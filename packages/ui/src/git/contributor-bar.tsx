@@ -8,6 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { seriesColor } from "../shared/series";
 
 interface ContributorBarProps {
   owners: Array<{ name: string; email?: string; file_count: number; pct: number }>;
@@ -48,7 +49,7 @@ export function ContributorBar({ owners }: ContributorBarProps) {
           }}
           formatter={(value) => [typeof value === "number" ? value : 0, "files"]}
         />
-        <Bar dataKey="files" fill="var(--color-accent-primary)" radius={[0, 4, 4, 0]} />
+        <Bar dataKey="files" fill={seriesColor(0)} radius={[0, 4, 4, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

@@ -53,8 +53,9 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
-from repowise.core.analysis.test_selection import RUNNERS
+from repowise.core.test_runners import RUNNERS
 
 # Candidates the table prints per changed file; json and list carry them all.
 _TABLE_CANDIDATES = 10
@@ -63,14 +64,7 @@ _TABLE_CANDIDATES = 10
 def _resolve_repo_path(path: str | None, fmt: str):
     """Resolve the repo path (workspace-aware), mirroring ``coverage``."""
     target = resolve_command_target(path=path)
-    target.notice(ci_notices(fmt), command="impacted-tests")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(ci_notices(fmt), command="impacted-tests", repo_option=False)
 
 
 @click.command("impacted-tests")
@@ -89,8 +83,10 @@ def _resolve_repo_path(path: str | None, fmt: str):
     "fmt",
     default="table",
     type=click.Choice(["table", "json", "list", "args"]),
-    help="table (human), json (full report and selection), list (test ids, one per line), "
-    "or args (one line of runner arguments, or :all for a full run; reasons on stderr).",
+    help="table (human), json (full report and selection), list (test ids, one per line; "
+    "nothing on stdout when every test must run, so `| xargs pytest` runs the suite, with "
+    "the reason on stderr), or args (one line of runner arguments, or :all for a full run; "
+    "reasons on stderr).",
 )
 @click.option(
     "--runner",
@@ -155,7 +151,7 @@ def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain
     """``(change set, selection config or None)``, or :class:`CannotEvaluateError`."""
     from repowise.core.ci.base import in_ci
 
-    config = _selection_config(repo_path) if explain or fmt in ("json", "args") else None
+    config = _selection_config(repo_path) if explain or fmt in ("json", "args", "list") else None
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
         revspec = ci_revspec(str(repo_root(str(repo_path))), None)
@@ -201,6 +197,8 @@ async def _collect(
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
             read_source=checkout.read,
+            scope_groups=plan.groups if plan else None,
+            project_dirs=plan.project_dirs if plan else None,
         )
         return await _decide(session, repo_id, out, *decide)
 
@@ -247,6 +245,15 @@ def _render(
     if fmt == "list" and prioritize:
         for test in _run_list(result, True).tests:
             click.echo(test)
+        return
+
+    selection = result.get("selection")
+    if fmt == "list" and selection is not None and selection.run_all:
+        # One line, not a partial list: piped to `xargs pytest`, an empty stdout
+        # runs the whole suite, which is the selection's verdict.
+        more = len(selection.reasons) - 1
+        extra = f" (and {more} more reason(s); --format json lists them)" if more > 0 else ""
+        click.echo(f"Run every test: {selection.reasons[0]}{extra}", err=True)
         return
 
     if fmt == "list":
@@ -311,6 +318,22 @@ def _args_header(selection, args: list[str], resolved: str, prioritize: bool) ->
         )
     if selection.run_all:
         return "Run every test:"
+    apart = []
+    if selection.broadcast:
+        apart.append(
+            f"{len(selection.broadcast)} only because a conftest on a route keeps every "
+            "test under it"
+        )
+    if selection.import_closure:
+        apart.append(
+            f"{len(selection.import_closure)} only through imports, with no call path to "
+            "the change"
+        )
+    if apart:
+        return (
+            f"{len(args)} argument(s) for {resolved}; selected test files that must still run "
+            f"but are counted apart: {'; '.join(apart)}."
+        )
     return f"{len(args)} argument(s) for {resolved}."
 
 
@@ -318,7 +341,7 @@ def _render_selection(
     result: dict, fmt: str, runner: str, explain: str | None = None, prioritize: bool = False
 ) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
-    from repowise.core.analysis.test_selection import (
+    from repowise.core.test_runners import (
         format_args,
         left_out,
         resolve_runner,
@@ -395,7 +418,8 @@ def _print_map_state(result: dict) -> None:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
+            "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif not result["map_current"]:

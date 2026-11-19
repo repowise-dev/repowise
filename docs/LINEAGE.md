@@ -127,7 +127,7 @@ and infers the parameters and return values a behaviour-preserving signature nee
 | Year | Work | What we take from it | Where it lives |
 |---|---|---|---|
 | 2009 | Robertson and Zaragoza, *The probabilistic relevance framework: BM25 and beyond*, Foundations and Trends in IR | BM25 ranking over full-text search, with per-column weights | `persistence/search.py` |
-| 2009 | Cormack, Clarke and Büttcher, *Reciprocal rank fusion outperforms Condorcet and individual rank learning methods*, SIGIR | Merging full-text and semantic results | `packages/server/src/repowise/server/mcp_server/tool_search.py` |
+| 2009 | Cormack, Clarke and Büttcher, *Reciprocal rank fusion outperforms Condorcet and individual rank learning methods*, SIGIR | Merging full-text and semantic results | `packages/server/src/repowise/server/mcp_server/tool_search/retrieval.py` |
 
 **How we checked it.** On 42 sealed retrieval tasks, held out from every round of
 tuning and graded without a model, `get_answer` found 0.876 of the files a fix needed,
@@ -162,7 +162,7 @@ language, every day. Where we departed from the source, we say so:
 - **Missing evidence reads as no signal.** A class with no detected member references
   reports LCOM4 of 1, not a high value; an unsupported language produces no health
   findings, not guessed ones.
-- **Weak signals stay weak.** Developer congestion and knowledge loss calibrated
+- **Weak signals stay weak.** Many authors and fading ownership calibrated
   weakly, so their weights are floored at 0.5 and 0.4 instead of being removed or
   inflated.
 

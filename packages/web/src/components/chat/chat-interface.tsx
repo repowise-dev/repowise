@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import useSWR from "swr";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-interface";
 import { getArtifactSourceTarget, useChatDraft } from "@repowise-dev/ui/chat";
@@ -14,6 +13,8 @@ import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
 import { useTranslations } from "next-intl";
+import { NoProviderReason } from "./no-provider-reason";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 interface ChatInterfaceProps {
   repoId: string;
@@ -45,6 +46,21 @@ export function ChatInterface({
     replaceArtifact,
     suggestions,
   } = useRepositoryChat();
+  // The ui package ships these in English; the empty chat page shows them translated.
+  const emptyChatSuggestions = useMemo(
+    () =>
+      [
+        t("emptySuggestions.treemap"),
+        t("emptySuggestions.riskiest"),
+        t("emptySuggestions.weeklyChanges"),
+        t("emptySuggestions.healthSlide"),
+        t("emptySuggestions.coverageGaps"),
+        t("emptySuggestions.deadCode"),
+      ].map((text) => ({ text, source: "static" as const })),
+    [t],
+  );
+  const visibleSuggestions =
+    suggestions ?? (pageContext.kind === "chat" ? emptyChatSuggestions : undefined);
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -64,6 +80,9 @@ export function ChatInterface({
     () => getProviders(repoId),
     { revalidateOnFocus: false },
   );
+  // Mounted here, not in the composer's reason: the reason unmounts as soon
+  // as a provider is set, and the run's confirm and progress must outlive it.
+  const upgrade = useModelUpgrade(repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((p) => p.configured);
 
@@ -182,7 +201,7 @@ export function ChatInterface({
       error={error}
       onSend={sendWithConversationModel}
       onCancel={cancel}
-      {...(suggestions ? { suggestions } : {})}
+      {...(visibleSuggestions ? { suggestions: visibleSuggestions } : {})}
       autoFocus
       draft={draft}
       onDraftChange={setDraft}
@@ -199,20 +218,7 @@ export function ChatInterface({
       artifactOverrides={artifactOverrides}
       unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
-      sendDisabledReason={
-        <span>
-          {t.rich("noProvider", {
-            link: (chunks) => (
-              <Link
-                href="/settings"
-                className="text-[var(--color-accent-primary)] hover:underline"
-              >
-                {chunks}
-              </Link>
-            ),
-          })}
-        </span>
-      }
+      sendDisabledReason={<NoProviderReason message="noProvider" onAddModel={upgrade.openSheet} />}
       historySlot={
         <div className="lg:hidden">
           <ConversationHistory
@@ -225,6 +231,7 @@ export function ChatInterface({
       }
     />
       </div>
+      {upgrade.sheet}
     </div>
   );
 }

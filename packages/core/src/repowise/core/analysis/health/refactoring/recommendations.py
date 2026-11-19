@@ -18,7 +18,6 @@ from typing import Any, Literal
 
 from repowise.core.analysis.function_test_map import MappedTest
 from repowise.core.analysis.health.grading import TARGET_SCORE
-from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
 from repowise.core.analysis.health.rows import field as row_field
@@ -30,14 +29,17 @@ from repowise.core.analysis.health.worth import (
     worst_after,
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
+from repowise.core.analysis.test_reach.hubs import hub_files
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     MAX_TESTS_PER_TARGET,
     ReachDistance,
     ReachedBy,
-    rank_tests,
+    rank_reaching,
 )
 from repowise.core.code_origin import ship_rank
+from repowise.core.ingestion.symbol_identity import make_symbol_id
+from repowise.core.perf_measure import verify_measure
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
@@ -312,6 +314,10 @@ class ValidationPlan:
     # How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs (``commands.TestRuns``),
     # so a later read builds the same commands without a checkout.
     test_runs: dict[str, list[str | None]] = field(default_factory=dict)
+    # A performance plan's ``perf measure`` lines (``perf_measure.verify_measure``),
+    # when its unit has an entry point or benchmark to time. Kept out of
+    # :meth:`as_dict` like ``step_verify``; :meth:`detail_dict` carries it.
+    measure: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -329,6 +335,10 @@ class ValidationPlan:
             **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
         }
 
+    def detail_dict(self) -> dict[str, Any]:
+        """:meth:`as_dict` for one plan read alone (and for what is stored), with ``measure``."""
+        return {**self.as_dict(), **({"measure": self.measure} if self.measure else {})}
+
 
 SymbolSpan = tuple[str, int, int]
 
@@ -345,7 +355,8 @@ class ValidationEvidence:
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
     ``test_runs`` is how each JS/TS, Go, Rust, JVM, Ruby or C# test runs; absent,
-    it gets no command.
+    it gets no command. ``timed`` is the workload a performance plan on each file
+    is timed with (``evidence.setup.timed_targets``); a file without one has none.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
@@ -355,6 +366,7 @@ class ValidationEvidence:
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     test_runs: TestRuns | None = None
+    timed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,30 +381,6 @@ class ValidationInputs:
     inferred: Mapping[str, ReachedBy]
     test_files: set[str]
     evidence: ValidationEvidence = field(default_factory=ValidationEvidence)
-
-
-# A hub is a module most of the code imports: fan-in above the absolute bar, or
-# in the top 1% of the repository's files and at least the floor. Far stricter
-# than ``PerfRanker``'s top-quintile "central": that marks a function worth a
-# performance claim, while a hub's reach is dropped from validation, so it must
-# be a module most tests would pass through. Fan-in counts every importer,
-# tests included, as ``graph_metrics.in_degree`` stores it.
-HUB_MIN_FAN_IN = 50
-HUB_TOP_PERCENTILE = 0.99
-HUB_FAN_IN_FLOOR = 10
-
-
-def hub_files(in_degree: Mapping[str, float], test_files: Collection[str]) -> frozenset[str]:
-    """The repository's own non-test files that are hubs by stored fan-in."""
-    own = {
-        path: int(fan_in or 0)
-        for path, fan_in in in_degree.items()
-        if not path.startswith("external:") and path not in test_files
-    }
-    bar = max(HUB_FAN_IN_FLOOR, _percentile_threshold(list(own.values()), HUB_TOP_PERCENTILE))
-    return frozenset(
-        path for path, fan_in in own.items() if fan_in > HUB_MIN_FAN_IN or fan_in >= bar
-    )
 
 
 def _siblings(paths: Collection[str]) -> dict[str, tuple[str, ...]]:
@@ -421,7 +409,7 @@ def target_symbol_ids(
         candidates = (
             (name,)
             if "::" in name
-            else (f"{file_path}::{name}", f"{file_path}::{name.replace('.', '::')}")
+            else (make_symbol_id(file_path, name), make_symbol_id(file_path, *name.split(".")))
         )
         found.update(candidate for candidate in candidates if candidate in ids)
     if found or not lines:
@@ -678,12 +666,33 @@ def _runs_reason(test: MappedTest, symbol: str) -> str:
     return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
 
 
-def _characterization_step(suggestion: RefactoringSuggestion) -> str:
-    """The step before an edit no test reaches: pin today's behaviour first."""
-    symbol = suggestion.target_symbol
+def _characterization_step(suggestion: RefactoringSuggestion, file_tests: int = 0) -> str:
+    """The step before an edit no test reaches: pin today's behaviour first.
+
+    *file_tests* counts the listed tests that reach the file but not the
+    changed function, so the step and the list state the same fact.
+    """
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
     if not symbol or not symbol.replace(".", "_").isidentifier():
         symbol = suggestion.file_path.rsplit("/", 1)[-1]
-    return f"No test reaches this; add a characterization test for `{symbol}` before the edit."
+    if file_tests:
+        files = "its files" if len(affected_files(suggestion)) > 1 else "its file"
+        reach = f"{file_tests} reach {files}" if file_tests > 1 else f"1 reaches {files}"
+        return f"No test reaches `{symbol}` ({reach}); add a characterization test first."
+    return f"No test reaches `{symbol}`; add a characterization test before the edit."
+
+
+def _prerequisite(
+    suggestion: RefactoringSuggestion,
+    basis: ValidationBasis,
+    nearest: list[tuple[MappedTest, str]] | None,
+    file_tests: int,
+) -> str | None:
+    """The characterization step when no test reaches the change, also when
+    tests reach the file (*file_tests* of them) but none a function it changes."""
+    if nearest == []:
+        return _characterization_step(suggestion, file_tests)
+    return _characterization_step(suggestion) if basis == "unknown" else None
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
@@ -924,6 +933,11 @@ def build_validation_plan(
             shown, total=aggregate_total, runs=facts.test_runs
         )
     files = affected_files(suggestion)
+    timed = (
+        facts.timed.get(suggestion.file_path)
+        if suggestion.refactoring_type == "performance_fix"
+        else None
+    )
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
@@ -936,13 +950,22 @@ def build_validation_plan(
         targets=target_rows,
         reasons=reasons if order_tests else {},
         test_runs=plan_runs(shown, facts.test_runs),
-        # Also when tests reach the file but none reaches a function it changes.
-        prerequisite=(
-            _characterization_step(suggestion)
-            if aggregate_basis == "unknown" or nearest == []
-            else None
+        prerequisite=_prerequisite(
+            suggestion,
+            aggregate_basis,
+            nearest,
+            # Summed per file, a test reaching two files counts twice: no count then.
+            aggregate_total if identities_complete or len(target_rows) == 1 else 0,
         ),
+        measure=verify_measure(timed, _baseline_label(suggestion)) if timed else None,
     )
+
+
+def _baseline_label(suggestion: RefactoringSuggestion) -> str:
+    """``<file stem>.<function>``, so two plans on same-named functions keep apart baselines."""
+    stem = suggestion.file_path.rsplit("/", 1)[-1].split(".", 1)[0]
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
+    return f"{stem}.{symbol}" if symbol else stem
 
 
 def with_step_verify(
@@ -1119,6 +1142,7 @@ class Recommendation:
         carrying its ``verify``, and the plan's ``governed_by``, ``risks`` and
         co-change partners."""
         payload = self.as_dict()
+        payload["validation"] = self.validation.detail_dict()
         payload["plan"] = self.suggestion.plan or {}
         steps = payload["plan"].get("steps")
         if isinstance(steps, list) and self.validation.step_verify:
@@ -1152,7 +1176,7 @@ class Recommendation:
             "file_weighted_deficit": self.file_weighted_deficit,
             # Enriched with the caller rollup, which the stored column lacks.
             "blast_radius": self.suggestion.blast_radius or {},
-            "validation": self.validation.as_dict(),
+            "validation": self.validation.detail_dict(),
             **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
             **(
                 {"annotations": self.annotations.as_dict()}
@@ -1443,7 +1467,7 @@ def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> Reache
     found = reached.all_tests or tuple(reached.tests)
     if tuple(expanded) == tuple(found):
         return reached
-    ranked = rank_tests(path, expanded)
+    ranked = rank_reaching(path, expanded, reach=reached.reach)
     return dataclasses.replace(
         reached,
         tests=ranked[:MAX_TESTS_PER_TARGET],

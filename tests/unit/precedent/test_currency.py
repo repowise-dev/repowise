@@ -118,6 +118,18 @@ def test_changed_scope_says_so_with_a_count(repo: Path) -> None:
     assert "the 2 files it governs changed in 1 commit since" in sentence
 
 
+def test_a_change_before_the_latest_acceptance_is_not_reported(repo: Path) -> None:
+    _touch_and_commit(repo, "moved.py")
+
+    sentence = describe_decision_currency(
+        repo, created_at=_BETWEEN, nodes=["moved.py"], accepted_at=datetime.now(UTC) + timedelta(seconds=2)
+    )
+
+    assert sentence is not None
+    assert "nothing in the file it governs has changed" in sentence
+    assert "when it was last accepted" in sentence
+
+
 def test_unscoped_record_says_it_cannot_be_checked(repo: Path) -> None:
     """The half a 0.0 score cannot express: never checkable, not checked-and-fresh."""
     sentence = describe_decision_currency(repo, created_at=datetime.now(UTC), nodes=[])

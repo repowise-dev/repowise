@@ -461,7 +461,7 @@ describe("DocDriftView", () => {
     const table = await screen.findByRole("table", TABLE);
     const headings = screen
       .getAllByRole("heading", { level: 3 })
-      .map((h) => h.textContent);
+      .map((h) => h.querySelector("[data-path]")?.getAttribute("data-path"));
     expect(headings).toEqual(["docs/architecture.md", "docs/cli.md"]);
     expect(screen.getByText("2 findings")).toBeTruthy();
     expect(screen.getByText("1 finding")).toBeTruthy();

@@ -162,7 +162,8 @@ repowise doc-drift --check --baseline .doc-drift-baseline.json
 
 Baseline entries are keyed on the document, the reference class and the target,
 not the line number, so editing a document above a known finding does not turn
-it back into a new one.
+it back into a new one. Add `--fail-on-baseline-growth` in CI to fail a change
+that adds entries to the committed baseline instead of fixing the drift.
 
 On a pull request you can instead gate only the drift the change is answerable
 for, with no baseline to maintain:
@@ -193,6 +194,13 @@ get_context(targets=["src/auth.py"], include=["doc_drift"])
 That returns the documents naming it, where in each, and whether those
 documents already carry drift of their own. Useful when you are about to move
 or rename something and want to know what will go stale.
+
+The dependency graph holds a narrower copy of the same evidence as
+`documents` edges: one per document and file, only for links and backticked
+paths that resolve to exactly one file, with no drift state. A bare backticked
+name such as `package.json` never reaches a root-level file. `include=["doc_drift"]`
+reads the drift tables (`doc_drift_references`), not those edges. See
+[GRAPH.md](GRAPH.md#edge-types).
 
 ## Where it shows up
 

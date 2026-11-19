@@ -8,6 +8,7 @@ run that read nothing is allowed to delete.
 
 from __future__ import annotations
 
+import calendar
 import json
 import time
 
@@ -502,8 +503,7 @@ def test_the_episode_is_dated_from_the_session_not_the_index(tmp_path):
     (row,) = _rows(root, tier=TIER_TRANSCRIPT)
 
     assert row["birth_at"] == pytest.approx(
-        time.mktime(time.strptime("2026-08-06 10:00:00", "%Y-%m-%d %H:%M:%S"))
-        - time.timezone,
+        calendar.timegm(time.strptime("2026-08-06 10:00:00", "%Y-%m-%d %H:%M:%S")),
         abs=2,
     )
     assert row["tier"] == TIER_TRANSCRIPT

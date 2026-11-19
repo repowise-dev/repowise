@@ -231,13 +231,19 @@ def _request_history_rewalk(repo_path: Path) -> bool:
     """Make the next ``repowise update`` re-read git history once, which labels
     the newly bound commits in the index; False when there is no index.
 
-    Drops the git-history stamp in ``.repowise/state.json``, the same signal a
-    history-rules change raises. No update flag re-walks git history alone.
+    Replaces a current git-history stamp in ``.repowise/state.json`` with the
+    backfill marker, which the update reads as stale and names as the reason.
+    A stamp already stale is left alone: that walk labels these commits too.
+    No update flag re-walks git history alone.
     """
     import json
 
     from repowise.core.fsutils import atomic_write_text
-    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION_KEY
+    from repowise.core.ingestion.git_indexer import (
+        GIT_HISTORY_BACKFILL_REWALK,
+        GIT_HISTORY_VERSION,
+        GIT_HISTORY_VERSION_KEY,
+    )
 
     state_path = repo_path / ".repowise" / "state.json"
     try:
@@ -246,7 +252,9 @@ def _request_history_rewalk(repo_path: Path) -> bool:
         return False
     if not isinstance(state, dict):
         return False
-    state.pop(GIT_HISTORY_VERSION_KEY, None)
+    if state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION:
+        return True
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_BACKFILL_REWALK
     atomic_write_text(state_path, json.dumps(state, indent=2))
     return True
 

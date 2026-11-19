@@ -49,11 +49,12 @@ def _razor_name(path: PurePosixPath) -> str:
     return path.stem
 
 
-_NAMERS = {"svelte": _svelte_name, "vue": _vue_name, "razor": _razor_name}
+# Astro takes Vue's rule: ``back-to-top.astro`` is written ``<BackToTop />``.
+_NAMERS = {"svelte": _svelte_name, "vue": _vue_name, "razor": _razor_name, "astro": _vue_name}
 
 
 def sfc_component_symbols(root: Node, src: str, file_info: FileInfo) -> list[Symbol]:
-    """Return the single component symbol for a ``.svelte`` / ``.vue`` / ``.razor`` file."""
+    """Return the single component symbol for a ``.svelte`` / ``.vue`` / ``.razor`` / ``.astro`` file."""
     path = PurePosixPath(file_info.path)
     if not path.stem:
         return []

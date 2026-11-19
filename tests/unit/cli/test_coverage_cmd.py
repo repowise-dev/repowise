@@ -8,6 +8,8 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import coverage_cmd
 from repowise.cli.main import cli
+from repowise.core.analysis.health.coverage import TestCoverage
+from repowise.core.persistence.crud.analysis.coverage_map import TestMapWrite
 
 
 @pytest.mark.parametrize(
@@ -67,13 +69,17 @@ def test_coverage_add_exits_non_zero_when_it_discovers_nothing(
     assert "No coverage report found" in result.output
 
 
-@pytest.mark.parametrize(("stored", "expected_exit"), [(True, 0), (False, 1)])
+@pytest.mark.parametrize(
+    ("stored", "expected_exit"),
+    [(("ingested", 3), 0), (("partial", 1), 0), (("unmapped", 0), 1), (("no_index", None), 1)],
+)
 def test_coverage_add_exit_status_follows_whether_anything_was_stored(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, stored: bool, expected_exit: int
+    monkeypatch: pytest.MonkeyPatch, tmp_path, stored: tuple, expected_exit: int
 ) -> None:
     """
-    Every no-op branch inside the ingest returns False -- no index, no indexed
-    files, nothing mapped, or --strict with unmapped report files. This pins
+    Every no-op branch inside the ingest returns an outcome that stored nothing
+    -- no index, no indexed files, nothing mapped, or --strict with unmapped
+    report files. This pins
     the wiring that turns that answer into the process exit status.
     """
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
@@ -214,6 +220,109 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
     assert recorded["sha"] != _FakeRepoRow.head_commit
 
 
+def test_coverage_add_stamps_a_leftover_report_at_the_commit_it_measured(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression for the P1 on #3935: the stamp follows the reports that gave
+    rows, not every file discovery turned up.
+
+    Two commits a week apart, a report from the first afternoon, and an empty
+    leftover from months ago sitting in the same directory. The aggregate is
+    measured at the first commit, so that is what gets stamped — live HEAD
+    would strand the drift check on a tree the report never saw. The leftover
+    is skipped by the parser, so its date must not enter the arithmetic: had it,
+    no commit would predate it and the writer would fall back to live HEAD.
+    """
+    import os
+    from datetime import UTC, datetime
+
+    import git as gitpython
+
+    from repowise.cli.commands import coverage_cmd
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x = 1\n")
+    repo.index.add(["src/foo.py"])
+    july = int(datetime(2026, 7, 3, 12, 0, tzinfo=UTC).timestamp())
+    measured_at_commit = repo.index.commit(
+        "feat: add foo",
+        commit_date=datetime.fromtimestamp(july, UTC).strftime("%Y-%m-%d %H:%M:%S +0000"),
+        author_date=datetime.fromtimestamp(july, UTC).strftime("%Y-%m-%d %H:%M:%S +0000"),
+    ).hexsha
+
+    lcov = tmp_path / "coverage" / "lcov.info"
+    lcov.parent.mkdir()
+    lcov.write_text("TN:\nSF:src/foo.py\nDA:1,2\nLF:1\nLH:1\nend_of_record\n")
+    # Written by the suite an hour after that commit.
+    run = july + 3600
+    os.utime(lcov, (run, run))
+    # A leftover nobody deleted, months older and yielding nothing.
+    stale = tmp_path / "coverage" / "stale.info"
+    stale.write_text("")
+    old = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
+    os.utime(stale, (old, old))
+
+    (tmp_path / "src" / "bar.py").write_text("y = 2\n")
+    repo.index.add(["src/bar.py"])
+    live_head = repo.index.commit("feat: add bar").hexsha
+    repo.close()
+
+    class _FakeRepoRow:
+        id = "repo-1"
+        head_commit = None
+
+    recorded: dict = {}
+
+    async def _fake_save_coverage_files(session, repository_id, files, **kwargs):
+        recorded["sha"] = kwargs.get("ingested_commit_sha")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_get_repository_by_path(session, local_path):
+        return _FakeRepoRow()
+
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.get_repository_by_path",
+        _fake_get_repository_by_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.save_coverage_files", _fake_save_coverage_files
+    )
+
+    async def _fake_repo_file_keys(session, repo_id):
+        return {"src/foo.py", "src/bar.py"}
+
+    monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+
+    async def _no_reconcile(_url):
+        return None
+
+    monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _no_reconcile)
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
+    monkeypatch.setattr(
+        "repowise.core.persistence.create_session_factory", lambda engine: object()
+    )
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _FakeSession())
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", str(lcov), str(stale), "--path", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recorded["sha"] == measured_at_commit
+    assert recorded["sha"] != live_head
+
+
 def _fake_ingest(monkeypatch: pytest.MonkeyPatch, tmp_path, keys: set[str]) -> list:
     """Run `coverage add` against *tmp_path* with *keys* indexed; returns the stored rows."""
 
@@ -340,7 +449,7 @@ def test_init_and_update_keep_the_repo_hook_in_step(
     import inspect
 
     from repowise.cli.commands.augment_cmd import coverage_reingest
-    from repowise.cli.commands.init_cmd import command as init_command
+    from repowise.cli.commands.init_cmd import _finish as init_finish
     from repowise.cli.commands.update_cmd import command as update_command
 
     calls: list = []
@@ -350,4 +459,297 @@ def test_init_and_update_keep_the_repo_hook_in_step(
     )
     update_command._refresh_editor_stamp(tmp_path, None)
     assert calls == [tmp_path]
-    assert "sync_repo_hook(repo_path, console)" in inspect.getsource(getattr(init_command.init_command, "callback", init_command.init_command))
+    assert "sync_repo_hook(repo_path, console)" in inspect.getsource(init_finish._write_editor_files)
+
+
+def _coverage_data(path, context: str | None, source) -> None:
+    """A real coverage.py ``.coverage`` with lines 1-2 of *source* run under *context*."""
+    coverage = pytest.importorskip("coverage")
+    data = coverage.CoverageData(basename=str(path))
+    if context:
+        data.set_context(context)
+    data.add_lines({str(source): [1, 2]})
+    data.write()
+
+
+def test_coverage_add_dot_coverage_builds_the_map_and_says_why_no_per_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    mapped: list = []
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        mapped.extend(records)
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    assert result.exit_code == 0, result.output
+    # No executable-line set in the file, so no per-file row; the map is built.
+    assert stored == []
+    assert [(r.file_path, r.covered_lines) for r in mapped] == [("src/a.py", [1, 2])]
+    assert "coverage lcov" in " ".join(result.output.split())
+
+
+def test_a_map_only_ingest_reports_the_files_it_mapped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
+    seen = _outcomes(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == [{"outcome": "ingested", "files_matched_bucket": "1-9"}]
+
+
+def test_coverage_add_dot_coverage_without_contexts_stores_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    _coverage_data(tmp_path / ".coverage", None, tmp_path / "src" / "a.py")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "coverage lcov" in output
+    assert "Nothing was stored." in output
+    # The paths were never the problem, so no prefix advice.
+    assert "strip_prefix" not in output
+
+
+_MONOREPO_KEYS = {"web/src/a.py", "api/src/a.py", "web/src/b.py", "api/src/b.py", "web/src/c.py"}
+
+
+def _package_report(tmp_path) -> None:
+    """A web package's lcov, paths from the package root: two tie, one maps."""
+    (tmp_path / "lcov.info").write_text(
+        "".join(f"SF:src/{n}.py\nDA:1,1\nend_of_record\n" for n in "abc"), encoding="utf-8"
+    )
+
+
+def test_coverage_add_stores_nothing_from_a_partial_mapping_and_suggests_a_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, _MONOREPO_KEYS)
+    _package_report(tmp_path)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "nothing was stored" in output
+    assert "set coverage.path_prefix: web in .repowise/config.yaml" in output
+    assert "--allow-partial" in output
+
+
+def test_coverage_add_allow_partial_stores_the_flagged_fragment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, _MONOREPO_KEYS)
+    _package_report(tmp_path)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info", "--allow-partial"])
+
+    assert result.exit_code == 0, result.output
+    assert [f.file_path for f in stored] == ["web/src/c.py"]
+    assert "flagged partial" in " ".join(result.output.split())
+
+
+def test_coverage_add_withholds_a_partial_per_test_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    mapped: list = []
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        mapped.extend(records)
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    coverage = pytest.importorskip("coverage")
+    data = coverage.CoverageData(basename=str(tmp_path / ".coverage"))
+    data.set_context("tests/test_a.py::test_one|run")
+    data.add_lines({str(tmp_path / n): [1] for n in ("src/a.py", "gone/b.py", "gone/c.py")})
+    data.write()
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    assert result.exit_code == 1, result.output
+    assert mapped == []
+    assert "More than half the per-test map did not map" in " ".join(result.output.split())
+
+
+def test_coverage_add_maps_a_package_per_test_lcov_like_its_aggregate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    keys = {
+        "packages/web/src/a.py",
+        "packages/api/src/a.py",
+        "packages/web/src/b.py",
+        "packages/api/src/b.py",
+    }
+    stored = _fake_ingest(monkeypatch, tmp_path, keys)
+    mapped: list = []
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        mapped.extend(records)
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    report = tmp_path / "packages" / "web" / "coverage" / "lcov.info"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "".join(
+            f"TN:tests/test_{n}.py::test_one|run\nSF:src/{n}.py\nDA:1,1\nend_of_record\n"
+            for n in "ab"
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "packages/web/coverage/lcov.info"])
+
+    assert result.exit_code == 0, result.output
+    expected = ["packages/web/src/a.py", "packages/web/src/b.py"]
+    assert sorted(f.file_path for f in stored) == expected
+    assert sorted(r.file_path for r in mapped) == expected
+
+
+def _outcomes(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Capture what ``coverage add`` reports for its ``command_run`` event."""
+    from repowise.cli.platform import telemetry
+
+    seen: list[dict] = []
+    monkeypatch.setattr(telemetry, "add_command_outcome", lambda **f: seen.append(f))
+    return seen
+
+
+def test_coverage_add_reports_no_report_when_discovery_finds_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _no_discovered_reports(monkeypatch, tmp_path)
+    seen = _outcomes(monkeypatch)
+
+    CliRunner().invoke(cli, ["coverage", "add"])
+
+    assert seen == [{"outcome": "no_report"}]
+
+
+def test_coverage_add_reports_an_ingest_and_a_bucket_of_matched_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"secret/a.py", "secret/b.py"})
+    _lcov(tmp_path / "one" / "lcov.info", "secret/a.py")
+    _lcov(tmp_path / "two" / "lcov.info", "secret/b.py")
+    seen = _outcomes(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "*/lcov.info"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == [{"outcome": "ingested", "files_matched_bucket": "1-9"}]
+
+
+@pytest.mark.parametrize(
+    ("args", "outcome"),
+    [(["lcov.info"], "mostly_unmapped"), (["lcov.info", "--allow-partial"], "partial")],
+)
+def test_coverage_add_reports_a_partial_mapping(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, args: list[str], outcome: str
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, _MONOREPO_KEYS)
+    _package_report(tmp_path)
+    seen = _outcomes(monkeypatch)
+
+    CliRunner().invoke(cli, ["coverage", "add", *args])
+
+    assert seen == [{"outcome": outcome, "files_matched_bucket": "1-9"}]
+
+
+def test_coverage_add_reports_a_report_that_maps_nowhere(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    _lcov(tmp_path / "lcov.info", "elsewhere/z.py")
+    seen = _outcomes(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])
+
+    assert result.exit_code == 1
+    assert seen == [{"outcome": "mostly_unmapped", "files_matched_bucket": "0"}]
+
+
+def test_every_ingest_outcome_is_documented() -> None:
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "reference" / "TELEMETRY.md").read_text(
+        encoding="utf-8"
+    )
+    section = doc.split("`coverage add` reports", 1)[1].split("\n\n", 1)[0]
+    for outcome in coverage_cmd.INGEST_OUTCOMES:
+        assert f"`{outcome}`" in section, outcome
+    assert "`files_matched_bucket`" in section
+
+
+def test_coverage_export_writes_the_stored_map_and_fails_without_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    _fake_ingest(monkeypatch, tmp_path, set())
+    stored = coverage_map.per_test_map_from_records(
+        [TestCoverage(test_id="t1", file_path="src/a.py", covered_lines=[1, 2])], "coverage.py"
+    )
+    found: list = [None]
+
+    async def _get(session, repository_id):
+        return found[0]
+
+    monkeypatch.setattr(coverage_map, "get_per_test_map", _get)
+
+    missing = CliRunner().invoke(cli, ["coverage", "export"])
+    assert missing.exit_code == 1
+    assert "No per-test map" in missing.output
+
+    found[0] = stored
+    result = CliRunner().invoke(cli, ["coverage", "export", "-o", "map.json.gz"])
+    assert result.exit_code == 0, result.output
+    raw = (tmp_path / "map.json.gz").read_bytes()
+    assert coverage_map.load_per_test_map(raw, max_bytes=1_000_000) == stored
+    assert "1 tests, 1 test-file pairs" in result.output
+
+
+def test_coverage_export_reads_a_per_test_report_without_an_index(tmp_path, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests.lcov").write_text(
+        "TN:t1\nSF:src/a.py\nDA:1,1\nDA:2,1\nend_of_record\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "export", "tests.lcov", "-o", "map.json.gz"])
+
+    assert result.exit_code == 0, result.output
+    tmap = coverage_map.load_per_test_map(
+        (tmp_path / "map.json.gz").read_bytes(), max_bytes=1_000_000
+    )
+    assert tmap.tests == (("t1", None),)
+    assert tmap.sources == {"src/a.py": (1, '[[0,"1-2"]]')}
+    plain = tmp_path / "plain.lcov"
+    plain.write_text("SF:src/a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    assert CliRunner().invoke(cli, ["coverage", "export", str(plain)]).exit_code == 1
+    absent = CliRunner().invoke(cli, ["coverage", "export", "nowhere.coverage"])
+    assert absent.exit_code == 2
+    assert "does not exist" in absent.output
+    assert "No per-test map" not in absent.output

@@ -10,9 +10,9 @@ base_url, following the same pattern as OpenRouterProvider / DeepSeekProvider.
 
 Models use ``vendor/model`` format:
     - mistral/mistral-small-latest  fast, economical EU model [default]
-    - openai/gpt-4o-mini            OpenAI small model
-    - anthropic/claude-haiku-4-5    Anthropic Claude Haiku
-    - google/gemini-2.5-flash       Google Gemini Flash
+    - openai/gpt-latest             OpenAI's current GPT
+    - anthropic/claude-sonnet-latest  Anthropic's current Sonnet
+    - vertex/gemini-flash-latest    Google's current Gemini Flash
 
 The live catalogue is public and needs no authentication at
 https://api.edenai.run/v3/models.
@@ -30,6 +30,7 @@ from repowise.core.providers.llm.openai_compat import (
     OpenAICompatibleProvider,
     listed_model_options,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -104,7 +105,7 @@ class EdenAIProvider(OpenAICompatibleProvider):
     Args:
         api_key:      Eden AI API key. Falls back to EDENAI_API_KEY env var.
         model:        Model identifier in ``vendor/model`` form. Defaults to
-                      ``mistral/mistral-small-latest``.
+                      the spec's default_model.
         base_url:     Override the Eden AI API URL. Falls back to EDENAI_BASE_URL,
                       then the global endpoint. Set the EU endpoint
                       (``https://api.eu.edenai.run/v3``) for data residency.
@@ -129,7 +130,7 @@ class EdenAIProvider(OpenAICompatibleProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "mistral/mistral-small-latest",
+        model: str = PROVIDER_SPECS["edenai"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

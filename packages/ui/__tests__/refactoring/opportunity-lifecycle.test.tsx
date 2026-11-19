@@ -53,7 +53,7 @@ describe("OpportunityRows", () => {
     expect(screen.getByText("packages/core/src/big.py")).toBeTruthy();
     expect(screen.getByText("3 steps, 2 mechanical")).toBeTruthy();
     // The lead cause, in words, not a token.
-    expect(screen.getByText(/Split File, against nested complexity/)).toBeTruthy();
+    expect(screen.getByText(/Split File, against deep nesting/)).toBeTruthy();
   });
 
   it("keeps addresses_primary_problem in three states", () => {

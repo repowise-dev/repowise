@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
+from repowise.core.analysis.change_health.commit_scan import current_fingerprint
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from tests.unit.server.conftest import create_test_repo
@@ -434,11 +435,13 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
         await crud.upsert_commit_health_bulk(
             session,
             repo["id"],
             [
                 {
+                    **current_fingerprint(stored.local_path),
                     "sha": "bbbbbbbb22",
                     "status": "partial",
                     "introduced_count": 2,
@@ -481,6 +484,55 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
     assert finding["severity_before"] == "high"
     assert finding["path"] == "src/main.py"
     assert finding["attribution_basis"] == "added_lines"
+    assert (health["improved_count"], health["moved_count"]) == (0, 0)
+    assert finding["moved_from"] is None
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_names_where_a_moved_finding_came_from(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    **current_fingerprint(stored.local_path),
+                    "sha": "bbbbbbbb22",
+                    "status": "available",
+                    "worsened_count": 1,
+                    "improved_count": 2,
+                    "moved_count": 7,
+                    "findings_stored": 1,
+                }
+            ],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "change_finding_id": "f0",
+                    "position": 0,
+                    "change_kind": "worsened",
+                    "dimension": "defect",
+                    "biomarker_type": "complex_method",
+                    "severity": "critical",
+                    "file_path": "src/pkg/run.py",
+                    "symbol": "run",
+                    "attribution_basis": "moved",
+                    "reason": "run has cyclomatic complexity 26",
+                    "moved_from_path": "src/main.py",
+                    "moved_from_symbol": "run",
+                }
+            ],
+        )
+
+    health = (await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")).json()["health"]
+
+    assert (health["improved_count"], health["moved_count"]) == (2, 7)
+    assert health["findings"][0]["moved_from"] == {"path": "src/main.py", "symbol": "run"}
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _web_assets
 
 
 class _FakeCompleted:
@@ -26,7 +27,7 @@ def test_node_major_version_parses_standard_output(monkeypatch: pytest.MonkeyPat
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         return _FakeCompleted("v20.11.1\n")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/usr/bin/node") == 20
 
 
@@ -36,7 +37,7 @@ def test_node_major_version_parses_old_release(monkeypatch: pytest.MonkeyPatch) 
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         return _FakeCompleted("v12.22.12\n")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/usr/bin/node") == 12
 
 
@@ -46,7 +47,7 @@ def test_node_major_version_handles_missing_v_prefix(
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         return _FakeCompleted("18.20.3\n")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/usr/bin/node") == 18
 
 
@@ -56,7 +57,7 @@ def test_node_major_version_returns_none_on_subprocess_error(
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         raise subprocess.CalledProcessError(1, "node")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/usr/bin/node") is None
 
 
@@ -66,7 +67,7 @@ def test_node_major_version_returns_none_on_oserror(
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         raise OSError("not executable")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/missing/node") is None
 
 
@@ -76,7 +77,7 @@ def test_node_major_version_returns_none_on_garbage_output(
     def fake_run(*_args: Any, **_kwargs: Any) -> _FakeCompleted:
         return _FakeCompleted("not a version string\n")
 
-    monkeypatch.setattr(serve_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(_web_assets.subprocess, "run", fake_run)
     assert serve_cmd._node_major_version("/usr/bin/node") is None
 
 

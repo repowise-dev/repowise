@@ -87,17 +87,15 @@ def test_resolve_scope_unwritten_with_cascade_none() -> None:
         cascade_mode="none",
         deps=deps,
     )
-    # Seeds are the template pages: a.py, module_page:src, repo_overview:demo.
+    # Seeds are the model-written template pages: module_page:src and
+    # repo_overview:demo. a.py is a structural page, so it is never "unwritten".
     assert plan.generate_ids == {
-        "file_page:src/a.py",
         "module_page:src",
         "repo_overview:demo",
     }
-    # cascade=none marks the file's containers stale, minus anything regenerated.
-    # module_page:src is a container of a.py but is itself regenerated, so it is
-    # not stale. No repo-wide left (overview is regenerated).
+    # No file page is seeded, so nothing is marked stale.
     assert plan.stale_ids == set()
-    assert plan.seed_count == 3
+    assert plan.seed_count == 2
 
 
 class _FakeGroup:
@@ -173,9 +171,7 @@ def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
         PageRecord("file_page:a.py", "file_page", "a.py", is_template=True),
         PageRecord("file_page:b.py", "file_page", "b.py", is_template=True),
     ]
-    deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], repo_wide_ids=()
-    )
+    deps = build_page_dependencies(module_groups=[], scc_groups=[], repo_wide_ids=())
     # An all-selecting intent would pick both; the ranked seed overrides it.
     plan = resolve_scope(
         records=records,

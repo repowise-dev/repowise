@@ -92,6 +92,6 @@ def _generate_refactoring_code(repo_path, suggestions: list, selector: str, *, f
         )
         console.print(
             f"[dim]Self-check: LCOM4 {v.get('before_lcom4')} → "
-            f"max {v.get('after_max_lcom4')} across {v.get('class_count')} classes — {verdict}[/dim]"
+            f"max {v.get('after_max_lcom4')} across {v.get('class_count')} classes: {verdict}[/dim]"
         )
     console.print(result.content)

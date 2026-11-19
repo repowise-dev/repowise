@@ -11,16 +11,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from .apex_hardcoded_id import ApexHardcodedIdDetector
+from .apex_missing_sharing import ApexMissingSharingDetector
+from .apex_see_all_data import ApexSeeAllDataDetector
+from .apex_soql_injection import ApexSoqlInjectionDetector
 from .array_spread_in_reduce import ArraySpreadInReduceDetector
 from .assertion_free_test import AssertionFreeTestDetector
 from .base import Biomarker, BiomarkerResult, FileContext
 from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
 from .brain_method import BrainMethodDetector
-from .bumpy_road import BumpyRoadDetector
 from .change_entropy import ChangeEntropyDetector
 from .churn_risk import ChurnRiskDetector
 from .co_change_scatter import CoChangeScatterDetector
+from .cobol_unstructured_flow import CobolUnstructuredFlowDetector
 from .code_age_volatility import CodeAgeVolatilityDetector
 from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
@@ -56,6 +60,7 @@ from .pd_concat_in_loop import PdConcatInLoopDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
 from .regex_compile_in_loop import RegexCompileInLoopDetector
+from .repeated_nesting import RepeatedNestingDetector
 from .resource_construction_in_loop import ResourceConstructionInLoopDetector
 from .serial_await_in_loop import SerialAwaitInLoopDetector
 from .sql_cartesian_join import SqlCartesianJoinDetector
@@ -64,6 +69,7 @@ from .sql_select_star import SqlSelectStarDetector
 from .sql_update_delete_without_where import SqlUpdateDeleteWithoutWhereDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
 from .unbounded_read_reduced_in_memory import UnboundedReadReducedInMemoryDetector
+from .untested_complexity import UntestedComplexityDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -72,12 +78,13 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     GodClassDetector,  # type: ignore[list-item]
     NestedComplexityDetector,  # type: ignore[list-item]
     ComplexMethodDetector,  # type: ignore[list-item]
-    BumpyRoadDetector,  # type: ignore[list-item]
+    RepeatedNestingDetector,  # type: ignore[list-item]
     LargeMethodDetector,  # type: ignore[list-item]
     PrimitiveObsessionDetector,  # type: ignore[list-item]
     DryViolationDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
+    UntestedComplexityDetector,  # type: ignore[list-item]
     CoverageGradientDetector,  # type: ignore[list-item]
     DeveloperCongestionDetector,  # type: ignore[list-item]
     KnowledgeLossDetector,  # type: ignore[list-item]
@@ -129,6 +136,13 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     SqlSelectStarDetector,  # type: ignore[list-item]
     SqlUpdateDeleteWithoutWhereDetector,  # type: ignore[list-item]
     SqlCartesianJoinDetector,  # type: ignore[list-item]
+    # Apex markers (advisory: listed, never scored).
+    ApexSoqlInjectionDetector,  # type: ignore[list-item]
+    ApexMissingSharingDetector,  # type: ignore[list-item]
+    ApexHardcodedIdDetector,  # type: ignore[list-item]
+    ApexSeeAllDataDetector,  # type: ignore[list-item]
+    # COBOL markers (advisory: listed, never scored).
+    CobolUnstructuredFlowDetector,  # type: ignore[list-item]
 ]
 
 

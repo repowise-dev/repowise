@@ -129,10 +129,6 @@ def observation_facts(row: Any) -> ObservationFacts:
     )
 
 
-def performance_facts(rows: list[Any]) -> list[ObservationFacts]:
-    return [observation_facts(row) for row in rows if is_performance(row)]
-
-
 def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
     """One public evidence entry.
 
@@ -166,5 +162,4 @@ __all__ = [
     "field",
     "is_performance",
     "observation_facts",
-    "performance_facts",
 ]

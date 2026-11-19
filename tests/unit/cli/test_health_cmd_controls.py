@@ -44,6 +44,27 @@ def test_an_unknown_value_is_refused_rather_than_silently_defaulted() -> None:
     assert "code-shape" in result.output
 
 
+def test_production_scope_leaves_out_tooling_vendored_and_generated_files() -> None:
+    """``--scope production`` reads the file set ``production_average`` does."""
+
+    def row(path: str, score: float, origin: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            file_path=path, score=score, nloc=100, is_test=False, code_origin=origin
+        )
+
+    rows = [
+        row("src/a.py", 4.0, "production"),
+        row("scripts/release.py", 10.0, "tooling"),
+        row("vendor/lib.js", 10.0, "vendored"),
+        row("src/gen/api_pb2.py", 10.0, "generated"),
+    ]
+    report = SimpleNamespace(metrics=rows, findings=[], kpis={})
+    opts = SimpleNamespace(scope="production", counts=DEFAULT_COUNTS, keeps=lambda _p: True)
+    metrics, _, _ = health_module._scope_report(report, set(), opts)
+    assert [m.file_path for m in metrics] == ["src/a.py"]
+    assert report.kpis["average_health"] == report.kpis["production_average"] == 4.0
+
+
 def test_the_distribution_line_names_every_band() -> None:
     """Three segments on a five-band scale reads as a scale that has three."""
     import re
@@ -77,7 +98,7 @@ def test_the_trend_says_the_controls_do_not_reach_it() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend", "--counts", "code_shape"])
         render.assert_called_once()
@@ -95,7 +116,7 @@ def test_the_trend_stays_quiet_when_no_control_was_passed() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend"])
     assert "do not apply to it" not in result.output
@@ -130,7 +151,7 @@ def test_the_report_leads_with_fix_first() -> None:
     # The growing, reachable database loop leads; the refactor follows.
     assert " 1. Batch the database calls loops make through load_all " in out
     assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 " in out
-    assert "src/core.py:20" in out
+    assert "src/core.py:10" in out
     assert "verify: pytest tests/test_core_0.py" in out
 
 
@@ -168,7 +189,7 @@ def _mostly_unanalysed_output(*args: str) -> str:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", *args])
     assert result.exit_code == 0, result.output
@@ -179,6 +200,56 @@ def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
     """A narrowed recompute keeps the unanalysed files in the share."""
     for args in ((), ("--scope", "production")):
         out = _mostly_unanalysed_output(*args)
-        assert "Code health: 10.0/10 ·" in out, args
+        # Never a bare score: coverage sits on the headline itself.
+        assert "Code health: 10.0/10 across 4 of 435 code files ·" in out, args
+        # No band anywhere on the line, the worst file's included.
         assert "Excellent" not in out, args
-        assert "analysed 4 of 435 code files" in out, args
+
+
+def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
+    def headline(**kpis) -> str:
+        console = Console(file=io.StringIO(), width=400, force_terminal=False)
+        with patch.object(health_module, "console", console):
+            health_module._render_headline(kpis, False, 0)
+        return console.file.getvalue()
+
+    base = {"average_health": 8.0, "production_average": 6.0, "file_count": 2}
+    # Every score carries its band: 6.0 is Fair beside a Good headline.
+    assert "[Good] · Production code: 6.0/10 [Fair] · Worst:" in headline(
+        **base, production_file_count=1
+    )
+    # Narrowed to production, the two figures are one.
+    narrowed = headline(**base, production_file_count=2)
+    assert "Production code" not in narrowed and "[Good] · Worst:" in narrowed
+
+
+def test_the_headline_names_hotspot_health_only_when_there_is_one() -> None:
+    def headline(**kpis) -> str:
+        console = Console(file=io.StringIO(), width=400, force_terminal=False)
+        with patch.object(health_module, "console", console):
+            health_module._render_headline(kpis, False, 0)
+        return console.file.getvalue()
+
+    out = headline(average_health=8.0, hotspot_health=6.5, worst_performer_score=1.0)
+    assert "Hotspot: 6.5/10 [Fair] · Worst: 1.0/10 [At risk]" in out
+    assert "Hotspot" not in headline(average_health=8.0, hotspot_health=None)
+
+
+def test_the_performance_line_leads_with_the_causes_worth_fixing_now() -> None:
+    """The stored headline every surface prints, not a raw finding count."""
+    from repowise.cli.commands.health_cmd.summary import _render_performance_section
+    from repowise.core.analysis.health.perf.coverage import PerfCoverage
+    from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
+
+    coverage = PerfCoverage(
+        analyzed_files=10, covered_files=9, covered_nloc=9000, total_nloc=10000
+    )
+    report = SimpleNamespace(kpis={"performance_average": 9.7})
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    with patch("repowise.cli.commands.health_cmd.summary.console", console):
+        _render_performance_section(report, coverage, PerformanceHeadline(4, 415, 926, 9.03))
+    out = console.file.getvalue()
+    assert (
+        "4 causes worth fixing now · 415 open in production code · 926 overall · "
+        "9.03/10K covered LOC · avg score 9.7/10" in out
+    )

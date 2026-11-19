@@ -134,9 +134,10 @@ async def _build_wiki_db(repo_root: Path) -> None:
 
 async def test_augment_edit_notices_match_the_golden_lines(tmp_path) -> None:
     await _build_wiki_db(tmp_path)
-    standing, mined, fixes = _golden_lines("augment-edit-notices.txt")
+    standing, fixes = _golden_lines("augment-edit-notices.txt")
 
     # No session id: the formatters run without claiming the session ledger.
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "", {}) == standing
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/parser.py", "", {}) == mined
+    # A mined record nobody put in force is background: no notice at all.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/parser.py", "", {}) is None
     assert decision_inject._edit_fix_history_notice(tmp_path, "src/core/pipeline.py", "") == fixes

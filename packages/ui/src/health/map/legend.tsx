@@ -9,19 +9,23 @@
  */
 
 // Aliased: the bare name would shadow the DOM `KeyboardEvent`.
-import { Fragment } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { OVERLAY_ORDER, OVERLAY_SPECS, type LegendRow, type OverlaySpec } from "./lens";
+import { Fragment, useState } from "react";
+import { ChevronDown } from "lucide-react";
+import type { LegendRow, MapLens } from "./lens";
+import { OVERLAY_ORDER, OVERLAY_SPECS } from "./lens-registry";
 import type { CodeHealthOverlay } from "./types";
 import { ActivityDot } from "../../ui/activity-dot";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { Segmented } from "../../shared/segmented";
 
-/** One key swatch: a disc in the row's fill. */
+/** One key swatch: a disc in the row's fill, or a pill for a run of the ramp. */
 function Swatch({ row, size }: { row: LegendRow; size: number }) {
+  const run = row.fill.startsWith("linear-gradient");
   return (
     <span
       aria-hidden
       className="inline-block shrink-0 rounded-full"
-      style={{ width: size, height: size, backgroundColor: row.fill }}
+      style={{ width: run ? size * 2.4 : size, height: size, background: row.fill }}
     />
   );
 }
@@ -46,7 +50,7 @@ function SizeKey({ className }: { className?: string }) {
 }
 
 /** The active lens's key rows, shared by both placements. */
-export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: boolean }) {
+export function MapLegendRows({ spec, loading }: { spec: MapLens; loading: boolean }) {
   if (loading) {
     return (
       <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
@@ -60,7 +64,7 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
       {spec.legend.map((row, i) => (
         <Fragment key={row.label}>
           {row.group && row.group !== spec.legend[i - 1]?.group ? (
-            <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:mt-0">
+            <span className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:mt-0">
               {row.group}
             </span>
           ) : null}
@@ -70,7 +74,7 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
           </span>
         </Fragment>
       ))}
-      <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      <span className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         Size
       </span>
       <SizeKey className="text-[var(--color-text-tertiary)]" />
@@ -79,63 +83,80 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
 }
 
 /**
- * The lens switcher as a real segmented control.
+ * The lens switcher: the shared segmented control for the primary lenses, and
+ * the rest behind a "More" menu. A lens picked from the menu joins the row as
+ * the selected segment, so the active lens is always on screen. Without
+ * `primary`, every lens is a segment, as before.
  *
- * A radiogroup rather than a row of pressed buttons: picking a lens is one
- * choice out of a set, and the roving-tabindex arrow-key behaviour comes free
- * with the role.
+ * Future lenses (off-boarding, coupling) join `lenses` and land in the menu.
  */
 export function MapLensSwitcher({
   overlay,
   onOverlayChange,
   lenses = OVERLAY_ORDER,
+  primary,
+  moreLabel = "More",
+  nameOf,
   className,
 }: {
   overlay: CodeHealthOverlay;
   onOverlayChange: (overlay: CodeHealthOverlay) => void;
   lenses?: CodeHealthOverlay[];
+  /** Lenses shown as segments; the others go behind "More". */
+  primary?: CodeHealthOverlay[];
+  moreLabel?: string;
+  /** A lens's display name, for a host that translates them. */
+  nameOf?: (lens: CodeHealthOverlay) => string;
   className?: string;
 }) {
-  const onKeyDown = (e: ReactKeyboardEvent) => {
-    const i = lenses.indexOf(overlay);
-    if (i < 0) return;
-    let next = i;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (i + 1) % lenses.length;
-    else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
-      next = (i - 1 + lenses.length) % lenses.length;
-    else return;
-    e.preventDefault();
-    const target = lenses[next];
-    if (target) onOverlayChange(target);
-  };
-
+  const [open, setOpen] = useState(false);
+  const name = (lens: CodeHealthOverlay) => nameOf?.(lens) ?? OVERLAY_SPECS[lens].label;
+  const main = primary ? lenses.filter((l) => primary.includes(l)) : lenses;
+  const rest = primary ? lenses.filter((l) => !primary.includes(l)) : [];
+  const shown = rest.includes(overlay) ? [...main, overlay] : main;
   return (
-    <div
-      role="radiogroup"
-      aria-label="Map lens"
-      onKeyDown={onKeyDown}
-      className={`inline-flex rounded-md border border-[var(--color-border-default)] p-0.5 ${className ?? ""}`}
-    >
-      {lenses.map((mode) => {
-        const active = overlay === mode;
-        return (
-          <button
-            key={mode}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            tabIndex={active ? 0 : -1}
-            onClick={() => onOverlayChange(mode)}
-            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
-              active
-                ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
-                : "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-            }`}
-          >
-            {OVERLAY_SPECS[mode].label}
-          </button>
-        );
-      })}
+    <div className={`flex min-w-0 flex-wrap items-start gap-1.5 ${className ?? ""}`}>
+      <Segmented
+        label="Map lens"
+        value={overlay}
+        options={shown.map((value) => ({ value, label: name(value) }))}
+        onChange={onOverlayChange}
+      />
+      {rest.length > 0 ? (
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+            >
+              {moreLabel}
+              <ChevronDown aria-hidden className="h-3.5 w-3.5" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent role="menu" align="end" className="w-48 p-1">
+            {rest.map((lens) => (
+              <button
+                key={lens}
+                type="button"
+                role="menuitemradio"
+                aria-checked={lens === overlay}
+                onClick={() => {
+                  setOpen(false);
+                  onOverlayChange(lens);
+                }}
+                className={`flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
+                  lens === overlay
+                    ? "font-semibold text-[var(--color-text-primary)]"
+                    : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                }`}
+              >
+                {name(lens)}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
+      ) : null}
     </div>
   );
 }
@@ -148,17 +169,20 @@ export function MapLensSwitcher({
  */
 export function MapLegend({
   overlay,
+  lens,
   loading = false,
   className,
 }: {
   overlay: CodeHealthOverlay;
+  /** A resolved or plug-in lens; wins over `overlay`. */
+  lens?: MapLens;
   loading?: boolean;
   className?: string;
 }) {
-  const spec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
+  const spec = lens ?? OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
   return (
     <div
-      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] ${className ?? ""}`}
+      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--color-text-tertiary)] ${className ?? ""}`}
     >
       {loading ? (
         <span className="flex items-center gap-1.5">
@@ -169,7 +193,7 @@ export function MapLegend({
         spec.legend.map((row, i) => (
           <Fragment key={row.label}>
             {row.group && row.group !== spec.legend[i - 1]?.group ? (
-              <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.12em] first:ml-0">
+              <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.12em] first:ml-0">
                 {row.group}
               </span>
             ) : null}

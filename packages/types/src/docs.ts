@@ -22,6 +22,13 @@ export interface DocPageSummary {
   repository_id: string;
   page_type: string;
   title: string;
+  /**
+   * What a navigation row calls the page: short, correctly cased, with no
+   * trailing "Overview" and no path. Absent on reference pages (named by
+   * their path) and from a backend older than this field; readers fall back
+   * to `title`, which stays the page's own heading.
+   */
+  nav_title?: string | null;
   target_path: string;
   source_hash: string;
   model_name: string;

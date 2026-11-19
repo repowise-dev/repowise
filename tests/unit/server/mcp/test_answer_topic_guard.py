@@ -289,3 +289,60 @@ async def test_a_name_only_tests_write_does_not_anchor_a_fixture(tmp_path):
     )
     assert not homonyms["union"]
     assert not any(h.get("_anchor_symbols") for h in out)
+
+
+# --- a file the index left out on size --------------------------------------
+
+_BIG_VIEW = "App/Sources/Main/MainView.swift"
+
+
+def _oversized_view(root, needle: str) -> int:
+    """A Swift view past the 2 MB read cap, *needle* on one line; that line's number."""
+    filler = [f"        Text(\"row {i}\").padding()" for i in range(80_000)]
+    at = 60_000
+    filler[at - 1] = f'        Text("{needle}").font(.title)'
+    _write(root, _BIG_VIEW, "struct MainView: View {\n" + "\n".join(filler) + "\n}\n")
+    assert (root / _BIG_VIEW).stat().st_size > 2_000_000
+    return at + 1
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_an_oversized_unindexed_file_writes_is_pointed_at(tmp_path):
+    line = _oversized_view(tmp_path, "sectionBanner4321")
+    _write(tmp_path, "App/Sources/Helper8.swift", "func helper8() -> Int { 8 }\n")
+    _, homonyms = await _anchor_symbol_hits(
+        _Session(),
+        "r",
+        {"sectionBanner4321"},
+        [{"target_path": "App/Sources/Helper8.swift", "score": 3.0}],
+        repo_root=tmp_path,
+        question="Which view renders sectionBanner4321 on the main screen?",
+    )
+    assert homonyms["unindexed_lines"] == [
+        {"path": _BIG_VIEW, "line": line, "text": 'Text("sectionBanner4321").font(.title)'}
+    ]
+    assert not homonyms["absent"] and not homonyms["not_searched"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_too_large_to_stream_is_named_as_not_searched(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _line_hits
+    from repowise.server.mcp_server.tool_answer.answer import _with_scan_gaps
+
+    _oversized_view(tmp_path, "sectionBanner4321")
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 2_100_000)
+    _, homonyms = await _anchor_symbol_hits(
+        _Session(),
+        "r",
+        {"sectionBanner4321"},
+        [],
+        repo_root=tmp_path,
+        question="Which view renders sectionBanner4321 on the main screen?",
+    )
+    assert homonyms["not_searched"] == [f"skipped as too large: {_BIG_VIEW}"]
+    # The scan stopped short, so the name is not called absent.
+    assert not homonyms["absent"] and not homonyms["unindexed_lines"]
+    payload = _with_scan_gaps({"answer": "x"}, homonyms)
+    assert payload["not_searched"] == [f"skipped as too large: {_BIG_VIEW}"]
+    # Nothing to say adds no key.
+    assert _with_scan_gaps({"answer": "x"}, {"not_searched": []}) == {"answer": "x"}

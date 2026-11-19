@@ -141,6 +141,9 @@ export interface RefactoringPlan {
   recipe?: RefactoringRecipe;
   /** Plan detail only, on a plan the index resolved as no longer detected. */
   payoff?: RefactoringPlanPayoff;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 /** What happened to a resolved plan. Mirrors ``refactoring.payoff.PAYOFF_OUTCOMES``. */
@@ -490,6 +493,9 @@ export interface RefactoringOpportunity {
   evidence_truncated?: boolean;
   evidence_reduced_reason?: string;
   evidence_next_cursor?: number;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 /**

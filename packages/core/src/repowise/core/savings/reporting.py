@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -56,6 +57,97 @@ def agent_breakdown_rows(rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[str, 
     )
 
 
+#: Surfaces whose events are tool calls Repowise answered: an MCP or VS Code
+#: tool call, or a hook that replaced a tool result. Distill rows are command
+#: output, recorded by the CLI or mined from transcripts.
+TOOL_CALL_SURFACES = ("mcp", "vscode_lm", "hook")
+
+
+@dataclass(frozen=True, slots=True)
+class FilesNotOpened:
+    files: int
+    tokens: int
+    tool_calls: int
+    per_day: tuple[Mapping[str, Any], ...]
+    per_agent: tuple[Mapping[str, Any], ...]
+    per_surface: tuple[Mapping[str, Any], ...]
+
+
+def files_not_opened(
+    credited: Iterable[tuple[Any, ...]], calls: Iterable[tuple[Any, ...]], limit: int
+) -> FilesNotOpened:
+    """Totals and breakdowns from ``(day, agent, surface, n, tokens)`` credited
+    rows and ``(day, agent, surface, n)`` tool-call rows.
+
+    Shared by both report builders, like :func:`breakdown_rows`, so the SQL and
+    pure paths cannot shape these rows two ways.
+    """
+    cells: dict[str, dict[Any, list[int]]] = {
+        name: defaultdict(lambda: [0, 0, 0]) for name in ("day", "agent", "surface")
+    }
+    for day, agent, surface, count, tokens in credited:
+        for name, key in (("day", day), ("agent", agent), ("surface", surface)):
+            cell = cells[name][key]
+            cell[0] += int(count)
+            cell[1] += int(tokens or 0)
+    for day, agent, surface, count in calls:
+        for name, key in (("day", day), ("agent", agent), ("surface", surface)):
+            cells[name][key][2] += int(count)
+
+    def rows(name: str, ordered: list[tuple[Any, list[int]]]) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            {
+                name: key,
+                "files_not_opened": cell[0],
+                "files_not_opened_tokens": cell[1],
+                "tool_calls_answered": cell[2],
+            }
+            for key, cell in ordered
+        )
+
+    def ranked(name: str) -> list[tuple[Any, list[int]]]:
+        return sorted(
+            cells[name].items(), key=lambda item: (-item[1][0], -item[1][2], item[0] or "")
+        )[:limit]
+
+    days = sorted(cells["day"].items(), reverse=True)[:DAY_LIMIT][::-1]
+    totals = [sum(cell[i] for cell in cells["day"].values()) for i in range(3)]
+    return FilesNotOpened(
+        files=totals[0],
+        tokens=totals[1],
+        tool_calls=totals[2],
+        per_day=rows("day", days),
+        per_agent=rows("agent", ranked("agent")),
+        per_surface=rows("surface", ranked("surface")),
+    )
+
+
+def _credited_files(
+    scoped: list[SavingsEvent], file_reads: Iterable[tuple[str, str, str]]
+) -> list[tuple[Any, ...]]:
+    """The pure path's credited rows: first event per (session, path) owns it.
+
+    *file_reads* are ``(session_key, path, read_at)`` rows; a Read after the
+    owning event cancels the credit. Mirrors the SQL in the repository.
+    """
+    latest_read = {(key, path): at for key, path, at in file_reads}
+    owners: dict[tuple[str, str], tuple[SavingsEvent, int | None]] = {}
+    for event in sorted(scoped, key=lambda item: (item.occurred_at, item.event_id)):
+        if not event.is_usable:
+            continue
+        for path, tokens in event.avoided_files:
+            owners.setdefault((event.file_session_key or event.event_id, path), (event, tokens))
+    credited: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0])
+    for (key, path), (event, tokens) in owners.items():
+        read_at = latest_read.get((key, path))
+        if read_at is not None and read_at > event.occurred_at:
+            continue
+        cell = credited[(event.occurred_at[:10], event.agent, event.surface)]
+        cell[0] += 1
+        cell[1] += tokens or 0
+    return [(*group, cell[0], cell[1]) for group, cell in credited.items()]
+
+
 def _included(occurred_at: str, cutoff: datetime | None, as_of: datetime) -> bool:
     timestamp = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
     return timestamp <= as_of and (cutoff is None or timestamp >= cutoff)
@@ -99,6 +191,46 @@ def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, int, float | 
     )
 
 
+#: Report-time rate for an unpriced event's agent, or None. See
+#: :func:`backfill_usd`.
+FallbackRate = Callable[[str], float | None]
+
+
+def backfill_usd(
+    groups: Iterable[tuple[str, float | None, int]], fallback_rate: FallbackRate | None
+) -> tuple[int, float]:
+    """Price ``(agent, session rate, unpriced tokens)`` groups at report time.
+
+    Shared by both report builders, so the rule has one owner: the session's
+    own captured rate first, else *fallback_rate* for the agent, else nothing.
+    Returns the tokens priced and their value.
+    """
+    tokens = 0
+    usd = 0.0
+    for agent, session_rate, saved in groups:
+        rate = session_rate if session_rate is not None else (
+            fallback_rate(agent) if fallback_rate is not None else None
+        )
+        if rate is None or saved <= 0:
+            continue
+        tokens += saved
+        usd += saved * rate / 1_000_000
+    return tokens, usd
+
+
+def _session_rates(events: Iterable[SavingsEvent]) -> dict[str, float]:
+    """Each session's newest captured input rate; ties go to the higher rate."""
+    newest: dict[str, tuple[str, float]] = {}
+    for event in events:
+        rate = event.input_rate_usd_per_million
+        if event.session_id is None or rate is None:
+            continue
+        key = (event.occurred_at, rate)
+        if event.session_id not in newest or key > newest[event.session_id]:
+            newest[event.session_id] = key
+    return {session: rate for session, (_at, rate) in newest.items()}
+
+
 def build_report(
     events: Iterable[SavingsEvent],
     opportunities: Iterable[OpportunityObservation] = (),
@@ -106,13 +238,22 @@ def build_report(
     as_of: datetime,
     days: int | None = None,
     max_breakdowns: int = 100,
+    file_reads: Iterable[tuple[str, str, str]] = (),
+    fallback_rate: FallbackRate | None = None,
 ) -> SavingsReport:
-    """Build a hand-checkable report while keeping opportunities separate."""
+    """Build a hand-checkable report while keeping opportunities separate.
+
+    *file_reads* are ``(session_key, path, read_at)`` rows for the
+    files-not-opened clawback, as the ledger stores them.
+    """
+    from repowise.core.savings.output_estimate import estimate_output, session_groups
+
     if as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     if days is not None and days < 0:
         raise ValueError("days cannot be negative")
     cutoff = as_of - timedelta(days=days) if days is not None else None
+    events = list(events)
     scoped = [event for event in events if _included(event.occurred_at, cutoff, as_of)]
     scoped_opportunities = [
         item for item in opportunities if _included(item.occurred_at, cutoff, as_of)
@@ -182,12 +323,31 @@ def build_report(
         opportunity_kinds[item.kind][0] += 1
         opportunity_kinds[item.kind][1] += item.estimated_potential_input_tokens
     occurrences = sorted(event.occurred_at for event in scoped)
+    session_rates = _session_rates(events)
+    backfilled_tokens, backfilled_usd = backfill_usd(
+        (
+            (event.agent, session_rates.get(event.session_id or ""), event.saved_input_tokens)
+            for event in scoped
+            if event.input_rate_usd_per_million is None
+        ),
+        fallback_rate,
+    )
+    in_subagent = [event for event in scoped if event.subagent_id is not None]
 
     def answered(event: SavingsEvent) -> bool:
         return event.result_state == "success" or (
             event.result_state == "partial" and event.is_usable
         )
 
+    files = files_not_opened(
+        _credited_files(scoped, file_reads),
+        [
+            (event.occurred_at[:10], event.agent, event.surface, 1)
+            for event in scoped
+            if event.surface in TOOL_CALL_SURFACES and answered(event)
+        ],
+        limit,
+    )
     return SavingsReport(
         unique_events=len(scoped),
         successful_or_usable_partial_events=sum(answered(event) for event in scoped),
@@ -235,4 +395,15 @@ def build_report(
         ),
         first_event_at=occurrences[0] if occurrences else None,
         last_event_at=occurrences[-1] if occurrences else None,
+        files_not_opened=files.files,
+        files_not_opened_tokens=files.tokens,
+        tool_calls_answered=files.tool_calls,
+        files_per_day=files.per_day,
+        files_per_agent=files.per_agent,
+        files_per_surface=files.per_surface,
+        subagent_events=len(in_subagent),
+        subagent_saved_input_tokens=sum(event.saved_input_tokens for event in in_subagent),
+        backfilled_saved_input_tokens=backfilled_tokens,
+        backfilled_input_savings_usd=backfilled_usd,
+        output_estimate=estimate_output(session_groups(scoped)),
     )

@@ -1,9 +1,10 @@
 """Claude Code SessionStart context block: freshness states and gating.
 
 The block's whole value is calibrated trust, so the contract under test is
-which of the four states gets emitted (current / update-in-flight / behind /
-git-unavailable) and that a git failure never produces a false "current"
-claim. Outside an indexed repo the handler must stay silent.
+which state gets emitted (update-in-flight / behind), that a current index or
+a git failure says nothing (never a false "current" claim), and that the
+call-first line comes only where no generated CLAUDE.md block carries it.
+Outside an indexed repo the handler must stay silent.
 """
 
 from __future__ import annotations
@@ -32,13 +33,42 @@ def _handle(cwd: Path) -> str | None:
     return session_start._handle_claude_session_start(str(cwd))
 
 
-def test_current_index(repo, monkeypatch) -> None:
+def _write_agent_block(repo: Path) -> None:
+    """The block ``repowise init`` writes, which already carries the call-first line."""
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "CLAUDE.md").write_text(
+        f"{session_start._AGENT_BLOCK_MARKER} -->\n<!-- REPOWISE:END -->\n", encoding="utf-8"
+    )
+
+
+def test_current_index_is_silent(repo, monkeypatch) -> None:
+    monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
+    _write_agent_block(repo)
+    assert _handle(repo) is None
+
+
+def test_current_index_without_agent_block_gives_only_the_call_first_line(
+    repo, monkeypatch
+) -> None:
     monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
     out = _handle(repo)
     assert out is not None
-    assert "current" in out
-    assert _INDEXED[:8] in out
-    assert "get_answer" in out
+    assert out.endswith(session_start.AGENT_STEER)
+    assert "current" not in out
+    assert _INDEXED[:8] not in out
+
+
+def test_locked_index_skips_the_decision_queries(repo, monkeypatch) -> None:
+    """Each decision query would wait out its own busy timeout and fail."""
+    monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
+    unlocked = _handle(repo)
+    monkeypatch.setattr(session_start, "index_locked", lambda p: True)
+    monkeypatch.setattr(
+        session_start,
+        "_decision_block",
+        lambda *a: pytest.fail("decision queries ran against a locked index"),
+    )
+    assert _handle(repo) == unlocked
 
 
 def test_behind_head_with_changed_count(repo, monkeypatch) -> None:
@@ -47,6 +77,7 @@ def test_behind_head_with_changed_count(repo, monkeypatch) -> None:
     monkeypatch.setattr(session_start, "_changed_file_count", lambda p, a, b: 12)
     out = _handle(repo)
     assert out is not None
+    assert out.startswith("[repowise ")
     assert f"indexed {_INDEXED[:8]}, now {_LIVE[:8]}" in out
     assert "(12 files changed since)" in out
     assert "stale_warning" in out
@@ -83,7 +114,9 @@ def test_git_failure_never_claims_current(repo, monkeypatch) -> None:
     out = _handle(repo)
     assert out is not None
     assert "current" not in out
-    assert "MCP tools" in out
+    assert out.endswith(session_start.AGENT_STEER)
+    _write_agent_block(repo)
+    assert _handle(repo) is None
 
 
 def test_silent_outside_indexed_repo(tmp_path) -> None:

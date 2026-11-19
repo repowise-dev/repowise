@@ -372,3 +372,305 @@ def test_go_method_of_an_unexported_type_is_not_public(tmp_path: Path) -> None:
     }
     flags = _public_flags(build_fixture(tmp_path, files).graph())
     assert flags["lib/b.go::client::Send"] == ""
+
+# ---------------------------------------------------------------------------
+# C#: a type of a project that ships a package is public API
+# ---------------------------------------------------------------------------
+
+
+def _csproj(props: str = "") -> str:
+    return f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{props}</PropertyGroup></Project>'
+
+
+def build_files(repo: Path, files: dict[str, str]) -> dict[str, str]:
+    """Build a graph from *files*; ``{symbol id: public_api}`` for every symbol."""
+    for rel, body in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(body, encoding="utf-8")
+    parser = ASTParser()
+    builder = GraphBuilder(repo)
+    for fi in FileTraverser(repo).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    builder.build()
+    return {
+        node: data["public_api"]
+        for node, data in builder.graph().nodes(data=True)
+        if data.get("node_type") == "symbol" and "public_api" in data
+    }
+
+
+_CSHARP_REPO = {
+    # Packs by opting in.
+    "src/Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+    "src/Lib/Client.cs": (
+        "namespace Lib;\n"
+        "public class Client\n{\n    public void Send() { }\n    private void Retry() { }\n}\n"
+        "internal class Helper\n{\n    public void Go() { }\n}\n"
+        "class Implicit\n{\n    public void Go() { }\n}\n"
+    ),
+    # Sets no packing property: shipped by the baseline it keeps.
+    "src/Base/Base.csproj": _csproj(),
+    "src/Base/.PublicAPI/PublicAPI.Shipped.txt": "Base.Thing\n",
+    "src/Base/Thing.cs": "namespace Base;\npublic class Thing\n{\n    public void Do() { }\n}\n",
+    # Says nothing about packing, so ships nothing.
+    "samples/App/App.csproj": _csproj(),
+    "samples/App/Program.cs": "namespace App;\npublic class Program\n{\n    public void Main() { }\n}\n",
+    "tests/Lib.Tests/Lib.Tests.csproj": _csproj(),
+    "tests/Lib.Tests/ClientTests.cs": (
+        "namespace Lib.Tests;\npublic class ClientTests\n{\n    public void Works() { }\n}\n"
+    ),
+    # An explicit no beats a PackageId.
+    "src/Nope/Nope.csproj": _csproj("<IsPackable>false</IsPackable><PackageId>Nope</PackageId>"),
+    "src/Nope/Widget.cs": "namespace Nope;\npublic class Widget\n{\n    public void Spin() { }\n}\n",
+    # A sample nested in the packaged library's folder is not part of the package.
+    "src/Lib/samples/Demo/Demo.csproj": _csproj(),
+    "src/Lib/samples/Demo/Demo.cs": "namespace Demo;\npublic class Demo\n{\n    public void Run() { }\n}\n",
+}
+
+
+def test_public_csharp_types_of_a_shipped_project_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(tmp_path, _CSHARP_REPO)
+    stamped = {node for node, root in flags.items() if root}
+    assert stamped == {
+        "src/Lib/Client.cs::Client",
+        "src/Lib/Client.cs::Client::Send",
+        "src/Base/Thing.cs::Thing",
+        "src/Base/Thing.cs::Thing::Do",
+    }
+    # The file that exports a symbol is the file that declares it.
+    assert flags["src/Lib/Client.cs::Client::Send"] == "src/Lib/Client.cs"
+    assert flags["src/Base/Thing.cs::Thing"] == "src/Base/Thing.cs"
+    # A private member, internal and modifier-less types (and their public
+    # members), and every type of a project that ships nothing stay unflagged.
+    for node in (
+        "src/Lib/Client.cs::Client::Retry",
+        "src/Lib/Client.cs::Helper",
+        "src/Lib/Client.cs::Helper::Go",
+        "src/Lib/Client.cs::Implicit",
+        "src/Lib/Client.cs::Implicit::Go",
+        "samples/App/Program.cs::Program",
+        "samples/App/Program.cs::Program::Main",
+        "tests/Lib.Tests/ClientTests.cs::ClientTests",
+        "tests/Lib.Tests/ClientTests.cs::ClientTests::Works",
+        "src/Nope/Widget.cs::Widget",
+        "src/Nope/Widget.cs::Widget::Spin",
+        "src/Lib/samples/Demo/Demo.cs::Demo",
+        "src/Lib/samples/Demo/Demo.cs::Demo::Run",
+    ):
+        assert flags[node] == "", node
+
+
+def test_a_repo_with_no_readable_project_stamps_no_csharp(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _CSHARP_REPO.items() if not rel.endswith(".csproj")}
+    assert not {node for node, root in build_files(tmp_path, files).items() if root}
+
+
+def test_every_generic_arity_of_a_public_type_is_public_api(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "Lib/Box.cs": (
+                "namespace Lib;\n"
+                "public class Box<T>\n{\n    public void Put() { }\n}\n"
+                "public class Box\n{\n    public void Open() { }\n}\n"
+            ),
+        },
+    )
+    # ``Box<T>`` and ``Box`` share a name; the id tells them apart.
+    assert {node for node, root in flags.items() if root} == {
+        "Lib/Box.cs::Box`1",
+        "Lib/Box.cs::Box`1::Put",
+        "Lib/Box.cs::Box",
+        "Lib/Box.cs::Box::Open",
+    }
+
+
+def test_a_partial_fragment_without_a_modifier_takes_the_public_part(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "src/Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "src/Lib/Pipeline.cs": (
+                "namespace Lib;\npublic partial class Pipeline\n{\n    public void Build() { }\n}\n"
+            ),
+            "src/Lib/Pipeline.Sync.cs": (
+                "namespace Lib;\npartial class Pipeline\n{\n"
+                "    public void Run() { }\n    private void Spin() { }\n}\n"
+            ),
+        },
+    )
+    assert flags["src/Lib/Pipeline.cs::Pipeline::Build"] == "src/Lib/Pipeline.cs"
+    # The part with no modifier is the public type too, and so are its members.
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline"] == "src/Lib/Pipeline.Sync.cs"
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline::Run"] == "src/Lib/Pipeline.Sync.cs"
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline::Spin"] == ""
+
+
+def test_partial_fragments_of_an_internal_type_stay_unflagged(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "Lib/Engine.cs": "namespace Lib;\ninternal partial class Engine\n{\n    public void A() { }\n}\n",
+            "Lib/Engine.More.cs": "namespace Lib;\npartial class Engine\n{\n    public void B() { }\n}\n",
+        },
+    )
+    assert not {node for node, root in flags.items() if root}
+
+
+def test_partial_fragments_in_a_project_that_ships_nothing_stay_unflagged(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "App/App.csproj": _csproj(),
+            "App/Job.cs": "namespace App;\npublic partial class Job\n{\n    public void A() { }\n}\n",
+            "App/Job.More.cs": "namespace App;\npartial class Job\n{\n    public void B() { }\n}\n",
+        },
+    )
+    assert not {node for node, root in flags.items() if root}
+
+
+_GEMSPEC = "Gem::Specification.new do |spec|\n  spec.name = '{name}'\n  spec.version = '0.1'\nend\n"
+
+_RUBY_GEM = {
+    "mygem.gemspec": _GEMSPEC.format(name="mygem"),
+    "lib/mygem.rb": (
+        "require 'mygem/client'\n\n"
+        "module Mygem\n  def self.new(url)\n    Client.new(url)\n  end\nend\n"
+    ),
+    "lib/mygem/client.rb": (
+        "module Mygem\n  class Client\n    def get(path)\n    end\n\n"
+        "    private\n\n    def retry_once\n    end\n  end\nend\n"
+    ),
+    "lib/mygem/unloaded.rb": "module Mygem\n  class Unloaded\n    def run\n    end\n  end\nend\n",
+    "spec/client_spec.rb": "require 'mygem'\n\ndescribe 'client' do\nend\n",
+}
+
+
+def _stamped(flags: dict[str, str]) -> set[str]:
+    return {node for node, root in flags.items() if root}
+
+
+def test_a_gems_entry_and_what_it_requires_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(tmp_path, _RUBY_GEM)
+    assert _stamped(flags) == {
+        "lib/mygem.rb::Mygem",
+        "lib/mygem.rb::Mygem::new",
+        "lib/mygem/client.rb::Mygem",
+        "lib/mygem/client.rb::Mygem::Client",
+        "lib/mygem/client.rb::Client::get",
+    }
+    # The file that exports a symbol is the file that declares it.
+    assert flags["lib/mygem/client.rb::Client::get"] == "lib/mygem/client.rb"
+    # A method below a bare ``private``, a file nothing requires and a spec stay out.
+    for node in (
+        "lib/mygem/client.rb::Client::retry_once",
+        "lib/mygem/unloaded.rb::Mygem",
+        "lib/mygem/unloaded.rb::Mygem::Unloaded",
+        "lib/mygem/unloaded.rb::Unloaded::run",
+    ):
+        assert flags[node] == "", node
+    assert not [node for node in flags if node.startswith("spec/") and flags[node]]
+
+
+def test_a_dashed_gem_name_reads_as_path_separators(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "rack-protection.gemspec": _GEMSPEC.format(name="rack-protection"),
+            "lib/rack/protection.rb": (
+                "module Rack\n  module Protection\n    def self.new\n    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert flags["lib/rack/protection.rb::Rack"] == "lib/rack/protection.rb"
+    assert flags["lib/rack/protection.rb::Rack::Protection"] == "lib/rack/protection.rb"
+    assert flags["lib/rack/protection.rb::Protection::new"] == "lib/rack/protection.rb"
+
+
+def test_a_lib_without_a_gemspec_stamps_nothing(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _RUBY_GEM.items() if not rel.endswith(".gemspec")}
+    flags = build_files(tmp_path, files)
+    assert flags and not _stamped(flags)
+
+
+def test_a_gem_whose_entry_file_is_absent_stamps_nothing(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _RUBY_GEM.items() if rel != "lib/mygem.rb"}
+    assert not _stamped(build_files(tmp_path, files))
+
+
+def test_the_gem_name_is_read_from_specification_new_or_the_file(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "one/one.gemspec": "Gem::Specification.new 'one', '1.0' do |s|\nend\n",
+            "one/lib/one.rb": "module One\nend\n",
+            # A name that is not a literal falls back to the gemspec's file name.
+            "two/two.gemspec": "Gem::Specification.new do |s|\n  s.name = Two::NAME\nend\n",
+            "two/lib/two.rb": "module Two\nend\n",
+        },
+    )
+    assert flags["one/lib/one.rb::One"] == "one/lib/one.rb"
+    assert flags["two/lib/two.rb::Two"] == "two/lib/two.rb"
+
+
+def test_a_gems_requires_are_followed_transitively_inside_its_own_lib(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "a/a.gemspec": _GEMSPEC.format(name="a"),
+            "a/lib/a.rb": "require_relative 'a/one'\nmodule A\nend\n",
+            "a/lib/a/one.rb": "require 'a/two'\nmodule A\n  class One\n  end\nend\n",
+            "a/lib/a/two.rb": "require 'b'\nmodule A\n  class Two\n  end\nend\n",
+            # Another gem's lib, reached by a require, is not this gem's surface.
+            "b/b.gemspec": _GEMSPEC.format(name="b-extra"),
+            "b/lib/b.rb": "module B\n  class Helper\n  end\nend\n",
+        },
+    )
+    assert flags["a/lib/a/one.rb::A::One"] == "a/lib/a/one.rb"
+    assert flags["a/lib/a/two.rb::A::Two"] == "a/lib/a/two.rb"
+    assert flags["b/lib/b.rb::B::Helper"] == ""
+
+
+def test_members_of_deeply_nested_ruby_modules_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "deep.gemspec": _GEMSPEC.format(name="deep"),
+            "lib/deep.rb": (
+                "module Deep\n  module Http\n    class Conn\n      def run\n      end\n\n"
+                "      class Inner\n        def go\n        end\n      end\n"
+                "    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert _stamped(flags) == {
+        "lib/deep.rb::Deep",
+        "lib/deep.rb::Deep::Http",
+        "lib/deep.rb::Http::Conn",
+        "lib/deep.rb::Conn::run",
+        "lib/deep.rb::Conn::Inner",
+        "lib/deep.rb::Inner::go",
+    }
+
+
+def test_ruby_methods_made_private_after_their_definition_are_not_public_api(
+    tmp_path: Path,
+) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "vis.gemspec": _GEMSPEC.format(name="vis"),
+            "lib/vis.rb": (
+                "module Vis\n  class Box\n    def open\n    end\n\n    def hidden\n    end\n"
+                "    private :hidden\n\n    protected\n\n    def guarded\n    end\n"
+                "    public\n\n    def back\n    end\n\n"
+                "    private def wrapped\n    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert {n for n in _stamped(flags) if "::Box::" in n} == {
+        "lib/vis.rb::Box::open",
+        "lib/vis.rb::Box::back",
+    }

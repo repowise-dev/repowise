@@ -778,3 +778,58 @@ async def test_relationship_graph_query_count_is_constant(
     # declared packages. Composition moved to a session-free fold, so the third
     # read replaces the aggregate the graph query used to push down.
     assert len(selects) == 3
+
+
+@pytest.mark.asyncio
+async def test_usage_lists_import_sites_with_line_and_reachability(
+    client: AsyncClient, app, tmp_path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    root = tmp_path / "test-repo"
+    (root / "src").mkdir()
+    (root / "src/app.py").write_text("import os\nimport fastapi\n", encoding="utf-8")
+    async with get_session(app.state.session_factory) as session:
+        system = ExternalSystem(
+            repository_id=repo["id"],
+            name="fastapi",
+            ecosystem="pypi",
+            declared_in="pyproject.toml",
+        )
+        session.add(system)
+        await session.flush()
+        session.add_all(
+            [
+                GraphNode(
+                    repository_id=repo["id"],
+                    node_id="src/app.py",
+                    node_type="file",
+                    language="python",
+                    is_entry_point=True,
+                ),
+                GraphNode(
+                    repository_id=repo["id"],
+                    node_id="external:fastapi",
+                    node_type="external",
+                    external_system_id=system.id,
+                ),
+                GraphEdge(
+                    repository_id=repo["id"],
+                    source_node_id="src/app.py",
+                    target_node_id="external:fastapi",
+                    imported_names_json="[]",
+                ),
+            ]
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/external-systems/pypi:fastapi/usage")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ecosystem"] == "pypi"
+    (site,) = data["sites"]
+    assert (site["path"], site["line"], site["mapping"]) == ("src/app.py", 2, "declared")
+    assert site["reachability"] == {"state": "reachable", "basis": "import_graph"}
+
+    bare = await client.get(f"/api/repos/{repo['id']}/external-systems/fastapi/usage")
+    assert bare.json()["summary"]["files"] == 1
+    missing = await client.get("/api/repos/nope/external-systems/fastapi/usage")
+    assert missing.status_code == 404

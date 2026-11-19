@@ -17,7 +17,11 @@ from repowise.core.ingestion.resolvers.ts_workspace import (
     build_workspace_map,
     resolve_via_workspaces,
 )
-from repowise.core.ingestion.resolvers.typescript import resolve_ts_js_import
+from repowise.core.ingestion.resolvers.typescript import (
+    detect_platform_files,
+    resolve_ts_js_import,
+    resolve_ts_js_import_all,
+)
 
 
 def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext:
@@ -27,8 +31,8 @@ def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext
         stem_map={},
         graph=nx.DiGraph(),
         repo_path=repo,
-        has_sfc_files=has_sfc
-        or any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+        has_sfc_files=has_sfc or any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+        has_platform_files=detect_platform_files(path_set),
     )
 
 
@@ -58,9 +62,7 @@ class TestExplicitRelativeExtensions:
         "extension",
         [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"],
     )
-    def test_existing_explicit_relative_file_wins(
-        self, tmp_path: Path, extension: str
-    ) -> None:
+    def test_existing_explicit_relative_file_wins(self, tmp_path: Path, extension: str) -> None:
         ctx = _ctx(tmp_path, [f"data/example{extension}", "services/reader.js"])
         result = resolve_ts_js_import(
             f"../data/example{extension}",
@@ -69,9 +71,7 @@ class TestExplicitRelativeExtensions:
         )
         assert result == f"data/example{extension}"
 
-    def test_ts_rewrite_fallback_still_resolves_when_js_file_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ts_rewrite_fallback_still_resolves_when_js_file_absent(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, ["data/example.ts", "services/reader.js"])
         result = resolve_ts_js_import(
             "../data/example.js",
@@ -131,9 +131,7 @@ class TestWorkspaceMap:
         assert mapping == {"@org/a": "packages/a"}
 
     def test_workspaces_object_form(self, tmp_path: Path) -> None:
-        (tmp_path / "package.json").write_text(
-            json.dumps({"workspaces": {"packages": ["libs/*"]}})
-        )
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": {"packages": ["libs/*"]}}))
         pkg = tmp_path / "libs" / "core"
         pkg.mkdir(parents=True)
         (pkg / "package.json").write_text(json.dumps({"name": "@org/core"}))
@@ -143,17 +141,13 @@ class TestWorkspaceMap:
     def test_empty_when_no_root_package(self, tmp_path: Path) -> None:
         assert build_workspace_map(tmp_path) == {}
 
-    def test_empty_workspaces_entry_drops_itself_not_the_workspace(
-        self, tmp_path: Path
-    ) -> None:
+    def test_empty_workspaces_entry_drops_itself_not_the_workspace(self, tmp_path: Path) -> None:
         # ``Path.glob("")`` raises ValueError. Unlike the pnpm reader, which
         # drops blank entries before they reach the globber, the ``workspaces``
         # field passes every string straight through — so the guard in
         # ``_expand_member_dirs`` is what keeps one blank entry from costing
         # the whole map.
-        (tmp_path / "package.json").write_text(
-            json.dumps({"workspaces": ["", "packages/*"]})
-        )
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["", "packages/*"]}))
         pkg = tmp_path / "packages" / "a"
         pkg.mkdir(parents=True)
         (pkg / "package.json").write_text(json.dumps({"name": "@org/a"}))
@@ -175,9 +169,7 @@ class TestPnpmWorkspaceMap:
     def test_pnpm_workspace_yaml_is_read(self, tmp_path: Path) -> None:
         # A pnpm root package.json carries no ``workspaces`` field at all.
         self._root(tmp_path)
-        (tmp_path / "pnpm-workspace.yaml").write_text(
-            'packages:\n  - "apps/*"\n  - "packages/*"\n'
-        )
+        (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "apps/*"\n  - "packages/*"\n')
         self._pkg(tmp_path, "apps/console", "@org/console")
         self._pkg(tmp_path, "packages/domain", "@org/domain")
         assert build_workspace_map(tmp_path) == {
@@ -198,9 +190,7 @@ class TestPnpmWorkspaceMap:
 
     def test_root_is_not_subject_to_negation(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text(json.dumps({"name": "@org/root"}))
-        (tmp_path / "pnpm-workspace.yaml").write_text(
-            'packages:\n  - "packages/*"\n  - "!**"\n'
-        )
+        (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "packages/*"\n  - "!**"\n')
         assert build_workspace_map(tmp_path) == {"@org/root": "."}
 
     def test_yml_extension_is_not_a_pnpm_manifest(self, tmp_path: Path) -> None:
@@ -285,9 +275,7 @@ class TestPnpmWorkspaceMap:
         # ``resolve_via_workspaces``, so a bad entry must cost its own member
         # rather than every member. Both the include and the exclude loop.
         self._root(tmp_path)
-        (tmp_path / "pnpm-workspace.yaml").write_text(
-            f'packages:\n  - "packages/*"\n  - "{bad}"\n'
-        )
+        (tmp_path / "pnpm-workspace.yaml").write_text(f'packages:\n  - "packages/*"\n  - "{bad}"\n')
         self._pkg(tmp_path, "packages/a", "@org/a")
         assert build_workspace_map(tmp_path) == {"@org/a": "packages/a"}
 
@@ -528,10 +516,7 @@ class TestWorkspaceExportsField:
             {"exports": {"./lib/format": "./src/lib/format.ts"}},
         )
         ctx = _ctx(tmp_path, ["packages/ui/src/lib/format.ts"])
-        assert (
-            resolve_via_workspaces("@org/ui/lib/format", ctx)
-            == "packages/ui/src/lib/format.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/lib/format", ctx) == "packages/ui/src/lib/format.ts"
 
     def test_exports_wildcard_pattern(self, tmp_path: Path) -> None:
         _setup_workspace(
@@ -566,19 +551,11 @@ class TestWorkspaceExportsField:
             ],
         )
         # Specific wildcard wins for graph/*
-        assert (
-            resolve_via_workspaces("@org/ui/graph/node", ctx)
-            == "packages/ui/src/graph/node.tsx"
-        )
+        assert resolve_via_workspaces("@org/ui/graph/node", ctx) == "packages/ui/src/graph/node.tsx"
         # Generic wildcard catches the rest
-        assert (
-            resolve_via_workspaces("@org/ui/utils", ctx)
-            == "packages/ui/src/utils.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/utils", ctx) == "packages/ui/src/utils.ts"
 
-    def test_exports_conditional_object_picks_import_over_require(
-        self, tmp_path: Path
-    ) -> None:
+    def test_exports_conditional_object_picks_import_over_require(self, tmp_path: Path) -> None:
         _setup_workspace(
             tmp_path,
             "@org/ui",
@@ -595,10 +572,7 @@ class TestWorkspaceExportsField:
             tmp_path,
             ["packages/ui/src/util.ts", "packages/ui/dist/util.cjs"],
         )
-        assert (
-            resolve_via_workspaces("@org/ui/util", ctx)
-            == "packages/ui/src/util.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/util", ctx) == "packages/ui/src/util.ts"
 
     def test_exports_condition_naming_absent_build_output_is_passed_over(
         self, tmp_path: Path
@@ -624,9 +598,7 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
 
-    def test_ranked_condition_still_wins_when_both_targets_exist(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ranked_condition_still_wins_when_both_targets_exist(self, tmp_path: Path) -> None:
         # The guard on the guard: continuing past an absent target must not
         # become a preference for source, or every package shipping both a
         # build and its sources would change which file it binds.
@@ -667,9 +639,7 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
 
-    def test_entry_with_no_ranked_condition_still_falls_through(
-        self, tmp_path: Path
-    ) -> None:
+    def test_entry_with_no_ranked_condition_still_falls_through(self, tmp_path: Path) -> None:
         # No condition here is one the module ranks, so the key was dropped
         # outright and the subpath probe below answered. Keeping the key on the
         # strength of a spare candidate would let ``./internal.ts`` answer from
@@ -682,9 +652,7 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/internal.ts", "packages/ui/index.ts"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.ts"
 
-    def test_spare_export_target_never_displaces_the_index_probe(
-        self, tmp_path: Path
-    ) -> None:
+    def test_spare_export_target_never_displaces_the_index_probe(self, tmp_path: Path) -> None:
         # vue's shape: the ranked condition names an absent build artefact, a
         # lower condition names a committed ``index.mjs``, and the package root
         # also holds the ``index.js`` the probe below already bound. The spare
@@ -708,27 +676,19 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/index.js", "packages/ui/index.mjs"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.js"
 
-    def test_declaration_file_is_not_taken_as_a_fallback_entry(
-        self, tmp_path: Path
-    ) -> None:
+    def test_declaration_file_is_not_taken_as_a_fallback_entry(self, tmp_path: Path) -> None:
         # The built entry is absent and the committed type declarations are
         # not. Binding them would resolve every call through this package to a
         # signature with no body.
         _setup_workspace(
             tmp_path,
             "@org/ui",
-            {
-                "exports": {
-                    ".": {"import": "./dist/index.js", "types": "./types/index.d.ts"}
-                }
-            },
+            {"exports": {".": {"import": "./dist/index.js", "types": "./types/index.d.ts"}}},
         )
         ctx = _ctx(tmp_path, ["packages/ui/types/index.d.ts"])
         assert resolve_via_workspaces("@org/ui", ctx) is None
 
-    def test_wildcard_key_does_not_fall_back_to_a_fixed_target(
-        self, tmp_path: Path
-    ) -> None:
+    def test_wildcard_key_does_not_fall_back_to_a_fixed_target(self, tmp_path: Path) -> None:
         # The fixed target would answer for every subpath under the key, so
         # two distinct imports would collapse onto one unrelated file.
         _setup_workspace(
@@ -762,9 +722,7 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
 
-    def test_source_entry_fallback_does_not_displace_a_resolving_main(
-        self, tmp_path: Path
-    ) -> None:
+    def test_source_entry_fallback_does_not_displace_a_resolving_main(self, tmp_path: Path) -> None:
         _setup_workspace(tmp_path, "@org/ui", {"main": "./entry.ts"})
         ctx = _ctx(tmp_path, ["packages/ui/entry.ts", "packages/ui/src/index.ts"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/entry.ts"
@@ -776,10 +734,7 @@ class TestWorkspaceExportsField:
             {"exports": {".": "./src/index.ts"}},
         )
         ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
-        assert (
-            resolve_via_workspaces("@org/ui", ctx)
-            == "packages/ui/src/index.ts"
-        )
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
 
     def test_exports_string_shorthand(self, tmp_path: Path) -> None:
         # `"exports": "./src/index.ts"` is shorthand for `{".": ...}`.
@@ -789,10 +744,7 @@ class TestWorkspaceExportsField:
             {"exports": "./src/index.ts"},
         )
         ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
-        assert (
-            resolve_via_workspaces("@org/ui", ctx)
-            == "packages/ui/src/index.ts"
-        )
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
 
     def test_no_exports_falls_back_to_src_root(self, tmp_path: Path) -> None:
         # Packages without `exports` but with a `src/` layout — the most
@@ -800,20 +752,14 @@ class TestWorkspaceExportsField:
         # resolve.
         _setup_workspace(tmp_path, "@org/ui", {})
         ctx = _ctx(tmp_path, ["packages/ui/src/lib/format.ts"])
-        assert (
-            resolve_via_workspaces("@org/ui/lib/format", ctx)
-            == "packages/ui/src/lib/format.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/lib/format", ctx) == "packages/ui/src/lib/format.ts"
 
     def test_no_exports_falls_back_to_flat_layout(self, tmp_path: Path) -> None:
         # Packages laid out directly at the package root (no src/) keep
         # working — common in small/older monorepos.
         _setup_workspace(tmp_path, "@org/ui", {})
         ctx = _ctx(tmp_path, ["packages/ui/lib/format.ts"])
-        assert (
-            resolve_via_workspaces("@org/ui/lib/format", ctx)
-            == "packages/ui/lib/format.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/lib/format", ctx) == "packages/ui/lib/format.ts"
 
     def test_exports_unmatched_subpath_returns_none(self, tmp_path: Path) -> None:
         # When ``exports`` is declared, an unmatched subpath should NOT
@@ -832,10 +778,7 @@ class TestWorkspaceExportsField:
         # NB: current implementation falls back to legacy probe for
         # robustness — Node-strict behaviour can be added once monorepo
         # behaviour is validated. Assert the lenient (current) result.
-        assert (
-            resolve_via_workspaces("@org/ui/secret", ctx)
-            == "packages/ui/src/secret.ts"
-        )
+        assert resolve_via_workspaces("@org/ui/secret", ctx) == "packages/ui/src/secret.ts"
 
 
 _DIST_EXPORTS = {
@@ -909,7 +852,9 @@ class TestExportsDistToSrc:
     ) -> None:
         repo, paths = ts_exports_dist_to_src
         ctx = _ctx(repo, [*paths, "packages/core/src/net/guard.ts"])
-        assert resolve_via_workspaces("@org/core/net/guard", ctx) == "packages/core/src/net/guard.ts"
+        assert (
+            resolve_via_workspaces("@org/core/net/guard", ctx) == "packages/core/src/net/guard.ts"
+        )
 
     @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
     def test_gitignored_local_build_is_remapped(
@@ -956,3 +901,130 @@ class TestMtsCtsResolution:
     def test_directory_import_resolves_to_index_cts(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, ["src/pkg/index.cts", "src/main.ts"])
         assert resolve_ts_js_import("./pkg", "src/main.ts", ctx) == "src/pkg/index.cts"
+
+
+_RN_PATHS = [
+    "index.js",
+    "src/App.tsx",
+    "src/components/Button.ios.tsx",
+    "src/components/Button.android.tsx",
+    "src/components/haptics.ts",
+    "src/components/haptics.native.ts",
+]
+
+
+class TestReactNativePlatformFiles:
+    """Metro picks ``X.<ios|android|native|web>.<ext>`` over ``X.<ext>`` (#3603)."""
+
+    def test_flag_set_only_when_a_platform_file_exists(self, tmp_path: Path) -> None:
+        assert _ctx(tmp_path, _RN_PATHS).has_platform_files is True
+        assert _ctx(tmp_path, ["src/foo.ts", "src/foo.test.ts"]).has_platform_files is False
+
+    @pytest.mark.parametrize("name", ["ios", "android", "native", "web"])
+    def test_flag_recognises_each_platform_segment(self, tmp_path: Path, name: str) -> None:
+        assert _ctx(tmp_path, [f"src/a.{name}.ts"]).has_platform_files is True
+
+    def test_flag_ignores_non_trailing_platform_segment(self, tmp_path: Path) -> None:
+        # ``ios`` as a directory or a mid-name token is not a platform extension.
+        ctx = _ctx(tmp_path, ["src/ios/util.ts", "src/ios.config.ts", "src/web.json"])
+        assert ctx.has_platform_files is False
+
+    def test_platform_only_import_resolves_to_every_platform_file(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == (
+            "src/components/Button.android.tsx",
+            "src/components/Button.ios.tsx",
+        )
+
+    def test_plain_file_comes_first_then_sorted_platform_files(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("./components/haptics", "src/App.tsx", ctx) == (
+            "src/components/haptics.ts",
+            "src/components/haptics.native.ts",
+        )
+
+    def test_index_form_resolves_through_directory(self, tmp_path: Path) -> None:
+        ctx = _ctx(
+            tmp_path,
+            [
+                "src/App.tsx",
+                "src/components/Button/index.ios.tsx",
+                "src/components/Button/index.android.tsx",
+            ],
+        )
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == (
+            "src/components/Button/index.android.tsx",
+            "src/components/Button/index.ios.tsx",
+        )
+
+    def test_parent_relative_specifier(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/screens/Home.tsx", "src/ui/Card.web.tsx", "src/ui/Card.ios.tsx"])
+        assert resolve_ts_js_import_all("../ui/Card", "src/screens/Home.tsx", ctx) == (
+            "src/ui/Card.ios.tsx",
+            "src/ui/Card.web.tsx",
+        )
+
+    def test_unrelated_platform_files_are_not_picked_up(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [*_RN_PATHS, "src/components/Other.ios.tsx"])
+        targets = resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx)
+        assert "src/components/Other.ios.tsx" not in targets
+
+    def test_repo_without_platform_files_matches_single_resolver(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/foo.ts", "src/main.ts"])
+        assert ctx.has_platform_files is False
+        assert resolve_ts_js_import_all("./foo", "src/main.ts", ctx) == ("src/foo.ts",)
+        assert resolve_ts_js_import_all("./missing", "src/main.ts", ctx) == ()
+
+    def test_probing_is_gated_on_the_context_flag(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        ctx.has_platform_files = False
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == ()
+
+    def test_non_relative_specifiers_are_unchanged(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("react-native", "src/App.tsx", ctx) == (
+            "external:react-native",
+        )
+
+
+class TestQuerySuffix:
+    """A bundler query (Vite ``?raw``, ``?url``, ``?worker``, ``?inline``) loads the same
+    file another way: the import is of the file before the ``?``, so a test that imports
+    the script it runs as text (``import src from "../lib/check.js?raw"``) depends on it."""
+
+    _PATHS = ("lib/page-check.js", "src/lib/page-check.test.ts", "src/worker.ts", "src/logo.svg")
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("../../lib/page-check.js?raw", "lib/page-check.js"),
+            ("../../lib/page-check.js?url", "lib/page-check.js"),
+            ("../worker?worker&inline", "src/worker.ts"),
+            ("../logo.svg?inline", "src/logo.svg"),
+        ],
+    )
+    def test_a_query_after_a_relative_path_resolves_to_the_file(
+        self, tmp_path: Path, spec: str, expected: str
+    ) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import(spec, "src/lib/page-check.test.ts", ctx) == expected
+
+    def test_a_js_specifier_with_a_query_still_finds_its_ts_file(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/worker.ts", "src/main.ts"])
+        assert resolve_ts_js_import("./worker.js?worker", "src/main.ts", ctx) == "src/worker.ts"
+
+    def test_the_all_variant_strips_the_query_too(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import_all(
+            "../../lib/page-check.js?raw", "src/lib/page-check.test.ts", ctx
+        ) == ("lib/page-check.js",)
+
+    def test_a_subpath_import_and_a_bare_query_are_left_alone(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        # ``#`` starts a Node subpath import, not a fragment; nothing resolves it here.
+        assert (
+            resolve_ts_js_import("#lib/page-check", "src/main.ts", ctx)
+            == "external:#lib/page-check"
+        )
+        # A specifier that is only a query has no path before the ``?`` to keep.
+        assert resolve_ts_js_import("?raw", "src/main.ts", ctx) == "external:?raw"

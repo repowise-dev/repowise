@@ -87,8 +87,10 @@ def test_list_without_an_index_uses_directories_and_the_catalog(repo):
         "criticality": "high",
         "tags": ["pci"],
     }
-    # The derived "src" keeps the file the declared component did not claim.
-    assert rows["src"]["source"] == "directory" and rows["src"]["files"] == 1
+    # Only the layout directory "src" divides the repo, so the derived component
+    # is the whole repo, keeping the files the declared component did not claim.
+    (whole,) = [r for r in data["components"] if r["source"] == "repo"]
+    assert whole["files"] == 2 and "src" not in rows
     assert data["catalog_errors"] == 0
 
 
@@ -119,6 +121,8 @@ spec: {type: service, lifecycle: production, owner: group:default/money}
 
     text = _invoke(["components", "ownership", "--path", str(repo)])
     assert "catalog_entry_no_code ledger" in text.output
+    # The text form says what the check could see, so no findings never reads as all clear.
+    assert "component(s) have a declared owner" in text.output
 
 
 def test_ownership_reports_a_bad_teams_file_once_without_its_content(repo):

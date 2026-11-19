@@ -13,6 +13,7 @@ from repowise.core.analysis.doc_drift.extractor import (
     extract,
     is_checkable_document,
     is_guide_document,
+    is_own_prose,
     prose_lines,
 )
 from repowise.core.analysis.doc_drift.models import DriftKind
@@ -254,6 +255,11 @@ def test_non_markdown_is_not_a_document():
     """`.rst` and `.adoc` are outside this detector's reach entirely."""
     assert not is_checkable_document("docs/index.rst")
     assert not is_checkable_document("docs/index.adoc")
+
+
+def test_own_prose_ignores_the_document_format():
+    assert is_own_prose("specs/api.pdf")
+    assert not is_own_prose("vendor/specs/api.pdf")
 
 
 def test_guide_documents_are_recognised():

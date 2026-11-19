@@ -5,6 +5,8 @@ seam forge metadata comes through (git only by default), :mod:`.record` is the
 versioned JSON shape and its in-toto export, and :mod:`.store` keeps the
 ``changes`` table in step with each index and update. :mod:`.evidence` is the
 checklist attached to a record, and :mod:`.collect` gathers and caches it.
+:mod:`.outcomes` reads what later history says about a change (reverts, fixes
+that name it, its files' later fix rate) through the ``change-outcome`` seam.
 """
 
 from __future__ import annotations

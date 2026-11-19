@@ -309,6 +309,17 @@ class CppDefUseDialect(BaseDefUseDialect):
             self.collect_reads(arg, uses)
             return
         if t in _DECL_KINDS:
+            val = node.child_by_field_name("value")
+            if val is not None:
+                start = len(defs)
+                decl = node.child_by_field_name("declarator")
+                binder = self._binder_identifier(decl)
+                if binder is not None:
+                    defs.append(self._occ(binder))
+                self._declare(defs, start, node)
+                self._process(val, defs, uses)
+                return
+
             for child in node.named_children:
                 start = len(defs)
                 if child.type == _INIT_DECLARATOR:

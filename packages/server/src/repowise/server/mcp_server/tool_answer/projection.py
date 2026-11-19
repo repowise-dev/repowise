@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -10,11 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._helpers import resolve_enum_argument
 from repowise.server.mcp_server.tool_answer.config import (
+    _BODY_NOTE,
+    _BODY_NOTE_TAIL,
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
+    _CUT_BODY_NOTE_TAIL,
     _LARGE_FILE_BYTES,
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
 )
+from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
@@ -33,6 +41,9 @@ _COLLECTIONS = (
 # ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
 # so the agent reads one trust signal.
 _INCLUDES = frozenset({"evidence", "diagnostics"})
+#: Why a keyless reply ignores ``include=["evidence"]``: it has no expanded
+#: shape, and the files the expansion would quote are already listed.
+_KEYLESS_EVIDENCE_REQUIRES = "an LLM provider; Read candidate_files"
 
 
 def _path(row: Any) -> str | None:
@@ -135,67 +146,76 @@ def _trim_key_symbols(
     row["key_symbols"] = trimmed
 
 
-def _deduplicate(payload: dict[str, Any]) -> None:
-    """Keep each source fragment once, then keep paths only where they add navigation."""
+_RATIONALE_TEXT_KEYS = ("rationale", "comment", "quote", "source", "text")
+
+
+def _lines_of(row: Any) -> tuple:
+    return tuple(row.get("lines") or ())
+
+
+def _drop_served_text(row: Any, text_keys: tuple[str, ...], slabs: list[str]) -> Any:
+    """A copy of *row* without its *text_keys* text when *slabs* already serve it."""
+    if not isinstance(row, dict):
+        return row
+    row = dict(row)
+    if _contained(_text(row, *text_keys), slabs):
+        for key in text_keys:
+            row.pop(key, None)
+    return row
+
+
+def _dedupe_bodies(payload: dict[str, Any]) -> list[Any]:
     bodies = _unique(
         list(payload.get("symbol_bodies") or []),
-        lambda row: (_path(row), row.get("name"), tuple(row.get("lines") or ())),
+        lambda row: (_path(row), row.get("name"), _lines_of(row)),
     )
     payload["symbol_bodies"] = bodies
-    body_text = [_text(row, "source") for row in bodies]
-    body_spans = _body_spans(bodies)
+    return bodies
 
+
+def _dedupe_quotes(payload: dict[str, Any], body_text: list[str]) -> list[Any]:
     quotes = _unique(
         [
             row
             for row in (payload.get("quotes") or [])
             if not _contained(_text(row, "quote"), body_text)
         ],
-        lambda row: (_path(row), tuple(row.get("lines") or ()), _text(row, "quote")),
+        lambda row: (_path(row), _lines_of(row), _text(row, "quote")),
     )
     payload["quotes"] = quotes
-    quote_text = [_text(row, "quote") for row in quotes]
+    return quotes
 
+
+def _dedupe_rationale(payload: dict[str, Any], served: list[str]) -> list[Any]:
     rationale = _unique(
         [
             row
             for row in (payload.get("code_rationale") or [])
-            if not _contained(
-                _text(row, "rationale", "comment", "quote", "source", "text"),
-                [*body_text, *quote_text],
-            )
+            if not _contained(_text(row, *_RATIONALE_TEXT_KEYS), served)
         ],
-        lambda row: (
-            _path(row),
-            tuple(row.get("lines") or ()),
-            _text(row, "rationale", "comment", "quote", "source", "text"),
-        ),
+        lambda row: (_path(row), _lines_of(row), _text(row, *_RATIONALE_TEXT_KEYS)),
     )
     payload["code_rationale"] = rationale
-    rationale_text = [
-        _text(row, "rationale", "comment", "quote", "source", "text") for row in rationale
-    ]
+    return rationale
 
-    guesses: list[dict[str, Any]] = []
-    for original in _unique(
+
+def _dedupe_guesses(payload: dict[str, Any], served: list[str]) -> list[Any]:
+    unique = _unique(
         list(payload.get("best_guesses") or []),
-        lambda row: (
-            _path(row),
-            _text(row, "excerpt"),
-            _text(row, "why_relevant", "reason"),
-        ),
-    ):
-        row = dict(original) if isinstance(original, dict) else original
-        if isinstance(row, dict) and _contained(
-            _text(row, "excerpt"), [*body_text, *quote_text, *rationale_text]
-        ):
-            row.pop("excerpt", None)
-        guesses.append(row)
+        lambda row: (_path(row), _text(row, "excerpt"), _text(row, "why_relevant", "reason")),
+    )
+    guesses = [_drop_served_text(row, ("excerpt",), served) for row in unique]
     payload["best_guesses"] = guesses
-    guess_text = [_text(row, "excerpt") for row in guesses]
+    return guesses
 
-    retrieval: list[dict[str, Any]] = []
-    for original in _unique(
+
+def _dedupe_retrieval(
+    payload: dict[str, Any],
+    served: list[str],
+    body_spans: list[tuple[str, int, int]],
+    symbol_served: list[str],
+) -> list[Any]:
+    unique = _unique(
         list(payload.get("retrieval") or []),
         lambda row: (
             _path(row),
@@ -203,28 +223,23 @@ def _deduplicate(payload: dict[str, Any]) -> None:
             _text(row, "excerpt", "snippet"),
             _text(row, "summary"),
         ),
-    ):
-        row = dict(original) if isinstance(original, dict) else original
-        if isinstance(row, dict) and _contained(
-            _text(row, "excerpt", "snippet"),
-            [*body_text, *quote_text, *rationale_text, *guess_text],
-        ):
-            row.pop("excerpt", None)
-            row.pop("snippet", None)
+    )
+    retrieval: list[Any] = []
+    for original in unique:
+        row = _drop_served_text(original, ("excerpt", "snippet"), served)
         if isinstance(row, dict):
-            _trim_key_symbols(row, body_spans, [*body_text, *quote_text])
+            _trim_key_symbols(row, body_spans, symbol_served)
         retrieval.append(row)
     payload["retrieval"] = retrieval
+    return retrieval
 
+
+def _dedupe_navigation(payload: dict[str, Any], evidence: tuple[list[Any], ...]) -> None:
+    """Keep fallback targets and candidates only for files no evidence row names."""
     citations = _unique(list(payload.get("citations") or []), lambda row: row)
     payload["citations"] = citations
     occupied = {path for path in map(_nav_path, citations) if path}
-    occupied.update(
-        path
-        for rows in (bodies, quotes, rationale, guesses, retrieval)
-        for path in map(_nav_path, rows)
-        if path
-    )
+    occupied.update(path for rows in evidence for path in map(_nav_path, rows) if path)
 
     fallbacks = [
         row
@@ -234,12 +249,30 @@ def _deduplicate(payload: dict[str, Any]) -> None:
     payload["fallback_targets"] = fallbacks
 
     ranked_paths = {path for path in map(_nav_path, fallbacks) if path}
-    candidates = [
+    payload["candidates"] = [
         row
         for row in _unique(list(payload.get("candidates") or []), lambda row: _path(row))
         if _nav_path(row) not in occupied and _nav_path(row) not in ranked_paths
     ]
-    payload["candidates"] = candidates
+
+
+def _deduplicate(payload: dict[str, Any]) -> None:
+    """Keep each source fragment once, then keep paths only where they add navigation."""
+    bodies = _dedupe_bodies(payload)
+    body_text = [_text(row, "source") for row in bodies]
+    quotes = _dedupe_quotes(payload, body_text)
+    quote_text = [_text(row, "quote") for row in quotes]
+    rationale = _dedupe_rationale(payload, [*body_text, *quote_text])
+    rationale_text = [_text(row, *_RATIONALE_TEXT_KEYS) for row in rationale]
+    guesses = _dedupe_guesses(payload, [*body_text, *quote_text, *rationale_text])
+    guess_text = [_text(row, "excerpt") for row in guesses]
+    retrieval = _dedupe_retrieval(
+        payload,
+        [*body_text, *quote_text, *rationale_text, *guess_text],
+        _body_spans(bodies),
+        [*body_text, *quote_text],
+    )
+    _dedupe_navigation(payload, (bodies, quotes, rationale, guesses, retrieval))
 
 
 def _same_file(a: str | None, b: str | None) -> bool:
@@ -266,12 +299,43 @@ def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
     return next((row for row in rows if _same_file(_nav_path(row), top)), None)
 
 
+# Generic sentences a keyless ``note`` drops: ``degraded`` and ``answer`` already
+# say synthesis is off, and each field the rest names sits beside it. The cut
+# body sentence stays: it is the prose pointer at a body's continuation.
+_KEYLESS_GENERIC_NOTES = (
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
+    _BODY_NOTE,
+)
+
+
+def _trim_keyless_note(payload: dict[str, Any]) -> None:
+    """Drop the generic sentences from a keyless ``note``; a sentence naming a
+    path or continuation is not one of them and stays."""
+    note = payload.get("note")
+    if payload.get("degraded") != "no-llm-provider" or not isinstance(note, str):
+        return
+    for generic in _KEYLESS_GENERIC_NOTES:
+        note = note.replace(generic, "")
+    if note.strip():
+        payload["note"] = note.strip()
+    else:
+        payload.pop("note", None)
+
+
 def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     """Describe only evidence that survived the external projection."""
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies") and payload.get("grounding"):
+    if payload.get("call_path"):
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). call_path: the calls "
+            f"{payload.get('call_path_from')} in call order, one per row as caller "
+            "file:call line -> callee file:definition line, shipped code only; a call "
+            "may sit on a branch that does not always run."
+        )
+    elif payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
@@ -384,7 +448,8 @@ def _first_guess(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     """Swap each low-confidence guess's page excerpt for compact facts about its file.
 
-    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``.
+    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``
+    on a keyed reply.
     The row's own ``why_relevant`` and ``score`` win: they come from the same hit.
     Returns whether there were rows to slim, so sizes are stamped on those only.
     """
@@ -497,12 +562,13 @@ def _default_shape(
     payload.pop("candidates", None)
     _prune_fallback_targets(payload, raw_fallbacks)
 
-    if not str(payload.get("answer") or "").strip():
-        payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
-    payload.setdefault(
-        "next_action_hint",
-        "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
-    )
+    if not payload.get("error"):
+        if not str(payload.get("answer") or "").strip():
+            payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
+        payload.setdefault(
+            "next_action_hint",
+            "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
+        )
 
 
 _RANKED_RATIONALE_CHARS = 200
@@ -515,6 +581,7 @@ def _ranked_list_only(payload: dict[str, Any]) -> bool:
         and payload.get("retrieval_quality") == "weak"
         and payload.get("confidence") == "low"
         and not payload.get("symbol_bodies")
+        and not payload.get("call_path")
         and _first_guess(payload) is not None
     )
 
@@ -524,7 +591,7 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 
     A rationale row from the top guess, or one opening with its file's
     ``why_relevant``, adds nothing; one other row survives, shortened.
-    ``include=["evidence"]`` restores everything.
+    A keyless reply has no expanded shape, so this list is the whole reply.
     """
     top = _nav_path(_first_guess(payload))
     why = {
@@ -571,8 +638,6 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 # symbol_bodies, a body keeps its leading lines and a continuation to Read.
 _KEYLESS_BODY_CHARS = 2_000
 _KEYLESS_BODY_REASON = "keyless_body_budget"
-_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
-_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
 
 
 def _cut_body(entry: dict[str, Any], chars: int, root: Path | None) -> int:
@@ -692,7 +757,8 @@ def _record_reductions(
         payload.setdefault("_meta", {}).setdefault("reductions", []).append(
             {"field": "evidence", "total": hidden, "emitted": shown, "reason": reason}
         )
-    if reduced and not expanded:
+    # A keyless reply has no expanded shape to recover.
+    if reduced and not expanded and payload.get("degraded") != "no-llm-provider":
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
         # The caller already holds the question; restating a long one costs
         # tokens on every reduced reply. Short scope and repo stay, so a caller
@@ -732,7 +798,12 @@ def _project(
         for key in _COLLECTIONS
     }
     _deduplicate(payload)
-    expanded = "evidence" in set(include or [])
+    asked = set(include or [])
+    # Keyless replies have one shape: with no prose to check, the expanded rows
+    # are long excerpts of ranked files that stay in the caller's context, and
+    # every file they name is already a guess or a citation to Read.
+    keyless = payload.get("degraded") == "no-llm-provider"
+    expanded = "evidence" in asked and not keyless
     facts = payload.pop("_candidate_file_facts", None)
     slimmed = False
     if not expanded:
@@ -742,6 +813,7 @@ def _project(
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
+    _trim_keyless_note(payload)
     ranked = not expanded and _ranked_list_only(payload)
     if ranked:
         _serve_ranked_list(payload)
@@ -753,11 +825,18 @@ def _project(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
     )
-    if "diagnostics" not in set(include or []):
+    if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(set(include or []) - _INCLUDES)
-    if unknown:
-        payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
+    ignored: list[dict[str, Any]] = []
+    for key in sorted(asked):
+        resolve_enum_argument(key, _INCLUDES, argument="include", ignored=ignored)
+    if keyless and "evidence" in asked:
+        # Named with its reason and where the files are, so it is not re-asked.
+        ignored.append(
+            {"argument": "include", "values": ["evidence"], "requires": _KEYLESS_EVIDENCE_REQUIRES}
+        )
+    if ignored:
+        payload.setdefault("_meta", {})["ignored_arguments"] = ignored
     return payload, slimmed, ranked
 
 
@@ -773,10 +852,10 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
 def _hint_with_update_pointer(
     hint: Any, confidence: Any, freshness: dict[str, Any]
 ) -> Any:
-    """Add the update pointer to a low-confidence hint served off a behind index."""
+    """Add the behind-index fact to a low-confidence hint."""
     if freshness.get("index_behind") is not True or confidence != "low":
         return hint
-    # A stale_warning already names the command, so don't say it twice.
+    # A stale_warning already states the index commit, so don't say it twice.
     if freshness.get("stale_warning"):
         return hint
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
@@ -794,20 +873,12 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     try:
         from repowise.core.persistence.database import get_session
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
-        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
 
         served = _served_paths(payload)
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            scope_hint = await unrelated_scope_hint(
-                session,
-                repository.id,
-                [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{index_state_key(repository)}",
-            )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:
         return
@@ -819,12 +890,11 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "index_behind",
         "stale_warning",
         "working_tree_dirty",
+        # Retired; a cached payload may still carry it.
         "scope_hint",
     ):
         meta.pop(key, None)
     meta.update(freshness)
-    if scope_hint:
-        meta["scope_hint"] = scope_hint
     # An error reply carries confidence "low" too, and its fault is not the
     # index, so the pointer would only misdirect there.
     try:
@@ -852,11 +922,15 @@ def _file_size(root: Path, path: str) -> tuple[int | None, int] | None:
         abs_path = (root / path).resolve()
         # An index row is not a trust boundary; refuse anything outside the repo.
         abs_path.relative_to(root.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not abs_path.is_file():
             return None
         size = abs_path.stat().st_size
         if size > _LINE_COUNT_MAX_BYTES:
             return None, size
+        if is_extracted_document(root / path):
+            return None
         lines, last = 0, b""
         with abs_path.open("rb") as handle:
             while chunk := handle.read(65536):
@@ -969,12 +1043,34 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
+        # The lean projection may drop flow_path; the raw reply still says it walked a chain.
+        await attach_pointers(payload, repo, question, chain=bool(raw.get("flow_path")))
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    try:
+        root = root or await _resolve_root(repo)
+        read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+        tokens = await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    except Exception:  # savings accounting never breaks a tool call
+        return
+    declare_replaced(payload, tokens)
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

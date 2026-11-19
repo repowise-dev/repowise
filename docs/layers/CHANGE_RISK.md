@@ -106,12 +106,13 @@ the indexed commit history.
 
 | Subject | Sample runs back from |
 |---|---|
-| A commit in `HEAD`'s history | `HEAD` |
-| A commit on another branch | that commit |
+| A commit | its first parent |
 | A `base..head` range | the merge-base of the two sides |
 | Uncommitted work | `HEAD` |
 
-A change never ranks against itself.
+A change never ranks against itself or anything after it, so a merge reads the same
+rank as `sha` or `sha^1..sha`, and in its `changes show` checklist, which names the
+sample size and the commit it ran back from.
 
 ### PR mode (`get_risk` with `changed_files`)
 

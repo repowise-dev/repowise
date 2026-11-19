@@ -64,7 +64,7 @@ export function PresentOverlay({ model, onClose, onOpenPage }: PresentOverlayPro
           onClick={onClose}
           aria-label="Close presentation (Esc)"
           title="Close (Esc)"
-          className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <X className="h-4 w-4" />
         </button>

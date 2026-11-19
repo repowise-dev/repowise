@@ -8,8 +8,13 @@
  * injects the app-specific pieces so web and hosted render the same view.
  */
 
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { DeadCodeView, type DeadCodeAdapter } from "@repowise-dev/ui/dead-code";
+import {
+  DeadCodeView,
+  type DeadCodeAdapter,
+  type DeadCodeLedeLabels,
+} from "@repowise-dev/ui/dead-code";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getDeadCodeSummary,
@@ -19,6 +24,8 @@ import {
 } from "@/lib/api/dead-code";
 import { getJob } from "@/lib/api/jobs";
 import { useTranslations } from "next-intl";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { useRepoFileCount } from "@/lib/hooks/use-repo";
 
 const POLL_INTERVAL_MS = 3_000;
 /** Give up watching after this long; the job may still be running server-side. */
@@ -47,6 +54,8 @@ async function waitForJob(jobId: string, timeoutMessage: string): Promise<void> 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const t = useTranslations("risk");
   const router = useRouter();
+  const ledeLabels = useLedeLabels();
+  const fileCount = useRepoFileCount(repoId);
   const prefix = `/repos/${repoId}`;
 
   const adapter: DeadCodeAdapter = {
@@ -63,5 +72,36 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     navigate: (href) => router.push(href),
   };
 
-  return <DeadCodeView adapter={adapter} />;
+  // The clean state names its scope once the file count lands.
+  const clean = {
+    title:
+      fileCount != null
+        ? t("deadCodeClean.titleScoped", { files: formatNumber(fileCount) })
+        : t("deadCodeClean.title"),
+    description: t("deadCodeClean.body"),
+  };
+
+  return <DeadCodeView adapter={adapter} ledeLabels={ledeLabels} clean={clean} />;
+}
+
+/** The lede copy from the catalog; exported for its test. */
+export function useLedeLabels(): DeadCodeLedeLabels {
+  const t = useTranslations("risk.deadCodeLede");
+  return useMemo<DeadCodeLedeLabels>(
+    () => ({
+      label: t("label"),
+      labelHint: t("labelHint"),
+      unit: t("unit"),
+      findingsUnit: (count) => t("findingsUnit", { count }),
+      separator: t("separator"),
+      clean: t("clean"),
+      ready: (count) => t("ready", { count }),
+      readyUncounted: t("readyUncounted"),
+      moreFlagged: (count) => t("moreFlagged", { count }),
+      flaggedInAll: ({ findings, lines }) => t("flaggedInAll", { findings, lines }),
+      noneReady: t("noneReady"),
+      flaggedForReview: ({ findings, lines }) => t("flaggedForReview", { findings, lines }),
+    }),
+    [t],
+  );
 }

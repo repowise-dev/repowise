@@ -28,6 +28,7 @@ from typing import Any
 
 from repowise.core.references import path_identity
 
+from .biomarker_names import identity_biomarker
 from .rows import detail_map, field
 
 FINDING_ID_VERSION = 2
@@ -127,7 +128,7 @@ def finding_public_id(row: Any) -> str:
             "kernel_version": FINDING_ID_VERSION,
             "dimension": field(row, "dimension", None) or "defect",
             "path": path_identity(field(row, "file_path", "") or ""),
-            "kind": kind,
+            "kind": identity_biomarker(kind),
             "symbol": symbol,
             **location,
             "details": _identity_details(kind, details, anchor),
@@ -151,19 +152,13 @@ def legacy_finding_public_id(row: Any) -> str:
             "kernel_version": 1,
             "dimension": field(row, "dimension", None) or "defect",
             "path": path_identity(field(row, "file_path", "") or ""),
-            "kind": field(row, "biomarker_type", "") or "",
+            "kind": identity_biomarker(field(row, "biomarker_type", "") or ""),
             "symbol": field(row, "function_name", None) or "",
             "line_start": field(row, "line_start", None),
             "line_end": field(row, "line_end", None),
             "details": details,
         }
     )
-
-
-def is_finding_public_id(value: str) -> bool:
-    """Whether a caller-supplied string has the shape this kernel mints."""
-    prefix, separator, digest = value.partition("_")
-    return bool(separator) and prefix == _PREFIX and len(digest) == 20
 
 
 __all__ = [
@@ -173,6 +168,5 @@ __all__ = [
     "SYMBOL_KEY",
     "SYMBOL_LINE_KEY",
     "finding_public_id",
-    "is_finding_public_id",
     "legacy_finding_public_id",
 ]

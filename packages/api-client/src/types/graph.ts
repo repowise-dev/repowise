@@ -28,6 +28,11 @@ export interface GraphEdgeResponse {
   source: string;
   target: string;
   imported_names: string[];
+  // The server populates this on every edge row and it was simply never
+  // mirrored here, so a consumer wanting to tell an `imports` edge from a
+  // `co_changes` one had to cast. Optional and nullable, matching the
+  // server's own `GraphEdgeResponse`, so an older backend keeps parsing.
+  edge_type?: string | null;
 }
 
 /**

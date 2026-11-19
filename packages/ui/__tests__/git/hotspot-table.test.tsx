@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { HotspotTable } from "../../src/git/hotspot-table.js";
-import type { Hotspot } from "@repowise-dev/types/git";
+import type { Hotspot, HotspotFacets } from "@repowise-dev/types/git";
 
 const hotspot = (overrides: Partial<Hotspot> = {}): Hotspot => ({
   file_path: "src/foo.ts",
@@ -21,52 +21,121 @@ const hotspot = (overrides: Partial<Hotspot> = {}): Hotspot => ({
   ...overrides,
 });
 
-// Small dataset (< 60 rows) so the shared virtualizer renders every row
-// unwindowed — assertions stay deterministic under jsdom.
 const rows: Hotspot[] = Array.from({ length: 10 }, (_, i) =>
   hotspot({
-    file_path: `src/file-${i}.ts`,
+    file_path: `src/dir/file-${i}.ts`,
     commit_count_90d: 20 - i,
-    is_hotspot: i % 2 === 0,
     bus_factor: i % 3,
+    rank: i + 41,
+    accelerating: i === 0,
   }),
 );
 
-describe("HotspotTable virtualization", () => {
-  it("renders every row in a small dataset", () => {
-    render(<HotspotTable hotspots={rows} />);
-    for (const h of rows) {
-      expect(screen.getByText(h.file_path)).toBeInTheDocument();
-    }
+const facets: HotspotFacets = { total: 672, bus_factor_1: 378, accelerating: 253, bug_magnet: 0 };
+
+afterEach(() => vi.useRealTimers());
+
+describe("HotspotTable", () => {
+  it("shows the server's facet counts as N of total, with no Hot chip", () => {
+    render(<HotspotTable hotspots={rows} total={672} facets={facets} onFilterChange={() => {}} />);
+    expect(screen.getByRole("button", { name: /^All 672$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bus factor 1 378 of 672$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Accelerating 253 of 672$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Hot/ })).not.toBeInTheDocument();
+    // A filter with nothing in it is not offered.
+    expect(screen.queryByRole("button", { name: /^Bug magnet/ })).not.toBeInTheDocument();
   });
 
-  it("memoized filter chips show correct counts", () => {
-    render(<HotspotTable hotspots={rows} />);
-    // All = 10, Hot = 5 (even indices). The filter chips are <button>s whose
-    // accessible name folds in the count span ("All (10)", "Hot (5)").
-    expect(screen.getByRole("button", { name: /^All \(10\)$/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Hot \(5\)$/ })).toBeInTheDocument();
+  it("asks the host to filter rather than filtering the loaded page", () => {
+    const onFilterChange = vi.fn();
+    render(<HotspotTable hotspots={rows} facets={facets} onFilterChange={onFilterChange} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Accelerating/ }));
+    expect(onFilterChange).toHaveBeenCalledWith("accelerating");
+    expect(screen.getByText("file-9.ts")).toBeInTheDocument();
   });
 
-  it("expands a row to reveal its detail content", () => {
+  it("shows the server rank and the name before its folder", () => {
+    render(<HotspotTable hotspots={rows} />);
+    expect(screen.getByText("41")).toBeInTheDocument();
+    expect(screen.getByText("file-0.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("src/dir")).toHaveLength(10);
+  });
+
+  it("marks only accelerating rows", () => {
+    render(<HotspotTable hotspots={rows} />);
+    expect(screen.getAllByLabelText("Accelerating")).toHaveLength(1);
+  });
+
+  it("sorts through the host, flipping the order on the active column", () => {
+    const onSortChange = vi.fn();
+    render(
+      <HotspotTable hotspots={rows} sort={{ key: "commits", order: "desc" }} onSortChange={onSortChange} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Commits 90d/ }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ key: "commits", order: "asc" });
+    fireEvent.click(screen.getByRole("button", { name: /^Score/ }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ key: "score", order: "desc" });
+  });
+
+  it("reports a settled search, not each keystroke", () => {
+    vi.useFakeTimers();
+    const onQueryChange = vi.fn();
+    render(<HotspotTable hotspots={rows} onQueryChange={onQueryChange} />);
+    const box = screen.getByRole("searchbox", { name: /Search hotspots/ });
+    fireEvent.change(box, { target: { value: "co" } });
+    fireEvent.change(box, { target: { value: "core" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(onQueryChange).toHaveBeenCalledTimes(1);
+    expect(onQueryChange).toHaveBeenCalledWith("core");
+  });
+
+  it("keeps what was typed when the URL echoes an earlier search", () => {
+    vi.useFakeTimers();
+    const tree = (query: string) => <HotspotTable hotspots={rows} query={query} onQueryChange={() => {}} />;
+    const { rerender } = render(tree(""));
+    const box = screen.getByRole("searchbox");
+    fireEvent.change(box, { target: { value: "co" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    fireEvent.change(box, { target: { value: "core" } });
+    rerender(tree("co"));
+    expect(box).toHaveValue("core");
+    // A change from outside (back button, link) still resets the box.
+    rerender(tree("api"));
+    expect(box).toHaveValue("api");
+  });
+
+  it("keeps the active chip when its count drops to zero", () => {
+    render(
+      <HotspotTable hotspots={[]} query="x" facets={facets} filter="bug_magnet" onFilterChange={() => {}} />,
+    );
+    expect(screen.getByRole("button", { name: /^Bug magnet 0 of 672$/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("offers one prompt per row and one for every listed row", () => {
+    const onGeneratePrompt = vi.fn();
+    const onGenerateBatchPrompt = vi.fn();
     render(
       <HotspotTable
         hotspots={rows}
-        renderExpandedRow={(h) => <div>detail for {h.file_path}</div>}
+        total={672}
+        onGeneratePrompt={onGeneratePrompt}
+        onGenerateBatchPrompt={onGenerateBatchPrompt}
       />,
     );
-    expect(screen.queryByText("detail for src/file-0.ts")).not.toBeInTheDocument();
-    const toggle = screen.getAllByRole("button", { name: "Expand symbols" })[0]!;
-    fireEvent.click(toggle);
-    expect(screen.getByText("detail for src/file-0.ts")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 672" }));
+    expect(onGenerateBatchPrompt).toHaveBeenCalledWith(rows);
+    fireEvent.click(screen.getByRole("button", { name: /: src\/dir\/file-3\.ts$/ }));
+    expect(onGeneratePrompt).toHaveBeenCalledWith(rows[3]);
   });
 
-  it("filters rows by the active filter chip", () => {
-    render(<HotspotTable hotspots={rows} />);
-    fireEvent.click(screen.getByRole("button", { name: /^Hot \(5\)$/ }));
-    // Only the 5 hot files (even indices) should remain.
-    expect(screen.getByText("src/file-0.ts")).toBeInTheDocument();
-    expect(screen.queryByText("src/file-1.ts")).not.toBeInTheDocument();
+  it("keeps the toolbar when a search matches nothing", () => {
+    render(<HotspotTable hotspots={[]} query="zzz" onQueryChange={() => {}} />);
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+    expect(screen.getByRole("searchbox")).toHaveValue("zzz");
   });
 
   it("renders the empty state when there are no hotspots", () => {
@@ -75,42 +144,32 @@ describe("HotspotTable virtualization", () => {
   });
 });
 
-const daysAgo = (n: number) =>
-  new Date(Date.now() - n * 86_400_000).toISOString();
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
 describe("HotspotTable fix history", () => {
   it("hides the Fixes column entirely when no row has counted fixes", () => {
     render(<HotspotTable hotspots={rows} />);
-    expect(screen.queryByRole("button", { name: /^Fixes/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Bug magnet/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: /^Fixes/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the Fixes column when fixes sit only past the loaded page", () => {
+    render(<HotspotTable hotspots={rows} facets={{ ...facets, with_fixes: 4 }} onSortChange={() => {}} />);
+    expect(screen.getByRole("columnheader", { name: /^Fixes/ })).toBeInTheDocument();
   });
 
   it("shows the Fixes column once the index carries fix data", () => {
     const withFixes = [
       hotspot({ file_path: "src/a.ts", prior_defect_count: 7, last_fix_at: daysAgo(3) }),
-      hotspot({ file_path: "src/b.ts", prior_defect_count: 0 }),
+      hotspot({ file_path: "src/b.ts", prior_defect_count: 0, primary_owner: "Bo" }),
     ];
     render(<HotspotTable hotspots={withFixes} />);
-    expect(screen.getByRole("button", { name: /^Fixes/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /^Fixes/ })).toBeInTheDocument();
     expect(screen.getByText("7")).toBeInTheDocument();
     // The file with no fixes shows a dash, not a misleading zero.
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("sorts on fix count, independently of churn", () => {
-    const withFixes = [
-      hotspot({ file_path: "src/low-fix.ts", commit_count_90d: 99, prior_defect_count: 1, last_fix_at: daysAgo(2) }),
-      hotspot({ file_path: "src/high-fix.ts", commit_count_90d: 1, prior_defect_count: 9, last_fix_at: daysAgo(2) }),
-    ];
-    render(<HotspotTable hotspots={withFixes} />);
-    fireEvent.click(screen.getByRole("button", { name: /^Fixes/ }));
-    const paths = screen
-      .getAllByTitle(/^src\//)
-      .map((el) => el.textContent);
-    expect(paths[0]).toBe("src/high-fix.ts");
-  });
-
-  it("offers a Bug magnet chip only for magnets that carry a timestamp", () => {
+  it("marks a magnet only when it carries a timestamp", () => {
     const anchored = hotspot({
       file_path: "src/magnet.ts",
       prior_defect_count: 5,
@@ -124,9 +183,6 @@ describe("HotspotTable fix history", () => {
       last_fix_at: null,
     });
     render(<HotspotTable hotspots={[anchored, unanchored]} />);
-    // One of the two claims a magnet; the timestamp-less one is not counted.
-    fireEvent.click(screen.getByRole("button", { name: /^Bug magnet \(1\)$/ }));
-    expect(screen.getByText("src/magnet.ts")).toBeInTheDocument();
-    expect(screen.queryByText("src/unanchored.ts")).not.toBeInTheDocument();
+    expect(screen.getAllByTitle(/^Bug magnet:/)).toHaveLength(1);
   });
 });

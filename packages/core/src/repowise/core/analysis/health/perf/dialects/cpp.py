@@ -440,6 +440,46 @@ def _declaration_has_initializer(node: Node) -> bool:
     return False
 
 
+_CV_WAITS: frozenset[bytes] = frozenset({b"wait", b"wait_for", b"wait_until"})
+_LOOP_KINDS: frozenset[str] = frozenset(
+    {"for_statement", "for_range_loop", "while_statement", "do_statement"}
+)
+
+
+def _waits_on_guard(decl: Node) -> bool:
+    """``std::unique_lock lk(mu);`` handed to ``cv.wait(lk)`` in the same loop:
+    a condition-variable wait needs the lock taken there, so it cannot be hoisted."""
+    guard = next(
+        (
+            c.child_by_field_name("declarator")
+            for c in decl.named_children
+            if c.type in ("init_declarator", "function_declarator")
+        ),
+        None,
+    )
+    if guard is None or guard.type != "identifier":
+        return False
+    loop = decl.parent
+    while loop is not None and loop.type not in _LOOP_KINDS:
+        if loop.type in _CPP_FN_KINDS:
+            return False
+        loop = loop.parent
+    return any(_is_wait_on(n, guard.text) for n in _subtree(loop))
+
+
+def _is_wait_on(node: Node, guard: bytes | None) -> bool:
+    """``cv.wait(guard, ...)`` / ``cv_->wait_for(guard, ...)``."""
+    if node.type != "call_expression":
+        return False
+    fn, args = node.child_by_field_name("function"), node.child_by_field_name("arguments")
+    if fn is None or fn.type != "field_expression":
+        return False
+    if args is None or not args.named_children:
+        return False
+    field = fn.child_by_field_name("field")
+    return field is not None and field.text in _CV_WAITS and args.named_children[0].text == guard
+
+
 _CPP_FN_KINDS: frozenset[str] = frozenset({"function_definition", "lambda_expression"})
 # ``while ((row = mysql_fetch_row(res)))``: a row cursor over the result set it is passed.
 _ROW_CURSORS: frozenset[str] = frozenset({"mysql_fetch_row", "PQgetResult"})
@@ -734,7 +774,7 @@ class CppPerfDialect(IterableSources):
         if name in REGEX_TYPES:
             return "regex_compile_in_loop" if self._has_literal_pattern(node) else None
         if name in LOCK_GUARD_TYPES:
-            return "lock_in_loop"
+            return None if _waits_on_guard(node) else "lock_in_loop"
         return None
 
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------

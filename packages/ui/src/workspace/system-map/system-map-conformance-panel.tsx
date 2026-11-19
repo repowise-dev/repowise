@@ -127,7 +127,7 @@ export function SystemMapConformancePanel({
   const totalCycles = report.total_cycles ?? report.cycle_count;
   const cycleSummary =
     totalCycles > report.cycle_count
-      ? `${report.cycle_count} of ${totalCycles} cycles`
+      ? `${report.cycle_count} of ${report.total_capped ? "at least " : ""}${totalCycles} cycles`
       : `${report.cycle_count} ${report.cycle_count === 1 ? "cycle" : "cycles"}`;
   const violations = `${report.violation_count} ${
     report.violation_count === 1 ? "violation" : "violations"

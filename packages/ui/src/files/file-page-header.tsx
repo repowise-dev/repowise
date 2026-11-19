@@ -5,6 +5,7 @@ import { AskAboutThis } from "../chat/ask-about-this";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { healthBandColor, coverageTextColor } from "../health/tokens";
+import { ScoreSplit } from "../health/score-split";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FileMarks } from "./file-marks";
 
@@ -108,6 +109,12 @@ export function FilePageHeader({
             color: healthBandColor(bandForScore(score)),
           }}
           layout="beside"
+          figureFooter={
+            <ScoreSplit
+              categories={data.health.breakdown?.categories}
+              signals={data.health.signals}
+            />
+          }
         >
           <FileProse data={data} linkPrefix={linkPrefix} LinkComponent={A} />
         </PageLede>

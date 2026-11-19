@@ -17,6 +17,7 @@ import { memo, useMemo, useState, type ElementType } from "react";
 import type { OrphanProvider, UnmatchedConsumer } from "@repowise-dev/types/workspace";
 
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { formatNumber } from "../lib/format";
@@ -25,7 +26,8 @@ import {
   buildUnmatchedConsumersAiPrompt,
   providerNoun,
 } from "./contract-ai-prompt";
-import { ContractIdentity, FilePathText } from "./contract-identity";
+import { ContractIdentity } from "./contract-identity";
+import { FilePath } from "../shared/file-path";
 import { sortUnmatchedReasons, unmatchedReasonCopy, type OrphanGroup } from "./contract-facts";
 import type { ContractRef } from "./contract-drawer";
 
@@ -194,7 +196,7 @@ function UnmatchedGroup({
             {copy.meaning}
           </p>
         </div>
-        <AiPromptButton onClick={onPrompt} label="AI prompt" />
+        <AiPromptButton onClick={onPrompt} />
       </div>
 
       {shown > 0 ? (
@@ -206,11 +208,11 @@ function UnmatchedGroup({
                 onClick={() =>
                   onSelect({ repo: u.repo, file_path: u.file_path, contract_id: u.contract_id })
                 }
-                className="grid w-full grid-cols-1 gap-x-4 gap-y-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)] md:grid-cols-[minmax(0,5fr)_minmax(0,1fr)_minmax(0,5fr)]"
+                className="grid w-full grid-cols-1 gap-x-4 gap-y-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)] md:grid-cols-[minmax(0,5fr)_minmax(0,1fr)_minmax(0,5fr)]"
               >
                 <ContractIdentity contractId={u.contract_id} />
                 <span className="text-xs text-[var(--color-text-secondary)]">{u.repo}</span>
-                <FilePathText path={u.file_path} />
+                <FilePath path={u.file_path} fold />
               </button>
             </li>
           ))}
@@ -276,7 +278,7 @@ function OrphanTable({
         </thead>
         <tbody>
           {shown.map((g) => (
-            <tr key={`${g.repo}|${g.contractType}`} className="border-t border-[var(--color-border-default)]">
+            <tr key={`${g.repo}|${g.contractType}`} className="group/row border-t border-[var(--color-border-default)]">
               <td className="py-2 pr-3 text-xs font-medium text-[var(--color-text-primary)]">
                 {g.repo}
               </td>
@@ -294,10 +296,10 @@ function OrphanTable({
                   >
                     Browse
                   </A>
-                  <AiPromptButton
+                  <RowPromptAction
                     variant="icon"
                     onClick={() => onPrompt(g)}
-                    label={`AI prompt for ${g.repo} ${providerNoun(g.contractType, 2)} with no caller`}
+                    label={`Copy prompt for ${g.repo} ${providerNoun(g.contractType, 2)} with no caller`}
                   />
                 </div>
               </td>

@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+from repowise.core.persistence.crud import indexed_file
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
@@ -29,7 +31,10 @@ async def module_graph(
     _repo: object = Depends(with_repo),
 ) -> ModuleGraphResponse:
     """Collapsed directory-level graph: one node per top-level path segment."""
-    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
+    # Indexed files only: symbol rows and import targets are not a module's files.
+    node_result = await session.execute(
+        select(GraphNode).where(GraphNode.repository_id == repo_id, indexed_file())
+    )
     nodes = node_result.scalars().all()
 
     # Group nodes by first path segment, detecting monorepo roots
@@ -112,8 +117,13 @@ async def module_graph(
             )
         )
 
-    # Build inter-module edges from file-level edges
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Build inter-module edges from file-level edges; a doc link or co-change is not a module dependency.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
+        )
+    )
     edges = edge_result.scalars().all()
 
     edge_counts: dict[tuple[str, str], int] = {}

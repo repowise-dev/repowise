@@ -18,6 +18,7 @@ import type { DocDriftAdapter } from "./doc-drift-adapter";
 import { docDriftUnavailableCopy } from "./doc-drift-unavailable";
 import { groupByDocument } from "./group-by-document";
 import { RouterAnchor } from "./router-anchor";
+import { FilePath } from "../shared/file-path";
 
 export interface DocDriftReferencesProps {
   /** Repo-relative path of the file the page is about. */
@@ -82,10 +83,9 @@ export function DocDriftReferences({ target, adapter, driftHref }: DocDriftRefer
                 <RouterAnchor
                   href={documentHref(group.document)}
                   navigate={navigate}
-                  title={group.document}
-                  className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)] transition-colors hover:text-[var(--color-accent-primary)]"
+                  className="flex min-w-0 text-[var(--color-text-primary)] transition-colors hover:text-[var(--color-accent-primary)]"
                 >
-                  {group.document}
+                  <FilePath path={group.document} />
                 </RouterAnchor>
                 {findings ? (
                   driftHref ? (

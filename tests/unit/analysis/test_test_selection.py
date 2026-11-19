@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.test_selection import (
+    BUILD_CONFIG_REASON,
     MAX_INDEX_GAP,
     RUN_ALL,
     Selection,
@@ -16,16 +17,21 @@ from repowise.core.analysis.test_selection import (
     TestSelectionConfig,
     doc_readers,
     format_args,
+    full_run_reason,
+    is_code_file,
     is_runnable_test,
+    is_test_helper,
     left_out,
     plan_gap,
     plugin_loader,
+    project_dirs,
     resolve_runner,
     runner_args,
     runner_notes,
     select_tests,
     with_rewired,
 )
+from repowise.core.phpunit_roots import read_phpunit_roots
 from repowise.core.pytest_roots import read_pytest_roots
 
 _NONE = TestSelectionConfig()
@@ -459,6 +465,82 @@ def test_configuration_changed_after_the_index_runs_everything(path, why) -> Non
     assert plan_gap(["src/b.py", path], _NONE).candidates == ()
 
 
+# -- a build file's name on an ordinary module ---------------------------------
+
+_PROJECT = project_dirs(
+    [
+        "setup.py",
+        "pyproject.toml",
+        "libs/old/setup.cfg",
+        "libs/old/setup.py",
+        "libs/new/pyproject.toml",
+        "libs/new/noxfile.py",
+        "src/pkg/core/evidence/__init__.py",
+        "src/pkg/core/evidence/setup.py",
+        "tools/legacy/setup.py",
+    ]
+)
+
+
+def test_project_dirs_are_the_root_and_dirs_with_a_manifest_no_module_can_be() -> None:
+    # A setup.py does not vouch for its own directory.
+    assert {".", "libs/old", "libs/new"} == _PROJECT
+
+
+@pytest.mark.parametrize(
+    "path", ["setup.py", "noxfile.py", "libs/old/setup.py", "libs/new/noxfile.py"]
+)
+def test_a_module_named_build_file_at_a_project_root_is_build_config(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) == BUILD_CONFIG_REASON
+
+
+@pytest.mark.parametrize(
+    "path", ["src/pkg/core/evidence/setup.py", "tools/legacy/setup.py", "src/pkg/noxfile.py"]
+)
+def test_a_module_named_build_file_away_from_a_project_root_is_code(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) is None
+    # Without the checkout's files the name decides, which runs everything.
+    assert full_run_reason(path) == BUILD_CONFIG_REASON
+
+
+@pytest.mark.parametrize(
+    "path", ["src/pkg/package.json", "src/pkg/Cargo.toml", "src/pkg/Makefile", "src/pkg/a/go.mod"]
+)
+def test_a_nested_data_manifest_stays_build_config(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) is not None
+
+
+def test_a_setup_module_is_selected_by_the_tests_reaching_it() -> None:
+    path = "src/pkg/core/evidence/setup.py"
+    tiers = _tiers(inferred=[_inferred(path, "tests/test_setup.py", "import-graph")])
+    sel = _select([path], tiers, project_dirs=_PROJECT)
+    assert sel.run_all is False
+    assert sel.test_files == ("tests/test_setup.py",)
+    # A module no test is known to reach still runs everything.
+    assert _select(["tools/legacy/setup.py"], _tiers(), project_dirs=_PROJECT).run_all
+    assert _select([path], tiers).run_all
+
+
+def test_a_setup_module_changed_after_the_index_is_traced_not_a_full_run() -> None:
+    path = "src/pkg/core/evidence/setup.py"
+    assert plan_gap(["src/b.py", path], _NONE, project_dirs=_PROJECT).reasons == ()
+    assert plan_gap(["src/b.py", "libs/old/setup.py"], _NONE, project_dirs=_PROJECT).reasons
+    assert plan_gap(["src/b.py", path], _NONE).reasons
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/stacks/node/package.json",
+        "tests/fixtures/stacks/rust/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+    ],
+)
+def test_a_fixture_manifest_changed_after_the_index_is_test_data(path) -> None:
+    assert plan_gap(["src/b.py", path], _NONE).reasons == ()
+    assert plan_gap(["src/b.py", "package.json"], _NONE).reasons
+
+
 def test_nothing_is_traced_when_the_change_runs_everything_anyway() -> None:
     assert plan_gap(["src/b.py"], _NONE, ["uv.lock", "src/a.py"]).candidates == ()
     assert plan_gap(["src/b.py"], _NONE, ["src/a.py"]).candidates == ("src/b.py",)
@@ -728,6 +810,8 @@ def test_a_changed_conftest_selects_every_test_at_or_below_it(path, expected, de
     assert not sel.run_all, sel.reasons
     assert sel.tests == expected
     assert sel.basis[path] == "conftest"
+    # The change is the conftest itself: its tests are what it reaches.
+    assert not sel.broadcast
 
 
 def test_a_route_through_a_conftest_selects_the_tests_under_it() -> None:
@@ -740,6 +824,100 @@ def test_a_route_through_a_conftest_selects_the_tests_under_it() -> None:
     sel = _select(["src/a.py"], tiers, known_tests=_KNOWN)
     assert not sel.run_all, sel.reasons
     assert sel.tests == ("other/test_c.py", "tests/unit/test_a.py", "tests/unit/sub/test_b.py")
+    # They still run, but are counted apart from what the change reaches.
+    assert sel.broadcast == dict.fromkeys(sel.tests[1:], "tests/unit/conftest.py")
+    assert sel.reached_tests() == ["other/test_c.py"]
+    assert "tests/unit/conftest.py is on its route" in sel.why["tests/unit/sub/test_b.py"]
+    assert sel.to_dict()["broadcast"] == dict(sel.broadcast)
+
+
+def test_a_test_the_conftest_broadcast_labels_is_broadcast_unless_evidence_reaches_it() -> None:
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/unit/conftest.py", "import-graph"),
+            _inferred("src/a.py", "tests/unit/test_a.py", "conftest-broadcast"),
+            _inferred("src/a.py", "tests/test_top.py", "conftest-broadcast"),
+            _inferred("src/b.py", "tests/unit/sub/test_b.py", "import-graph"),
+        ]
+    )
+    sel = _select(["src/a.py", "src/b.py"], tiers, known_tests=_KNOWN)
+    assert not sel.run_all, sel.reasons
+    assert set(sel.test_files) == set(_KNOWN) - {"other/test_c.py"}
+    # src/b.py reaches test_b on its own; a broadcast row outside the
+    # conftest's directory (an importer) still names that conftest.
+    assert sel.broadcast == {
+        "tests/unit/test_a.py": "tests/unit/conftest.py",
+        "tests/test_top.py": "tests/unit/conftest.py",
+    }
+    assert sel.reached_tests() == ["tests/unit/sub/test_b.py"]
+
+
+def test_a_full_run_or_a_plain_subset_has_no_broadcast() -> None:
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/unit/test_a.py", "import-graph")])
+    assert not _select(["src/a.py"], tiers, known_tests=_KNOWN).broadcast
+    assert not _select(["uv.lock"], known_tests=_KNOWN).broadcast
+
+
+def test_a_test_reached_only_by_a_long_import_chain_is_counted_apart_but_runs() -> None:
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_far.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_near.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_called.py", "call-graph"),
+            _inferred("src/a.py", "tests/test_a.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_unmeasured.py", "import-graph"),
+            _inferred("src/b.py", "tests/test_both.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_both.py", "call-graph"),
+        ]
+    )
+    tiers["test_hops"] = {
+        "tests/test_far.py": 3,
+        "tests/test_near.py": 1,
+        "tests/test_called.py": 4,
+        "tests/test_a.py": 3,
+        "tests/test_both.py": 5,
+    }
+    sel = _select(["src/a.py", "src/b.py"], tiers)
+    assert not sel.run_all, sel.reasons
+    # Every test still runs; only the long import-only one leaves the headline.
+    assert len(sel.test_files) == 6
+    assert sel.import_closure == {"tests/test_far.py": 3}
+    assert "tests/test_far.py" not in sel.reached_tests()
+    assert "import-closure: 3 hops away" in sel.why["tests/test_far.py"]
+    # A direct importer, a call path (from any changed file), the paired name
+    # and a test with no measured distance all stay in the headline.
+    assert len(sel.reached_tests()) == 5
+
+
+def test_a_test_importing_a_deleted_file_is_never_counted_apart() -> None:
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/gone.py", "tests/test_x.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_x.py", "import-graph"),
+        ]
+    )
+    tiers["test_hops"] = {"tests/test_x.py": 4}
+    sel = _select(["src/a.py"], tiers, deleted=["src/gone.py"])
+    assert "tests/test_x.py" in sel.test_files and not sel.import_closure
+
+
+def test_a_package_init_test_runs_and_names_why() -> None:
+    tiers = _tiers(inferred=[_inferred("pkg/core.py", "tests/test_leaf.py", "package-init")])
+    tiers["test_hops"] = {"tests/test_leaf.py": 3}
+    sel = _select(["pkg/core.py"], tiers)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_leaf.py",)
+    assert sel.basis == {"pkg/core.py": "package-init"}
+    assert "package-init: it imports a module under a package" in sel.why["tests/test_leaf.py"]
+    # Import-time reach only, so far away it is counted apart, never dropped.
+    assert sel.import_closure == {"tests/test_leaf.py": 3}
+
+
+def test_a_covered_test_is_never_counted_apart() -> None:
+    covered = {"tests/test_x.py::t": {"test_file": "tests/test_x.py", "source_files": ["src/a.py"]}}
+    tiers = _tiers(covered=covered, inferred=[_inferred("src/a.py", "tests/test_x.py", "import-graph")])
+    tiers["test_hops"] = {"tests/test_x.py": 4}
+    assert not _select(["src/a.py"], tiers).import_closure
 
 
 def test_a_route_through_an_imported_helper_selects_its_importers() -> None:
@@ -932,6 +1110,21 @@ def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     assert is_runnable_test("src/pkg/test_paths.py")
 
 
+def test_a_test_named_php_class_phpunit_does_not_collect_is_not_runnable() -> None:
+    """``src/Testing/Attributes/UnitTest.php`` is test-shaped, but PHPUnit never collects it."""
+    config = (
+        '<phpunit><testsuites><testsuite name="Suite">'
+        '<directory suffix="Test.php">./tests</directory>'
+        '</testsuite></testsuites></phpunit>'
+    )
+    roots = read_phpunit_roots([("phpunit.xml.dist", config)])
+    assert not is_runnable_test("src/Testing/Attributes/UnitTest.php", phpunit_roots=roots)
+    assert is_runnable_test("tests/RouterTest.php", phpunit_roots=roots)
+    assert is_runnable_test("tests/sub/DeepTest.php", phpunit_roots=roots)
+    # With no config the name decides.
+    assert is_runnable_test("src/Testing/Attributes/UnitTest.php")
+
+
 def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:
     config = TestSelectionConfig(
         always_run=("tests/test_smoke.py", "apps/android/FooTest.kt", "e2e/")
@@ -965,3 +1158,77 @@ def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> 
     assert runner_args(upper, "pytest") == ["tests/test_b.py", "tests/TEST_C.PY"]
     assert runner_notes(sel, "files") == []
     assert runner_notes(_select(["uv.lock"], config=config), "pytest") == []
+
+
+def test_an_apex_test_class_is_test_code() -> None:
+    path = "force-app/main/default/classes/AccountServiceTest.cls"
+    assert is_runnable_test(path)
+    sel = _select([path], _tiers())
+    assert not any("is not code" in r for r in sel.reasons), sel.reasons
+
+
+def test_perl_tests_are_collected_and_their_helpers_are_code() -> None:
+    assert is_runnable_test("t/basic.t")
+    assert is_runnable_test("xt/author.t")
+    assert is_code_file("t/lib/Helper.pm") and is_code_file("bin/run.pl")
+    assert is_test_helper("t/lib/Helper.pm")
+    assert not is_runnable_test("t/lib/Helper.pm")
+
+
+# -- changes inside function bodies ----------------------------------------------
+
+
+def _function_tiers(**extra):
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        **extra,
+    )
+    tiers["function_covered"] = ["src/a.py"]
+    tiers["measured_test_files"] = ["tests/test_a.py", "tests/test_wide.py"]
+    return tiers
+
+
+def test_a_change_inside_covered_functions_runs_their_test_files_whole() -> None:
+    """A fixture set up once per file runs the change for tests coverage did not credit."""
+    tiers = _function_tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_wide.py", "import-graph"),
+            _inferred("src/a.py", "tests/conftest.py", "import-graph"),
+        ]
+    )
+    selection = _select(["src/a.py"], tiers, known_tests=["tests/test_a.py", "tests/test_wide.py"])
+    assert not selection.run_all
+    assert selection.test_files == ("tests/test_a.py",)
+    assert selection.tests == ("tests/test_a.py",)
+    assert "it covers the changed function lines" in selection.why["tests/test_a.py"]
+    assert any(
+        r.startswith("src/a.py: 1 test file(s) cover the changed function lines")
+        for r in selection.reasons
+    )
+    assert selection.broadcast == {}
+
+
+def test_a_test_the_map_never_ran_keeps_the_graphs_word() -> None:
+    tiers = _function_tiers(inferred=[_inferred("src/a.py", "tests/test_new.py", "import-graph")])
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_new.py"}
+    assert any("1 test file(s) the map never ran still run for it" in r for r in selection.reasons)
+
+
+def test_a_module_level_change_keeps_the_graph_tests_beside_coverage() -> None:
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        inferred=[_inferred("src/a.py", "tests/test_wide.py", "import-graph")],
+    )
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_wide.py"}
+    assert selection.tests == ("tests/test_a.py::t", "tests/test_wide.py")
+
+
+def test_function_coverage_still_runs_the_tests_every_subset_runs() -> None:
+    selection = _select(["src/a.py"], _function_tiers(), unplaced_tests=["tests/test_z.py"])
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_z.py"}

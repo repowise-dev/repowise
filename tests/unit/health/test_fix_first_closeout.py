@@ -125,7 +125,8 @@ def _validated(magnitude: str, via: str, dependents: int) -> FixFirstQueue:
 @pytest.mark.parametrize("magnitude", ["n/a", "grows_with_data", "unknown"])
 def test_no_text_field_carries_an_internal_token(via: str, magnitude: str) -> None:
     queue = _validated(magnitude, via, dependents=1)
-    assert len(queue.items) == 2
+    # A loop nobody measured is no item: only the finding is left to read.
+    assert len(queue.items) == (1 if magnitude == "unknown" else 2)
     for item in queue.items:
         for line in _texts(item):
             assert not _RAW.search(line), line

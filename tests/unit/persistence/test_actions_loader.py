@@ -31,7 +31,7 @@ from repowise.core.persistence.models import (
     PerformanceOpportunity,
     SecurityFinding,
 )
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import insert_repo, make_wiki_symbol
 
 ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 #: A size finding's deepest nested block: Fix first's first concrete step.
@@ -106,6 +106,16 @@ async def _seed(session) -> str:
                                    biomarker_type="change_entropy", severity="high",
                                    file_path="src/hist.py", symbol=None,
                                    attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c4",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/repo.py", symbol="load",
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c5",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/other.py", symbol="f",
+                                   attribution_basis="added_lines"),
             HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
                           severity="high", function_name="build", health_impact=1.0,
                           line_start=10, line_end=60, details_json=DEEP),
@@ -122,9 +132,10 @@ async def _seed(session) -> str:
                 plan_state="available", fix_strategy="batch_or_prefetch_io",
                 boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
                 intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
-                affected_files_total=2,
+                affected_files_total=2, queue_eligible=True,
                 details_json=json.dumps(
                     {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "growth_source": "loop",
                                 "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),
@@ -162,7 +173,7 @@ async def _seed(session) -> str:
     add(
         [
             DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/dead.py",
-                            symbol_name=f"f{i}", lines=10, safe_to_delete=True)
+                            symbol_name=f"f{i}", lines=10, confidence=0.9, safe_to_delete=True)
             for i in range(3)
         ]
     )
@@ -191,12 +202,12 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     rules = _by_rule(view)
 
     # Fix first names the busy bug magnet by its code-shape finding, not the
-    # higher-impact history marker, and the plan-ready loop; the fragile-file
-    # rule does not repeat the file it already names.
+    # higher-impact history marker; the fragile-file rule does not repeat the
+    # file it already names. The plan-ready loop this week's commit added is a
+    # fresh regression (below), so Fix first does not list it again.
     fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
     assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
-    assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
-    assert fixes["src/repo.py"]["effort"] == "S"
+    assert "src/repo.py" not in fixes
     assert "fragile_file" not in rules
 
     (secret,) = rules["live_secret"]
@@ -207,9 +218,16 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     assert dead["evidence_total"] == 3
 
     week = _by_rule(view, "week")
-    (fresh,) = week["fresh_regressions"]
-    assert fresh["title"] == "Simplify `build` in `src/new.py` while the change is fresh"
-    assert fresh["evidence_ids"] == ["recent"]
+    # The proven performance cause acts now; the unproven one is left out, and
+    # the code-shape finding is one item to plan.
+    perf, shape = sorted(week["fresh_regressions"], key=lambda a: a["tier"])
+    assert (perf["tier"], perf["target"]["path"]) == ("act_now", "src/repo.py")
+    assert perf["title"] == "Fix the performance regression in `load` in `src/repo.py`"
+    # Planned, at its finding's severity.
+    assert (shape["tier"], shape["severity"], shape["target"]["path"]) == (
+        "plan", "high", "src/new.py"
+    )
+    assert shape["evidence_ids"] == ["recent"]
 
 
 async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session) -> None:
@@ -301,6 +319,94 @@ async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
     assert (await _coverage(async_session, rid, "newer"))["coverage"].status == "stale"
 
 
+async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import _runtime
+    from repowise.core.persistence.models import EvidenceRun, GraphNode
+
+    rid = await _seed(async_session)
+    assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ()
+
+    # A vendored copy's tests are not this repository's suite; a production
+    # ``__main__.py`` is an entry point setup profiles. A JavaScript entry
+    # point and test file are not: setup plans neither from the index.
+    async_session.add_all(
+        [
+            GraphNode(repository_id=rid, node_id="vendor/lib/test_x.py", node_type="file",
+                      is_test=True),
+            HealthFileMetric(repository_id=rid, file_path="vendor/lib/test_x.py",
+                             is_test=True, code_origin="vendored"),
+            # No stored origin: its path says vendored.
+            GraphNode(repository_id=rid, node_id="vendor/lib/test_y.py", node_type="file",
+                      is_test=True),
+            GraphNode(repository_id=rid, node_id="web/index.js", node_type="file",
+                      is_entry_point=True),
+            GraphNode(repository_id=rid, node_id="web/app.test.js", node_type="file",
+                      is_test=True),
+        ]
+    )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.targets) == ("unknown", ())
+
+    async_session.add_all(
+        [
+            GraphNode(repository_id=rid, node_id="src/pkg/__main__.py", node_type="file",
+                      is_entry_point=True),
+            GraphNode(repository_id=rid, node_id="tests/test_cli.py", node_type="file",
+                      is_test=True),
+        ]
+    )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert state.targets == ("entry_point", "unit_test")
+
+    for run_id, sha, days in (("r1", "older", 5), ("r2", "head", 1)):
+        async_session.add(
+            EvidenceRun(id=run_id, repository_id=rid, run_key=run_id, kind="profile",
+                        format="repowise-evidence-v1", source="cli", workload_name="cli",
+                        workload_class="entry_point", commit_sha=sha,
+                        ingested_at=ANCHOR - timedelta(days=days))
+        )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.commit_sha, state.runs) == ("measured", "head", 2)
+    assert (await _runtime(async_session, rid, "newer"))["runtime"].status == "stale"
+
+    # Re-adding an older profile restamps its ingest time; the run at HEAD still decides.
+    async_session.add(
+        EvidenceRun(id="r3", repository_id=rid, run_key="r3", kind="profile",
+                    format="repowise-evidence-v1", source="cli", workload_name="old",
+                    workload_class="entry_point", commit_sha="older", ingested_at=ANCHOR)
+    )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.commit_sha, state.runs) == ("measured", "head", 3)
+    assert (await _runtime(async_session, rid, "newer"))["runtime"].commit_sha == "older"
+
+
+async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
+    from repowise.core.evidence.runtime_setup import stored_target_classes
+    from repowise.core.persistence.models import GraphNode
+
+    rid = await _seed(async_session)
+    # A benchmark file by its path alone (a node ``*.bench.ts``, a Rust
+    # ``benches/`` file) is nothing setup profiles.
+    for path in ("benchmarks/bench_parse.py", "src/parse.bench.ts", "benches/parse.rs"):
+        async_session.add(GraphNode(repository_id=rid, node_id=path, node_type="file"))
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ()
+
+    # A pytest-benchmark function is, however many near misses the query also reads.
+    async_session.add_all(
+        make_wiki_symbol(rid, "benchmarks/bench_parse.py", f"benchmark{i}") for i in range(250)
+    )
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ()
+    async_session.add(make_wiki_symbol(rid, "benchmarks/bench_parse.py", "bench_parse"))
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ("benchmark",)
+
+
 async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(async_session) -> None:
     """openclaw's attempt.ts: tests load it through a support module two imports away."""
     from repowise.core.analysis.test_reachability import clear_test_map_cache
@@ -311,6 +417,9 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
     facts = await load_repo_facts(async_session, rid)
     assert facts.history_commits == 5
     assert facts.files["src/core.py"].tests_reaching == 0
+    # The lead is measured from its stored details: CCN 44 is worth breaking up.
+    lead = facts.files["src/core.py"].lead
+    assert (lead.function, lead.worth) == ("run", True)
 
     for path, is_test in (
         ("src/core.py", False),
@@ -336,7 +445,8 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
     assert (core.tests_reaching, core.tests_reaching_via) == (1, "import-graph")
 
     # Once production code imports the middle file it is a hub, not test
-    # support, and the second hop no longer counts.
+    # support, and the second hop no longer counts; the import closure still
+    # does, so the file is not claimed untested.
     async_session.add(GraphNode(repository_id=rid, node_id="src/app.py", node_type="file"))
     async_session.add(
         GraphEdge(repository_id=rid, source_node_id="src/app.py",
@@ -345,7 +455,21 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
     await async_session.commit()
     clear_test_map_cache()
     facts = await load_repo_facts(async_session, rid)
-    assert facts.files["src/core.py"].tests_reaching == 0
+    assert facts.files["src/core.py"].tests_reaching == 1
+
+
+async def test_a_file_only_replacing_tests_reach_reads_mocked_only(async_session, monkeypatch) -> None:
+    from repowise.core.analysis.test_reachability import ReachRow
+    from repowise.core.persistence.crud.analysis import actions as loader
+
+    rid = await _seed(async_session)
+
+    async def mocked(_session, _repo_id, paths):
+        return {p: ReachRow("mocked_only", mocked_by=("tests/test_core.py",)) for p in paths}
+
+    monkeypatch.setattr(loader, "any_tests_reaching", mocked)
+    core = (await loader.load_repo_facts(async_session, rid)).files["src/core.py"]
+    assert (core.tests_reaching, core.tests_reaching_via) == (0, "mocked-only")
 
 
 async def test_a_failed_test_map_walk_is_unknown_not_zero(async_session, monkeypatch) -> None:

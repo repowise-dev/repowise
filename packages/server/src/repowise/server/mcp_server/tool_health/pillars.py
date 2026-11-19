@@ -8,6 +8,7 @@ from typing import Any
 from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.core.persistence.crud import measured_costs, unranked_command, unranked_reason
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
@@ -45,6 +46,45 @@ _PERFORMANCE_EVIDENCE_PAGE_CAP = 20
 """Ceiling on one evidence page. ``limit`` still means what it says below it,
 including ``limit=0`` for the totals and no rows."""
 
+_MEASURED_CAP = 3
+"""Measured functions per run when no ``limit`` is passed."""
+
+_MEASURED_PAGE_CAP = 10
+"""Ceiling on measured functions per run: the reader ranks at most ten per run."""
+
+#: Run fields a measured block carries: its basis, age, sample size and where
+#: its time went (production repo code itself, waits, libraries).
+_MEASURED_RUN_FIELDS = (
+    "run_id",
+    "workload_class",
+    "workload_name",
+    "commit",
+    "age_days",
+    "samples",
+    "repo_self_share",
+    "wait_share",
+    "library_share",
+    "outside_production",
+    "value_kind",
+    "ordering_only",
+)
+
+#: Row fields: ``share`` is self time (the cost ranked by), ``inclusive``
+#: context. Callers, owner and tests are one ``get_context`` call away.
+_MEASURED_ROW_FIELDS = (
+    "symbol_id",
+    "lines",
+    "run_id",
+    "rank",
+    "share",
+    "share_low",
+    "share_high",
+    "inclusive",
+    "samples",
+    "freshness",
+    "callers_total",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _PerformanceBlocks:
@@ -53,6 +93,72 @@ class _PerformanceBlocks:
     page: PerformancePage | None = None
     summary: dict[str, Any] | None = None
     ignored: dict[str, str] = field(default_factory=dict)
+    #: ``performance_measured``: what stored runs measured, or why nothing is.
+    measured: dict[str, Any] | None = None
+
+
+async def _measured_block(session: Any, repository_id: str, req: HealthRequest) -> dict[str, Any]:
+    """The ``performance_measured`` block: ranked functions with their runs.
+
+    One run per workload, its newest. Each group (``rows`` from workload
+    classes that may lead, ``in_tests`` from unit-test runs) lists
+    :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
+    :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
+    with production evidence sits on names it in ``on_static_findings``.
+    Without ranked evidence it is one ``status`` token (``no_runtime_data``,
+    ``stale``, ``not_ranked``): unknown, never zero.
+    """
+    cap = min(req.limit, _MEASURED_PAGE_CAP) if req.limit_explicit else _MEASURED_CAP
+    # At least one row, so a group still reports its total with ``limit=0``.
+    view = await measured_costs(session, repository_id, limit=max(cap, 1))
+    # ``None`` means no workload's newest run ranks a function in a class that
+    # leads or in ``unit_test``.
+    if view is None:
+        status = await unranked_reason(session, repository_id)
+        block: dict[str, Any] = {"basis": "unknown", "status": status}
+        command = unranked_command(status)
+        if command:
+            block["command"] = command
+        return block
+    block = {"basis": "measured", "runs": []}
+    runs: dict[str, dict[str, Any]] = {}
+    for group, key in (("measured", "rows"), ("measured_in_tests", "in_tests")):
+        found = view.get(group)
+        if not found:
+            continue
+        # Cut per run by the reader; ``limit=0`` keeps the totals and no rows.
+        rows = found["rows"] if cap else []
+        block[key] = [_measured_row(row) for row in rows]
+        # The nested stamping in ``paging`` adds ``_emitted`` and ``_reduced_reason``.
+        block[f"{key}_total"] = found["total"]
+        shown = {row["run_id"] for row in rows}
+        for run in found["runs"]:
+            if run["run_id"] in shown:
+                runs.setdefault(run["run_id"], _measured_run(run))
+    block["runs"] = list(runs.values())
+    return block
+
+
+def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
+    out = {f: run[f] for f in _MEASURED_RUN_FIELDS}
+    # Twelve characters name a commit for git; the full SHA is the CLI's JSON.
+    if out["commit"]:
+        out["commit"] = out["commit"][:12]
+    # Only a tracer's run says so: every other run gives shares.
+    if not out["ordering_only"]:
+        del out["ordering_only"]
+    return out
+
+
+def _measured_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = {f: row[f] for f in _MEASURED_ROW_FIELDS}
+    # ``"start-end"``: a list here would be stamped with counts like a collection.
+    lines = row["lines"]
+    out["lines"] = f"{lines[0]}-{lines[1]}" if lines else None
+    if row.get("on_static_findings"):
+        # Open with ``get_health(opportunity_id=...)``.
+        out["on_static_findings"] = row["on_static_findings"]
+    return out
 
 
 async def _performance_blocks(
@@ -230,12 +336,15 @@ def _render_performance(
         _merge_ignored(result, performance.ignored)
 
     if performance.summary is not None:
-        result["performance_summary"] = {
-            **performance.summary,
-            "facets": page.facets if page else {},
-            "next_call": ActionCommand.call(
+        summary = {**performance.summary, "facets": page.facets if page else {}}
+        # Its call returns the queue: dropped only when this response lists items.
+        if not result.get("performance_opportunities"):
+            summary["next_call"] = ActionCommand.call(
                 "The ranked performance opportunities, lead first",
                 "get_health",
                 {"include": ["performance"], "only": ["performance_opportunities"], "limit": 6},
-            ).as_dict(),
-        }
+            ).as_dict()
+        result["performance_summary"] = summary
+
+    if performance.measured is not None:
+        result["performance_measured"] = performance.measured

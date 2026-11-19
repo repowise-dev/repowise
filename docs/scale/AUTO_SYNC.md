@@ -9,7 +9,9 @@ method that fits your setup; they can be combined.
 | [File watcher](#2-file-watcher) | Local development, uncommitted work | No |
 | [GitHub webhook](#3-github-webhook) | Teams, a shared repowise server | Yes |
 | [GitLab webhook](#4-gitlab-webhook) | Teams, a shared repowise server | Yes |
-| [Polling fallback](#5-polling-fallback) | Safety net for missed webhooks | Yes |
+| [Gitea / Forgejo webhook](#5-gitea--forgejo-webhook) | Self-hosted teams | Yes |
+| [Polling fallback](#6-polling-fallback) | Safety net for missed webhooks | Yes |
+| [Server-owned clones](#7-server-owned-clones) | A server whose checkout is a clone of GitLab, GitHub or Gitea | Yes |
 
 Whichever you use, agents are told when the index is behind: the SessionStart
 hook reports indexed commit vs `HEAD` ([HOOKS.md](../agent/HOOKS.md)), and MCP
@@ -127,17 +129,102 @@ With `REPOWISE_GITLAB_WEBHOOK_TOKEN` set, the server compares it with the
 `401 Unauthorized`. Without the token, only local callers are accepted and every
 other caller gets `403 Forbidden`, as with GitHub.
 
-Both endpoints match the payload's repository to a registered one by a
+---
+
+## 5. Gitea / Forgejo Webhook
+
+One endpoint serves both: Forgejo is a Gitea fork and still sends the
+`X-Gitea-*` headers alongside its own `X-Forgejo-*` ones.
+
+```bash
+export REPOWISE_GITEA_WEBHOOK_SECRET="your-secret-here"
+```
+
+In your repository, open **Settings > Webhooks > Add Webhook > Gitea**
+(**Forgejo** on Forgejo):
+
+1. **Target URL:** `https://your-server.example.com/api/webhooks/gitea`
+2. **HTTP Method:** `POST`
+3. **POST Content Type:** `application/json`
+4. **Secret:** the value of `REPOWISE_GITEA_WEBHOOK_SECRET`
+5. **Trigger On:** **Push Events**
+
+### Security (Gitea / Forgejo)
+
+With `REPOWISE_GITEA_WEBHOOK_SECRET` set, every request must carry a valid
+HMAC-SHA256 digest of the raw body in `X-Gitea-Signature` or
+`X-Forgejo-Signature`. Both forges send it as **bare lowercase hex with no
+`sha256=` prefix**, which is the one way their delivery differs from GitHub's;
+a prefixed value is rejected with `401 Unauthorized`, as is a mismatch.
+
+Without the secret, only local callers are accepted and every other caller gets
+`403 Forbidden`, as with GitHub and GitLab.
+
+Gitea and Forgejo also send GitHub's `X-Hub-Signature-256` for compatibility,
+so an existing hook pointed at `/api/webhooks/github` keeps working — it is
+just recorded as a GitHub event. Use this endpoint to have the delivery
+attributed to the forge that sent it, and to give it its own secret.
+
+All three endpoints match the payload's repository to a registered one by a
 canonical key, so clone, ssh and web URLs of the same repository match, case
 aside. Other hosts are listed in [GIT_HOSTS.md](../start/GIT_HOSTS.md).
 
 ---
 
-## 5. Polling Fallback
+## 6. Polling Fallback
 
 While `repowise serve` runs, a background job polls every registered repository
 every 15 minutes. New commits a webhook missed trigger an incremental update.
 No configuration is needed.
+
+---
+
+## 7. Server-owned clones
+
+A webhook and the poller start a sync of the checkout on the server's disk. On
+a developer's machine that checkout is the working tree, so the sync indexes
+what is there. On a server whose checkout is a clone, nothing moves the clone
+when someone pushes, so the index would stay where the clone was made.
+
+Tell the server it owns the clone, once per repository. `--no-editor-setup`
+keeps init from editing agent files such as a committed `CLAUDE.md`, which
+would count as local edits:
+
+```bash
+git clone https://gitlab.example.com/group/project.git /srv/repos/project
+cd /srv/repos/project
+repowise init --no-prose --yes --no-editor-setup
+repowise config set managed_checkout true
+repowise serve --host 0.0.0.0
+```
+
+For a managed checkout, every server sync first fetches the branch the clone
+has checked out from its upstream and fast-forwards to it:
+
+- The GitLab, GitHub or Gitea push webhook syncs the pushed commit.
+- The poller compares the remote branch (read with `git ls-remote`, no fetch)
+  with the last indexed commit, and syncs when they differ.
+- The fetch runs inside `.repowise/.update.lock`, so it never overlaps a
+  `repowise update` or another sync.
+- Credentials come from the clone's own git config: the remote URL, a
+  credential helper or an SSH key for the user the server runs as. Nothing
+  prompts; a missing credential fails the fetch.
+
+A managed checkout holds no local work. When it has edited tracked files, or
+commits the remote does not have, the sync is refused with that reason in the
+job's error and the server log (`managed_checkout_not_moved`); nothing is reset
+or discarded. A fetch that fails (network, credentials, a deleted branch) is
+refused the same way, and the checkout and the index stay where they were. SSH
+runs in batch mode unless the clone sets `core.sshCommand`, so an unknown host
+key fails the fetch instead of waiting. A remote the poller cannot read is
+logged as `managed_checkout_remote_unreadable` and skipped.
+
+Until the cause is fixed, each poll after a push starts a sync that is refused
+again, so the job list shows the reason every 15 minutes.
+
+The setting lives in the clone's `.repowise/config.yaml`, which is not
+committed, so a teammate's working tree never inherits it. Leave it off for any
+checkout someone edits.
 
 ---
 
@@ -153,7 +240,7 @@ No configuration is needed.
    (`--cascade-budget N` to override).
 4. Regenerate those pages with the LLM, when the repo was indexed with docs.
    Affected pages beyond the budget are marked stale, not regenerated;
-   `repowise generate --stale` refreshes them when you choose to spend on it.
+   `repowise update --full` refreshes them all, pricing the model's pages first.
 5. In a workspace, re-run the cross-repo analysis.
 6. Save the new `HEAD` as the last synced commit.
 
@@ -180,12 +267,28 @@ LLM cost. `POST /api/repos/{id}/full-resync` also regenerates every page.
 
 ---
 
+## Concurrent updates
+
+Rapid commits through the post-commit hook and a manual `repowise update` can
+start updates at once. One update runs at a time; a second one that finds the lock held
+records its commit and exits, and the running update rolls forward to it.
+
+| File | Purpose |
+|------|---------|
+| `.repowise/.update.lock` | Held by the running update. Records its PID, a process creation token and the target commit, so a lock left by a crashed update is cleared. A workspace update uses `.repowise-workspace/.update.lock` |
+| `.repowise/.update.queued` | Written by the post-commit hook before it starts the background update, so agent hooks stop reporting a stale wiki right away |
+| `.repowise/.update.pending` | Written by an update that found the lock held. Carries the newest HEAD, which the running update processes in an extra pass before it exits |
+| `.repowise/.update.log` | Output of background updates. Capped at 256 KB, keeping the last 64 KB |
+
+---
+
 ## Environment variables
 
 | Variable | Used by | Description |
 |----------|---------|-------------|
 | `REPOWISE_GITHUB_WEBHOOK_SECRET` | Server | HMAC secret for GitHub webhook verification |
 | `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Server | Token for GitLab webhook verification |
+| `REPOWISE_GITEA_WEBHOOK_SECRET` | Server | HMAC secret for Gitea / Forgejo webhook verification |
 
 Provider API keys, the database URL and the API token are listed in
 [CONFIG.md](../reference/CONFIG.md#environment-variables). Keys saved to
@@ -204,12 +307,18 @@ Provider API keys, the database URL and the API token are listed in
 installed.
 
 **Webhook returns 401**: a secret or token is set on the server but the
-request's signature did not match (or the GitHub `sha256=` prefix was missing).
-Check the value matches on both sides.
+request's signature did not match. Check the value matches on both sides, and
+the prefix: GitHub's `X-Hub-Signature-256` needs the `sha256=` prefix, while
+Gitea's and Forgejo's `X-Gitea-Signature` must not have one.
 
 **Webhook returns 403**: no secret or token is set, and the request came from a
-non-local caller. Set `REPOWISE_GITHUB_WEBHOOK_SECRET` or
-`REPOWISE_GITLAB_WEBHOOK_TOKEN`, restart the server, and redeliver the payload.
+non-local caller. Set `REPOWISE_GITHUB_WEBHOOK_SECRET`,
+`REPOWISE_GITLAB_WEBHOOK_TOKEN` or `REPOWISE_GITEA_WEBHOOK_SECRET`, restart the
+server, and redeliver the payload.
+
+**A push does not reach a server's index**: if the checkout is a clone the
+server owns, set `managed_checkout` ([above](#7-server-owned-clones)). If it is
+set, the job's error says why the clone was not moved.
 
 **Update is slow**: the first update after many commits does more work.
 `repowise update --index-only` skips page regeneration when you only need the

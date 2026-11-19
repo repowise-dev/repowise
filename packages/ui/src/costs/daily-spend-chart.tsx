@@ -3,6 +3,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { CHART_HEIGHT } from "./chart-height";
 import { formatCost } from "../lib/format";
+import { seriesColor } from "../shared/series";
 
 export interface DailySpendChartProps {
   /** Day-grouped cost rows ({ group: "YYYY-MM-DD", cost_usd }). Caller fetches. */
@@ -68,7 +69,7 @@ export function DailySpendChart({ groups, height = CHART_HEIGHT }: DailySpendCha
             formatter={(value) => [formatCost(Number(value)), "Cost"]}
             labelFormatter={(label) => `Date: ${String(label)}`}
           />
-          <Bar dataKey="cost_usd" fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="cost_usd" fill={seriesColor(0)} radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>

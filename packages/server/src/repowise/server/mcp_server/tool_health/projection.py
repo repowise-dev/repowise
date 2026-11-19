@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.health.counts import DEFAULT_COUNTS
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE
+from repowise.core.analysis.health.counts import COUNTS, DEFAULT_COUNTS
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES
 from repowise.server.mcp_server.tool_health.paging import _stamp_collection
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 
@@ -28,6 +28,7 @@ _ALWAYS_KEPT = frozenset(
         "unknown_include_keys_emitted",
         # A rejected filter value is a caller-error report too.
         "ignored_arguments",
+        "ignored_arguments_hint",
         "recovery",
     }
 )
@@ -38,6 +39,28 @@ _UNKNOWN_ONLY_HINT = (
     "performance_opportunities or refactoring_plans; a dimension such as "
     "performance is an `include` value. See docs/agent/MCP_TOOLS.md."
 )
+
+#: Keys built only when ``include`` asks (blocks.py, pillars.py): a missing
+#: include, not a misspelling, is why such a key is absent.
+_INCLUDE_OF_KEY = {
+    **dict.fromkeys(
+        ("performance_opportunities", "performance_summary", "performance_measured"),
+        "performance",
+    ),
+    **dict.fromkeys(
+        (
+            "refactoring_opportunities",
+            "refactoring_summary",
+            "refactoring_plans",
+            "suggestion_legend",
+        ),
+        "refactoring",
+    ),
+    **{k: k for k in ("trend", "coverage", "doc_drift", "untested_complexity", "what_if")},
+}
+
+#: Which control accepts each value, to name the right one for a swapped value.
+_CONTROL_OF_VALUE = {**dict.fromkeys(COUNTS, "counts"), **dict.fromkeys(SCOPES, "scope")}
 
 _PLAN_COMPANIONS = frozenset(
     {"refactoring_plans_status", "refactoring_plans_opportunities_total"}
@@ -60,6 +83,13 @@ def _name_rejected_controls(
     }
     if rejected:
         result["ignored_arguments"] = {**result.get("ignored_arguments", {}), **rejected}
+    swapped = [
+        f'{name}="{raw}" is a {other} value: did you mean {other}="{raw}"?'
+        for name, raw in rejected.items()
+        if (other := _CONTROL_OF_VALUE.get(raw)) and other != name
+    ]
+    if swapped:
+        result["ignored_arguments_hint"] = " ".join(swapped)
 
 
 def _name_uncounted_blocks(result: dict[str, Any], reported_counts: str) -> None:
@@ -92,18 +122,7 @@ def _project(
     keep = (
         set(req.only_list)
         | _ALWAYS_KEPT
-        | {
-            suffix
-            for k in req.only_list
-            for suffix in (
-                f"{k}_total",
-                f"{k}_emitted",
-                f"{k}_reduced_reason",
-                f"{k}_scope",
-                f"{k}_hidden",
-                f"{k}_counts",
-            )
-        }
+        | {f"{k}{suffix}" for k in req.only_list for suffix in _SIBLING_SUFFIXES}
     )
     # Which reading the numbers are on, only when it is not the default.
     if reported_scope != DEFAULT_SCOPE:
@@ -117,9 +136,43 @@ def _project(
     unknown = sorted(
         raw for raw, resolved in zip(req.only, req.only_list, strict=True) if resolved not in result
     )
+    hint = _unknown_only_hint(req, unknown, result) if unknown else ""
     result = {k: v for k, v in result.items() if k in keep}
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
-        result["unknown_only_keys_hint"] = _UNKNOWN_ONLY_HINT
+        result["unknown_only_keys_hint"] = hint
     return result
+
+
+#: Suffixes of a collection's accounting siblings, which ``only`` keeps with it.
+_SIBLING_SUFFIXES = ("_total", "_emitted", "_reduced_reason", "_scope", "_hidden", "_counts")
+
+
+def _targeted_keys(result: dict[str, Any]) -> list[str]:
+    """The keys a targeted call can keep with ``only``. Unlike the dashboard,
+    whose blocks are built on demand, a targeted result is whole before the
+    projection; ``trends`` is built only when wanted, so it is always named."""
+    skip = _ALWAYS_KEPT | {"_meta", "scope", "counts"}
+    keys = (k for k in (*result, "trends") if k not in skip and not k.endswith(_SIBLING_SUFFIXES))
+    return list(dict.fromkeys(keys))
+
+
+def _unknown_only_hint(req: HealthRequest, unknown: list[str], result: dict[str, Any]) -> str:
+    """The generic hint, led by the include each include-gated miss needs. A
+    targeted call names its own keys (#4089): the dashboard keys the generic
+    hint lists are never in a targeted response."""
+    needs = [
+        f'only=["{raw}"] needs include=["{include}"].'
+        for raw, resolved in zip(req.only, req.only_list, strict=True)
+        if raw in unknown
+        and (include := _INCLUDE_OF_KEY.get(resolved))
+        and include not in req.include_set
+    ]
+    generic = _UNKNOWN_ONLY_HINT
+    if result.get("mode") == "targets":
+        generic = (
+            f"`only` names response keys; this call has {', '.join(_targeted_keys(result))}. "
+            "A dimension such as performance is an `include` value."
+        )
+    return " ".join(dict.fromkeys([*needs, generic]))

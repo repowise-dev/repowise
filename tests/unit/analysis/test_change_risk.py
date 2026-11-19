@@ -17,6 +17,7 @@ from repowise.core.analysis.change_risk import (
     features_from_file_changes,
     score_change,
     score_live_change,
+    working_tree_is_dirty,
 )
 from repowise.core.analysis.change_risk.model import _CONSTANTS, _sigmoid
 
@@ -206,6 +207,15 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_repowise_state_alone_does_not_make_the_tree_dirty(git_repo: Path) -> None:
+    """A fresh init leaves .repowise/ untracked; that is not a code change."""
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "wiki.db").write_text("x", encoding="utf-8")
+    assert not working_tree_is_dirty(str(git_repo))
+    (git_repo / "new.py").write_text("x = 1\n", encoding="utf-8")
+    assert working_tree_is_dirty(str(git_repo))
+
+
 def test_extract_commit_features_counts_diffusion(git_repo: Path) -> None:
     _commit(
         git_repo,
@@ -389,16 +399,72 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
     baseline.clear_baseline_cache()
 
 
-def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypatch) -> None:
-    # The memo exists for the long-lived MCP server that scores many changes
-    # against one repo state. Keying it on the target defeated that, so two
-    # different merged commits must now share a single walk.
+def _merged_change(repo: Path) -> str:
+    """A merge commit with history before it and larger commits landing after it."""
+    for i in range(10):
+        _commit(repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+    _git(["checkout", "-q", "-b", "feature"], repo)
+    _commit(repo, {"src/pr.py": "".join(f"p{i} = {i}\n" for i in range(6))}, "feat: pr", "Dev")
+    _git(["checkout", "-q", "-"], repo)
+    _commit(repo, {"src/main.py": "m = 1\n"}, "feat: main moves", author="Dev")
+    merge_cmd = ["merge", "-q", "--no-ff", "feature", "-m", "Merge pr"]
+    _git(["-c", "user.name=Dev", "-c", "user.email=t@e.com", *merge_cmd], repo)
+    merge = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    # Larger commits after the merge: a sample read at HEAD would rank it lower.
+    for i in range(10):
+        body = "".join(f"y{j} = {j}\n" for j in range(40))
+        _commit(repo, {f"src/later{i}.py": body}, f"feat: later {i}", author="Dev")
+    return merge
+
+
+def test_a_change_ranks_the_same_however_it_is_spelled(git_repo: Path) -> None:
+    # The commit, its first-parent range and its checklist rank against one
+    # sample: the commits before the change, wherever HEAD has moved since.
+    import asyncio
+
+    from repowise.core.analysis.change_risk import baseline
+    from repowise.core.changes.collect import evidence_for_revspec
+    from repowise.core.changes.evidence import item_line
+
+    merge = _merged_change(git_repo)
+    parent = subprocess.run(
+        ["git", "rev-parse", f"{merge}^1"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    baseline.clear_baseline_cache()
+
+    commit = score_live_change(str(git_repo), merge, baseline=200)
+    ranged = score_live_change(str(git_repo), f"{merge}^1..{merge}", baseline=200)
+    checklist = asyncio.run(evidence_for_revspec(None, "", str(git_repo), merge))
+    row = next(i for i in checklist.items if i.kind == "risk_score").to_dict()
+    line = item_line(row)
+
+    assert commit.percentile is not None
+    assert commit.percentile == ranged.percentile
+    assert commit.baseline_as_of == ranged.baseline_as_of == parent
+    assert commit.baseline_sample_size == ranged.baseline_sample_size
+    assert line["key"] == "risk_score_before"
+    assert line["params"] == {
+        "percentile": round(commit.percentile, 1),
+        "sample": commit.baseline_sample_size,
+        "as_of": parent[:10],
+    }
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_shared_by_spellings_of_one_change(git_repo: Path, monkeypatch) -> None:
+    # The memo is keyed on the anchor, so a commit and its first-parent range
+    # share one walk.
     from repowise.core.analysis.change_risk import baseline
 
     for i in range(10):
         _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
-    older = _commit(git_repo, {"src/a.py": "a = 1\n"}, "feat: a", author="Dev")
-    newer = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
+    head = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
@@ -410,15 +476,11 @@ def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypat
 
     monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
-    first = score_live_change(str(git_repo), older, baseline=200)
-    second = score_live_change(str(git_repo), newer, baseline=200)
-    third = score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
+    score_live_change(str(git_repo), head, baseline=200)
+    score_live_change(str(git_repo), f"{head}^..{head}", baseline=200)
+    score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
 
     assert calls["n"] == 1
-    # Each still excludes only itself, so every sample is the same size.
-    assert first.baseline_sample_size == second.baseline_sample_size
-    assert third.baseline_sample_size == first.baseline_sample_size
-
     baseline.clear_baseline_cache()
 
 
@@ -432,8 +494,7 @@ def test_commit_does_not_rank_against_itself(git_repo: Path) -> None:
     samples = baseline.baseline_samples(str(git_repo), "HEAD", 200, ())
     result = score_live_change(str(git_repo), "HEAD", baseline=200)
 
-    # The cached walk holds every commit; the ranking drops exactly one - the
-    # target - so the two sizes differ by one and no more.
+    # The sample runs back from the parent, so it is every commit but the target.
     assert result.baseline_sample_size == len(samples) - 1
     baseline.clear_baseline_cache()
 

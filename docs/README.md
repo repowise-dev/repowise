@@ -13,7 +13,7 @@ By hand: the [Quickstart](start/QUICKSTART.md) gets you indexed and connected to
 your agent in under five minutes, with no API key.
 
 <div align="center">
-  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools (all ten on Claude Code, five by default on other clients)" width="100%" />
 </div>
 
 For a map of every layer and how they feed each other, read
@@ -30,11 +30,12 @@ For a map of every layer and how they feed each other, read
 | [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index, and connect your agent |
 | [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, and how to add one |
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and the opt-in extras |
+| [agent/CLAUDE_CODE_COMMANDS.md](agent/CLAUDE_CODE_COMMANDS.md) | The 18 `/repowise:*` slash commands in the Claude Code plugin |
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the support ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 29 parsed to a full AST, 43 on the support ladder |
 
 ### Find what to fix first
 
@@ -42,6 +43,7 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability and performance risk per file, and the Fix first queue |
 | [layers/PERFORMANCE.md](layers/PERFORMANCE.md) | N+1 queries, I/O in loops and blocking calls, grouped into plans and a default queue |
+| [layers/RUNTIME_EVIDENCE.md](layers/RUNTIME_EVIDENCE.md) | Profiles, benchmark results, test timings and query counts from your own runs, joined to the functions they measured |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Graph-aware refactoring plans, from Extract Method to Performance Fix |
 | [layers/OWNERSHIP.md](layers/OWNERSHIP.md) | Owners, bus factor, and where knowledge is at risk |
 | [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local dashboard |
@@ -67,6 +69,14 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [layers/CHANGES.md](layers/CHANGES.md) | Change Records: each merged PR, MR or commit read back from git, with an in-toto export |
 | [layers/ATTRIBUTION.md](layers/ATTRIBUTION.md) | AI attribution: public markers read by default, opt-in edit capture, and coverage beside every share |
+
+### Govern change across a team
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/COMPONENTS.md](layers/COMPONENTS.md) | Backstage-shaped components, declared owners against recent activity, events and package usage |
+| [layers/POLICY.md](layers/POLICY.md) | Change policy in `.repowise/policies.yaml`, checked locally or in CI with SARIF and JUnit |
+| [layers/REPORTS.md](layers/REPORTS.md) | Assessment, change evidence and inventory packs to hand to an auditor, acquirer or board |
 
 ### Know which tests matter
 
@@ -98,6 +108,7 @@ For a map of every layer and how they feed each other, read
 
 | Doc | What it covers |
 |-----|----------------|
+| [scale/LARGE_MONOREPOS.md](scale/LARGE_MONOREPOS.md) | Index a multi-million-line monorepo with its full history: commands, sizing, freshness |
 | [scale/WORKSPACES.md](scale/WORKSPACES.md) | Multi-repo intelligence: cross-repo contracts, co-changes, one MCP server |
 | [scale/WORKTREES.md](scale/WORKTREES.md) | Linked git worktrees seed their index from the base checkout |
 | [../docker/README.md](../docker/README.md) | Running repowise in Docker |
@@ -106,9 +117,10 @@ For a map of every layer and how they feed each other, read
 
 | Doc | What it covers |
 |-----|----------------|
+| [business/EVALUATION.md](business/EVALUATION.md) | Try it on your own code in an afternoon, offline, from index to evidence packs |
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
-| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method |
 | [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
 | [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |
 
@@ -125,6 +137,7 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [../.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) | How to set up, test and submit a change |
 | [architecture/README.md](architecture/README.md) | How repowise is built: pipelines, graph algorithms, health internals |
+| [architecture/single-sources.md](architecture/single-sources.md) | Which module owns each shared concept; check it before writing a helper |
 
 ---
 
@@ -137,7 +150,9 @@ For a map of every layer and how they feed each other, read
 | [reference/CONFIG.md](reference/CONFIG.md) | `.repowise/config.yaml`, `health-rules.json`, and environment variables |
 | [reference/MCP_RESPONSE_FIELDS.md](reference/MCP_RESPONSE_FIELDS.md) | The field dictionary for every MCP response, including the `_meta` envelope |
 | [reference/HOOKS_REFERENCE.md](reference/HOOKS_REFERENCE.md) | The exact settings entries each hook install writes |
+| [reference/PLUGINS.md](reference/PLUGINS.md) | Build, test and publish a plugin: entry points, every registry and seam, and how one is chosen |
 | [reference/CHANGE_REVIEW_API.md](reference/CHANGE_REVIEW_API.md) | Reviewing a change from Python, with or without a checkout |
+| [reference/PACKAGE_USAGE.md](reference/PACKAGE_USAGE.md) | Where third-party packages are imported, the CycloneDX export, and reading Syft, SPDX or OSV files |
 | [reference/WORKSPACE_CONTRACTS.md](reference/WORKSPACE_CONTRACTS.md) | How a workspace names, reads and matches cross-repo contracts |
 | [reference/COMPUTED_GLOSSARY.md](reference/COMPUTED_GLOSSARY.md) | Definitions for every computed metric |
 | [reference/TELEMETRY.md](reference/TELEMETRY.md) | What anonymous telemetry collects, and how to turn it off |

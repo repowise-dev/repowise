@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import repowise.core.upgrade.release as rel
 from repowise.core.upgrade.release import (
     BUNDLED_CHANGELOG_PATH,
@@ -126,3 +128,40 @@ def test_check_latest_version_cached_does_not_poison_on_failure(monkeypatch, tmp
     assert calls["n"] == 2
     assert second.latest_version == "9.9.9"
     assert second.update_available is True
+
+
+# --- offline / opt-out switches -------------------------------------------
+
+
+@pytest.mark.parametrize("var", ["REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
+def test_network_off_switches_skip_release_fetches(monkeypatch, var):
+    import httpx
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("network call made with an off switch set")
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    monkeypatch.setenv(var, "1")
+    latest, error = rel.fetch_latest_version()
+    assert latest is None and error
+    assert rel.fetch_release_highlights("1.0.0") is None
+
+
+def test_an_off_switch_leaves_no_empty_highlights_cache(monkeypatch, tmp_path):
+    """Offline must not cache "no highlights", or they stay hidden once back online."""
+    cache = tmp_path / "highlights.json"
+    monkeypatch.setattr(rel, "_HIGHLIGHTS_CACHE_PATH", cache)
+    monkeypatch.setenv("REPOWISE_OFFLINE", "1")
+
+    assert rel.latest_highlights_cached("1.0.0") == []
+    assert not cache.exists()
+
+
+def test_do_not_track_zero_keeps_the_network_on(monkeypatch):
+    from repowise.core.platform.telemetry import network_disabled
+
+    for var in ("REPOWISE_OFFLINE", "REPOWISE_TELEMETRY_DISABLED"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DO_NOT_TRACK", "0")
+
+    assert network_disabled() is False

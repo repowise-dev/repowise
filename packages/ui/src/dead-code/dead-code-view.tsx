@@ -3,7 +3,7 @@
 /**
  * Dead Code view, on the section design language.
  *
- * Three things, top to bottom: a lede with the reclaimable line count and one
+ * Three things, top to bottom: a lede with the deletion-ready line count and one
  * posture sentence, the safe-to-delete list, and the full findings table with
  * its status control in the section header. Carries the optimistic row patch
  * + Undo toast, bulk resolve, the "Propose cleanup" agent brief, and
@@ -32,12 +32,13 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
+import { CleanState, type CleanStateCopy } from "../shared/clean-state";
 import { Segmented } from "../shared/segmented";
 import { OverviewSection } from "../overview/section";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildDeadCodeAiPrompt } from "../health/ai-prompt-builder";
 
-import { AnalysedAt, DeadCodeLede } from "./dead-code-lede";
+import { AnalysedAt, DeadCodeLede, type DeadCodeLedeLabels } from "./dead-code-lede";
 import { SafeToDeletePile } from "./safe-to-delete-pile";
 import { FindingsTable } from "./findings-table";
 import { DEAD_CODE_STATUS_LABELS } from "./finding-cells";
@@ -72,7 +73,17 @@ function RetryCard({
   );
 }
 
-export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
+export function DeadCodeView({
+  adapter,
+  ledeLabels,
+  clean: cleanCopy,
+}: {
+  adapter: DeadCodeAdapter;
+  /** The lede's copy, for a host that translates it. */
+  ledeLabels?: Partial<DeadCodeLedeLabels>;
+  /** The clean state's copy, for a host that translates it or knows the file count. */
+  clean?: CleanStateCopy;
+}) {
   const [analyzing, setAnalyzing] = useState(false);
   const [promptIds, setPromptIds] = useState<string[] | null>(null);
   /** Which slice the findings table shows; the lede and the list stay open-only. */
@@ -351,16 +362,19 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
             {analyzeAction("Run analysis")}
           </EmptyState>
         ) : (
-          <DeadCodeLede summary={summary} action={analyzeAction("Re-analyze")}>
+          <DeadCodeLede
+            summary={summary}
+            action={analyzeAction("Re-analyze")}
+            {...(ledeLabels ? { labels: ledeLabels } : {})}
+          >
             {clean ? (
-              <EmptyState
-                tone="positive"
-                className="items-start px-0 py-0 text-left"
-                title="No dead code found"
+              <CleanState
+                align="start"
+                title={cleanCopy?.title ?? "No dead code found"}
                 description={
                   <>
-                    No unreachable files, unused exports or zombie packages across this
-                    repository.
+                    {cleanCopy?.description ??
+                      "No unreachable files, unused exports or zombie packages across this repository."}
                     <AnalysedAt at={summary.analyzed_at} />
                   </>
                 }

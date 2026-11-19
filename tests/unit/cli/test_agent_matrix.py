@@ -200,6 +200,13 @@ def test_the_indexing_column_matches_the_identities() -> None:
         assert GEN._cell(row, "indexing_provider") == expected, row["id"]
 
 
+def test_the_attribution_column_matches_the_supported_agents() -> None:
+    """Attribution is derived from each target's capture adapter."""
+    for row in GEN.agent_rows():
+        expected = "Yes" if row["capture_adapter"] else "No"
+        assert GEN._cell(row, "capture_adapter") == expected, row["id"]
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 
@@ -251,15 +258,12 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ),
     ("docs/start/USER_GUIDE.md", "single_repo", "**{W} tools, task-shaped.**"),
     ("docs/architecture/pluggable-storage.md", "single_repo", "{w} MCP tools still expose"),
-    ("website/mcp-server.md", "total", "It registers {n} tools:"),
-    ("website/mcp-server.md", "single_repo", "a curated {n}-tool default surface"),
     ("packages/server/README.md", "total", "registers {n} MCP tools"),
     ("packages/server/README.md", "single_repo", "advertises **{n} by default**"),
     (".claude-plugin/marketplace.json", "single_repo", "{w} task-shaped MCP tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
-    ("docs/reference/CLI_REFERENCE.md", "lean", "the {w}-tool agent-lean profile"),
     ("packages/server/README.md", "total", "{n} registered MCP tools"),
     ("packages/server/README.md", "single_repo", "({n} advertised by default"),
     # The CLI help text is the copy every user reads, and it was the only place
@@ -275,14 +279,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "plus {w} more by default",
     ),
     ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "opt_in", "{W} more are opt-in"),
-    # The lean count is written twice in this file, in the --tools help and in
-    # the worked example. One row matching either would let the other go stale,
-    # so each occurrence is pinned by the text around it.
-    (
-        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
-        "lean",
-        "{w}-tool agent-lean profile. Overrides",
-    ),
+    # The lean count is written in the worked example; the --tools help names
+    # the profiles as peers, with no counts.
     (
         "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
         "lean",

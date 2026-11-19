@@ -128,6 +128,19 @@ def test_fix_pressure_counts_only_fix_commits(repo_with_history: Path) -> None:
     assert "cold.py" not in pressure  # churn is not fix history
 
 
+def test_a_path_and_its_string_share_one_walk(
+    repo_with_history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The score passes a ``Path``, other readers a ``str``: one checkout, one walk."""
+    from repowise.core.analysis.change_risk import fix_history
+
+    walks: list[str] = []
+    real = fix_history._walk
+    monkeypatch.setattr(fix_history, "_walk", lambda *a: walks.append(a[1]) or real(*a))
+    assert fix_pressure(repo_with_history, "HEAD") == fix_pressure(str(repo_with_history), "HEAD")
+    assert len(walks) == 1
+
+
 _MANIFESTS = ("package.json", "web/package-lock.json", "pyproject.toml")
 
 
@@ -281,11 +294,11 @@ def test_zero_density_commits_stay_in_the_population() -> None:
 
 def test_percentile_uses_the_repos_own_commits(repo_with_history: Path) -> None:
     """End to end: a change to the fragile file outranks one to the safe file."""
-    hot_sha = _commit(repo_with_history, {"hot.py": "v = 9\n"}, "feat: touch the hot file")
-    cold_sha = _commit(repo_with_history, {"cold.py": "c = 9\n"}, "feat: touch the cold file")
-    # Enough commits for the sample to clear MIN_DENSITY_POPULATION.
+    # Enough commits before the change for its sample to clear MIN_DENSITY_POPULATION.
     for i in range(4, 8):
         _commit(repo_with_history, {"cold.py": f"c = {i}\n"}, f"feat: add capability {i}")
+    hot_sha = _commit(repo_with_history, {"hot.py": "v = 9\n"}, "feat: touch the hot file")
+    cold_sha = _commit(repo_with_history, {"cold.py": "c = 9\n"}, "feat: touch the cold file")
 
     hot = score_live_change(str(repo_with_history), hot_sha, baseline=200)
     cold = score_live_change(str(repo_with_history), cold_sha, baseline=200)
@@ -380,3 +393,135 @@ def test_repo_without_fix_history_reports_nothing(tmp_path: Path) -> None:
     assert result.fix_density == 0.0
     assert result.hot_files == ()
     assert result.fix_percentile is None
+
+
+def test_one_walk_primes_the_same_pressure_every_ref_would_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    repo = tmp_path / "merges"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "feat: seed")
+    _commit(repo, {"a.py": "a = 1\n"}, "fix: a breaks")
+    _git(["checkout", "-q", "-b", "side"], repo)
+    _commit(repo, {"b.py": "b = 1\n"}, "fix: b breaks on the side")
+    _git(["checkout", "-q", "main"], repo)
+    _commit(repo, {"a.py": "a = 2\n"}, "fix: a breaks again")
+    _git(["-c", "user.name=Dev", "-c", "user.email=d@e.com", "merge", "-q", "--no-ff", "side",
+          "-m", "Merge side"], repo)
+    _commit(repo, {"b.py": "b = 2\n"}, "feat: b grows")
+    shas = subprocess.run(
+        ["git", "rev-list", "--first-parent", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.split()
+
+    history = fix_history.FixHistory(str(repo))
+    walked = {}
+    for sha in shas:
+        clear_fix_pressure_cache()
+        walked[sha] = fix_pressure(str(repo), sha)
+    clear_fix_pressure_cache()
+    assert fix_history.prime_fix_pressure(str(repo), history, shas) == len(shas)
+
+    def no_walk(*_a, **_k):
+        raise AssertionError("a primed ref walked git again")
+
+    monkeypatch.setattr(fix_history, "_walk", no_walk)
+    for sha in shas:
+        assert fix_pressure(str(repo), sha) == walked[sha]
+    assert walked[shas[0]]["b.py"] > 0  # the side branch's fix is reached through the merge
+    # A history past the walk limit answers nothing, and scoring walks git itself.
+    assert history.pressure(shas[0], depth=1) is None
+    assert history.pressure("f" * 40) is None
+
+
+def _merge_repo(repo: Path) -> list[str]:
+    """main with a merged side branch carrying a fix; first-parent shas, newest first."""
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "feat: seed")
+    _commit(repo, {"a.py": "a = 1\n"}, "fix: a breaks")
+    _git(["checkout", "-q", "-b", "side"], repo)
+    _commit(repo, {"b.py": "b = 1\n"}, "fix: b breaks on the side")
+    _git(["checkout", "-q", "main"], repo)
+    _commit(repo, {"a.py": "a = 2\n"}, "fix: a breaks again")
+    _git(["-c", "user.name=Dev", "-c", "user.email=d@e.com", "merge", "-q", "--no-ff", "side",
+          "-m", "Merge side"], repo)
+    _commit(repo, {"b.py": "b = 2\n"}, "fix: b breaks on main")
+    return subprocess.run(
+        ["git", "rev-list", "--first-parent", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.split()
+
+
+def test_one_walk_matches_walk_on_a_shallow_clone(tmp_path: Path) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    source = tmp_path / "source"
+    _merge_repo(source)
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=2", source.resolve().as_uri(), str(shallow)],
+        check=True, capture_output=True, text=True,
+    )
+    history = fix_history.FixHistory(str(shallow))
+    assert history.shallow
+    for sha in history.order:
+        clear_fix_pressure_cache()
+        assert history.pressure(sha) == fix_pressure(str(shallow), sha), sha
+
+
+def test_one_walk_answers_up_to_the_depth_limit_and_not_past_it(tmp_path: Path) -> None:
+    from repowise.core.analysis.change_risk import fix_history
+
+    repo = tmp_path / "limit"
+    head = _merge_repo(repo)[0]
+    listed = int(subprocess.run(
+        ["git", "rev-list", "--no-merges", "--count", head], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout)
+    history = fix_history.FixHistory(str(repo))
+    assert history.pressure(head, listed) == fix_pressure(str(repo), head, depth=listed)
+    assert history.pressure(head, listed - 1) is None
+    # A walk capped below the history leaves older commits to _walk.
+    capped = fix_history.FixHistory(str(repo), depth=1)
+    assert capped.pressure(head) is None and not capped.answers(head + "x")
+
+
+def test_a_carriage_return_ends_a_fix_subject(repo_with_history: Path) -> None:
+    """The rest of the subject is not a file the fix touched."""
+    _commit(repo_with_history, {"hot.py": "v = 9\n"}, "fix: one\rtwo.py")
+
+    pressure = fix_pressure(str(repo_with_history), "HEAD")
+
+    assert set(pressure) == {"hot.py"}
+
+
+def test_the_fix_walk_runs_while_the_change_is_read(
+    repo_with_history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from repowise.core.analysis.change_risk import service
+
+    walking = threading.Event()
+    real_pressure = service.fix_pressure
+    real_features = service.extract_commit_features
+
+    def _pressure(*args, **kwargs):
+        walking.set()
+        return real_pressure(*args, **kwargs)
+
+    def _features(*args, **kwargs):
+        # Serial code would only start the walk after this returns.
+        assert walking.wait(timeout=10)
+        return real_features(*args, **kwargs)
+
+    monkeypatch.setattr(service, "fix_pressure", _pressure)
+    monkeypatch.setattr(service, "extract_commit_features", _features)
+
+    result = score_live_change(str(repo_with_history), "HEAD", baseline=0)
+
+    assert result.fix_history_available

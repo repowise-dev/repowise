@@ -27,13 +27,16 @@ what the system prompt already tells the model to do.
 
 from __future__ import annotations
 
+from ..ingestion.git_indexer._constants import (
+    PRIOR_DEFECT_WINDOW_DAYS,
+    PRIOR_DEFECT_WINDOW_LABEL,
+)
 from .languages import sanitize_language_code
 
 ENGLISH_LABELS: dict[str, str] = {
     # -- shared ------------------------------------------------------------
     "overview": "Overview",
     "source": "Source",
-    "footer": "*Generated from parsed code, the import graph and git history.*",
     "and_more": "and {count} more.",
     "file": "File",
     "file_singular": "file",
@@ -64,6 +67,7 @@ ENGLISH_LABELS: dict[str, str] = {
     "public_api": "Public API",
     "depends_on": "Depends on",
     "used_by": "Used by",
+    "used_by_tests": "Plus {count} test {file_word}.",
     # Symbols the API list leaves out, named so the identifier stays on the
     # page even though the entry does not.
     "also_defined": "Also defined: {names}.",
@@ -77,7 +81,12 @@ ENGLISH_LABELS: dict[str, str] = {
     "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
     "history_owner_lines": "**{owner}** wrote {line}% of its current lines ({commit}% of commits).",
     "history_owner_lines_only": "**{owner}** wrote {line}% of its current lines.",
-    "history_fixes": "{count} of those commits fixed a bug.",
+    # Its own sentence, never "of those commits": the fix count covers the
+    # prior-defect window, not the 90 days the commit sentence ends on.
+    "history_fixes": "{count} {fix_word} in the last {window}.",
+    "fix_commit_singular": "bug-fix commit",
+    "fix_commit_plural": "bug-fix commits",
+    "fix_window": PRIOR_DEFECT_WINDOW_LABEL,
     "history_hotspot": "It is one of the repository's change hotspots.",
     "history_stable": "It has been stable: nothing has changed it lately.",
     "commit_singular": "commit",
@@ -90,10 +99,6 @@ ENGLISH_LABELS: dict[str, str] = {
     "changes_with_entry": "{count} shared {commit_word}",
     "last_together": "last together on {date}",
     "decisions_heading": "Decisions touching this file",
-    "question_exports": "What does `{path}` export?",
-    "question_where_defined": "Where is `{symbol}` defined?",
-    "question_what_imports": "What imports `{path}`?",
-    "question_depends_on": "What does `{path}` depend on?",
     # -- symbol spotlight --------------------------------------------------
     "defined_in": "Defined in",
     "async_marker": "async",
@@ -106,21 +111,16 @@ ENGLISH_LABELS: dict[str, str] = {
     "symbol_kind_fallback": "symbol",
     "decorators": "Decorators",
     "where_used": "Where it is used",
-    "importers_summary": (
-        "{count} {file_word} {import_verb} the module that defines it. "
-        "These are import-level references, not confirmed call sites."
+    "call_sites_summary": "Used in {count} resolved {call_word}.",
+    "call_sites_tests": "Tests add {count} more.",
+    "only_test_calls": "Only tests use it ({count} resolved {call_word}).",
+    "module_scope": "top-level code",
+    "no_call_sites": (
+        "No uses of it were resolved. Its file page lists the files that import its module."
     ),
-    "import_verb_singular": "imports",
-    "import_verb_plural": "import",
-    "call_sites_summary": "Reached by {count} resolved {call_word}.",
-    "imported_by_heading": "Files importing this module",
-    "call_site_singular": "call",
-    "call_site_plural": "calls",
+    "call_site_singular": "place",
+    "call_site_plural": "places",
     "in_file": "in `{path}`",
-    "question_what_calls": "What calls `{symbol}`?",
-    "implementation": "Implementation",
-    "question_what_is": "What is `{symbol}`?",
-    "question_which_files_import": ("Which files import the module that defines `{symbol}`?"),
     # -- infrastructure page -----------------------------------------------
     "infrastructure": "Infrastructure",
     "type": "Type",
@@ -178,7 +178,6 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
     "de": {
         "overview": "Überblick",
         "source": "Quelltext",
-        "footer": "*Erstellt aus geparstem Code, dem Importgraphen und der Git-Historie.*",
         "and_more": "und {count} weitere.",
         "file": "Datei",
         "file_singular": "Datei",
@@ -210,6 +209,7 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "public_api": "Öffentliche API",
         "depends_on": "Abhängigkeiten",
         "used_by": "Wird verwendet von",
+        "used_by_tests": "Dazu {count} Test-{file_word}.",
         "also_defined": "Ebenfalls definiert: {names}.",
         "history": "Historie",
         "history_commits": (
@@ -221,7 +221,11 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
             "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben ({commit}% der Commits)."
         ),
         "history_owner_lines_only": "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben.",
-        "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
+        "history_fixes": "{count} {fix_word} in den letzten {window}.",
+        "fix_commit_singular": "Bugfix-Commit",
+        "fix_commit_plural": "Bugfix-Commits",
+        # Dative after "in den letzten"; same months as PRIOR_DEFECT_WINDOW_LABEL.
+        "fix_window": f"{PRIOR_DEFECT_WINDOW_DAYS // 30} Monaten",
         "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
         "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",
         "commit_singular": "Commit",
@@ -234,10 +238,6 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "changes_with_entry": "{count} gemeinsame {commit_word}",
         "last_together": "zuletzt gemeinsam am {date}",
         "decisions_heading": "Entscheidungen zu dieser Datei",
-        "question_exports": "Was exportiert `{path}`?",
-        "question_where_defined": "Wo ist `{symbol}` definiert?",
-        "question_what_imports": "Was importiert `{path}`?",
-        "question_depends_on": "Wovon hängt `{path}` ab?",
         "defined_in": "Definiert in",
         "async_marker": "asynchron",
         "estimated_complexity": "Geschätzte Komplexität",
@@ -249,23 +249,17 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "symbol_kind_fallback": "Symbol",
         "decorators": "Dekoratoren",
         "where_used": "Wo es verwendet wird",
-        "importers_summary": (
-            "{count} {file_word} {import_verb} das Modul, das es definiert. "
-            "Dies sind Referenzen auf Importebene, keine bestätigten Aufrufstellen."
+        "call_sites_summary": "Verwendet an {count} aufgelösten {call_word}.",
+        "call_sites_tests": "Tests fügen {count} weitere hinzu.",
+        "only_test_calls": "Nur Tests verwenden es ({count} aufgelöste {call_word}).",
+        "module_scope": "Code auf Modulebene",
+        "no_call_sites": (
+            "Es wurden keine Verwendungen aufgelöst. Die Dateiseite listet die Dateien, "
+            "die sein Modul importieren."
         ),
-        "import_verb_singular": "importiert",
-        "import_verb_plural": "importieren",
-        "call_sites_summary": "Erreicht von {count} aufgelösten {call_word}.",
-        "imported_by_heading": "Dateien, die dieses Modul importieren",
-        "call_site_singular": "Aufrufstelle",
-        "call_site_plural": "Aufrufstellen",
+        "call_site_singular": "Stelle",
+        "call_site_plural": "Stellen",
         "in_file": "in `{path}`",
-        "question_what_calls": "Was ruft `{symbol}` auf?",
-        "implementation": "Implementierung",
-        "question_what_is": "Was ist `{symbol}`?",
-        "question_which_files_import": (
-            "Welche Dateien importieren das Modul, das `{symbol}` definiert?"
-        ),
         "infrastructure": "Infrastruktur",
         "type": "Typ",
         "declared_targets": "Deklarierte Ziele",

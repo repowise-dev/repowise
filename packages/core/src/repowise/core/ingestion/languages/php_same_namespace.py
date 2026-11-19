@@ -147,6 +147,7 @@ def resolve_php_same_namespace_refs(
     graph: nx.DiGraph,
     parsed_files: dict[str, Any],
     texts: dict[str, str],
+    scan_paths: set[str] | None = None,
 ) -> int:
     """Emit same-namespace and qualified-name ``imports`` edges for PHP files.
 
@@ -198,10 +199,13 @@ def resolve_php_same_namespace_refs(
             shadowed=code.shadowed,
         )
 
+    # The index above needs every file; only source scanning narrows to the
+    # changed files during a graph patch.
+    scan = set(texts) if scan_paths is None else set(texts) & scan_paths
     # Code first, so a name used in code gets its real hint. The second pass
     # reads the raw text, comments included; ``emit_scope_edges`` skips any
     # pair already linked, so it only adds files no code names.
-    code_texts = sorted((path, blank_php_comments(text)) for path, text in texts.items())
+    code_texts = sorted((path, blank_php_comments(texts[path])) for path in scan)
     added = emit_scope_edges(
         graph,
         code_texts,
@@ -212,7 +216,7 @@ def resolve_php_same_namespace_refs(
     )
     return added + emit_scope_edges(
         graph,
-        sorted(texts.items()),
+        sorted((path, texts[path]) for path in scan),
         comment_plan,
         skip_names=frozenset(),
         ident_re=_NAME_RE,

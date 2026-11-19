@@ -98,7 +98,17 @@ def _is_data_shape_question(question: str, question_ids: set[str]) -> bool:
     return any(_clause_carries_shape_cue(c) for c in _interrogative_clauses(question))
 
 
+# "What is the risk of changing how X stores its keys" asks about a change, not
+# for the field set: the shape noun only names the thing being changed.
+_CHANGE_CUE = re.compile(
+    r"\b(?:risks? of|risky|impact of|blast radius|would break|breaks? if|changing|refactor\w*)\b",
+    re.I,
+)
+
+
 def _clause_carries_shape_cue(clause: str) -> bool:
+    if _CHANGE_CUE.search(clause):
+        return False
     low = clause.lower()
     words = set(_WORD.findall(low))
     if words & _SHAPE_NOUNS:
@@ -175,6 +185,10 @@ def _run_grep(
     repo_root: Path, args: list[str], identifier: str
 ) -> subprocess.CompletedProcess | None:
     """Run a bounded, transport-safe ``git grep`` variant; ``None`` on failure."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         return subprocess.run(
             # --no-pager + stdin=DEVNULL are load-bearing: this can run inside a
@@ -230,12 +244,10 @@ def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None
 
 def _read_lines(repo_root: Path, rel_path: str) -> list[str] | None:
     """Read a repo-relative file's lines, refusing any path outside the root."""
-    try:
-        abs_path = (repo_root / rel_path).resolve()
-        abs_path.relative_to(repo_root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except (OSError, ValueError):
-        return None
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    text = read_repo_file_text(repo_root, rel_path, allow_extracted=False)
+    return text.splitlines() if text is not None else None
 
 
 def _docstring_line_set(lines: list[str]) -> set[int]:

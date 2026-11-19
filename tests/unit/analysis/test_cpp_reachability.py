@@ -22,6 +22,7 @@ Asserts:
 from __future__ import annotations
 
 import fnmatch
+from pathlib import Path
 
 import networkx as nx
 
@@ -289,6 +290,34 @@ class TestCppFileReachable:
         pkgs = build_cpp_package_files(graph)
         assert is_cpp_file_reachable("lib/dead.cc", graph, pkgs) is False
 
+    def test_a_large_directory_reads_each_sibling_once(self, monkeypatch) -> None:
+        # Every importer-less file asks about the same siblings; reading them
+        # per file made a 1,000-file directory cost a million in-edge scans.
+        from repowise.core.analysis.dead_code import file_reachability
+
+        n = 300
+        graph = _build_graph(
+            {f"src/Functions/f{i}.cpp": _cpp_file() for i in range(n)}
+            | {"src/Functions/keyed_a.cpp": _cpp_file(), "src/Functions/keyed_b.cpp": _cpp_file()},
+            edges=[("src/Functions/f0.cpp", "src/Functions/keyed_a.cpp", {"edge_type": "imports"})],
+        )
+        pkgs = build_cpp_package_files(graph)
+        calls = 0
+        real = file_reachability.has_dependency_importer
+
+        def counting(g, path):
+            nonlocal calls
+            calls += 1
+            return real(g, path)
+
+        monkeypatch.setattr(file_reachability, "has_dependency_importer", counting)
+        answers = {f: is_cpp_file_reachable(f, graph, pkgs) for f in pkgs["src/Functions"]}
+        assert calls <= 2 * (n + 2)
+        # Same answers as a plain map, which reads the directory per call.
+        assert answers == {f: is_cpp_file_reachable(f, graph, dict(pkgs)) for f in answers}
+        assert answers["src/Functions/keyed_b.cpp"] is True  # conditional pair of keyed_a
+        assert answers["src/Functions/f1.cpp"] is False
+
 
 # ---------------------------------------------------------------------------
 # Never-flag patterns
@@ -538,3 +567,56 @@ class TestCppEndToEnd:
         report = analyzer.analyze({"min_confidence": 0.0})
         paths = {f.file_path for f in report.findings}
         assert "apps/io_tester/io_tester.cc" not in paths
+
+
+def test_build_listed_cpp_file_is_reachable() -> None:
+    # Issue 3820: a file stamped build_listed is reachable
+    from repowise.core.analysis.dead_code.cpp_reachability import is_cpp_file_reachable
+
+    g = nx.DiGraph()
+    g.add_node("WorkspacesLib/SteamGameHelper.cpp", build_listed=True, language="cpp")
+    g.add_node("Orphan.cpp", build_listed=False, language="cpp")
+
+    assert is_cpp_file_reachable("WorkspacesLib/SteamGameHelper.cpp", g, {}) is True
+    assert is_cpp_file_reachable("Orphan.cpp", g, {}) is False
+
+
+def test_stamp_cpp_build_listed_ignores_headers(tmp_path: Path) -> None:
+    # Review finding: headers in CMake targets or vcxproj ClInclude are not compilation units
+    from unittest.mock import MagicMock
+
+    from repowise.core.ingestion.graph_warmups import _stamp_cpp_build_listed
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    (tmp_path / "App.vcxproj").write_text(
+        '<Project>\n'
+        '  <ItemGroup>\n'
+        '    <ClCompile Include="src/main.cpp" />\n'
+        '    <ClInclude Include="include/stale.h" />\n'
+        '  </ItemGroup>\n'
+        '</Project>\n'
+    )
+    (tmp_path / "app.rc").write_text('#include "include/branding.h"\n')
+
+    g = nx.DiGraph()
+    g.add_node("src/main.cpp")
+    g.add_node("include/stale.h")
+    g.add_node("include/branding.h")
+    g.add_node("cmake_src.cpp")
+    g.add_node("cmake_hdr.h")
+
+    target = MagicMock()
+    target.sources = ("cmake_src.cpp",)
+    target.public_headers = ("cmake_hdr.h",)
+    target.private_headers = ()
+    index = MagicMock()
+    index.targets = {"t": target}
+
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    _stamp_cpp_build_listed(ctx, g, index)
+
+    assert g.nodes["src/main.cpp"].get("build_listed") is True
+    assert g.nodes["cmake_src.cpp"].get("build_listed") is True
+    assert g.nodes["include/branding.h"].get("build_listed") is True
+    assert "build_listed" not in g.nodes["include/stale.h"]
+    assert "build_listed" not in g.nodes["cmake_hdr.h"]

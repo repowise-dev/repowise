@@ -20,12 +20,14 @@ from repowise.core.analysis.health.perf.serving import (
     PerformanceQuery,
     facet_counts,
     fold_facets,
+    fold_scoped_facets,
     intervention_file,
     keep,
     parse_query,
     plan_link,
     rescope_summary,
     row_sort_key,
+    serialize,
     summary_payload,
 )
 from repowise.core.analysis.health.rows import field
@@ -75,6 +77,37 @@ def test_plan_link_states() -> None:
     assert missing.state == "not_persisted" and "Reindex" in missing.reason
     linked = plan_link({"plan_state": "available"}, {"id": 7}, "plan:x")
     assert (linked.state, linked.row_id, linked.public_id) == ("available", "7", "plan:x")
+
+
+def test_summary_view_keeps_what_a_row_is_acted_on_by() -> None:
+    row = {
+        "opportunity_id": "perf1",
+        "biomarker_type": "io_in_loop",
+        "boundary_kind": "db",
+        "fix_strategy": "batch_or_prefetch_io",
+        "fix_safety": "advisory",
+        "details": {
+            "facets": {"amplification": "per_iteration", "loop_magnitude": "grows_with_data"},
+            "fix_rationale": "One sink.",
+            "plan": {"effort_bucket": "S", "benefit": 1.0, "cost": 1.0, "risk": 1.0,
+                     "steps": [{"order": 1}], "validation": {"total": 0}},
+        },
+    }
+    link = plan_link({"plan_state": "no_safe_plan"}, None)
+    # The agent surface's summary shape does not grow.
+    bare = serialize(row, link, summary=True)
+    assert not {"fix", "gain_text", "plan_economics"} & bare.keys()
+    summary = serialize(row, link, summary=True, decisions=True)
+    assert summary["fix"] == {
+        "strategy": "batch_or_prefetch_io", "safety": "advisory", "rationale": "One sink."
+    }
+    assert summary["gain_text"]
+    assert summary["plan_economics"]["effort_bucket"] == "S"
+    # The heavy plan fields stay on the detail view only.
+    assert "plan_steps" not in summary and "validation" not in summary
+    detail = serialize(row, plan_link({"plan_state": "no_safe_plan"}, None))
+    assert detail["plan_steps"] == [{"order": 1}]
+    assert detail["fix"] == summary["fix"]
 
 
 def test_intervention_file_prefers_the_symbol() -> None:
@@ -317,3 +350,128 @@ async def test_an_unjudged_store_reads_the_default_queue_rule_live(store) -> Non
     await session.commit()
     live = [i["opportunity_id"] for i in (await service.page(parse_query()[0])).items]
     assert live == judged == ["perf_0"]
+
+
+_SCOPES = [
+    # Worth doing now: the stored default-queue verdict.
+    {},
+    {"queue": True, "actionability": "advisory"},
+    # All production causes, every state, proof and role.
+    {"actionability": "all", "proof": "all", "role": "all"},
+    # Everything.
+    {"context": "all", "actionability": "all", "proof": "all", "role": "all"},
+    {"context": "all", "actionability": "all", "proof": "all", "role": "all", "boundary": "db"},
+    {"context": "test", "actionability": "all", "proof": "all", "role": "all"},
+]
+
+#: Facet name and the query attribute that narrows it.
+_OWN = {
+    "context": "context",
+    "boundary": "boundary",
+    "confidence": "confidence",
+    "actionability": "actionability",
+    "proof": "proof",
+    "role": "role",
+}
+
+
+@pytest.mark.parametrize("args", _SCOPES)
+async def test_scoped_facets_sum_to_the_rows_the_scope_returns(store, args) -> None:
+    """Every number the dashboard shows sits inside its scope: a facet with no
+    own selection sums to the query's total, and a selected value equals it."""
+    from repowise.core.persistence.crud.analysis.performance import (
+        list_performance_opportunities,
+        performance_facet_counts,
+    )
+
+    session, repository_id = store
+    query, ignored = parse_query(**args, limit=100, lift_defaults=True)
+    assert not ignored
+    _, total = await list_performance_opportunities(
+        session, repository_id, **query.store_filters(), sort=query.sort, limit=100
+    )
+    grouped = await performance_facet_counts(session, repository_id, scoped=True)
+    facets = fold_scoped_facets(grouped, query)
+    assert "queue" not in facets
+    for name, attribute in _OWN.items():
+        counts = {entry["value"]: entry["total"] for entry in facets[name]}
+        chosen = getattr(query, attribute)
+        if chosen in (None, "all"):
+            assert sum(counts.values()) == total, name
+        else:
+            assert counts.get(chosen, 0) == total, name
+
+
+def test_all_lifts_the_default_state_and_proof() -> None:
+    query, ignored = parse_query(actionability="all", proof="all", role="all", lift_defaults=True)
+    assert not ignored
+    assert (query.actionabilities, query.proofs, query.roles) == (None, None, None)
+    assert query.queue_eligible is None
+    held, _ = parse_query(queue=True, actionability="investigate")
+    assert held.queue_eligible is True
+    assert held.actionabilities == {"investigate"}
+    # The agent surface keeps its vocabulary: "all" is named, not applied.
+    _, ignored = parse_query(actionability="all", proof="all")
+    assert set(ignored) == {"performance_actionability", "performance_proof"}
+    # An explicit proof survives the live default-queue rule on an unjudged store.
+    live, _ = parse_query(queue=True, actionability="advisory", proof="proven")
+    assert live.store_filters(judged=False)["proofs"] == {"proven"}
+
+
+async def test_scope_counts_equal_what_each_scope_lists(store) -> None:
+    """The scope control's numbers are the totals its scopes return."""
+    from repowise.core.analysis.health.perf.serving import SCOPES, scope_counts
+    from repowise.core.persistence.crud.analysis.performance import (
+        list_performance_opportunities,
+        performance_facet_counts,
+    )
+
+    session, repository_id = store
+    grouped = await performance_facet_counts(session, repository_id, scoped=True)
+    counts = scope_counts(grouped)
+    assert set(counts) == {"now", "production", "all"}
+    for name, args in SCOPES.items():
+        query, _ = parse_query(**args, limit=100, lift_defaults=True)
+        _, total = await list_performance_opportunities(
+            session, repository_id, **query.store_filters(), sort=query.sort, limit=100
+        )
+        assert counts[name] == total, name
+    assert counts["now"] <= counts["production"] <= counts["all"]
+
+
+def test_area_facet_ranks_areas_and_splits_their_states() -> None:
+    from repowise.core.analysis.health.perf.serving import area_facet
+
+    groups = [
+        ("pkg/a/x.py", "advisory", 3),
+        ("pkg/a/y.py", "expected", 5),
+        ("pkg/b/z.py", "plan_ready", 1),
+        ("pkg/c/w.py", "investigate", 2),
+    ]
+    facet = area_facet(groups)
+    assert facet["depth"] == 2
+    assert [entry["area"] for entry in facet["items"]] == ["pkg/b", "pkg/a", "pkg/c"]
+    assert facet["items"][1] == {
+        "area": "pkg/a", "total": 8, "actionability": {"advisory": 3, "expected": 5},
+    }
+    assert facet["total"] == sum(entry["total"] for entry in facet["items"]) + facet["more"]
+    # A chosen depth wins; a limit counts the rest in ``more``.
+    assert area_facet(groups, depth=1)["items"] == [
+        {"area": "pkg", "total": 11, "actionability": {"advisory": 3, "expected": 5,
+                                                        "plan_ready": 1, "investigate": 2}},
+    ]
+    assert area_facet(groups, limit=1)["more"] == 10
+    # Files directly in the opened area are its own files, flagged as such.
+    inside = area_facet([("pkg/a/x.py", "advisory", 1), ("pkg/a/b/y.py", "advisory", 1)], base="pkg/a")
+    own = [entry for entry in inside["items"] if entry.get("own")]
+    assert [entry["area"] for entry in own] == ["pkg/a"]
+
+
+def test_an_area_narrows_by_directory_never_by_a_shared_prefix() -> None:
+    query, _ = parse_query(area="pkg/a/", lift_defaults=True)
+    assert query.area == "pkg/a"
+    assert query.store_filters()["area_prefix"] == "pkg/a/"
+    rows = [{"file_path": "pkg/a/x.py", "status": "open"}, {"file_path": "pkg/ab/y.py", "status": "open"}]
+    only_area = {"status": "open", "area_prefix": query.area_prefix}
+    assert [r["file_path"] for r in rows if keep(r, only_area)] == ["pkg/a/x.py"]
+    assert parse_query(area="")[0].store_filters()["area_prefix"] is None

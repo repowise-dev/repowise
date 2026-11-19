@@ -235,7 +235,7 @@ describe("FileExplorer", () => {
     expect(store.getState().activeLayerId).toBe("layer:api");
   });
 
-  it("highlights selected file with accent background", () => {
+  it("highlights selected file with the neutral selection wash", () => {
     act(() => {
       store.getState().setView(mockView);
       store.getState().selectNode("src/app.py");
@@ -243,7 +243,7 @@ describe("FileExplorer", () => {
     render(<FileExplorer />);
     fireEvent.click(screen.getByLabelText("Expand src"));
     const button = screen.getByLabelText("Select app.py");
-    expect(button.style.background).toContain("rgba(245,149,32,0.2)");
+    expect(button.style.background).toContain("--color-selection-wash");
   });
 
   it("returns null when view is null", () => {

@@ -13,7 +13,6 @@ each ``FunctionComplexity``.
 
 from __future__ import annotations
 
-from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -25,7 +24,7 @@ class LargeAssertionBlockDetector:
     _MIN_COUNT = 15
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if not is_test_file(ctx.file_path):
+        if not ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:

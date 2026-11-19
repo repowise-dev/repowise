@@ -124,6 +124,10 @@ from typing import Any
 # plan". Read a detector's confidence as medium-or-high.
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
+#: The evidence key for the share of its source finding a plan removes (1.0:
+#: the whole finding), so a set of plans is priced by one rescore.
+RECOVERED_SHARE = "recovered_share"
+
 
 @dataclass
 class RefactoringContext:
@@ -225,9 +229,10 @@ class RefactoringSuggestion:
     plan: dict[str, Any]
     # The signals that justify the suggestion (LCOM4, WMC, clone ranges, ...).
     evidence: dict[str, Any]
-    # Health score the refactoring would recover if applied: the part of the
-    # source finding's deduction that applying it removes, plus any history
-    # deduction that releases. >= 0.
+    # Health score the refactoring would recover if applied: the file rescored
+    # with the part of the source finding it removes taken out
+    # (``health.gain.removal_gain``), so caps, history release and the floor
+    # all count. >= 0.
     impact_delta: float
     # Effort estimate — "S" | "M" | "L" | "XL" (from the target's size).
     effort_bucket: str

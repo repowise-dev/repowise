@@ -63,7 +63,9 @@ class Item:
     """
 
     group: Group
-    path: Path
+    #: A filesystem path, or ``str`` for a locator that is not one (a database
+    #: host): ``Path`` would rewrite its ``/`` on Windows.
+    path: Path | str
     #: Short label for the row, e.g. "Claude Code (user)" or "index".
     label: str
     exists: bool
@@ -467,7 +469,7 @@ def _store_item() -> Item | None:
         pass
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        path=locator,
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(

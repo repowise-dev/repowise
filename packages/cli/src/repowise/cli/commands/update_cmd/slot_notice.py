@@ -3,7 +3,7 @@
 An onboarding slot registered after an index was built cannot arrive on the
 incremental ``repowise update`` path, and must not try: that run's
 ``parsed_files`` is the changed-file slice, and the slot gates read whole-repo
-signals.  A Glossary mined from a truncated vocabulary scan is worse than an
+signals.  An Active Landscape counted from a truncated history is worse than an
 absent one, which is why ``update_cmd.command`` sets ``file_pages_only`` and
 the repo-wide levels are skipped.
 
@@ -16,9 +16,9 @@ orientation was identical to a fresh ``repowise init`` of the same repository.
 So the remedy this module names is ``--full``, never a re-index. Nobody should
 be told to throw away an index to gain a page.
 
-**A missing row is not the same as a missing slot.** Three of microdot's five
+**A missing row is not the same as a missing slot.** Some of microdot's
 registered slots are refused by their own signal gates on every run, fresh or
-full; the glossary, for one, mines no house vocabulary there at all.  Reporting
+full; Active Landscape, for one, has too little history there.  Reporting
 those would promise a page that no command can deliver.  So the comparison is
 against :data:`~repowise.cli.helpers.ONBOARDING_SLOTS_OFFERED_KEY`, the slots
 the last whole-repo run actually evaluated, and only a slot that has never been
@@ -70,7 +70,7 @@ async def _persisted_slots(repo_path: Path) -> set[str]:
 
     Scoped to this repository rather than to the whole store: the database is
     repo-local by default but ``REPOWISE_DB_URL`` can point several repos at
-    one, and an unscoped read would let another repo's Glossary silence this
+    one, and an unscoped read would let another repo's page silence this
     one's notice.
     """
     from sqlalchemy import select
@@ -110,8 +110,8 @@ async def _persisted_slots(repo_path: Path) -> set[str]:
 def missing_slots(repo_path: Path) -> list[str]:
     """Registered onboarding slots this index has never been offered.
 
-    Returns them in ``ONBOARDING_ORDER``, which is reading order, so a notice
-    listing several names them the way the wiki would.
+    Returns them in ``ONBOARDING_SLOTS`` order, so a notice listing several
+    names them the way the wiki would.
     """
     from repowise.cli.helpers import load_config, run_async
 

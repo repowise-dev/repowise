@@ -9,10 +9,13 @@ records the file itself as the acceptance artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
@@ -30,6 +33,7 @@ from repowise.core.analysis.decisions.manifest import (
 from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
+from .batches import chunked
 from .crud.authority import (
     accepted_decision_ids,
     latest_acceptance,
@@ -38,9 +42,16 @@ from .crud.authority import (
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
-from .models import DecisionAlias, DecisionRecord
+from .decision_id_migration import repair_superseded_aliases
+from .models import (
+    REKEYED_REASON,
+    SUPERSEDED_REASON,
+    DecisionAcceptance,
+    DecisionAlias,
+    DecisionRecord,
+)
 
-__all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
+__all__ = ["ImportOutcome", "export_manifest", "import_manifest", "refresh_manifest"]
 
 
 def _stored_currency(value: str) -> str:
@@ -89,7 +100,11 @@ def _json_list(raw: str) -> list[str]:
 
 async def _aliases_for(session: AsyncSession, decision_id: str) -> list[str]:
     rows = await session.execute(
-        select(DecisionAlias.alias_id).where(DecisionAlias.decision_id == decision_id)
+        select(DecisionAlias.alias_id).where(
+            DecisionAlias.decision_id == decision_id,
+            # A pre-fix supersede pointer names another record, not this one.
+            DecisionAlias.reason != SUPERSEDED_REASON,
+        )
     )
     return [r[0] for r in rows.all()]
 
@@ -155,6 +170,7 @@ async def export_manifest(
                 evidence=_json_list(acceptance.evidence_json),
                 superseded_by=rec.superseded_by or "",
                 aliases=await _aliases_for(session, rec.id),
+                base_token=_base_token(rec, acceptance),
             )
         )
     changed = write_manifest(
@@ -166,23 +182,55 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "skipped", "unchanged")
+    __slots__ = (
+        "accepted",
+        "created",
+        "reaffirmed",
+        "repaired",
+        "skipped",
+        "unchanged",
+        "unchecked",
+    )
 
     def __init__(self) -> None:
         self.created: list[str] = []
         self.accepted: list[str] = []
         self.reaffirmed: list[str] = []
+        #: Reaffirmed entries with no ``base_token``: never checked for staleness.
+        self.unchecked: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
+        #: The stale supersede pointers the repair deleted.
+        self.repaired: list[str] = []
 
     def as_dict(self) -> dict[str, object]:
         return {
             "created": self.created,
             "accepted": self.accepted,
             "reaffirmed": self.reaffirmed,
+            "unchecked": self.unchecked,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
+            "repaired": self.repaired,
         }
+
+
+def _base_token(record: DecisionRecord, acceptance: DecisionAcceptance) -> str:
+    """Hash the accepted content compared by ``_differs``, independent of the store.
+
+    Acceptance ids and provenance vary across clones. A canonical content hash
+    also stays stable when an unchanged decision is reaffirmed.
+    """
+    content = {
+        "title": record.title,
+        "decision": record.decision,
+        "reason": (acceptance.reason or "").strip(),
+        "scope": sorted(_json_list(acceptance.scope_json)),
+        "currency": acceptance.currency,
+        "kind": record.kind,
+    }
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _differs(
@@ -243,12 +291,235 @@ async def _apply_entry(
     record.superseded_by = successor
 
 
+async def _alias_reasons(session: AsyncSession, ids: list[str]) -> dict[str, str]:
+    """Each of *ids* that holds an alias row, and its reason, read in ``chunked()`` pieces."""
+    reasons: dict[str, str] = {}
+    for piece in chunked(ids):
+        rows = await session.execute(
+            select(DecisionAlias.alias_id, DecisionAlias.reason).where(
+                DecisionAlias.alias_id.in_(piece)
+            )
+        )
+        reasons.update(rows.tuples().all())
+    return reasons
+
+
+@dataclass
+class _ImportTargets:
+    """Where each listed id lands in the store, resolved after the repair."""
+
+    repository_id: str
+    #: Each listed id's entry, the first where the file repeats an id.
+    entries: dict[str, ManifestDecision]
+    #: Each listed id's record, after the repair: a file written before the id
+    #: migration lists records under ids they no longer sit on, so two entries
+    #: can reach one record without either naming it.
+    targets: dict[str, str | None]
+    #: Skipped entries still count: else a rival becomes the sole claimant and overwrites.
+    claims: Counter[str]
+    #: Listed ids not on their own record that hold an alias row, and its reason.
+    aliases: dict[str, str]
+
+    async def place(
+        self, session: AsyncSession, entry: ManifestDecision
+    ) -> tuple[DecisionRecord | None, str | None]:
+        """The stored record *entry* updates, or why the entry is skipped."""
+        reason = _missing_field(entry) or self._unplaceable(entry.id)
+        if reason:
+            return None, reason
+        resolved = self.targets[entry.id]
+        record = await session.get(DecisionRecord, resolved) if resolved else None
+        reason = await self._contested(session, entry.id, record)
+        if reason is None and record is not None and resolved != entry.id:
+            reason = await _superseded_wording(session, entry, record)
+        return record, reason
+
+    def _unplaceable(self, entry_id: str) -> str | None:
+        resolved = self.targets[entry_id]
+        if resolved and resolved != entry_id and resolved in self.entries:
+            # The alias lands on a record the file holds as its own entry, so
+            # following it would write one decision over a different one.
+            return f"its alias resolves to {resolved[:8]}, which the file lists"
+        if resolved is None and entry_id in self.aliases:
+            # A moved record's supersede pointer: creating the id would copy a
+            # record that lives on under another id.
+            return "retired id, record moved, resolves to nothing"
+        return None
+
+    async def _contested(
+        self, session: AsyncSession, entry_id: str, record: DecisionRecord | None
+    ) -> str | None:
+        if record is not None and record.repository_id != self.repository_id:
+            # One store can hold several repositories. An id that resolves into
+            # a different one is not this file's decision.
+            return "belongs to another repository"
+        resolved = self.targets[entry_id]
+        if resolved and resolved != entry_id and self.claims[resolved] > 1:
+            # Checked after the repository so a multi-repo store skips as before.
+            return await self._rival(session, entry_id, resolved, record)
+        return None
+
+    async def _rival(
+        self,
+        session: AsyncSession,
+        entry_id: str,
+        resolved: str,
+        record: DecisionRecord | None,
+    ) -> str | None:
+        """Why *entry_id* yields *record*, stored on *resolved*, to the other
+        entries that reach it, ``None`` when it is the one that applies."""
+        claimants = [i for i, t in self.targets.items() if t == resolved]
+        reasons = [self.aliases.get(i) for i in claimants]
+        # No record (a dangling alias): no keeper to fold into, so every claimant yields.
+        # Every claimant is ``rekeyed`` or ``merged``: ``superseded`` rows resolve to
+        # nothing or their own id.
+        if record is not None and reasons.count(REKEYED_REASON) == 1:
+            # The id migration moved one record onto *resolved* and folded the
+            # rest into it, so the re-keyed id's entry is the keeper's own,
+            # unless it is the wording of a record the keeper superseded.
+            kept = claimants[reasons.index(REKEYED_REASON)]
+            if entry_id == kept:
+                return None
+            if not await _superseded_wording(session, self.entries[kept], record):
+                return f"folded into {resolved[:8]}, whose own entry the file lists"
+        # Two entries reach one record without either naming it, and nothing
+        # stored tells them apart: two re-keys, or folds with no re-key.
+        return f"its alias resolves to {resolved[:8]}, which another entry also reaches"
+
+
+async def _superseded_wording(
+    session: AsyncSession, entry: ManifestDecision, record: DecisionRecord
+) -> str | None:
+    """Why *entry*, which reaches *record* through an alias, is the wording of a
+    record *record* superseded, ``None`` when it is not.
+
+    A pre-fix supersede moved the superseded record's aliases onto its successor
+    and left the record in place, still naming the successor. One query, walking
+    the ``superseded_by`` chain back from *record*.
+    """
+    # Only wording the successor does not share tells its predecessor's entry apart.
+    clues = [
+        column == value
+        for column, value, own in (
+            (DecisionRecord.title, entry.title, record.title),
+            (DecisionRecord.decision, entry.decision, record.decision),
+        )
+        if value and value != own
+    ]
+    if not clues:
+        return None
+    chain = (
+        select(DecisionRecord.id)
+        .where(DecisionRecord.superseded_by == record.id)
+        .cte("superseded_chain", recursive=True)
+    )
+    # UNION, not UNION ALL: a ``superseded_by`` cycle then ends the walk.
+    chain = chain.union(select(DecisionRecord.id).where(DecisionRecord.superseded_by == chain.c.id))
+    match = (
+        await session.execute(
+            select(DecisionRecord.id, DecisionRecord.superseded_by)
+            .where(DecisionRecord.id.in_(select(chain.c.id)), or_(*clues))
+            .order_by(DecisionRecord.id)
+            .limit(1)
+        )
+    ).first()
+    if match is None:
+        return None
+    match_id, via = match
+    # Down a chain the record did not supersede the match itself: name the link that did.
+    by = "superseded" if via == record.id else f"replaced via {via[:8]}"
+    return (
+        f"its alias resolves to {record.id[:8]}, but it matches {match_id[:8]},"
+        f" which {record.id[:8]} {by}"
+    )
+
+
+def _missing_field(entry: ManifestDecision) -> str | None:
+    """Why the file's entry is too incomplete to import, ``None`` when it is not."""
+    if not entry.id or not entry.title:
+        return "missing id or title"
+    if not entry.reason.strip():
+        return "no reason recorded"
+    if not [s for s in _entry_scope(entry) if s.strip()]:
+        return "no scope recorded"
+    return None
+
+
+async def _resolve_targets(
+    session: AsyncSession,
+    repository_id: str,
+    entries: list[ManifestDecision],
+) -> _ImportTargets:
+    """Resolve every listed id once, so one alias lookup serves each entry."""
+    targets: dict[str, str | None] = {}
+    for entry in entries:
+        if entry.id and entry.id not in targets:
+            targets[entry.id] = await resolve_decision_id(session, entry.id)
+    # One query per chunk, not per entry.
+    aliases = await _alias_reasons(
+        session, [listed_id for listed_id, target in targets.items() if target != listed_id]
+    )
+    return _ImportTargets(
+        repository_id=repository_id,
+        entries={entry.id: entry for entry in reversed(entries)},
+        targets=targets,
+        claims=Counter(target for target in targets.values() if target),
+        aliases=aliases,
+    )
+
+
+async def _create_record(
+    session: AsyncSession, entry: ManifestDecision, repository_id: str
+) -> DecisionRecord:
+    """Insert the decision the file is the only record of."""
+    record = DecisionRecord(
+        id=entry.id,
+        repository_id=repository_id,
+        title=entry.title,
+        decision=entry.decision,
+        rationale=entry.reason,
+        source=entry.source or "cli",
+        kind=entry.kind or ARCHITECTURAL_KIND,
+        evidence_commits_json=json.dumps(sorted(entry.evidence)),
+        superseded_by=entry.superseded_by or None,
+        confidence=_entry_confidence(entry),
+        verification="unverified",
+    )
+    session.add(record)
+    await session.flush()
+    await set_record_scope(
+        session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
+    )
+    return record
+
+
+async def _accept_from_file(
+    session: AsyncSession, record: DecisionRecord, entry: ManifestDecision, artifact: str
+) -> None:
+    """Log the file's acceptance of *entry* against its stored record."""
+    await record_acceptance(
+        session,
+        record,
+        action="accepted",
+        currency=_stored_currency(entry.currency),
+        reason=entry.reason,
+        scope=_entry_scope(entry),
+        evidence=sorted(entry.evidence) or [artifact],
+        accepter=entry.accepted_by,
+        artifact=entry.accepted_artifact or artifact,
+        # The named accepter signed the manifest, not this store.
+        kind="import",
+        note="imported from the tracked manifest",
+    )
+
+
 async def import_manifest(
     session: AsyncSession,
     repository_id: str,
     repo_path: Path | str,
     *,
     dry_run: bool = False,
+    force: bool = False,
 ) -> ImportOutcome:
     """Reconcile the store to ``decisions.yaml``.
 
@@ -257,31 +528,23 @@ async def import_manifest(
     version controlled and reviewable, which is the only reason a non-human
     accepter is allowed at all, and an entry the file does not present as
     accepted is skipped rather than guessed at. An entry that differs from the
-    store is re-accepted from the file, because the difference is somebody's
-    commit; an entry the file no longer holds is left alone, since a missing
-    line is as likely a bad merge as a deliberate removal.
+    store is re-accepted from the file unless its base token shows the store
+    changed since export. ``force`` bypasses this token check, and entries
+    without tokens retain the previous behaviour. An entry the file no longer
+    holds is left alone, since a missing line is as likely a bad merge as a
+    deliberate removal.
     """
     outcome = ImportOutcome()
     entries, _ = load_manifest(repo_path)
     artifact = f".repowise/{MANIFEST_FILENAME}"
+    # Clears the inert supersede pointers, as the id migration does; placement reads past them.
+    outcome.repaired, _ = await repair_superseded_aliases(session, repository_id, apply=not dry_run)
+    plan = await _resolve_targets(session, repository_id, entries)
 
     for entry in entries:
-        if not entry.id or not entry.title:
-            outcome.skipped.append((entry.id or "<no id>", "missing id or title"))
-            continue
-        if not entry.reason.strip():
-            outcome.skipped.append((entry.id, "no reason recorded"))
-            continue
-        if not [s for s in _entry_scope(entry) if s.strip()]:
-            outcome.skipped.append((entry.id, "no scope recorded"))
-            continue
-
-        resolved = await resolve_decision_id(session, entry.id)
-        record = await session.get(DecisionRecord, resolved) if resolved else None
-        if record is not None and record.repository_id != repository_id:
-            # One store can hold several repositories. An id that resolves into
-            # a different one is not this file's decision.
-            outcome.skipped.append((entry.id, "belongs to another repository"))
+        record, reason = await plan.place(session, entry)
+        if reason:
+            outcome.skipped.append((entry.id or "<no id>", reason))
             continue
 
         if record is not None:
@@ -290,12 +553,23 @@ async def import_manifest(
                 if not _differs(entry, record, acceptance):
                     outcome.unchanged.append(entry.id)
                     continue
+                if (
+                    not force
+                    and entry.base_token
+                    and entry.base_token != _base_token(record, acceptance)
+                ):
+                    outcome.skipped.append(
+                        (entry.id, "changed in the store since this file was exported")
+                    )
+                    continue
                 # The file changed: a colleague edited the reason, corrected
                 # the scope, or withdrew the decision. Their edit is the
                 # authority, so it is re-accepted rather than left disagreeing
                 # with the store — appended to the log, so the history of both
                 # acceptances survives.
                 outcome.reaffirmed.append(entry.id)
+                if not entry.base_token:
+                    outcome.unchecked.append(entry.id)
                 if dry_run:
                     continue
                 await _apply_entry(session, entry, record)
@@ -304,41 +578,128 @@ async def import_manifest(
             outcome.created.append(entry.id)
             if dry_run:
                 continue
-            record = DecisionRecord(
-                id=entry.id,
-                repository_id=repository_id,
-                title=entry.title,
-                decision=entry.decision,
-                rationale=entry.reason,
-                source=entry.source or "cli",
-                kind=entry.kind or ARCHITECTURAL_KIND,
-                evidence_commits_json=json.dumps(sorted(entry.evidence)),
-                superseded_by=entry.superseded_by or None,
-                confidence=_entry_confidence(entry),
-                verification="unverified",
-            )
-            session.add(record)
-            await session.flush()
-            await set_record_scope(
-                session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
-            )
+            record = await _create_record(session, entry, repository_id)
+            # An id listed twice: the second copy finds this record, not a clashing insert.
+            plan.targets[entry.id] = record.id
         elif entry.id not in outcome.reaffirmed:
             outcome.accepted.append(entry.id)
             if dry_run:
                 continue
 
-        await record_acceptance(
-            session,
-            record,
-            action="accepted",
-            currency=_stored_currency(entry.currency),
-            reason=entry.reason,
-            scope=_entry_scope(entry),
-            evidence=sorted(entry.evidence) or [artifact],
-            accepter=entry.accepted_by,
-            artifact=entry.accepted_artifact or artifact,
-            # The named accepter signed the manifest, not this store.
-            kind="import",
-            note="imported from the tracked manifest",
-        )
+        await _accept_from_file(session, record, entry, artifact)
     return outcome
+
+
+def _committed_ids(repo_path: Path | str) -> set[str] | None:
+    """Ids in the committed ``decisions.yaml`` at ``HEAD``, ``None`` when git has none."""
+    import subprocess
+
+    import yaml
+
+    try:
+        out = subprocess.run(
+            ["git", "show", f"HEAD:.repowise/{MANIFEST_FILENAME}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        data = yaml.safe_load(out.stdout)
+    except yaml.YAMLError:
+        return None
+    entries = data.get("decisions") if isinstance(data, dict) else None
+    return {
+        str(e["id"]) for e in entries or [] if isinstance(e, dict) and e.get("id")
+    }
+
+
+async def _store_moved_past(session: AsyncSession, entry: ManifestDecision) -> bool:
+    """Whether *entry* is an older acceptance of its decision, exported earlier.
+
+    Import reads any difference as somebody's edit. Here the other reading
+    matters: the store accepted the decision again (a landing, a dismissal, a
+    pull) after the file was written. The entry is then an export of an
+    acceptance row the store still holds, not the latest one, and rewriting
+    it loses nothing.
+    """
+    decision_id = await resolve_decision_id(session, entry.id)
+    record = await session.get(DecisionRecord, decision_id) if decision_id else None
+    if record is None or (entry.title, entry.decision, entry.kind) != (
+        record.title,
+        record.decision,
+        record.kind,
+    ):
+        # The wording lives on the record, with no history to match against.
+        return False
+    rows = (
+        await session.scalars(
+            select(DecisionAcceptance)
+            .where(DecisionAcceptance.decision_id == decision_id)
+            .order_by(DecisionAcceptance.seq)
+        )
+    ).all()
+    for row in rows[:-1]:
+        if (
+            row.created_at.isoformat() == entry.accepted_at
+            and (row.reason or "").strip() == entry.reason.strip()
+            and sorted(_json_list(row.scope_json)) == sorted(entry.scope)
+            and row.currency == _stored_currency(entry.currency)
+        ):
+            return True
+    return False
+
+
+async def refresh_manifest(
+    session: AsyncSession, repository_id: str, repo_path: Path | str
+) -> tuple[str, int]:
+    """Keep an existing ``decisions.yaml`` in step with the store, or leave it be.
+
+    Returns ``(outcome, count)``. ``absent``: there is no file, and none is
+    created, since only someone who exported one has opted in. ``held``: the
+    file says something the store has not read, so rewriting it would lose
+    that; ``decision import`` reconciles it. ``unchanged`` / ``written``: the
+    store's projection, as ``decision export`` writes it.
+
+    Held covers two cases. The file holds an entry the store would import
+    (a colleague's commit, or a hand edit), short of one the store has simply
+    moved past: export would overwrite it. Or the working copy dropped an
+    entry the committed file has: import ignores a missing line, so only git
+    shows that someone removed it on purpose.
+    """
+    from repowise.core.analysis.decisions.manifest import (
+        ManifestConflictError,
+        manifest_path,
+    )
+
+    if not manifest_path(repo_path).is_file():
+        return "absent", 0
+    try:
+        entries, raw = load_manifest(repo_path)
+        pending = await import_manifest(session, repository_id, repo_path, dry_run=True)
+    except ManifestConflictError:
+        return "held", 0
+    if pending.created or pending.accepted:
+        return "held", 0
+    by_id = {e.id: e for e in entries}
+    # A skip is held too, unless it is an export the store moved past: that
+    # is the one skip the rewrite resolves rather than loses.
+    for entry_id in [*pending.reaffirmed, *(i for i, _ in pending.skipped)]:
+        entry = by_id.get(entry_id)
+        if entry is None or not await _store_moved_past(session, entry):
+            return "held", 0
+    committed = _committed_ids(repo_path)
+    if committed and committed - {e.id for e in entries}:
+        return "held", 0
+    try:
+        count, changed = await export_manifest(
+            session, repository_id, repo_path, expected_raw=raw
+        )
+    except ManifestConflictError:
+        return "held", 0
+    return ("written" if changed else "unchanged"), count

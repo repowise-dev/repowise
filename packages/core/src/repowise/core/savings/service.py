@@ -1,4 +1,8 @@
-"""The one savings report every first-party surface reads.
+"""The read side of the savings ledger: the one report, and per-agent call times.
+
+``load_agent_calls`` answers a narrower question from the same sidecar (when
+did each agent last read the index), so it shares the read-only handle below
+and adds no second aggregation of savings.
 
 Before this, three consumers each aggregated and priced the ledger themselves:
 the costs endpoint, the repository overview headline and ``repowise saved``.
@@ -17,6 +21,7 @@ shape, but never recomputes a number from its parts.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,20 +48,10 @@ def load_report(
     a CLI command, neither of which should fail because a sidecar is locked,
     truncated or written by a newer build.
     """
-    if repo_root is None:
-        return None
-    database = sidecar_path(repo_root)
-    if not database.is_file():
+    connection = _open_read_only(repo_root)
+    if connection is None:
         return None
     moment = as_of or datetime.now(UTC)
-    try:
-        # A read-only URI handle never contends with the hook and MCP writers,
-        # and never runs the schema upgrade a read path has no business doing.
-        connection = sqlite3.connect(
-            f"file:{database.as_posix()}?mode=ro", uri=True, timeout=1
-        )
-    except sqlite3.Error:
-        return None
     try:
         return SavingsRepository(connection).report(
             # The recorder files events under the path it wrote to, so the
@@ -69,6 +64,7 @@ def load_report(
             as_of=moment,
             days=days,
             max_breakdowns=max_breakdowns,
+            fallback_rate=_cached_agent_rate(repo_root),
         )
     # OverflowError is not a ValueError: a large enough ``days`` overflows the
     # timedelta rather than failing validation, and this function promises not
@@ -77,3 +73,62 @@ def load_report(
         return None
     finally:
         connection.close()
+
+
+def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]] | None:
+    """``{agent slug: (first, last)}`` times of the calls that read *repo_root*'s index.
+
+    ``None`` when there is no ledger to read, same contract as
+    :func:`load_report`. ``unknown`` is the slug of calls whose client did not
+    announce a name the identity registry knows.
+    """
+    connection = _open_read_only(repo_root)
+    if connection is None:
+        return None
+    try:
+        rows = SavingsRepository(connection).index_call_window(str(Path(repo_root)))
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return {str(agent): (str(first), str(last)) for agent, first, last in rows}
+
+
+#: ``pricing_source`` of the default rate a scan falls back to when it sighted
+#: no model (``pricing._scan``).
+_UNSIGHTED_SOURCE = "session_model:unknown"
+
+
+def _cached_agent_rate(repo_root: str | Path) -> Callable[[str], float | None]:
+    """An agent's input rate from the pricing cache, for report-time backfill.
+
+    Cache only, never a transcript scan: the report runs inside a dashboard
+    request. A cold cache backfills nothing, and the callers that warm it
+    (the costs endpoint, ``repowise saved``) fill it for the next report. The
+    default rate used when no model was sighted is not a model anyone ran, so
+    it backfills nothing either.
+    """
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    def rate(agent: str) -> float | None:
+        snapshot = resolve_pricing_snapshot(repo_root, allow_scan=False, agent=agent)
+        if snapshot is None or snapshot.pricing_source == _UNSIGHTED_SOURCE:
+            return None
+        return snapshot.input_rate_usd_per_million
+
+    return rate
+
+
+def _open_read_only(repo_root: str | Path | None) -> sqlite3.Connection | None:
+    """A read-only handle on the sidecar, or ``None`` when there is none."""
+    if repo_root is None:
+        return None
+    database = sidecar_path(repo_root)
+    if not database.is_file():
+        return None
+    try:
+        # A read-only URI handle never contends with the hook and MCP writers,
+        # and never runs the schema upgrade a read path has no business doing.
+        return sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None

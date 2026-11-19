@@ -14,6 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -160,8 +161,8 @@ def _summary_payload(
     """The compact current headline, written once and read by primary key."""
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.eligibility import (
+        perf_confident_verdict,
         perf_queue_counts,
-        perf_queue_verdict,
         queue_proof,
     )
 
@@ -176,14 +177,10 @@ def _summary_payload(
         boundaries[key] = boundaries.get(key, 0) + 1
         proof = queue_proof(item)
         proofs[proof] = proofs.get(proof, 0) + 1
-    # The lead is the head of the default queue, so it is production work with a
-    # strategy; never a marker whose measured precision is below the bar for leading.
+    # The lead is the first confident cause of the default queue; never a marker
+    # whose measured precision is below the bar for leading.
     lead = next(
-        (
-            o
-            for o in opportunities
-            if perf_queue_verdict(o).eligible and o.may_lead
-        ),
+        (o for o in opportunities if perf_confident_verdict(o).eligible and o.may_lead),
         None,
     )
     return {
@@ -419,7 +416,7 @@ async def _plan_facts(
             "benefit": recommendation.benefit,
             "cost": recommendation.cost,
             "risk": recommendation.risk,
-            "validation": recommendation.validation.as_dict(),
+            "validation": recommendation.validation.detail_dict(),
         }
     return facts
 
@@ -574,6 +571,7 @@ async def list_performance_opportunities(
     roles: frozenset[str] | None = None,
     queue_eligible: bool | None = None,
     file_paths: tuple[str, ...] | None = None,
+    area_prefix: str | None = None,
     sort: str = "rank",
     limit: int = 20,
     offset: int = 0,
@@ -596,6 +594,7 @@ async def list_performance_opportunities(
         roles=roles,
         queue_eligible=queue_eligible,
         file_paths=file_paths,
+        area_prefix=area_prefix,
         include_unverified=include_unverified,
     )
     total = int(
@@ -627,7 +626,9 @@ async def performance_facet_counts(
     *,
     file_paths: tuple[str, ...] | None = None,
     include_unverified: bool = False,
-) -> list[tuple[str, str | None, str, str, str, str, str, int]]:
+    scoped: bool = False,
+    area_prefix: str | None = None,
+) -> list[tuple[Any, ...]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
     Returned pre-aggregation, one ``(*FACET_FIELDS, count)`` tuple per group,
@@ -635,19 +636,90 @@ async def performance_facet_counts(
     with every filter applied *except* its own, or choosing one value would
     erase the alternatives.
     """
-    from ....analysis.health.perf.serving import FACET_FIELDS
+    from ....analysis.health.perf.serving import FACET_FIELDS, SCOPED_GROUP_FIELDS
 
-    columns = tuple(getattr(PerformanceOpportunity, name) for name in FACET_FIELDS)
+    # ``scoped`` also groups by the stored queue verdict, for scope-aware facets.
+    fields = SCOPED_GROUP_FIELDS if scoped else FACET_FIELDS
+    columns = tuple(getattr(PerformanceOpportunity, name) for name in fields)
     result = await session.execute(
         select(*columns, func.count())
         .where(
             *_predicates(
-                repository_id, file_paths=file_paths, include_unverified=include_unverified
+                repository_id,
+                file_paths=file_paths,
+                area_prefix=area_prefix,
+                include_unverified=include_unverified,
             )
         )
         .group_by(*columns)
     )
     return [tuple(row) for row in result.all()]
+
+
+class PerformanceHeadline(NamedTuple):
+    """The performance headline every surface prints, in the Performance
+    view's three scopes: the default queue (worth fixing now) leads, and every
+    production cause and every cause give it context."""
+
+    now: int
+    production: int
+    all: int
+    per_10k_loc: float | None
+    """Every cause per 10K lines a performance detector ran on; ``None`` with none."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return self._asdict()
+
+
+async def performance_headline(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    covered_nloc: int,
+    include_unverified: bool = False,
+) -> PerformanceHeadline:
+    """The one count of open performance causes, read by every surface.
+
+    The scope sizes the Performance view's scope control shows, from the same
+    grouped aggregate, so a headline never states a number that view
+    contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    """
+    from ....analysis.health.perf.serving import scope_counts
+    from .queue_counts import any_unjudged
+
+    groups = await performance_facet_counts(
+        session, repository_id, include_unverified=include_unverified, scoped=True
+    )
+    judged = not await any_unjudged(session, repository_id, "causes")
+    scopes = scope_counts(groups, judged=judged)
+    every = scopes["all"]
+    return PerformanceHeadline(
+        now=scopes["now"],
+        production=scopes["production"],
+        all=every,
+        per_10k_loc=round(10000.0 * every / covered_nloc, 2) if covered_nloc > 0 else None,
+    )
+
+
+async def performance_area_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    **filters: Any,
+) -> list[tuple[str, str, int]]:
+    """``(file_path, actionability_state, count)`` over the rows *filters*
+    (the serving layer's ``store_filters``) list, for the area facet."""
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+        )
+        .where(*_predicates(repository_id, include_unverified=include_unverified, **filters))
+        .group_by(PerformanceOpportunity.file_path, PerformanceOpportunity.actionability_state)
+    )
+    return [(row[0], row[1], int(row[2])) for row in result.all()]
 
 
 _ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate", "expected")
@@ -666,6 +738,10 @@ class PerformanceFileRollup(NamedTuple):
     expected: int
     best_rank: int
     """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
+    queued: int = 0
+    """Causes in the default queue: what a map colours, as the headline leads with them."""
+    queued_states: frozenset[str] = frozenset()
+    """The actionability states among those queued causes."""
 
 
 async def gated_performance_counts(
@@ -683,39 +759,17 @@ async def gated_performance_counts(
     )
 
 
-async def performance_file_rollups(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    file_paths: tuple[str, ...] | None = None,
-) -> list[PerformanceFileRollup]:
-    """Per-file burden for every file carrying an open opportunity.
-
-    One indexed aggregate over ``(repository_id, status, file_path)`` returning
-    at most three rows per file rather than one per observation, so a caller
-    that needs the whole repository still pays a grouped scan and not a
-    per-file query. Ordered best-rank first, which is the order a bounded map
-    feed admits files in.
-    """
-    where = _predicates(repository_id, file_paths=file_paths)
-    result = await session.execute(
-        select(
-            PerformanceOpportunity.file_path,
-            PerformanceOpportunity.actionability_state,
-            func.count(),
-            func.sum(PerformanceOpportunity.observations_total),
-            func.min(PerformanceOpportunity.rank_position),
-        )
-        .where(*where)
-        .group_by(
-            PerformanceOpportunity.file_path,
-            PerformanceOpportunity.actionability_state,
-        )
-    )
+def _fold_rollups(groups: Any) -> list[PerformanceFileRollup]:
+    """One rollup per file from the grouped ``performance_file_rollups`` rows."""
     folded: dict[str, dict[str, int]] = {}
-    for path, state, count, observations, best_rank in result.all():
+    queued_states: dict[str, set[str]] = {}
+    for path, state, count, observations, best_rank, eligible in groups:
         if not path:
             continue
+        # The stored verdict: a row stored before causes were judged counts as
+        # not queued until the next index judges it.
+        if eligible:
+            queued_states.setdefault(path, set()).add(state)
         row = folded.setdefault(
             path,
             {
@@ -726,8 +780,10 @@ async def performance_file_rollups(
                 "investigate": 0,
                 "expected": 0,
                 "best_rank": best_rank or 0,
+                "queued": 0,
             },
         )
+        row["queued"] += int(count or 0) if eligible else 0
         row["opportunities"] += int(count or 0)
         row["observations"] += int(observations or 0)
         if state in _ACTIONABILITY_STATES:
@@ -743,9 +799,46 @@ async def performance_file_rollups(
             investigate=row["investigate"],
             expected=row["expected"],
             best_rank=row["best_rank"],
+            queued=row["queued"],
+            queued_states=frozenset(queued_states.get(path, ())),
         )
         for path, row in folded.items()
     ]
+    return rollups
+
+
+async def performance_file_rollups(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: tuple[str, ...] | None = None,
+) -> list[PerformanceFileRollup]:
+    """Per-file burden for every file carrying an open opportunity.
+
+    One indexed aggregate over ``(repository_id, status, file_path)`` returning
+    a few rows per file rather than one per observation, so a caller
+    that needs the whole repository still pays a grouped scan and not a
+    per-file query. Ordered best-rank first, which is the order a bounded map
+    feed admits files in.
+    """
+    where = _predicates(repository_id, file_paths=file_paths)
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+            func.sum(PerformanceOpportunity.observations_total),
+            func.min(PerformanceOpportunity.rank_position),
+            PerformanceOpportunity.queue_eligible,
+        )
+        .where(*where)
+        .group_by(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            PerformanceOpportunity.queue_eligible,
+        )
+    )
+    rollups = _fold_rollups(result.all())
     # Best rank first, then path, so the order a cap is applied against is
     # total and does not move between two reads of the same store.
     rollups.sort(key=lambda r: (r.best_rank, r.file_path))
@@ -889,7 +982,317 @@ async def get_health_finding_by_public_id(
     return result.scalars().first()
 
 
+# ---------------------------------------------------------------------------
+# Measured costs: what stored runs measured, beside the static causes
+# ---------------------------------------------------------------------------
+
+_MEASURED_CALLERS = 3
+_MEASURED_TESTS = 3
+
+
+async def measured_costs(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = 10,
+    now: datetime | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    """What each workload's newest stored run measured, ranked by what it costs.
+
+    *run_id* keeps that one run (a workload's newest); any other id ranks
+    nothing here and gives ``None``.
+
+    Read at request time from ``workload_hotness``, which every ingest and
+    update rebuilds, so nothing new is stored and an index without evidence
+    pays one indexed lookup. ``None`` when no function is ranked: callers add
+    nothing then, and every output stays as it was.
+
+    - ``measured``: one block per run in a workload class that may lead
+      (``evidence.hotness.LEAD_CLASSES``), newest run first, each with at most
+      *limit* of its ranked functions, best rank first. A function two
+      workloads rank is listed under each.
+    - ``measured_in_tests``: the same for ``unit_test`` runs, listed apart and
+      never leading.
+    - Each group carries ``total``: its ranked rows before the *limit* cut.
+
+    Each run names its basis (workload class and name, commit, age, samples)
+    and where its time went (``repo_self_share``, ``wait_share``,
+    ``library_share``). Each row's ``share`` is the function's self time (its
+    cost: built-ins and libraries it called included, waits excluded) with its
+    interval; ``inclusive`` is context. A row carries the function's
+    lines, callers outside test code, owner, nearest tests and, when an open
+    static performance cause sits on it and that cause's evidence runs in
+    production code, ``on_static_findings`` with the cause ids. Stale evidence
+    and code outside production are never rows.
+    """
+    from ....evidence.hotness import LEAD_CLASSES
+    from ....ingestion.symbol_identity import file_of_symbol
+    from .evidence import ranked_by_workload
+
+    ranked = await ranked_by_workload(session, repository_id)
+    if run_id is not None:
+        ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
+    if not ranked:
+        return None
+    groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
+    for run, rows in ranked:
+        if run.workload_class in LEAD_CLASSES:
+            groups["measured"].append((run, rows))
+        elif run.workload_class == "unit_test":
+            groups["measured_in_tests"].append((run, rows))
+    if not any(groups.values()):
+        return None
+    # ``limit=0`` keeps each group's runs and total with no rows.
+    shown = {key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()}
+    ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
+    spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
+    covered = await _static_causes_on(session, repository_id, set(ids), spans)
+    context = await _function_context(session, repository_id, ids)
+    at = now or _now_utc()
+    view: dict[str, Any] = {}
+    for key, runs in shown.items():
+        if runs:
+            view[key] = {
+                "runs": [_measured_run(run, rows, at) for run, rows in groups[key]],
+                "rows": [
+                    _measured_row(r, spans, context, covered) for _, rows in runs for r in rows
+                ],
+                "total": sum(len(rows) for _, rows in groups[key]),
+            }
+    return view or None
+
+
+async def _symbol_spans(
+    session: AsyncSession, repository_id: str, paths: set[str]
+) -> dict[str, list[Any]]:
+    """Every indexed symbol's span in *paths*, per file."""
+    from ...models import WikiSymbol
+
+    out: dict[str, list[Any]] = {}
+    for batch in chunked(sorted(paths)):
+        result = await session.execute(
+            select(
+                WikiSymbol.file_path,
+                WikiSymbol.symbol_id,
+                WikiSymbol.start_line,
+                WikiSymbol.end_line,
+            ).where(WikiSymbol.repository_id == repository_id, WikiSymbol.file_path.in_(batch))
+        )
+        for row in result:
+            out.setdefault(row.file_path, []).append(row)
+    return out
+
+
+async def _static_causes_on(
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: set[str],
+    spans: dict[str, list[Any]],
+) -> dict[str, set[str]]:
+    """The open static performance causes on each of *symbol_ids* that has one.
+
+    On a function means the cause's edit site is the function, or an open
+    performance finding's line falls inside it and in no narrower symbol.
+    A finding with no line names no function, and one with no cause id has
+    no listed cause to carry the measurement, so neither covers a function.
+    Only a cause whose evidence runs in production code links: a cause seen
+    only from tests says nothing about a production measurement.
+    """
+    from ....symbol_spans import symbol_at
+
+    out: dict[str, set[str]] = {}
+    for batch in chunked(sorted(symbol_ids)):
+        result = await session.execute(
+            select(
+                PerformanceOpportunity.intervention_symbol, PerformanceOpportunity.opportunity_id
+            ).where(
+                PerformanceOpportunity.repository_id == repository_id,
+                PerformanceOpportunity.status == "open",
+                PerformanceOpportunity.intervention_symbol.in_(batch),
+            )
+        )
+        for symbol_id, opportunity_id in result:
+            out.setdefault(symbol_id, set()).add(opportunity_id)
+    for batch in chunked(sorted(spans)):
+        result = await session.execute(
+            select(
+                HealthFinding.file_path, HealthFinding.line_start, HealthFinding.opportunity_id
+            ).where(
+                HealthFinding.repository_id == repository_id,
+                HealthFinding.dimension == "performance",
+                HealthFinding.status == "open",
+                HealthFinding.file_path.in_(batch),
+            )
+        )
+        for path, line, opportunity_id in result:
+            held = symbol_at(spans[path], line) if line else None
+            if opportunity_id and held is not None and held.symbol_id in symbol_ids:
+                out.setdefault(held.symbol_id, set()).add(opportunity_id)
+    production: set[str] = set()
+    for batch in chunked(sorted({i for ids in out.values() for i in ids})):
+        result = await session.execute(
+            select(PerformanceOpportunity.opportunity_id).where(
+                PerformanceOpportunity.repository_id == repository_id,
+                PerformanceOpportunity.status == "open",
+                PerformanceOpportunity.execution_context == "production",
+                PerformanceOpportunity.opportunity_id.in_(batch),
+            )
+        )
+        production.update(result.scalars())
+    linked = {sid: ids & production for sid, ids in out.items()}
+    return {sid: ids for sid, ids in linked.items() if ids}
+
+
+class _FunctionContext(NamedTuple):
+    callers_total: dict[str, int]
+    callers: dict[str, list[str]]
+    owners: dict[str, Any]
+    tests: dict[str, Any]
+
+
+async def _function_context(
+    session: AsyncSession, repository_id: str, symbol_ids: list[str]
+) -> _FunctionContext:
+    """Callers, file owner and nearest tests of *symbol_ids*, from the stores
+    ``get_context`` reads: graph edges, git metadata and the function test map.
+
+    Callers in test code (``code_origin``) are neither listed nor counted: a
+    measured production function's callers say who pays for it in production.
+    """
+    from ....evidence.ingest import load_origins
+    from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ..git import get_git_metadata_bulk
+    from ..graph import get_node_degree_counts_bulk
+    from .function_facts import tests_for_functions
+
+    if not symbol_ids:
+        return _FunctionContext({}, {}, {}, {})
+    # Which functions the graph knows: an unknown one has no caller count at all.
+    degrees = await get_node_degree_counts_bulk(
+        session, repository_id, symbol_ids, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
+    )
+    sources = await _callers_of(session, repository_id, symbol_ids)
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(s) for found in sources.values() for s in found}
+    )
+    outside_tests = {
+        sid: [s for s in found if origins.get(file_of_symbol(s)) != "test"]
+        for sid, found in sources.items()
+    }
+    return _FunctionContext(
+        callers_total={i: len(outside_tests.get(i, ())) for i in symbol_ids if i in degrees},
+        callers={sid: found[:_MEASURED_CALLERS] for sid, found in outside_tests.items() if found},
+        owners=await get_git_metadata_bulk(
+            session, repository_id, sorted({file_of_symbol(i) for i in symbol_ids})
+        ),
+        tests=await tests_for_functions(session, repository_id, symbol_ids, k=_MEASURED_TESTS),
+    )
+
+
+async def _callers_of(
+    session: AsyncSession, repository_id: str, symbol_ids: list[str]
+) -> dict[str, list[str]]:
+    """Every caller of each of *symbol_ids*, once each, most confident first.
+
+    One statement per chunk of ids for all of them, reading two columns, so
+    the cost is the callers the shown functions have, not one query each.
+    """
+    from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+    from ...models import GraphEdge
+
+    out: dict[str, list[str]] = {}
+    for batch in chunked(sorted(symbol_ids)):
+        result = await session.execute(
+            select(GraphEdge.target_node_id, GraphEdge.source_node_id)
+            .where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.target_node_id.in_(batch),
+                GraphEdge.edge_type.in_(sorted(SYMBOL_USE_EDGE_TYPES)),
+            )
+            .order_by(
+                GraphEdge.target_node_id,
+                GraphEdge.confidence.desc(),
+                GraphEdge.source_node_id,
+                GraphEdge.edge_type,
+            )
+        )
+        for target, source in result:
+            out.setdefault(target, []).append(source)
+    # One caller per function, whichever edge types link them.
+    return {target: list(dict.fromkeys(found)) for target, found in out.items()}
+
+
+def _measured_run(run: Any, rows: list[Any], at: datetime) -> dict[str, Any]:
+    """A run's basis: workload, commit, age, samples and where its time went.
+
+    *rows* are all the run's ranked functions, not the ones a limit kept.
+    """
+    from ....evidence.hotness import run_samples
+    from ....evidence.status import time_split
+
+    measured_at = run.measured_at or run.ingested_at
+    if measured_at is not None and measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=UTC)
+    return {
+        "run_id": run.id,
+        "workload_class": run.workload_class,
+        "workload_name": run.workload_name,
+        "commit": run.commit_sha,
+        "measured_at": measured_at.isoformat() if measured_at else None,
+        "age_days": max((at - measured_at).days, 0) if measured_at else None,
+        "samples": run_samples(run),
+        **time_split(run),
+        "outside_production": run.unlisted_symbols,
+        "value_kind": run.value_kind,
+        "ordering_only": any(r.ordering_only for r in rows),
+    }
+
+
+def _measured_row(
+    row: Any,
+    spans: dict[str, list[Any]],
+    context: _FunctionContext,
+    covered: dict[str, set[str]],
+) -> dict[str, Any]:
+    from ....ingestion.symbol_identity import file_of_symbol
+
+    symbol_id = row.symbol_id
+    path = file_of_symbol(symbol_id)
+    span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
+    owner = context.owners.get(path)
+    tests = context.tests.get(symbol_id)
+    out = {
+        "symbol_id": symbol_id,
+        "file_path": path,
+        "lines": [span.start_line, span.end_line] if span is not None else None,
+        "run_id": row.run_id,
+        "rank": row.rank,
+        # The cost the rank is by: self time, waits excluded.
+        "share": row.self_share,
+        "share_low": row.share_low,
+        "share_high": row.share_high,
+        "inclusive": row.total_share,
+        "samples": row.samples,
+        "freshness": row.freshness,
+        "callers_total": context.callers_total.get(symbol_id),
+        "callers": context.callers.get(symbol_id, []),
+        "owner": (
+            {"name": owner.primary_owner_name, "commit_pct": owner.primary_owner_commit_pct}
+            if owner is not None and owner.primary_owner_name
+            else None
+        ),
+        # ``None``: the function was never mapped to tests; ``[]``: no test reaches it.
+        "tests": [t.selector for t in tests] if tests is not None else None,
+    }
+    if symbol_id in covered:
+        out["on_static_findings"] = sorted(covered[symbol_id])
+    return out
+
+
 __all__ = [
+    "PerformanceHeadline",
     "finalize_performance_opportunities",
     "gated_performance_counts",
     "get_health_finding_by_public_id",
@@ -899,6 +1302,8 @@ __all__ = [
     "list_evidence_for_opportunities",
     "list_opportunity_evidence",
     "list_performance_opportunities",
+    "measured_costs",
     "opportunity_details",
     "performance_facet_counts",
+    "performance_headline",
 ]

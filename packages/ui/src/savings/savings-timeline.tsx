@@ -5,6 +5,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recha
 
 import { formatTokens } from "../lib/format";
 import type { SavingsBreakdownRow } from "./types";
+import { seriesColor } from "../shared/series";
 
 /** Below this many days with a recorded saving, a bar chart is two or three
  *  bars in a wide empty box: the shape carries nothing a sentence does not.
@@ -117,7 +118,7 @@ export function SavingsTimeline({ days, height = TIMELINE_HEIGHT }: SavingsTimel
               formatter={(value) => [`${formatTokens(Number(value))} tokens`, "Saved"]}
               labelFormatter={(label) => String(label)}
             />
-            <Bar dataKey="tokens" fill="var(--color-accent-fill)" radius={[3, 3, 0, 0]} />
+            <Bar dataKey="tokens" fill={seriesColor(0)} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>

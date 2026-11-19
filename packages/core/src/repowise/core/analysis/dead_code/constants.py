@@ -47,6 +47,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # An Apex trigger is run by the platform on DML, and an anonymous-Apex
+    # script by a person or a CI job; nothing names either.
+    "*.trigger",
+    "*.apex",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",
@@ -77,7 +81,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files â€” loaded by the
+    # Next.js / Remix / SvelteKit framework route files — loaded by the
     # framework at runtime, never imported via module imports.
     "*/page.tsx",
     "*/page.ts",
@@ -108,7 +112,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",  # global usings â€” file-implicit, never imported by symbol
+    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
     "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
@@ -132,7 +136,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # the build packs as the public surface. Nothing imports them, and every
     # type they list is public API.
     "*/ref/*.cs",
-    "*MauiProgram.cs",  # MAUI app entry â€” invoked by host, not imported
+    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -584,7 +588,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.spec.cts",
     "*/__tests__/*",
     "*/__mocks__/*",
-    # Storybook stories â€” loaded by Storybook indexer via glob.
+    # Storybook stories — loaded by Storybook indexer via glob.
     "*.stories.ts",
     "*.stories.tsx",
     "*.stories.js",
@@ -607,7 +611,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.storybook/manager.js",
     "*.storybook/manager.jsx",
     "*.storybook/manager.mdx",
-    # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
+    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
     "*.bench.js",
@@ -662,7 +666,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "proxy.ts",
     "sitemap.ts",
     "robots.ts",
-    # Remix root/entry files â€” invoked by the framework runtime.
+    # Remix root/entry files — invoked by the framework runtime.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
@@ -678,6 +682,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/+layout.server.ts",
     "*/+server.ts",
     "*/+error.svelte",
+    # Astro file-based routes: every page under src/pages is a route, and a
+    # .ts/.js/.mjs file there is an endpoint (``robots.txt.ts``, ``api/[id].json.ts``).
+    "*src/pages/*.astro",
+    # shortcut: exempts src/pages/*.{ts,js,mjs} in every repo, not only Astro ones, and _-prefixed non-routes (fnmatch ``*`` crosses ``/``), gate on an Astro stack signal or filter in code if a repo reports hidden dead code.
+    "*src/pages/*.ts",
+    "*src/pages/*.js",
+    "*src/pages/*.mjs",
     # ESM declaration outputs in dist trees.
     "*/dist/*.d.ts",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------
@@ -766,7 +777,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
-    # Unqualified ``from pytest import fixture`` form â€” the decorator text is
+    # Unqualified ``from pytest import fixture`` form — the decorator text is
     # bare ``fixture``, which the dotted prefixes above never match.
     "fixture",
     # Flask
@@ -792,7 +803,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.websocket",
     "app.middleware",
     "app.exception_handler",
-    # asynccontextmanager / contextmanager â€” used as values
+    # asynccontextmanager / contextmanager — used as values
     # (e.g. FastAPI(lifespan=...)) rather than imported by name.
     "asynccontextmanager",
     "contextmanager",
@@ -808,10 +819,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
     "compiles",
     "listens_for",
-    # Click CLI commands â€” registered with the parent group/command.
+    # Click CLI commands — registered with the parent group/command.
     "click.command",
     "click.group",
-    # Typer â€” same shape.
+    # Typer — same shape.
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
@@ -848,6 +859,8 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",  # JAX-WS
+    "WebServiceProvider",
     "ApplicationScoped",
     "RequestScoped",
     "SessionScoped",
@@ -890,6 +903,17 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Metro / Anvil: the generated graph constructs a contributed binding and
+    # loads a contributed binding container, so nothing names either.
+    "ContributesBinding",
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
+    # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
+    # which instantiates the annotated class. Nothing in source names it.
+    "GlideModule",
     # Compose previews, rendered by the IDE (prefix match covers
     # ``PreviewLightDark``, ``PreviewScreenSizes`` and the other presets).
     "Preview",
@@ -911,7 +935,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ArchTest",
     "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",  # Jackson factory method â€” reflectively invoked
+    "JsonCreator",  # Jackson factory method — reflectively invoked
     "JsonProperty",
     "Mojo",  # Maven plugin entry
     "Goal",
@@ -1082,9 +1106,13 @@ _PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
 _BARE_NAME_USE_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "scala"})
 
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
-# matched against the raw decorator text rather than its base name.
-_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
-    ("SuppressWarnings", "unused"),
+# matched against the raw decorator text rather than its base name. The third
+# field asks for a whole quoted argument, case-insensitive: Kotlin writes both
+# ``unused`` and ``UNUSED``, and ``UNUSED_PARAMETER`` / ``UNUSED_VARIABLE``
+# silence a warning inside the body, not one about the declaration.
+_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
+    ("SuppressWarnings", "unused", False),
+    ("Suppress", "unused", True),
 )
 
 # Inner class names a framework reads off the class that declares them, so no

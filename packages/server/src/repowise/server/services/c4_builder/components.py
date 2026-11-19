@@ -30,6 +30,7 @@ from collections.abc import Iterable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.fsutils import strip_dir_prefix
 from repowise.core.ids import ComponentId, InvalidNodeIdError, render
 from repowise.core.persistence import GraphNode
 
@@ -54,12 +55,6 @@ def component_id(component_path: str, *, is_root_bucket: bool = False) -> str:
     return render(ComponentId(component_path or ".", is_root_bucket=is_root_bucket))
 
 
-def _relative(file_path: str, container_path: str) -> str:
-    if container_path and file_path.startswith(container_path + "/"):
-        return file_path[len(container_path) + 1 :]
-    return file_path
-
-
 def _component_for(
     file_path: str, container_path: str, root_label: str
 ) -> tuple[str, str, str] | None:
@@ -72,7 +67,7 @@ def _component_for(
     ending in the reserved root marker. One odd directory costs its own
     component, not the whole view.
     """
-    rel = _relative(file_path, container_path)
+    rel = strip_dir_prefix(file_path, container_path)
     dirs = rel.split("/")[:-1]  # directory segments only (drop the filename)
 
     i = 0

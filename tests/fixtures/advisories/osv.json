@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.6.0",
+  "id": "GHSA-9wx4-h78v-vm56",
+  "aliases": ["CVE-2024-35195"],
+  "summary": "Requests session verify=False persists",
+  "affected": [
+    {
+      "package": {"ecosystem": "PyPI", "name": "requests", "purl": "pkg:pypi/requests"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}]
+    }
+  ]
+}

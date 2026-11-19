@@ -7,9 +7,9 @@ cost-effective signal (highest Popt) — it flags only files that already proved
 fragile, so inspecting them per line of code catches defects efficiently.
 
 The git indexer counts, per file, the bug-fix commits touching it in the
-trailing ~6-month window (``git_meta["prior_defect_count"]``), classified by the
-same keyword rule the benchmark labels fixes with, and anchored to the index's
-``as_of`` reference so a historical/T0 checkout measures the window *before* that
+trailing ~6-month window (``git_meta["prior_defect_count"]``), classified by
+the conventional-commit-aware fix rule (``git_indexer/fix_rule.py``), and
+anchored to the index's ``as_of`` reference so a historical/T0 checkout measures the window *before* that
 commit — no leakage from future fixes. This biomarker is the consumer.
 
 Fires when the file's fix count is in the top fifth *for this repository*
