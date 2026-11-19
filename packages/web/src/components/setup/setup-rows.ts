@@ -7,8 +7,13 @@
  * agent, not the reader.
  */
 
-import type { SetupPromptRow } from "@repowise-dev/ui/health/ai-prompt-builder";
-import type { SetupAgent } from "@repowise-dev/types/generated/http";
+import {
+  buildConnectEvidencePrompt,
+  type AiPromptFlavor,
+  type SetupPromptRow,
+} from "@repowise-dev/ui/health/ai-prompt-builder";
+import type { ActionRule } from "@repowise-dev/types/actions";
+import type { NextAction, SetupAgent } from "@repowise-dev/types/generated/http";
 import type { SetupResponse } from "@/lib/api/setup";
 
 export type SetupMsg =
@@ -41,6 +46,13 @@ export interface SetupRow {
   prompt: SetupPromptRow;
   /** Paths the row can list on request, e.g. files that failed to parse. */
   files?: string[];
+  /**
+   * The setup rules this row answers, so `#<rule>` links (Do next,
+   * `repowise next`) land on it as well as `#<id>`.
+   */
+  anchors?: ActionRule[];
+  /** A prompt of its own, used instead of building one from `prompt`. */
+  buildPrompt?: (flavor?: AiPromptFlavor) => string;
 }
 
 export interface SetupView {
@@ -49,6 +61,8 @@ export interface SetupView {
   checksUnreadable: boolean;
   essentials: SetupRow[];
   optional: SetupRow[];
+  /** Rows usage has unlocked (Claude Code calls, synced commits). */
+  depth: SetupRow[];
   /** Index up to date, an agent has called, sync on. */
   doneCount: number;
   allDone: boolean;
@@ -62,6 +76,11 @@ export interface DeriveOptions {
   relative: (iso: string) => string;
   /** When this browser first saw each agent connected, by agent id. */
   agentSeenAt?: Record<string, string>;
+  /**
+   * Whether runtime evidence is stored; null or absent when it could not be
+   * read. Feeds the performance evidence row.
+   */
+  evidenceConnected?: boolean | null;
 }
 
 export const ESSENTIALS_TOTAL = 3;
@@ -87,6 +106,19 @@ const unreadable = (command: string): Pick<SetupRow, "tone" | "status" | "detail
 });
 
 const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
+
+/** The visible setup step a rule raised, from the payload's setup block. */
+function setupStep(s: SetupResponse, rule: ActionRule): NextAction | null {
+  return (s.setup?.actions ?? []).find((a) => a.rule === rule) ?? null;
+}
+
+/** A `why` fact's value by label, e.g. "commits since last sync". */
+function whyValue(action: NextAction | null, label: string): string | null {
+  return action?.why.find((w) => w.label === label)?.value ?? null;
+}
+
+/** An action title without the backticks core wraps paths in. */
+const plainTitle = (title: string) => title.replace(/`/g, "");
 
 // -- index -------------------------------------------------------------------
 
@@ -332,12 +364,15 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
 function syncRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   const installed = s.sync.installed;
   const word = installed === true ? "On" : installed === false ? "Off" : "Unknown";
+  const behind = Number((whyValue(setupStep(s, "sync_hook_missing"), "commits since last sync") ?? "").replace(/,/g, ""));
   return {
     id: "sync",
+    anchors: ["sync_hook_missing"],
     tone: installed ? "done" : "off",
     status: msg(`sync.status${word}`),
     title: msg("sync.title"),
     detail: msg(`sync.detail${word}`),
+    ...(!installed && behind > 0 ? { note: msg("sync.behind", { count: behind }) } : {}),
     action: { kind: "hook", hook: "post-commit", enabled: installed === true },
     command: "repowise hook install",
     prompt: {
@@ -362,12 +397,15 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   let status = msg(llm ? "model.statusLlm" : "model.statusBuilt");
   // Provider settings unreadable: only a written-by-model state still holds.
   if (!s.model_available && !llm) status = msg("unreadable.status");
+  const ready = whyValue(setupStep(s, "docs_model_ready"), "model found");
   return {
     id: "model",
+    anchors: ["docs_model_ready"],
     tone: "model",
     status,
     title: msg("model.title"),
     detail,
+    ...(ready ? { note: msg("model.ready", { source: ready }) } : {}),
     action: { kind: "model", hasModel: llm },
     command: "repowise generate",
     prompt: {
@@ -383,6 +421,10 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
 }
 
 function coverageRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  return { ...coverageState(s, o), anchors: ["coverage_found"] };
+}
+
+function coverageState(s: SetupResponse, o: DeriveOptions): SetupRow {
   const stored = s.coverage.ingested_at;
   const report = (s.coverage.discovered ?? [])[0];
   const command = `repowise coverage add ${report?.path ?? "<report>"}`;
@@ -452,10 +494,13 @@ const REWRITE_WORD = {
 function rewriteRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   const state = s.rewrite_hook.state;
   const on = state === "installed";
+  // Offered once usage unlocks it; before that it is a quiet optional row.
+  const suggested = !on && setupStep(s, "distill_suggested") !== null;
   return {
     id: "rewrite",
-    tone: on ? "done" : "off",
-    status: msg(`rewrite.status${REWRITE_WORD[state]}`),
+    anchors: ["distill_suggested"],
+    tone: on ? "done" : suggested ? "found" : "off",
+    status: msg(suggested ? "rewrite.statusSuggested" : `rewrite.status${REWRITE_WORD[state]}`),
     title: msg("rewrite.title"),
     detail: msg(state === "not_applicable" ? "rewrite.detailNa" : "rewrite.detail"),
     action: { kind: "hook", hook: "rewrite", enabled: on, unavailable: state === "not_applicable" },
@@ -470,6 +515,78 @@ function rewriteRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       verify: "doctor",
     },
   };
+}
+
+const EVIDENCE_COMMAND = "repowise evidence setup";
+
+/**
+ * Profiles and benchmark results. Found when the `evidence_found` step names
+ * files on disk; on once a run is stored. Its prompt is the connect-evidence
+ * pass, the same one the Performance page hands over.
+ */
+function evidenceRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  const step = setupStep(s, "evidence_found");
+  const base = {
+    id: "evidence",
+    anchors: ["evidence_found"] as ActionRule[],
+    title: msg("evidence.title"),
+    command: EVIDENCE_COMMAND,
+    buildPrompt: (flavor?: AiPromptFlavor) => buildConnectEvidencePrompt(flavor),
+    prompt: {
+      repoName: o.repoName,
+      title: "Performance evidence",
+      state: "",
+      command: EVIDENCE_COMMAND,
+      verify: "status" as const,
+    },
+  };
+  if (step) {
+    return {
+      ...base,
+      tone: "found",
+      status: msg("evidence.statusFound"),
+      detail: msg("evidence.detailFound"),
+      action: { kind: "prompt" },
+      files: (step.details ?? []).map((d) => d.path),
+    };
+  }
+  if (o.evidenceConnected) {
+    return { ...base, tone: "done", status: msg("evidence.statusOn"), detail: msg("evidence.detailOn"), action: null };
+  }
+  return { ...base, tone: "off", status: msg("evidence.statusOff"), detail: msg("evidence.detailNone"), action: null };
+}
+
+/** The depth rules a usage threshold unlocks, in the order they show. */
+const DEPTH_RULES: { rule: ActionRule; id: string }[] = [
+  { rule: "always_load_suggested", id: "always-load" },
+  { rule: "settings_suggested", id: "settings" },
+];
+
+/**
+ * Rows usage has unlocked: loading the read tools up front and the settings
+ * that fit this repo. Each comes from its live setup step, so it leaves once
+ * done; the title and impact are core's words.
+ */
+function depthRows(s: SetupResponse, o: DeriveOptions): SetupRow[] {
+  return DEPTH_RULES.flatMap(({ rule, id }) => {
+    const step = setupStep(s, rule);
+    if (!step) return [];
+    const title = plainTitle(step.title);
+    const command = step.command ?? "repowise next";
+    return [
+      {
+        id,
+        anchors: [rule],
+        tone: "found",
+        status: msg("depth.statusSuggested"),
+        title: { text: title },
+        detail: { text: step.impact },
+        action: { kind: "prompt" },
+        command,
+        prompt: { repoName: o.repoName, title, state: step.impact, command, verify: "status" },
+      } satisfies SetupRow,
+    ];
+  });
 }
 
 /** A trailing "(run X)" or "(run: X)" in doctor text, with X captured. */
@@ -547,7 +664,8 @@ export function deriveSetup(s: SetupResponse, o: DeriveOptions): SetupView {
     attention,
     checksUnreadable: !s.checks_available,
     essentials,
-    optional: [modelRow(s, o), coverageRow(s, o), rewriteRow(s, o)],
+    optional: [modelRow(s, o), coverageRow(s, o), evidenceRow(s, o), rewriteRow(s, o)],
+    depth: depthRows(s, o),
     doneCount: done,
     allDone: done === ESSENTIALS_TOTAL,
   };

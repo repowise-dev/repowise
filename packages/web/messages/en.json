@@ -157,7 +157,8 @@
     "groupUnderstand": "Understand",
     "groupCodeQuality": "Code quality",
     "tests": "Tests",
-    "security": "Security"
+    "security": "Security",
+    "setup": "Setup"
   },
   "breadcrumb": {
     "review": "Review",
@@ -1456,7 +1457,6 @@
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
       "askLabel": "Ask about {title}",
       "askPlaceholder": "Ask about this page",
-      "noProse": "This documentation is built from the index: structure, history and signals. A model has not written the prose for {count, plural, one {# page} other {# pages}} yet.",
       "more": "More",
       "menu": {
         "exportPage": "Export this page (Markdown)",
@@ -1464,7 +1464,12 @@
         "exportZip": "Download ZIP archive",
         "present": "Present",
         "readerLevel": "Reader level"
-      }
+      },
+      "modelAsk": "Add a model to write the how and why on these pages.",
+      "modelReady": "Ready on this machine. {source}.",
+      "modelAskSub": "{count, plural, one {# page is} other {# pages are}} built from the index. Your agent's answers already use the index without one.",
+      "copyPrompt": "Copy prompt",
+      "copied": "Copied"
     },
     "tree": {
       "searchPlaceholder": "Search docs...",
@@ -1848,12 +1853,12 @@
     "steps": {
       "repo": "Your repo",
       "agent": "Your agent",
-      "yours": "Make it yours"
+      "ask": "Ask it",
+      "repos": "Your repos"
     },
     "skip": "Skip the tour",
     "back": "Back",
     "nextAgent": "Next: your agent",
-    "nextYours": "Next: make it yours",
     "finish": "Finish in Setup",
     "repo": {
       "title": "We mapped <em>{name}</em>",
@@ -1925,7 +1930,6 @@
       "prompt": "Connect repowise to {name} for this repo. Run `{command}` in the repo root, then restart {name} so it loads the repowise tools. Run `repowise doctor` to check the connection.",
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
-      "askLabel": "Ask it something",
       "tips": {
         "title": "Not seeing it?",
         "claudeCode": "In Claude Code, run /mcp: repowise should be listed as connected. If it is not, restart Claude Code in this repo.",
@@ -1938,20 +1942,10 @@
       "copy": "Copy",
       "copied": "Copied",
       "copyFailed": "Couldn't copy",
-      "copyQuestion": "Copy: {question}"
+      "copyQuestion": "Copy: {question}",
+      "waitingNote": "Waiting for its first call. Ask it anything about this repo."
     },
-    "yours": {
-      "title": "Make it <em>yours</em>",
-      "lede": "Every part is optional. Change any of it later in Settings.",
-      "modelTitle": "Add a model where it helps",
-      "gets": {
-        "docs": "Docs that explain how and why",
-        "chat": "Chat in this dashboard",
-        "answers": "Written answers for your agent",
-        "local": "Your key or sign-in stays here"
-      },
-      "detected": "Found on this machine: {names}.",
-      "keyless": "Until you add a model, your agent's answers are ranked evidence from the index.",
+    "ask": {
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",
@@ -1960,12 +1954,51 @@
       "syncOffConfirm": "Turn off",
       "teamTitle": "Running this for a team?",
       "teamBody": "Hosted repowise indexes on every push, reviews pull requests and gives your team one dashboard.",
-      "teamLink": "See hosted"
+      "teamLink": "See hosted",
+      "title": "Now <em>ask it</em> something",
+      "lede": "Paste one into {agent}. Each one is about this repo, so the answer is about your code.",
+      "ledeAny": "Paste one into your agent. Each one is about your code, so the answer is too.",
+      "later": "Change any of it later in Setup."
+    },
+    "nextAsk": "Next: ask it",
+    "workspace": {
+      "title": "We mapped <em>{count, plural, one {# repo} other {# repos}}</em> in {name}",
+      "titleNoName": "We mapped <em>{count, plural, one {# repo} other {# repos}}</em>",
+      "lede": "{files, plural, one {# file} other {# files}} and their shared history, read on this machine. Nothing left it.",
+      "agentLede": "One workspace server answers about every repo in it.",
+      "standout": "Across repos",
+      "membersLabel": "Repos in this workspace",
+      "agentUnknown": "The workspace setup could not be read. Run repowise doctor in the workspace root.",
+      "waitingNote": "Waiting for the first call. Ask your agent anything about these repos.",
+      "tip": "Restart your agent in the workspace root so it loads the workspace server.",
+      "contracts": {
+        "label": "Contracts",
+        "unit": "links between repos",
+        "caption": "HTTP routes and shared schemas one repo serves and another calls.",
+        "open": "Open contracts"
+      },
+      "coChanges": {
+        "label": "Co-changes",
+        "unit": "{count, plural, one {commit} other {commits}}",
+        "caption": "<mono>{a}</mono> and <mono>{b}</mono> changed together.",
+        "open": "Open co-changes"
+      },
+      "lowest": {
+        "label": "Lowest health",
+        "caption": "<mono>{name}</mono>, the lowest of {count} indexed.",
+        "open": "Open the workspace"
+      },
+      "notIndexed": {
+        "label": "Not indexed",
+        "unit": "{count, plural, one {repo} other {repos}}",
+        "caption": "<mono>{names}</mono>. Contracts that touch {count, plural, one {it} other {them}} are not seen yet.",
+        "open": "Open the workspace"
+      }
     }
   },
   "chat": {
     "addModel": "Add a model",
-    "noProvider": "Chat here needs an API key or a local model, set in <link>settings</link>. Your agent can ask the index without one.",
+    "noProvider": "Add a model to chat here, or set one in <link>settings</link>. Your agent can still ask the index without one.",
     "noProviderShort": "Chat needs an API key or a local model, set in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
     "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results.",
@@ -1988,7 +2021,10 @@
       "noMatch": "No listed model matches.",
       "configure": "Configure in Settings",
       "needsSetup": "More providers need a key first."
-    }
+    },
+    "modelReady": "Ready on this machine. {source}.",
+    "copyPrompt": "Copy prompt",
+    "copied": "Copied"
   },
   "codeHealth": {
     "hotspots": {
@@ -3118,7 +3154,8 @@
         "statusUnknown": "Couldn't check",
         "detailOn": "Updates after each commit.",
         "detailOff": "The index updates only when you run repowise update.",
-        "detailUnknown": "The post-commit hook couldn't be read."
+        "detailUnknown": "The post-commit hook couldn't be read.",
+        "behind": "{count, plural, one {# commit} other {# commits}} since the last sync."
       },
       "model": {
         "title": "A model for docs, chat and answers",
@@ -3126,7 +3163,8 @@
         "statusBuilt": "Built from index",
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
-        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model."
+        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model.",
+        "ready": "Ready on this machine. {source}."
       },
       "coverage": {
         "title": "Test coverage",
@@ -3144,7 +3182,8 @@
         "statusNa": "Needs Claude Code",
         "statusUnknown": "Couldn't check",
         "detail": "Claude Code reads test, build and git output through distill.",
-        "detailNa": "This works with Claude Code, which isn't on this machine."
+        "detailNa": "This works with Claude Code, which isn't on this machine.",
+        "statusSuggested": "Suggested"
       },
       "check": {
         "statusWarn": "Warning",
@@ -3167,8 +3206,74 @@
       "unreadable": {
         "status": "Couldn't check",
         "detail": "Couldn't read this here. Run {command} in a terminal to check."
+      },
+      "evidence": {
+        "title": "Performance evidence",
+        "statusFound": "Found",
+        "statusOn": "On",
+        "statusOff": "None found",
+        "detailFound": "Profiles or benchmark results are on disk. Connecting them lets Repowise rank slow paths by measured time, not only by code shape.",
+        "detailOn": "Runtime evidence is stored, so slow paths are ranked by measured time.",
+        "detailNone": "No profiles or benchmark results found. With them, slow paths are ranked by measured time."
+      },
+      "depth": {
+        "statusSuggested": "Suggested"
       }
     },
-    "changeIn": "Change in {group}"
+    "changeIn": "Change in {group}",
+    "depth": "Suggested from your usage",
+    "hero": {
+      "eyebrow": "{agent} made its first call {when}",
+      "eyebrowNoCall": "Your agent has called this index",
+      "title": "Finish setup with your agent",
+      "body": "It turns on what this repo is missing, adds the coverage reports and benchmark results it finds, and asks you one thing at most.",
+      "copy": "Copy prompt for your agent",
+      "copied": "Copied. Paste it into your agent.",
+      "copyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "footnote": "Same text as <code>repowise next --prompt setup</code>. Or do the rows yourself below.",
+      "notNow": "Not now"
+    },
+    "depthBlock": {
+      "title": "Suggested from your usage",
+      "lede": "Claude Code has made {count, plural, one {# call} other {# calls}} to this index."
+    },
+    "workspace": {
+      "title": "Setup",
+      "description": "What is set up in each repo of this workspace.",
+      "progress": "{done} of {total, plural, one {# repo has} other {# repos have}} every essential done.",
+      "loading": "Reading each repo's setup",
+      "loadFailedLabel": "Couldn't load setup",
+      "loadFailed": "The workspace setup could not be read. Check that the server is running, then try again.",
+      "retry": "Try again",
+      "heroEyebrow": "An agent has called this workspace",
+      "heroTitle": "Finish setup across the workspace with your agent",
+      "heroBody": "One prompt. It runs the setup loop in each repo with steps left and asks you one thing at most.",
+      "heroCopy": "Copy prompt for your agent",
+      "heroCopied": "Copied. Paste it into your agent.",
+      "heroCopyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "foot": "Open a repo's Setup for its rows and prompts.",
+      "col": {
+        "repo": "Repo",
+        "index": "Index",
+        "agent": "Agent",
+        "sync": "Sync",
+        "coverage": "Coverage",
+        "evidence": "Evidence"
+      },
+      "cell": {
+        "upToDate": "Up to date",
+        "behind": "Behind",
+        "incomplete": "Incomplete",
+        "notIndexed": "Not indexed",
+        "unreadable": "Couldn't read",
+        "connected": "Connected",
+        "noCalls": "No calls yet",
+        "on": "On",
+        "off": "Off",
+        "found": "Found",
+        "none": "None found",
+        "na": "n/a"
+      }
+    }
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
@@ -65,9 +65,14 @@ export function SetupRowView({ row, action, onOpenPrompt, children }: Props) {
   const title = text(row.title);
   return (
     <div
+      id={row.id}
       data-row={row.id}
-      className="group/row flex flex-col gap-2 border-t border-[var(--color-border-default)] py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+      className="group/row relative flex scroll-mt-24 flex-col gap-2 border-t border-[var(--color-border-default)] py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 data-[linked=true]:bg-[var(--color-accent-muted)] motion-safe:transition-colors motion-safe:duration-700"
     >
+      {/* Rule ids as extra anchors, so `#sync_hook_missing` lands here too. */}
+      {row.anchors?.map((rule) => (
+        <span key={rule} id={rule} aria-hidden className="absolute top-0 scroll-mt-24" />
+      ))}
       <div className="min-w-0 flex-1">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
           <StatusDot tone={row.tone} />
@@ -134,7 +139,7 @@ function RowDetail({ detail }: { detail: string }) {
 }
 
 /** Copies the row's prompt; the button itself says "Copied". */
-function AttentionPrompt({ row }: { row: SetupRow }) {
+export function AttentionPrompt({ row }: { row: SetupRow }) {
   const t = useTranslations("setup");
   return (
     <AiPromptButton
@@ -142,7 +147,44 @@ function AttentionPrompt({ row }: { row: SetupRow }) {
       copiedLabel={t("copied")}
       failedLabel={t("copyFailed")}
       ariaLabel={`${t("copyPrompt")}: ${row.prompt.title}`}
-      copyText={() => buildSetupAiPrompt(row.prompt)}
+      copyText={() => (row.buildPrompt ? row.buildPrompt() : buildSetupAiPrompt(row.prompt))}
     />
   );
+}
+
+/** How long a linked row stays marked after the page scrolls to it. */
+const LINKED_MS = 2400;
+
+/**
+ * Scrolls to the row a `#<row id>` or `#<setup rule>` link names and marks it
+ * for a moment, on load (once `ready`) and on every hash change. Rows render
+ * after the setup payload loads, so the browser's own jump finds nothing.
+ */
+export function useLinkedRow(ready: boolean) {
+  useEffect(() => {
+    if (!ready) return;
+    const timers: number[] = [];
+    const go = () => {
+      const raw = window.location.hash.slice(1);
+      let id = raw;
+      try {
+        id = decodeURIComponent(raw);
+      } catch {
+        /* a malformed escape: look the fragment up as written */
+      }
+      if (!id) return;
+      const row = document.getElementById(id)?.closest<HTMLElement>("[data-row]");
+      if (!row) return;
+      const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      row.scrollIntoView?.({ block: "center", behavior: still ? "auto" : "smooth" });
+      row.dataset.linked = "true";
+      timers.push(window.setTimeout(() => delete row.dataset.linked, LINKED_MS));
+    };
+    go();
+    window.addEventListener("hashchange", go);
+    return () => {
+      window.removeEventListener("hashchange", go);
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [ready]);
 }

@@ -76,6 +76,8 @@ export interface DecisionAgentHeroProps {
    * be read, and the hero renders nothing.
    */
   prompt: DecisionAgentHeroPrompt | null | undefined;
+  /** The small line over the heading. */
+  eyebrow?: string;
   /** The heading; the default names the pass the prompt asks for. */
   heading?: string;
   /** One sentence on what the agent does with it. */
@@ -129,6 +131,7 @@ function defaultDescription(prompt: DecisionAgentHeroPrompt): string {
  */
 export function DecisionAgentHero({
   prompt,
+  eyebrow = "Hand off to your agent",
   heading,
   description,
   copyLabel = "Copy prompt for your agent",
@@ -181,7 +184,7 @@ export function DecisionAgentHero({
       )}
     >
       <div className="grid min-w-0 gap-1.5">
-        <p className={HERO_MICRO}>Hand off to your agent</p>
+        <p className={HERO_MICRO}>{eyebrow}</p>
         <h2
           id={headingId}
           className="text-base font-semibold text-[var(--color-text-primary)] [text-wrap:balance] sm:text-lg"
