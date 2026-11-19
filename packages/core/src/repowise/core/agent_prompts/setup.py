@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .evidence import render_connect_evidence
-from .preamble import ROLE
+from .preamble import ROLE, WORKSPACE_ROLE
 from .sections import repo_suffix
 
 FINISH_SETUP = (
@@ -68,7 +68,7 @@ def render_finish_setup_workspace(paths: Sequence[str], flavor: str = "generic")
     """The pass across a workspace's indexed members, named by their directories."""
     names = ", ".join(f"`{p}`" for p in paths)
     lead = WORKSPACE_LEAD.format(names=names)
-    return f"{ROLE[flavor]}\n\n{lead}\n\n{FINISH_SETUP}"
+    return f"{WORKSPACE_ROLE[flavor]}\n\n{lead}\n\n{FINISH_SETUP}"
 
 
 def render_setup_step(

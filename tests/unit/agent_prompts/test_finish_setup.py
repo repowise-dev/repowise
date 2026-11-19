@@ -19,7 +19,7 @@ from repowise.core.agent_prompts import (
     render_finish_setup,
     render_finish_setup_workspace,
 )
-from repowise.core.agent_prompts.preamble import ROLE
+from repowise.core.agent_prompts.preamble import ROLE, WORKSPACE_ROLE
 from repowise.core.analysis.actions.rules import setup as rules
 from repowise.core.analysis.actions.setup import FoundFile, SetupFacts
 
@@ -59,6 +59,8 @@ def test_the_copy_keeps_the_house_style() -> None:
 
 def test_the_workspace_form_names_each_member_then_runs_the_same_loop() -> None:
     prompt = render_finish_setup_workspace(["services/payments-api", "web-checkout"])
+    assert prompt.startswith(WORKSPACE_ROLE["generic"] + "\n\n")
+    assert "senior engineer in this repository" not in prompt
     assert "this workspace: `services/payments-api`, `web-checkout`." in prompt
     assert prompt.endswith(FINISH_SETUP)
 
