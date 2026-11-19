@@ -141,7 +141,7 @@ describe("ways in to the model sheet", () => {
       />,
     );
     expect(screen.getByText(/Your agent can still ask the index without one/)).toBeTruthy();
-    expect(screen.getByText("Ready on this machine. Uses Ollama on this machine.")).toBeTruthy();
+    expect(screen.getByText("A model is ready. Uses Ollama on this machine.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs."));
   });

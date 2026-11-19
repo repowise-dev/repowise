@@ -1466,7 +1466,7 @@
         "readerLevel": "Reader level"
       },
       "modelAsk": "Add a model to write the how and why on these pages.",
-      "modelReady": "Ready on this machine. {source}.",
+      "modelReady": "A model is ready. {source}.",
       "modelAskSub": "{count, plural, one {# page is} other {# pages are}} built from the index. Your agent's answers already use the index without one.",
       "copyPrompt": "Copy prompt",
       "copied": "Copied"
@@ -2022,7 +2022,7 @@
       "configure": "Configure in Settings",
       "needsSetup": "More providers need a key first."
     },
-    "modelReady": "Ready on this machine. {source}.",
+    "modelReady": "A model is ready. {source}.",
     "copyPrompt": "Copy prompt",
     "copied": "Copied"
   },
@@ -3164,7 +3164,7 @@
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
         "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model.",
-        "ready": "Ready on this machine. {source}."
+        "ready": "A model is ready. {source}."
       },
       "coverage": {
         "title": "Test coverage",

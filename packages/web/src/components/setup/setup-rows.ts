@@ -398,14 +398,18 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   // Provider settings unreadable: only a written-by-model state still holds.
   if (!s.model_available && !llm) status = msg("unreadable.status");
   const ready = whyValue(setupStep(s, "docs_model_ready"), "model found");
+  // The found source says what "ready on this machine" would, more exactly, so
+  // it takes the detail line; it is a note only beside a provider in use.
+  const readyLine = ready ? msg("model.ready", { source: ready }) : null;
+  const readyAsDetail = readyLine !== null && s.model_available && !s.model.active_provider;
   return {
     id: "model",
     anchors: ["docs_model_ready"],
     tone: "model",
     status,
     title: msg("model.title"),
-    detail,
-    ...(ready ? { note: msg("model.ready", { source: ready }) } : {}),
+    detail: readyAsDetail ? readyLine : detail,
+    ...(readyLine && !readyAsDetail ? { note: readyLine } : {}),
     action: { kind: "model", hasModel: llm },
     command: "repowise generate",
     prompt: {

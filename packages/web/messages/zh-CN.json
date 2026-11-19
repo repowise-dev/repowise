@@ -1358,7 +1358,7 @@
         "readerLevel": "阅读深度"
       },
       "modelAsk": "添加模型，为这些页面写出原理和原因。",
-      "modelReady": "本机已就绪。{source}。",
+      "modelReady": "已有可用的模型。{source}。",
       "modelAskSub": "{count} 个页面由索引生成。即使没有模型，你的智能体的回答也已经在使用索引。",
       "copyPrompt": "复制提示词",
       "copied": "已复制"
@@ -1914,7 +1914,7 @@
       "configure": "在设置中配置",
       "needsSetup": "其他提供商需要先添加密钥。"
     },
-    "modelReady": "本机已就绪。{source}。",
+    "modelReady": "已有可用的模型。{source}。",
     "copyPrompt": "复制提示词",
     "copied": "已复制"
   },
@@ -3056,7 +3056,7 @@
         "detailActive": "正在使用 {provider}。",
         "detailReady": "此电脑上可用：{providers}。",
         "detailNone": "文档基于索引生成；添加模型之前，你的智能体得到的回答是按相关度排序的证据。",
-        "ready": "本机已就绪。{source}。"
+        "ready": "已有可用的模型。{source}。"
       },
       "coverage": {
         "title": "测试覆盖率",

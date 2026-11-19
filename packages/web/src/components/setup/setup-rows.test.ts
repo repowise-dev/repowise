@@ -312,7 +312,9 @@ describe("setup steps on the rows", () => {
       withSteps([["docs_model_ready", { why: [{ label: "model found", value: "Uses your Anthropic key", basis: "measured" }] }]]),
       OPTS,
     );
-    expect(row(view, "model").note).toEqual({ key: "model.ready", values: { source: "Uses your Anthropic key" } });
+    // One line: the source replaces "<providers> ready on this machine", never a second line.
+    expect(row(view, "model").detail).toEqual({ key: "model.ready", values: { source: "Uses your Anthropic key" } });
+    expect(row(view, "model").note).toBeUndefined();
   });
 
   it("suggests distill once usage unlocks it, and leaves it quiet before", () => {

@@ -129,7 +129,7 @@ describe("docs copy", () => {
         ready={{ source: "Uses your Anthropic key", prompt: "Write the docs with a model." }}
       />,
     );
-    expect(screen.getByText(/Ready on this machine\. Uses your Anthropic key\./)).toBeTruthy();
+    expect(screen.getByText(/A model is ready\. Uses your Anthropic key\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs with a model."));
   });
