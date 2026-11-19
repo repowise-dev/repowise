@@ -133,10 +133,11 @@ def evidence_add(
     """Ingest the evidence of one run of a named workload.
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
-    results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark or hyperfine JSON), detected from its content. Several profiles
-    (a parent process and its workers, or a directory holding one file per
-    process) merge into one run; they must share a format, unit, tool and clock.
+    results as the tool wrote them (Speedscope JSON, Go pprof, V8 .cpuprofile,
+    collapsed stacks, pytest-benchmark or hyperfine JSON), detected from its
+    content. Several profiles (a parent process and its workers, or a directory
+    holding one file per process) merge into one run; they must share a format,
+    unit, tool and clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it.
     A profile's frames join to the indexed functions only under the checkout
@@ -202,18 +203,21 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
-    payload = run_async(
-        _ingest(
-            repo_path=repo_path,
-            prepared=prepared,
-            workload=workload.strip(),
-            workload_class=workload_class,
-            environment=environment,
-            allow_partial=allow_partial,
-            caps=caps,
-            notices=notices,
+    try:
+        payload = run_async(
+            _ingest(
+                repo_path=repo_path,
+                prepared=prepared,
+                workload=workload.strip(),
+                workload_class=workload_class,
+                environment=environment,
+                allow_partial=allow_partial,
+                caps=caps,
+                notices=notices,
+            )
         )
-    )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     if fmt == "json":
         emit_json(payload)
     if not payload["stored"]:

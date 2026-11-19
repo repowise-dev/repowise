@@ -1375,7 +1375,7 @@ repowise coverage suggest-gates --format json
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
-profile in the profiler's own format ([Speedscope JSON, Go pprof or collapsed
+profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile` or collapsed
 stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
 runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
 converted first. Several profiles of one run (a parent process and its workers, or a directory
@@ -1386,6 +1386,7 @@ repowise evidence add prof.json --workload "cli build" --class entry_point --com
 repowise evidence add prof.speedscope.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
 repowise evidence add cpu.pprof --workload "go test ./pkg" --class unit_test --commit $(git rev-parse HEAD)
+repowise evidence add app.cpuprofile --workload "node app.js" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
 repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
@@ -1402,8 +1403,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `pytest-benchmark`, `hyperfine`, `collapsed` or a format a plugin registers. | detected from the content |
-| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu` |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
 

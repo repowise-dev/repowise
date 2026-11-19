@@ -583,7 +583,11 @@ def test_node_bins_get_a_cpu_profile_and_typescript_is_refused(tmp_path: Path) -
     assert js["command"] == "node --cpu-prof --cpu-prof-dir=.repowise/node-bin-fx-js bin/fx.js " + ARGS_PLACEHOLDER
     assert js["profile"] == ".repowise/node-bin-fx-js"
     assert js["prerequisites"] == ["git clean -fqx -- .repowise/node-bin-fx-js"]
-    assert js["ingest"] is None and "cpuprofile" in js["reason"]
+    assert js["ingest"] == (
+        "repowise evidence add .repowise/node-bin-fx-js "
+        f'--workload "node bin/fx.js {ARGS_PLACEHOLDER}" --class entry_point --commit {SHA}'
+    )
+    assert "cpuprofile" not in js["reason"]
     assert ts["command"] is None and "TypeScript" in ts["reason"]
 
 
