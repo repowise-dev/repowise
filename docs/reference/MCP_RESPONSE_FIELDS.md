@@ -365,8 +365,8 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 
 | Row | Fields |
 |-----|--------|
-| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"` |
-| File | `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
+| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`; `source` on a unique exact hit |
+| File | `type: "file"`, `page_id`, `path`, `title`, `score`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
 | Concept | `page_type`, `path` if the page names a file, `symbol_id` on a symbol page, `relevance_score`, `snippet`, `sources` |
 
 Row notes:
@@ -377,6 +377,8 @@ Row notes:
 - **`symbols`:** on a symbol hit outside `symbol` mode, up to 5 other matches in the file as `name:line`, then `+N more`. On a page row, up to 3 query-matching `name:line` (`Owner.member`).
 - **`matched_lines`:** on the first three page rows with a match, up to 3 live `{line, text}` sharing the most query words, code before comments and imports. Never every match.
 - **`sources`:** `fts`, `vector`, `symbol`, or a mix; omitted when `["fts"]` and `_meta.semantic_search` is `false`.
+- **`signature`:** omitted where `lines` holds the symbol's live definition line with its whole parameter list.
+- **`source`:** the live numbered body, when the query names one identifier, exactly one indexed symbol has that name and its body is at most 20 lines. It replaces `signature`, sets `_meta.complete`, and makes a `get_symbol` call for that symbol unnecessary. A longer body, two definitions of the name (overloads included) or a workspace-wide search serve none.
 
 `lines` notes:
 
