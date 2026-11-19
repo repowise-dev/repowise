@@ -4,10 +4,12 @@ Read as ``go test`` prints it (redirected to a file), or as ``go test -json``
 (test2json events, whose ``Output`` pieces are joined per package first).
 Each result line is ``BenchmarkName-P  N  t ns/op  b B/op  a allocs/op``:
 the series is the package import path and the benchmark's name. Go
-leaves ``-P`` (GOMAXPROCS) off when it is 1, so the suffix is dropped only
-when every result of the package ends in the same one; otherwise (``-cpu
-1,4``, or a sub-benchmark named ``size-64`` at GOMAXPROCS 1) names stay
-whole. Repeats (``-count=N``) fold into one value with
+leaves ``-P`` (GOMAXPROCS) off when it is 1, and a sub-benchmark's own name
+may end in ``-64``, so the suffix is dropped only when every result of the
+package ends in the same one and something shows it is GOMAXPROCS: a
+top-level result (a Go identifier holds no ``-``), or the ``=== RUN`` line
+``-v`` and ``-json`` print without it. Otherwise (``-cpu 1,4``, or only
+sub-benchmarks with no ``=== RUN`` lines) names stay whole. Repeats (``-count=N``) fold into one value with
 ``rounds``: the time statistics over the repeats, and the fewest
 allocations and bytes, since a stray allocation (a pool refill, a
 background sweep) only ever adds.
@@ -39,6 +41,7 @@ _RESULT = re.compile(r"^(Benchmark\S*)\s+(\d+)\s+(\d+(?:\.\d+)?(?:e[+-]?\d+)?) n
 _PROCS = re.compile(r"^(.*)-(\d+)$")
 _TEST2JSON = re.compile(r'^\{\s*(?:"Time"\s*:\s*"[^"]*"\s*,\s*)?"Action"\s*:')
 _FAILED = re.compile(r"^\s*--- FAIL: (Benchmark\S*)")
+_RAN = re.compile(r"^=== RUN\s+(Benchmark\S*)")
 _DECLARED = re.compile(r"(?m)^func\s+(Benchmark\w*)\s*\(")
 
 
@@ -68,7 +71,7 @@ def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
     """The whole output as a v1 ``benchmark`` document; *root* is the checkout the run used."""
     text = _text(data)
     packages = _test2json(text) if _TEST2JSON.match(text.lstrip()) else [(None, text)]
-    found, failed = _results(packages)
+    found, failed, ran = _results(packages)
     if not found:
         raise EvidenceFormatError(
             "the file holds no go test benchmark results"
@@ -82,7 +85,7 @@ def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
         "kind": "benchmark",
         "tool": {"name": "go"},
         "benchmarks": [
-            _entry(pkg, name, runs, locate) for (pkg, name), runs in _series(found).items()
+            _entry(pkg, name, runs, locate) for (pkg, name), runs in _series(found, ran).items()
         ],
     }
     if failed:
@@ -90,38 +93,55 @@ def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
     return out
 
 
-def _results(packages: list[tuple[str | None, str]]) -> tuple[list[_Result], int]:
-    """Every result line of every package's output, and the failed benchmarks counted."""
+def _results(
+    packages: list[tuple[str | None, str]],
+) -> tuple[list[_Result], int, set[tuple[str | None, str]]]:
+    """Every result line of every package's output, the failed benchmarks counted
+    (top-level only: a failed sub-benchmark fails its parent too), and the
+    ``(package, name)`` pairs ``=== RUN`` names."""
     found: list[_Result] = []
     failed = 0
+    ran: set[tuple[str | None, str]] = set()
     for package, output in packages:
         pkg = package
         for raw in output.splitlines():
             line = raw.strip()
             if line.startswith("pkg: "):
                 pkg = line[5:].strip() or package
-            elif _FAILED.match(line):
-                failed += 1
+            elif fail := _FAILED.match(line):
+                failed += "/" not in fail.group(1)
+            elif run := _RAN.match(line):
+                ran.add((pkg, run.group(1)))
             elif match := _RESULT.match(line):
                 found.append((
                     pkg, match.group(1), int(match.group(2)), float(match.group(3)),
                     _metrics(match.group(4)),
                 ))
-    return found, failed
+    return found, failed, ran
 
 
-def _series(found: list[_Result]) -> dict[tuple[str | None, str], list[tuple[int, float, dict[str, float]]]]:
-    """Results by (package, series name), repeats together; a shared ``-P`` suffix dropped."""
-    suffixes: dict[str | None, set[str | None]] = {}
+def _series(
+    found: list[_Result], ran: set[tuple[str | None, str]]
+) -> dict[tuple[str | None, str], list[tuple[int, float, dict[str, float]]]]:
+    """Results by (package, series name), repeats together; a GOMAXPROCS suffix dropped."""
+    names: dict[str | None, set[str]] = {}
     for pkg, name, *_ in found:
-        match = _PROCS.match(name)
-        suffixes.setdefault(pkg, set()).add(match.group(2) if match else None)
+        names.setdefault(pkg, set()).add(name)
+    procs = {pkg: _procs_suffixed(pkg, printed, ran) for pkg, printed in names.items()}
     out: dict[tuple[str | None, str], list[tuple[int, float, dict[str, float]]]] = {}
     for pkg, name, n, ns, metrics in found:
-        if None not in suffixes[pkg] and len(suffixes[pkg]) == 1:
+        if procs[pkg]:
             name = name.rsplit("-", 1)[0]
         out.setdefault((pkg, name), []).append((n, ns, metrics))
     return out
+
+
+def _procs_suffixed(pkg: str | None, printed: set[str], ran: set[tuple[str | None, str]]) -> bool:
+    """Whether every name *pkg* printed ends in one ``-P`` known to be GOMAXPROCS."""
+    suffixes = {m.group(2) if (m := _PROCS.match(name)) else None for name in printed}
+    if None in suffixes or len(suffixes) != 1:
+        return False
+    return any("/" not in name or (pkg, name.rsplit("-", 1)[0]) in ran for name in printed)
 
 
 def _test2json(text: str) -> list[tuple[str | None, str]]:

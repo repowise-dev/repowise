@@ -257,11 +257,13 @@ The format is detected from the content, never the file name;
 - **Go.** The package's directory comes from the `go.mod` files under
   `--checkout-root`, and the benchmark links to the `BenchmarkX` function in
   that directory's `_test.go` file. The `-P` GOMAXPROCS suffix is dropped
-  when every result of the package ends in the same one; otherwise (`-cpu
-  1,4`, or GOMAXPROCS 1, where Go prints none) names stay whole. Over repeats the
+  when every result of the package ends in the same one and a top-level
+  result or a `=== RUN` line (`-v`, `-json`) shows it is GOMAXPROCS;
+  otherwise (`-cpu 1,4`, GOMAXPROCS 1 where Go prints none, or only
+  sub-benchmarks in plain output) names stay whole. Over repeats the
   fewest allocations and bytes are kept: a stray allocation only ever adds.
   Allocations and bytes per operation are exact; time per operation is not.
-  A failed benchmark is counted under `skipped` as `failed`; output with no
+  A failed top-level benchmark is counted under `skipped` as `failed`; output with no
   result line is refused. Text that PowerShell 5 redirected (UTF-16) reads
   the same. Custom metrics (`MB/s`, `b.ReportMetric`) are not read. A
   benchmark that logs while it runs splits its result line in the text
