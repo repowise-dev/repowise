@@ -157,6 +157,7 @@ class TestErrorCases:
         the test below covers.
         """
         self._clear_provider_env_impl(monkeypatch)
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
@@ -183,6 +184,7 @@ class TestErrorCases:
         """
         self._clear_provider_env_impl(monkeypatch)
         monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "Unknown provider" not in result.output

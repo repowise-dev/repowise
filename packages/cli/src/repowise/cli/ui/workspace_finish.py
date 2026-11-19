@@ -168,7 +168,9 @@ def workspace_steps(facts: WorkspaceFacts, setup: Any = None) -> list[tuple[str,
     """``repowise serve``, then the two moves that most need making."""
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     skipped = next((r for r in facts.repos if r.skipped), None)
     if skipped and not facts.dry_run:
         candidates.append(

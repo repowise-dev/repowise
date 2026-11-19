@@ -44,7 +44,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`hook backfill`](#repowise-hook-backfill), [`hook rewrite`](#repowise-hook-rewrite-installuninstallstatus), [`hook
   read-skeleton|search-digest|read-reread`](#repowise-hook-read-skeletonsearch-digestread-reread),
   [`hook health-gate`](#repowise-hook-health-gate-installuninstallstatus), [`augment`](#repowise-augment)
-- **Server:** [`serve`](#repowise-serve-path), [`mcp`](#repowise-mcp-path)
+- **Server:** [`serve`](#repowise-serve), [`mcp`](#repowise-mcp-path)
 - **Workspace:** [`workspace list`](#repowise-workspace-list), [`workspace add`](#repowise-workspace-add-path),
   [`workspace remove`](#repowise-workspace-remove-alias), [`workspace scan`](#repowise-workspace-scan-path), [`workspace update`](#repowise-workspace-update), [`workspace
   set-default`](#repowise-workspace-set-default-alias), [`workspace diagnostics`](#repowise-workspace-diagnostics),
@@ -174,7 +174,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 - **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude.json`) and Claude Desktop MCP entry, Claude Code
   PostToolUse/SessionStart hooks (`~/.claude/settings.json`). Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
 - **`--no-editor-setup`.** Writes only `.repowise/` (scratch checkouts, throwaway venvs, worktrees, CI); skips the post-commit hook (git hooks dir) and `--distill-hook` offer (user-level hook).
-  - One `repowise` MCP key per config, so a second `init` repoints it; `repowise mcp .` prints config for manual setup.
+  - One `repowise` MCP key per config, so a second `init` repoints it; `repowise agents print-config <agent>` prints config for manual setup.
   - `--no-distill-hook`, `--no-claude-md`, `--no-agents` still save to repo config: they mean "never".
   - `REPOWISE_SKIP_EDITOR_SETUP=1`: same switch, beats `--editor-setup`.
 - **`--save-key`.** On so scripted `init` leaves an answering MCP server (env keys die with their shell). Read by
@@ -216,8 +216,11 @@ and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then de
 
 - Each line: `v` (schema, `1`), `event` (`stage`, `phase`, `warning`, last `summary`). `phase`: `state` (`start`/`done`/`failed`), `completed`, `total`, `unit`, `elapsed_s`.
 - `summary`: `status` (`ready`/`degraded`/`interrupted`/`failed` = exit `0`/`2`/`130`/other), `mode` (`key` from index
-  scope, `label`, `run_mode`), `restart_required` (restart or `/mcp` to load tools), `spend` (`tokens`, `usd`),
-  `warnings`, `files_written`, `next` (commands, `repowise serve` first).
+  scope, `label`, `run_mode`), `restart_required` (true when any agent must restart to load the tools), `restart_hosts` (`id`, `name` of each), `spend` (`tokens`, `usd`),
+  `warnings`, `files_written`, `next` (commands, `repowise serve` first), `mcp_tools` (per wired agent: `id`,
+  `name`, `profile`, `adjustments`, `tool_count`, `tools`, `change_command`, `always_load` with `enabled`, `tools`,
+  `cost`, `command`, or null for a client that loads every schema up front), `connect` (installed agents init did not wire:
+  `id`, `name`, `command`).
 
 </details>
 
@@ -405,7 +408,7 @@ repowise wiki-styles
 
 ---
 
-### `repowise serve [PATH]`
+### `repowise serve`
 
 Start the API server and web UI.
 
@@ -2201,7 +2204,7 @@ repowise mcp --tools "+get_dependency_path,-get_dead_code"
 | `--transport` | `stdio` (editors), `streamable-http` (HTTP clients), or `sse` (legacy). | `stdio` |
 | `--port` | HTTP/SSE port. | `7338` |
 | `--host` | HTTP/SSE bind; `0.0.0.0` without `REPOWISE_API_KEY` warns that every tool is unauthenticated and network-accessible. | `REPOWISE_HOST`, else `127.0.0.1` |
-| `--tools` | A profile (`core`, `standard`, `all`) optionally followed by `+name`/`-name`; `+`/`-` alone adjust the client's default; comma list = allowlist; `lean` selects the six-tool agent-lean profile. Overrides config. | `mcp.tools`, else `standard` on Claude Code and `core` on other clients |
+| `--tools` | A profile (`core`, `lean`, `standard`, `all`) optionally followed by `+name`/`-name`; `+`/`-` alone adjust the client's default; comma list = allowlist. Overrides config. | `mcp.tools`, else `standard` on Claude Code and `core` on other clients |
 | `--all` | Every tool, including opt-in and workspace. | off |
 | `--no-workspace` | Nested repo ignores the enclosing workspace's default. | auto-detect |
 
@@ -2248,7 +2251,7 @@ repowise agents add --hosted --target=auto --yes --format json
 | `--yes` / `-y` | `add`: never prompt. | off |
 | `--hosted` | `add`: write the hosted server for this repo instead of the local one (see below). `--scope` is ignored. | off |
 | `--repo` | `add --hosted`: `owner/name` on repowise.dev. | the GitHub `origin` |
-| `--tools` | `add`: which MCP tools the local server lists, saved as this repo's `mcp.tools` (see [MCP Tools](../agent/MCP_TOOLS.md#configuring-the-tool-surface)). Each wired agent's row says which profile it gets. | `standard` on Claude Code, `core` on other clients |
+| `--tools` | `add`: which MCP tools the local server lists, saved as this repo's `mcp.tools` (see [MCP Tools](../agent/MCP_TOOLS.md#configuring-the-tool-surface)). Each wired agent's row says how many tools it lists and under which profile, and for Claude Code whether always-load is on; JSON carries the same as `tool_surface` (keys as in init's `mcp_tools`). | `standard` on Claude Code, `core` on other clients |
 | `print-config --scope` | `project` or `user` snippet. | `project` |
 | `print-config --format` | `table`: bare paste-ready snippet; `json`: with target, scope, repo, docs URL. | `table` |
 

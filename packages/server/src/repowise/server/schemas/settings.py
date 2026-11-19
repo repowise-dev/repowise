@@ -44,6 +44,8 @@ class SettingView(SettingState):
     key: str
     type: SettingType
     default_note: str | None = None
+    #: What turning it on costs, in a few words, when the setting says.
+    cost_note: str | None = None
     description: str
     area: str
     #: ``repo``, ``user`` or ``env``.
