@@ -382,6 +382,43 @@ class TestSubagentsKeepTheirOwnState:
         _read(repo)
         assert _served(_read(repo)) is not None
 
+    @staticmethod
+    def _edit(repo: Path, body: str) -> None:
+        (repo / "a.py").write_text(body, encoding="utf-8")
+        _handle_post_tool_use(
+            "Edit", {"file_path": str(repo / "a.py")}, {}, str(repo), session_id=SESSION
+        )
+
+    @pytest.mark.parametrize(("reader", "editor"), [(None, "agent-1"), ("agent-1", None)])
+    def test_an_edit_by_another_window_is_stale_not_an_outside_change(
+        self, repo: Path, reader: str | None, editor: str | None
+    ) -> None:
+        changed = _BODY + "\nedited"
+        self._as(reader)
+        _read(repo)
+        self._as(editor)
+        self._edit(repo, changed)
+        self._as(reader)
+        context = _read(repo, content=changed).context or ""
+        assert "stale" in context
+        assert "changed on disk" not in context
+
+    def test_an_outside_write_after_a_subagent_edit_is_still_an_outside_change(
+        self, repo: Path
+    ) -> None:
+        import os
+
+        self._as(None)
+        _read(repo)
+        self._as("agent-1")
+        self._edit(repo, _BODY + "\nedited")
+        outside = _BODY + "\nwritten by something else"
+        (repo / "a.py").write_text(outside, encoding="utf-8")
+        stat = (repo / "a.py").stat()
+        os.utime(repo / "a.py", ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        self._as(None)
+        assert "changed on disk" in (_read(repo, content=outside).context or "")
+
 
 @pytest.mark.parametrize(
     ("client", "payload"),

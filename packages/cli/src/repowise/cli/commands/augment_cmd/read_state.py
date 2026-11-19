@@ -72,6 +72,11 @@ _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 #: keyed on both (:func:`bind_agent`). A subagent never received the parent's
 #: bytes, so it must not inherit the parent's "you already have this", and the
 #: parent must not inherit the subagent's.
+#:
+#: Two facts belong to the whole session and live in one file beside the
+#: partitions (:func:`_load_shared_state`): the Edits any context window made,
+#: so a write by a subagent is not reported to its parent as an outside change,
+#: and the session's one decision-capture ask.
 _STATE_DIR = "hook-sessions"
 
 #: The ``agent_id`` of the hook event this process is handling, "" on a main
@@ -92,13 +97,74 @@ def bind_agent(payload: dict) -> None:
 _STATE_TTL_SECONDS = 7 * 24 * 3600
 
 
-def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
-    """This context window's state file: one per session id and subagent (:data:`_STATE_DIR`)."""
+def _state_file(repo_path: Path, key: str) -> Path:
     import hashlib
 
-    key = f"{session_id}/{_agent_id}" if _agent_id else session_id
     digest = hashlib.sha1(key.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return Path(repo_path) / ".repowise" / _STATE_DIR / f"{digest}.json"
+
+
+def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
+    """This context window's state file: one per session id and subagent (:data:`_STATE_DIR`)."""
+    return _state_file(repo_path, f"{session_id}/{_agent_id}" if _agent_id else session_id)
+
+
+def _shared_state_path(repo_path: Path, session_id: str) -> Path:
+    """The file every context window of *session_id* shares (:data:`_STATE_DIR`)."""
+    return _state_file(repo_path, f"{session_id}/*")
+
+
+def _load_shared_state(repo_path: Path, session_id: str) -> dict:
+    """``edits`` (path -> the file's mtime_ns right after an Edit) and ``capture_prompted``."""
+    fresh = {"session_id": session_id, "edits": {}, "capture_prompted": False}
+    try:
+        state = json.loads(_shared_state_path(repo_path, session_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fresh
+    if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return fresh
+    for key, default in fresh.items():
+        if not isinstance(state.get(key), type(default)):
+            state[key] = default
+    return state
+
+
+def _save_shared_state(repo_path: Path, state: dict) -> bool:
+    """Persist the shared state; never raises. Returns whether the write landed."""
+    edits = state["edits"]
+    if len(edits) > 500:
+        state["edits"] = {k: edits[k] for k in sorted(edits, key=edits.get, reverse=True)[:400]}
+    path = _shared_state_path(repo_path, state["session_id"])
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _mtime_ns(path: Path) -> int:
+    try:
+        return int(path.stat().st_mtime_ns)
+    except OSError:
+        return -1
+
+
+def _edited_by_another_window(
+    repo_path: Path, checkout: Path, rel: str, session_id: str, prior_meta: object
+) -> bool:
+    """Whether another context window of this session Edited *rel* since this one read it.
+
+    Sequence numbers are per window, so the order comes from the file itself:
+    the last write is a session Edit when the mtime it left is the mtime now,
+    and it came after this window's read when the read saw another mtime.
+    """
+    if not isinstance(prior_meta, dict):
+        return False
+    edit_mt = _load_shared_state(repo_path, session_id)["edits"].get(rel)
+    if not isinstance(edit_mt, int) or edit_mt == -1 or edit_mt == prior_meta.get("mt"):
+        return False
+    return _mtime_ns(checkout / rel) == edit_mt
 
 
 def _sweep_stale_sessions(directory: Path) -> None:
@@ -163,10 +229,6 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "read_whole": [],
         "skeleton_edit_warned": [],
         "decisions_shown": [],
-        # Whether this session has already been asked to record a decision.
-        # One ask per session is the whole cost control on a hook nobody can
-        # decline, so it is claimed on the ask and never cleared.
-        "capture_prompted": False,
         # File ranges served by repowise MCP responses this session, kept for
         # the read-after-served KPI (see read_enrich; rel -> [[start, end]]).
         "served": {},
@@ -246,12 +308,16 @@ def _handle_edit_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
-    rel = repo_relative(file_path, _checkout_root(Path(cwd), repo_path), resolve=True)
+    checkout = _checkout_root(Path(cwd), repo_path)
+    rel = repo_relative(file_path, checkout, resolve=True)
     if rel is None:
         return None
     state = _load_session_state(repo_path, session_id)
     state["seq"] += 1
     state["edits"][rel] = state["seq"]
+    shared = _load_shared_state(repo_path, session_id)
+    shared["edits"][rel] = _mtime_ns(checkout / rel)
+    _save_shared_state(repo_path, shared)
 
     notices: list[str] = []
     skeleton_warning = _edit_from_skeleton_notice(rel, state)
@@ -345,12 +411,16 @@ def _handle_read_post(
     notices: list[str] = []
     fired: list[tuple[str, str]] = []  # (category, text) for the efficacy ledger
 
-    # Stale-read: this session Read the file, then Edited/Wrote it, and is
-    # now Reading it again. The fresh Read is fine — the flag is about any
+    # Stale-read: this window Read the file, then it (or another window of the
+    # session, such as a subagent) Edited/Wrote it, and it is now Reading it again. The fresh Read is fine — the flag is about any
     # reasoning still anchored on the pre-edit excerpt.
     last_read = state["reads"].get(rel)
     last_edit = state["edits"].get(rel)
-    edited_since_read = last_read is not None and last_edit is not None and last_read < last_edit
+    edited_since_read = (
+        last_read is not None and last_edit is not None and last_read < last_edit
+    ) or _edited_by_another_window(
+        repo_path, checkout, rel, session_id, state["read_meta"].get(rel)
+    )
     if edited_since_read and rel not in state["stale_notified"]:
         state["stale_notified"].append(rel)
         notices.append(
