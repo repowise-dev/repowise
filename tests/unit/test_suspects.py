@@ -275,6 +275,8 @@ async def test_candidates_not_capped_below_the_limit(suspects_index):
     # Recency alone is no evidence: the note says how to read further back.
     since = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
     assert f"none merged before {since} was read" in out["note"]
+    # Chat and REST take `since` themselves; the CLI command works from every surface.
+    assert "Read an earlier window with `since`" in out["note"]
     assert "`repowise suspects --since <an earlier date>`" in out["note"]
 
 

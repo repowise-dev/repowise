@@ -47,8 +47,9 @@ def _note(since: datetime, rows: list[dict[str, Any]], capped: bool, commit_limi
 
     A window that may start before the oldest stored change needs a deeper index;
     one where no listed row has evidence beyond its merge time (``recency`` fires
-    on every candidate) needs an earlier ``--since``. Neither is settable over
-    MCP, so the step is always the CLI's.
+    on every candidate) needs an earlier ``since``. The CLI, REST and chat take
+    ``since``; MCP does not, so the note names the argument and gives the CLI
+    command as the step that works from every surface. Re-indexing is the CLI's.
     """
     if capped:
         return (
@@ -60,8 +61,9 @@ def _note(since: datetime, rows: list[dict[str, Any]], capped: bool, commit_limi
         return NOTE
     return (
         f"{NOTE} No change listed has evidence beyond its merge time, and none merged "
-        f"before {since:%Y-%m-%d} was read: the cause may be older. Run `repowise suspects "
-        f"--since <an earlier date>` with the same --symptom, --files or --trace."
+        f"before {since:%Y-%m-%d} was read: the cause may be older. Read an earlier window with `since`, "
+        "or run `repowise suspects --since <an earlier date>` with the same --symptom, "
+        "--files or --trace."
     )
 
 
