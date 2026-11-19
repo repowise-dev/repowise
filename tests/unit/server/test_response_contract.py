@@ -33,6 +33,7 @@ WAIVED: dict[tuple[str, str], str] = {
     ("GET", "/metrics"): "Prometheus text exposition",
     ("POST", "/api/providers/{provider_id}/key"): "204, no body",
     ("DELETE", "/api/providers/{provider_id}/key"): "204, no body",
+    ("POST", "/api/telemetry/view"): "204, no body",
     ("GET", "/api/pages"): (
         "returns full or summary rows by ``fields``; the models serialize "
         "themselves and FastAPI cannot coerce one shape into the other"

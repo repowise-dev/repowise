@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from repowise.core.entry_candidacy import is_reachability_root
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from .prune import _PRUNE_CHUNK
 
@@ -307,7 +308,7 @@ def apply_stored_complexity(
         if pf.file_info.path in skip_paths:
             continue
         for sym in pf.symbols:
-            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
+            sid = getattr(sym, "id", None) or make_symbol_id(pf.file_info.path, sym.name)
             if value := stored.get(sid):
                 sym.complexity_estimate = value
 
@@ -436,6 +437,7 @@ async def prune_absent_graph_rows(
     """
     from sqlalchemy import delete, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
     if not node_ids:
@@ -470,19 +472,11 @@ async def prune_absent_graph_rows(
             )
         )
 
-    node_rows_db = (
-        await session.execute(
-            select(GraphNode.id, GraphNode.node_id).where(GraphNode.repository_id == repo_id)
-        )
-    ).all()
-    stale_node_ids = [row_id for row_id, node_id in node_rows_db if node_id not in node_ids]
-    for i in range(0, len(stale_node_ids), _PRUNE_CHUNK):
-        await session.execute(
-            delete(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.id.in_(stale_node_ids[i : i + _PRUNE_CHUNK]),
-            )
-        )
+    stored_node_ids = (
+        await session.execute(select(GraphNode.node_id).where(GraphNode.repository_id == repo_id))
+    ).scalars()
+    stale_node_ids = [node_id for node_id in stored_node_ids if node_id not in node_ids]
+    await delete_graph_nodes(session, repo_id, stale_node_ids)
 
     if stale_edge_ids or stale_node_ids:
         logger.info(
@@ -708,8 +702,8 @@ async def _drifted_files(
     changed file. The store is read only for the changed files and the
     rest is a dictionary diff, so no step reads the whole edge table.
     """
-    from repowise.core.analysis.execution_graph import file_of_symbol
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
 
     graph = graph_builder.graph()
     owner = _edge_owners(graph.nodes(data=True))
@@ -856,11 +850,11 @@ async def _prune_vanished_symbol_nodes(
     a new parser) would otherwise keep its old row beside the new ones. Scoped
     to files this run reconciled; a file that is gone is
     :func:`_prune_stale_file_rows`'s job.
-    Membership rows prune themselves on their next write, and ``graph_metrics``
-    holds files only.
+    Membership rows retire with their nodes; ``graph_metrics`` holds files only.
     """
     from sqlalchemy import delete, or_, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
     graph = graph_builder.graph()
@@ -882,11 +876,7 @@ async def _prune_vanished_symbol_nodes(
                 or_(GraphEdge.source_node_id.in_(batch), GraphEdge.target_node_id.in_(batch)),
             )
         )
-        await session.execute(
-            delete(GraphNode).where(
-                GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch)
-            )
-        )
+    await delete_graph_nodes(session, repo_id, stale)
     if stale:
         logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
 
@@ -907,6 +897,7 @@ async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder
     """
     from sqlalchemy import delete, or_, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
 
     graph = graph_builder.graph()
@@ -945,12 +936,14 @@ async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder
                 ).scalars()
             )
         gone.extend(n for n in batch if n not in linked)
+    await delete_graph_nodes(session, repo_id, gone)
     for i in range(0, len(gone), _PRUNE_CHUNK):
         batch = gone[i : i + _PRUNE_CHUNK]
-        for model in (GraphNode, GraphMetric):
-            await session.execute(
-                delete(model).where(model.repository_id == repo_id, model.node_id.in_(batch))
+        await session.execute(
+            delete(GraphMetric).where(
+                GraphMetric.repository_id == repo_id, GraphMetric.node_id.in_(batch)
             )
+        )
     if gone:
         logger.info("graph_synthetic_nodes_pruned", repo_id=repo_id, nodes=len(gone))
     return len(gone)

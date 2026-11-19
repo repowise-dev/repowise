@@ -10,6 +10,10 @@ import {
   useRepositoryChat,
 } from "./repository-chat-provider";
 
+vi.mock("@/lib/api/chat", () => ({
+  getChatSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+}));
+
 const sendMessage = vi.fn();
 let pathname = "/repos/r1/code-health";
 let search = new URLSearchParams();

@@ -72,6 +72,9 @@ export interface PreflightEstimate {
 export interface PreflightResponse {
   provider: {
     ok: boolean;
+    /** False only when no provider is chosen at all; the index then runs
+     *  without a model. Absent on an older server. */
+    configured?: boolean;
     name: string | null;
     model: string | null;
     error: string | null;

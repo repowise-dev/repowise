@@ -6,7 +6,8 @@ import json
 import re
 from typing import Any
 
-_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+# Match strings first so commas inside their values are left untouched.
+_TRAILING_COMMA_RE = re.compile(r'"(?:\\.|[^"\\])*"|,\s*([}\]])')
 
 
 def load_json_config(text: str) -> Any:
@@ -18,7 +19,7 @@ def load_json_config(text: str) -> Any:
     from repowise.core.ingestion.tsconfig_resolver import _strip_jsonc_comments
 
     try:
-        return json.loads(_TRAILING_COMMA_RE.sub(r"\1", _strip_jsonc_comments(text)))
+        return json.loads(_TRAILING_COMMA_RE.sub(lambda m: m.group(1) or m.group(), _strip_jsonc_comments(text)))
     except ValueError:
         return None
 

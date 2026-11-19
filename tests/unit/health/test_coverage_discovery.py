@@ -550,6 +550,24 @@ def test_expand_report_patterns_never_walks_dependency_trees(tmp_path: Path) -> 
     assert expand_report_patterns([absolute], Path()) == [tmp_path / "web/coverage/lcov.info"]
 
 
+def test_a_pruned_name_spelled_after_double_star_is_an_opt_in(tmp_path: Path) -> None:
+    # A multi-module Gradle build writes one JaCoCo report per module, at any depth.
+    report = "build/reports/jacoco/test/jacocoTestReport.xml"
+    modules = ("", "moshi", "moshi-adapters", "moshi/records-tests", "moshi-kotlin-tests/codegen-only")
+    for rel in (*(f"{m}/{report}".lstrip("/") for m in modules), "x/node_modules/y/" + report, "x/dist/" + report):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("<report/>")
+
+    found = expand_report_patterns(["**/" + report], tmp_path)
+    # Only ``build`` is let in: node_modules and dist stay pruned.
+    assert found == sorted(tmp_path / m / report for m in modules)
+    assert expand_report_patterns(["*/build/reports/jacoco/*/*.xml"], tmp_path) == sorted(
+        tmp_path / m / report for m in ("moshi", "moshi-adapters")
+    )
+    # Without the name spelled, ``build`` stays pruned.
+    assert expand_report_patterns(["**/jacocoTestReport.xml"], tmp_path) == []
+
+
 def test_an_existing_path_is_taken_literally_before_globbing(tmp_path: Path) -> None:
     odd = tmp_path / "cov[1].info"
     odd.write_text("")

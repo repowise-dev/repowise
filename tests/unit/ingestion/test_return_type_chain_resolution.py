@@ -244,6 +244,53 @@ def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
     assert result[0].callee_id.endswith("::Product::run")
 
 
+def _python_chain_edges(tmp_path: Path, use_source: str) -> set[tuple[int, str]]:
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "app").mkdir()
+    parsed = {}
+    parsed.update(
+        _parse(
+            tmp_path,
+            "tools/confirm.py",
+            "python",
+            "def resolve(key):\n    return key\n\n\nclass Job:\n    def start(self):\n        pass\n",
+        )
+    )
+    parsed.update(_parse(tmp_path, "app/run.py", "python", use_source))
+    imports = {"tools/confirm.py": set(), "app/run.py": {"tools/confirm.py"}}
+    resolver = CallResolver(parsed, imports, repo_path=str(tmp_path))
+    calls = parsed["app/run.py"].calls
+    return {(e.line, e.callee_id) for e in resolver.resolve_file("app/run.py", calls)}
+
+
+def test_python_chain_on_a_call_result_never_binds_a_module_function(tmp_path: Path) -> None:
+    edges = _python_chain_edges(
+        tmp_path,
+        "import json\nfrom pathlib import Path\n"
+        "root = Path(__file__).resolve()\n"
+        "data = json.loads('1').resolve()\n"
+        "name = str(root).resolve()\n",
+    )
+
+    assert edges == set()
+
+
+def test_python_chain_keeps_a_bare_name_method(tmp_path: Path) -> None:
+    edges = _python_chain_edges(tmp_path, "def make(x):\n    return x\n\nmake(1).start()\n")
+
+    assert edges == {(4, "app/run.py::make"), (4, "tools/confirm.py::Job::start")}
+
+
+def test_python_chain_on_a_repo_function_may_reach_a_module_function(tmp_path: Path) -> None:
+    # A lazy module accessor hands back a module, whose functions are its attributes.
+    edges = _python_chain_edges(
+        tmp_path,
+        "def _lazy():\n    from tools import confirm\n    return confirm\n\n_lazy().resolve(1)\n",
+    )
+
+    assert (5, "tools/confirm.py::resolve") in edges
+
+
 def _java_chain_call(parsed: dict[str, ParsedFile], path: str, outer: str):
     return next(
         c
@@ -417,6 +464,8 @@ def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Pat
         "cmd/run.go", [call]
     )
 
+    # Without the lane only the inner call is known: a repo function, which may
+    # hand back a package, so the bare name stays.
     assert [edge.callee_id for edge in before] == ["logging/log.go::Err"]
     assert after == []
 

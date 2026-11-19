@@ -10,8 +10,13 @@ and ``event``:
 - ``warning``: something the run skipped or degraded. ``level``, ``text``.
 - ``summary``: always the last line. ``status`` is ``ready`` (exit 0),
   ``degraded`` (exit 2), ``interrupted`` (exit 130) or ``failed`` (any other
-  exit, with ``error``); then ``mode``, ``restart_required``, ``spend``,
-  ``warnings``, ``files_written`` and ``next`` (commands, first one first).
+  exit, with ``error``); then ``mode``, ``restart_required``,
+  ``restart_hosts`` (``id``, ``name``), ``spend``, ``warnings``,
+  ``files_written``, ``next`` (commands, first one first), ``mcp_tools``
+  (per wired agent: ``id``, ``name``, ``profile``, ``adjustments``,
+  ``tool_count``, ``tools``, ``change_command`` and ``always_load``, null for
+  a client that loads every schema up front) and ``connect`` (installed
+  agents not wired: ``id``, ``name``, ``command``).
 
 While the stream is open, human text goes to stderr, so stdout is only these lines.
 """
@@ -54,18 +59,27 @@ def summary_fields(
     next_commands: list[str] | None = None,
     error: str | None = None,
     findings: dict[str, Any] | None = None,
+    mcp_tools: list[dict[str, Any]] | None = None,
+    restart_hosts: list[dict[str, str]] | None = None,
+    connect: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Every summary key, always present, so a consumer never probes for one."""
     fields: dict[str, Any] = {
         "status": status,
         "mode": mode,
         "restart_required": restart_required,
+        # Which agents to restart: each loads its MCP config only at startup.
+        "restart_hosts": list(restart_hosts or []),
         "spend": spend or {"tokens": 0, "usd": 0.0},
         "warnings": list(warnings or []),
         "files_written": list(files_written or []),
         "next": list(next_commands or []),
         # What the finish panel's "What stood out" showed; null before it rendered.
         "findings": findings,
+        # The MCP tools each wired agent is listed; empty when nothing was wired.
+        "mcp_tools": list(mcp_tools or []),
+        # Installed agents init did not wire, each with the command that wires it.
+        "connect": list(connect or []),
     }
     if error is not None:
         fields["error"] = error

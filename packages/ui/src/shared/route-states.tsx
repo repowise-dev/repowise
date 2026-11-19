@@ -2,7 +2,11 @@ import * as React from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Button } from "../ui/button";
+import { IllustrationSlot } from "./illustration";
 import { OrbLoader, ORB_STATE } from "./orb-loader";
+
+/** Square px a host illustration gets on a route-level state. */
+const ROUTE_ILLUSTRATION_SIZE = 128;
 
 const FRAME =
   "flex min-h-[60vh] flex-col items-center justify-center gap-4 px-4 py-10 text-center sm:px-6";
@@ -30,6 +34,8 @@ export interface RouteErrorProps {
   retryLabel?: string;
   /** Optional way out, see `RouteLinkElement`. */
   back?: RouteLinkElement;
+  /** Replaces the default warning mark, and any host illustration. */
+  icon?: React.ReactNode;
   className?: string;
 }
 
@@ -42,13 +48,28 @@ export function RouteError({
   onRetry,
   retryLabel = "Try again",
   back,
+  icon,
   className,
 }: RouteErrorProps) {
+  const builtIn = (
+    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-error-muted)]">
+      <AlertTriangle className="h-5 w-5 text-[var(--color-error)]" aria-hidden />
+    </div>
+  );
   return (
     <div role="alert" className={cn(FRAME, className)}>
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-error-muted)]">
-        <AlertTriangle className="h-5 w-5 text-[var(--color-error)]" aria-hidden />
-      </div>
+      {icon ? (
+        <span aria-hidden className="inline-flex">
+          {icon}
+        </span>
+      ) : (
+        <IllustrationSlot
+          kind="error"
+          title={title}
+          size={ROUTE_ILLUSTRATION_SIZE}
+          fallback={builtIn}
+        />
+      )}
       <div className="max-w-[52ch] space-y-1">
         <h1 className="text-[18px] font-semibold text-[var(--color-text-primary)]">{title}</h1>
         <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
@@ -84,7 +105,7 @@ export interface RouteNotFoundProps {
   description?: string;
   /** Mono micro-label above the title. Default "404". */
   code?: string;
-  /** Replaces the default searching orb. */
+  /** Replaces the default searching orb, and any host illustration. */
   icon?: React.ReactNode;
   /** Useful next steps: host links (`<Link>`), rendered as a short list. */
   links?: RouteLinkElement[];
@@ -109,7 +130,14 @@ export function RouteNotFound({
   return (
     <div className={cn(FRAME, "gap-5", className)}>
       <span aria-hidden className="inline-flex text-[var(--color-text-tertiary)]">
-        {icon ?? <OrbLoader state={ORB_STATE.searching} size={64} />}
+        {icon ?? (
+          <IllustrationSlot
+            kind="notFound"
+            title={title}
+            size={ROUTE_ILLUSTRATION_SIZE}
+            fallback={<OrbLoader state={ORB_STATE.searching} size={64} />}
+          />
+        )}
       </span>
       <div className="max-w-[52ch] space-y-1.5">
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">

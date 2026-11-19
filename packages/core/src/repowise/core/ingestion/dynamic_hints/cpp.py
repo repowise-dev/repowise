@@ -15,10 +15,8 @@ from pathlib import Path
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {
-    "build", "out", "cmake-build-debug", "cmake-build-release",
-    "node_modules", ".git", "third_party", "vendor", "_deps",
-}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"build", "out", "cmake-build-debug", "cmake-build-release", "third_party", "_deps"}
 
 # Include fragments are scanned too: a generated binding table pasted into a
 # .inl is exactly where function-pointer and designated-initialiser wiring

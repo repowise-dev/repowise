@@ -16,7 +16,7 @@ def _ctx(root: Path, files: dict[str, str]) -> ResolverContext:
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    indexed = {rel for rel in files if not rel.lower().endswith((".dproj", ".lpi"))}
+    indexed = {rel for rel in files if not rel.lower().endswith((".dproj", ".lpi", ".lpk"))}
     return ResolverContext(
         path_set=indexed,
         stem_map=build_stem_map(indexed),
@@ -179,6 +179,81 @@ def test_lazarus_project_other_unit_files_act_as_search_path(tmp_path: Path) -> 
     )
 
     assert resolve_pascal_import_all("uPty", "app/core/uMain.pas", ctx)[0] == "app/unix/uPty.pas"
+
+
+def test_lazarus_package_files_and_unit_paths_resolve_its_uses(tmp_path: Path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        {
+            "pkg/Lib.lpk": (
+                '<CONFIG><Package Version="5"><Name Value="Lib"/><CompilerOptions><SearchPaths>'
+                '<OtherUnitFiles Value="unix"/></SearchPaths></CompilerOptions><Files>'
+                '<Item><Filename Value="core\\uMain.pas"/><UnitName Value="uMain"/></Item>'
+                '<Item><Filename Value="named\\uNamed.pas"/><UnitName Value="uNamed"/></Item>'
+                "</Files></Package></CONFIG>"
+            ),
+            "pkg/core/uMain.pas": _UNIT,
+            "pkg/named/uNamed.pas": _UNIT,
+            "pkg/alt/uNamed.pas": _UNIT,
+            "pkg/unix/uPty.pas": _UNIT,
+            "pkg/alt/uPty.pas": _UNIT,
+        },
+    )
+
+    assert resolve_pascal_import_all("uPty", "pkg/core/uMain.pas", ctx)[0] == "pkg/unix/uPty.pas"
+    assert resolve_pascal_import_all("uNamed", "pkg/core/uMain.pas", ctx)[0] == (
+        "pkg/named/uNamed.pas"
+    )
+
+
+def test_a_utf16_project_names_its_units(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, {"src/App.dpr": "", "src/Win/uPty.pas": _UNIT, "src/Posix/uPty.pas": _UNIT})
+    source = "program App;\nuses\n  uPty in 'Win\\uPty.pas';\nbegin\nend.\n"
+    (tmp_path / "src/App.dpr").write_bytes(source.encode("utf-16"))
+
+    assert resolve_pascal_import_all("uPty", "src/App.dpr", ctx) == ("src/Win/uPty.pas",)
+
+
+def test_an_ansi_project_reaches_a_non_ascii_unit_path(tmp_path: Path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        {"src/App.dpr": "", "src/Ядро/Модуль.pas": _UNIT, "src/Другое/Модуль.pas": _UNIT},
+    )
+    source = "program App;\nuses\n  Модуль in 'Ядро\\Модуль.pas';\nbegin\nend.\n"
+    (tmp_path / "src/App.dpr").write_bytes(source.encode("cp1251"))
+
+    assert resolve_pascal_import_all("Модуль", "src/App.dpr", ctx) == ("src/Ядро/Модуль.pas",)
+
+
+def test_a_non_ascii_in_path_naming_no_file_resolves_to_nothing(tmp_path: Path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        {"src/App.dpr": "program App;\nuses\n  Нет in 'Нет.pas';\nbegin\nend.\n"},
+    )
+
+    assert resolve_pascal_import_all("Нет", "src/App.dpr", ctx) == ()
+
+
+def test_an_ansi_in_path_no_code_page_places_resolves_to_nothing(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, {"src/App.dpr": ""})
+    (tmp_path / "src/App.dpr").write_bytes(
+        b"program App;\nuses\n  Gone in 'g\x98\xff.pas';\nbegin\nend.\n"
+    )
+
+    assert resolve_pascal_import_all("Gone", "src/App.dpr", ctx) == ()
+
+
+def test_project_text_held_in_memory_resolves_without_a_checkout() -> None:
+    source = b"program App;\nuses\n  uPty in 'Win\\uPty.pas';\nbegin\nend.\n"
+    indexed = {"src/App.dpr", "src/Win/uPty.pas", "src/Posix/uPty.pas"}
+    ctx = ResolverContext(
+        path_set=indexed,
+        stem_map=build_stem_map(indexed),
+        graph=nx.DiGraph(),
+        source_map={"src/App.dpr": source},
+    )
+
+    assert resolve_pascal_import_all("uPty", "src/App.dpr", ctx) == ("src/Win/uPty.pas",)
 
 
 def test_a_commented_out_in_path_is_ignored(tmp_path: Path) -> None:

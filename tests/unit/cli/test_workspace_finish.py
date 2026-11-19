@@ -41,7 +41,9 @@ def _facts(repos, provider=None) -> WorkspaceFacts:
 
 
 def test_one_repo_reads_like_the_single_repo_panel():
-    setup = EditorSetupOutcome(claude_code_connected=True, first_index=True)
+    setup = EditorSetupOutcome(
+        claude_code_connected=True, restart_hosts=({"id": "claude-code", "name": "Claude Code"},)
+    )
     facts = _facts(
         [RepoOutcome("beast", _WRITTEN, pages=937)],
         provider=provider_model("claude_cli", "claude_cli/claude-haiku-5-5"),
@@ -54,7 +56,7 @@ def test_one_repo_reads_like_the_single_repo_panel():
     assert "claude_cli/claude" not in text
     assert "553 files · 8,528 symbols" in text
     assert "beast" in text and "937 pages" in text
-    assert "Restart Claude Code" in text
+    assert "Restart to load the repowise tools: Claude Code" in text
     assert "Try asking your agent" in text
     assert "—" not in text
     steps = text[text.index("What's next:") :]

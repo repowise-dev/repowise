@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { Button } from "@repowise-dev/ui/ui/button";
+import type { FirstPromptFacts } from "@repowise-dev/ui/onboarding/first-prompts";
 import type { SetupResponse } from "@/lib/api/setup";
 import type { WelcomeLens } from "@/lib/welcome-moment";
 import {
@@ -46,8 +47,8 @@ export interface WelcomeDialogProps {
   years: number | null;
   lenses: WelcomeLens[];
   setup: SetupResponse | null;
-  /** The busiest file, for the second example question. */
-  hotspotPath: string | null;
+  /** Index facts the first prompts name. */
+  promptFacts: FirstPromptFacts;
 }
 
 /** Enter on the dialog itself (not on a control inside it) moves on a step.
@@ -129,7 +130,12 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
               <WelcomeStepRepo repoId={repoId} lenses={props.lenses} onNavigate={close} />
             )}
             {step === "agent" && (
-              <WelcomeStepAgent repoId={repoId} setup={props.setup} hotspotPath={props.hotspotPath} />
+              <WelcomeStepAgent
+                repoId={repoId}
+                repoName={props.repoName}
+                setup={props.setup}
+                promptFacts={props.promptFacts}
+              />
             )}
             {step === "yours" && <WelcomeStepYours repoId={repoId} setup={props.setup} />}
           </div>

@@ -7,10 +7,11 @@ machine; ``repowise status`` reads it back as p50 and p90 per tool.
 from __future__ import annotations
 
 import json
-import math
 import threading
 from collections import defaultdict
 from pathlib import Path
+
+from repowise.core.stats import percentile
 
 LOG_FILENAME = "mcp_calls.jsonl"
 MAX_LINES = 5000
@@ -64,12 +65,6 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
-def _percentile(sorted_values: list[int], pct: int) -> int:
-    """Nearest-rank percentile of an ascending, non-empty list."""
-    rank = max(1, math.ceil(pct / 100 * len(sorted_values)))
-    return sorted_values[rank - 1]
-
-
 def latency_summary(repo_root: str | Path) -> dict[str, dict[str, int]]:
     """``{tool: {"calls", "p50", "p90"}}`` from the log; empty when it is absent.
 
@@ -89,8 +84,8 @@ def latency_summary(repo_root: str | Path) -> dict[str, dict[str, int]]:
     return {
         tool: {
             "calls": len(values),
-            "p50": _percentile(sorted(values), 50),
-            "p90": _percentile(sorted(values), 90),
+            "p50": percentile(values, 0.5, method="nearest_rank"),
+            "p90": percentile(values, 0.9, method="nearest_rank"),
         }
         for tool, values in sorted(by_tool.items())
     }

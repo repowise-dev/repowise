@@ -31,7 +31,7 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RemoteServerEntryError
+from ..formats.server_entry import RemoteServerEntryError, agents_remove_command, read_servers
 from ..types import (
     Capability,
     DoctorReport,
@@ -41,6 +41,7 @@ from ..types import (
     InstallMethod,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -269,6 +270,21 @@ class KiroTarget:
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(scope, repo)), str(steering_path(scope, repo))]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``settings/mcp.json`` at user scope and in the workspace."""
+        scopes: list[tuple[Scope, Path | None]] = [(Scope.USER, None)]
+        if repo_path is not None:
+            scopes.append((Scope.PROJECT, repo_path))
+        return [
+            ServerMap(
+                mcp_config_path(scope, repo),
+                scope,
+                read_servers(mcp_config_path(scope, repo), "mcpServers"),
+                remove_command=agents_remove_command(ID, scope.value),
+            )
+            for scope, repo in scopes
+        ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """User-scope health, plus the workspace half when *repo_path* is given."""

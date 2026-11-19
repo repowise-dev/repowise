@@ -6,11 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.settings.model import flag
 
 from ...ingestion.git_indexer.function_blame import BlameIndex
 from ...ingestion.package_roots import module_for as _module_for
-from ..execution_graph import file_of_symbol
 from ..graph_view import HasEdge
 from ..test_reach.type_only import is_type_only, may_be_type_only
 from .asserts.lexicon import AssertVocabulary

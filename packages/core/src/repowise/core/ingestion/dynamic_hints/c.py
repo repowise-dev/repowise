@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"build", "out", "node_modules", ".git", "third_party"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"build", "out", "third_party"}
 
 # fp = some_function;  (assigning a function name to a variable — common C function-pointer wiring)
 _FN_PTR_ASSIGN_RE = re.compile(

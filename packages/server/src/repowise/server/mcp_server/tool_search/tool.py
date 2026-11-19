@@ -216,25 +216,25 @@ async def search_codebase(
     symbol_kind: str | None = None,
     pattern: str | None = None,
 ) -> dict:
-    """Find code by concept, symbol, or path — hybrid codebase search.
+    """Find code by concept, symbol, or path: hybrid codebase search.
 
     For a how/where/why question call get_answer. Use this to enumerate
     matches, resolve an identifier to a symbol_id, or find files for
     get_context. Identifier, literal, `a|b|c` or regex queries return
     `lines` (path, line, kind, text; definitions first, one group per
-    alternative) read from live files; when `complete` is true they are
-    every match, so no grep is needed. `candidates` lists
-    distinct files to Read, best first.
+    alternative; `in` names the enclosing symbol until it changes) read
+    from live files; when `complete` is true they are every match, so no
+    grep is needed. `candidates` lists distinct files to Read, best first.
 
     Args:
-        query: identifier, `a|b` alternation, regex, path, or natural language.
-        limit: max results (default 5).
-        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        query: Identifier, `a|b` alternation, regex, path, or natural language.
+        limit: Max results.
+        mode: auto | symbol | path | concept | hybrid.
         kind: implementation | test | config | doc.
         symbol_kind: function | class | method | ...
         page_type: file_page | module_page.
-        repo: alias, or "all" for workspace-wide.
-        pattern: alias for query.
+        repo: Alias, or "all" for workspace-wide.
+        pattern: Alias for query.
     """
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
@@ -296,8 +296,26 @@ async def search_codebase(
     return _flag_degraded_legs(_drop_echoed_candidates(response))
 
 
+def _drop_echoed_signatures(response: dict) -> None:
+    """Drop a symbol row's ``signature`` where ``lines`` holds its live
+    definition line with the whole parameter list on it."""
+    definitions = {
+        (item.get("repo"), item.get("path"), item.get("line")): item.get("text") or ""
+        for item in response.get("lines") or ()
+        if isinstance(item, dict) and item.get("kind") == "definition"
+    }
+    for row in response.get("results") or ():
+        if not isinstance(row, dict) or row.get("type") != "symbol":
+            continue
+        text = definitions.get((row.get("repo"), row.get("path"), row.get("start_line")))
+        if text and "(" in text and text.count(")") >= text.count("("):
+            row.pop("signature", None)
+
+
 def _drop_echoed_candidates(response: dict) -> dict:
-    """Drop ``candidates`` that only repeat the result paths in result order."""
+    """Drop ``candidates`` that only repeat the result paths in result order,
+    and signatures ``lines`` already shows."""
+    _drop_echoed_signatures(response)
     candidates = response.get("candidates")
     if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
         return response

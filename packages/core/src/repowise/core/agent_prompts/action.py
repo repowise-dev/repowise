@@ -7,11 +7,11 @@ capped the way every surface sees it.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 
 from repowise.core.analysis.health.biomarker_labels import biomarker_label
+from repowise.core.git_sha import is_sha_prefix
 
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, count, join_sections, repo_suffix
@@ -28,9 +28,6 @@ _EXPECTED = (
     "2. The tests you ran, before and after.",
     "3. What remains against the done condition.",
 )
-
-_COMMIT = re.compile(r"[0-9a-f]{7,40}")
-
 
 def _short(symbol: str) -> str:
     return symbol.split("::")[-1]
@@ -49,7 +46,7 @@ def _detail_line(d: Mapping[str, Any]) -> str:
         if p
     )
     ref = d.get("ref")
-    commit = f" (commit {ref[:10]})" if ref and _COMMIT.fullmatch(ref) else ""
+    commit = f" (commit {ref[:10]})" if is_sha_prefix(ref) else ""
     reason = "\n  - " + d["reason"] if d.get("reason") else ""
     return f"- {where}{f': {what}' if what else ''}{commit}{reason}"
 

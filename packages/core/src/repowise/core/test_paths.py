@@ -139,8 +139,9 @@ _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 # that shows up in real directory names. These count only when the
 # filename corroborates, or when the file's own language declares the token
 # (Ruby's spec/ needs no corroboration - a Ruby file under spec/ is RSpec
-# material whatever its name; Python's t/ likewise - a Python file under t/
-# is test material whatever its name).
+# material whatever its name; Python's and Perl's t/ likewise - a Python or
+# Perl file under t/ is test material whatever its name). A language declares
+# its tokens with ``test_dir_tokens`` on its spec.
 _AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs", "t"})
 
 # A whole module named for testing and nothing else: Django's per-app
@@ -242,6 +243,7 @@ class _Conventions:
     stem_prefixes: tuple[str, ...]
     stem_suffixes: tuple[str, ...]
     infixes: tuple[str, ...]
+    test_exts: frozenset[str]
     source_exts: frozenset[str]
     exact_stem_exts: frozenset[str]
     camel_res: dict[str, re.Pattern[str]]
@@ -277,6 +279,7 @@ def _conventions() -> _Conventions:
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
         stem_suffixes=REGISTRY.test_stem_suffixes(),
         infixes=REGISTRY.test_infixes(),
+        test_exts=REGISTRY.test_extensions(),
         source_exts=REGISTRY.all_code_extensions(),
         exact_stem_exts=REGISTRY.extensions_for(("python", "rust")),
         camel_res=REGISTRY.camel_test_res_by_extension(),
@@ -369,6 +372,8 @@ def _is_test_name(filename: str) -> bool:
     ext = PurePosixPath(lowered).suffix
     if ext not in rules.source_exts:
         return False
+    if ext in rules.test_exts:
+        return True
     if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
         return True
     stem = PurePosixPath(lowered).stem
@@ -663,6 +668,17 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
     )
 
 
+def is_test_support_module(path: str) -> bool:
+    """Test-tree code a runner never collects: Perl's ``t/lib/Helper.pm``.
+
+    Ingestion still marks it test material; reach walks through it to the
+    test that loads it, as through a Python helper.
+    """
+    from .ingestion.languages.registry import REGISTRY
+
+    return PurePosixPath(path).suffix.lower() in REGISTRY.test_support_extensions()
+
+
 def is_test_path(
     path: str,
     language: str | None = None,
@@ -800,6 +816,38 @@ def is_test_to_production_pair(
     against another file, with no node to read a stored flag from.
     """
     return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
+
+
+#: The suffixes pytest-cov's ``--cov-context=test`` adds, one context per phase.
+_TEST_PHASES = ("|setup", "|run", "|teardown")
+
+# Extensions that make a test-id prefix a source path rather than a bare suite name.
+_TEST_ID_FILE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
+
+
+def nodeid_without_phase(test_id: str) -> str:
+    """*test_id* without the ``|setup`` / ``|run`` / ``|teardown`` pytest-cov adds.
+
+    The three phases are one test: fixture setup and teardown lines are what
+    that test exercised.
+    """
+    for phase in _TEST_PHASES:
+        if test_id.endswith(phase):
+            return test_id[: -len(phase)]
+    return test_id
+
+
+def nodeid_test_file(test_id: str) -> str | None:
+    """The path a test id names before ``::``, or ``None`` for a bare suite name.
+
+    ``tests/test_x.py::Class::test|run`` gives ``tests/test_x.py``; an lcov
+    ``TN:`` label with no path in it gives ``None``.
+    """
+    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
+    if not head:
+        return None
+    looks_pathy = "/" in head or "\\" in head or head.endswith(_TEST_ID_FILE_EXTS)
+    return head if looks_pathy else None
 
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
