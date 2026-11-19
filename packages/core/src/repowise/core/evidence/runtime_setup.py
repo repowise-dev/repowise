@@ -52,9 +52,13 @@ _MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _COMMAND_WORDS = frozenset({"pytest", "python", "py.test"})
 _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run"), ("pipenv", "run"))
 
-# pyinstrument through its API: the ``pyinstrument -r speedscope`` command
-# wrote only import frames on Windows, and its renderer drops most frames
-# unless the filter threshold is 0. The path is fixed before the program runs,
+# pyinstrument through its API, sampling every 10 ms (100 Hz, as Go's pprof
+# and py-spy do) and written by the recipe as a sampled speedscope profile:
+# one sample per pyinstrument sample, weighted by the wall time it covered.
+# That keeps the sample count, so every share has an interval, and keeps the
+# file small: the renderer's evented output (no sample count) grew to about
+# 100 MB for a 10-minute run. A frame is pyinstrument's own identifier
+# (``co_name``, file, first line). The path is fixed before the program runs,
 # so a ``chdir`` does not move it, and an older profile is removed first. The
 # profile is written at exit when the run succeeded: no uncaught exception and
 # an outermost exit code in ``{ok}``. Only the program's own exit is judged
@@ -65,21 +69,27 @@ _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run")
 # profile in the handler, then ends the process with ``os._exit(143)``, so a
 # non-daemon thread or a program that swallows the interrupt cannot keep a
 # timed-out run alive. ``W`` writes once and is named so the run's own
-# ``except ... as e`` cannot unbind it. ``n`` holds the failed-test count a pytest run reports; it lands in the
-# profile as ``testsFailed``. Ceiling: a program that installs its own
+# ``except ... as e`` cannot unbind it. ``n`` holds the failed-test count a
+# pytest run reports; it lands in the profile as ``testsFailed``. Ceiling: a program that installs its own
 # ``sys.excepthook`` hides its crashes, one that installs its own SIGINT or
 # SIGTERM handler loses the partial profile, and Windows delivers no SIGTERM
-# on a kill. Double quotes outside, single inside:
-# one spelling for sh and PowerShell.
+# on a kill. Double quotes outside, single inside: one spelling for sh and
+# PowerShell.
 _PYINSTRUMENT = (
-    "import sys,os,atexit,signal;from pyinstrument import Profiler;"
-    "from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();"
+    "import sys,os,atexit,signal,json;from pyinstrument import Profiler,__version__ as V;"
+    "p=Profiler(interval=0.01);"
     "o=os.path.abspath('{out}');os.makedirs(os.path.dirname(o),exist_ok=True);"
-    "os.path.exists(o) and os.remove(o);f=[];c=[0];i=[];n=[];"
+    "os.path.exists(o) and os.remove(o);f=[];c=[0];i=[];n=[];F={{}};"
     "sys.excepthook=(lambda h:lambda *a:(f.append(1),h(*a)))(sys.excepthook);"
-    "W=lambda:(p.stop(),(i or not f and c[0] in {ok}) and open(o,'w',encoding='utf-8').write("
-    "(lambda t:t.rstrip()[:-1]+(',%stestsFailed%s:%d}}'%(chr(34),chr(34),n[0]) if n else '}}'))("
-    "p.output(SpeedscopeRenderer(processor_options={{'filter_threshold':0}})))));"
+    # chr(36) is ``$``, which sh and PowerShell expand inside double quotes.
+    "w=lambda r:json.dump({{chr(36)+'schema':'https://www.speedscope.app/file-format-schema.json',"
+    "'exporter':'pyinstrument@'+V,'profiles':[{{'type':'sampled','name':'python','unit':'seconds',"
+    "'startValue':0,'endValue':sum(t for _,t in r),"
+    "'samples':[[F.setdefault(x.partition(chr(1))[0],len(F)) for x in k] for k,_ in r],"
+    "'weights':[round(t,6) for _,t in r]}}],"
+    "'shared':{{'frames':[(lambda a:{{'name':a[0],'file':a[1],'line':int(a[2])}})((x.split(chr(0))+['','0'])[:3]) for x in F]}},"
+    "**({{'testsFailed':n[0]}} if n else {{}})}},open(o,'w',encoding='utf-8'),separators=(',',':'));"
+    "W=lambda:(lambda r:(i or not f and c[0] in {ok}) and w(r))(p.stop().frame_records);"
     "signal.signal(signal.SIGINT,lambda *a:(i.append(1),signal.default_int_handler(*a)));"
     "signal.signal(signal.SIGTERM,lambda *a:(i.append(1),W(),os._exit(143)));"
     "atexit.register(W);"
@@ -88,7 +98,8 @@ _PYINSTRUMENT = (
 #: Exit codes a profiled run may end with and still be stored. pytest's 1 means
 #: the suite ran and some tests failed: the profile still measured the whole
 #: workload, and the count is recorded. 2 to 5 (interrupted, internal error,
-#: usage error, no tests) and any crash are refused.
+#: usage error, no tests) and any crash are refused, unless the recipe's own
+#: Ctrl-C or SIGTERM handler saw the run stopped.
 _CLEAN_EXITS = "(None,0)"
 _TEST_EXITS = "(None,0,1)"
 #: How the Python suite recipe may be cut short. A Windows kill delivers no
@@ -101,7 +112,9 @@ SUBSET_NOTE = (
 ARGS_PLACEHOLDER = "<args>"
 _ARGS_REASON = (
     f"Replace {ARGS_PLACEHOLDER} with the arguments of a representative run, then run it; "
-    "with no arguments the program only prints its usage."
+    "with no arguments the program only prints its usage. Replace it in the ingest line's "
+    "workload too, with a short name for those arguments (the subcommand), so runs with "
+    "different arguments keep separate histories."
 )
 
 
@@ -576,12 +589,21 @@ def _unit_targets(
 
 
 def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
-    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen."""
+    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen.
+
+    Its ingest line names the workload per arguments (``app <args>``), so an
+    ``init`` run and an ``update`` run of one program never share a history.
+    """
     if target["class"] != "entry_point" or not target["command"]:
         return target
+    ingest = target["ingest"]
+    if ingest:
+        workload = target["workload"]
+        ingest = ingest.replace(f'--workload "{workload}"', f'--workload "{workload} {ARGS_PLACEHOLDER}"')
     return {
         **target,
         "command": f"{target['command']} {ARGS_PLACEHOLDER}",
+        "ingest": ingest,
         "reason": target["reason"] or _ARGS_REASON,
     }
 

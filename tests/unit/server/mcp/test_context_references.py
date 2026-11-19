@@ -118,6 +118,7 @@ async def test_definition_import_call_and_same_file_call(session, repo_id, tmp_p
     ]
     assert out["complete"] is True
     assert "reasons" not in out
+    assert "hint" not in out
 
 
 @pytest.mark.asyncio
@@ -269,6 +270,10 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
     assert out["reasons"] == [
         "may be called through a module object outside an import: app/lazy.py"
     ]
+    assert out["hint"] == (
+        r'Not every site is listed. Before answering, run search_codebase(query="\bbackend_of\b")'
+        " for every line naming it."
+    )
     assert "app/lazy.py" not in out["files"]
 
 
@@ -301,6 +306,14 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
     assert out["complete"] is complete
     assert ("app/lazy.py" in out["files"]) is True
     assert ("reasons" in out) is not complete
+
+
+@pytest.mark.parametrize(
+    ("name", "query"),
+    [("backend_of", r"\bbackend_of\b"), ("$scope", r"\$scope\b"), ("operator+", r"\boperator\+")],
+)
+def test_the_hint_query_matches_the_name_as_a_whole_word(name, query):
+    assert _edit_sites._word_regex(name) == query
 
 
 @pytest.mark.asyncio
@@ -792,6 +805,8 @@ async def test_block_over_its_budget_serves_leading_files_with_the_exact_total(
     assert out["sites_total"] == 1 + 40 * 2
     assert out["complete"] is False
     assert f"{len(out['files'])} of 41 files shown" in out["reasons"][-1]
+    # The budget cut says where the rest are; no search is needed.
+    assert "hint" not in out
     response: dict = {}
     collector.attach(response)
     assert response["_meta"]["omitted"]["refs"]
@@ -1718,3 +1733,30 @@ def test_a_module_handed_on_is_found_by_the_name_its_import_spells(
     (tmp_path / rel).write_text(user, encoding="utf-8")
 
     assert _edit_sites._hands_on_module(tmp_path, rel, {holder}) is handed
+
+
+@pytest.mark.parametrize("name", ["backend_of", "$scope", "operator+", "__init__"])
+def test_the_hint_query_is_read_as_a_regex_by_search_codebase(name):
+    from repowise.server.mcp_server._query_shape import query_pattern
+
+    shape = query_pattern(_edit_sites._word_regex(name))
+
+    assert shape is not None and shape[0] == "regex"
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
+    session, repo_id, tmp_path, monkeypatch
+):
+    files = {"web/a.ts": _PICK, "web/m.ts": "import * as a from './a'\nconst m = a\nm.pick(1)\n"}
+    files.update({f"web/u{i:02}.ts": "import { pick } from './a'\npick(1)\n" for i in range(40)})
+    node = await _seed_js(session, repo_id, tmp_path, files)
+    node.name = "web.a.pick"  # a qualified name: the query keeps its last part
+    monkeypatch.setattr(_edit_sites, "effective_char_budget", lambda: 1000)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert len(out["reasons"]) > 1
+    assert "files shown to fit" in out["reasons"][-1]
+    assert out["hint"] == _edit_sites.incomplete_hint("pick")
+    assert r'query="\bpick\b"' in out["hint"]

@@ -67,27 +67,35 @@ read, a program with no profiler flag).
 ### Python example
 
 On a package whose `pyproject.toml` declares a console script `app =
-"app.cli:main"` and depends on `pytest-benchmark`, `setup` lists three targets:
-`app` (`entry_point`), `pytest bench` (`benchmark`) and `python tests`
-(`unit_test`). Its `next_call` profiles the console script with pyinstrument, in
-process, and ingests the Speedscope file:
+"app.cli:main"` and a `test` extra with `pytest-benchmark`, `setup` lists three
+targets: `app` (`entry_point`), `pytest bench` (`benchmark`) and `python tests`
+(`unit_test`). An entry point waits for its arguments, so `next_call` profiles
+the benchmark and names the entry point under `optional`:
 
 ```json
 "next_call": {
-  "purpose": "Profile app (entry_point), then ingest the profile.",
+  "purpose": "Profile pytest bench (benchmark), then ingest the profile.",
   "steps": [
-    { "cwd": "/work/app", "run": "python -m pip install pyinstrument" },
-    { "cwd": "/work/app", "run": "python -c \"import sys,os,atexit;from pyinstrument import Profiler;from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();o=os.path.abspath('.repowise/app.speedscope.json');os.makedirs(os.path.dirname(o),exist_ok=True);atexit.register(lambda:(p.stop(),open(o,'w',encoding='utf-8').write(p.output(SpeedscopeRenderer(processor_options={'filter_threshold':0})))));p.start();sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"" },
-    { "cwd": "/work/app", "run": "repowise evidence add .repowise/app.speedscope.json --workload \"app\" --class entry_point --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
+    { "cwd": "/work/app", "run": "python -m pip install -e \".[test]\" pytest pytest-cov" },
+    { "cwd": "/work/app", "run": "git clean -fqx -- .repowise/pytest-bench.json" },
+    { "cwd": "/work/app", "run": "pytest --benchmark-only --benchmark-json=.repowise/pytest-bench.json" },
+    { "cwd": "/work/app", "run": "repowise evidence add .repowise/pytest-bench.json --workload \"pytest bench\" --class benchmark --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
     { "cwd": "/work/app", "run": "repowise evidence status" }
-  ]
+  ],
+  "optional": {
+    "purpose": "Fill <args> of these entry points (units[].runtime) with a representative run, then run each command and its ingest line.",
+    "workloads": ["app"]
+  }
 }
 ```
 
-The benchmark target is `pytest --benchmark-only
---benchmark-json=.repowise/pytest-bench.json`, run from the repository root. A
-unit that runs under `uv` gets `uv run --with pyinstrument python -c ...` and no
-install step.
+The `app` target's command is `python -c "..." <args>`: pyinstrument in process,
+sampling every 10 ms, written as a sampled Speedscope profile (one sample per
+pyinstrument sample, weighted by the wall time it covered), so every run
+carries its sample count and each share gets an interval. Its ingest line names
+the workload `app <args>`: the agent fills both, so an `app build` run and an
+`app serve` run keep separate histories. A unit that runs under `uv` gets `uv
+run --with pyinstrument python -c ...` and no install step.
 
 ### Go example
 
@@ -114,7 +122,7 @@ The "Connect evidence" prompt hands an agent the loop rather than stack
 commands, so the commands always come from `setup`:
 
 ```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats steps you already ran. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats what you already did. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
 ```
 
 From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
@@ -146,12 +154,16 @@ It exits 1 when nothing was stored and 2 on a usage error. A run that reads
 but does not store has `stored: false` and a `reason` (`no_index`,
 `mostly_unmapped`, `nothing_matched`); a file refused before it is read
 (`file_too_large`, `invalid_evidence`) prints an `error`, `message` and
-`remedy` instead. The text output names what was
-stored, what was skipped by reason and whether the run reads as stale. The JSON
+`remedy` instead; for `file_too_large` the remedy is the `repowise config set
+evidence.max_file_mb <n>` line that admits the file. The text output names what was
+stored, what was skipped by reason and whether the run reads as stale. An
+`entry_point` profile that covers under 3 seconds is stored with a warning: a
+program that deferred its work or printed its usage measured little. The JSON
 result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
 `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
 `unmatched_sample`, `tests_failed`, `input_format`, `conversion` (for a converted profile:
-`total`, `unit`, `explained_share`, `skip_rate`, `skipped_share_by_reason`,
+`total`, `unit`, `repo_self_share`, `wait_share`, `library_share`,
+`explained_share`, `skip_rate`, `skipped_share_by_reason`,
 `self_unattributed`, `symbols`), and once stored `run_id`, `restamped`,
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
@@ -191,7 +203,7 @@ The format is detected from the content, never the file name;
 
 | Format | Written by | What a frame carries |
 |---|---|---|
-| `speedscope` | `pyinstrument -r speedscope` (or through its API, as `setup` prints), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
+| `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
@@ -246,7 +258,8 @@ they are joined.
 | entry list | yes | `symbols`, `benchmarks`, `tests` or `queries`, by kind |
 | `value_kind` | profile | `cpu` or `wall` |
 | `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
-| `total`, `explained` | no | The whole run's value, and the part with a repo frame on the stack; their ratio is the explained share |
+| `total`, `explained` | no | The whole run's value, and the part with a production frame anywhere on the stack |
+| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in dependencies (see below) |
 | `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement |
 | `dirty` | no | Uncommitted changes at measurement |
 | `tool` | no | `name` and `version`, one word each |
@@ -254,7 +267,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location; `self` and `total` in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
+| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required) |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -307,17 +320,32 @@ benchmark or test keeps its row without its function and is counted under
   symbol of their own are charged to the enclosing function when the frame's
   qualified name shows it.
 - **Module bodies.** Import-time code (Python `<module>`, Go package `init`)
-  resolves to its file and counts as explained. The index keeps no symbol for a
+  resolves to its file. The index keeps no symbol for a
   file's top level, so its self time is reported under `self_unattributed` as
   `module_body`, never dropped.
-- **Inclusive and self.** Each function gets inclusive time (every stack it is
-  on, once per stack even when it recurses) and self time (stacks where it is
-  the innermost repo frame; built-ins and dependencies below it count as its
-  own). A stack whose innermost repo frame was skipped charges no function;
-  its self time is reported under `self_unattributed` by that skip reason.
-- **Explained share.** `explained` is the weight of stacks with a resolved
-  frame in production code (`code_origin`). `add` prints it beside the skip
-  rate, the share of repo frame time that did not join, broken down by reason.
+- **Self is the cost.** A function's self time is the stacks where it is the
+  innermost repo frame somebody here maintains. Built-ins, the standard
+  library and dependencies below it (outside the checkout, or vendored and
+  generated files inside it) count as its own, so I/O, a C extension or a
+  library call stays with the code that made it. A **wait** does not: a stack
+  blocked below it in an event loop's select or turn, a thread or process join,
+  a queue get, a future's result, a subprocess wait or a sleep charges it
+  nothing. Functions are ranked by self time.
+- **Inclusive** time (every stack a function is on, once per stack even when
+  it recurses) is kept as context. It never ranks: an entry function or a
+  dispatcher is on every stack and costs nothing itself.
+- A stack whose innermost repo frame was skipped charges no function; its self
+  time is reported under `self_unattributed` by that skip reason.
+- **Where the time went.** Each stack counts once: `waits` (blocked as above),
+  `libraries` (a dependency frame runs below the innermost repo frame, or on a
+  stack with no repo frame),
+  `repo_self` (neither, and that frame is a production function by
+  `code_origin`: time in production repo code itself), or none of them (test or
+  tooling code, module bodies, unjoined frames, stacks with no repo frame that
+  run only the runtime and standard library).
+  `add` prints the three shares beside the skip rate, the share of repo frame
+  time that did not join, broken down by reason. `explained` (a production
+  frame anywhere on the stack) is still written but says nothing about cost.
 
 A profile or query-count run where more than half the entries did not map is
 refused unless `--allow-partial`; stored that way it is flagged
@@ -342,7 +370,10 @@ repowise evidence status --format json
 One line per workload (kind, name, environment), the newest run of each: its
 kind, class and environment, freshness against the indexed commit (`current`,
 `stale` or `unknown`), the commit, how many entries were stored, how much of
-the run repo code explains, and `(partial)` when flagged. The JSON form adds
+the run went to production repo code itself, to waits and to libraries, and
+`(partial)` when flagged. The JSON form carries them as `repo_self_share`,
+`wait_share` and `library_share` (`null` for a run stored before they were
+recorded: add the profile again). The JSON form adds
 `runs_stored` per kind and, per run, the tool, value kind, unit, `ingested_at`,
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
@@ -355,7 +386,7 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 
 | Stored | Never stored |
 |---|---|
-| Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value | Raw stacks or samples |
+| Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value, the repo-self, wait and library values | Raw stacks or samples |
 | Per function: symbol id, start line, self and inclusive value, sample counts, call count when a tracer gave one | Frames outside the checkout, labels, environment variables, command lines |
 | Per benchmark: its name, unit, `lower_is_better` and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
 | Per test: test id, test file, duration, outcome | |
@@ -372,7 +403,7 @@ The `evidence:` block of `.repowise/config.yaml`:
 | Key | Default | What it does |
 |---|---|---|
 | `max_file_mb` | `20` | Largest file read; a bigger one is refused before it is read |
-| `max_symbols_per_run` | `1500` | Most functions stored from one profile, costliest first; the rest are counted as truncated |
+| `max_symbols_per_run` | `1500` | Most functions stored from one profile, costliest self time first; the rest are counted as truncated |
 | `max_rows_per_run` | `30000` | Most benchmark, test or query rows stored from one run |
 | `history_runs` | `20` | Runs kept per workload and environment, per kind |
 | `max_runs` | `50` | Runs kept per kind across all workloads |

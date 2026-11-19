@@ -518,6 +518,59 @@ def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
     ) == "speedscope"
 
 
+# Waits, libraries and the repo code's own cost.
+SPLIT = {**PYSPY, "shared": {"frames": [
+    {"name": "<module>", "file": "C:\\Python\\runpy.py", "line": 88},                      # 0
+    {"name": "App.run", "file": _f("pkg\\app.py"), "line": 10},                           # 1
+    {"name": "App.load", "file": _f("pkg\\app.py"), "line": 25},                          # 2
+    {"name": "EpollSelector.select", "file": "C:\\Python\\Lib\\selectors.py", "line": 9},  # 3
+    {"name": "epoll.poll", "file": "<built-in>", "line": 0},                              # 4
+    {"name": "read", "file": "C:\\Python\\json.py", "line": 7},                           # 5
+    {"name": "execute", "file": "C:\\venv\\Lib\\site-packages\\sa\\engine.py", "line": 3},  # 6
+    {"name": "get", "file": _f(".venv\\Lib\\site-packages\\lib\\x.py"), "line": 4},       # 7
+    {"name": "Condition.wait", "file": "C:\\Python\\Lib\\threading.py", "line": 5},       # 8
+]}, "profiles": [{
+    "type": "sampled", "unit": "seconds",
+    "samples": [[0, 1, 3, 4], [0, 1, 2, 5], [0, 1, 2, 6], [0, 1, 7], [0, 1, 7, 8], [0, 8]],
+    "weights": [4, 2, 1, 1, 1, 1],
+}]}
+
+
+def test_waits_charge_no_self_time_and_libraries_stay_with_their_caller() -> None:
+    conv = _convert(profile_formats.get("speedscope").read(_bytes(SPLIT)))
+    got = _entries(conv)
+    # The event loop's select under run is a wait; a library inside the checkout
+    # (a venv) is charged to run like one outside it.
+    assert (got["pkg.app.App.run"]["self"], got["pkg.app.App.run"]["total"]) == (1, 9)
+    # json (stdlib) and sqlalchemy (a dependency) below load are load's cost.
+    assert (got["pkg.app.App.load"]["self"], got["pkg.app.App.load"]["total"]) == (3, 3)
+    # Costliest first by self, not by inclusive.
+    assert [e["function"] for e in conv.document["symbols"]] == [
+        "pkg.app.App.load", "pkg.app.App.run",
+    ]
+    assert (conv.repo_self, conv.waits, conv.libraries) == (2, 6, 2)
+    summary = conv.summary()
+    assert (summary["repo_self_share"], summary["wait_share"], summary["library_share"]) == (
+        0.2, 0.6, 0.2,
+    )
+    assert (conv.document["repo_self"], conv.document["waits"]) == (2, 6)
+    assert parse_evidence(json.dumps(conv.document)).waits == 6
+
+
+def test_a_wait_is_a_runtime_or_standard_library_frame_only() -> None:
+    from repowise.core.evidence.profile_convert import is_wait_frame
+
+    def frame(path: str, name: str) -> ProfileFrame:
+        return ProfileFrame(path=path, line=1, language="python", function=name)
+
+    assert is_wait_frame(frame("/usr/lib/python3.12/threading.py", "Event.wait"))
+    assert is_wait_frame(frame("/usr/lib/python3.12/concurrent/futures/_base.py", "result"))
+    assert is_wait_frame(frame("<built-in>", "time.sleep"))
+    assert not is_wait_frame(frame("/usr/lib/python3.12/threading.py", "Thread.start"))
+    assert not is_wait_frame(frame("/venv/site-packages/pkg/queue.py", "get"))
+    assert not is_wait_frame(frame("/usr/lib/python3.12/json/decoder.py", "decode"))
+
+
 @pytest.mark.parametrize(("given", "read"), [(3, 3), (0, 0), (-1, None), ("3", None), (True, None)])
 def test_a_speedscope_file_carries_the_failed_test_count_of_its_run(given, read) -> None:
     run = profile_formats.get("speedscope").read(_bytes({**PYINSTRUMENT, "testsFailed": given}))

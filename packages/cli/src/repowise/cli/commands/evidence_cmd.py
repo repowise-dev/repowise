@@ -12,6 +12,7 @@ its class, and what did not map.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -237,7 +238,8 @@ def _read_evidence(
             "file_too_large",
             f"{file} is {size / 1048576:.1f} MB, over evidence.max_file_mb ({max_file_mb:g}).",
             fmt,
-            remedy="Raise evidence.max_file_mb in .repowise/config.yaml, or ingest a smaller run.",
+            remedy=f"Run `repowise config set evidence.max_file_mb {math.ceil(size / 1048576)}`, "
+            "then add the file again, or ingest a smaller run.",
         )
     data = file.read_bytes()
     name = _input_format(input_format, data)
@@ -413,6 +415,7 @@ async def _store(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
         _report_conversion(notices, read.format, conversion)
+        _warn_short_run(notices, workload_class, doc.value_kind, conversion)
 
     paths = entry_paths(doc)
     origins = await load_origins(session, target.repo.id, paths)
@@ -517,18 +520,44 @@ async def _convert(
 
 
 def _report_conversion(notices: Any, name: str, conversion: Any) -> None:
-    """How the profile's frames joined: explained share and skip rate, never silent."""
+    """Where the profile's time went and how its frames joined, never silent."""
+    from repowise.core.evidence.status import split_words
+
     summary = conversion.summary()
-    share, rate = summary["explained_share"], summary["skip_rate"]
-    explained = "unknown" if share is None else f"{share:.0%}"
+    rate = summary["skip_rate"]
+    split = split_words(summary) or "repo code itself unknown"
     skipped = "no repo frames" if rate is None else f"{rate:.0%} of repo frame time skipped"
     reasons = ", ".join(
         f"{reason} {part:.0%}" for reason, part in summary["skipped_share_by_reason"].items()
     )
     notices.print(
-        f"Converted {escape(name)}: repo code explains {explained} of "
+        f"Converted {escape(name)}: {split} of "
         f"{_total(conversion.total)} {escape(conversion.unit)}; {skipped}"
         + (f" ({escape(reasons)})." if reasons else ".")
+    )
+
+
+#: Seconds in one unit of a timed profile; a ``samples`` unit says nothing of time.
+_SECONDS = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+#: An entry point measured for less than this most likely did no real work.
+_SHORT_RUN_S = 3.0
+
+
+def _warn_short_run(notices: Any, workload_class: str, value_kind: str | None, conversion: Any) -> None:
+    """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
+
+    A program that deferred to another process or printed its usage exits 0
+    having measured nothing representative, and its run would still rank.
+    """
+    per = _SECONDS.get(conversion.unit)
+    if workload_class != "entry_point" or value_kind != "wall" or per is None:
+        return
+    if conversion.total * per >= _SHORT_RUN_S:
+        return
+    notices.print(
+        f"[yellow]This entry point's profile covers {conversion.total * per:.1f} s: a run "
+        "that deferred its work or printed its usage measures little. Check its output, and "
+        "if it did no real work, run it again with arguments that do.[/yellow]"
     )
 
 
@@ -701,6 +730,10 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
     notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
     for step in call["steps"]:
         notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+    if call.get("optional"):
+        optional = call["optional"]
+        notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
+                      f"{escape(optional['purpose'])}")
 
 
 def _setup_lines(unit: dict[str, Any]) -> list[str]:
@@ -795,7 +828,8 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
 
     Each run says how fresh it is against the indexed commit (current, stale
-    or unknown), how much of the run repo code explains, and what was skipped.
+    or unknown), where its time went (production repo code itself, waits,
+    libraries), and what was skipped.
     """
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
@@ -818,12 +852,15 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
 
 def _status_line(run: dict[str, Any]) -> str:
     """One workload's newest run, in words; an unknown value says so, never 0."""
-    share = run["explained_share"]
-    if share is None:
-        explained = "explained share unknown"
+    from repowise.core.evidence.status import split_words
+
+    split = split_words(run)
+    if split is None:
+        # A profile stored before the split was recorded; other kinds have none.
+        explained = "; time split unknown" if run["kind"] == "profile" else ""
     else:
         unit = f" {escape(run['unit'])}" if run["unit"] else ""
-        explained = f"repo code explains {share:.0%} of {_total(run['total_value'])}{unit}"
+        explained = f"; {split} of {_total(run['total_value'])}{unit}"
     units = run["units"]
     stored = (
         f"{units['matched']} of {units['total']} entries stored"
@@ -833,7 +870,7 @@ def _status_line(run: dict[str, Any]) -> str:
     return (
         f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
         f"{escape(run['environment'])}): {run['freshness']} at "
-        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}"
+        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}{explained}"
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
