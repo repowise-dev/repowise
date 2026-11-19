@@ -198,7 +198,9 @@ def _entry(
         "allocs_per_op": fewest("allocs/op"),
         "bytes_per_op": fewest("B/op"),
     }
-    where = locate(pkg, name.split("/", 1)[0])
+    # The function is the name's first part, without a ``-P`` a series kept
+    # (``-cpu 1,4``): a Go identifier holds no ``-``.
+    where = locate(pkg, name.split("/", 1)[0].split("-", 1)[0])
     if where is not None:
         entry.update(path=where[0], function=where[1], line=where[2], exact=True)
     return entry

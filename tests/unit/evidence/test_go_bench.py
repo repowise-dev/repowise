@@ -170,3 +170,10 @@ def test_a_failed_sub_benchmark_counts_once_with_its_parent() -> None:
     )
     doc = parse_evidence(json.dumps(profile_formats.get("go-bench").to_v1(data, FIXTURE)))
     assert doc.skipped == {"failed": 1}
+
+
+def test_a_series_that_keeps_its_procs_suffix_still_links_its_function() -> None:
+    entries = _convert(_lines("BenchmarkJoin  10  1 ns/op", "BenchmarkJoin-4  10  1 ns/op"))
+    assert [(e["name"], e["location"]["function"]) for e in entries] == [
+        (f"{PKG}.BenchmarkJoin", "BenchmarkJoin"), (f"{PKG}.BenchmarkJoin-4", "BenchmarkJoin"),
+    ]
