@@ -91,7 +91,7 @@ def select_filter(
 # segment after it is the one to match. cmd.exe's ``cd /d <dir>`` (change drive
 # too) is the same shape with a switch.
 _CD_PREFIX_RE = re.compile(
-    r"""^cd\s+(?:/[dD]\s+)?(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*"""
+    r"""^cd\s+(?:/d\s+)?(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*"""
 )
 
 
