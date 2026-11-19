@@ -357,8 +357,8 @@ def prepare_evidence_files(
 
 
 def _junit_reports_as_one(
-    files: Sequence[tuple[str, bytes]], input_format_name: str | None
-) -> Sequence[tuple[str, bytes]]:
+    files: Sequence[tuple[str | Path, bytes]], input_format_name: str | None
+) -> Sequence[tuple[str | Path, bytes]]:
     """Several files holding JUnit XML reports as one report; *files* as given otherwise.
 
     The files that are not JUnit XML (Surefire's ``.txt`` summaries,

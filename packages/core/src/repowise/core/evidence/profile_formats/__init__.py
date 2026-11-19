@@ -31,7 +31,16 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, criterion, hyperfine, junit, pprof, pytest_benchmark, speedscope
+from . import (
+    collapsed,
+    cpuprofile,
+    criterion,
+    hyperfine,
+    junit,
+    pprof,
+    pytest_benchmark,
+    speedscope,
+)
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
