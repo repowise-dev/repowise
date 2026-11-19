@@ -217,6 +217,7 @@ jobs:
     permissions:
       contents: read
       actions: write   # deletes older index caches; main pushes only
+      id-token: write  # proves the per-test map upload comes from this repository
 
     steps:
       - uses: actions/checkout@v7
@@ -297,6 +298,7 @@ jobs:
           path: ${{ runner.temp }}/coverage-data
 
       - name: Add the per-test coverage
+        id: add-map
         if: steps.per-test.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 15
@@ -306,6 +308,27 @@ jobs:
         run: |
           uvx coverage combine --data-file="$RUNNER_TEMP/per-test.coverage" "$RUNNER_TEMP"/coverage-data/*/.coverage
           uv run repowise coverage add "$RUNNER_TEMP/per-test.coverage"
+
+      # The same map for hosted Repowise, exported from the index as a few MB
+      # of gzip (the raw .coverage is too big to send). Warn only, like the
+      # coverage upload in "Python tests".
+      - name: Upload the per-test map to Repowise
+        if: steps.add-map.outcome == 'success'
+        continue-on-error: true
+        env:
+          PYTHONUTF8: "1"
+          DO_NOT_TRACK: "1"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          uv run repowise coverage export -o "$RUNNER_TEMP/per-test-map.json.gz"
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty')
+          [ -n "$token" ] || { echo "::warning::Repowise: no OIDC token; the per-test map was not uploaded."; exit 0; }
+          curl -sS --fail-with-body --max-time 120 -H "Authorization: Bearer $token" \
+            -F "report=@$RUNNER_TEMP/per-test-map.json.gz" \
+            -F "repository=$GITHUB_REPOSITORY" -F "head_sha=$GITHUB_SHA" \
+            -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" \
+            https://api.repowise.dev/ci/coverage \
+            || echo "::warning::Repowise: per-test map upload failed; see the message above."
 
       - name: Save the index
         if: steps.build.outcome == 'success'
