@@ -356,6 +356,7 @@ def test_base_includes_all_models():
         "evidence_test_stats",
         "evidence_query_counts",
         "symbol_hotness",
+        "workload_hotness",
         "build_units",
         "build_unit_deps",
         "build_unit_files",

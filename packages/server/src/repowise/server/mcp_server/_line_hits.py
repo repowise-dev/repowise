@@ -42,7 +42,9 @@ from repowise.server.mcp_server._edit_sites import (
     SMALL_SET_LINES,
     _bare_name,
     _cap_references_per_file,
+    _leaf,
     _read_lines,
+    incomplete_hint,
     reference_edit_set,
 )
 from repowise.server.mcp_server._federation import Federation
@@ -96,6 +98,8 @@ _MIXED_KIND_ORDER = {
 }
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
+# Any letter opens a name, as ``\w`` in the hint's regex reads it (``été``).
+_IDENTIFIER = re.compile(r"(?:[^\W\d]|\$)[\w$]*")
 # Code punctuation: a leading decorator ``@``, an identifier glued to an opening
 # ``(`` or ``{`` (``send(``), or a glued ``=`` (``path="/x"``). Prose such as
 # ``Add (optional) support`` has a space before its parenthesis and matches none.
@@ -787,6 +791,15 @@ def _serve_lines(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+        # Lines from one name's edit set that may miss sites; the regex scan
+        # reads every file. A cut to the line cap or naming _meta.omitted
+        # already says where the rest is. The edit sets scan the symbol's own
+        # name, also for a ``pkg.mod.name`` or ``path::name`` query.
+        name = _leaf(query.strip())
+        budget = (OVER_LINES, OVER_LINES_MIXED)
+        missed = any("_meta.omitted" not in r and r not in budget for r in reasons)
+        if missed and not literal_scan and not mixed and _IDENTIFIER.fullmatch(name):
+            response.setdefault("hint", incomplete_hint(name))
     else:
         _drop_sweep_advice(response)
     _drop_pages_beside_definitions(response, every_page=not mixed)

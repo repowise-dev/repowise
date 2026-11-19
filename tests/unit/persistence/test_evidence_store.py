@@ -393,3 +393,17 @@ def test_a_store_from_before_the_hotness_basis_gains_its_columns_on_init(tmp_pat
     _init_db(created)
     for table in ("evidence_runs", "evidence_symbol_costs", "symbol_hotness"):
         assert _columns(old, table) == _columns(created, table), table
+
+
+def test_workload_hotness_migration_matches_the_model_and_downgrades(tmp_path: Path) -> None:
+    """Derived and rebuilt whole, keyed by run and function; local stores get it from init_db."""
+    table = Base.metadata.tables["workload_hotness"]
+    assert [c.name for c in table.primary_key.columns] == ["repository_id", "run_id", "symbol_id"]
+    migrated = tmp_path / "migrated.db"
+    config = _alembic_config(migrated)
+    command.upgrade(config, "head")
+    created = tmp_path / "created.db"
+    _init_db(created)
+    assert _columns(migrated, "workload_hotness") == _columns(created, "workload_hotness")
+    command.downgrade(config, "-1")
+    assert _columns(migrated, "workload_hotness") == {}

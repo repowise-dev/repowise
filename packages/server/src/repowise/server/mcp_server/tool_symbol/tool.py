@@ -135,20 +135,22 @@ async def get_symbol(
 ) -> dict:
     """Follow-up read of one symbol whose id another response already gave you.
 
-    **Not an entry point.** ``get_answer`` ships ``symbol_bodies``; for a
-    whole file ``get_context(include=["skeleton"])`` or a Read is one call.
+    **Not an entry point.** `get_answer` ships `symbol_bodies`; for a
+    whole file `get_context(include=["skeleton"])` or a Read is one call.
     Never walk a file symbol by symbol. Returns verified, line-numbered
-    source; a truncated result carries the ``continuation`` to pass back.
+    source; a truncated result carries the `continuation` to pass back as
+    symbol_id.
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
             live range, or an omission ref.
-        depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
-            it calls, transitively, in ``callee_bodies``.
-        context_lines: extra lines before/after (0-50).
-        query: regex/substring filter on an omission ref's lines.
-        id, reference: aliases for ``symbol_id``.
-        repo: usually omitted.
+        depth: 1 is this symbol alone; 2-3 also return the bodies it calls,
+            transitively, in `callee_bodies`.
+        context_lines: Extra lines before and after (0-50).
+        query: Regex or substring filter on an omission ref's lines.
+        id: Alias for symbol_id.
+        reference: A `continuation_reference` or `fetch_reference`, unchanged.
+        repo: Usually omitted.
     """
     symbol_id, repo = _reference_arguments(reference, symbol_id, id, repo)
     if repo == "all":

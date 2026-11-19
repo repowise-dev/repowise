@@ -17,6 +17,7 @@ from repowise.core.suspects import (
     suspect_signals,
 )
 from repowise.core.suspects.git_text import hunk_symbols
+from repowise.core.suspects.index import NOTE
 from repowise.core.suspects.signals import path_mentions, path_terms
 
 NOW = datetime(2026, 1, 10, tzinfo=UTC)
@@ -256,6 +257,9 @@ async def test_candidates_capped_when_the_window_holds_commit_limit_changes(
     assert len(out["suspects"]) == 1
     assert out["suspects"][0]["id"] == "change-0"
     assert out["suspects"][0]["rank"] == 1
+    assert out["note"].startswith(NOTE)
+    assert f"at least `commit_limit` ({int(commit_limit)}) changes" in out["note"]
+    assert "`repowise init --commit-limit`" in out["note"]
 
 
 async def test_candidates_not_capped_below_the_limit(suspects_index):
@@ -268,6 +272,21 @@ async def test_candidates_not_capped_below_the_limit(suspects_index):
     assert out["candidates"] == 2  # The stored third change is outside the window.
     assert out["candidates_capped"] is False
     assert [s["id"] for s in out["suspects"]] == ["change-0", "change-1"]
+    # Recency alone is no evidence: the note says how to read further back.
+    since = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
+    assert f"none merged before {since} was read" in out["note"]
+    # Chat and REST take `since` themselves; the CLI command works from every surface.
+    assert "Read an earlier window with `since`" in out["note"]
+    assert "`repowise suspects --since <an earlier date>`" in out["note"]
+
+
+def test_a_capped_window_says_so_even_when_a_row_has_evidence():
+    from repowise.core.suspects.index import _note
+
+    rows = [{"signals": {"text": {}, "recency": {}}}]
+    # The window itself is incomplete: evidence on a listed row does not read the unindexed changes.
+    assert "`repowise init --commit-limit` above 50" in _note(NOW, rows, True, 50)
+    assert _note(NOW, rows, False, 50) == NOTE
 
 
 async def test_empty_suspects_window_is_not_capped(suspects_index):
@@ -280,6 +299,7 @@ async def test_empty_suspects_window_is_not_capped(suspects_index):
     assert out["candidates"] == 0
     assert out["candidates_capped"] is False
     assert out["suspects"] == []
+    assert "`repowise suspects --since <an earlier date>`" in out["note"]
 
 
 @pytest.mark.parametrize("config", [{}, {"commit_limit": 0}, {"commit_limit": "0"}, {"commit_limit": None}])

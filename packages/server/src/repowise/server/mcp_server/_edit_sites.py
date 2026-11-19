@@ -1886,8 +1886,28 @@ async def edit_set_block(
         out["prose_lines"] = left_out
     if reasons:
         out["reasons"] = reasons
+        # The budget cut names its own way back; any other reason means lines
+        # the set may have missed, which a text search lists.
+        if len(reasons) > (len(shown) < len(by_file)):
+            out["hint"] = incomplete_hint(_bare_name(node))
     out["files"] = shown
     return out
+
+
+def incomplete_hint(name: str) -> str:
+    """What to do when an edit set of *name* is not complete: the text search
+    that lists every live line naming it, whatever the graph missed."""
+    return (
+        "Not every site is listed. Before answering, run "
+        f'search_codebase(query="{_word_regex(name)}") for every line naming it.'
+    )
+
+
+def _word_regex(name: str) -> str:
+    """A search_codebase regex query matching *name* as a whole word."""
+    head = r"\b" if re.match(r"\w", name) else ""
+    tail = r"\b" if re.search(r"\w$", name) else ""
+    return f"{head}{re.escape(name)}{tail}"
 
 
 async def _widen(
