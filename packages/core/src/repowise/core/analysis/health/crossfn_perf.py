@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -20,6 +21,7 @@ from .perf import (
 )
 from .perf.lazy_load import collect_lazy_loads
 from .perf.orm_models import build_model_index
+from .perf.scan_cache import PerfScanCache
 from .perf.table_scale import settle_small_table_loops
 from .perf.unbounded_reduction import collect_unbounded_reductions
 from .source_reader import SourceReader
@@ -40,12 +42,15 @@ class CrossFunctionPerfStage:
         origins: dict[str, CodeOrigin],
         parsed_files: list[Any],
         read_source: SourceReader,
+        cache_dir: Path | str | None = None,
     ) -> None:
         self._graph = graph
         self._execution_graph = execution_graph
         self._origins = origins
         self._parsed_files = parsed_files
         self._read_source = read_source
+        self._reduction_cache = PerfScanCache(cache_dir, "unbounded_reduction") if cache_dir else None
+        self._model_cache = PerfScanCache(cache_dir, "orm_models") if cache_dir else None
 
     def run(
         self,
@@ -56,14 +61,23 @@ class CrossFunctionPerfStage:
         """Every post-walk perf pass, in order: promotions read the crossfn hits."""
         from repowise.core.pipeline.phase_timing import timed
 
+        for cache in (self._reduction_cache, self._model_cache):
+            if cache is not None:
+                cache.load()
         with timed(timings, "analysis.health.crossfn"):
             self.apply_crossfn(walked)
         with timed(timings, "analysis.health.promotions"):
             apply_perf_promotions(walked, dataflow=dataflow)
         with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self._read_source)
+            collect_unbounded_reductions(
+                walked, read_source=self._read_source, cache=self._reduction_cache
+            )
+            if self._reduction_cache is not None:
+                self._reduction_cache.save(keep_unused=len(walked) < len(self._parsed_files))
         with timed(timings, "analysis.health.lazy_load"):
-            index = build_model_index(self._parsed_files, self._read_source)
+            index = build_model_index(self._parsed_files, self._read_source, cache=self._model_cache)
+            if self._model_cache is not None:
+                self._model_cache.save()
             collect_lazy_loads(walked, self._parsed_files, read_source=self._read_source, index=index)
         with timed(timings, "analysis.health.small_tables"):
             try:

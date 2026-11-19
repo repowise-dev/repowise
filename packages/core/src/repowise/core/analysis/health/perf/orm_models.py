@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..complexity.ast_utils import _node_text
 from .reduction_idioms import field_text, ident, walk
+from .scan_cache import PerfScanCache, scan_cached
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -510,7 +511,20 @@ def _resolve_inherited(
     return result
 
 
-def build_model_index(parsed_files: Iterable[Any], read_source: SourceReader) -> ModelIndex:
+def _file_models(pf: Any, source: bytes) -> tuple[dict[str, _RawClass], list, bool] | None:
+    # Column-only files feed the schema, not the lazy-load model index.
+    related = any(h in source for h in _RELATION_HINTS + _MANAGER_HINTS)
+    if not related and not any(h in source for h in _COLUMN_HINTS):
+        return {}, [], False
+    pending: list[tuple[str, str, Relation]] = []
+    classes = _scan_file(pf.file_info.abs_path, pf.file_info.language, source, pending)
+    return (classes, pending, related) if classes is not None else None
+
+
+def build_model_index(
+    parsed_files: Iterable[Any], read_source: SourceReader, *, cache: PerfScanCache | None = None
+) -> ModelIndex:
+    """Merge current per-file facts, optionally reusing their content-keyed scans."""
     raw: dict[str, list[_RawClass]] = {}
     schema: dict[str, list[_RawClass]] = {}
     pending: list[tuple[str, str, Relation]] = []
@@ -518,20 +532,14 @@ def build_model_index(parsed_files: Iterable[Any], read_source: SourceReader) ->
         info = pf.file_info
         if info.language != "python":
             continue
-        source = read_source(info.abs_path)
-        if source is None:
-            continue
-        # Only a file with relations or managers feeds the lazy-load index; one that
-        # only declares columns feeds the schema.
-        related = any(h in source for h in _RELATION_HINTS + _MANAGER_HINTS)
-        if not related and not any(h in source for h in _COLUMN_HINTS):
-            continue
         try:
-            classes = _scan_file(info.abs_path, info.language, source, pending)
+            scanned = scan_cached(pf, read_source, lambda source, pf=pf: _file_models(pf, source), cache)
         except Exception:  # one unreadable model file costs its own classes only
-            classes = None
-        if classes is None:
+            scanned = None
+        if scanned is None:
             continue
+        classes, file_pending, related = scanned
+        pending.extend(file_pending)
         for name, rc in classes.items():
             if related:
                 raw.setdefault(name, []).append(rc)
