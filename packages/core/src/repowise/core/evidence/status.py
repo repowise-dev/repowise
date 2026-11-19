@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
@@ -97,4 +97,75 @@ def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[s
     }
 
 
-__all__ = ["evidence_status", "run_share", "run_status", "split_words", "time_split"]
+def _utc(when: datetime | None) -> datetime | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return when.replace(tzinfo=when.tzinfo or UTC) if when else None
+
+
+def freshness_entry(
+    commit_sha: str | None,
+    ingested_at: datetime | None,
+    reference_commit: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """One stored measurement: the commit it measured, when it was ingested,
+    its age in whole days, and ``current``/``stale``/``unknown`` against
+    *reference_commit* (``coverage_freshness``)."""
+    at = _utc(ingested_at)
+    return {
+        "present": True,
+        "commit_sha": commit_sha,
+        "ingested_at": at.isoformat() if at else None,
+        "age_days": max((now - at).days, 0) if at else None,
+        "freshness": coverage_freshness(commit_sha, reference_commit),
+    }
+
+
+#: Nothing stored: no commit, no age; freshness is unknown, never current.
+ABSENT: dict[str, Any] = {
+    "present": False,
+    "commit_sha": None,
+    "ingested_at": None,
+    "age_days": None,
+    "freshness": "unknown",
+}
+
+
+async def load_evidence_freshness(
+    session: Any, repository_id: str, reference_commit: str | None, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """How fresh the stored coverage and runtime evidence are against
+    *reference_commit*: the newest coverage ingest, and the newest runtime
+    run with how many runs are stored. One keyed read per store."""
+    from ..persistence.crud.analysis.coverage import load_newest_ingest
+    from ..persistence.crud.analysis.evidence import newest_evidence_run
+
+    now = now or datetime.now(UTC)
+    ingest = await load_newest_ingest(session, repository_id)
+    coverage = (
+        freshness_entry(ingest.ingested_commit_sha, ingest.ingested_at, reference_commit, now)
+        if ingest is not None
+        else dict(ABSENT)
+    )
+    runs, newest = await newest_evidence_run(
+        session, repository_id, prefer_commit=reference_commit
+    )
+    runtime = (
+        freshness_entry(newest.commit_sha, newest.ingested_at, reference_commit, now)
+        if newest is not None
+        else dict(ABSENT)
+    )
+    runtime["runs"] = runs
+    return {"reference_commit": reference_commit, "coverage": coverage, "runtime": runtime}
+
+
+__all__ = [
+    "ABSENT",
+    "evidence_status",
+    "freshness_entry",
+    "load_evidence_freshness",
+    "run_share",
+    "run_status",
+    "split_words",
+    "time_split",
+]

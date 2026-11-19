@@ -205,6 +205,8 @@ def build_report(
     *file_reads* are ``(session_key, path, read_at)`` rows for the
     files-not-opened clawback, as the ledger stores them.
     """
+    from repowise.core.savings.output_estimate import estimate_output, session_groups
+
     if as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     if days is not None and days < 0:
@@ -347,4 +349,5 @@ def build_report(
         files_per_day=files.per_day,
         files_per_agent=files.per_agent,
         files_per_surface=files.per_surface,
+        output_estimate=estimate_output(session_groups(scoped)),
     )

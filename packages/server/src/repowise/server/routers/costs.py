@@ -21,6 +21,7 @@ from repowise.server.schemas import (
     SavingsBreakdownRow,
     SavingsFilesRow,
     SavingsOpportunityRow,
+    SavingsOutputCalibration,
     SavingsResponse,
 )
 
@@ -220,6 +221,7 @@ async def get_savings(
         files_per_day=_files_rows(report.files_per_day, "day"),
         files_per_agent=_files_rows(report.files_per_agent, "agent"),
         files_per_surface=_files_rows(report.files_per_surface, "surface"),
+        **_output_estimate_fields(report),
     )
 
 
@@ -232,6 +234,26 @@ def _files_rows(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsFile
         })
         for row in rows
     ]
+
+
+def _output_estimate_fields(report: Any) -> dict[str, Any]:
+    """The benchmark-estimated output fields; empty (all null) without a calibration."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {}
+    try:
+        return _output_estimate_payload(report, estimate)
+    except Exception:  # an estimate is never worth a failed response
+        return {}
+
+
+def _output_estimate_payload(report: Any, estimate: Any) -> dict[str, Any]:
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": SavingsOutputCalibration(**estimate.calibration()),
+    }
 
 
 def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreakdownRow]:
