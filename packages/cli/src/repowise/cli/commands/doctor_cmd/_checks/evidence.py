@@ -26,17 +26,21 @@ def _row(block: dict, kind: str, name: str, *, check_id: str) -> DoctorCheck:
 def evidence_rows(ctx: CheckContext) -> list[DoctorCheck]:
     """Coverage and runtime evidence: present or absent, commit, age, stale."""
     from repowise.cli.commands._evidence_freshness import stored_freshness
+    from repowise.cli.helpers import StaleIndexError
+    from repowise.core.evidence.setup import UPDATE_COMMAND
 
     try:
         block = stored_freshness(ctx.repo_path)
     except Exception as exc:
+        stale = isinstance(exc, StaleIndexError)
         return [
             _check(
                 "Evidence freshness",
                 True,
-                f"Could not check: {type(exc).__name__}: {exc}",
+                f"Could not check: {exc.message if stale else f'{type(exc).__name__}: {exc}'}",
                 check_id="evidence-freshness",
                 warn=True,
+                fix=UPDATE_COMMAND if stale else None,
             )
         ]
     if block is None:

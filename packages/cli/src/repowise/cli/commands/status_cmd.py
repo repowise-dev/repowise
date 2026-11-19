@@ -1074,7 +1074,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 # Coverage and runtime evidence: present, commit, age, fresh or stale.
-                "evidence_freshness": _evidence_freshness(repo_path) if has_db else None,
+                # ``None`` without a store, as the reader opens none.
+                "evidence_freshness": _evidence_freshness(repo_path),
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),

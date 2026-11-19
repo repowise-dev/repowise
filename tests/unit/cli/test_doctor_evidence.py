@@ -50,3 +50,11 @@ def test_no_index_no_rows_and_an_unreadable_store_warns(monkeypatch) -> None:
     assert _rows(monkeypatch, None) == {}
     (row,) = _rows(monkeypatch, RuntimeError("locked")).values()
     assert (row.id, row.level, row.ok) == ("evidence-freshness", "warn", True)
+
+
+def test_an_older_store_names_the_update(monkeypatch) -> None:
+    from repowise.cli.helpers import StaleIndexError
+
+    (row,) = _rows(monkeypatch, StaleIndexError()).values()
+    assert (row.level, row.fix) == ("warn", "repowise update")
+    assert "StaleIndexError" not in row.detail
