@@ -15,6 +15,8 @@ from __future__ import annotations
 import ssl
 import time
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -169,10 +171,14 @@ def _retry_wait(response: httpx.Response, backoff: float) -> float:
     Parsed here, not with the LLM providers' ``parse_retry_after``: that one
     drops a value over 600 s, and a long ask should wait the cap, not 1 s.
     """
+    header = response.headers.get("Retry-After", "")
     try:
-        asked = float(response.headers.get("Retry-After", ""))
+        asked = float(header)
     except ValueError:
-        return backoff
+        try:  # the HTTP-date form
+            asked = (parsedate_to_datetime(header) - datetime.now(UTC)).total_seconds()
+        except (TypeError, ValueError):
+            return backoff
     return min(asked, _RETRY_AFTER_CAP) if asked > 0 else backoff
 
 

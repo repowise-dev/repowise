@@ -341,6 +341,17 @@ def test_a_long_retry_after_waits_the_cap(retry_after, wait, waits) -> None:
     assert waits == [wait]
 
 
+def test_a_retry_after_date_waits_until_then_up_to_the_cap(waits) -> None:
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    later = format_datetime(datetime.now(UTC) + timedelta(hours=1), usegmt=True)
+    answers = [httpx.Response(429, headers={"Retry-After": later}), httpx.Response(200, json={})]
+    with _client(lambda request: answers.pop(0)) as client:
+        client.request("GET", "user")
+    assert waits == [30.0]
+
+
 @pytest.mark.parametrize("error", [httpx.ProxyError, httpx.UnsupportedProtocol])
 def test_an_error_that_would_only_repeat_is_not_retried(error, waits) -> None:
     handler, calls = _flaky(error)
