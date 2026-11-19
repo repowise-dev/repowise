@@ -184,6 +184,21 @@ class TestContextInclude:
         assert "ignored_arguments" not in result
 
     @pytest.mark.asyncio
+    async def test_unadvertised_keys_are_still_served(self, setup_mcp):
+        # Left out of the tool description, never out of the vocabulary.
+        from repowise.server.mcp_server import get_context, get_risk
+
+        card = await get_context(
+            ["src/auth/service.py"], include=["metrics", "community", "provenance"]
+        )
+        risk = await get_risk(["src/auth/service.py"], include=["churn", "scales", "changes"])
+
+        assert "ignored_arguments" not in card and "ignored_arguments" not in risk
+        target = card["targets"]["src/auth/service.py"]
+        assert {"metrics", "provenance"} <= target.keys()
+        assert "risk_scales" in risk
+
+    @pytest.mark.asyncio
     async def test_clean_call_adds_nothing(self, setup_mcp):
         from repowise.server.mcp_server import get_context
 

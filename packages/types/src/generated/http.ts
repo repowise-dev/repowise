@@ -4470,6 +4470,7 @@ export interface SettingView {
   key: string;
   type: "bool" | "int" | "float" | "str" | "list" | "mapping";
   default_note?: string | null;
+  cost_note?: string | null;
   description: string;
   area: string;
   scope: "repo" | "user" | "env";

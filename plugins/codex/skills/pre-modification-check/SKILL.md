@@ -1,6 +1,6 @@
 ---
 name: pre-modification-check
-description: Use before modifying, refactoring, moving, or deleting files in a Repowise-indexed repository, especially shared utilities, core modules, public APIs, or files the user did not explicitly identify.
+description: Before editing, moving or deleting a shared or unfamiliar file, check callers and risk.
 ---
 
 # Pre-Modification Check with Repowise

@@ -8,6 +8,7 @@ are not re-indexed.
 
 from __future__ import annotations
 
+import json
 from itertools import zip_longest
 from pathlib import Path
 from types import SimpleNamespace
@@ -667,6 +668,10 @@ async def test_initial_index_without_provider_writes_deterministic_docs_mode(
     persist_state.assert_called_once()
     assert persist_state.call_args.kwargs["docs_mode"] == "deterministic"
     assert persist_state.call_args.kwargs["llm_client"] is None
+    # The run summary says so too, so the dashboard calls it an index.
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert json.loads(job.config_json)["docs_mode"] == "deterministic"
 
 
 @pytest.mark.asyncio
@@ -694,6 +699,9 @@ async def test_initial_index_with_provider_uses_llm_mode(session_factory, tmp_pa
     assert run_pipeline_mock.await_args.kwargs["mode"] == OrchestratorMode.STANDARD
     assert run_pipeline_mock.await_args.kwargs["generate_docs"] is True
     assert persist_state.call_args.kwargs["docs_mode"] == "llm"
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert json.loads(job.config_json)["docs_mode"] == "llm"
 
 
 @pytest.mark.asyncio

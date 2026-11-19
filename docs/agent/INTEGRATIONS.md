@@ -115,9 +115,21 @@ and wins over the setting. The value is a profile (`core`, `lean`, `standard`,
 `all`), optionally followed by `+name` or `-name`; `+name` or `-name` alone adjusts
 each client's default; plain names are the exact list. The server reads it when it
 starts, so restart it (or the agent) after a change. A tool left out only by a
-client's default still answers if called, and the server's instructions name the
-command that lists it. The `lean` profile is **six** tools (seven in workspace
-mode): core plus `get_risk`.
+client's default still answers if called; `get_overview(include=["tools"])` lists
+the whole surface. The `lean` profile is **six** tools (seven in workspace mode):
+core plus `get_risk`.
+
+`repowise init` and `repowise agents add` print, for each agent they connect, how
+many tools it lists and under which profile; `init --progress json` gives the same
+facts per agent in the summary's `mcp_tools` field.
+
+**Always-load (Claude Code, off by default).** Claude Code keeps every repowise
+schema behind tool search, so the model's first repowise call usually follows a
+tool-search turn. `repowise config set mcp.always_load true` asks it to keep the
+four read tools (`get_answer`, `get_context`, `get_symbol`, `search_codebase`)
+loaded from the first turn instead, for about 2k to 2.6k more tokens per turn,
+depending on the model. Other tools stay deferred, and clients that load every
+schema up front are unaffected. Restart the agent after the change.
 
 `repowise doctor` shows the surface each wired agent gets on that agent's row:
 profile, tool count, any `--tools` pin in its server entry, and `mcp.always_load`

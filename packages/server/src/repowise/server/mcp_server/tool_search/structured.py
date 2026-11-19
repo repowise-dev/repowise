@@ -46,7 +46,14 @@ from .ordering import (
     _protect_named_symbols,
 )
 from .retrieval import _neg_score, _per_repo, _search_single_repo
-from .serve import _page_language, _result_paths, _serve_snippets, _slim_served_rows
+from .serve import (
+    _page_language,
+    _result_paths,
+    _serve_snippets,
+    _slim_served_rows,
+    attach_unique_body,
+    unique_exact_row,
+)
 
 
 def _lead_candidates(response: dict, issue: IssueFiles | None, limit: int) -> None:
@@ -465,6 +472,12 @@ async def _structured_search(
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
     _attach_match_notes(response, candidates, exact, missing, grep_hint)
+    # Symbol mode ranks every candidate, so its pool can tell one definition
+    # from two; hybrid fetches a window and cannot.
+    if plan.mode == "symbol" and repository is not None and response.get("exact_match"):
+        row = unique_exact_row(candidates, results, pools.symbols + pools.spare)
+        if row is not None:
+            await attach_unique_body(response, row, pools.contexts[0], repository)
     if fed is not None:
         fed.annotate(response, results)
     # Last: slims fields the steps above still read.

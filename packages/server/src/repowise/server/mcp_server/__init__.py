@@ -301,7 +301,7 @@ def registered_tool(fn: Any) -> Any:
 #: pass. Every name costs schema bytes on each turn of a host that re-sends
 #: the tool list. docs/agent/MCP_TOOLS.md still documents them.
 _UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
-    "get_context": frozenset({"compact", "symptom"}),
+    "get_context": frozenset({"compact"}),
     # get_symbol's ``id`` stays listed: get_answer hints say ``get_symbol id='...'``.
     "get_symbol": frozenset({"reference", "context_lines"}),
     "get_why": frozenset({"reference"}),
