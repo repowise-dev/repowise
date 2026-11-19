@@ -165,8 +165,9 @@ def _entry(case: ET.Element, classname: str, suite_file: str | None) -> dict[str
     if not name:
         return entry
     path, outside = _test_file(case, classname, suite_file)
-    if outside:
-        # An absolute path names the machine, not the repository: keep the test's own name only.
+    if outside and nodeid_test_file(classname):
+        # The classname is the absolute path, which names the machine, not the
+        # repository: keep the test's own name only.
         entry["id"] = name
     elif path:
         test_id = f"{path}::{_qualname(classname, path, name)}"

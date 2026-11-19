@@ -213,3 +213,18 @@ def test_a_file_with_a_document_type_in_a_report_directory_is_left_out() -> None
     combined = junit.combine([testng, SUREFIRE])
 
     assert len(_doc(combined).entries) == 2
+
+
+def test_an_absolute_file_falls_back_to_the_classname() -> None:
+    data = b"""<testsuite>
+    <testcase classname="tests.test_a.TestA" name="test_add" file="/ci/repo/tests/test_a.py"/>
+    <testcase classname="tests.test_b.TestB" name="test_add" file="/ci/repo/tests/test_b.py"/>
+    </testsuite>"""
+
+    doc = place_test_entries(_doc(data), {"tests/test_a.py", "tests/test_b.py"})
+
+    assert [e["test_id"] for e in doc.entries] == [
+        "tests/test_a.py::TestA::test_add",
+        "tests/test_b.py::TestB::test_add",
+    ]
+    assert doc.skipped == {}
