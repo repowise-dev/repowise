@@ -31,7 +31,7 @@ Paths are relative to `packages/core/src/repowise/core/`.
 
 | Field | Meaning |
 |---|---|
-| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `php:<composer name>` / `php:<dir>` when unnamed, `manifest:<root>` (`manifest:.` at the repo root) |
+| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `php:<composer name>` / `php:<dir>` when unnamed, `manifest:<root>` (`manifest:.` at the repo root) |
 | `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `dart`, `swift`, `php`, `pascal` or `manifest` |
 | `name` | The name the build tool uses (assembly, crate, package, module path, artifactId) |
 | `root` | Repo-relative POSIX directory, `""` at the repo root |
