@@ -21,6 +21,7 @@ from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
 from .runtime_setup import (
+    ARGS_PLACEHOLDER,
     CLASS_ORDER,
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
@@ -228,7 +229,11 @@ def evidence_setup(
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
+    done = _measured_at(runtime, head)
+    next_call = _with_optional(
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done),
+        _optional_entry_points(planned, done),
+    )
     if next_call is not None:
         reason = None
     elif indexed and covered:
@@ -248,6 +253,49 @@ def evidence_setup(
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+
+
+def _with_optional(
+    next_call: dict[str, Any] | None, optional: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """*next_call* carrying *optional* under ``optional``.
+
+    With no step left, the call is still there, with no steps, so an agent
+    that stops at a null ``next_call`` never stops before the entry points.
+    """
+    if optional is None:
+        return next_call
+    if next_call is None:
+        next_call = {"purpose": "Only entry points waiting for their arguments are left.", "steps": []}
+    return {**next_call, "optional": optional}
+
+
+def _optional_entry_points(
+    planned: Sequence[dict[str, Any]], done: Collection[str]
+) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments and not measured here, by workload.
+
+    Never a step, so named here. An entry point counts as measured once any
+    run of it is stored at this commit (``app`` or ``app build``), but not one
+    stored under the unfilled name (``app <args>``). Only names,
+    so the default answer stays small; each target's command and ingest line
+    are in ``units[].runtime``.
+    """
+    workloads = [
+        t["workload"] for u in planned for t in u.get("runtime", ())
+        if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+        and not any(
+            (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
+            for d in done
+        )
+    ]
+    if not workloads:
+        return None
+    return {
+        "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
+        "representative run, then run each command and its ingest line.",
+        "workloads": workloads,
     }
 
 
