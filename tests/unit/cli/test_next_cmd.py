@@ -186,7 +186,7 @@ def test_status_carries_a_next_block_and_json_counts() -> None:
     )
 
     lines = status_cmd._next_actions_lines(view)
-    assert lines[0].endswith("1 thing is worth planning this quarter.")
+    assert lines[0].endswith("1 thing is worth planning this quarter. 1 setup step to finish.")
     assert "src/big.py" in lines[1]
     assert status_cmd._next_actions_lines(None) == []
 
