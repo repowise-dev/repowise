@@ -337,3 +337,16 @@ class TestSearchPatternAlias:
 
         assert "query" not in schema.get("required", [])
         assert arg_model.model_validate({"pattern": "AuthService"}).pattern == "AuthService"
+
+    @pytest.mark.asyncio
+    async def test_unadvertised_pattern_works_through_the_server(self, setup_mcp):
+        import json
+
+        from repowise.server.mcp_server import mcp
+
+        result = await mcp.call_tool("search_codebase", {"pattern": "AuthService"})
+        content = result.content if hasattr(result, "content") else result[0]
+        payload = json.loads(content[0].text)
+
+        assert "error" not in payload
+        assert payload["mode"] == "symbol"

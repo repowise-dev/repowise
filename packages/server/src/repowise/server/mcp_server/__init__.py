@@ -302,7 +302,8 @@ def registered_tool(fn: Any) -> Any:
 #: the tool list. docs/agent/MCP_TOOLS.md still documents them.
 _UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
     "get_context": frozenset({"compact", "symptom"}),
-    "get_symbol": frozenset({"id", "reference", "context_lines"}),
+    # get_symbol's ``id`` stays listed: get_answer hints say ``get_symbol id='...'``.
+    "get_symbol": frozenset({"reference", "context_lines"}),
     "get_why": frozenset({"reference"}),
     "search_codebase": frozenset({"page_type", "pattern"}),
 }

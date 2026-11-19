@@ -148,7 +148,8 @@ async def get_symbol(
             transitively, in `callee_bodies`.
         context_lines: Extra lines before and after (0-50).
         query: Regex or substring filter on an omission ref's lines.
-        id, reference: Aliases for symbol_id.
+        id: Alias for symbol_id.
+        reference: A `continuation_reference` or `fetch_reference`, unchanged.
         repo: Usually omitted.
     """
     symbol_id, repo = _reference_arguments(reference, symbol_id, id, repo)
