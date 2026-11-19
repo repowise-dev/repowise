@@ -324,6 +324,8 @@ def _result_paths(results: list[dict]) -> list[str]:
     """
     paths: list[str] = []
     for item in results:
+        if not isinstance(item, dict):
+            continue
         p = hit_file_path(item)
         if p:
             paths.append(p)
