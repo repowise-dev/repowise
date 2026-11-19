@@ -1,53 +1,50 @@
 /**
- * The shared savings surface.
+ * The shared Usage & savings surface.
  *
  * Data and callbacks only: nothing here fetches, routes, reads storage or
- * branches on which host is rendering it. A host maps its response onto
- * `SavingsView`, supplies links through `LinkComponent`, and owns whether the
- * reset notice is showing.
+ * branches on which host is rendering it. A host passes the savings report,
+ * its spend, links through `LinkComponent`, words through `copy`, and at most
+ * one setup nudge.
  *
  * Nothing here computes a saving. The server's report service is the only
- * thing that aggregates or prices; these components read fields.
+ * thing that aggregates or prices; these components read fields and group
+ * per-operation rows into plain jobs.
  */
 export {
-  surfaceLabel,
-  agentLabel,
-  modelLabel,
+  hasSavings,
   type SavingsView,
+  type SavingsBreakdownView,
+  type SavingsFilesView,
   type SpendView,
-  type SavingsBreakdownRow,
-  type SavingsAgentRow,
-  type SavingsOpportunityRow,
+  type SpendRowView,
+  type SpendGrouping,
 } from "./types";
-export { SavingsLede, type SavingsLedeProps } from "./savings-lede";
 export {
-  SavingsSourceTable,
-  type SavingsSourceTableProps,
-  type SourceRow,
-} from "./savings-source-table";
+  DEFAULT_SAVINGS_COPY,
+  BENCHMARK_FEWER_FILES_PCT,
+  humanizeOperation,
+  type SavingsCopy,
+} from "./copy";
 export {
-  OpportunityList,
-  buildOpportunities,
-  type OpportunityListProps,
-  type OpportunityItem,
-  type BuildOpportunitiesOptions,
-} from "./opportunity-list";
+  SAVINGS_JOB_IDS,
+  jobForOperation,
+  groupByJob,
+  type SavingsJobId,
+  type SavingsJobTotal,
+} from "./jobs";
 export {
-  SavingsTimeline,
-  MIN_DAYS_FOR_CHART,
-  TIMELINE_HEIGHT,
-  type SavingsTimelineProps,
-} from "./savings-timeline";
-export { SpendSummary, type SpendSummaryProps } from "./spend-summary";
+  SavingsPageBody,
+  SavingsEmpty,
+  SavingsNudge,
+  type SavingsPageBodyProps,
+  type SavingsNudgeProps,
+} from "./savings-page";
+export { SavingsHero, SavingsProof } from "./savings-hero";
+export { SavingsOverTime, type SavingsLens } from "./savings-over-time";
+export { SavingsJobs } from "./savings-jobs";
+export { RepowiseUsage, USAGE_DAY_LIMIT, type RepowiseUsageProps } from "./repowise-usage";
 export {
-  UsageDetails,
-  type UsageDetailsProps,
-  type UsageDetailTab,
-} from "./usage-details";
-export {
-  SavingsMethodology,
   SavingsResetNotice,
   ACCOUNTING_METHOD_VERSION,
-  type SavingsMethodologyProps,
   type SavingsResetNoticeProps,
 } from "./savings-methodology";

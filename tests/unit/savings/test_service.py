@@ -227,6 +227,13 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
         "backfilled_input_savings_usd",
     ):
         assert sql.pop(key) == pytest.approx(pure.pop(key))
+    for key in ("per_operation", "per_surface", "per_model", "per_day"):
+        sql_rows = [dict(row) for row in sql.pop(key)]
+        pure_rows = [dict(row) for row in pure.pop(key)]
+        assert [row.pop("priced_input_savings_usd") for row in sql_rows] == pytest.approx(
+            [row.pop("priced_input_savings_usd") for row in pure_rows]
+        )
+        assert sql_rows == pure_rows
     assert sql == pure
 
     # Guard rails on the fixture itself: if it ever stops covering the mixed

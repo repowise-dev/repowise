@@ -1401,6 +1401,8 @@ export interface CostGroupResponse {
   input_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 export interface CostSummaryResponse {
@@ -1409,6 +1411,8 @@ export interface CostSummaryResponse {
   total_input_tokens: number;
   total_output_tokens: number;
   since: string | null;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 /** Two areas whose files change together; ``source == target`` for same-area pairs. */
@@ -4418,6 +4422,7 @@ export interface SavingsBreakdownRow {
   group?: string | null;
   events?: number;
   saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
 }
 
 /** Files not opened and tool calls answered in one day, agent or surface. */

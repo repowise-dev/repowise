@@ -23,7 +23,7 @@ DAY_LIMIT = 366
 
 
 def breakdown_rows(key: str, rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[str, Any], ...]:
-    """Shape ``(group, events, saved_input_tokens)`` triples into report rows.
+    """Shape ``(group, events, saved_input_tokens, priced_input_usd)`` rows into report rows.
 
     Shared with :mod:`repowise.core.savings.repository` so the SQL path and the
     pure path cannot drift into two different row shapes. They are meant to be
@@ -31,7 +31,13 @@ def breakdown_rows(key: str, rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[s
     them to own the shaping.
     """
     return tuple(
-        {key: row[0], "events": int(row[1]), "saved_input_tokens": int(row[2])} for row in rows
+        {
+            key: row[0],
+            "events": int(row[1]),
+            "saved_input_tokens": int(row[2]),
+            "priced_input_savings_usd": float(row[3]),
+        }
+        for row in rows
     )
 
 
@@ -258,8 +264,8 @@ def build_report(
     scoped_opportunities = [
         item for item in opportunities if _included(item.occurred_at, cutoff, as_of)
     ]
-    groups: dict[str, dict[Any, list[int]]] = {
-        name: defaultdict(lambda: [0, 0])
+    groups: dict[str, dict[Any, list[float]]] = {
+        name: defaultdict(lambda: [0, 0, 0.0])
         for name in ("operation", "surface", "agent", "model", "day")
     }
     input_usd = 0.0
@@ -268,6 +274,7 @@ def build_report(
     priced_output = 0
     output_evidence_events = 0
     for event in scoped:
+        input_price = price_tokens(event.saved_input_tokens, event.input_rate_usd_per_million)
         for name, value in (
             ("operation", event.operation),
             ("surface", event.surface),
@@ -278,7 +285,7 @@ def build_report(
             bucket = groups[name][value]
             bucket[0] += 1
             bucket[1] += event.saved_input_tokens
-        input_price = price_tokens(event.saved_input_tokens, event.input_rate_usd_per_million)
+            bucket[2] += input_price or 0.0
         if input_price is not None:
             priced_input += event.saved_input_tokens
             input_usd += input_price
@@ -298,14 +305,14 @@ def build_report(
     limit = max(0, min(max_breakdowns, 100))
 
     def ranked(name: str) -> list[tuple[Any, ...]]:
-        """Sorted ``(group, events, saved)`` triples, matching the SQL order.
+        """Sorted ``(group, events, saved, usd)`` rows, matching the SQL order.
 
         ``-saved`` then group ascending, with a null group first among ties --
         SQLite sorts NULL first on an ascending key, and an unpriced event has
         a null model, so this is the tie the two builders actually hit.
         """
         return [
-            (group, values[0], values[1])
+            (group, values[0], values[1], values[2])
             for group, values in sorted(
                 groups[name].items(),
                 key=lambda item: (-item[1][1], item[0] is not None, item[0] or ""),
@@ -315,7 +322,7 @@ def build_report(
     # Ordered by day ascending, capped to the most recent days, matching the
     # SQL path's newest-first-then-reversed slice.
     day_rows = [
-        (group, values[0], values[1])
+        (group, values[0], values[1], values[2])
         for group, values in sorted(groups["day"].items(), reverse=True)[:DAY_LIMIT]
     ][::-1]
     opportunity_kinds: dict[str, list[int]] = defaultdict(lambda: [0, 0])

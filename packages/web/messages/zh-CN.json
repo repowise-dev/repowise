@@ -862,29 +862,14 @@
       }
     },
     "costs": {
-      "spendEmptyTitle": "尚无模型调用记录",
-      "spendEmptyDescription": "此仓库还没有产生任何花费。Repowise 使用模型生成文档或回答问题后，花费会显示在这里。",
       "title": "用量与节省",
       "description": "智能体避开了什么、Repowise 花了多少，以及我们凭什么这么说。",
       "savingsErrorTitle": "无法加载智能体节省数据",
-      "spendTitle": "Repowise 模型开销",
-      "spendDescription": "Repowise 自身模型工作产生的花费，与智能体节省并列展示，且从不从中扣除。",
       "spendErrorTitle": "无法加载模型开销",
-      "savingsEmptyTitle": "尚未记录任何智能体节省",
-      "savingsEmptyDescription": "把嘈杂的命令走 repowise distill，或者用 repowise hook rewrite install 安装重写钩子。一旦有智能体开始使用这个仓库，节省数据就会自动出现在这里。",
-      "bySourceTitle": "按来源划分的节省",
-      "bySourceDescription": "总额中每一部分各由哪个采集面产生。",
-      "opportunitiesTitle": "观察到的机会",
-      "opportunitiesDescription": "本可被优化却没有被优化的行为。永不计入上面的总额。",
-      "detailsTitle": "明细",
-      "detailsDescription": "同样的节省数据，按日期、操作、计价模型和智能体拆分。",
       "loadingSavings": "正在加载智能体节省数据",
       "loadingSpend": "正在加载模型开销…",
       "savingsErrorBody": "节省数据接口没有响应。",
-      "savingsErrorBodySpendUnaffected": "节省数据接口没有响应，下方的模型开销不受影响。",
-      "surfaceHeader": "采集面",
-      "surfaceCaption": "按产生这些节省的采集面划分",
-      "surfaceEmpty": "这个时间窗口内没有任何节省带有采集面。"
+      "savingsErrorBodySpendUnaffected": "节省数据接口没有响应，下方的模型开销不受影响。"
     },
     "repoSettings": {
       "title": "设置",

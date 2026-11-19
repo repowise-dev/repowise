@@ -105,7 +105,9 @@ class SavingsRepository:
         sorts the matched slice, which is why every one of these is capped.
         """
         return self._conn.execute(
-            f"SELECT {expression}, COUNT(*), COALESCE(SUM(saved_input_tokens), 0) "
+            f"SELECT {expression}, COUNT(*), COALESCE(SUM(saved_input_tokens), 0), "
+            "COALESCE(SUM(CASE WHEN input_rate_usd_per_million IS NOT NULL "
+            "THEN saved_input_tokens * input_rate_usd_per_million / 1000000.0 ELSE 0 END), 0) "
             f"FROM savings_events WHERE {where} "
             f"GROUP BY 1 ORDER BY {order} LIMIT ?",
             [*params, limit],
