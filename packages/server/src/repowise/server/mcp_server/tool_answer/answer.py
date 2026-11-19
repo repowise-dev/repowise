@@ -149,6 +149,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
 from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
     _LEAN_HIGH_DROP_KEYS,  # re-exported for tests that assert the key set
+    _NO_SYNTHESIS_NOTE,
     _PAGE_EXCERPT_HITS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
@@ -984,7 +985,7 @@ async def get_answer(
         )
         return await _degrade(
             "no-llm-provider",
-            "Synthesis is unavailable; local retrieval and source evidence remain usable.",
+            _NO_SYNTHESIS_NOTE,
         )
 
     prompt = await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines)

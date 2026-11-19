@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import coverage_cmd
 from repowise.cli.main import cli
+from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.persistence.crud.analysis.coverage_map import TestMapWrite
 
 
@@ -699,3 +700,56 @@ def test_every_ingest_outcome_is_documented() -> None:
     for outcome in coverage_cmd.INGEST_OUTCOMES:
         assert f"`{outcome}`" in section, outcome
     assert "`files_matched_bucket`" in section
+
+
+def test_coverage_export_writes_the_stored_map_and_fails_without_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    _fake_ingest(monkeypatch, tmp_path, set())
+    stored = coverage_map.per_test_map_from_records(
+        [TestCoverage(test_id="t1", file_path="src/a.py", covered_lines=[1, 2])], "coverage.py"
+    )
+    found: list = [None]
+
+    async def _get(session, repository_id):
+        return found[0]
+
+    monkeypatch.setattr(coverage_map, "get_per_test_map", _get)
+
+    missing = CliRunner().invoke(cli, ["coverage", "export"])
+    assert missing.exit_code == 1
+    assert "No per-test map" in missing.output
+
+    found[0] = stored
+    result = CliRunner().invoke(cli, ["coverage", "export", "-o", "map.json.gz"])
+    assert result.exit_code == 0, result.output
+    raw = (tmp_path / "map.json.gz").read_bytes()
+    assert coverage_map.load_per_test_map(raw, max_bytes=1_000_000) == stored
+    assert "1 tests, 1 test-file pairs" in result.output
+
+
+def test_coverage_export_reads_a_per_test_report_without_an_index(tmp_path, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests.lcov").write_text(
+        "TN:t1\nSF:src/a.py\nDA:1,1\nDA:2,1\nend_of_record\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "export", "tests.lcov", "-o", "map.json.gz"])
+
+    assert result.exit_code == 0, result.output
+    tmap = coverage_map.load_per_test_map(
+        (tmp_path / "map.json.gz").read_bytes(), max_bytes=1_000_000
+    )
+    assert tmap.tests == (("t1", None),)
+    assert tmap.sources == {"src/a.py": (1, '[[0,"1-2"]]')}
+    plain = tmp_path / "plain.lcov"
+    plain.write_text("SF:src/a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    assert CliRunner().invoke(cli, ["coverage", "export", str(plain)]).exit_code == 1
+    absent = CliRunner().invoke(cli, ["coverage", "export", "nowhere.coverage"])
+    assert absent.exit_code == 2
+    assert "does not exist" in absent.output
+    assert "No per-test map" not in absent.output

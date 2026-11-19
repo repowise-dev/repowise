@@ -53,6 +53,48 @@ async def test_core_tools_document_parameters_on_the_schema():
         assert not undocumented, (name, undocumented)
 
 
+#: ``include`` values each tool still serves but no longer names to agents.
+_UNADVERTISED_INCLUDES = {
+    "get_context": {"references+", "skeleton+", "metrics", "community", "facts", "provenance"},
+    "get_risk": {"churn", "scales", "changes"},
+    "get_change_risk": {"evidence"},
+}
+
+
+def _accepted_includes(tool_name: str) -> frozenset[str]:
+    import importlib
+
+    module = {
+        "get_context": "tool_context.context",
+        "get_risk": "tool_risk.get_risk",
+        "get_change_risk": "tool_change_risk.payload",
+    }[tool_name]
+    return importlib.import_module(f"repowise.server.mcp_server.{module}")._INCLUDE_BLOCKS
+
+
+@pytest.mark.asyncio
+async def test_unadvertised_include_values_are_unnamed_but_still_accepted():
+    import re
+
+    listed = await _listed()
+    for tool_name, hidden in _UNADVERTISED_INCLUDES.items():
+        tool = listed[tool_name]
+        include_doc = tool.inputSchema["properties"]["include"].get("description", "")
+        # Core tools carry the list on the property; the others quote it in the description.
+        named = set(re.findall(r"[\w+]+", include_doc)) | set(
+            re.findall(r'"([\w+]+)"', tool.description)
+        )
+        assert not hidden & named, (tool_name, hidden & named)
+        assert hidden <= _accepted_includes(tool_name), tool_name
+
+
+@pytest.mark.asyncio
+async def test_suspects_names_its_symptom_input():
+    props = (await _listed())["get_context"].inputSchema["properties"]
+    assert "symptom" in props
+    assert "suspects (pass symptom=)" in props["include"]["description"]
+
+
 def test_lift_args_moves_entries_and_keeps_later_sections():
     props = {"a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "integer"}}
     doc = (
