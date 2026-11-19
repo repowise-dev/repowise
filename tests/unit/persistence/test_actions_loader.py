@@ -319,6 +319,59 @@ async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
     assert (await _coverage(async_session, rid, "newer"))["coverage"].status == "stale"
 
 
+async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import _runtime
+    from repowise.core.persistence.models import EvidenceRun, GraphNode
+
+    rid = await _seed(async_session)
+    assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ()
+
+    # A vendored copy's tests are not this repository's suite; a production
+    # entry point is something to run.
+    async_session.add_all(
+        [
+            GraphNode(repository_id=rid, node_id="vendor/lib/test_x.py", node_type="file",
+                      is_test=True),
+            HealthFileMetric(repository_id=rid, file_path="vendor/lib/test_x.py",
+                             is_test=True, code_origin="vendored"),
+            GraphNode(repository_id=rid, node_id="src/cli.py", node_type="file",
+                      is_entry_point=True),
+        ]
+    )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.targets) == ("unknown", ("entry_point",))
+
+    async_session.add(GraphNode(repository_id=rid, node_id="tests/test_cli.py",
+                                node_type="file", is_test=True))
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert state.targets == ("entry_point", "unit_test")
+
+    for run_id, sha, days in (("r1", "older", 5), ("r2", "head", 1)):
+        async_session.add(
+            EvidenceRun(id=run_id, repository_id=rid, run_key=run_id, kind="profile",
+                        format="repowise-evidence-v1", source="cli", workload_name="cli",
+                        workload_class="entry_point", commit_sha=sha,
+                        ingested_at=ANCHOR - timedelta(days=days))
+        )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.commit_sha, state.runs) == ("measured", "head", 2)
+    assert (await _runtime(async_session, rid, "newer"))["runtime"].status == "stale"
+
+
+async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
+    from repowise.core.evidence.runtime_setup import stored_target_classes
+    from repowise.core.persistence.models import GraphNode
+
+    rid = await _seed(async_session)
+    async_session.add(GraphNode(repository_id=rid, node_id="benchmarks/bench_parse.py",
+                                node_type="file"))
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ("benchmark",)
+
+
 async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(async_session) -> None:
     """openclaw's attempt.ts: tests load it through a support module two imports away."""
     from repowise.core.analysis.test_reachability import clear_test_map_cache

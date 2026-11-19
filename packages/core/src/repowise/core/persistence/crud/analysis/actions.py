@@ -46,6 +46,7 @@ from repowise.core.analysis.actions.build import (
     build_drift,
     build_files,
     build_recent,
+    build_runtime,
     build_secrets,
     lead_paths,
     reach_paths,
@@ -69,6 +70,7 @@ from ...models import (
     CoverageIngest,
     DeadCodeFinding,
     DocDriftFinding,
+    EvidenceRun,
     FixEvent,
     GitCommit,
     GitCommitFile,
@@ -496,6 +498,33 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
     )
 
 
+async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) -> dict:
+    count = (
+        await session.execute(
+            select(func.count(EvidenceRun.id)).where(EvidenceRun.repository_id == repo_id)
+        )
+    ).scalar_one()
+    if not count:
+        from repowise.core.evidence.runtime_setup import stored_target_classes
+
+        # Only a repository with nothing stored is asked what it could run.
+        return build_runtime(
+            {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
+        )
+    newest = (
+        await session.execute(
+            select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
+            .where(EvidenceRun.repository_id == repo_id)
+            .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
+            .limit(1)
+        )
+    ).one()
+    return build_runtime(
+        {"runs": count, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
+        head_sha,
+    )
+
+
 _Reader = Callable[[], Awaitable[dict[str, Any]]]
 
 
@@ -535,6 +564,7 @@ async def load_repo_facts(
     await read("dead_code", lambda: _dead(session, repo_id, files, lookup, alias))
     await read("decisions", lambda: _decisions(session, repo_id))
     await read("coverage", lambda: _coverage(session, repo_id, head_sha))
+    await read("runtime", lambda: _runtime(session, repo_id, head_sha))
     values["unavailable"] = unavailable
     return RepoFacts(**values)
 

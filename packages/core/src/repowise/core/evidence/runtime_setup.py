@@ -183,6 +183,51 @@ async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs
     )
 
 
+async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, ...]:
+    """Workload classes the index holds something to run for, in :data:`CLASS_ORDER`.
+
+    The same sources and origin rules as :func:`load_runtime_inputs`, as a
+    yes or no per class: a production entry point, a test file of our own, and
+    (only when neither exists) a benchmark file by its path. About 40 ms on an
+    8,000-file index where the full load takes 200 ms. Ceiling: Go benchmarks
+    sit in ``_test.go`` files and count as the test suite here.
+    """
+    from sqlalchemy import or_, select
+
+    from ..code_origin import is_benchmark_path, path_origin
+    from ..persistence.models import GraphNode, HealthFileMetric
+
+    def files(*where: Any) -> Any:
+        return (
+            select(GraphNode.node_id, HealthFileMetric.code_origin)
+            .outerjoin(
+                HealthFileMetric,
+                (HealthFileMetric.repository_id == GraphNode.repository_id)
+                & (HealthFileMetric.file_path == GraphNode.node_id),
+            )
+            .where(GraphNode.repository_id == repository_id, GraphNode.node_type == "file", *where)
+        )
+
+    def origin(row: Any) -> str:
+        return row.code_origin or path_origin(row.node_id)
+
+    ours = or_(HealthFileMetric.code_origin.is_(None), HealthFileMetric.code_origin.not_in(_NOT_OURS))
+    found: list[str] = []
+    entries = await session.execute(files(GraphNode.is_entry_point.is_(True)))
+    if any(origin(r) == "production" for r in entries):
+        found.append("entry_point")
+    tests = await session.execute(files(GraphNode.is_test.is_(True), ours).limit(50))
+    has_tests = any(origin(r) not in _NOT_OURS for r in tests)
+    if not found and not has_tests:
+        # Every benchmark path rule has "bench" in it.
+        benches = await session.execute(files(GraphNode.node_id.ilike("%bench%"), ours))
+        if any(is_benchmark_path(r.node_id) and origin(r) not in _NOT_OURS for r in benches):
+            found.append("benchmark")
+    if has_tests:
+        found.append("unit_test")
+    return tuple(found)
+
+
 def _within(root: str, path: str) -> bool:
     return not root or path == root or path.startswith(root + "/")
 
@@ -660,5 +705,6 @@ __all__ = [
     "evidence_ingest_line",
     "load_runtime_inputs",
     "runtime_targets",
+    "stored_target_classes",
     "timed_target",
 ]
