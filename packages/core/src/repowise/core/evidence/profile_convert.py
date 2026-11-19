@@ -197,7 +197,7 @@ def convert_profile(
             "the profile does not say whether it timed CPU or wall-clock",
             "name the clock the profiler sampled: cpu or wall",
         )
-    refuse_compiled_positions(run, root, read_lines)
+    refuse_compiled_positions(run, root, read_lines, origins)
     resolution = resolve_frames(
         run.frames,
         root=root,
@@ -359,6 +359,7 @@ def refuse_compiled_positions(
     run: ProfileRun,
     root: str,
     read_lines: Callable[[str], Sequence[str] | None] | None = None,
+    origins: Mapping[str, str] | None = None,
 ) -> None:
     """Refuse a run whose checkout frames carry positions in compiled code.
 
@@ -366,9 +367,10 @@ def refuse_compiled_positions(
     a JavaScript file that names a source map (``//# sourceMappingURL=``) is
     build output: a bundle or a compiler's, whose positions belong to other
     files. Source maps are not read, so either refuses the run. A dependency
-    (``node_modules``, a vendored or generated file) is charged to its caller
-    and never checked. *read_lines* reads a repo-relative file; without it
-    only TypeScript is checked.
+    (``node_modules``, a vendored or generated file by its stored
+    ``code_origin`` in *origins*, else :func:`path_origin`) is charged to its
+    caller and never checked. *read_lines* reads a repo-relative file;
+    without it only TypeScript is checked.
     """
     typescript = [f for f in run.frames if f.language == "typescript"]
     if typescript and frame_paths(typescript, root=root):
@@ -382,7 +384,7 @@ def refuse_compiled_positions(
         return
     javascript = [f for f in run.frames if f.language == "javascript"]
     for rel in sorted(frame_paths(javascript, root=root)):
-        if is_vendored_or_generated_path(rel):
+        if ((origins or {}).get(rel) or path_origin(rel)) in ("vendored", "generated"):
             continue
         lines = read_lines(rel)
         if lines is not None and _names_source_map(lines):

@@ -200,6 +200,9 @@ def test_bundled_or_compiled_javascript_with_a_source_map_is_refused(tmp_path: P
     )
     with pytest.raises(EvidenceFormatError, match="source map"):
         _convert(read(bundled), symbols={}, root=str(tmp_path), reader=reader)
+    # The stored code_origin decides what is a dependency, as it does for joining.
+    convert_profile(read(bundled), root=str(tmp_path), symbols_by_file={},
+                    origins={"dist/main.js": "generated"}, read_lines=reader)
 
 
 def test_a_sample_on_an_unknown_node_is_counted_and_a_file_without_deltas_refused() -> None:
@@ -210,6 +213,10 @@ def test_a_sample_on_an_unknown_node_is_counted_and_a_file_without_deltas_refuse
     assert run.skipped == {"bad_sample": 1}
     assert sum(s.samples or 0 for s in run.stacks) == 1
     doc = json.loads(data)
+    # JSON's NaN and Infinity weigh nothing, never poison the run's total.
+    nan = read(json.dumps({**doc, "timeDeltas": [float("nan"), 1000],
+                           "endTime": float("inf")}).encode())
+    assert sum(st.weight for st in nan.stacks) == 1000
     del doc["timeDeltas"]
     with pytest.raises(EvidenceFormatError, match="time delta"):
         read(json.dumps(doc).encode())

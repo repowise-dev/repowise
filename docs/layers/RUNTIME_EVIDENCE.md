@@ -219,8 +219,8 @@ The format is detected from the content, never the file name;
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
 - **Clock.** A profile needs `cpu` or `wall`. pyinstrument and `.cpuprofile`
-  output is wall clock and pprof says its own sample type; for py-spy, collapsed stacks and other
-  Speedscope exporters pass `--value-kind`.
+  output is wall clock and pprof says its own sample type; for py-spy,
+  collapsed stacks and other Speedscope exporters pass `--value-kind`.
 - **TypeScript and bundled code.** A profile whose frames name TypeScript files
   of the checkout is refused: its positions are in the compiled JavaScript. So
   is one that ran a JavaScript file of the checkout ending in a

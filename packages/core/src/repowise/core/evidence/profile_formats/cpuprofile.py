@@ -21,6 +21,7 @@ thread on a wall-clock interval and records the time it waited as
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -120,7 +121,10 @@ def _frame_index(
 
 
 def _weights(doc: dict[str, Any]) -> list[float]:
-    """Each sample's time until the next, in microseconds; out-of-order samples weigh 0."""
+    """Each sample's time until the next, in microseconds; out-of-order samples weigh 0.
+
+    A delta that is not a finite number counts as 0.
+    """
     deltas = [d if _number(d) else 0 for d in doc["timeDeltas"]]
     at = float(doc["startTime"]) if _number(doc.get("startTime")) else 0.0
     times: list[float] = []
@@ -161,7 +165,8 @@ def _whole(value: Any) -> bool:
 
 
 def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A finite number; JSON's NaN and Infinity are not."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 __all__ = ["read", "sniff"]
