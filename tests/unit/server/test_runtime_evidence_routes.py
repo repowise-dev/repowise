@@ -255,3 +255,38 @@ def test_unranked_command(status: str, command: str | None) -> None:
     from repowise.core.persistence.crud import unranked_command
 
     assert unranked_command(status) == command
+
+
+@pytest.mark.asyncio
+async def test_status_and_measured_name_the_same_newest_run(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    from datetime import timedelta
+
+    repo_id = await _repo(ev_client, session_factory)
+    await _seed(session_factory, repo_id)
+    # An older profile of r1's workload, added again after r1: newest ingest,
+    # older measurement. The ranking keeps r1, so status must too.
+    async with session_factory() as session:
+        session.add(
+            EvidenceRun(
+                id="r0",
+                repository_id=repo_id,
+                run_key="r0",
+                kind="profile",
+                format="repowise-evidence-v1",
+                source="cli",
+                workload_name="w-r1",
+                workload_class="entry_point",
+                commit_sha=HEAD,
+                measured_at=MEASURED_AT - timedelta(days=3),
+                ingested_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        await session.commit()
+
+    status = (await ev_client.get(f"/api/repos/{repo_id}/evidence/status")).json()
+    measured = (await ev_client.get(f"/api/repos/{repo_id}/evidence/measured")).json()
+    status_runs = {w["run_id"] for w in status["workloads"] if w["workload"] == "w-r1"}
+    measured_runs = {r["run_id"] for r in measured["measured"]["runs"]}
+    assert status_runs == measured_runs == {"r1"}

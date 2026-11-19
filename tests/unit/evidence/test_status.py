@@ -14,7 +14,8 @@ def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleName
         "id": run_id, "kind": "profile", "workload_name": workload,
         "workload_class": "entry_point", "environment": "local", "value_kind": "wall",
         "unit": "samples", "tool_name": None, "tool_version": None, "commit_sha": commit,
-        "dirty": None, "ingested_at": datetime(2026, 1, 1, tzinfo=UTC), "units_total": None,
+        "dirty": None, "ingested_at": datetime(2026, 1, 1, tzinfo=UTC), "measured_at": None,
+        "units_total": None,
         "units_matched": None, "units_skipped": None, "units_outside_repo": None,
         "units_truncated": None, "skipped_json": None, "total_value": None,
         "explained_value": None, "repo_self_value": None, "wait_value": None,
@@ -76,3 +77,19 @@ def test_a_red_suites_failures_show_with_its_run() -> None:
     assert run["tests_failed"] == 3
     assert "; 3 tests failed." in _status_line(run)
     assert "tests failed" not in _status_line(run_status(_run("r2", "x", None, tests_failed=0), None))
+
+
+def test_newest_is_by_measurement_time_like_the_ranking() -> None:
+    # r2 was re-added later (newer ingest) but measured earlier than r1.
+    status = evidence_status(
+        [
+            _run("r2", "build", None, ingested_at=datetime(2026, 3, 1, tzinfo=UTC),
+                 measured_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            _run("r1", "build", None, ingested_at=datetime(2026, 2, 1, tzinfo=UTC),
+                 measured_at=datetime(2026, 2, 1, tzinfo=UTC)),
+            _run("b1", "build", None, kind="benchmark", measured_at=None),
+        ],
+        None,
+    )
+    assert [w["run_id"] for w in status["workloads"]] == ["r1", "b1"]
+    assert status["runs_stored"] == {"benchmark": 1, "profile": 2}

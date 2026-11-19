@@ -83,17 +83,24 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
 
 
 def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[str, Any]:
-    """The newest run of every workload (kind, name, environment), newest first,
-    and how many runs each kind keeps. *runs* come newest first."""
-    latest: dict[tuple[str, str, str], Any] = {}
-    stored: dict[str, int] = {}
+    """The newest run of every workload (kind, name, environment), in the
+    order of *runs* (newest ingest first), and how many runs each kind keeps.
+
+    Newest is :func:`evidence.hotness.newest_runs`, the run the measured views
+    rank: by measurement time, not ingest time, so re-adding an old profile
+    does not make it the workload's newest here while the ranking keeps
+    another."""
+    from .hotness import newest_runs
+
+    runs = list(runs)
+    by_kind: dict[str, list[Any]] = {}
     for run in runs:
-        stored[run.kind] = stored.get(run.kind, 0) + 1
-        latest.setdefault((run.kind, run.workload_name, run.environment), run)
+        by_kind.setdefault(run.kind, []).append(run)
+    newest = {run_id for kind_runs in by_kind.values() for run_id in newest_runs(kind_runs)}
     return {
         "reference_commit": reference_commit,
-        "runs_stored": dict(sorted(stored.items())),
-        "workloads": [run_status(run, reference_commit) for run in latest.values()],
+        "runs_stored": {kind: len(kind_runs) for kind, kind_runs in sorted(by_kind.items())},
+        "workloads": [run_status(run, reference_commit) for run in runs if run.id in newest],
     }
 
 
