@@ -511,11 +511,16 @@ async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) ->
         return build_runtime(
             {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
         )
+    # A run at HEAD wins over a newer ingest of an older commit: re-adding an
+    # old profile restamps its ingest time, and must not make current evidence stale.
+    at_head = (EvidenceRun.commit_sha == head_sha,) if head_sha else ()
     newest = (
         await session.execute(
             select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
             .where(EvidenceRun.repository_id == repo_id)
-            .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
+            .order_by(
+                *(c.desc() for c in at_head), EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc()
+            )
             .limit(1)
         )
     ).one()

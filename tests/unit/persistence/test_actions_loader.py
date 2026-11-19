@@ -372,6 +372,17 @@ async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_sessi
     assert (state.status, state.commit_sha, state.runs) == ("measured", "head", 2)
     assert (await _runtime(async_session, rid, "newer"))["runtime"].status == "stale"
 
+    # Re-adding an older profile restamps its ingest time; the run at HEAD still decides.
+    async_session.add(
+        EvidenceRun(id="r3", repository_id=rid, run_key="r3", kind="profile",
+                    format="repowise-evidence-v1", source="cli", workload_name="old",
+                    workload_class="entry_point", commit_sha="older", ingested_at=ANCHOR)
+    )
+    await async_session.flush()
+    state = (await _runtime(async_session, rid, "head"))["runtime"]
+    assert (state.status, state.commit_sha, state.runs) == ("measured", "head", 3)
+    assert (await _runtime(async_session, rid, "newer"))["runtime"].commit_sha == "older"
+
 
 async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
     from repowise.core.evidence.runtime_setup import stored_target_classes
@@ -385,7 +396,12 @@ async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
     await async_session.flush()
     assert await stored_target_classes(async_session, rid) == ()
 
-    # A pytest-benchmark function is.
+    # A pytest-benchmark function is, however many near misses the query also reads.
+    async_session.add_all(
+        make_wiki_symbol(rid, "benchmarks/bench_parse.py", f"benchmark{i}") for i in range(250)
+    )
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ()
     async_session.add(make_wiki_symbol(rid, "benchmarks/bench_parse.py", "bench_parse"))
     await async_session.flush()
     assert await stored_target_classes(async_session, rid) == ("benchmark",)

@@ -133,9 +133,7 @@ class RuntimeInputs:
     measured: frozenset[tuple[str, str]] = frozenset()
 
 
-async def _stored_benchmarks(
-    session: Any, repository_id: str, *, limit: int | None = None
-) -> set[tuple[str, str]]:
+async def _stored_benchmarks(session: Any, repository_id: str) -> set[tuple[str, str]]:
     """``(path, function)`` of stored benchmark functions the planners profile
     (:func:`is_benchmark_function`): Go ``Benchmark*`` and pytest-benchmark."""
     from sqlalchemy import and_, or_, select
@@ -154,7 +152,7 @@ async def _stored_benchmarks(
             ),
         ),
     )
-    rows = await session.execute(query if limit is None else query.limit(limit))
+    rows = await session.execute(query)
     return {(r.file_path, r.name) for r in rows if is_benchmark_function(r.file_path, r.name)}
 
 
@@ -244,7 +242,7 @@ async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, 
         for r in await session.execute(files(*suite, HealthFileMetric.code_origin.is_(None)))
     )
     if not found and not has_tests:
-        benches = await _stored_benchmarks(session, repository_id, limit=200)
+        benches = await _stored_benchmarks(session, repository_id)
         origins = await load_origins(session, repository_id, (p for p, _ in benches))
         if any(o not in _NOT_OURS for o in origins.values()):
             found.append("benchmark")
