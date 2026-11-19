@@ -26,6 +26,7 @@ from ..extractors import (
 from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
+from ..extractors.tcl import tcl_proc_namespace
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
 from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
 from ..lang_helpers.source_prep import cpp_class_head_macros
@@ -576,12 +577,14 @@ def _symbol_kind(
     # Only module-level and class-body members are symbols; the query is
     # recursive, so defs nested in a callable are dropped. Module-anchored
     # node types only match at module level and skip the check, as does a
-    # def the caller has placed already (``keep_nested``) and a Perl named
-    # ``sub``, which is package-global wherever it is declared.
+    # def the caller has placed already (``keep_nested``), a Perl named
+    # ``sub``, which is package-global wherever it is declared, and a Tcl
+    # ``proc``, which defines a real command when the proc around it runs.
     if (
         not keep_nested
         and node_type not in _MODULE_ANCHORED_NODE_TYPES
         and not (language == "perl" and is_perl_package_sub(def_node))
+        and not (language == "tcl" and node_type == "procedure")
         and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
     ):
         return None
@@ -649,6 +652,10 @@ def _resolve_parent_name(
     # and ``sub B::f`` names its package itself.
     if language == "perl" and name_nodes:
         return perl_sub_owner(def_node, _node_text(name_nodes[0], src))
+
+    # Tcl: ``namespace eval`` blocks and a qualified proc name set the namespace.
+    if language == "tcl" and name_nodes:
+        return tcl_proc_namespace(def_node, _node_text(name_nodes[0], src))
     return None
 
 

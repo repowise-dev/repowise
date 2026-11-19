@@ -138,6 +138,9 @@ def _is_elif_continuation(node: Node) -> bool:
       sibling that immediately follows the parent ``if``'s else token
       (spelled ``else`` in those grammars, ``kElse`` in Pascal's).
     """
+    if node.type == "elseif":
+        # Tcl's named ``elseif`` arm; PHP's ``elseif`` is an unnamed keyword token.
+        return node.is_named
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
     if node.type in ("elif_clause", "elif_expression", "elsif", "else_if_clause"):
@@ -361,7 +364,7 @@ def _case_head(node: Node, lmap: LanguageNodeMap) -> list[Node] | None:
     return None
 
 
-_BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block"})
+_BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block", "braced_word"})
 
 
 def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -391,6 +394,8 @@ def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     turn holds the ``match_arm`` nodes. Other languages may place cases
     directly under the switch node.  This helper handles both layouts.
     """
+    if lmap.case_children is not None:
+        return lmap.case_children(node)
     cases: list[Node] = []
     for child in node.children:
         if child.type in lmap.case_kinds:
@@ -469,12 +474,15 @@ def _split_arms(node: Node, lmap: LanguageNodeMap) -> _Arms:
     Python's ``match_statement`` always keeps one point per case: ``match`` /
     ``case`` is pattern matching, the same decision as ``if`` / ``elif`` (a
     3-arm ``match`` would score 2 against the equivalent ``if`` / ``elif``'s 4).
+    Tcl's ``switch`` (glob / regexp / exact patterns) is pattern matching in
+    the same sense.
     """
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
     cases = [arm for arm in _collect_case_children(node, lmap) if not _is_default_arm(arm)]
     defaults = {arm.id for arm in _collect_case_children(node, lmap)} - {c.id for c in cases}
     tangled = {c.id for c in cases if _subtree_contains_complex(c, complex_types)}
-    if node.type == "match_statement" or (tangled and not _has_subject(node)):
+    pattern_matching = node.type == "match_statement" or _effective_kind(node, lmap) == "tcl_switch"
+    if pattern_matching or (tangled and not _has_subject(node)):
         tangled = {c.id for c in cases}
     simple = {c.id for c in cases} - tangled
     return _Arms(defaults | simple, tangled, bool(simple))
@@ -564,6 +572,15 @@ def _tally_only(node: Node, tally: BodyTally, lmap: LanguageNodeMap, scope: int)
         stack.extend((child, cur_scope) for child in reversed(cur.children))
 
 
+def _effective_kind(node: Node, lmap: LanguageNodeMap) -> str:
+    """*node*'s type, or the control-flow kind a generic command stands for."""
+    if lmap.command_kind is not None and node.is_named:
+        kind = lmap.command_kind(node)
+        if kind is not None:
+            return kind
+    return node.type
+
+
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
@@ -633,6 +650,7 @@ def _walk_function_body(
 
         is_flat_match_arm = node.id in flat_arm_ids
         is_switch_arm = node.id in switch_arm_ids
+        kind = _effective_kind(node, lmap)
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
         # the node-type name of their parent node (an ``if`` node contains an
@@ -643,10 +661,10 @@ def _walk_function_body(
             # Flat match arms: no CCN increment, no nesting increment.
             conditions.extend(_compound_condition(node, lmap))
         elif node.is_named and (
-            node.type in lmap.branch_kinds
-            or node.type in lmap.loop_kinds
-            or node.type in lmap.case_kinds
-            or node.type in lmap.catch_kinds
+            kind in lmap.branch_kinds
+            or kind in lmap.loop_kinds
+            or kind in lmap.case_kinds
+            or kind in lmap.catch_kinds
         ):
             ccn_increment = 1
             # An ``else if`` / ``elif`` chain arm, a ternary chain arm or
@@ -663,7 +681,9 @@ def _walk_function_body(
                 nesting_increment = 1
             # Side-channel: does not affect ccn/cognitive (boolean operators
             # are still tallied independently by the regular recursion below).
-            conditions.extend(_compound_condition(node, lmap))
+            # A command-named construct has no condition field to read.
+            if kind == node.type:
+                conditions.extend(_compound_condition(node, lmap))
         elif node.id in bare_handler_ids:
             # A bare ``on T { }`` handler branches and nests like a catch clause.
             ccn_increment = nesting_increment = 1
@@ -672,7 +692,7 @@ def _walk_function_body(
             # its own body, and the guarded and finally bodies stay at the
             # try's depth (Sonar's cognitive complexity spec).
             bare_handler_ids.update(_bare_on_handlers(node))
-        elif node.is_named and node.type in lmap.switch_kinds:
+        elif node.is_named and kind in lmap.switch_kinds:
             arms = _split_arms(node, lmap)
             flat_arm_ids.update(arms.flat)
             switch_arm_ids.update(arms.counted)

@@ -50,7 +50,7 @@ TEST_CODE_SUFFIXES = frozenset(
     {".py", ".go", ".java", ".kt", ".kts", ".scala", ".groovy", ".rb", ".cs", ".fs"}
     | set(JS_SUFFIXES)
     | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp", ".cls"}
-    | {".t", ".pl", ".pm"}
+    | {".t", ".pl", ".pm", ".test", ".tcl"}
 )
 
 

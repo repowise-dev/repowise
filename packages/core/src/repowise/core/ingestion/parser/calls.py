@@ -8,6 +8,7 @@ from dataclasses import replace
 from tree_sitter import Node
 
 from ..extractors import node_text
+from ..extractors.tcl import is_tcl_switch_arm, tcl_call_namespace
 from ..language_configs import LanguageConfig
 from ..models import STRING_LITERAL_RECEIVER, CallReceiver, CallSite, FileInfo, Symbol
 from ..parser_helpers import (
@@ -416,6 +417,8 @@ def _call_from_match(
         return None
 
     site_node = site_nodes[0]
+    if language == "tcl" and is_tcl_switch_arm(site_node):
+        return None
     names = _call_names(
         capture_dict, site_node, target_nodes[0], config, language, src, call_builtins
     )
@@ -436,6 +439,12 @@ def _call_from_match(
         if perl_names is None:
             return None
         target_name, receiver_name, perl_scope = perl_names
+    qualifier = tcl_namespace = None
+    if language == "tcl":
+        target_name, qualifier = _split_tcl_command(target_name)
+        if not target_name:
+            return None
+        tcl_namespace = tcl_call_namespace(site_node)
 
     arg_nodes = capture_dict.get("call.arguments", [])
     receiver_call_nodes = capture_dict.get("call.receiver_call", [])
@@ -468,7 +477,8 @@ def _call_from_match(
         start_byte=target_nodes[0].start_byte,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
-        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else perl_scope,
+        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else (perl_scope or qualifier),
+        namespace=tcl_namespace,
         edge_type=(
             "references" if site_node.type in config.reference_call_node_types else "calls"
         ),
@@ -509,6 +519,14 @@ def _split_perl_call_name(
     if not receiver_name or not target_name:
         return None
     return target_name, receiver_name, receiver_name if function_form else None
+
+
+def _split_tcl_command(name: str) -> tuple[str, str | None]:
+    """``(proc, qualifier)``: ``a::f`` -> ``("f", "a")``, ``::a::f`` -> ``("f", "::a")``, ``::f`` -> ``("f", "::")``."""
+    if "::" not in name:
+        return name, None
+    qualifier, _, leaf = name.rpartition("::")
+    return leaf, qualifier or "::"
 
 
 def _call_arguments(

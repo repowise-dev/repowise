@@ -33,6 +33,7 @@ from .extractors.imports import (
     TS_JS_IMPORTS,
     ImportExtractor,
 )
+from .extractors.tcl import tcl_call_name, tcl_leaf_name
 from .extractors.visibility import (
     apex_visibility,
     csharp_visibility,
@@ -768,6 +769,17 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_extraction="none",
         parent_class_types=frozenset(),
         symbol_name_fn=perl_sub_name,
+    ),
+    "tcl": LanguageConfig(
+        # `namespace eval` scopes procs by name, not by nesting a class.
+        symbol_node_types={"procedure": "function"},
+        import_node_types=["command"],  # `source` / `package require`; see queries/tcl.scm
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=tcl_leaf_name,
+        call_target_name_fn=tcl_call_name,
     ),
 }
 

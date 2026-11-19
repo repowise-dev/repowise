@@ -43,6 +43,7 @@ LanguageTag = Literal[
     "dart",
     "pascal",
     "perl",
+    "tcl",
     "cobol",
     "gdscript",
     "vbnet",
@@ -395,6 +396,10 @@ class CallSite:
     # and cpp has none -- a scoped call must stay on the free-call path. Java
     # writes the ``S`` of ``S.super.m()`` here.
     scope_name: str | None = None
+    # Tcl: the ``namespace eval`` blocks around the call, inside its proc (so
+    # relative to the proc's namespace) or, outside any proc, from the global
+    # one; ``::a`` when one is absolute. None when there are none.
+    namespace: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
     # The grammar's bare-call pattern also matched this member call (Java

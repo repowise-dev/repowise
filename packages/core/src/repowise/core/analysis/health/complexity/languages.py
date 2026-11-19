@@ -47,6 +47,11 @@ from dataclasses import dataclass
 from tree_sitter import Node
 
 from ....ingestion.cpp_export_macros import misread_scope_keyword
+from ....ingestion.extractors.tcl import (
+    is_tcl_switch_arm,
+    is_tcl_switch_arm_body,
+    tcl_switch_arm_bodies,
+)
 
 
 @dataclass(frozen=True)
@@ -411,6 +416,16 @@ class LanguageNodeMap:
     #     ScalaTest matcher or Spark ``Column`` method (``be > 1 and be < 5``),
     #     Pascal bitwise ``Flags and $FF``. None means every match is logic.
     logical_operator: Callable[[Node], object] | None = None
+
+    # -- Command-named control flow ------------------------------------------
+    #   * ``command_kind`` -- for a grammar that parses some control flow as a
+    #     generic command (Tcl ``for`` / ``switch`` and its arms), the node kind
+    #     such a node stands for: a name in ``loop_kinds``, ``switch_kinds`` or
+    #     ``case_kinds``. None (or a None result) means the node type says it all.
+    #   * ``case_children`` -- the arms of a ``switch_kinds`` node whose grammar
+    #     nests them deeper than ``_collect_case_children`` looks.
+    command_kind: Callable[[Node], str | None] | None = None
+    case_children: Callable[[Node], list[Node]] | None = None
 
 
 
@@ -1464,6 +1479,66 @@ _PERL = LanguageNodeMap(
 )
 
 
+# Commands the Tcl grammar leaves generic that iterate (EDA shells add
+# ``foreach_in_collection``); ``dict for`` / ``dict map`` are matched below.
+_TCL_LOOP_COMMANDS = frozenset({b"for", b"foreach_in_collection", b"lmap"})
+_TCL_DICT_LOOPS = frozenset({b"for", b"map"})
+
+
+def _tcl_command_name(node: Node) -> bytes | None:
+    if node.type != "command":
+        return None
+    name = node.child_by_field_name("name")
+    return name.text if name is not None and name.type == "simple_word" else None
+
+
+def _tcl_command_kind(node: Node) -> str | None:
+    """The loop / switch / arm a generic Tcl node stands for."""
+    if is_tcl_switch_arm_body(node):
+        return "tcl_switch_arm"
+    name = _tcl_command_name(node)
+    # A switch arm's pattern parses as a command named by the pattern.
+    if name is None or is_tcl_switch_arm(node):
+        return None
+    if name in _TCL_LOOP_COMMANDS:
+        return "tcl_loop"
+    if name == b"switch":
+        return "tcl_switch"
+    if name == b"dict":
+        words = node.child_by_field_name("arguments")
+        first = words.named_children[0] if words is not None and words.named_children else None
+        if first is not None and first.text in _TCL_DICT_LOOPS:
+            return "tcl_loop"
+    return None
+
+
+_TCL = LanguageNodeMap(
+    function_kinds=frozenset({"procedure"}),
+    lambda_kinds=frozenset(),
+    # ``elseif`` is its own node (a chain continuation); ``else`` is not a
+    # decision. ``ternary_expr`` sits inside ``expr``.
+    branch_kinds=frozenset({"if", "elseif", "ternary_expr"}),
+    # ``for`` / ``foreach_in_collection`` / ``lmap`` / ``dict for`` are
+    # generic commands, mapped to ``tcl_loop`` by ``command_kind``.
+    loop_kinds=frozenset({"foreach", "while", "tcl_loop"}),
+    foreach_kinds=frozenset({"foreach"}),
+    # ``catch {script}`` mostly swallows an error; the ``if`` testing its
+    # result is the branch. ``try``'s ``on`` / ``trap`` handlers have no node
+    # of their own, so no catch is counted rather than one guessed.
+    try_kinds=frozenset({"try", "catch"}),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset({"tcl_switch"}),
+    case_kinds=frozenset({"tcl_switch_arm"}),
+    boolean_operator_kinds=frozenset(),
+    # ``&&`` / ``||`` sit in ``binop_expr`` as operator tokens.
+    boolean_operator_text_kinds=frozenset({"binop_expr"}),
+    command_kind=_tcl_command_kind,
+    case_children=tcl_switch_arm_bodies,
+    # A switch arm whose pattern is ``proc`` parses as a ``procedure``.
+    local_value=is_tcl_switch_arm,
+)
+
+
 _PASCAL = LanguageNodeMap(
     # ``defProc`` pairs a signature (``header: declProc``) with a ``body``
     # block field -- the interface-only ``declProc`` forward/interface
@@ -1773,6 +1848,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "ruby": _RUBY,
     "shell": _SHELL,
     "perl": _PERL,
+    "tcl": _TCL,
     "pascal": _PASCAL,
     # No "elixir" entry on purpose. See the note above ``_FSHARP``.
     "fsharp": _FSHARP,

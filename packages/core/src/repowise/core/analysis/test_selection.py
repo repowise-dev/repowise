@@ -229,7 +229,6 @@ _ROOT_META = (
 # ``history.json`` or ``changes.yaml`` is data a test may load.
 _DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
 
-
 @dataclass(frozen=True)
 class TestSelectionConfig:
     """``tests.full_run_on`` and ``tests.always_run`` from ``.repowise/config.yaml``."""

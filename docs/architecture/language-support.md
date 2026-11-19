@@ -810,6 +810,7 @@ dependency surface their syntax supports.
 | Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
 | Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
 | Good | **Perl** | `.pl` `.pm` `.t`, perl shebang | `use` / `require` through `@INC`-style whole-segment path suffix; pragmas dropped; `Pkg->m()` and `$self->m()` dispatched through `@ISA` (`use parent`, `use base`, `@ISA`) |
+| Good | **Tcl** | `.tcl`, tclsh / wish shebang, tcltest `.test` | `source` paths importer-relative or by unique suffix after stripping a `$dir/` or `[..]/` anchor; `package require` through the repo's `package provide`; commands resolved through `namespace eval` and qualified names |
 
 ---
 
