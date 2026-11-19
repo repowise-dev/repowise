@@ -31,7 +31,7 @@ from repowise.core.persistence.models import (
     PerformanceOpportunity,
     SecurityFinding,
 )
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import insert_repo, make_wiki_symbol
 
 ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 #: A size finding's deepest nested block: Fix first's first concrete step.
@@ -327,7 +327,8 @@ async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_sessi
     assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ()
 
     # A vendored copy's tests are not this repository's suite; a production
-    # entry point is something to run.
+    # ``__main__.py`` is an entry point setup profiles. A JavaScript entry
+    # point and test file are not: setup plans neither from the index.
     async_session.add_all(
         [
             GraphNode(repository_id=rid, node_id="vendor/lib/test_x.py", node_type="file",
@@ -337,16 +338,24 @@ async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_sessi
             # No stored origin: its path says vendored.
             GraphNode(repository_id=rid, node_id="vendor/lib/test_y.py", node_type="file",
                       is_test=True),
-            GraphNode(repository_id=rid, node_id="src/cli.py", node_type="file",
+            GraphNode(repository_id=rid, node_id="web/index.js", node_type="file",
                       is_entry_point=True),
+            GraphNode(repository_id=rid, node_id="web/app.test.js", node_type="file",
+                      is_test=True),
         ]
     )
     await async_session.flush()
     state = (await _runtime(async_session, rid, "head"))["runtime"]
-    assert (state.status, state.targets) == ("unknown", ("entry_point",))
+    assert (state.status, state.targets) == ("unknown", ())
 
-    async_session.add(GraphNode(repository_id=rid, node_id="tests/test_cli.py",
-                                node_type="file", is_test=True))
+    async_session.add_all(
+        [
+            GraphNode(repository_id=rid, node_id="src/pkg/__main__.py", node_type="file",
+                      is_entry_point=True),
+            GraphNode(repository_id=rid, node_id="tests/test_cli.py", node_type="file",
+                      is_test=True),
+        ]
+    )
     await async_session.flush()
     state = (await _runtime(async_session, rid, "head"))["runtime"]
     assert state.targets == ("entry_point", "unit_test")
@@ -369,8 +378,15 @@ async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
     from repowise.core.persistence.models import GraphNode
 
     rid = await _seed(async_session)
-    async_session.add(GraphNode(repository_id=rid, node_id="benchmarks/bench_parse.py",
-                                node_type="file"))
+    # A benchmark file by its path alone (a node ``*.bench.ts``, a Rust
+    # ``benches/`` file) is nothing setup profiles.
+    for path in ("benchmarks/bench_parse.py", "src/parse.bench.ts", "benches/parse.rs"):
+        async_session.add(GraphNode(repository_id=rid, node_id=path, node_type="file"))
+    await async_session.flush()
+    assert await stored_target_classes(async_session, rid) == ()
+
+    # A pytest-benchmark function is.
+    async_session.add(make_wiki_symbol(rid, "benchmarks/bench_parse.py", "bench_parse"))
     await async_session.flush()
     assert await stored_target_classes(async_session, rid) == ("benchmark",)
 
