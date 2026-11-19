@@ -199,6 +199,7 @@ async def test_measured_groups_by_class_and_filters_one_run(
         1000,
     )
     assert run["repo_self_share"] == 0.47
+    assert run["measured_at"] == "2026-11-15T00:00:00Z"
     row = lead["rows"][0]
     assert (row["share"], row["share_low"], row["share_high"]) == (0.1, 0.08, 0.12)
     assert row["on_static_findings"] == []
@@ -238,3 +239,19 @@ async def test_functions_by_symbol_and_by_file(ev_client: AsyncClient, session_f
         (LOAD, "measured", "stale"),
         (LOGIN, "ranked", "current"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("status", "command"),
+    [
+        ("measured", None),
+        ("not_ranked", None),
+        ("needs_update", "repowise update"),
+        ("stale", "repowise evidence setup --format json"),
+        ("no_runtime_data", "repowise evidence setup --format json"),
+    ],
+)
+def test_unranked_command(status: str, command: str | None) -> None:
+    from repowise.core.persistence.crud import unranked_command
+
+    assert unranked_command(status) == command

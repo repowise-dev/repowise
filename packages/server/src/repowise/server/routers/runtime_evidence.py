@@ -1,4 +1,4 @@
-"""/api/repos/{repo_id}/evidence/* — what stored runtime evidence measured.
+"""/api/repos/{repo_id}/evidence/*: what stored runtime evidence measured.
 
 Read-only and thin: run status is ``evidence.status``, the ranked rows are
 ``crud.measured_costs`` and the per-function view is ``symbol_hotness``
@@ -132,8 +132,7 @@ def _function(row: Any) -> dict[str, Any]:
     return {
         "symbol_id": row.symbol_id,
         "file_path": file_of_symbol(row.symbol_id),
-        # The lead tier's thresholds are not calibrated, so no surface claims
-        # it: it reads as ranked.
+        # Tiers above ranked are not calibrated, so no surface claims them.
         "tier": "ranked" if row.tier in ("ranked", "lead_candidate") else "measured",
         "rank": row.rank,
         "self_share": row.self_share,

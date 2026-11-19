@@ -66,7 +66,7 @@ class EvidenceRunSummary(_Strict):
     #: Against the indexed commit: ``current``, ``stale`` or ``unknown``.
     freshness: FreshnessStatus
     dirty: bool | None
-    ingested_at: str | None
+    ingested_at: UTCDateTime | None
     units: EvidenceUnits
     #: ``{reason: count}`` for the entries that did not map.
     skipped: dict[str, int] | None
@@ -111,7 +111,7 @@ class MeasuredRun(_Strict):
     workload_class: str
     workload_name: str
     commit: str | None
-    measured_at: str | None
+    measured_at: UTCDateTime | None
     age_days: int | None
     #: Samples in the whole run; null when the profiler counted none.
     samples: int | None
