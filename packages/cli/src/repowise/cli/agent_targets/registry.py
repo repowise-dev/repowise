@@ -173,7 +173,10 @@ def double_registration(
         # plugin); a name someone added by hand is a hand edit.
         if not loaded[name][0].name_prefix and name != LOCAL_NAME:
             return None
-        return next((m.remove_command for m in loaded[name] if m.remove_command), None)
+        # Only when one command clears every file holding the name; otherwise a
+        # copy survives the fix and the row names the files instead.
+        commands = {m.remove_command for m in loaded[name]}
+        return commands.pop() if len(commands) == 1 else None
 
     def removal(name: str) -> str:
         if loaded[name][0].name_prefix and command(name):

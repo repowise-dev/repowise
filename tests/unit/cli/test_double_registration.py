@@ -175,6 +175,7 @@ def test_the_plugin_server_is_read_from_the_plugin_install(tmp_path: Path, monke
         ({"command": "repowise", "args": ["mcp"]}, True),
         ({"command": "C:/venv/Scripts/repowise.exe", "args": ["mcp", "/repo"]}, True),
         ({"command": ["repowise", "mcp", "--transport", "stdio"]}, True),
+        ({"command": r"C:\venv\Scripts\repowise.exe", "args": ["mcp"]}, True),
         ({"command": "repowise", "args": ["serve"]}, False),
         ({"command": "uvx", "args": ["mcp"]}, False),
         ({"url": "https://api.example.test/mcp"}, False),

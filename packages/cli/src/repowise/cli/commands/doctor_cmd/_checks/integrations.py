@@ -82,15 +82,18 @@ def _agent_target_checks(
         name, check_id = f"Agent: {target.id}", f"agent-{target.id}"
         try:
             report = diagnose(target, repo_path=repo_path)
+        except Exception as exc:
+            detail = f"Could not check: {exc}"
+            checks.append(_check(name, True, detail, check_id=check_id, warn=True))
+            continue
+        try:
             surface = (
                 host_surface(target.id, loaded_servers(target, repo_path), repo_path)
                 if repo_path is not None
                 else None
             )
-        except Exception as exc:
-            detail = f"Could not check: {exc}"
-            checks.append(_check(name, True, detail, check_id=check_id, warn=True))
-            continue
+        except Exception:  # the surface is extra; it never costs the host's own report
+            surface = None
         # The surface rides on the host's own row: one line per host, with the
         # same facts under stable keys in the JSON.
         data = {"host": target.id, **surface} if surface is not None else None

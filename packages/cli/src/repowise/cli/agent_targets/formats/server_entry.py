@@ -252,7 +252,7 @@ def launches_repowise(entry: Mapping) -> bool:
         command, args = (command[0] if command else None), command[1:]
     if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
         return False
-    return re.split(r"[\/]", command)[-1].lower() in ("repowise", "repowise.exe")
+    return re.split(r"[\\/]", command)[-1].lower() in ("repowise", "repowise.exe")
 
 
 def read_servers(path: Path, *keys: str) -> dict:
