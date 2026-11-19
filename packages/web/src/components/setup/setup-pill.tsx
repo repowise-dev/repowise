@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import type { RepoResponse } from "@/lib/api/types";
+import { setupHref } from "@/components/settings/settings-groups";
 import { deriveSetup, ESSENTIALS_TOTAL } from "./setup-rows";
 import {
   rememberSetupDone,
@@ -14,10 +15,6 @@ import {
   useOnboardingState,
   useSetupData,
 } from "./use-setup";
-
-export function setupHref(repoId: string): string {
-  return `/repos/${encodeURIComponent(repoId)}/settings/setup`;
-}
 
 /**
  * The repo whose Setup pill the footer shows: the active one, once it has an

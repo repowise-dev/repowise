@@ -3113,10 +3113,11 @@ function notesFromAugment(additionalContext) {
   return notes;
 }
 function savingsTotals(s) {
+  const tokens = s.saved_input_tokens ?? 0;
   return {
-    tokens: s.saved_input_tokens,
-    inferredTokens: Math.min(s.inferred_saved_input_tokens, s.saved_input_tokens),
-    usd: s.priced_input_savings_usd
+    tokens,
+    inferredTokens: Math.min(s.inferred_saved_input_tokens ?? 0, tokens),
+    usd: s.priced_input_savings_usd ?? 0
   };
 }
 function savingsSince(now, base) {

@@ -1,6 +1,6 @@
 import type { SavingsJobId } from "@repowise-dev/ui/savings";
 import type { SetupResponse } from "@/lib/api/setup";
-import { setupHref } from "@/components/setup/setup-pill";
+import { setupHref } from "@/components/settings/settings-groups";
 
 /** The setup suggestions the savings page can make, in priority order. Ids
  *  match the Setup rows whose prompt the nudge hands over. */

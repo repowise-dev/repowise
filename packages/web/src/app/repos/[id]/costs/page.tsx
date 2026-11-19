@@ -26,7 +26,7 @@ import type { SetupResponse } from "@/lib/api/setup";
 import { useRepo } from "@/lib/hooks/use-repo";
 import { useSetupData, useSetupView } from "@/components/setup/use-setup";
 import { useSetupText } from "@/components/setup/setup-row";
-import { setupHref } from "@/components/setup/setup-pill";
+import { setupHref } from "@/components/settings/settings-groups";
 import type { SetupRow } from "@/components/setup/setup-rows";
 import { useSavingsCopy } from "./savings-copy";
 import {
