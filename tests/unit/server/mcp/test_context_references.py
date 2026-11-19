@@ -879,7 +879,7 @@ async def _seed_package(
         node_type="symbol",
         name=name,
         file_path=path,
-        kind="function" if language == "go" else "class",
+        kind="function" if language in ("go", "rust") else "class",
         language=language,
         start_line=start,
         end_line=end,
@@ -1024,6 +1024,75 @@ async def test_kotlin_same_package_in_another_directory_is_listed(session, repo_
     assert ("src/com/ex/Main.kt", 3, "reference") in _sites(out)
     assert ("app/misc/Extra.kt", 3, "reference") in _sites(out)
     assert out["complete"] is True, out.get("reasons")
+
+
+_OPEN_RO = "pub(crate) fn open_ro(path: &str) -> u8 {\n    0\n}\n"
+
+
+@pytest.mark.asyncio
+async def test_rust_path_qualified_uses_are_listed_and_complete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": _OPEN_RO,
+            # No ``use``: the path names the function.
+            "src/source.rs": "fn read(p: &str) -> u8 {\n    crate::index::open_ro(p)\n}\n",
+            "src/memory/mod.rs": "fn up(p: &str) -> u8 {\n    super::index::open_ro(p)\n}\n",
+            # Names it only as a longer word: not a site.
+            "src/other.rs": "fn open_ro_all() {}\nfn f() { crate::other::open_ro_all() }\n",
+        },
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    sites = _sites(out)
+    assert ("src/source.rs", 2, "reference") in sites
+    assert ("src/memory/mod.rs", 2, "reference") in sites
+    assert not any(p == "src/other.rs" for p, _n, _k in sites)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_rust_method_called_on_a_value_stays_incomplete(session, repo_id, tmp_path):
+    """``value.open()`` names no path: the member scan still says what it cannot see."""
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": "pub struct Store;\n\nimpl Store {\n    pub fn open(&self) {}\n}\n",
+            "src/app.rs": "fn go() {\n    crate::make().open();\n}\n",
+        },
+        "rust",
+        ("src/index.rs", "Store::open", 4, 4),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: src/app.rs" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_rust_without_git_to_search_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"src/index.rs": _OPEN_RO},
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "rust: could not search for ::open_ro" in out["reasons"]
 
 
 _FIND = (

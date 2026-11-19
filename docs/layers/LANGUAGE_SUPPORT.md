@@ -153,7 +153,7 @@ vocabulary, and every origin has exactly one confidence:
 | `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
 | `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
 | `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path such as `crate::index::open_ro()` that needs no `use` |
 | `crate_root` | 0.88 | The reference is scoped to its Rust crate |
 | `receiver_import` | 0.88 | The receiver's class was found in an imported file |
 | `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |

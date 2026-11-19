@@ -67,7 +67,8 @@ _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field"})
 # Languages where using a symbol from another file takes an import naming that
 # file or the symbol, so importers are every file that can use it. Elsewhere
 # (same-package or namespace visibility) sites are listed but never complete,
-# except in the directory-package languages below.
+# except in the directory-package languages below and in Rust, whose other
+# uses are paths ending in the name.
 _IMPORT_SCOPED_LANGUAGES = frozenset({"python", "typescript", "javascript"})
 # Languages whose same-package files are found and scanned too, so the set
 # can be complete: Go's package is its directory, a JVM package is every file
@@ -928,6 +929,9 @@ def _package_scope(
     import, its file's package, and why the edit set cannot be complete."""
     if language in _IMPORT_SCOPED_LANGUAGES:
         return [], None, []
+    if language == "rust":
+        files, reasons = _rust_path_files(root, node)
+        return files, None, reasons
     if language not in _DIRECTORY_PACKAGE_LANGUAGES:
         return [], None, [f"{language or 'unknown language'}: same-package use is not scanned"]
     def_file = node.file_path
@@ -947,6 +951,25 @@ def _package_scope(
         return [(parent / n).as_posix() for n in names if PurePosixPath(n).suffix in exts], package, []
     files, reasons = _jvm_package_files(root, node, def_lines, package, language)
     return files, package, reasons
+
+
+def _rust_path_files(root: Path, node: GraphNode) -> tuple[list[str], list[str]]:
+    """``(files, reasons)``: Rust files that may name *node* through a path.
+
+    Another file reaches a Rust item through a ``use`` (an importer, already
+    scanned) or a path ending in ``::name`` (``crate::m::name``,
+    ``super::name``, ``m::Type::name``), which needs no ``use``; the module
+    itself is one file. Ceiling: a path split across lines before the name
+    is missed.
+    """
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    needle = f"::{_bare_name(node)}"
+    held = _files_holding(root, needle)
+    if held is None:
+        return [], [f"rust: could not search for {needle}"]
+    exts = REGISTRY.extensions_for(("rust",))
+    return sorted(f for f in held if PurePosixPath(f).suffix in exts), []
 
 
 def _jvm_package_files(

@@ -124,7 +124,7 @@ base origins; the other 21 are [receiver-typing variants](#typing-the-receiver).
 | 0.90 | `self_inherited` | `self` / `this` or Python `super()`, found on exactly one ancestor |
 | 0.90 | `enclosing_inherited` | A bare call, found on exactly one ancestor |
 | 0.88 | `package_alias` | Go `pkg.Func`, resolved across the whole package |
-| 0.88 | `module_alias` | The receiver is an imported module |
+| 0.88 | `module_alias` | The receiver is an imported module, or a Rust module path (`crate::index::open_ro()`, `super::f()`, a `mod` the file declares) walked down the module tree |
 | 0.88 | `crate_root` | A Rust crate-scoped reference |
 | 0.88 | `receiver_import` | The receiver's type was found in an imported file |
 | 0.85 | `import_merged` | It is in one of the imported files; which one is unattributed |
