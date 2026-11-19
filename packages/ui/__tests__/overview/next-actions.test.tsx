@@ -295,6 +295,9 @@ describe("actionHref", () => {
         "/repos/r",
       ),
     ).toBe("/repos/r/decisions/d1");
+    expect(
+      actionHref(action({ surface: "setup", rule: "sync_hook_missing" }), "/repos/r"),
+    ).toBe("/repos/r/settings/setup#sync_hook_missing");
   });
 });
 
