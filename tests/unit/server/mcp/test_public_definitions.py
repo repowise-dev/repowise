@@ -19,7 +19,7 @@ from repowise.server.mcp_server import mcp, tool_definitions
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["core", "standard", "all"])
+@pytest.mark.parametrize("profile", ["core", "lean", "standard", "all"])
 @pytest.mark.parametrize("workspace", [False, True])
 async def test_public_definitions_match_the_live_server_byte_for_byte(
     tmp_path: Any, monkeypatch: Any, profile: str, workspace: bool

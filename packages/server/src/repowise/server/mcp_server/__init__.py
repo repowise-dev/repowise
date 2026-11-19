@@ -444,7 +444,9 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
 
     Built from the tool registry with the server's own wrapping and schema
     slimming, without creating or starting a server. Sorted by name, as the
-    server lists them; a name with no registered tool is skipped.
+    server lists them; a name with no registered tool is skipped. The
+    ``mcp.always_load`` hint is a per-repository setting, so it is not here;
+    a server that honours it adds it per session (``mark_always_loaded``).
     """
     from mcp.server.fastmcp.tools import Tool
     from mcp.types import Tool as MCPTool
