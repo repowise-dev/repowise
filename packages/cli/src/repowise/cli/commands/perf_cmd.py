@@ -371,7 +371,11 @@ def _emit_comparison(result: Comparison, job: _Job, *, baseline: str | None) -> 
     metavar="NAME",
     help="Compare the newest benchmark runs with exact baseline NAME.",
 )
-@click.option("--workload", default=None, help="Only this workload's runs.")
+@click.option(
+    "--workload",
+    default=None,
+    help="Only this workload's runs. With --save, the baseline's other workloads are kept.",
+)
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
 @format_option()
 def perf_check_command(
@@ -414,6 +418,8 @@ def perf_check_command(
             current = _current_snapshot(repo_path, workload, fmt)
             if not current["workloads"]:
                 cannot_evaluate(fmt, "no_exact_evidence", _NO_EXACT)
+            if workload is not None:
+                current = _keep_other_workloads(repo_path, save_name, current)
             path = perf_check.save_snapshot(ensure_repowise_dir(repo_path), save_name, current)
             _emit_snapshot_saved(save_name, path, current, fmt)
         else:
@@ -431,6 +437,14 @@ def perf_check_command(
         cannot_evaluate(fmt, "baseline", str(exc))
     except OSError as exc:
         cannot_evaluate(fmt, "io_error", f"could not read or store the baseline: {exc}")
+
+
+def _keep_other_workloads(repo_path: Path, name: str, current: dict) -> dict:
+    """*current* (one workload) over baseline *name*'s other workloads, when it exists."""
+    if not perf_check.snapshot_path(get_repowise_dir(repo_path), name).is_file():
+        return current
+    kept = perf_check.load_snapshot(get_repowise_dir(repo_path), name)["workloads"]
+    return {**current, "workloads": dict(sorted({**kept, **current["workloads"]}.items()))}
 
 
 _NO_EXACT = (

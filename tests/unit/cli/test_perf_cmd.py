@@ -264,3 +264,21 @@ def test_check_names_a_workload_the_baseline_lacks(indexed) -> None:
     result = _check(root, "--against", "base", "--workload", "other", "--format", "json")
     assert result.exit_code == 2
     assert "has no workload 'other'" in json.loads(result.stdout)["message"]
+
+
+def test_a_workload_filtered_save_keeps_the_baselines_other_workloads(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    _ingest(root, head, text, "before.txt")
+    path = root / "other.txt"
+    path.write_text(text.replace("BenchmarkJoin", "BenchmarkSplit"))
+    result = _evidence_add(
+        str(path), "--workload", "other", "--class", "benchmark", "--commit", head,
+    )
+    assert result.exit_code == 0, result.output
+    assert _check(root, "--save", "base").exit_code == 0
+
+    saved = _check(root, "--save", "base", "--workload", "other", "--format", "json")
+    assert saved.exit_code == 0, saved.output
+    assert json.loads(saved.stdout)["benchmarks"] == {"go bench results ./strs": 3, "other": 3}

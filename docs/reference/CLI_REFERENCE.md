@@ -1522,7 +1522,7 @@ repowise perf check --against base   # exit 1 when a benchmark allocates more pe
 |------|--------------|---------|
 | `--save NAME` | Store the newest benchmark run of each workload and its allocations per operation as `.repowise/perf/exact/NAME.json`, beside a `perf measure` baseline of the same name and never in place of it. | |
 | `--against NAME` | Compare the newest benchmark run of each workload now with baseline `NAME`. | |
-| `--workload` | Only this workload's runs. | every workload |
+| `--workload` | Only this workload's runs. With `--save`, only this workload's entry is replaced; the baseline's other workloads are kept. | every workload |
 | `--path` | Repo path. | cwd / workspace primary |
 | `--format` | `table` or `json`. | `table` |
 
