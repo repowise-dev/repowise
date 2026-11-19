@@ -296,8 +296,12 @@ def _relative(repo_path: Path, paths: list[Path]) -> list[str]:
     return out
 
 
-def _search_lines(facts: FinishFacts) -> list[RenderableType]:
-    """The command that turns semantic search on, when documentation exists without it."""
+def _search_lines(facts: FinishFacts, *, server: bool = False) -> list[RenderableType]:
+    """The command that turns semantic search on, when documentation exists without it.
+
+    A *server* run keeps only the embedding-failed warning: the reindex hint is
+    a command for someone at the machine.
+    """
     search = facts.scope.get("search") or {}
     if facts.embed_failed:
         return [
@@ -307,7 +311,7 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
                 "[bold]repowise reindex[/bold]."
             )
         ]
-    if not facts.pages or search.get("semantic") == "available":
+    if server or not facts.pages or search.get("semantic") == "available":
         return []
     command = search.get("next_command") or "repowise reindex"
     return [
@@ -335,9 +339,14 @@ def _embed_cost(command: str) -> str:
 
 
 def _footer(
-    facts: FinishFacts, setup: Any, repo_path: Path, files_written: list[Path]
+    facts: FinishFacts,
+    setup: Any,
+    repo_path: Path,
+    files_written: list[Path],
+    *,
+    server: bool = False,
 ) -> list[RenderableType]:
-    lines = _search_lines(facts)
+    lines = _search_lines(facts, server=server)
     if files_written:
         lines.append(
             dim_line(
@@ -391,9 +400,19 @@ def print_finish_panel(
     files_written: list[Path] | None = None,
     owl: str = mascot.DONE,
 ) -> None:
-    """The finish panel on a terminal; the same rows as plain lines off one."""
-    title, metrics, body, footer = _panel_parts(facts, setup, repo_path, files_written)
-    print_completion_panel(console, title, metrics, steps, body=body, footer=footer, owl=owl)
+    """The finish panel on a terminal; the same rows as plain lines off one.
+
+    A server run (no terminal and editor setup off: a stack worker, a CI job)
+    prints no next steps, agent questions or reindex hint: they are commands
+    for someone at the machine, and its log has no one reading them there.
+    """
+    server = not console.is_terminal and bool(getattr(setup, "editor_setup_disabled", False))
+    title, metrics, body, footer = _panel_parts(
+        facts, setup, repo_path, files_written, server=server
+    )
+    print_completion_panel(
+        console, title, metrics, [] if server else steps, body=body, footer=footer, owl=owl
+    )
 
 
 def _panel_parts(
@@ -401,6 +420,8 @@ def _panel_parts(
     setup: Any,
     repo_path: Path | None,
     files_written: list[Path] | None,
+    *,
+    server: bool = False,
 ) -> tuple[str, list[tuple[str, str]], list[RenderableType], list[RenderableType]]:
     body: list[RenderableType] = [
         *stood_out_lines(facts.stood_out),
@@ -410,6 +431,7 @@ def _panel_parts(
     if connected:
         body.append(Text(""))
         body += connected
-    body += ask_lines(agent_questions(facts.top_hotspot))
-    footer = _footer(facts, setup, repo_path or Path("."), files_written or [])
+    if not server:
+        body += ask_lines(agent_questions(facts.top_hotspot))
+    footer = _footer(facts, setup, repo_path or Path("."), files_written or [], server=server)
     return escape(completion_title(facts.scope)), _metrics(facts), body, footer
