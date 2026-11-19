@@ -152,6 +152,22 @@ Opus 5.5, opened 83% fewer files and got all 48 answers right.
 | Wall clock | 45 s | **24 s** | **-47%** |
 | Tool calls | 7.1 | **5.3** | **-26%** |
 
+### Sonnet 4.6 at the current build
+
+The same 24 questions, three runs per side, rerun with repowise at `a5ee180fb`
+(indexes rebuilt at that commit, pre-registered as amendment A6). The row above
+stays as published.
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 3.28 | **0.00** | **-100%** |
+| Output tokens | 2,298 | **1,120** | **-51.2%** [-74.2, -29.3] |
+| Wall clock | 45 s | **24 s** | **-47.2%** [-69.0, -26.2] |
+| Tool calls | 6.5 | **4.7** | **-28%** |
+| Answers right | 70 of 72 | **71 of 72** | |
+
+Wrote less on **19 of 24** questions.
+
 ### Opus 5.5, the newest flagship
 
 | Per question | Without repowise | With repowise | Change |
