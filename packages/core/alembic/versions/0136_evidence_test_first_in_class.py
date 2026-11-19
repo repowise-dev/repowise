@@ -4,7 +4,7 @@ One nullable column on ``evidence_test_timings``: a fixture shared by a class
 or module runs inside its first test, so that test's time may carry it. Local
 SQLite stores get it from the model through the reconciler.
 
-Revision ID: 0137
+Revision ID: 0136
 Revises: 0135
 Create Date: 2026-11-19
 """
@@ -16,7 +16,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0137"
+revision: str = "0136"
 down_revision: str | None = "0135"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
