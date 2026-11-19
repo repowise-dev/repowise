@@ -177,3 +177,18 @@ def test_a_series_that_keeps_its_procs_suffix_still_links_its_function() -> None
     assert [(e["name"], e["location"]["function"]) for e in entries] == [
         (f"{PKG}.BenchmarkJoin", "BenchmarkJoin"), (f"{PKG}.BenchmarkJoin-4", "BenchmarkJoin"),
     ]
+
+
+def test_a_result_split_by_what_the_benchmark_printed_is_joined_back() -> None:
+    # Real go 1.26 output of a benchmark that calls fmt.Println and b.Log.
+    data = _lines(
+        "BenchmarkLog-32      \tprinted",
+        "     100\t       243.0 ns/op\t     109 B/op\t       0 allocs/op",
+        "--- BENCH: BenchmarkLog-32",
+        "    l_test.go:6: hello",
+        "BenchmarkQuiet-32    \t     100\t         1.000 ns/op\t       0 B/op\t       0 allocs/op",
+    )
+    entries = {e["name"]: e for e in _convert(data)}
+    assert list(entries) == [f"{PKG}.BenchmarkLog", f"{PKG}.BenchmarkQuiet"]
+    log = entries[f"{PKG}.BenchmarkLog"]
+    assert (log["bytes_per_op"], log["median"]) == (109, 243)

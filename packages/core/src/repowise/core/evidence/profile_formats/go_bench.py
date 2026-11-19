@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,11 @@ from repowise.core.code_origin import is_benchmark_function
 
 from ..format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 
-_RESULT = re.compile(r"^(Benchmark\S*)\s+(\d+)\s+(\d+(?:\.\d+)?(?:e[+-]?\d+)?) ns/op\b(.*)$")
+_NUMBERS = r"(\d+)\s+(\d+(?:\.\d+)?(?:e[+-]?\d+)?) ns/op\b(.*)$"
+_RESULT = re.compile(r"^(Benchmark\S*)\s+" + _NUMBERS)
+# What a benchmark prints while it runs lands between its name and its numbers.
+_NAME_ONLY = re.compile(r"^(Benchmark\S*)(?:\s|$)")
+_NUMBERS_ONLY = re.compile(r"^" + _NUMBERS)
 _PROCS = re.compile(r"^(.*)-(\d+)$")
 _TEST2JSON = re.compile(r'^\{\s*(?:"Time"\s*:\s*"[^"]*"\s*,\s*)?"Action"\s*:')
 _FAILED = re.compile(r"^\s*--- FAIL: (Benchmark\S*)")
@@ -104,8 +109,7 @@ def _results(
     ran: set[tuple[str | None, str]] = set()
     for package, output in packages:
         pkg = package
-        for raw in output.splitlines():
-            line = raw.strip()
+        for line in _joined(output):
             if line.startswith("pkg: "):
                 pkg = line[5:].strip() or package
             elif fail := _FAILED.match(line):
@@ -118,6 +122,24 @@ def _results(
                     _metrics(match.group(4)),
                 ))
     return found, failed, ran
+
+
+def _joined(output: str) -> Iterator[str]:
+    """*output*'s stripped lines, a result split by printed output joined back.
+
+    A benchmark that prints while it runs (``fmt.Println``) leaves
+    ``BenchmarkX-8  <its output>`` and the numbers on a later line.
+    """
+    pending: str | None = None
+    for raw in output.splitlines():
+        line = raw.strip()
+        if pending is not None and _NUMBERS_ONLY.match(line):
+            yield f"{pending} {line}"
+            pending = None
+            continue
+        if not _RESULT.match(line) and (name := _NAME_ONLY.match(line)):
+            pending = name.group(1)
+        yield line
 
 
 def _series(
