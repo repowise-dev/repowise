@@ -2014,7 +2014,7 @@ repowise workspace scan --yes
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--yes` / `-y` | Add all without prompting. | off |
-| `--exclude` | Skip paths matching this glob, matched like `.gitignore`: `*` stays within one directory, `**` crosses directories, and a pattern with a slash (e.g. `'test-repos/*'`, `'/legacy'`) is relative to the workspace root. A slashless name such as `legacy` matches at any depth, so it also skips `svc/legacy`; write `/legacy` to skip only the top-level one. Repeatable. | |
+| `--exclude` | Skip paths matching this glob, matched like `.gitignore`: `*` stays within one directory, `**` crosses directories, and a slash at the start or in the middle (e.g. `'/legacy'`, `'test-repos/*'`) ties the pattern to the workspace root. A trailing slash only means "directory": `legacy` and `legacy/` both match at any depth. **Changed:** before, `--exclude legacy` skipped only the top-level `legacy`; it now also skips nested repos of that name such as `svc/legacy`. Write `/legacy` to keep the old, top-level-only scope. Repeatable. | |
 | `--verbose`, `-v` | Debug logs. | off |
 
 ### `repowise workspace update`
