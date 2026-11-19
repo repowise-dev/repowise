@@ -154,6 +154,41 @@ def test_semantic_search_line_only_when_off():
 
 
 
+@pytest.mark.parametrize(
+    ("setup", "server"),
+    [
+        (EditorSetupOutcome(editor_setup_disabled=True), True),
+        (EditorSetupOutcome(claude_code_connected=True), False),
+    ],
+    ids=["server", "agent"],
+)
+def test_a_server_run_prints_no_laptop_next_steps(setup, server):
+    import io
+
+    from repowise.cli.ui.finish_panel import print_finish_panel
+
+    scope = {
+        "content_provenance": "template",
+        "search": {
+            "semantic": "unavailable",
+            "next_command": "repowise reindex --embedder ollama",
+        },
+    }
+    facts = FinishFacts(
+        scope=scope, files=1, symbols=1, languages="Python 100%", graph_nodes=1,
+        graph_edges=0, elapsed="1.0s", top_hotspot="a.py", pages="1 page",
+    )
+    out = io.StringIO()
+    console = Console(file=out, width=100, theme=THEME)  # a pipe, as a worker's log is
+    steps = build_contextual_next_steps(hotspot_count=1, top_hotspot="a.py", setup=setup)
+    print_finish_panel(console, facts, steps=steps, setup=setup, repo_path=Path("/r"))
+    text = out.getvalue()
+
+    assert "Indexed" in text
+    for laptop in ("What's next:", "repowise serve", "Try asking your agent", "reindex"):
+        assert (laptop in text) is not server, laptop
+
+
 def test_panel_states_what_each_wired_agent_lists():
     surface = {
         "id": "vscode",

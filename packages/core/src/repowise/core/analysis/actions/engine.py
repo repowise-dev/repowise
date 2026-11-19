@@ -31,6 +31,8 @@ RULES: tuple[Rule, ...] = (
     hygiene.dead_code_batch,
     signal.coverage_missing,
     signal.coverage_stale,
+    signal.runtime_missing,
+    signal.runtime_stale,
 )
 
 #: Stored per horizon. The page shows fewer; the rest stay one click away and

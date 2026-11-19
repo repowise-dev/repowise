@@ -578,16 +578,16 @@ def test_node_bins_get_a_cpu_profile_and_typescript_is_refused(tmp_path: Path) -
 
     js, ts = _targets(tmp_path)
 
-    assert js["command"] == (
-        "node --cpu-prof --cpu-prof-dir=.repowise --cpu-prof-name=node-bin-fx-js.cpuprofile bin/fx.js "
-        + ARGS_PLACEHOLDER
-    )
+    # One directory per target: every process and worker thread writes its own
+    # profile there, cleaned first, and the ingest line takes the directory.
+    assert js["command"] == "node --cpu-prof --cpu-prof-dir=.repowise/node-bin-fx-js bin/fx.js " + ARGS_PLACEHOLDER
+    assert js["profile"] == ".repowise/node-bin-fx-js"
+    assert js["prerequisites"] == ["git clean -fqx -- .repowise/node-bin-fx-js"]
     assert js["ingest"] == (
-        "repowise evidence add .repowise/node-bin-fx-js.cpuprofile "
+        "repowise evidence add .repowise/node-bin-fx-js "
         f'--workload "node bin/fx.js {ARGS_PLACEHOLDER}" --class entry_point --commit {SHA}'
     )
     assert "cpuprofile" not in js["reason"]
-    assert js["prerequisites"] == ["git clean -fqx -- .repowise/node-bin-fx-js.cpuprofile"]
     assert ts["command"] is None and "TypeScript" in ts["reason"]
 
 
@@ -790,3 +790,20 @@ def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> N
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
 
     assert "optional" not in plan["next_call"]
+
+
+def test_a_node_ingest_line_names_the_directory_of_per_process_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.evidence import runtime_setup
+
+    monkeypatch.setattr(runtime_setup, "_readable", lambda _fmt: True)
+    (tmp_path / "package.json").write_text(
+        '{"name": "fx", "bin": {"fx": "bin/fx.js"}, '
+        '"scripts": {"test": "jest"}, "devDependencies": {"jest": "1"}}'
+    )
+    (tmp_path / "bin").mkdir()
+
+    (js,) = _targets(tmp_path)
+
+    assert js["ingest"].startswith('repowise evidence add .repowise/node-bin-fx-js --workload "node bin/fx.js')

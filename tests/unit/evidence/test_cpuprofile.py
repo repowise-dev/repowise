@@ -332,3 +332,28 @@ def test_bundled_code_is_judged_by_its_stored_origin_on_ingest(
         assert payload["stored"] is True
         # The generated file is a library frame: its time goes to main.
         assert payload["conversion"]["library_share"] == 1.0
+
+
+def test_the_profiles_of_one_runs_processes_merge_into_one_run() -> None:
+    from repowise.core.evidence.add import prepare_evidence_files
+
+    # --cpu-prof writes one file per process and worker thread.
+    parent = _profile(
+        [(1, "(root)", "", -1, -1, [2]), (2, "main", f"{URL}app.js", 31, 13, [3]),
+         (3, "makeText", f"{URL}app.js", 8, 17, [])],
+        [3, 3, 2],
+    )
+    worker = _profile(
+        [(1, "(root)", "", -1, -1, [2]), (2, "tokenize", f"{URL}lib/text.js", 2, 17, [])],
+        [2, 2],
+    )
+    prepared = prepare_evidence_files(
+        [("parent.cpuprofile", parent), ("worker.cpuprofile", worker)],
+        checkout_root=FIXTURE,
+        commit="a" * 40,
+    )
+    assert (prepared.format, prepared.profiles) == ("cpuprofile", 2)
+    got = {e["function"]: e for e in _convert(prepared.run).document["symbols"]}
+    assert got["app.makeText"]["self_samples"] == 2
+    assert got["app.main"]["total_samples"] == 3
+    assert got["lib.text.tokenize"]["self_samples"] == 2
