@@ -77,6 +77,7 @@ def _canonical(
     evidence_kind: str = "measured",
     priced: bool = False,
     occurred_at: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Write one canonical savings event, which is what the command reads."""
     from datetime import UTC, datetime
@@ -102,6 +103,7 @@ def _canonical(
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": baseline,
         "delivered_input_tokens": delivered,
+        "session_id": session_id,
     }
     if priced:
         payload.update(
@@ -264,6 +266,59 @@ def test_saved_reports_unpriced_tokens_rather_than_valuing_them(repo_cwd: Path) 
     flat = " ".join(result.output.split())
     assert "1,000,000 tokens carry no recorded rate" in flat
     assert "Estimated saved" not in flat
+
+
+def test_saved_labels_the_output_estimate_as_from_the_benchmark(repo_cwd: Path) -> None:
+    _store(repo_cwd).close()
+    _canonical(repo_cwd, surface="mcp", baseline=1_000_000, delivered=0, priced=True, session_id="s")
+    result = CliRunner().invoke(saved_command, [])
+    assert result.exit_code == 0
+    flat = " ".join(result.output.split())
+    assert "Output saved (estimated from benchmark)" in flat
+    assert "over 1 questions in 1 sessions" in flat
+    assert "Estimated total" in flat
+
+    as_json = CliRunner().invoke(saved_command, ["--format", "json"])
+    import json
+
+    summary = json.loads(as_json.output)["summary"]
+    assert summary["output_tokens_saved_estimated"] > 0
+    assert summary["calibration"]["per_model"][0]["basis"] == "measured"
+    assert summary["total_usd_saved_estimated"] == pytest.approx(
+        summary["estimated_usd"] + summary["output_usd_saved_estimated"]
+    )
+
+
+def test_saved_names_both_causes_of_unpriced_output_estimate(repo_cwd: Path) -> None:
+    _store(repo_cwd).close()
+    _canonical(repo_cwd, surface="mcp", baseline=1_000_000, delivered=0, session_id="s")
+    result = CliRunner().invoke(saved_command, [])
+    assert result.exit_code == 0
+    flat = " ".join(result.output.split())
+    assert "from sessions with no recorded model or output rate and are not priced" in flat
+
+
+def test_saved_without_a_calibration_prints_the_same_report(repo_cwd: Path, monkeypatch) -> None:
+    from repowise.core.savings import output_estimate
+
+    _store(repo_cwd).close()
+    _canonical(repo_cwd, surface="mcp", baseline=1_000_000, delivered=0, priced=True, session_id="s")
+    with_estimate = CliRunner().invoke(saved_command, [])
+
+    def boom():
+        raise RuntimeError("calibration unavailable")
+
+    monkeypatch.setattr(output_estimate, "_load_calibration", boom)
+    without = CliRunner().invoke(saved_command, [])
+    assert without.exit_code == 0
+    added = ("estimated from benchmark", "Estimated total", "(input priced + output")
+    kept = [
+        line
+        for line in with_estimate.output.splitlines()
+        if not any(marker in line for marker in added)
+    ]
+    assert len(kept) < len(with_estimate.output.splitlines())
+    assert without.output.splitlines() == kept
 
 
 class TestPricingModelResolution:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.savings.contracts import (
     OpportunityObservation,
@@ -23,6 +23,9 @@ from repowise.core.savings.reporting import (
     agent_breakdown_rows,
     breakdown_rows,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.savings.output_estimate import OutputEstimate
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
@@ -350,6 +353,7 @@ class SavingsRepository:
         priced_input = int(row[8])
         saved_output = int(row[11])
         priced_output = int(row[12])
+        output_estimate = self._output_estimate(where, params)
         return SavingsReport(
             unique_events=int(row[0]),
             successful_or_usable_partial_events=int(row[1]),
@@ -389,4 +393,19 @@ class SavingsRepository:
             ),
             first_event_at=row[14],
             last_event_at=row[15],
+            output_estimate=output_estimate,
         )
+
+    def _output_estimate(self, where: str, params: list[Any]) -> OutputEstimate | None:
+        """The benchmark-calibrated output estimate; ``None`` rather than a failed report.
+
+        Imported here, not at module top: the event writers import this module
+        on the hook path and never build a report.
+        """
+        from repowise.core.savings.output_estimate import SESSION_GROUPS_SQL, estimate_output
+
+        try:
+            groups = self._conn.execute(SESSION_GROUPS_SQL.format(where=where), params).fetchall()
+        except sqlite3.Error:
+            return None
+        return estimate_output(groups)
