@@ -216,6 +216,20 @@ def input_format(given: str | None, data: bytes) -> str:
     return detect_profile_format(head) or EVIDENCE_FORMAT
 
 
+def _call_to_v1(to_v1: Any, data: bytes, name: str) -> dict[str, Any]:
+    """*to_v1* over *data*, with the file's *name* to readers that take one.
+
+    Criterion is the one reader that does: its ``estimates.json`` carries no
+    benchmark id, so it reads the sibling ``benchmark.json`` from the path.
+    A reader that takes bytes only raises TypeError before running, which is
+    not confused with one that raises it inside: the retry re-raises.
+    """
+    try:
+        return to_v1(data, name)
+    except TypeError:
+        return to_v1(data)
+
+
 def prepare_evidence(
     data: bytes,
     *,
@@ -254,7 +268,7 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                text = json.dumps(_call_to_v1(reader.to_v1, data, name), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
