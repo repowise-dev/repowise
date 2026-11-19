@@ -26,7 +26,7 @@ export function JobLog({ entries, maxLines = 6 }: JobLogProps) {
 
   // Follow the newest line by scrolling the log's own viewport. `scrollIntoView`
   // also scrolls every scrollable ancestor, so each new line dragged the whole
-  // page back to the log while a job ran (#5469).
+  // page back to the log while a job ran.
   useEffect(() => {
     const viewport = viewportRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
