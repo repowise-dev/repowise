@@ -158,10 +158,19 @@ or index access to a tool call or hook.
 The count is distinct (session, path). Within one host session a path is
 credited once across surfaces, owned by the first usable event that served it.
 A Read of that path later in the session, seen by the Read hook, cancels the
-credit (`savings_file_reads`). The session key is hashed without the surface:
-the hooks key it by the host's session id, and the MCP server by the same id
-when the host exports it (`CLAUDE_CODE_SESSION_ID`), otherwise by its own
-connection id. An event with no session counts on its own.
+credit (`savings_file_reads`). The session key is hashed without the surface
+or the repository root: the hooks key it by the host's session id, and the MCP
+server by the same id when the host exports it (`CLAUDE_CODE_SESSION_ID`),
+otherwise by its own connection id. An event with no session counts on its own.
+
+The Read hook knows which paths to note from its own per-window session state:
+paths it replaced, and paths a repowise MCP reply served in that window. So a
+cancellation needs the Read hook and the MCP PostToolUse hook installed, and a
+subagent's Read cancels only credits made in its own window. A collapsed
+re-read credits a file the agent opened earlier in the session, because the
+Read it replaced is one the agent did not have to pay for again. Each window
+(`days`) assigns ownership within itself, so a session that spans a window edge
+can credit a path in both windows.
 
 `tool_calls_answered` counts usable MCP, VS Code tool and hook events. Distill
 rows are command output, not tool calls.

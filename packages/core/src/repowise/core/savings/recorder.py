@@ -188,7 +188,7 @@ def record_file_read_on(
         from repowise.core.savings.correlation import file_session_key
         from repowise.core.savings.repository import SavingsRepository
 
-        key = file_session_key(str(Path(repo_root)), session_id)
+        key = file_session_key(session_id)
         SavingsRepository(connection).record_file_read(key, path, utc_text(datetime.now(UTC)))
         return True
     except Exception:

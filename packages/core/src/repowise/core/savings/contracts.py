@@ -206,13 +206,13 @@ def _avoided_files(value: Mapping[str, Any]) -> tuple[tuple[str, int | None], ..
     return tuple(files.items())
 
 
-def _file_session(value: Mapping[str, Any], repository_id: str) -> str | None:
+def _file_session(value: Mapping[str, Any]) -> str | None:
     """The cross-surface session key for this event's files, or None."""
     raw = value.get("host_session_id")
     if raw is None or raw == "":
         return None
     raw = str(raw)
-    return raw if _HASH_RE.fullmatch(raw) else file_session_key(repository_id, raw)
+    return raw if _HASH_RE.fullmatch(raw) else file_session_key(raw)
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,7 +273,7 @@ class SavingsEvent:
         try:
             # Best-effort: a bad file list costs the list, never the event.
             avoided = _avoided_files(value) if semantics.is_usable else ()
-            file_key = _file_session(value, repository_id)
+            file_key = _file_session(value)
         except Exception:
             avoided, file_key = (), None
         session_id = _correlation(

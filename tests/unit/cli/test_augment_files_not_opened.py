@@ -78,6 +78,8 @@ def test_a_collapsed_reread_credits_its_file_and_a_later_read_cancels_it(repo: P
     served = _read(repo, changed)
     assert served.replacement is None
     assert _files(repo) == (0, 1)
+    # Noted once: the path leaves the credited list until something credits it again.
+    assert "a.py" not in _load_session_state(repo, SESSION)["credited"]
 
 
 def test_an_uncredited_read_writes_nothing(repo: Path) -> None:

@@ -6,9 +6,11 @@ import sqlite3
 
 #: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
 #: the per-event ``schema_version`` column, which versions an event payload and
-#: is still 1: v2 changed only how the store validates an agent id, and v3 only
-#: added the files-not-opened tables, which old rows simply have no entries in.
-SAVINGS_SCHEMA_VERSION = 3
+#: is still 1: v2 changed only how the store validates an agent id. The
+#: files-not-opened tables were added without a bump: they are additive, a v2
+#: store missing them is repaired by the required-tables check, and a bump would
+#: make every older build refuse the sidecar and drop its events.
+SAVINGS_SCHEMA_VERSION = 2
 
 _PRESERVED_TABLES = (
     """

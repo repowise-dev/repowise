@@ -498,13 +498,7 @@ def _handle_read_post(
             fired.append((served.category, served.text))
             state["skeletonized"].append(rel)
 
-    try:  # files-not-opened bookkeeping never changes what this Read returns
-        if served is not None:
-            note_credited(state, [rel])
-        elif session_id and rel in state["credited"]:
-            on_emitted = _then(on_emitted, lambda: _record_file_read(repo_path, session_id, rel))
-    except Exception:
-        pass
+    on_emitted = _files_not_opened(repo_path, rel, session_id, state, served, on_emitted)
 
     _record_read_meta(checkout, rel, tool_input, tool_output, state, replaced=served is not None)
 
@@ -603,6 +597,23 @@ def _same_range(tool_input: dict, prior: dict) -> bool:
     return tool_input.get("offset") == prior.get("off") and tool_input.get(
         "limit"
     ) == prior.get("lim")
+
+
+def _files_not_opened(repo_path: Path, rel: str, session_id: str, state: dict, served, on_emitted):
+    """Credit a replaced Read, or queue the note that cancels an earlier credit.
+
+    A Read of a credited path is noted once, after the response, and the path
+    leaves the credited list. Never changes what this Read returns.
+    """
+    try:
+        if served is not None:
+            note_credited(state, [rel])
+        elif session_id and rel in state["credited"]:
+            state["credited"].remove(rel)
+            return _then(on_emitted, lambda: _record_file_read(repo_path, session_id, rel))
+    except Exception:  # bookkeeping only; the Read result is already decided
+        return on_emitted
+    return on_emitted
 
 
 def note_credited(state: dict, paths: list[str]) -> None:

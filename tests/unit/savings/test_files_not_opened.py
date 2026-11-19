@@ -69,12 +69,12 @@ def _report(tmp_path: Path, events: list[SavingsEvent], reads=()):
         for event in events:
             repository.record_event(event)
         for session, path, at in reads:
-            repository.record_file_read(file_session_key(REPO, session), path, at)
+            repository.record_file_read(file_session_key(session), path, at)
         sql = repository.report(REPO, as_of=AS_OF)
     pure = build_report(
         events,
         as_of=AS_OF,
-        file_reads=[(file_session_key(REPO, s), p, at) for s, p, at in reads],
+        file_reads=[(file_session_key(s), p, at) for s, p, at in reads],
     )
     # One owner of the arithmetic: both builders agree field for field.
     assert {k: asdict(sql)[k] for k in _FILE_FIELDS} == {k: asdict(pure)[k] for k in _FILE_FIELDS}
@@ -118,7 +118,7 @@ def test_a_later_read_cancels_the_credit_and_an_earlier_one_does_not(tmp_path: P
 
 
 def test_a_read_keeps_its_latest_time(tmp_path: Path) -> None:
-    key = file_session_key(REPO, "host-1")
+    key = file_session_key("host-1")
     with OmissionStore(tmp_path / "omissions.db") as store:
         repository = SavingsRepository(store._conn)
         repository.record_file_read(key, "a.py", "2026-09-14T00:05:00.000000Z")
@@ -171,18 +171,22 @@ def test_files_are_stored_as_paths_beside_the_event(tmp_path: Path) -> None:
     assert rows == [("a.py", 5, 71)]
 
 
-def test_a_v2_ledger_upgrades_in_place_and_keeps_its_rows(tmp_path: Path) -> None:
+def test_a_ledger_without_the_files_tables_gains_them_in_place(tmp_path: Path) -> None:
     db_path = tmp_path / "omissions.db"
     with OmissionStore(db_path) as store:
         SavingsRepository(store._conn).record_event(_event(1))
         store._conn.execute("DROP TABLE savings_event_files")
         store._conn.execute("DROP TABLE savings_file_reads")
         store._conn.execute("PRAGMA user_version=2")
-    conn = sqlite3.connect(db_path, isolation_level=None)
+    ro = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
     try:
         # A read-only report on the old ledger works and credits no files.
-        old = SavingsRepository(conn).report(REPO, as_of=AS_OF)
+        old = SavingsRepository(ro).report(REPO, as_of=AS_OF)
         assert (old.unique_events, old.files_not_opened, old.tool_calls_answered) == (1, 0, 1)
+    finally:
+        ro.close()
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
         schema.initialize_savings_schema(conn)
         schema.initialize_savings_schema(conn)  # idempotent
         assert conn.execute("PRAGMA user_version").fetchone()[0] == schema.SAVINGS_SCHEMA_VERSION
@@ -203,3 +207,15 @@ def test_an_event_still_lands_on_a_ledger_without_the_files_table(tmp_path: Path
         assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_the_hook_and_mcp_keys_agree_however_the_root_is_spelled(tmp_path: Path) -> None:
+    """The hook notes a Read under its own spelling of the root; it still cancels."""
+    from repowise.core.savings.recorder import record_file_read_on
+
+    db_path = tmp_path / "omissions.db"
+    with OmissionStore(db_path) as store:
+        SavingsRepository(store._conn).record_event(_event(1, files=[("a.py", 5)]))
+        assert record_file_read_on(store._conn, str(tmp_path) + "/", "host-1", "a.py")
+        report = SavingsRepository(store._conn).report(REPO, as_of=datetime.now().astimezone())
+    assert report.files_not_opened == 0

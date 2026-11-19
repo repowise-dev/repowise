@@ -57,7 +57,7 @@ async def test_a_file_card_credits_its_file_keyed_by_the_host_session(repo: Path
     (row,) = _files(repo)
     assert row[0] == "a.py"
     assert row[1] == file_read_tokens(repo, "a.py")
-    assert row[2] == file_session_key(str(repo), "host-session")
+    assert row[2] == file_session_key("host-session")
 
     with OmissionStore(_repo_db(repo)) as store:
         report = store.savings().report(str(repo), as_of=datetime.now(UTC))
