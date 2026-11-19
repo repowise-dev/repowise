@@ -728,3 +728,24 @@ def test_coverage_export_writes_the_stored_map_and_fails_without_one(
     raw = (tmp_path / "map.json.gz").read_bytes()
     assert coverage_map.load_per_test_map(raw, max_bytes=1_000_000) == stored
     assert "1 tests, 1 test-file pairs" in result.output
+
+
+def test_coverage_export_reads_a_per_test_report_without_an_index(tmp_path, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests.lcov").write_text(
+        "TN:t1\nSF:src/a.py\nDA:1,1\nDA:2,1\nend_of_record\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "export", "tests.lcov", "-o", "map.json.gz"])
+
+    assert result.exit_code == 0, result.output
+    tmap = coverage_map.load_per_test_map(
+        (tmp_path / "map.json.gz").read_bytes(), max_bytes=1_000_000
+    )
+    assert tmap.tests == (("t1", None),)
+    assert tmap.sources == {"src/a.py": (1, '[[0,"1-2"]]')}
+    plain = tmp_path / "plain.lcov"
+    plain.write_text("SF:src/a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    assert CliRunner().invoke(cli, ["coverage", "export", str(plain)]).exit_code == 1

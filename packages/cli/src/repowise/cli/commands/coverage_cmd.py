@@ -556,6 +556,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
 
 
 @coverage_group.command("export")
+@click.argument("report", required=False)
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
@@ -567,47 +568,55 @@ def coverage_status(repo: str | None, fmt: str) -> None:
     show_default=True,
     help="File to write the gzipped map to.",
 )
-def coverage_export(repo: str | None, output: str) -> None:
+def coverage_export(report: str | None, repo: str | None, output: str) -> None:
     """Write the per-test map as a small gzipped file, for an upload from CI.
 
-    The map `coverage add` stored from a `.coverage` with per-test contexts, in
-    its stored layout: a few MB where the raw database is gigabytes to parse.
+    With no REPORT, the map `coverage add` stored; with one (a `.coverage` with
+    per-test contexts, or a per-test lcov), that report's map, no index needed.
+    Either way in the stored layout: a few MB where the raw database is
+    gigabytes to parse.
     """
-    repo_path = _resolve_coverage_repo(repo)
+    from repowise.core.persistence.crud.analysis.coverage_map import (
+        dump_per_test_map,
+        per_test_map_from_records,
+    )
 
-    async def _do() -> tuple[int, int, int] | None:
+    async def _stored():
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
             get_session,
         )
         from repowise.core.persistence.crud import get_repository_by_path
-        from repowise.core.persistence.crud.analysis.coverage_map import (
-            dump_per_test_map,
-            get_per_test_map,
-        )
+        from repowise.core.persistence.crud.analysis.coverage_map import get_per_test_map
 
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
+        repo_path = _resolve_coverage_repo(repo)
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        async with get_session(create_session_factory(engine)) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
-            tmap = await get_per_test_map(session, repo_row.id) if repo_row else None
-        if tmap is None:
-            return None
-        data = dump_per_test_map(tmap)
-        Path(output).write_bytes(data)
-        return len(tmap.tests), tmap.pair_count, len(data)
+            return await get_per_test_map(session, repo_row.id) if repo_row else None
 
-    written = run_async(_do())
-    if written is None:
+    if report:
+        from repowise.core.analysis.health.coverage.contexts import parse_contexts_file
+
+        parsed = parse_contexts_file(report)
+        tmap = (
+            per_test_map_from_records(parsed.records, parsed.source_format)
+            if parsed.has_contexts
+            else None
+        )
+    else:
+        tmap = run_async(_stored())
+    if tmap is None:
         console.print(
             "[yellow]No per-test map to export.[/yellow] Record one with "
             f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], then "
-            "[cyan]repowise coverage add .coverage[/cyan]."
+            "[cyan]repowise coverage export .coverage[/cyan]."
         )
         raise click.exceptions.Exit(1)
-    tests, pairs, size = written
+    data = dump_per_test_map(tmap)
+    Path(output).write_bytes(data)
     console.print(
-        f"Wrote {escape(output)}: {tests} tests, {pairs} test-file pairs, {size / 1e6:.1f} MB."
+        f"Wrote {escape(output)}: {len(tmap.tests)} tests, {tmap.pair_count} test-file pairs, "
+        f"{len(data) / 1e6:.1f} MB."
     )

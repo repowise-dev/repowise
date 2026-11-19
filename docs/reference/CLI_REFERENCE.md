@@ -1190,7 +1190,7 @@ Ingest coverage reports and gate a change on patch coverage in CI.
 repowise coverage setup                 # how to write a report here (`evidence setup`, coverage part)
 repowise coverage add [PATHS...]        # ingest (+ per-test map when contexts exist)
 repowise coverage status                # ingested coverage + "Test-to-code map" counts
-repowise coverage export [-o FILE]      # the per-test map as gzipped JSON, for upload from CI
+repowise coverage export [REPORT] [-o FILE]  # the per-test map as gzipped JSON, for upload from CI
 repowise coverage check [REVSPEC]       # gate a change on patch coverage (CI)
 repowise coverage suggest-gates
 repowise coverage add web.lcov api.lcov          # merged, hit wins
@@ -1220,7 +1220,8 @@ repowise coverage add .coverage                  # per-test map
 - *Test-to-code map* (which test covers which lines: "which tests exercise this change"): from a context-recorded
   `.coverage` or per-test lcov; without contexts, per-file only. Separate from the per-file aggregate and `health`.
   `.coverage` lacks executable lines, so gives only this map; `coverage lcov` exports per-file data.
-- `export`: writes the stored map (`-o`, default `per-test-map.json.gz`) in its stored layout, format
+- `export`: writes the stored map, or with `REPORT` (a `.coverage` with contexts or a per-test lcov) that report's
+  map with no index needed, to `-o` (default `per-test-map.json.gz`) in the stored layout, format
   `repowise-test-map-v1`: a few MB where the raw `.coverage` is too big to send. Exits 1 when there is no map.
 
 #### `repowise coverage check [REVSPEC]`
