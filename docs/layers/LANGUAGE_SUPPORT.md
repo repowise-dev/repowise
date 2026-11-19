@@ -153,15 +153,15 @@ vocabulary, and every origin has exactly one confidence:
 | `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
 | `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
 | `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path such as `crate::index::open_ro()` that needs no `use` |
 | `crate_root` | 0.88 | The reference is scoped to its Rust crate |
 | `receiver_import` | 0.88 | The receiver's class was found in an imported file |
-| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
 | `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
 | `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
 | `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
 | `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
-| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
 | `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
 | `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
 | `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |

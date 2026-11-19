@@ -32,7 +32,7 @@ from .callees import _MAX_CALLEE_DEPTH
 from .lookup import _resolve_symbol, _rows_in_scope
 from .misses import _not_found_response
 from .omission import _extract_omission_ref, _resolve_omission_ref
-from .ranges import _range_id_read
+from .ranges import _line_id_target, _range_id_read
 from .text import _elapsed_ms
 
 
@@ -142,7 +142,7 @@ async def get_symbol(
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
-            live range, or an omission ref. A bare file path is not an id.
+            live range, or an omission ref.
         depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
             it calls, transitively, in ``callee_bodies``.
         context_lines: extra lines before/after (0-50).
@@ -185,6 +185,8 @@ async def get_symbol(
         routed = await _routed_read(symbol_id, context_lines, query, depth)
         if routed is not None:
             return routed
+    # A "path:line" id reads as the symbol holding that line, or the lines around it.
+    symbol_id = await _line_id_target(symbol_id, ctx) or symbol_id
     ranged = await _range_id_read(symbol_id, context_lines, ctx, t0)
     if ranged is not None:
         return ranged
