@@ -303,8 +303,10 @@ def workspace_remove(alias: str) -> None:
     multiple=True,
     metavar="GLOB",
     help=(
-        "Skip discovered repos whose path matches this glob, relative to the "
-        "workspace root (e.g. 'test-repos/*'). Repeatable."
+        "Skip discovered repos whose path matches this glob, matched like "
+        ".gitignore (e.g. 'test-repos/*'). A slashless name such as 'legacy' "
+        "matches at any depth; write '/legacy' for the top-level one only. "
+        "Repeatable."
     ),
 )
 @click.option(
