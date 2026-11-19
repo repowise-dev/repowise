@@ -27,22 +27,13 @@ simply do not fire, never a false positive.
 
 from __future__ import annotations
 
+from repowise.core.stats import percentile
+
 from .callgraph import CallGraphIndex
 
-
-def _percentile_threshold(values: list[int], pct: float) -> int:
-    """The ``pct`` percentile of *values* (inclusive-lower), or a high sentinel.
-
-    Mirrors ``engine._percentile_p80``'s convention so the centrality / churn
-    quintiles agree with the rest of the health pipeline. Returns a value larger
-    than any input when *values* is empty, so an empty distribution gates
-    everything out (nothing clears an unreachable bar).
-    """
-    if not values:
-        return 1 << 30
-    ordered = sorted(values)
-    idx = min(len(ordered) - 1, max(0, int(pct * len(ordered))))
-    return ordered[idx]
+#: The bar an empty distribution yields: larger than any input, so nothing
+#: clears it and an empty distribution gates everything out.
+UNREACHABLE_BAR = 1 << 30
 
 
 class PerfRanker:
@@ -68,7 +59,9 @@ class PerfRanker:
         # that have at least one caller. ``max(2, ...)`` keeps a shallow graph
         # from calling a function with a single caller "central".
         in_degrees = [d for d in (index.in_degree.values() if index else ()) if d >= 1]
-        self._hot_in_degree = max(2, _percentile_threshold(in_degrees, centrality_pct))
+        self._hot_in_degree = max(
+            2, percentile(in_degrees, centrality_pct, default=UNREACHABLE_BAR)
+        )
 
     # -- the gate -------------------------------------------------------------
 

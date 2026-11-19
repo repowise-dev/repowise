@@ -549,8 +549,13 @@ def _preconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def verify_check(validation: Any) -> dict[str, Any]:
-    """The ``verify`` postcondition for a plan's (or a shared profile's) validation."""
+    """The ``verify`` postcondition for a plan's (or a shared profile's) validation.
+
+    A performance plan whose unit has a workload to time also carries
+    ``measure`` (``perf_measure.verify_measure``); every other check has none.
+    """
     validation = _dict(validation)
+    measure = _dict(validation.get("measure"))
     if not validation:
         text = "The tests that exercise the change pass; add one if none does."
         return {"kind": "verify", "text": text}
@@ -570,6 +575,7 @@ def verify_check(validation: Any) -> dict[str, Any]:
         "commands": _strs(validation.get("commands")),
         "basis": validation.get("basis"),
         **({"reasons": validation["reasons"]} if _dict(validation.get("reasons")) else {}),
+        **({"measure": measure} if measure else {}),
     }
 
 

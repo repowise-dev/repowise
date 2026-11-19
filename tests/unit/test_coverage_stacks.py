@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from repowise.core.build_units import BuildUnit, BuildUnitIndex
 from repowise.core.test_runners import stacks
+from repowise.core.test_runners.packages import quote_arg
 from repowise.core.test_runners.stacks import detect_repo_stacks, detect_stacks, files_to_read
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_stacks"
@@ -78,7 +79,11 @@ def test_the_root_stack_matches_every_stack_fixture(case):
         ("node_jest_npm", "npm test -- --ci", "npm test -- --ci --coverage --coverageReporters=lcov",
          "coverage/lcov.info"),
         ("node_jest_npm", "npx jest --ci", "npx jest --coverage --coverageReporters=lcov --ci", "coverage/lcov.info"),
-        ("node_vitest_pnpm", "pnpm test", "pnpm test -- --coverage.enabled --coverage.reporter=lcov",
+        # pnpm reads ``pnpm test --flag`` as its own option and passes a ``--`` on to the script.
+        ("node_vitest_pnpm", "pnpm test",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage", "coverage/lcov.info"),
+        ("node_vitest_pnpm", "pnpm test -- --ci",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage -- --ci",
          "coverage/lcov.info"),
         ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
         ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
@@ -118,7 +123,7 @@ def test_tools_that_need_an_install_say_so():
     assert poetry.edit("poetry run pytest").prepare == ("- run: poetry run pip install pytest-cov",)
     vitest = detect_stacks(*_load("node_vitest_pnpm"))[0]
     assert vitest.prepare == ('- run: pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
-    assert vitest.requires == ('pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
+    assert vitest.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D "@vitest/coverage-v8@^2.1.0"')
     rust = detect_stacks(*_load("rust"))[0]
     assert rust.edit("cargo test").prepare == ("- uses: taiki-e/install-action@cargo-llvm-cov",)
     assert rust.requires == ("cargo install cargo-llvm-cov",)
@@ -127,7 +132,7 @@ def test_tools_that_need_an_install_say_so():
 @pytest.mark.parametrize(
     ("case", "install"),
     [
-        ("python_pip", "python -m pip install pytest pytest-cov"),
+        ("python_pip", "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"),
         ("python_hatch", "hatch run python -m pip install pytest pytest-cov"),
     ],
 )
@@ -136,6 +141,73 @@ def test_a_workstation_installs_what_the_ci_setup_installs(case, install):
     python = detect_stacks(*_load(case))[0]
     assert python.requires[-1] == install
     assert python.to_dict()["prerequisites"][-1] == install
+
+
+_PROJECT = '[project]\nname = "pkg"\nversion = "0"\n'
+
+
+@pytest.mark.parametrize(
+    ("files", "install"),
+    [
+        # A flat package with a dev requirements file: the project and the file, not the docs one.
+        ({"pyproject.toml": _PROJECT, "requirements-dev.txt": "pytest-httpbin\n", "requirements-docs.txt": "sphinx\n"},
+         "-e . -r requirements-dev.txt pytest pytest-cov"),
+        ({"setup.py": "", "requirements-py3-dev.txt": "x\n", "requirements-unit-tests.txt": "y\n"},
+         "-e . -r requirements-py3-dev.txt -r requirements-unit-tests.txt pytest pytest-cov"),
+        # "requirements" after the dev or test word; a docs file stays out either way.
+        ({"setup.py": "", "dev-requirements.txt": "x\n", "test-requirements.txt": "y\n", "docs-requirements.txt": "z\n"},
+         "-e . -r dev-requirements.txt -r test-requirements.txt pytest pytest-cov"),
+        # setup.cfg extras: the test extra over dev.
+        ({"setup.py": "from setuptools import setup\nsetup()\n",
+          "setup.cfg": "[metadata]\nname = pkg\n\n[options.extras_require]\ndev =\n    flake8\ntest =\n    pytest\n"},
+         '-e ".[test]" pytest pytest-cov'),
+        # pyproject extras; a dependency group is not an extra pip can name.
+        ({"pyproject.toml": _PROJECT + '[project.optional-dependencies]\ndev = ["pytest"]\n'
+                                       '[dependency-groups]\ntest = ["pytest"]\n'},
+         '-e ".[dev]" pytest pytest-cov'),
+        # A pyproject that only configures tools, over a flat tree, is not planned as an install.
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "requirements.txt": "flask\n"},
+         "-r requirements.txt pytest pytest-cov"),
+        # It still builds a src layout, or setup.cfg's metadata, through setuptools.
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "src/lib/__init__.py": ""},
+         "-e . pytest pytest-cov"),
+        ({"pyproject.toml": "[tool.ruff]\n",
+          "setup.cfg": "[metadata]\nname = pkg\n[options.extras_require]\ntest =\n    pytest\n"},
+         '-e ".[test]" pytest pytest-cov'),
+        # pip refuses a setup.cfg with neither setup.py nor pyproject.toml.
+        ({"setup.cfg": "[metadata]\nname = pkg\n", "src/lib/__init__.py": "", "requirements-dev.txt": "x\n"},
+         "-r requirements-dev.txt pytest pytest-cov"),
+        # Test requirements in a requirements/ directory.
+        ({"setup.py": "", "requirements/test.txt": "pytest\n", "requirements/docs.txt": "sphinx\n"},
+         "-e . -r requirements/test.txt pytest pytest-cov"),
+    ],
+)
+def test_a_pip_unit_installs_the_project_and_its_test_dependencies(files, install):
+    paths = sorted([*files, "pkg/__init__.py", "tests/test_pkg.py"])
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert stack.to_dict()["prerequisites"] == [f"python -m pip install {install}"]
+    assert f"- run: pip install {install}   # adjust to your install" in stack.setup
+
+
+def test_a_uv_test_group_is_synced_and_integration_tests_are_left_out():
+    paths = sorted([
+        "pyproject.toml", "uv.lock", "langchain_core/__init__.py",
+        "tests/unit_tests/test_a.py", "tests/integration_tests/test_b.py",
+    ])
+    pyproject = _PROJECT + '[dependency-groups]\nlint = ["ruff"]\ntest = ["pytest"]\n'
+    (stack,) = detect_stacks(paths, {"pyproject.toml": pyproject})
+    assert stack.test == (
+        "uv run --with pytest-cov --group test pytest tests/unit_tests "
+        "--cov=langchain_core --cov-report=xml --cov-context=test"
+    )
+    assert stack.to_dict()["prerequisites"] == []
+
+
+def test_a_uv_dev_group_needs_no_flag():
+    # ``uv run`` syncs the dev group by default.
+    paths = ["pyproject.toml", "uv.lock", "pkg/__init__.py", "tests/test_a.py"]
+    (stack,) = detect_stacks(paths, {"pyproject.toml": _PROJECT + '[dependency-groups]\ndev = ["pytest-cov"]\n'})
+    assert stack.test == "uv run pytest --cov=pkg --cov-report=xml --cov-context=test"
 
 
 def test_python_records_test_contexts_and_sends_the_coverage_db_on_pushes():
@@ -179,7 +251,11 @@ def test_workspace_members_are_run_by_the_workspace_root():
 
 
 def test_npm_workspace_members_get_their_own_stacks():
-    assert [s.root for s in detect_stacks(*_load("node_monorepo"))] == ["", "packages/a", "packages/b"]
+    # The root delegates to turbo, so members with tests are units; packages/b has none.
+    root, member = detect_stacks(*_load("node_monorepo"))
+    assert (root.root, member.root) == ("", "packages/a")
+    # The member has no lockfile of its own: the workspace root's picks npm and its install.
+    assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
 
 
 MONOREPO = {
@@ -246,9 +322,13 @@ def test_to_dict_is_json_ready():
     for found in (detect_stacks(*_load("python_uv_workspace")), detect_stacks(*_load("gradle_plain"))):
         for stack in found:
             assert json.loads(json.dumps(stack.to_dict())) == stack.to_dict()
-    # Its command needs the init script its CI step writes, so a workstation gets the reason.
-    gradle = detect_stacks(*_load("gradle_plain"))[0].to_dict()
-    assert gradle["shell"] == "github-actions" and gradle["command"] is None and gradle["reason"]
+    # Its CI command needs the init script its CI step writes; a workstation runs the shipped copy.
+    gradle = detect_stacks(*_load("gradle_plain"))[0]
+    assert gradle.shell == "github-actions" and "$RUNNER_TEMP" in gradle.test
+    shown = gradle.to_dict()
+    script = quote_arg(stacks.JACOCO_INIT_SCRIPT.as_posix())
+    assert shown["command"] == f"./gradlew test jacocoTestReport --init-script {script}"
+    assert shown["shell"] is None and shown["reason"] is None
 
 
 def _index(*units: tuple[str, str, str]) -> BuildUnitIndex:
@@ -337,3 +417,321 @@ def test_the_dotnet_sdk_covers_the_app_projects_too():
     (stack,) = detect_stacks(paths, files)
     assert "      8.0.x" in stack.setup and "      9.0.x" in stack.setup
     assert not any("coverlet" in note for note in stack.notes)
+
+
+# ---------------------------------------------------------------------------
+# JavaScript workspaces, installs and runners, in the layouts real repositories use
+# ---------------------------------------------------------------------------
+
+_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
+
+
+def _package(scripts: dict | None = None, **fields) -> str:
+    return json.dumps({"name": "x", **({"scripts": scripts} if scripts is not None else {}), **fields})
+
+
+PNPM_WORKSPACE = {
+    "package.json": _package({"test": "vitest"}, private=True,
+                             devDependencies={"vitest": "^3", "@vitest/coverage-v8": "^3"}),
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+    "pnpm-lock.yaml": "",
+    "vitest.config.ts": "",
+    "packages/reactivity/package.json": _package(),
+    "packages/reactivity/src/index.ts": "",
+    "packages/shared/package.json": _package({"build": "tsc"}),
+    "packages/shared/src/index.ts": "",
+}
+
+
+def test_a_pnpm_workspace_root_runs_its_packages_tests(tmp_path):
+    _write(tmp_path, PNPM_WORKSPACE)
+    members = _index(("npm", "packages/reactivity", "packages/reactivity/package.json"),
+                     ("npm", "packages/shared", "packages/shared/package.json"))
+    # The index lists only the members; the root's vitest still runs them all.
+    for found in (detect_repo_stacks(tmp_path, members), detect_repo_stacks(tmp_path)):
+        (stack,) = found
+        assert (stack.root, stack.package_manager, stack.runner) == ("", "pnpm", "vitest")
+        assert stack.test == f"pnpm run test {_VITEST}"
+        assert stack.requires == ("pnpm install --frozen-lockfile",)
+
+
+def test_a_workspaces_root_with_its_own_runner_runs_the_members_too():
+    files = {
+        "package.json": _package({"test": "vitest run"}, workspaces=["packages/*"]),
+        "packages/zod/package.json": _package({"test": "vitest run"}),
+        "packages/docs/package.json": _package({"dev": "next dev"}),
+    }
+    paths = [*files, "pnpm-lock.yaml"]
+    (stack,) = detect_stacks(paths, files)
+    assert (stack.root, stack.package_manager, stack.test) == ("", "pnpm", f"pnpm run test {_VITEST}")
+
+
+@pytest.mark.parametrize("script", ["yarn workspaces run test", "node scripts/test.js"])
+def test_a_workspaces_root_without_a_known_runner_leaves_the_members_theirs(script):
+    files = {
+        "package.json": _package({"test": script}, workspaces=["packages/*"]),
+        "packages/a/package.json": _package({"test": "vitest"}, devDependencies={"@vitest/coverage-v8": "1"}),
+    }
+    found = detect_stacks([*files, "yarn.lock"], files)
+    member = next(s for s in found if s.root == "packages/a")
+    assert (member.package_manager, member.test) == ("yarn", f"yarn test {_VITEST}")
+
+
+def test_a_package_with_no_lockfile_installs_before_its_tests():
+    files = {"package.json": _package({"test": "mocha --check-leaks test/"}, devDependencies={"mocha": "1"})}
+    (stack,) = detect_stacks(["package.json", "test/app.js"], files)
+    assert stack.to_dict()["prerequisites"] == ["npm install"]
+    assert stack.test == "npx --yes c8 --reporter=lcov npm test"
+
+
+@pytest.mark.parametrize(
+    ("script", "runner", "command"),
+    [
+        # Arguments land on the last command of a chain, where the runner is.
+        ("tsc -p tsconfig.spec.json && vp test --run", "vitest", f"pnpm run test {_VITEST}"),
+        ("tsc -p tsconfig.json && bun test", "bun", "pnpm run test --coverage --coverage-reporter=lcov"),
+        ("cross-env CI=1 jest", "jest", "pnpm run test --coverage --coverageReporters=lcov"),
+        # A runner before the last command would run without the flags.
+        ("vitest run && node scripts/check.js", None, ""),
+        ("jest && vitest run", None, ""),
+    ],
+)
+def test_a_runner_at_the_end_of_a_chain_is_recognised(script, runner, command):
+    files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert (stack.runner, stack.test) == (runner, command)
+
+
+@pytest.mark.parametrize(
+    ("script", "runner"),
+    [
+        # An exec wrapper runs the command after its own flags, whatever the tool.
+        ("nub exec --node vitest run", "vitest"),
+        ("pnpm exec vitest run", "vitest"),
+        ("npm exec -- jest --ci", "jest"),
+        ("npx --yes vitest", "vitest"),
+        ("bunx vitest run", "vitest"),
+        ("cross-env CI=1 yarn exec jest", "jest"),
+        # A flag that takes a value leaves the value where the runner would be.
+        ("npx -p vitest node run.js", None),
+        ("npx --package=vitest vitest run", None),
+        # Only ``-p`` and ``--package`` themselves: a longer flag starting the same way is a plain flag.
+        ("npx --package-lock=false vitest run", "vitest"),
+        ("npx -p-x vitest run", "vitest"),
+        ("npm exec --prefix pkg vitest", None),
+        # The wrapped command keeps its own reading: c8 still gets its lcov report step.
+        ("npx c8 mocha", "report:c8"),
+        ("bundle exec rspec", None),
+    ],
+)
+def test_an_exec_wrapper_runs_the_runner_it_names(script, runner):
+    files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.runner == runner
+    if runner == "vitest":
+        assert stack.test == f"pnpm run test {_VITEST}"
+
+
+def test_vitest_writes_its_report_where_the_ingest_line_looks():
+    # The config's own directory would put lcov.info under coverage/raw/default.
+    files = {
+        "package.json": _package({"test": "vitest run"}, devDependencies={"@vitest/coverage-v8": "1"}),
+        "vitest.config.ts": "export default { test: { coverage: { reportsDirectory: './coverage/raw/default' } } }",
+    }
+    (stack,) = detect_stacks([*files, "pnpm-lock.yaml"], files)
+    assert stack.test.endswith(" --coverage.reportsDirectory=coverage")
+    assert stack.reports == "coverage/lcov.info"
+
+
+def test_a_test_script_chaining_other_scripts_falls_back_to_the_one_running_the_runner():
+    scripts = {
+        "test": "npm-run-all build lint test:unit",
+        "test:unit": "run-p test:vitest:min test:ts",
+        "test:vitest": "cross-env COVERAGE=true vitest run",
+        "test:vitest:min": "cross-env MINIFY=true vitest run",
+        "test:vitest:watch": "vitest",
+        "test:ts": "tsc -p test/ts/",
+    }
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == f"pnpm run test:vitest {_VITEST}"
+    # Two runners among the candidates is a guess too far.
+    scripts["test:e2e"] = "jest -c e2e"
+    files = {"package.json": _package(scripts)}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == "" and stack.to_dict()["reason"]
+
+
+@pytest.mark.parametrize("scripts", [{"build": "vite build"}, {"test": 'echo "Error: no test specified" && exit 1'}])
+def test_a_package_with_no_tests_is_no_unit(scripts):
+    files = {"go.mod": "module example.com/app\n", "static/admin/package.json": _package(scripts)}
+    paths = [*files, "main.go", "main_test.go", "static/admin/yarn.lock"]
+    assert [(s.root, s.language) for s in detect_stacks(paths, files)] == [("", "go")]
+
+
+def test_npm_passes_flags_after_a_separator_and_yarn_as_they_are():
+    files = {"package.json": _package({"test": "vitest run"}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (npm,) = detect_stacks(["package.json", "package-lock.json"], files)
+    (yarn,) = detect_stacks(["package.json", "yarn.lock"], files)
+    assert npm.test == f"npm test -- {_VITEST}" and npm.requires == ("npm ci",)
+    assert yarn.test == f"yarn test {_VITEST}" and yarn.requires == ("yarn install --frozen-lockfile",)
+
+
+def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
+    files = {"package.json": _package({"test": "vitest"}, devDependencies={"vitest": "3.0.0"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+                             {**files, "pnpm-workspace.yaml": "packages: []\n"})
+    assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
+
+
+# ---------------------------------------------------------------------------
+# Fixtures, stubs and samples are not units
+# ---------------------------------------------------------------------------
+
+
+def test_a_manifest_in_a_testdata_directory_is_no_unit():
+    files = {
+        "go.mod": "module example.com/scanner\n",
+        "cmd/scanner/update/testdata/pom.xml": "<project/>",
+        "cmd/scanner/scan/image/testdata/java-fixture/app/pom.xml": "<project/>",
+        "internal/analysis/testdata/rust/rust-project/Cargo.toml": '[package]\nname = "p"\n',
+    }
+    paths = [*files, "main.go", "main_test.go"]
+    assert [(s.root, s.language) for s in detect_stacks(paths, files)] == [("", "go")]
+
+
+def test_a_go_mod_with_no_module_line_or_no_go_files_is_no_unit():
+    files = {
+        "go.mod": "module example.com/site\n",
+        "internal/warpc/genavif/go.mod": "module example.com/site/internal/warpc/genavif\n\ngo 1.21\n",
+        "internal/warpc/genwebp/go.mod": "",
+        "internal/warpc/gen/go.mod": "module example.com/site/internal/warpc/gen\n",
+    }
+    paths = [*files, "main.go", "internal/warpc/genavif/avif.c", "internal/warpc/genwebp/webp.c",
+             "internal/warpc/gen/gen.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "internal/warpc/gen"]
+
+
+def test_dotnet_runs_the_root_solution_not_a_samples_one_and_names_the_sdk_pin():
+    files = {"global.json": json.dumps({"sdk": {"version": "11.0.100"}})}
+    paths = ["Polly.slnx", "samples/Samples.slnx", "global.json", "src/Polly/Polly.csproj",
+             "test/Polly.Specs/Polly.Specs.csproj"]
+    (stack,) = detect_stacks(paths, files)
+    assert stack.test.startswith("dotnet test Polly.slnx ")
+    assert "11.0.100" in stack.notes[0]
+
+
+def test_dotnet_prefers_the_solution_at_its_root_over_nested_ones():
+    paths = ["Clean.Architecture.slnx", "MinimalClean/MinimalClean.Architecture.slnx",
+             "sample/NimblePros.SampleToDo.slnx", "src/Web/Web.csproj"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.test.startswith("dotnet test Clean.Architecture.slnx ")
+
+
+def test_dotnet_without_a_pin_names_no_sdk():
+    # Target frameworks of the projects read are only a lower bound, so no SDK is named from them.
+    files = {"src/App/App.csproj": "<TargetFramework>net11.0</TargetFramework>"}
+    (stack,) = detect_stacks(["App.slnx", *files], files)
+    assert not any("SDK" in note for note in stack.notes)
+
+
+def test_a_go_module_is_judged_by_its_module_line_only_when_it_was_read():
+    assert [s.language for s in detect_stacks(["go.mod", "main.go"], {})] == ["go"]
+
+
+def test_a_module_in_a_test_directory_is_no_unit():
+    # Its tests cover test code; the production units run their own.
+    files = {"go.mod": "module example.com/app\n", "integration-tests/go.mod": "module example.com/it\n"}
+    paths = [*files, "main.go", "integration-tests/it_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == [""]
+
+
+@pytest.mark.parametrize("pin", ['{"sdk": "11.0.100"}', "[1]", "// comment\n{}", '{"sdk": {"version": 11}}'])
+def test_an_odd_global_json_names_no_sdk(pin):
+    files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0</TargetFramework>"}
+    (stack,) = detect_stacks(["App.sln", *files], files)
+    assert not any("SDK" in note for note in stack.notes)
+
+
+def test_a_global_json_saved_with_a_bom_still_names_its_pin():
+    files = {"global.json": "\ufeff" + json.dumps({"sdk": {"version": "10.0.100"}})}
+    (stack,) = detect_stacks(["App.sln", "global.json"], files)
+    assert "10.0.100" in stack.notes[0]
+
+
+def test_a_go_module_whose_go_code_is_all_in_nested_modules_is_no_unit():
+    files = {"go.mod": "module example.com/tools\n", "a/go.mod": "module example.com/a\n"}
+    paths = [*files, "a/a.go", "a/a_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["a"]
+
+
+def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
+    assert stacks.JACOCO_INIT_SCRIPT.is_file()
+    body = stacks.JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert [line[4:] for line in stack.prepare[3:-1]] == body
+    assert "apply plugin: 'jacoco'" in body[2] and "xml.required = true" in body[3]
+
+
+@pytest.mark.parametrize(
+    ("scripts", "command"),
+    [
+        # Two suites with one runner: neither alone is the whole run.
+        ({"test": "run-s test:unit test:integration", "test:unit": "vitest run",
+          "test:integration": "vitest run -c integration.config.ts"}, ""),
+        ({"test": "npm-run-all test:*", "test:a": "jest", "test:b": "jest -c b"}, ""),
+        # The one suite test names is the run, beside others it does not name.
+        ({"test": "npm run lint && npm run test:unit", "test:unit": "vitest run",
+          "test:smoke": "vitest run -c smoke.config.ts"}, f"pnpm run test:unit {_VITEST}"),
+        # A Playwright suite writes no source coverage; the unit suite is what these flags can measure.
+        ({"test": "run-s test:unit test:e2e", "test:unit": "vitest run", "test:e2e": "playwright test"},
+         f"pnpm run test:unit {_VITEST}"),
+    ],
+)
+def test_a_fallback_script_is_picked_only_when_it_is_the_whole_run(scripts, command):
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == command
+
+
+
+def test_a_shipped_test_utils_package_is_a_unit():
+    # The manifest makes test-utils/ a package root, which code_origin keeps production.
+    files = {"package.json": _package({"test": "vitest run"}),
+             "test-utils/package.json": _package({"test": "vitest run"}),
+             "x/testdata/app/package.json": _package({"test": "vitest run"})}
+    paths = [*files, "test-utils/src/index.js", "pnpm-lock.yaml"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "test-utils"]
+
+
+def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
+    # dotnet walks up from the working directory to the first global.json.
+    files = {
+        "global.json": json.dumps({"sdk": {"version": "10.0.100"}}),
+        "src/Svc/Svc.sln": "",
+        "src/Svc/App/App.csproj": "<TargetFramework>net8.0</TargetFramework>",
+    }
+    paths = list(files)
+    assert "global.json" in files_to_read(paths)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert stack.root == "src/Svc" and "10.0.100" in stack.notes[0]
+    # A nearer pin wins.
+    files["src/Svc/global.json"] = json.dumps({"sdk": {"version": "9.0.100"}})
+    paths = list(files)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert "9.0.100" in stack.notes[0]
+
+
+@pytest.mark.parametrize(
+    ("installed", "argument"),
+    [
+        ("/opt/py lib/repowise/jacoco.gradle", '"/opt/py lib/repowise/jacoco.gradle"'),
+        ("C:/Users/a b/repowise/jacoco.gradle", '"C:/Users/a b/repowise/jacoco.gradle"'),
+        # The setup output's one quoting rule leaves a path holding $ or a backtick as it is.
+        ("/home/$u/jacoco.gradle", "/home/$u/jacoco.gradle"),
+    ],
+)
+def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, installed, argument):
+    monkeypatch.setattr(stacks, "JACOCO_INIT_SCRIPT", PurePosixPath(installed))
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"

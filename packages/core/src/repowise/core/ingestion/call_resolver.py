@@ -86,6 +86,7 @@ from .call_receiver_typing import (
     ReceiverTypingMixin,
     _store_capped,
 )
+from .call_rust_paths import RustPathCallsMixin
 from .decorator_names import is_property_accessor, property_mutator_role
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
@@ -329,6 +330,7 @@ class CallResolver(
     BarrelForwardingMixin,
     InheritanceMixin,
     CppClassScopeMixin,
+    RustPathCallsMixin,
 ):
     """Resolve raw CallSites to symbol-level edges.
 
@@ -1290,6 +1292,12 @@ class CallResolver(
             # type is read by identity and the method asked for across it.
             # Python and Dart read the return type in the callee's file the same way.
             type_id = self._returned_type_id(inner_callee)
+            if type_id in self._parsed_files:
+                # A module object handed on: ``load().f()`` calls the module's ``f``.
+                hit = self._module_alias_call(file_path, type_id, call, caller_id)
+                if hit is None:
+                    return False, None
+                return True, self._return_typed_call(caller_id, hit.callee_id, "import", call.line)
             hit = (
                 None
                 if type_id is None
@@ -2269,6 +2277,11 @@ class CallResolver(
     ) -> ResolvedCall | None:
         """Strategies 1 and 1b: the receiver names an imported module."""
         receiver_name = call.receiver_name
+        held = self._module_held_by_local(file_path, caller_id, receiver_name)
+        if held is not None:
+            hit = self._module_alias_call(file_path, held, call, caller_id)
+            if hit is not None:
+                return self._body_typed_call(caller_id, hit.callee_id, "import", call.line)
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
@@ -2282,6 +2295,27 @@ class CallResolver(
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+
+    def _module_held_by_local(
+        self, file_path: str, caller_id: str, receiver_name: str | None
+    ) -> str | None:
+        """The module file a Python local holds, typed from the call that bound it.
+
+        ``m = load()`` where ``load`` returns a module object
+        (``_python_returned_module``).
+        """
+        if not receiver_name or self._language_of(file_path) != "python":
+            return None
+        # Typing the body resolves every call it assigns, so ask only where
+        # the receiver is one of those names.
+        span = self._spans_for(file_path).get(caller_id)
+        if span is None or not any(
+            a.name == receiver_name and span[0] <= a.line <= span[1]
+            for a in self._call_assignments_for(file_path, "python")
+        ):
+            return None
+        held = self._declared_types_in(file_path, caller_id, "python").get(receiver_name)
+        return held if held in self._parsed_files else None
 
     def _module_alias_call(
         self,

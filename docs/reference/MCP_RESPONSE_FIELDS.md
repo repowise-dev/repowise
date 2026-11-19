@@ -195,6 +195,7 @@ Per target, under `targets`:
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
 | `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records; `get_why` serves them |
+| `measured` | Symbol or file a stored profile run measured: one line with rank among repo code, workload class and name (`in tests` for a unit-test run), share of samples with its interval (`ordering only` for a tracer), how much of the run repo code explains, and age. A file names up to 3 functions from one run and counts the rest, with other runs and stale ones counted apart. `stale:` when the body changed since the run. Rows are per function, so a class card has none. Absent with no runtime evidence |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
 | `file_preview` | File with no symbols: `lines`, `chars`, and `heading_count` + 3 `headings` (markdown, reST) or 3 lines as `head` |
 | `resolved_to`, `note` | A `path::Name` miss answered with the file's card |
@@ -207,6 +208,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 - **symbols:** compact cards list the top 15: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules), then functions and methods, then the rest, each by centrality. A budget trim below 15 keeps symbols by kind and name match. `include=["symbols"]` lists all.
 - **`symbol_id`:** absent means `path::name`; methods and overloads carry theirs.
 - **`fix_history`:** age is measured to the indexed commit.
+- **`measured`:** absence means unknown, never fast. Rank orders functions within one run; it is not a claim that the function is slow.
 - **`*_basis`:** an empty list means no resolved edge, not proof of none.
 
 ### Context opt-in blocks
@@ -230,7 +232,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). A `call` line is one the graph binds to the symbol; for a method it is also a call of it on any receiver in code (`db.name(...)`), in languages whose comments and strings are read, outside files whose own class defines that member. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
 
 - `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
@@ -242,8 +244,9 @@ Never complete for:
 - over 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
+- a file that hands on, as a whole value, a module holding the symbol (`return mod`, `m = mod`, `const m = ns`) and uses the name on an object no import binds
 - over 50 documents naming it
-- over 3 plain `reference` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
+- over 3 plain `reference` or `string` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 
 ### changes
 
@@ -333,6 +336,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `facts`, `tests` | Function and symbol facts; see [symbol facts](#symbol-facts) |
 | `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
+| `kind: "file"`, `symbols`, `symbols_total` | A bare file path: its top-level symbol names in source order (15 max; `symbols_total` when there are more), no source |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
@@ -377,7 +381,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
+- Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
 - An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
@@ -729,6 +733,8 @@ Findings carry `health_impact: 0` and never blend into the score. `perf_rank` is
 - Ids are stable per model version; older ones resolve to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`.
 - `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unknown) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
 - The `growth_source` facet (`loop`, `registry`, `cold_path`, `none`, `n/a`) names the loop showing growth. `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or per-call causes an entry point reaches); `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
+- `performance_measured` (dashboard only) lists what stored profile runs measured, beside the static causes. `basis: "measured"`: `rows` (workload classes that may lead) and `in_tests` (`unit_test` runs, never leading) give each function's `rank`, `share` with its interval (`share_low`, `share_high`), `self_share`, `samples`, `lines` (`"start-end"`), `freshness` and `callers_total`; `runs` gives each row's basis: `workload_class`, `workload_name`, `commit`, `age_days`, `samples`, `explained_share` (how much of the run production code explains), `outside_production` (functions counted, not listed) and `ordering_only` (a tracer: order, no share). Three rows per group, `limit` up to 10. `on_static_findings` names measured functions a static cause already holds, by `opportunity_ids`. Without ranked evidence: `basis: "unknown"` and `status` `no_runtime_data` or `stale` (both with `command`, the setup call), or `not_ranked` (too few samples in production code).
+- With the queue in the same response, `performance_summary` drops its `next_call` (it would return that queue).
 
 ### Coverage
 

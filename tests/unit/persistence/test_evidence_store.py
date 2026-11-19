@@ -342,7 +342,9 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
     if warm_start:
         # init_db may create the tables before the migration runs.
         _init_db(migrated)
-    command.upgrade(config, "0125")
+    command.upgrade(config, "0131")
+    command.stamp(config, "0132")  # 0132 is not the evidence store's; it refuses a warm start
+    command.upgrade(config, "0133")
 
     created = tmp_path / "created.db"
     _init_db(created)
@@ -350,6 +352,9 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
         assert _columns(migrated, table) == _columns(created, table), table
         assert _indexes(migrated, table) == _indexes(created, table), table
 
+    command.downgrade(config, "0132")
+    assert "tests_failed" not in _columns(migrated, "evidence_runs")
+    command.stamp(config, "0131")
     command.downgrade(config, "0124")
     for table in _TABLES:
         assert _columns(migrated, table) == {}
@@ -372,3 +377,16 @@ def test_an_existing_store_gains_the_tables_on_init(tmp_path: Path) -> None:
             "SELECT sql FROM sqlite_master WHERE name = 'evidence_symbol_costs'"
         ).fetchone()[0]
     assert "WITHOUT ROWID" in sql
+
+
+def test_a_store_from_before_the_hotness_basis_gains_its_columns_on_init(tmp_path: Path) -> None:
+    """The reconciler adds the nullable columns 0131 adds; keys stay as they were."""
+    old = tmp_path / "old.db"
+    command.upgrade(_alembic_config(old), "0125")
+    with sqlite3.connect(old) as connection:
+        connection.execute("PRAGMA user_version = 0")
+    _init_db(old)
+    created = tmp_path / "created.db"
+    _init_db(created)
+    for table in ("evidence_runs", "evidence_symbol_costs", "symbol_hotness"):
+        assert _columns(old, table) == _columns(created, table), table

@@ -210,7 +210,7 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max) or `"repowise#<ref>"` |
+| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max), `"path/file.py:140"` (the innermost symbol holding line 140, else lines 130 to 150; a trailing `:column` is ignored) or `"repowise#<ref>"`. A bare file path returns the file's top-level symbol names (15 max) to pass back as `"path/file.py::<name>"` |
 | `id` | string | none | Alias for `symbol_id` |
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
@@ -354,7 +354,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`; misses go to `unresolved` |
-| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance`, `defect`, `maintainability`, `advisory` |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance` (also adds `performance_measured`, what stored profiles ranked), `defect`, `maintainability`, `advisory` |
 | `only` | list[string] | none | Keep these top-level keys; identity, totals and recovery always survive |
 | `limit` | int | `20` | Rows per ranked list, max 50; `0` for none |
 | `cursor` | int | `0` | Offset into a ranked list (or `fix_first` when named in `only`); `recovery` names the next call |
@@ -391,6 +391,7 @@ get_health(fix_id="act_...")
 get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"], limit=10)
 get_health(include=["coverage"], only=["coverage"])
 ```
 

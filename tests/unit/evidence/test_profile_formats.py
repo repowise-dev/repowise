@@ -236,6 +236,8 @@ def test_collapsed_conversion_skips_lineless_frames_and_other_checkouts() -> Non
     }
     assert conv.total == 52
     assert conv.explained == 40
+    # Every stack counted its samples, so the run's count is known.
+    assert conv.document["total_samples"] == 52
 
 
 def test_a_file_with_no_stack_line_is_refused() -> None:
@@ -505,6 +507,8 @@ def test_an_evented_profile_keeps_sample_counts_of_sampled_ones_in_the_file() ->
     )
     samples = {s.frames: s.samples for s in run.stacks}
     assert samples == {(2,): 1, (1,): None}
+    # Part of the run counted no samples, so the run's count is unknown.
+    assert "total_samples" not in _convert(run).document
 
 
 def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
@@ -512,3 +516,10 @@ def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
     assert detect_profile_format(
         b'{"exporter": "x", "$schema": "https://www.speedscope.app/file-format-schema.json"}'
     ) == "speedscope"
+
+
+@pytest.mark.parametrize(("given", "read"), [(3, 3), (0, 0), (-1, None), ("3", None), (True, None)])
+def test_a_speedscope_file_carries_the_failed_test_count_of_its_run(given, read) -> None:
+    run = profile_formats.get("speedscope").read(_bytes({**PYINSTRUMENT, "testsFailed": given}))
+    assert run.tests_failed == read
+    assert profile_formats.get("speedscope").read(_bytes(PYINSTRUMENT)).tests_failed is None

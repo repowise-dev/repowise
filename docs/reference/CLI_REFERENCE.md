@@ -5,7 +5,7 @@ Every `repowise` command and flag. For a guided introduction, see the [Quickstar
 Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `changes`, `check`, `ci-summary`, `components`,
 `config`, `context`, `corrections`, `costs`, `coverage`, `dead-code`, `decision`, `delete`, `distill`, `doc-drift`,
 `doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `hosted`, `impacted-tests`, `init`,
-`login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
+`login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `perf`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
 `saved`, `savings`, `search`, `security`, `serve`, `status`, `suspects`, `symbol`, `telemetry`, `uninstall`, `update`,
 `watch`, `whats-new`, `whoami`, `why`, `wiki-styles`, `workspace`. `repowise --version` prints the version.
 `repowise-augment` and `repowise-rewrite` are separate console scripts (hook entry points, not run by hand).
@@ -31,6 +31,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`risk`](#repowise-risk-revspec), [`overlap`](#repowise-overlap), [`dead-code`](#repowise-dead-code-path),
   [`doc-drift`](#repowise-doc-drift-path), [`security`](#repowise-security), [`check`](#repowise-check-revspec), [`ci-summary`](#repowise-ci-summary-dir),
   [`impacted-tests`](#repowise-impacted-tests-revspec), [`coverage`](#repowise-coverage),
+  [`evidence`](#repowise-evidence), [`perf measure`](#repowise-perf-measure----command),
   [`components`](#repowise-components), [`packages`](#repowise-packages), [`changes`](#repowise-changes),
   [`suspects`](#repowise-suspects), [`events`](#repowise-events), [`report
   assessment`](#repowise-report-assessment-path), [`report estate`](#repowise-report-estate-path)
@@ -468,8 +469,8 @@ repowise search "rate limit" --all              # workspace, fan-out
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `fulltext` |
-| `--limit` | Max results. | `10` |
+| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `auto` |
+| `--limit` | Max results. | `5` |
 | `--all` | Every workspace repo, merged. | off |
 
 Plus `--repo`, `--no-workspace`, `--format` and `--full` as in the [shared options](#shared-options-ask-context-symbol-why).
@@ -1355,10 +1356,10 @@ repowise coverage suggest-gates --format json
 ### `repowise evidence`
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
-[`repowise-evidence-v1`](../layers/PERFORMANCE.md#runtime-evidence-format) file per run, or a
+[`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
 profile in the profiler's own format ([Speedscope JSON, Go pprof or collapsed
-stacks](../layers/PERFORMANCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON](../layers/PERFORMANCE.md#benchmark-results-as-the-runner-wrote-them)),
+stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
+runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
 converted first.
 
 ```bash
@@ -1415,16 +1416,62 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
-  the root start with its root (`tools: go bench .`). A target with no `command` or no `ingest` says
-  why in `reason` (`go run` takes no profiler flag; TypeScript positions are in the compiled
-  JavaScript; this build does not read the format the recipe writes). Only a target with an
-  `ingest` line enters `next_call`. `next_call` lists the steps to run next, each with its `cwd`: ingest a coverage
+  the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
+  unit's own test install plus the profiler; a Python run that fails writes no profile, and the
+  pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
+  stores nothing. An entry point's `command` ends in `<args>`: replace it with the
+  arguments of a representative run, since a bare run measures only the usage screen. A target with
+  no `command`, no `ingest`, or something left to fill says why in `reason` (`go run` takes no
+  profiler flag; TypeScript positions are in the compiled JavaScript; this build does not read the
+  format the recipe writes; `<args>` to fill). Only a target with an `ingest` line and no `reason`
+  enters `next_call`. `next_call` lists the steps to run next, each with its `cwd`: ingest a coverage
   report on disk first, else profile the best runtime target, else run a unit's tests with
   coverage. What is already stored for the checkout's commit (coverage, a workload's run) is not
   asked for again; once nothing is left, `next_call` is `null` and `reason` says so, so an agent
   that reruns `setup` after each step stops. Before the repository is indexed, the steps are `repowise init --yes --no-prose` and
   `setup` again; no store is created. `coverage setup` prints the coverage part only. Takes
   `--path` and `--format`.
+
+### `repowise perf measure -- <command>`
+
+Time a command and say whether a change made it faster or slower. Runs only the command typed
+after `--`, as `distill` does.
+
+```bash
+repowise perf measure --save base -- pytest tests/test_parse.py      # before the edit
+repowise perf measure --against base -- pytest tests/test_parse.py   # after it
+repowise perf measure --base-dir ../main-checkout -- python -m mypkg build
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--save NAME` | Run the command and store the runs as baseline `NAME` in `.repowise/perf/NAME.json`, with the commit, whether the tree was dirty, the OS and the host. | |
+| `--against NAME` | Run the same command again and compare with baseline `NAME`. A different command is refused. | |
+| `--base-dir DIR` | Alternate runs between `DIR` (base) and the current directory (head) in one session, in pairs whose order alternates. | |
+| `--runs` | Timed runs per side, at least 4. | `10` |
+| `--warmup` | Untimed runs per side before the timed ones. | `1` |
+| `--timeout` | Seconds one run may take; the run's whole process tree is killed after it. | `600` |
+| `--format` | `table` or `json`. | `table` |
+
+- Pass exactly one of `--save`, `--against` and `--base-dir`.
+- The verdict compares median wall times, head over base, with a 95% bootstrap interval, always
+  printed with the ratio. It says `improved` or `regressed` only when the whole interval clears 1 by
+  more than the threshold; anything else is `inconclusive`.
+- The threshold is twice the base-versus-base noise, with a floor. Noise is how far each side's later
+  half of runs sits from its earlier half (median against median); the larger side counts. The floor
+  is 5% before and after (`--save`, then `--against`) and 2% interleaved (`--base-dir`), where machine
+  drift lands on both sides alike.
+- Every run must exit 0. A failing or timed-out run stops the measurement with that run's last
+  output lines; it is never reported as a timing.
+- Exits `0` when saved, improved or inconclusive, `1` when regressed, `2` when nothing could be
+  measured (a run failed, a missing or unreadable baseline, a usage error). With `--format json`,
+  stdout is one document either way: `mode`, `verdict`, `base` and `head` (runs, `median_s`,
+  `samples_s`, `noise`, `commit`, `dirty`, `cwd`), `ratio` (`estimate`, `low`, `high`,
+  `confidence`), `threshold`, `command` and `baseline`; an error is `{"error", "message"}`.
+- Wall time is noisy evidence. The exit code is informational, for an agent to branch on; do not
+  gate CI on it.
+- `--base-dir` must name another checkout. An editable install can load one checkout's code for
+  both sides; run each side with its own environment when that applies.
 
 ---
 

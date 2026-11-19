@@ -146,6 +146,7 @@ def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
         commands[0] if commands else None,
         basis if basis in ("measured", "inferred") else "unknown",
         None if tests else profile.get("prerequisite"),
+        profile.get("measure") or None,
     )
 
 

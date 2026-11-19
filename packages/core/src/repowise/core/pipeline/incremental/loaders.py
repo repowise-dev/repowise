@@ -189,9 +189,9 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
         # functions collapse to one row and this percentile is taken over a
         # population missing those samples. Closer than the changed-files
         # subset, still not the number a full index computes.
-        from repowise.core.analysis.health.engine import _percentile_p80
+        from repowise.core.stats import percentile
 
-        return _percentile_p80(counts)
+        return percentile(counts, 0.8)
     except Exception as exc:
         log(f"[yellow]Stored function-mod percentile unavailable: {exc}[/yellow]")
         return None
