@@ -56,8 +56,17 @@ def _tool_surface(repo_path: Path, target_id: str) -> dict[str, Any]:
     slug = identity.slug if identity else "unknown"
     exact = profile is None and bool(rest) and not is_delta(rest)
     names = client_tool_names(str(repo_path), slug)
-    # Only the deltas that took effect: the resolver drops an unknown name.
-    applied = [t for t in rest if (t.lstrip("+-") in names) != t.startswith("-")]
+    # Only the deltas that took effect: an unknown name, or a removal or
+    # addition that leaves the profile's list as it was, changes nothing.
+    base = names if exact else client_tool_names(
+        str(repo_path), slug, override=[profile] if profile else []
+    )
+    applied = [
+        t
+        for t in dict.fromkeys(rest)
+        if (t.lstrip("+-") in names) != t.startswith("-")
+        and (t.lstrip("+-") in base) != (t.lstrip("+-") in names)
+    ]
     # A placeholder, not a value: the profile names are the choices to put there.
     tools_key = registry.get("mcp.tools").key
     surface: dict[str, Any] = {

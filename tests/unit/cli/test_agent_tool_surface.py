@@ -89,6 +89,15 @@ def test_deltas_alone_adjust_each_client_default(tmp_path: Path) -> None:
     assert (codex["profile"], codex["tool_count"]) == ("core", 6)
     # An unknown name is dropped by the server, so the line does not name it.
     assert codex["adjustments"] == ["+get_health"]
+    # Standard already lists get_health: the addition changes nothing.
+    assert claude["adjustments"] == []
+
+
+def test_a_removal_that_changes_nothing_is_not_named(tmp_path: Path) -> None:
+    _config(tmp_path, "mcp:\n  tools: [core, -bogus, -get_risk, -get_why, -get_why]\n")
+    codex = agent_tool_surface(tmp_path, "codex")
+    assert codex["adjustments"] == ["-get_why"]
+    assert codex["tool_count"] == 4
 
 
 def test_an_unreadable_config_reports_nothing(tmp_path: Path) -> None:
