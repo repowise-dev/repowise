@@ -8,13 +8,18 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from repowise.core.agents.identity import UNKNOWN_AGENT, is_agent_slug
 from repowise.core.savings.correlation import hash_correlation_evidence, new_event_id
 from repowise.core.savings.formulas import TokenAccounting, calculate_token_accounting
 from repowise.core.savings.normalization import normalize_metadata
+
+if TYPE_CHECKING:
+    # Type-only: the event writers import this module on the hook path, and
+    # the estimate is a report-time concern they never touch.
+    from repowise.core.savings.output_estimate import OutputEstimate
 
 SCHEMA_VERSION = 1
 SURFACES = frozenset({"distill", "hook", "mcp", "vscode_lm"})
@@ -380,3 +385,8 @@ class SavingsReport:
     #: they are live. Null when the window holds no events at all.
     first_event_at: str | None = None
     last_event_at: str | None = None
+    #: Output tokens saved, estimated per session from the paired benchmark
+    #: (see :mod:`repowise.core.savings.output_estimate`). Kept apart from the
+    #: recorded ``saved_output_tokens``, which no producer measures. Null when
+    #: no calibration could be loaded.
+    output_estimate: OutputEstimate | None = None

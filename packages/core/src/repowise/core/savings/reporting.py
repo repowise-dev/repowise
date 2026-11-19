@@ -108,6 +108,8 @@ def build_report(
     max_breakdowns: int = 100,
 ) -> SavingsReport:
     """Build a hand-checkable report while keeping opportunities separate."""
+    from repowise.core.savings.output_estimate import estimate_output, session_groups
+
     if as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     if days is not None and days < 0:
@@ -235,4 +237,5 @@ def build_report(
         ),
         first_event_at=occurrences[0] if occurrences else None,
         last_event_at=occurrences[-1] if occurrences else None,
+        output_estimate=estimate_output(session_groups(scoped)),
     )
