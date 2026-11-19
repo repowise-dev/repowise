@@ -18,6 +18,7 @@ from repowise.cli.agent_targets import formats  # noqa: F401  (package import sm
 from repowise.cli.agent_targets.formats import json_merge, marker_block
 from repowise.cli.agent_targets.registry import (
     detect_all,
+    diagnose,
     get_target,
     list_target_ids,
     resolve_target_flag,
@@ -893,7 +894,7 @@ def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
     monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "no_settings.json")
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: desktop)
 
-    report = target_mod.TARGET.doctor()
+    report = diagnose(target_mod.TARGET)
     assert report.status is DoctorStatus.OK
 
 
@@ -930,11 +931,12 @@ def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
     monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: user_config)
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
 
-    report = target_mod.TARGET.doctor()
+    report = diagnose(target_mod.TARGET)
     assert report.status is not DoctorStatus.OK
     assert any("registered twice" in issue for issue in report.issues)
     assert not any("—" in issue for issue in report.issues)
-    assert report.fix_command == "repowise agents remove --target=claude-code"
+    # The plugin stays; the user entry repowise wrote is the copy to drop.
+    assert report.fix_command == "repowise agents remove --target=claude-code --scope=user"
 
 
 def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
@@ -973,8 +975,8 @@ def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
     monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: tmp_path / "none.json")
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
 
-    assert target_mod.TARGET.doctor().status is DoctorStatus.OK
-    report = target_mod.TARGET.doctor(repo_path=repo)
+    assert diagnose(target_mod.TARGET).status is DoctorStatus.OK
+    report = diagnose(target_mod.TARGET, repo_path=repo)
     assert report.status is not DoctorStatus.OK
     issue = next(i for i in report.issues if "registered twice" in i)
     assert str(repo / ".mcp.json") in issue
