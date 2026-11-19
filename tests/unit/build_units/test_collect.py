@@ -509,6 +509,27 @@ def test_cargo_path_dep_on_a_dropped_duplicate_links_its_manifest(tmp_path):
     assert _owners(index, "b/dup/src/lib.rs") == ["manifest:b/dup"]
 
 
+def test_cargo_path_dep_on_a_dropped_root_keeps_manifest_beside_go(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "a/dup/src/lib.rs": "",
+        "b/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "b/dup/src/lib.rs": "",
+        "b/dup/go.mod": "module example.com/bdup\n\ngo 1.22\n",
+        "b/dup/dup.go": "package bdup\n",
+        "app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\n'
+            'other = { path = "../b/dup" }\n'
+        ),
+        "app/src/main.rs": "",
+    })
+    assert index.unit("cargo:dup").root == "a/dup"
+    assert index.unit("go:example.com/bdup").root == "b/dup"
+    assert index.unit("manifest:b/dup").manifest == "b/dup/Cargo.toml"
+    assert index.unit("cargo:app").deps == ("manifest:b/dup",)
+    assert _owners(index, "b/dup/src/lib.rs") == ["go:example.com/bdup", "manifest:b/dup"]
+
+
 def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):
     repo = tmp_path / "repo"
     index = _collect(repo, {

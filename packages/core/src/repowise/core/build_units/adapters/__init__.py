@@ -30,9 +30,11 @@ def linked_unit_id(
     """The unit a path dependency on *root* links.
 
     *by_root* maps each root that kept its name to that unit's id. A root in
-    *dropped* lost the name to an earlier root and is the fallback unit
-    ``manifest:<root>`` (``manifest:.`` at the repo root). A directory in
-    neither holds no package, so the dependency links nothing.
+    *dropped* lost the name to an earlier root and links the fallback
+    ``manifest:<root>`` (``manifest:.`` at the repo root). Collection keeps
+    that fallback when a unit names it, even if another adapter already holds
+    the directory. A directory in neither holds no package, so the dependency
+    links nothing.
     """
     if root in by_root:
         return by_root[root]
