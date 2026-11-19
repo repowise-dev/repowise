@@ -304,6 +304,80 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
 
 
 @pytest.mark.asyncio
+async def test_a_call_on_a_returned_module_with_no_root_name_is_incomplete(
+    session, repo_id, tmp_path
+):
+    """``_catalog().backend_of`` has no root name, yet the file hands the module on."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'})],
+    )
+    body = "from pkg import catalog\n\n\ndef _catalog():\n    return catalog\n\n\n"
+    body += "def run():\n    return _catalog().backend_of(1)\n"
+    (tmp_path / "app" / "lazy.py").write_text(body, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: app/lazy.py"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import * as a from './a'\nconst m = a\nexport const f = () => m.pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a }\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a; }\n"
+        "export function f() { const m = load(); return m.pick(1) }\n",
+        "const a = require('./a')\nconst m = a // the module\nexport const f = () => m.pick(1)\n",
+        "import a = require('./a.js')\nconst load = () => a\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nexport default a\nexport const f = (m: any) => m.pick(1)\n",
+        "import * as a from './a'\nconst m = a as any\nexport const f = () => m.pick(1)\n",
+    ],
+)
+async def test_a_typescript_namespace_handed_on_is_incomplete(session, repo_id, tmp_path, text):
+    """A namespace import or ``require`` handed on reaches ``pick`` through a
+    local no import binds, which the scan cannot follow."""
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: web/b.ts"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Read through the namespace itself: a listed site.
+        "import * as a from './a'\nexport const f = () => a.pick(1)\n",
+        # Another module's namespace is handed on, not the one holding ``pick``.
+        "import * as a from './a'\nimport * as z from './z'\nconst m = z\n"
+        "export const f = () => m.pick(1)\n",
+        # The object is the class's own instance.
+        "import * as a from './a'\nconst m = a\nclass C { g() { return this.pick(1) } }\n",
+    ],
+)
+async def test_a_typescript_namespace_not_handed_on_stays_complete(
+    session, repo_id, tmp_path, text
+):
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is True
+    assert "reasons" not in out
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("body", "names"),
     [
@@ -320,6 +394,8 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
         ),
         # An object use with no module import of a file holding the name.
         ("from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n", '["MODELS"]'),
+        # A call's result, in a file that never hands the module on.
+        ("from pkg import catalog\n\ndef f(make):\n    return make().backend_of()\n", '["catalog"]'),
     ],
 )
 async def test_object_use_without_a_module_object_stays_complete(
@@ -1515,3 +1591,51 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
     assert [s for s in _sites(out) if s[0] == "app/other.py"] == [("app/other.py", 6, "reference")]
     assert out["complete"] is False
     assert any(r.startswith("another class defines its own member") for r in out["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("holder", "user", "handed"),
+    [
+        # A dotted file name and an index file are named by their import specifier.
+        ("web/user.service.ts", "import * as s from './user.service'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib/index'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib'\nconst m = s\n", True),
+        # A directory specifier names the directory's index.
+        ("web/index.ts", "import * as s from '.'\nconst m = s\n", True),
+        ("web/index.ts", "const s = require('../web')\nconst m = s\n", True),
+        # A relative specifier resolves from the importing file: another
+        # directory's index, or a same-named file elsewhere, is not the module.
+        ("web/lib/index.ts", "import * as s from './api/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from '..'\nconst m = s\n", False),
+        ("web/x/a.ts", "import * as s from './a'\nconst m = s\n", False),
+        # A JavaScript literal holding the namespace hands it on.
+        ("web/a.ts", "import * as s from './a'\nconst api = { s }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst api = { k: s, j: 1 }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst all = [s]\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst api = { a, s }\n", True),
+        # Call arguments are not a literal, as ``f(mod)`` is not.
+        ("web/a.ts", "import * as s from './a'\nexpect(a, s, b)\n", False),
+        ("web/a.ts", "import * as s from './a'\nf({ a }, s, b)\n", False),
+        # A package specifier names an index by its directory.
+        ("web/lib/index.ts", "import * as s from 'pkg/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from 'app/lib/index'\nconst m = s\n", True),
+        # A member of the required module is not the module.
+        ("web/m.ts", "const s = require('./m').helper\nconst m = s\n", False),
+        # A comparison reads the namespace, it does not hand it on.
+        ("web/a.ts", "import * as s from './a'\nconst ok = s !== undefined\n", False),
+        ("web/a.ts", "import * as s from './a'\nfunction f() { return s != null }\n", False),
+        ("web/a.ts", "import * as s from './a'\nconst m = s!\n", True),
+        # A Python module named index is imported by that name.
+        ("pkg/index.py", "from pkg import index\nm = index\n", True),
+        # A keyword argument passes the module to a call, as a positional one does.
+        ("pkg/catalog.py", "from pkg import catalog\npatch.object(target=catalog, attr='x')\n", False),
+    ],
+)
+def test_a_module_handed_on_is_found_by_the_name_its_import_spells(
+    tmp_path, holder, user, handed
+):
+    rel = "web/u.ts" if holder.startswith("web/") else "app/u.py"
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(user, encoding="utf-8")
+
+    assert _edit_sites._hands_on_module(tmp_path, rel, {holder}) is handed

@@ -244,6 +244,7 @@ Never complete for:
 - over 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
+- a file that hands on, as a whole value, a module holding the symbol (`return mod`, `m = mod`, `const m = ns`) and uses the name on an object no import binds
 - over 50 documents naming it
 - over 3 plain `reference` or `string` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 

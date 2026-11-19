@@ -15,6 +15,7 @@ import io
 import json
 import keyword
 import os
+import posixpath
 import re
 import tokenize
 from collections import Counter
@@ -643,7 +644,7 @@ _KEYWORD_AFTER = re.compile(r"\s*=(?!=)")
 _SLOT_BEFORE = re.compile(r"(?:^|[{(,])\s*$")
 _SLOT_AFTER = re.compile(r"\s*:(?!:)")
 # Object roots that are the caller's own instance or class, never a module.
-_OWN_RECEIVERS = frozenset({"self", "cls"})
+_OWN_RECEIVERS = frozenset({"self", "cls", "this"})
 
 
 class _Foreign:
@@ -664,10 +665,10 @@ class _Foreign:
 
     Only uses the tokenizer or mask reads as code are judged. Ceiling: a
     module bound without an import (``m = importlib.import_module(...)``,
-    ``m = load()`` returning one) reads as a plain object. The dynamic-use
-    reason marks the first; for the second, a Python use on such an object
-    sets ``on_object``, and the caller asks whether the file imports, as a
-    module, one that holds the name.
+    ``m = load()`` or ``load()`` returning one, ``const m = ns``) reads as a
+    plain object. The dynamic-use reason marks the first; for the rest, a use
+    on such an object sets ``on_object``, and the caller asks whether the
+    file hands on, as a module object, one that holds the name.
     """
 
     def __init__(
@@ -689,9 +690,10 @@ class _Foreign:
             root = _OBJECT_ROOT.search(before)
             if root is not None and root.group(1) in self._words:
                 return False
-            # Ceiling: ``load().name`` has no root name and is not counted: a
-            # call's result is mostly a value (``Path(p).resolve()``), rarely a module.
-            if self._python and root is not None and root.group(1) not in _OWN_RECEIVERS:
+            # ``load().name`` has no root name: a call's result is mostly a
+            # value (``Path(p).resolve()``), so the caller counts it only in a
+            # file that hands a module object on.
+            if root is None or root.group(1) not in _OWN_RECEIVERS:
                 self.on_object = True
             return True
         if _SLOT_BEFORE.search(before) and _SLOT_AFTER.match(after):
@@ -1317,14 +1319,90 @@ async def _definition_span(
 
 
 def _module_names(path: str) -> set[str]:
-    """Names a Python import of the module at *path* binds: its stem, or its package's."""
+    """Names an import of the module at *path* spells: its stem, its package's
+    for a Python ``__init__``, and also its directory's for a JavaScript ``index``."""
     p = PurePosixPath(path)
-    return {p.parent.name} if p.stem == "__init__" else {p.stem}
+    python = p.suffix in _PYTHON_EXTENSIONS
+    if p.stem == "__init__" and python:
+        return {p.parent.name}
+    if p.stem == "index" and not python:
+        return {p.parent.name, p.stem}
+    return {p.stem}
+
+
+# ``import * as ns from "./m"``, ``const ns = require("./m")`` and TypeScript's
+# ``import ns = require("./m")``: a whole module bound. A ``require`` must end
+# the value: ``require("./m").helper`` binds a member, not the module.
+_JS_NAMESPACE = re.compile(
+    r"\*\s*as\s+([A-Za-z_$][\w$]*)"
+    r"|(?:const|let|var|import)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
+    r"""["'`][^"'`\n]+["'`]\s*\)\s*(?:[;,]|//|$)"""
+)
+
+
+def _js_import_targets(path: str) -> set[str]:
+    """Paths a relative import of the JavaScript module at *path* resolves from:
+    the file without its extension, and its directory for an ``index``."""
+    stem, _ = posixpath.splitext(path)
+    if posixpath.basename(stem) != "index":
+        return {stem}
+    return {stem, posixpath.dirname(stem) or "."}
+
+
+def _js_namespaces(text: str, rel: str, module_paths: set[str], stems: set[str]) -> set[str]:
+    """Names one JavaScript or TypeScript import line in *rel* binds to a whole
+    module of *module_paths* (spelled by one of *stems*).
+
+    A relative specifier is resolved against *rel*'s directory; a package
+    specifier is matched by its last segment.
+    """
+    source = _IMPORT_SOURCE.search(text)
+    spec = (source.group(1) or source.group(2)) if source is not None else None
+    if not spec:
+        return set()
+    if spec.startswith("."):
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+        # ``./user.service`` and ``./a.js`` both name their module file.
+        named = {target, posixpath.splitext(target)[0]}
+        if not any(named & _js_import_targets(p) for p in module_paths):
+            return set()
+    else:
+        path = PurePosixPath(spec)
+        # ``pkg/index`` names the package by its directory, as ``pkg`` does.
+        base = path.parent.name if path.stem == "index" else path.name
+        if not base or not {base, PurePosixPath(base).stem} & stems:
+            return set()
+    return {m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text)}
+
+
+def _module_bindings(
+    lines: list[str], imports: set[int], rel: str, module_paths: set[str], python: bool
+) -> set[str]:
+    """Local names the import lines of *rel* bind to a whole module of *module_paths*.
+
+    Python binds a module by ``import`` (its name or an ``as`` alias);
+    JavaScript and TypeScript by ``import * as ns`` or ``require``.
+    """
+    stems = {s for p in module_paths for s in _module_names(p)}
+    local: set[str] = set()
+    for n in imports:
+        text = lines[n - 1]
+        if not python:
+            local |= _js_namespaces(text, rel, module_paths, stems)
+            continue
+        for stem in stems:
+            esc = re.escape(stem)
+            local.update(m.group(1) for m in re.finditer(rf"(?<!\w){esc}\s+as\s+(\w+)", text))
+            plain = list(re.finditer(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)", text))
+            if _outside_module(text, plain):
+                local.add(stem)
+    return local
 
 
 def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     """Whether *rel* binds one of *module_paths* as a module object and hands
-    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``.
+    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``,
+    or in a JavaScript literal (``{ ns }``).
 
     Ceiling: ``import pkg.mod`` binds ``pkg``, which is not followed; nor is
     ``f(mod)``, which tests write for every ``monkeypatch.setattr(mod, ...)``.
@@ -1333,20 +1411,28 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     if lines is None:
         return False
     imports = _import_lines(lines)
-    local: set[str] = set()
-    for stem in {s for p in module_paths for s in _module_names(p)}:
-        esc = re.escape(stem)
-        aliased = re.compile(rf"(?<!\w){esc}\s+as\s+(\w+)")
-        plain = re.compile(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)")
-        for n in imports:
-            text = lines[n - 1]
-            local.update(m.group(1) for m in aliased.finditer(text))
-            if _outside_module(text, list(plain.finditer(text))):
-                local.add(stem)
+    python = Path(rel).suffix in _PYTHON_EXTENSIONS
+    local = _module_bindings(lines, imports, rel, module_paths, python)
     if not local:
         return False
     alt = "|".join(re.escape(a) for a in sorted(local))
-    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;]|$)")
+    # A Python keyword argument (``patch.object(target=mod, ...)``) stays
+    # out, as ``f(mod)`` does; JavaScript ends the value at more tokens.
+    # A JavaScript ``!`` ends it as a non-null assertion, not as ``!=``.
+    end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),]|!(?!=)|//|$)|\s+(?:as|satisfies)\b)"
+    # A JavaScript literal holding it hands it on too: ``{ ns }``, ``[x, ns]``,
+    # ``{ k: ns }``; a comma counts only inside an open ``{`` or ``[``, so
+    # ``f(a, ns, b)`` stays out. A Python one stays out: tests patch
+    # ``{"m": mod}`` into ``sys.modules`` as they pass ``f(mod)``.
+    # Ceiling: an element alone on its line is not read.
+    literal = (
+        ""
+        if python
+        else rf"|(?:[{{\[](?:[^(){{}}\[\]]*,)?|:)\s*(?:{alt})\s*[,}}\]]"
+    )
+    handed = re.compile(
+        rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}{literal}"
+    )
     return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
 
 
