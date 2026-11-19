@@ -12,6 +12,7 @@ import { memo, type CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
 import type { BandEdgeData } from "./flow-elements";
 import { useEdgeActive, useEdgeFocused } from "./system-map-focus";
+import { formatNumber } from "../../lib/format";
 
 /** One source for the band's look, read by the legend too. */
 export const BAND_STROKE = { min: 2, max: 10, opacity: 0.55 } as const;
@@ -61,7 +62,7 @@ function BandLabels({ x, y, links, sentence, active, focused }: { x: number; y: 
           zIndex: focused ? 3 : 1,
         }}
       >
-        {links.toLocaleString()}
+        {formatNumber(links)}
       </div>
       {focused && (
         <div

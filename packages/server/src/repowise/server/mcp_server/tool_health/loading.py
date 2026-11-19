@@ -9,7 +9,7 @@ projection gates the work as well as the payload.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -61,6 +61,7 @@ from repowise.server.mcp_server.tool_health.findings import (
     read_withheld_rows,
 )
 from repowise.server.mcp_server.tool_health.pillars import (
+    _measured_block,
     _performance_blocks,
     _PerformanceBlocks,
     _refactoring_blocks,
@@ -363,6 +364,11 @@ async def _read_pillars(
         actionability=req.performance_actionability,
         sort=req.performance_sort,
     )
+    # Repository-wide, so a targeted call leaves it out.
+    if "performance" in req.include_set and req.wants("performance_measured") and not pop.scoped:
+        performance = replace(
+            performance, measured=await _measured_block(session, repository.id, req)
+        )
     return refactoring, performance
 
 

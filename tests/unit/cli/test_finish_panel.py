@@ -121,17 +121,20 @@ def test_title_and_scope_line_come_from_the_naming_table():
 
 
 def test_restart_claude_code_is_inside_the_panel_on_a_first_index():
-    text = _render("built_from_code", EditorSetupOutcome(claude_code_connected=True))
+    setup = EditorSetupOutcome(
+        claude_code_connected=True, restart_hosts=({"id": "claude-code", "name": "Claude Code"},)
+    )
+    text = _render("built_from_code", setup)
     panel_lines = [line for line in text.splitlines() if line.startswith("│")]
-    assert any("Restart Claude Code" in line for line in panel_lines)
+    assert any("Restart to load the repowise tools: Claude Code" in line for line in panel_lines)
     assert any("Claude Code" in line and "Connected" in line for line in panel_lines)
 
 
 def test_rerun_does_not_shout_restart():
     setup = EditorSetupOutcome(claude_code_connected=True, first_index=False)
     text = _render("built_from_code", setup)
-    assert "Restart Claude Code" not in text
-    assert "stays connected" in text
+    assert "Restart to load" not in text
+    assert "Already connected" in text
 
 
 def test_panel_names_example_questions_files_and_auto_sync():
@@ -149,6 +152,58 @@ def test_semantic_search_line_only_when_off():
     assert "Semantic search is off" not in _render("fast")
 
 
+
+
+@pytest.mark.parametrize(
+    ("setup", "server"),
+    [
+        (EditorSetupOutcome(editor_setup_disabled=True), True),
+        (EditorSetupOutcome(claude_code_connected=True), False),
+    ],
+    ids=["server", "agent"],
+)
+def test_a_server_run_prints_no_laptop_next_steps(setup, server):
+    import io
+
+    from repowise.cli.ui.finish_panel import print_finish_panel
+
+    scope = {
+        "content_provenance": "template",
+        "search": {
+            "semantic": "unavailable",
+            "next_command": "repowise reindex --embedder ollama",
+        },
+    }
+    facts = FinishFacts(
+        scope=scope, files=1, symbols=1, languages="Python 100%", graph_nodes=1,
+        graph_edges=0, elapsed="1.0s", top_hotspot="a.py", pages="1 page",
+    )
+    out = io.StringIO()
+    console = Console(file=out, width=100, theme=THEME)  # a pipe, as a worker's log is
+    steps = build_contextual_next_steps(hotspot_count=1, top_hotspot="a.py", setup=setup)
+    print_finish_panel(console, facts, steps=steps, setup=setup, repo_path=Path("/r"))
+    text = out.getvalue()
+
+    assert "Indexed" in text
+    for laptop in ("What's next:", "repowise serve", "Try asking your agent", "reindex"):
+        assert (laptop in text) is not server, laptop
+
+
+def test_panel_states_what_each_wired_agent_lists():
+    surface = {
+        "id": "vscode",
+        "name": "VS Code",
+        "profile": "core",
+        "adjustments": [],
+        "tool_count": 5,
+        "tools": [],
+        "change_command": "repowise config set mcp.tools <core|lean|standard|all>",
+        "always_load": None,
+    }
+    setup = EditorSetupOutcome(claude_code_connected=True, tool_surfaces=(surface,))
+    text = _render("built_from_code", setup)
+    assert "VS Code: lists 5 MCP tools (core profile)" in text
+    assert "repowise config set mcp.tools <core|lean|standard|all>" in text
 
 
 def test_bracketed_file_names_render_literally():
@@ -230,7 +285,7 @@ def test_stood_out_names_the_four_findings():
     assert "7.4/10 Good  scheduler/planner.py is lowest at 3.1" in text
     assert "38 files nothing reaches, 12 findings safe to delete" in text
     assert "Hotspot       auth/session.py, changed in 48 commits" in text
-    assert "14 candidates to review" in text
+    assert "14 background records from history" in text
     assert "confirmed" not in text and "decisions found" not in text
     # The count rows they replace are gone; the rest stay.
     assert "Git history" not in text and "unused export" not in text
@@ -269,7 +324,7 @@ def test_unmeasured_findings_are_left_out():
     text = _panel(StoodOut(dead_unreachable=0, decision_candidates=1))
     assert "Health" not in text and "Hotspot" not in text
     assert "no unreachable files" in text
-    assert "1 candidate to review" in text
+    assert "1 background record from history" in text
     assert "What stood out" not in _panel(StoodOut())
 
 

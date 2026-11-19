@@ -133,7 +133,9 @@ class TestGenerateRestampsScope:
         monkeypatch.setattr(generate_cmd, "get_head_commit", lambda _p: "head")
         monkeypatch.setattr(generate_cmd, "save_state", lambda _p, _s: None)
         monkeypatch.setattr(generate_cmd, "load_config", lambda _p: {})
-        outcome = SimpleNamespace(total_pages=28, remaining_template_pages=remaining)
+        outcome = SimpleNamespace(
+            total_pages=28, remaining_template_pages=remaining, generated_pages=[]
+        )
         provider = SimpleNamespace(provider_name="mock", model_name="mock-1")
         generate_cmd._write_state(Path("."), state, provider, outcome, embedder="mock")
         return resolve_index_scope(state)

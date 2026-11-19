@@ -290,7 +290,11 @@ def check_repo_staleness(
     repo_path: Path,
     last_commit: str | None,
 ) -> tuple[bool, str | None, int]:
-    """Check if a repo has new commits since *last_commit*.
+    """Check if a repo has new commits since *last_commit*, or owes work without one.
+
+    With HEAD unmoved, an index is still stale when a version stamp moved
+    (:func:`stamps_moved`) or a page is stale, as the single-repo update
+    treats them.
 
     Returns ``(is_stale, current_head, commits_behind)``.
     """
@@ -303,6 +307,8 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        if stamps_moved(repo_path):
+            return True, current_head, 0
         # Same reconciliation as the single-repo update: a page can be stale
         # with HEAD unmoved, and only an update clears it.
         try:
@@ -316,6 +322,27 @@ def check_repo_staleness(
 
     behind = count_commits_between(repo_path, last_commit, current_head)
     return True, current_head, behind
+
+
+def stamps_moved(repo_path: Path) -> bool:
+    """Whether an indexed repo's health or git history stamp is behind this build.
+
+    Work no commit explains: rows scored by an older health analyzer, or git
+    rows written under older history rules. A repo with no recorded sync, or
+    no local store and no configured database, has no rows for either stamp
+    to describe. Under a configured database the repository row is not looked
+    up: this check stays offline, and a member with a moved stamp but no rows
+    there is reported stale on purpose, since the full index that update falls
+    back to writes the rows it is missing.
+    """
+    from ...analysis.health import health_analyzer_changed
+    from ...ingestion.git_indexer import git_history_stale
+    from ...persistence.database import has_db_store
+
+    state = read_repo_state(repo_path)
+    if not state.get("last_sync_commit") or not has_db_store(repo_path):
+        return False
+    return health_analyzer_changed(state) or git_history_stale(state)
 
 
 def restamp_changed_sync_commit(repo_path: Path, previous: str | None, current: str | None) -> None:
@@ -352,8 +379,11 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
     The "up to date" skip and the no-relevant-changes incremental path bump
     ``last_sync_commit`` without re-running the persistence that stamps the
     ``repositories`` row, which the server reads for the indexed commit and
-    the "indexed at" time. Stamps ``head_commit`` only on drift but always
-    advances ``updated_at``. Creates a missing row in an existing store (a
+    the "indexed at" time. Stamps ``head_commit`` only on drift, and advances
+    ``updated_at`` on drift or once per UTC day, so a repeat check the same
+    day leaves the store untouched. The index age and the editor-file stamp
+    read it in days; a surface showing the full time shows the first check
+    of the day. Creates a missing row in an existing store (a
     configured database counts as existing); a no-op when no store exists.
     The single head-commit stamper for the CLI and workspace update paths.
     """
@@ -369,7 +399,7 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
         init_db,
         upsert_repository,
     )
-    from ...persistence.crud import get_repository_by_path
+    from ...persistence.crud import get_repository_by_path, index_synced_at
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -386,10 +416,12 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
                     head_commit=head,
                 )
             else:
-                if repo.head_commit != head:
+                now = datetime.now(UTC)
+                synced = index_synced_at(repo)
+                if repo.head_commit != head or synced is None or synced.date() < now.date():
                     repo.head_commit = head
-                repo.updated_at = datetime.now(UTC)
-                await session.flush()
+                    repo.updated_at = now
+                    await session.flush()
     finally:
         await engine.dispose()
 

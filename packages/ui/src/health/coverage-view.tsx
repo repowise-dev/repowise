@@ -542,8 +542,8 @@ function CoverageBody({
         </div>
         {fetchTruncated ? (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Showing {files.length.toLocaleString()} of{" "}
-            {summary.file_count.toLocaleString()} instrumented files, capped so one
+            Showing {formatNumber(files.length)} of{" "}
+            {formatNumber(summary.file_count)} instrumented files, capped so one
             tab does not pull the whole repository.
           </p>
         ) : null}
@@ -586,7 +586,7 @@ function CoverageGap({
       title="Files the report didn't cover"
       description={
         map.files_total > 0
-          ? `Your coverage report named ${measured.toLocaleString()} files. The dependency graph answers for the other ${map.files_total.toLocaleString()}: ${map.files_reached.toLocaleString()} are reached by a test, and it finds no test for ${map.files_not_reached.toLocaleString()}. Treat that as a floor, not a measurement: it misses code a framework invokes, such as routes, CLI commands and plugin registries.`
+          ? `Your coverage report named ${formatNumber(measured)} files. The dependency graph answers for the other ${formatNumber(map.files_total)}: ${formatNumber(map.files_reached)} are reached by a test, and it finds no test for ${formatNumber(map.files_not_reached)}. Treat that as a floor, not a measurement: it misses code a framework invokes, such as routes, CLI commands and plugin registries.`
           : "The dependency graph could not answer for the files the coverage report left out."
       }
     >
@@ -595,12 +595,12 @@ function CoverageGap({
       {paths && paths.total > 0 ? (
         <p className="text-xs text-[var(--color-text-tertiary)]">
           <span className="tabular-nums">
-            {paths.matched.toLocaleString()} of {paths.total.toLocaleString()}
+            {formatNumber(paths.matched)} of {formatNumber(paths.total)}
           </span>{" "}
           report paths matched a file in this repository
           {missed > 0 ? (
             <>
-              ; {missed.toLocaleString()} did not
+              ; {formatNumber(missed)} did not
               {paths.unmatched_sample[0] ? (
                 <>
                   {" "}(for example{" "}

@@ -69,17 +69,19 @@ defect-validated score from deterministic markers).
 
 Claude uses these when relevant — no slash command needed:
 
-- **Codebase exploration** — routes questions to `get_overview` / `get_answer` / `search_codebase` / `get_context` / `get_symbol` instead of raw file reads.
+- **Codebase exploration** — sends exact names to Grep, Glob and Read, and questions about how code works, its callers, impact and history to `get_answer` / `get_context` / `get_risk` / `get_why` / `search_codebase` / `get_symbol`.
 - **Pre-modification check** — calls `get_risk` (and `get_health` for refactors) before editing to assess blast radius.
 - **Change review** — for a PR / branch / working-tree diff, combines `get_change_risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
 - **Code health** — answers quality / complexity / "what to refactor" via `get_health`.
 - **Architectural decisions** — queries `get_why` for the *why* before architectural changes.
 - **Dead-code cleanup** — uses `get_dead_code`, conservatively, during cleanup.
+- **Settings** — lists, explains and (after asking you) changes Repowise settings with `repowise config`.
 
-### MCP tools (10 flagship + `list_repos`)
+### MCP tools (10 flagship, `list_repos` in a workspace)
 
-Registered automatically when the plugin is enabled. The default single-repo
-surface is the ten flagship tools below plus `list_repos` (see
+Registered automatically when the plugin is enabled. Claude Code's default
+single-repo surface is the ten flagship tools below; a workspace adds
+`list_repos` (see
 [MCP_TOOLS.md](../../docs/agent/MCP_TOOLS.md)):
 
 | Tool | What it answers |

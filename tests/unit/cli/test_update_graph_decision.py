@@ -51,11 +51,13 @@ def test_rebuild_index_records_graph_decision_in_run_state(monkeypatch, tmp_path
         analyzer_changed=False,
         extraction_changed=False,
         history_stale=False,
+        refresh_git=False,
         repo_path=Path(tmp_path),
         state={},
         file_diffs=[],
         git_decay_map={},
         full_git_summaries=[],
+        degraded=[],
         timings=None,
         emitter=None,
     )

@@ -45,7 +45,7 @@ from ..strings import (
     select_argument,
 )
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
-from .client_calls import VERBS, is_rooted_url, method_from_argument
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
 from .wrappers import GENERIC_ARGS
@@ -378,7 +378,7 @@ def _request(
     if url is None:
         return None
     base = _base(options, library, strings)
-    return method, _join(client.base if base is None else base, url)
+    return method, join_base(client.base if base is None else base, url)
 
 
 class _Fields:
@@ -412,12 +412,6 @@ class _Fields:
                 text = self._strings.text(rhs)
                 if text is not None:
                     settled[name] = text
-
-
-def _join(base: str, url: str) -> str:
-    if not base or url.startswith(("http://", "https://", "//")):
-        return url
-    return base.rstrip("/") + "/" + url.lstrip("/") if url else base
 
 
 def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:

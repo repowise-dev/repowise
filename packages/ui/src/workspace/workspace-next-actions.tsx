@@ -13,6 +13,7 @@ import { ActionDrawer } from "../overview/action-drawer";
 import { ActionRow, renderActionTitle, useActionPrompt } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
 import { Segmented } from "../shared/segmented";
+import { formatNumber } from "../lib/format";
 
 export interface WorkspaceNextActionsProps {
   data: WorkspaceActionsResponse;
@@ -36,7 +37,7 @@ function work(repo: WorkspaceRepoActions, horizon: ActionHorizonKey): number {
 }
 
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${formatNumber(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /**
@@ -82,7 +83,7 @@ export function WorkspaceNextActions({
 
   const status =
     total === 0
-      ? `Nothing stands out ${window} in ${available.length.toLocaleString()} ${
+      ? `Nothing stands out ${window} in ${formatNumber(available.length)} ${
           available.length === 1 ? "repository" : "repositories"
         }.`
       : `${plural(total, "thing")} worth doing ${window}, across ${plural(
@@ -184,7 +185,7 @@ export function WorkspaceNextActions({
                   href={repoHref(repoId)}
                   className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
-                  {`All ${work(repo, horizon).toLocaleString()} in ${repo.alias}`}
+                  {`All ${formatNumber(work(repo, horizon))} in ${repo.alias}`}
                 </Link>
               </div>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">

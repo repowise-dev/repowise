@@ -30,6 +30,7 @@ export function setupFixture(overrides: Partial<SetupResponse> = {}): SetupRespo
         config_files: { user: ["~/.claude.json"] },
         first_call_at: null,
         last_call_at: null,
+        default_profile: "standard",
       },
       {
         id: "cursor",
@@ -37,8 +38,9 @@ export function setupFixture(overrides: Partial<SetupResponse> = {}): SetupRespo
         installed: true,
         connected: false,
         config_files: { project: [".cursor/mcp.json"] },
+        default_profile: "core",
       },
-      { id: "codex", display_name: "Codex", installed: false, connected: false },
+      { id: "codex", display_name: "Codex", installed: false, connected: false, default_profile: "core" },
     ],
     calls: { first_call_at: null, last_call_at: null, unattributed: false },
     sync: { installed: true, detail: "installed" },

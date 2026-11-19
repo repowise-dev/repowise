@@ -29,7 +29,7 @@ You get the same answers in a dashboard: what calls this, what breaks, what to f
 
 <p align="center"><sub>
 Graph, risk, health, tests and dead code make <strong>zero LLM calls</strong> · no API key to index ·
-28 languages · Claude Code, Codex, Cursor and any MCP host · free and open source
+29 languages · Claude Code, Codex, Cursor and any MCP host · free and open source
 </sub></p>
 
 <p align="center">
@@ -68,11 +68,11 @@ The agent installs Repowise, indexes the repo with no API key, connects itself t
 the index, and asks you before anything costs money. To do it by hand:
 
 ```bash
-uv tool install repowise          # or: pipx install repowise / pip install repowise
+uv tool install repowise          # needs Python 3.11+ and Git. Or: pipx install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
                                   # answers and docs: run repowise generate (one command, no re-index)
-repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
+repowise serve                    # local dashboard (needs Node 20+; first run downloads the UI)
 ```
 
 `serve` opens the dashboard in your browser. After a first index it starts with a short
@@ -126,7 +126,7 @@ understand the code, to change it safely, and to keep improving it.
 <td width="50%" valign="top">
 <img src=".github/assets/readme/graph.webp" alt="Architecture map: every file grouped into communities, with a band for each strong link between them" width="100%" />
 <h3>See how it fits together</h3>
-A call graph across 28 languages, an architecture map you can explore, C4 views,
+A call graph across 29 languages, an architecture map you can explore, C4 views,
 and a generated wiki for every module and file.<br />
 <a href="docs/layers/GRAPH.md">The graph</a> · <a href="docs/layers/WIKI.md">Docs</a>
 </td>
@@ -180,7 +180,7 @@ the code it governs, plus docs checked against the code.<br />
 | You ask | Repowise gives you |
 |---|---|
 | *How does checkout work in this repo?* | A cited answer built from the call graph and the generated docs, in one call. [Search and answers](docs/layers/WIKI.md) |
-| *What calls this function, and what does it call?* | A call graph across 28 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
+| *What calls this function, and what does it call?* | A call graph across 29 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
 | *Can I get docs for this codebase?* | A wiki for every module and file, rendered from the code's structure with no key, or written by a model when you choose. It updates incrementally after each commit. [Docs](docs/layers/WIKI.md) |
 | *Which of our docs are wrong?* | Markdown checked against the tree: every reference to a file or symbol the code no longer has, with the line to edit. [Doc drift](docs/layers/DOC_DRIFT.md) |
 | *Why is it built this way?* | Decisions mined from ADRs, `# WHY:` comments, commit and PR history and your agent sessions, each tied to the code it governs and flagged when it goes stale. [Decisions](docs/layers/DECISIONS.md) |
@@ -445,7 +445,7 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 | | repowise | CodeScene |
 |---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
-| Code health score (1-10) | ✅ 59 detectors, 23 scoring | ✅ 25-30 |
+| Code health score (1-10) | ✅ 59 detectors, 22 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
@@ -492,7 +492,7 @@ comparisons: **[repowise.dev/compare →](https://www.repowise.dev/compare)**
 
 ## Supported languages
 
-**28 languages parsed to an AST, 42 on a five-rung ladder, framework-aware where an
+**29 languages parsed to an AST, 43 on a five-rung ladder, framework-aware where an
 ecosystem handler exists.** Every language ships in the open-source distribution.
 
 <p>
@@ -526,6 +526,7 @@ ecosystem handler exists.** Every language ships in the open-source distribution
   <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
   <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" />
   <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+  <img src="https://img.shields.io/badge/Perl-39457E?style=flat-square&logo=perl&logoColor=white" alt="Perl" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
   <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
@@ -537,7 +538,7 @@ ecosystem handler exists.** Every language ships in the open-source distribution
 | Rung | Languages | What you get |
 |---|---|---|
 | **Full** (15) | Python · TypeScript · JavaScript · Svelte · Vue · Astro · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby · Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, within the language-specific ceilings in the full matrix |
+| **Good** (12) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C · Perl | All of the above except the full health suite, within the language-specific ceilings in the full matrix |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
@@ -563,7 +564,7 @@ languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
 
 ## Supported agents and editors
 
-**Eight agents wired end to end · two at the Full tier · every other MCP host one
+**Nine agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -580,12 +581,16 @@ paste away.**
   <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
   <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
 </p>
+<p>
+  <strong>Basic tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Windsurf-0B100F?style=flat-square&logo=windsurf&logoColor=white" alt="Windsurf" />
+</p>
 
 **Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
 instructions file, hook-level interception of tool calls, and transcript mining after
 the session. **Good** is MCP tools plus an instructions file or skills, without transcript mining
 (hooks only where the matrix says). **Basic** is the MCP config alone. Anything else that speaks MCP is one snippet away:
-`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
+`repowise agents print-config claude-code` prints a server entry for Cline,
 Zed, Gemini CLI or any host that reads `mcpServers`.
 [Integration matrix →](docs/agent/INTEGRATIONS.md)
 
@@ -610,6 +615,11 @@ map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
 ---
 
 ## The ten MCP tools
+
+Claude Code lists all ten. Clients that send every tool schema with every request
+(Codex, Cursor, VS Code and Copilot, and the rest) list the five core tools by default,
+which keeps each request small; `repowise config set mcp.tools standard` lists all ten
+there too. `repowise init` and `repowise agents add` print what each connected agent lists.
 
 Every response carries a `_meta` envelope with the indexed commit, the index age and a
 stale warning when the index has fallen behind your checkout, so your agent always
@@ -713,7 +723,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ```bash
 repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # answers and docs with a model, on an existing index (no re-index)
-repowise serve [PATH]     # MCP server + local dashboard
+repowise serve            # local dashboard and API
 repowise update [PATH]    # incremental update (--workspace for every repo)
 repowise watch            # re-index on file change
 repowise search "<q>"     # hybrid search (fulltext / semantic / symbol / path)

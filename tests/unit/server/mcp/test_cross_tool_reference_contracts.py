@@ -844,7 +844,7 @@ async def test_decision_and_evidence_ids_round_trip_through_get_why(
     [full] = evidence_result["evidence_refs"]
     assert _served_form_of(evidence, full)
 
-    archaeology = await get_why("src/legacy/old_auth.py")
+    archaeology = await get_why("src/legacy/old_auth.py", include=["history"])
     rationale = archaeology["code_rationale"][0]
     [rationale_ref] = rationale["evidence_refs"]
     from repowise.server.mcp_server import _why_evidence

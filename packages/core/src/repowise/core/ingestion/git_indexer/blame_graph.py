@@ -27,6 +27,8 @@ from git.exc import GitCommandError
 
 from repowise.core.analysis.git_cli import run_git
 
+from ._constants import _GRAPH_PACK_WINDOW_OPTIONS
+
 logger = structlog.get_logger(__name__)
 
 __all__ = ["BlameGraph"]
@@ -35,7 +37,9 @@ _OBJECT_DIR_ENV = "GIT_OBJECT_DIRECTORY"
 _ALTERNATES_ENV = "GIT_ALTERNATE_OBJECT_DIRECTORIES"
 
 # A graph that takes longer than this is abandoned and the pass runs as before.
-_WRITE_TIMEOUT_SECS = 600
+# Generous on purpose: ClickHouse (321k commits) writes it in 460-570 s, and a
+# blame without it ran 24 times slower there, so giving up costs far more.
+_WRITE_TIMEOUT_SECS = 1800
 
 
 class BlameGraph:
@@ -79,7 +83,13 @@ class BlameGraph:
         env = {_OBJECT_DIR_ENV: scratch, _ALTERNATES_ENV: os.pathsep.join(alternates)}
         try:
             proc = run_git(
-                ["commit-graph", "write", "--reachable", "--changed-paths"],
+                [
+                    *(arg for option in _GRAPH_PACK_WINDOW_OPTIONS for arg in ("-c", option)),
+                    "commit-graph",
+                    "write",
+                    "--reachable",
+                    "--changed-paths",
+                ],
                 working_dir,
                 env={**os.environ, **env},
                 timeout=_WRITE_TIMEOUT_SECS,

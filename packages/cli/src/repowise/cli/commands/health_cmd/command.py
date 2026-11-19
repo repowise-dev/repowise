@@ -51,6 +51,7 @@ from repowise.core.persistence.crud.analysis.health import open_finding_count
 from .codegen import _generate_refactoring_code
 from .persist import (
     _load_fix_first,
+    _load_measured_costs,
     _load_perf_causes,
     _load_persisted_coverage_map,
     _load_queue_counts,
@@ -70,6 +71,7 @@ from .summary import (
     _render_defect_accuracy_line,
     _render_distribution_line,
     _render_fix_first,
+    _render_measured_costs,
     _render_performance_section,
     _render_split_line,
 )
@@ -184,8 +186,8 @@ class _HealthGroup(click.Group):
     type=click.Choice(list(SCOPES)),
     help=(
         "Which files to report on. 'production' leaves out tests, tooling, "
-        "vendored and generated files, which tend to score higher, so it "
-        "lowers every figure without a defect being found."
+        "build, vendored, generated and docs example files, which tend to "
+        "score higher, so it lowers every figure without a defect being found."
     ),
 )
 @click.option(
@@ -513,6 +515,9 @@ def _render_json(
 
     excluded = excluded_types()
     short_history = _load_short_history(repo_path)
+    # Repository-wide, so a narrowed run leaves it out, as the table does.
+    narrowed = bool(opts.file_filter or opts.module_filter)
+    measured = None if narrowed else _load_measured_costs(repo_path)
     click.echo(
         json.dumps(
             {
@@ -529,6 +534,8 @@ def _render_json(
                 # Findings, causes, plans and Fix first items, as every
                 # surface counts them; ``shown`` is 0, nothing is listed.
                 "queue_counts": _load_queue_counts(repo_path),
+                # Only with ranked runtime evidence (``crud.measured_costs``).
+                **({"measured_costs": measured} if measured else {}),
                 "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
                 "findings": [
                     {
@@ -604,6 +611,8 @@ def _render_table(
     narrowed = bool(opts.file_filter or opts.module_filter)
     causes = None if narrowed else _load_perf_causes(repo_path, coverage.covered_nloc)
     _render_performance_section(report, coverage, causes)
+    if not narrowed:
+        _render_measured_costs(_load_measured_costs(repo_path))
     _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
 

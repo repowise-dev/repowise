@@ -222,23 +222,23 @@ RETIRED_ORIENTATION_IDS = [
     "onboarding:onboarding/guided_tour",
     "onboarding:onboarding/codebase_map",
     "onboarding:onboarding/development_guide",
+    "onboarding:onboarding/key_concepts",
+    "onboarding:onboarding/glossary",
 ]
 
 SURVIVING_ORIENTATION_IDS = [
     "onboarding:onboarding/getting_started",
-    "onboarding:onboarding/key_concepts",
     "onboarding:onboarding/how_it_works",
     "onboarding:onboarding/active_landscape",
-    "onboarding:onboarding/glossary",
 ]
 
 
 class TestOrientationRetirement:
-    """The id-keyed repo-wide shape, which these three are the first users of.
+    """The id-keyed repo-wide shape, used by every retired orientation slot.
 
     The successor is the overview, whose id carries the repository name, so it
     cannot be written as a literal successor id.  And the retired pages share
-    ``page_type='onboarding'`` with the five that survive, so the rule cannot
+    ``page_type='onboarding'`` with the slots that survive, so the rule cannot
     be keyed on type either.  Both halves are asserted here because getting
     either wrong silently takes out the whole orientation collection.
     """
@@ -258,5 +258,5 @@ class TestOrientationRetirement:
         assert repo_wide_successor_type(page_id) is None
         assert resolve_superseded(page_id) is None
 
-    def test_the_retired_set_is_exactly_these_three(self):
+    def test_the_retired_set_is_exactly_these(self):
         assert sorted(RETIRED_IDS) == sorted(RETIRED_ORIENTATION_IDS)

@@ -6,11 +6,15 @@ import asyncio
 import contextlib
 import os
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+import anyio
+from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import server as _lowlevel
+from mcp.server.session import ServerSession
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,6 +35,7 @@ from repowise.core.providers.embedding.base import (
     warm_query_embedder,
 )
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.registry.instructions import server_instructions
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
 from repowise.server.mcp_server._checkout import close_own_index_contexts
@@ -50,12 +55,12 @@ _log = __import__("logging").getLogger("repowise.mcp")
 class StoreUnavailableError(RuntimeError):
     """The repo-local index store cannot be created or opened.
 
-    Raised out of the lifespan so the process exits once with a message that
-    names the path and the fix. Before this the same failure escaped as a
-    bare traceback, and an MCP host treats a server that dies at startup as
-    one to respawn, so an unwritable .repowise became a crash loop. Click-free
-    because the server does not depend on the CLI; the mcp command turns it
-    into a clean non-zero exit.
+    The message names the path and the fix. The lifespan serves it as every
+    tool's answer over an empty store (:func:`_serve_no_index`), because an MCP
+    host respawns a server that dies at startup, so an unwritable .repowise
+    became a crash loop. Raised only when even that store cannot open.
+    Click-free because the server does not depend on the CLI; the mcp command
+    turns it into a clean non-zero exit.
 
     ``reason`` is a fixed slug for anonymous telemetry, never message text:
     ``store_open_failed``, ``db_url_unreachable`` or
@@ -125,6 +130,18 @@ def _configured_embedder_name() -> str:
     return "" if source == "default" else name
 
 
+def _is_keyless_name(name: str) -> bool:
+    """Whether the configured embedder *name* resolves to :class:`KeylessEmbedder`."""
+    return not name or name == "mock"
+
+
+def _embedder_lacks_key(name: str) -> bool:
+    """Whether *name* needs an API key and none is set: it builds as keyless."""
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    return bool(EMBEDDER_KEY_ENVS.get(name)) and _persisted_embedder_key(name) is None
+
+
 def _persisted_embedder_key(name: str) -> str | None:
     """The configured embedder's API key: env > repo ``.env`` > global config.
 
@@ -170,7 +187,7 @@ def _resolve_embedder():
 
     name = _configured_embedder_name()
 
-    if not name or name == "mock":
+    if _is_keyless_name(name):
         _state._embedder_status = {
             "active": "mock",
             "requested": name or None,
@@ -265,21 +282,28 @@ def _share_lifespan(server: Any) -> None:
             error = exc
             raise
         finally:
-            async with manager["lock"]:
-                manager["active"] -= 1
-                if manager["active"] == 0:
-                    context = manager["context"]
-                    manager["context"] = None
-                    manager["state"] = None
-                    if context is not None:
-                        teardown_error = (
-                            None if isinstance(error, asyncio.CancelledError) else error
-                        )
-                        await context.__aexit__(
-                            type(teardown_error) if teardown_error is not None else None,
-                            teardown_error,
-                            teardown_error.__traceback__ if teardown_error is not None else None,
-                        )
+            # A session ends by cancelling its anyio task group, and that
+            # cancellation lands on every await below: unshielded, the teardown
+            # was cut short and left the engine, the store and the background
+            # tasks open past the session.
+            with anyio.CancelScope(shield=True):
+                async with manager["lock"]:
+                    manager["active"] -= 1
+                    if manager["active"] == 0:
+                        context = manager["context"]
+                        manager["context"] = None
+                        manager["state"] = None
+                        if context is not None:
+                            teardown_error = (
+                                None if isinstance(error, asyncio.CancelledError) else error
+                            )
+                            await context.__aexit__(
+                                type(teardown_error) if teardown_error is not None else None,
+                                teardown_error,
+                                teardown_error.__traceback__
+                                if teardown_error is not None
+                                else None,
+                            )
 
     server.lifespan = shared
 
@@ -320,24 +344,6 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
-async def _served_repository_id(factory: Any) -> str | None:
-    """The one row a repo-local store holds, else ``None``.
-
-    Same rule as the CLI's moved-repo lookup: identity is inferred only from
-    the served checkout's own store, and only when it holds one repository.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.persistence.models import Repository
-
-    try:
-        async with factory() as session:
-            rows = (await session.scalars(select(Repository.id).limit(2))).all()
-    except OperationalError:
-        return None
-    return rows[0] if len(rows) == 1 else None
-
-
 async def _abort_startup(*tasks: asyncio.Task) -> None:
     """Undo the startup a lifespan raised out of, before it reached its teardown.
 
@@ -349,6 +355,73 @@ async def _abort_startup(*tasks: asyncio.Task) -> None:
     for task in tasks:
         await _cancel_task(task)
     _state._lancedb_ready = None
+
+
+async def _open_store(db_url: str) -> Any:
+    """An engine on *db_url* with its schema in place."""
+    _log.info("repowise MCP: initialising database…")
+    engine = create_engine(db_url, short_lived=False)
+    try:
+        await init_db(engine)
+    except (OSError, OperationalError):
+        await engine.dispose()
+        raise
+    return engine
+
+
+async def _open_single_repo_store(
+    configured_db_url: str | None,
+) -> tuple[Any, StoreUnavailableError | None]:
+    """``(engine, None)`` on the served repo's store, or ``(None, error)`` when it
+    cannot open. A directory with no ``.repowise/`` gets the empty store."""
+    # When repo path is set and no env override, prefer repo-local DB.
+    store_location: str | None = None
+    db_url: str | None = None
+    try:
+        if _state._repo_path and configured_db_url is None:
+            db_path = get_repo_db_path(_state._repo_path)
+            repowise_dir = db_path.parent
+            store_location = str(repowise_dir)
+            if not repowise_dir.exists():
+                # An unindexed directory, often just wherever a globally
+                # installed plugin was launched. Exiting here made the host
+                # respawn the server in a loop and the agent never saw why.
+                # Serve an empty in-memory store instead, so every tool returns
+                # the "no index, run repowise init" notice, without leaving a
+                # stray .repowise/ on disk (#3163).
+                _log.warning(
+                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
+                )
+                db_url = _NO_INDEX_DB_URL
+                _state._serving_no_index = True
+            elif not db_path.exists():
+                _log.warning(
+                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
+                    repowise_dir,
+                )
+        return await _open_store(db_url or resolve_db_url(_state._repo_path)), None
+    except (OSError, OperationalError) as exc:
+        # A read-only or missing directory, or a .repowise that is a file.
+        return None, _store_unavailable(store_location, _state._repo_path, exc)
+
+
+async def _serve_no_index(store_error: StoreUnavailableError, *tasks: asyncio.Task) -> Any:
+    """Serve the empty in-memory store in place of one that cannot open.
+
+    Exiting made the host respawn the server in a loop, and the agent never
+    saw why. Served, every tool answers with *store_error*'s cause and fix
+    (``_failure_shield``). Raises *store_error* only when even the in-memory
+    store cannot open.
+    """
+    _log.error("%s", store_error)
+    try:
+        engine = await _open_store(_NO_INDEX_DB_URL)
+    except BaseException as exc:
+        await _abort_startup(*tasks)
+        raise store_error from exc
+    _state._store_error = store_error
+    _state._serving_no_index = True
+    return engine
 
 
 async def _warm_lancedb() -> None:
@@ -364,8 +437,15 @@ async def _warm_lancedb() -> None:
 
     Tool dispatch waits on this event before running any handler body (see
     ``_failure_shield``), so the two never overlap.
+
+    A keyless embedder never runs the vector leg, so nothing reads LanceDB and
+    the import is skipped: no tool call waits on it. That includes a keyed
+    embedder with no key, which :func:`_resolve_embedder` serves as keyless.
     """
     try:
+        name = _configured_embedder_name()
+        if _is_keyless_name(name) or _embedder_lacks_key(name):
+            return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:
         pass  # optional dependency — the InMemory fallback covers it
@@ -424,17 +504,23 @@ async def _load_vector_stores(repo_path: str | None) -> None:
 
         from pathlib import Path
 
-        lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        # A keyless store is never searched (``store_has_semantic_vectors``),
+        # so it is not worth opening.
+        lance_dir = (
+            Path(repo_path) / ".repowise" / "lancedb"
+            if repo_path and is_semantic_embedder(embedder)
+            else None
+        )
         has_index = lance_dir is not None and lance_dir.exists()
         # Overlaps the import and open below; awaited before ready is set.
         warmup = _asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
-            # Step 1 — import lancedb in a thread to keep event loop free.
-            await _asyncio.to_thread(__import__, "lancedb")
-
-            from repowise.core.persistence.vector_store import LanceDBVectorStore
-
             if has_index:
+                # Step 1 — import lancedb in a thread to keep event loop free.
+                await _asyncio.to_thread(__import__, "lancedb")
+
+                from repowise.core.persistence.vector_store import LanceDBVectorStore
+
                 vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 # Step 2: pre-connect so first search() is instant.
                 await vs._ensure_connected()
@@ -445,8 +531,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         except Exception as exc:
             # ImportError included: with an index on disk, a missing lancedb
             # is as broken as an unreadable one. No index is a keyless repo.
-            if lance_dir is not None and lance_dir.exists():
-                _mark_vector_store_unreadable(exc)
+            _mark_vector_store_unreadable(exc)
         finally:
             warmup.cancel()  # a no-op once awaited; stops it on a failed open
 
@@ -502,22 +587,55 @@ def _detect_workspace(repo_path: str | None):
                 best_match_depth = match_depth
                 best_match_abs = entry_abs
 
+        if (
+            resolved not in (best_match_abs, ws_root)
+            and (resolved / ".repowise" / "state.json").exists()
+        ):
+            # resolved is its own indexed repo but not a registered member:
+            # either nested in a member's directory (containment matched the
+            # enclosing entry) or a sibling no member contains. Serving the
+            # enclosing repo or the primary is wrong for it — drop to
+            # single-repo mode.
+            return None, None, None
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
             primary = ws_config.get_primary()
             repo_alias = primary.alias if primary else ws_config.repos[0].alias
-        elif resolved != best_match_abs and (resolved / ".repowise" / "state.json").exists():
-            # resolved is its own indexed repo, nested inside a matched
-            # member/primary's directory but not itself a registered member.
-            # Containment made it match the enclosing entry above; that's
-            # wrong for an indexed, non-member repo — drop to single-repo
-            # mode instead of silently serving the enclosing repo.
-            return None, None, None
 
         return ws_root, ws_config, repo_alias
     except Exception:
         _log.debug("Workspace detection failed", exc_info=True)
         return None, None, None
+
+
+def workspace_registry(ws_root: Any, ws_config: Any, default_alias: str | None, db_url: str | None):
+    """The registry a workspace is served from, defaulting to *default_alias*.
+
+    With *db_url* (``REPOWISE_DB_URL``) every member is read from that one
+    store. Shared with the CLI's tool commands, so both answer the same way.
+    """
+    from repowise.core.workspace.registry import RepoRegistry
+
+    if default_alias and ws_config.get_repo(default_alias):
+        ws_config.default_repo = default_alias
+    return RepoRegistry(
+        workspace_root=ws_root,
+        ws_config=ws_config,
+        embedder_factory=_query_embedder,
+        on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
+        db_url=db_url,
+    )
+
+
+def publish_workspace_state(registry: Any, default_ctx: Any, ws_root: Any) -> None:
+    """Serve *registry*, with its default repo's resources as the ``_state`` globals."""
+    _state._registry = registry
+    _state._workspace_root = str(ws_root)
+    _state._session_factory = default_ctx.session_factory
+    _state._fts = default_ctx.fts
+    _state._vector_store = default_ctx.vector_store
+    _state._decision_store = default_ctx.decision_store
+    _state._vector_store_ready = default_ctx.vector_store_ready
 
 
 def _warm_savings_pricing(repo_path: str | None) -> None:
@@ -542,6 +660,9 @@ async def _lifespan(server: FastMCP):
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
     _release_task = asyncio.create_task(_watch_server_currency(), name="server-currency")
+    store_error: StoreUnavailableError | None = None
+    _state._serving_no_index = False
+    _state._store_error = None
 
     # --- Workspace detection ------------------------------------------------
     if _state._force_single_repo:
@@ -551,43 +672,31 @@ async def _lifespan(server: FastMCP):
 
     if ws_root is not None and ws_config is not None:
         # Workspace mode — use RepoRegistry for multi-repo serving
+        shared_db_url = get_configured_db_url()
+        registry = workspace_registry(ws_root, ws_config, ws_repo_alias, shared_db_url)
 
-        from repowise.core.workspace.registry import RepoRegistry
-
-        # Override default repo to the one the path points at
-        if ws_repo_alias and ws_config.get_repo(ws_repo_alias):
-            ws_config.default_repo = ws_repo_alias
-
-        registry = RepoRegistry(
-            workspace_root=ws_root,
-            ws_config=ws_config,
-            embedder_factory=_query_embedder,
-            on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
-        )
-
-        # Eagerly load the default repo so tools work immediately. A failure
-        # here leaves the lifespan before its teardown, so the background
-        # tasks are cancelled by hand or they outlive the loop.
+        # Eagerly load the default repo so tools work immediately. A store
+        # that cannot open is served below as no index; any other failure
+        # leaves the lifespan before its teardown, so the background tasks are
+        # cancelled by hand or they outlive the loop.
         try:
             default_ctx = await registry.get_default()
-        except (OSError, OperationalError) as exc:
-            await _abort_startup(_release_task, _warm_task)
-            raise _store_unavailable(
-                str(ws_root), str(ws_root), exc, reason="workspace_default_failed"
-            ) from exc
+        except (OSError, OperationalError, LookupError) as exc:
+            # LookupError: the shared store has no row for the default repo.
+            store_error = _store_unavailable(
+                None if shared_db_url else str(ws_root),
+                str(ws_root),
+                exc,
+                reason="workspace_default_failed",
+            )
+            with contextlib.suppress(Exception):
+                await registry.close()
         except BaseException:
             await _abort_startup(_release_task, _warm_task)
             raise
 
-        _state._registry = registry
-        _state._workspace_root = str(ws_root)
-
-        # Alias default repo's resources into _state for backward compat
-        _state._session_factory = default_ctx.session_factory
-        _state._fts = default_ctx.fts
-        _state._vector_store = default_ctx.vector_store
-        _state._decision_store = default_ctx.decision_store
-        _state._vector_store_ready = default_ctx.vector_store_ready
+    if ws_root is not None and ws_config is not None and store_error is None:
+        publish_workspace_state(registry, default_ctx, ws_root)
 
         # Load cross-repo enricher (Phase 3 + 4)
         try:
@@ -627,56 +736,19 @@ async def _lifespan(server: FastMCP):
         _state._workspace_root = None
         return
 
-    # --- Single-repo mode (existing behavior) --------------------------------
+    # --- Single-repo mode, or a workspace whose default store cannot open -----
     configured_db_url = get_configured_db_url()
 
-    # When repo path is set and no env override, prefer repo-local DB.
-    store_location: str | None = None
-    db_url: str | None = None
-    _state._serving_no_index = False
-    try:
-        if _state._repo_path and configured_db_url is None:
-            db_path = get_repo_db_path(_state._repo_path)
-            repowise_dir = db_path.parent
-            store_location = str(repowise_dir)
-            if not repowise_dir.exists():
-                # An unindexed directory, often just wherever a globally
-                # installed plugin was launched. Exiting here made the host
-                # respawn the server in a loop and the agent never saw why.
-                # Serve an empty in-memory store instead, so every tool returns
-                # the "no index, run repowise init" notice, without leaving a
-                # stray .repowise/ on disk (#3163).
-                _log.warning(
-                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
-                )
-                db_url = _NO_INDEX_DB_URL
-                _state._serving_no_index = True
-            elif not db_path.exists():
-                _log.warning(
-                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
-                    repowise_dir,
-                )
-
-        db_url = db_url or resolve_db_url(_state._repo_path)
-
-        _log.info("repowise MCP: initialising database…")
-        engine = create_engine(db_url, short_lived=False)
-        try:
-            await init_db(engine)
-        except (OSError, OperationalError):
-            await engine.dispose()
-            raise
-    except (OSError, OperationalError) as exc:
-        # A read-only or missing directory, or a .repowise that is a file.
-        await _abort_startup(_release_task, _warm_task)
-        raise _store_unavailable(store_location, _state._repo_path, exc) from exc
+    if store_error is None:
+        engine, store_error = await _open_single_repo_store(configured_db_url)
+    if store_error is not None:
+        engine = await _serve_no_index(store_error, _release_task, _warm_task)
 
     _state._session_factory = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
     )
 
-    if _state._repo_path and configured_db_url is None:
-        _state._served_repo_id = await _served_repository_id(_state._session_factory)
+    await _state.publish_served_repo_id(_state._session_factory)
 
     _state._fts = FullTextSearch(engine)
     try:
@@ -746,8 +818,29 @@ class _RepowiseMCP(FastMCP):
         state = getattr(request, "scope", {}).get("state") or {}
         return state.get("principal")
 
+    def _client_slug(self) -> str | None:
+        """The agent slug of the client in this request, or None outside one."""
+        try:
+            session = self._mcp_server.request_context.session
+        except LookupError:
+            return None
+        from repowise.core.agents.identity import resolve_client_identity
+
+        info = getattr(getattr(session, "client_params", None), "clientInfo", None)
+        return resolve_client_identity(getattr(info, "name", None))
+
     async def list_tools(self):  # type: ignore[override]
-        tools = await super().list_tools()
+        from repowise.server.mcp_server._tool_selection import (
+            mark_always_loaded,
+            session_tool_names,
+        )
+
+        tools = mark_always_loaded(await super().list_tools())
+        client = self._client_slug()
+        if client is not None:
+            names = session_tool_names(client)
+            if names is not None:
+                tools = [t for t in tools if t.name in names]
         principal = self._request_principal()
         if principal is None:
             return tools
@@ -764,6 +857,14 @@ class _RepowiseMCP(FastMCP):
 
             from repowise.server.mcp_server._http_auth import call_denial
 
+            if _state._registry is not None:
+                # Repo checks read ids synchronously; a shared store's are read
+                # here. Unreadable, an id stays unknown and its check refuses.
+                try:
+                    await _state._registry.ensure_repo_ids()
+                except (OSError, OperationalError):
+                    _log.warning("repowise MCP: could not read repository ids", exc_info=True)
+
             denial = call_denial(principal, name, arguments)
             if denial is not None:
                 raise ToolError(denial)
@@ -776,52 +877,76 @@ class _RepowiseMCP(FastMCP):
             current_principal.reset(reset)
 
 
-# Hosts that defer tool schemas show the model only tool names and this
-# string, so it says when to call; tests pin the key lines and a length cap.
-_INSTRUCTIONS = (
-    "repowise indexes this repository's code graph, git history and "
-    "decisions. One call here often replaces several text searches and "
-    "file reads.\n"
-    "- Use search_codebase(query) to find an identifier or literal: `lines` "
-    "(path, line, kind, text) are read from live files; `complete: true` "
-    "means every match.\n"
-    '- Use get_context(targets=[symbol], include=["references"]) before a '
-    "rename: a `complete` list is the whole edit set. On a directory, "
-    'include=["files"] lists its files and tests.\n'
-    "- Use get_answer(question) for one how/where/why question per call.\n"
-    "- Use get_risk before editing a widely imported file, get_change_risk "
-    "before committing a multi-file change, get_why before changing an "
-    "established pattern. Skip them for one-line fixes.\n"
-    "- Targets with uncommitted edits are flagged: index facts for them "
-    "predate the edit.\n"
-    "No index: tell the user to run 'repowise init --yes --no-prose' (no "
-    "API key or model calls). Suggest it, do not run it yourself."
-)
-
-#: Opt-in workspace tools, named only once the selected surface has them.
-_WORKSPACE_TOOL_LINES = {
-    "get_architecture": "get_architecture for the workspace's coupling and architecture score",
-    "get_blast_radius": "get_blast_radius for the services a change reaches in other repos",
-}
-
-
-def _instructions(enabled: Iterable[str] = (), repo_line: str | None = None) -> str:
-    """The server instructions, naming a workspace tool only when it is served.
-
-    *repo_line* says what get_why holds for the served repository.
-    """
-    text = f"{_INSTRUCTIONS}\n{repo_line}" if repo_line else _INSTRUCTIONS
-    lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
-    if not lines:
-        return text
-    return f"{text}\nIn this workspace, use {' and '.join(lines)}."
-
-
 mcp = _RepowiseMCP(
     "repowise",
-    instructions=_instructions(),
+    instructions=server_instructions(None),
     lifespan=_lifespan,
 )
+
+#: The instructions one session's client reads, by its agent slug. Set with
+#: the boot selection; None (no selection yet) sends the boot text to all.
+_client_instructions: Callable[[str], str] | None = None
+
+
+def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set[str]:
+    """Trim *mcp* to the selected surface and set the instructions it sends.
+
+    The boot text names the boot surface. A session's own text names only the
+    tools its client is listed (:func:`session_tool_names`), so a client given
+    the core profile is not told to call a tool it never sees.
+    """
+    global _client_instructions
+    from repowise.server.mcp_server import _tool_selection
+
+    enabled = _tool_selection.apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    workspace = bool(_tool_selection._selected_surface and _tool_selection._selected_surface[0])
+    repo_line = decisions_line(repo_path)
+
+    def text(served: Iterable[str]) -> str:
+        return server_instructions(served, repo_line=repo_line, workspace=workspace)
+
+    mcp._mcp_server.instructions = text(enabled)
+
+    def for_client(client: str) -> str:
+        listed = _tool_selection.session_tool_names(client)
+        return text(enabled if listed is None else listed)
+
+    _client_instructions = for_client
+    return enabled
+
+
+class _ClientSession(ServerSession):
+    """A session that answers ``initialize`` with its own client's instructions.
+
+    The initialize reply carries the instructions and is the first moment the
+    server knows the client, so the text is chosen there. Other servers in the
+    process, and this one before any selection, keep the SDK's behaviour.
+    """
+
+    async def _received_request(self, responder: Any) -> None:
+        request = responder.request.root
+        if (
+            isinstance(request, mcp_types.InitializeRequest)
+            and _client_instructions is not None
+            and self._init_options.server_name == mcp.name
+        ):
+            from repowise.core.agents.identity import resolve_client_identity
+
+            # This leans on SDK internals; if they move, the boot text goes out
+            # rather than the handshake failing.
+            try:
+                client = resolve_client_identity(request.params.clientInfo.name)
+                self._init_options = self._init_options.model_copy(
+                    update={"instructions": _client_instructions(client)}
+                )
+            except Exception:
+                _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
+        await super()._received_request(responder)
+
+
+# The low-level server builds each session from this module name; there is no
+# session-class hook. Read at session creation, so every transport gets it.
+_lowlevel.ServerSession = _ClientSession
 _share_lifespan(mcp._mcp_server)
 # FastMCP takes no version argument, and without one the handshake's
 # serverInfo.version reports the installed ``mcp`` SDK's version.
@@ -846,14 +971,11 @@ def create_mcp_server(
     _state._repo_path = repo_path
     _state._force_single_repo = not workspace_mode
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
     # Tool modules import lazily now, so a server has to ask for the full
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
-
-    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-    mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
+    _select_surface(repo_path, tools)
     return mcp
 
 
@@ -1003,6 +1125,27 @@ def _run_network_transport(transport: str, host: str, port: int) -> None:
     mcp.run(transport=transport)
 
 
+def _load_native_libraries() -> None:
+    """Load numpy before the stdio transport starts reading stdin.
+
+    On Windows, loading numpy's OpenBLAS DLL while a read is pending on the
+    stdin pipe never returns: its start-up waits behind the read, the read
+    waits for the client, the client waits for the reply. The SDK keeps a read
+    pending all session, and tools first import numpy mid-call (networkx
+    pagerank, lancedb), so that call hung. Any thread hangs; only loading it
+    before a read is pending avoids it. numpy alone covers what tools load
+    (pagerank, scipy.sparse, pyarrow, lancedb) in about 0.15 s. scipy's own
+    Fortran modules (``scipy.linalg``, ``scipy.stats``) hang too; a tool that
+    starts importing one adds it here.
+    """
+    from repowise.core.blas_threads import limit_blas_threads
+
+    limit_blas_threads()  # before numpy, even when run_mcp is reached without the CLI
+    # A broken install fails in the tool that needs it, not at startup.
+    with contextlib.suppress(ImportError):
+        import numpy  # noqa: F401
+
+
 def _run_stdio_transport() -> int:
     """Run the stdio transport; returns how many stray stdout writes it saw."""
     # stdout is the JSON-RPC channel on stdio, so every log line written there
@@ -1018,6 +1161,7 @@ def _run_stdio_transport() -> int:
     from repowise.server.mcp_server._watchdog import start_parent_watchdog
 
     start_parent_watchdog()
+    _load_native_libraries()
     # The SDK writes frames through stdout's buffer, so anything arriving at
     # the text layer is a stray print. The guard moves it to stderr, counts it,
     # and the count is what names the session protocol_corrupted.
@@ -1060,11 +1204,9 @@ def run_mcp(
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
         from repowise.server.mcp_server import ensure_full_surface
-        from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
         ensure_full_surface()
-        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-        mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
+        _select_surface(repo_path, tools)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

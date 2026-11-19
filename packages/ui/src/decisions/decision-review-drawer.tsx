@@ -14,6 +14,13 @@ import { formatDate, parseDateOrNull, stripMarkdown } from "../lib/format";
 import { Button } from "../ui/button";
 import { describeRecordStaleness } from "./decision-staleness";
 import { VerificationBadge } from "./verification-badge";
+import {
+  GapList,
+  ReasonField,
+  isReasonGap,
+  type DecisionAcceptOptions,
+} from "./decision-confirm";
+import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
 
 /**
  * One record of the review queue, read in full without leaving the queue.
@@ -31,10 +38,18 @@ export interface DecisionReviewDrawerProps {
   /** Whether the review verbs apply: only a candidate is accepted or dismissed. */
   reviewable: boolean;
   onClose: () => void;
-  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  /** Accepts; `options.reason` carries a reason typed in the drawer. */
+  onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
   /** Re-accepts a decision whose files moved. Given only where it applies. */
   onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
+  /** Pins or unpins a decision in force. Given only where it applies. */
+  onPin?: ((decision: DecisionRecord, pinned: boolean) => void) | undefined;
+  /**
+   * The record's agent prompts (pin, veto, change it), rendered first in the
+   * verb row: handing a change to an agent is the primary action.
+   */
+  prompts?: React.ReactNode;
   readOnlyReason?: string | undefined;
   pending?: boolean | undefined;
   /** The full record page, where its fields are edited. */
@@ -47,6 +62,9 @@ export interface DecisionReviewDrawerProps {
   /** Slot for marks the caller already renders on the row (currency, signer). */
   marks?: React.ReactNode;
 }
+
+/** The verb that turns a background record into a decision in force. */
+export const PUT_IN_FORCE_LABEL = "Put in force";
 
 /** Quote provenance as quiet row meta, matching the queue table. */
 const EVIDENCE_META = "text-2xs text-[var(--color-text-tertiary)]";
@@ -61,6 +79,8 @@ export function DecisionReviewDrawer({
   onAccept,
   onDismiss,
   onReaffirm,
+  onPin,
+  prompts,
   readOnlyReason,
   pending,
   href,
@@ -82,11 +102,15 @@ export function DecisionReviewDrawer({
         >
           {d && (
             <DrawerBody
+              // Keyed so a reason typed for one record never carries to the next.
+              key={d.id}
               d={d}
               reviewable={reviewable}
               onAccept={onAccept}
               onDismiss={onDismiss}
               onReaffirm={onReaffirm}
+              onPin={onPin}
+              prompts={prompts}
               readOnlyReason={readOnlyReason}
               pending={pending}
               href={href}
@@ -108,9 +132,13 @@ function DrawerBody(props: BodyProps) {
   const { d, reviewable, onAccept } = props;
   const blockers = decisionAcceptanceBlockers(d);
   const reason = stripMarkdown(d.rationale || d.context || "");
+  const [typed, setTyped] = React.useState("");
+  const needsReason = blockers.some(isReasonGap);
+  const otherGaps = blockers.filter((b) => !isReasonGap(b));
+  const askReason = reviewable && !!onAccept && needsReason && otherGaps.length === 0;
   return (
     <>
-      <DrawerHeader {...props} blockers={blockers} />
+      <DrawerHeader {...props} blockers={blockers} typedReason={askReason ? typed : ""} />
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4 text-sm">
         <Field label="Decision">
           <p className="text-[var(--color-text-primary)]">{stripMarkdown(d.decision || d.title)}</p>
@@ -120,22 +148,34 @@ function DrawerBody(props: BodyProps) {
             <p className="text-[var(--color-text-secondary)]">{reason}</p>
           </Field>
         )}
+        <DecisionOrigin decision={d} />
+        <DecisionAppliedLine decision={d} />
+        {askReason && (
+          <ReasonField
+            id={`drawer-reason-${d.id}`}
+            value={typed}
+            onChange={setTyped}
+            disabled={props.pending}
+          />
+        )}
         <EvidenceField d={d} />
         <ScopeField d={d} />
-        {reviewable && onAccept && blockers.length > 0 && (
-          <Field label="Cannot accept yet">
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              {blockers.join("; ")}. Fill it in on the full record, or with{" "}
-              <code className="font-mono text-xs">repowise decision confirm {d.id.slice(0, 8)}</code>.
-            </p>
-          </Field>
+        {reviewable && onAccept && otherGaps.length > 0 && (
+          <GapList gaps={otherGaps} id={d.id} onRecordPage={false} />
         )}
       </div>
     </>
   );
 }
 
-function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers: string[] }) {
+function DrawerHeader({
+  d,
+  marks,
+  href,
+  Link,
+  prompts,
+  ...verbs
+}: BodyProps & { blockers: string[]; typedReason: string }) {
   const flagged = d.verification && d.verification !== "exact" ? d.verification : null;
   return (
     <header className="flex items-start justify-between gap-3 border-b border-[var(--color-border-default)] px-5 py-4">
@@ -157,6 +197,7 @@ function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers
             bottom-right corner of every overlay, which is where a footer's
             primary verb would sit. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
+          {prompts}
           <DrawerVerbs d={d} {...verbs} />
           <Link
             href={href}
@@ -178,16 +219,70 @@ function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers
 
 type VerbProps = Pick<
   BodyProps,
-  "d" | "reviewable" | "onAccept" | "onDismiss" | "onReaffirm" | "readOnlyReason" | "pending"
-> & { blockers: string[] };
+  | "d"
+  | "reviewable"
+  | "onAccept"
+  | "onDismiss"
+  | "onReaffirm"
+  | "onPin"
+  | "readOnlyReason"
+  | "pending"
+> & { blockers: string[]; typedReason: string };
 
 function DrawerVerbs(props: VerbProps) {
-  const { reviewable, onReaffirm, readOnlyReason } = props;
-  if (!reviewable && !onReaffirm) return null;
+  const { d, reviewable, onReaffirm, onPin, readOnlyReason, pending } = props;
+  if (!reviewable && !onReaffirm && !onPin) return null;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
-  return onReaffirm ? <ReaffirmVerb {...props} onReaffirm={onReaffirm} /> : <ReviewVerbs {...props} />;
+  if (reviewable) return <ReviewVerbs {...props} />;
+  return (
+    <div className="flex items-center gap-2">
+      {onPin && <PinVerb d={d} pending={pending ?? false} onPin={onPin} />}
+      {onReaffirm && <ReaffirmVerb {...props} onReaffirm={onReaffirm} />}
+    </div>
+  );
+}
+
+/** Pin or unpin, the same words and titles wherever the verb is drawn. */
+export const PIN_LABEL = "Pin";
+export const UNPIN_LABEL = "Unpin";
+export const PIN_TITLE = "Hold it as law: an agent asks a person before replacing it";
+export const UNPIN_TITLE = "It stays in force; agents may replace it again";
+
+/** A pinned decision's mark: the word, with the sentence on hover. */
+export function PinnedMark() {
+  return (
+    <span
+      className="inline-flex items-center whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-2xs font-medium text-[var(--color-text-secondary)]"
+      title="Pinned: a person holds it as law, and an agent asks before replacing it."
+    >
+      Pinned
+    </span>
+  );
+}
+
+export function PinVerb({
+  d,
+  pending,
+  onPin,
+}: {
+  d: DecisionRecord;
+  pending: boolean;
+  onPin: (decision: DecisionRecord, pinned: boolean) => void;
+}) {
+  const pinned = d.pinned === true;
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={pending}
+      title={pinned ? UNPIN_TITLE : PIN_TITLE}
+      onClick={() => onPin(d, !pinned)}
+    >
+      {pinned ? UNPIN_LABEL : PIN_LABEL}
+    </Button>
+  );
 }
 
 function ReaffirmVerb({
@@ -202,12 +297,19 @@ function ReaffirmVerb({
   );
 }
 
-function ReviewVerbs({ d, onAccept, onDismiss, pending, blockers }: VerbProps) {
+function ReviewVerbs({ d, onAccept, onDismiss, pending, blockers, typedReason }: VerbProps) {
+  // A reason typed below fills the one gap a reader can fill here.
+  const reason = typedReason.trim();
+  const open = blockers.filter((b) => !(reason && isReasonGap(b)));
   return (
     <div className="flex items-center gap-2">
       {onAccept && (
-        <Button size="sm" disabled={pending || blockers.length > 0} onClick={() => onAccept(d)}>
-          {pending ? "Accepting…" : "Accept"}
+        <Button
+          size="sm"
+          disabled={pending || open.length > 0}
+          onClick={() => (reason ? onAccept(d, { reason }) : onAccept(d))}
+        >
+          {pending ? "Putting in force…" : PUT_IN_FORCE_LABEL}
         </Button>
       )}
       {onDismiss && (

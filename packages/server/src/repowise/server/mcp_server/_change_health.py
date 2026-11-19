@@ -35,6 +35,8 @@ REASON_LIMIT = 3
 MOVED_TO_LIMIT = 10
 #: Per-file score rows carried in ``health_delta.files``.
 FILE_ROWS_LIMIT = 10
+#: Changed symbols listed under ``include=["findings"]``; the total counts all.
+CHANGED_SYMBOLS_LIMIT = 50
 
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
@@ -223,6 +225,27 @@ def _file_scores(rows: list[FileScoreDelta], *, full: bool = False) -> dict[str,
     if change is not None:
         out["score_change"] = change.as_dict()
     return out
+
+
+def changed_symbol_rows(delta: ChangeHealthDelta) -> dict[str, Any]:
+    """Every symbol the diff added, edited, deleted or moved, findings or not.
+
+    Empty when the comparison touched no symbol, so the block does not grow.
+    """
+    if not delta.changed_symbols:
+        return {}
+    rows = []
+    for changed in delta.changed_symbols[:CHANGED_SYMBOLS_LIMIT]:
+        row: dict[str, Any] = {
+            "path": changed.path,
+            "symbol": changed.symbol,
+            "change": changed.change,
+            "lines": [changed.start_line, changed.end_line],
+        }
+        if changed.moved_from:
+            row["moved_from"] = {"path": changed.moved_from[0], "symbol": changed.moved_from[1]}
+        rows.append(row)
+    return {"changed_symbols": rows, "changed_symbols_total": len(delta.changed_symbols)}
 
 
 def finding_row(

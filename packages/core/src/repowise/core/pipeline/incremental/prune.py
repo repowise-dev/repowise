@@ -21,6 +21,7 @@ async def prune_deleted_files(
     skip: Callable[[str, Exception], None],
     log: LogFn,
     degraded: list[str] | None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None,
     pruned: set[str] | None = None,
     left_index: set[str] | None = None,
@@ -35,8 +36,8 @@ async def prune_deleted_files(
 
     The graph's file nodes join *live_paths* because resolver passes mint
     file-shaped nodes that name no file (`external:`, `framework:`, Spring SPI
-    sources); they fail every liveness test, and only changed files' edges are
-    rebuilt afterwards. A graph that cannot be read skips the prune.
+    sources); they fail every liveness test, and edges deleted with them are
+    not rebuilt afterwards. A graph that cannot be read skips the prune.
 
     *left_index* is passed through: see prune_deleted_file_rows.
     """
@@ -64,8 +65,24 @@ async def prune_deleted_files(
             log(f"[yellow]{refusal}[/yellow]")
             if degraded is not None:
                 degraded.append(refusal)
+            if prune_refusals is not None:
+                # A refusal is not a failure to try: the prune ran and decided
+                # the change looked like a broken run rather than a commit. It
+                # is a stopped prune, which is exactly the case the sync
+                # pointer must not advance past (#5410).
+                prune_refusals.append(refusal)
     except Exception as exc:
         skip("Deleted-file prune", exc)
+
+    # The liveness prune above never judges `external:` / `framework:` nodes;
+    # the rebuilt graph does.
+    try:
+        from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
+
+        with timed(timings, "persist.prune"):
+            await prune_absent_synthetic_nodes(session, repo_id, graph_builder)
+    except Exception as exc:
+        skip("Synthetic graph node prune", exc)
 
     # The performance and refactoring queues are materialized from the health
     # findings the prune just deleted; without this they keep serving a cause

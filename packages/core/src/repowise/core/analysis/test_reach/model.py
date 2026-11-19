@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 # How many call hops a test may take and still be said to reach a file. The walk
@@ -158,15 +159,15 @@ def rank_reaching(
     the one mirroring more of its directories, and the path. Targets, tests
     and *changed* may be ``path::name`` ids; every key reads the file part.
     """
-    path_of = target.split("::", 1)[0]
+    path_of = file_of_symbol(target)
     names = paired_test_names(path_of)
     dirs = set(path_of.split("/")[:-1])
     reach = reach or {}
     if edited is None:
-        edited = {c.split("::", 1)[0] for c in changed}
+        edited = {file_of_symbol(c) for c in changed}
 
     def key(test: str) -> tuple[bool, bool, int, bool, int, bool, int, str]:
-        path = test.split("::", 1)[0]
+        path = file_of_symbol(test)
         distance = reach.get(test) or reach.get(path)
         return (
             path not in edited,
@@ -196,19 +197,19 @@ def tests_matching_by_name(
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
     by_name: dict[str, list[str]] = {}
+    tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
     for path in test_files:
-        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
-    files_by_dir: dict[str, list[str]] = {}
-    for path in all_files:
-        dir_path, _, _ = path.rpartition("/")
-        files_by_dir.setdefault(dir_path, []).append(path)
+        dir_path, _, name = path.rpartition("/")
+        by_name.setdefault(name, []).append(path)
+        tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
 
     owned_by: dict[str, set[str]] = {}
-    for test in test_files:
-        dir_path, _, test_name = test.rpartition("/")
-        for source in files_by_dir.get(dir_path, ()):
-            if source != test and test_name in paired_test_names(source):
-                owned_by.setdefault(test, set()).add(source)
+    for source in all_files:
+        dir_path, _, _ = source.rpartition("/")
+        for name in paired_test_names(source):
+            for test in tests_by_dir_and_name.get((dir_path, name), ()):
+                if source != test:
+                    owned_by.setdefault(test, set()).add(source)
     out: dict[str, ReachedBy] = {}
     for target in targets:
         found = [

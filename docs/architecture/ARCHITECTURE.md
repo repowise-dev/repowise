@@ -286,7 +286,7 @@ the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API cal
 The dependency graph is a two-tier directed graph where **file nodes** represent source
 files and **symbol nodes** represent individual functions, classes, and methods. Edges
 include `imports`, `DEFINES`, `HAS_METHOD`, `CALLS` (with confidence 0.0–1.0),
-`inherits`, `implements`, and `co_changes`. `CALLS` edges are built by `CallResolver`
+`inherits`, `implements`, `co_changes` and `documents`. `CALLS` edges are built by `CallResolver`
 using 3-tier resolution; all others are built by `GraphBuilder` during AST ingestion.
 
 It is built by the `ASTParser` + `GraphBuilder` + `CallResolver` during ingestion and
@@ -310,6 +310,10 @@ The graph is used for:
   change together (but may have no import relationship) get `co_changes` edges.
   These participate in change propagation and are shown in the graph visualization
   as dashed purple lines. They do NOT affect PageRank.
+- **Documentation edges** give a Markdown document a `documents` edge to each file
+  it links to or names. No graph metric, dead-code reachability, change
+  propagation or graph view reads them; the knowledge-graph export keeps them
+  as their own relation (see [GRAPH.md](../layers/GRAPH.md#edge-types)).
 - **Dead code detection**: files with `in_degree == 0` (no importers) are
   candidates for unreachable file detection
 - **MCP `get_dependency_path` tool** *(opt-in)*: answers "how is module A connected to module B?"
@@ -434,6 +438,12 @@ The traverser also detects monorepo structure by looking for multiple
 When detected, each package is documented as a semi-independent unit with
 cross-package edges tracked in the graph.
 
+Package roots come from the language registry's manifest names. The projects,
+crates, packages and modules a repo builds, their in-repo dependencies and the
+units owning each file are read once per graph build into a stored
+`BuildUnitIndex`: see [build-units.md](build-units.md). Each of these shared
+questions has one owning module, listed in [single-sources.md](single-sources.md).
+
 Each `FileInfo` is tagged with: `language`, `is_test`, `is_config`, `is_api_contract`,
 `is_entry_point`, `git_hash`. These tags influence generation priority and prompt choice.
 
@@ -491,7 +501,7 @@ instead of tree-sitter.
 
 **Edge types.** User-facing walkthrough: [docs/layers/GRAPH.md](../layers/GRAPH.md).
 `EdgeType` in `ingestion/models.py` is the source of truth, a
-closed `Literal` of 17 values, with `EDGE_TYPE_VALUES` derived from it at runtime
+closed `Literal` of 18 values, with `EDGE_TYPE_VALUES` derived from it at runtime
 and pinned by `tests/unit/ingestion/test_edge_type_vocabulary.py`. The ones whose
 meaning is easy to get wrong:
 
@@ -516,6 +526,10 @@ meaning is easy to get wrong:
 - `co_changes`: A and B frequently change in the same commit (from git history,
   added by `GitIndexer` after graph construction). Weight = co-change count.
   Filtered out of PageRank but included in change propagation and visualization.
+- `documents`: Markdown document → a file it links to or names in backticks,
+  from doc drift's resolver, added by `GraphBuilder.build()`. Replaces a
+  `co_changes` edge on the same pair. Prose, not a dependency: excluded from
+  every metric and view, and kept in the knowledge-graph export.
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
@@ -1125,7 +1139,8 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 (`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
-which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
+which clients were wired up, which to restart, and the `repowise agents add`
+command for any other agent installed on the machine.
 
 ---
 

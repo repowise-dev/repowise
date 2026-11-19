@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .ansible import resolve_ansible_import
+from .astro import resolve_astro_import
 from .clojure import resolve_clojure_import
 from .cobol import resolve_cobol_import
 from .context import ResolverContext
@@ -24,6 +25,7 @@ from .kotlin import resolve_kotlin_import
 from .lean import resolve_lean_import
 from .luau import resolve_luau_import
 from .pascal import resolve_pascal_import
+from .perl import resolve_perl_import
 from .php import resolve_php_import
 from .python import resolve_python_import
 from .qml import resolve_qml_import
@@ -46,7 +48,10 @@ _RESOLVERS: dict[str, ResolverFn] = {
     # SvelteKit ``$lib`` alias it now understands for .ts/.js files too.
     "svelte": resolve_ts_js_import,
     "vue": resolve_ts_js_import,
-    "astro": resolve_ts_js_import,
+    # The same, except a ``/``-rooted path resolves under the nearest
+    # ``public/`` (a ``/src/...`` one also from the project root), never to an
+    # external node.
+    "astro": resolve_astro_import,
     "go": resolve_go_import,
     "rust": resolve_rust_import,
     "cpp": resolve_cpp_import,
@@ -66,6 +71,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "php": resolve_php_import,
     # source ./lib.sh + the $SCRIPT_DIR/$(dirname "$0") idioms.
     "shell": resolve_shell_import,
+    # use Foo::Bar -> lib/Foo/Bar.pm; require "x.pl" importer-relative.
+    "perl": resolve_perl_import,
     # Lightweight regex-tier resolvers (import_support="partial")
     "elixir": resolve_elixir_import,
     "dart": resolve_dart_import,

@@ -57,9 +57,14 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
     leaves a resumable, persisted index behind.
     """
     from repowise.core.pipeline.resume import ResumeController
+    from repowise.core.update_lock import holds_init_lock
 
     engine, sf, repo_id = await open_repo_db(repo_path)
-    return ResumeController(sf, repo_id, resume=resume), engine
+    # An overlapping init that lost the lock must not reap the owner's live rows.
+    controller = ResumeController(
+        sf, repo_id, resume=resume, reap_abandoned=holds_init_lock(repo_path)
+    )
+    return controller, engine
 
 
 # Chunk size for the preserved-page FTS backfill — keeps the IN (...) below
@@ -178,6 +183,13 @@ async def persist_result(
         await fts.ensure_index()
 
     async with get_session(sf) as session:
+        # Slice 1 (#5338): this function commits one domain at a time instead of
+        # once at the end, so a dropped connection costs the domain in flight
+        # rather than the whole persist. Committing mid-session would normally
+        # expire every loaded row; nothing here re-reads a mutated row from the
+        # database afterwards, so expiry is off rather than re-fetching `repo`
+        # after every boundary.
+        session.expire_on_commit = False
         repo = await upsert_repository(
             session,
             name=result.repo_name,
@@ -200,6 +212,9 @@ async def persist_result(
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
+        # Commit boundary 1 of 5: the repository row and its settings.
+        with timed(timings, "persist.commit.repository"):
+            await session.commit()
         swept_page_ids: list[str] = []
         if index_done:
             # Health runs after the INDEX checkpoint and mutates the in-memory
@@ -213,6 +228,9 @@ async def persist_result(
                         session, repo.id, getattr(result, "parsed_files", None)
                     )
                 await persist_analysis(result, session, repo.id)
+            # Commit boundary 2 of 5: analysis.
+            with timed(timings, "persist.commit.analysis"):
+                await session.commit()
             with timed(timings, "persist.generation"):
                 await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
@@ -247,6 +265,17 @@ async def persist_result(
             swept_page_ids = await persist_pipeline_result(
                 result, session, repo.id, scan_commit_health=False
             )
+        # The vector side of what the branch retired goes before the SQL side
+        # commits. A drop between them then leaves embeddings gone and rows
+        # present, which the next run re-creates — never the reverse, where a
+        # committed deletion keeps an embedding nothing will ever remove.
+        store = getattr(result, "vector_store", None)
+        if store is not None and swept_page_ids:
+            await store.delete_many(swept_page_ids)
+        # Commit boundary 3 of 5: generation and its structural sweep (or the
+        # pipeline result), together with the vector deletions that retire them.
+        with timed(timings, "persist.commit.generation"):
+            await session.commit()
         persisted_repo_id = repo.id
 
         # Tombstone pages whose file is simply gone. The other tombstone path
@@ -255,13 +284,20 @@ async def persist_result(
         # later index. Outside the branch above because both branches need it.
         # Its ids join the swept ones so they leave the vector store and the
         # full-text index together, below, after this session closes.
+        tombstoned: list[str] = []
         try:
-            swept_page_ids = [
-                *swept_page_ids,
-                *await tombstone_absent_file_pages(session, repo.id, repo_path),
-            ]
+            tombstoned = await tombstone_absent_file_pages(session, repo.id, repo_path)
+            swept_page_ids = [*swept_page_ids, *tombstoned]
         except Exception as exc:  # one stale page must not fail a whole index
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
+        # Same ordering as the sweep above, for the same reason: the embeddings
+        # go before the rows that name them, so an interruption cannot leave a
+        # committed tombstone pointing at an embedding nothing will delete.
+        if store is not None and tombstoned:
+            await store.delete_many(tombstoned)
+        # Commit boundary 4 of 5: the tombstone sweep.
+        with timed(timings, "persist.commit.prune"):
+            await session.commit()
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
@@ -284,17 +320,14 @@ async def persist_result(
         job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
+        # Commit boundary 5 of 5: the generation job record.
+        with timed(timings, "persist.commit.job"):
+            await session.commit()
 
-        # Drop swept pages from the vector store *before* the SQL session
-        # commits. The vector store is a separate engine/file (pgvector DB,
-        # LanceDB dir, or in-memory) so there is no SQLite write-lock conflict,
-        # and the delete is idempotent. Keeping the SQL commit last as the
-        # durable source of truth means an interrupted run self-heals: the
-        # vector embedding is already gone, the SQL rows follow on commit.
-        if swept_page_ids:
-            store = getattr(result, "vector_store", None)
-            if store is not None:
-                await store.delete_many(swept_page_ids)
+        # Nothing is deleted from the vector store here: each batch of retired
+        # pages was deleted immediately before the commit that made its SQL side
+        # durable, which is the ordering the invariant needs. Deleting after the
+        # commits would leave a committed row whose embedding outlives it.
 
     # FTS deletes/indexing run outside the session: the FTS index lives in the
     # *same* SQLite file as the session, so touching it while the session still
@@ -383,7 +416,9 @@ def keep_prior_documentation(
     _restore_docs_scope(state["index_scope"], prior_state, prior_mode)
 
 
-def _restore_docs_scope(scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str) -> None:
+def _restore_docs_scope(
+    scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str
+) -> None:
     """Put the prior run's documentation sections back into this run's *scope*."""
     from repowise.core.index_scope import resolve_index_scope
 
@@ -603,7 +638,7 @@ def save_full_state_and_config(
         provider.provider_name,
         provider.model_name,
         embedder_name_resolved,
-        embedding_model=resolve_embedding_model(embedder_name_resolved),
+        embedding_model=resolve_embedding_model(embedder_name_resolved, repo_path=repo_path),
         exclude_patterns=exclude_patterns if exclude_patterns else None,
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
         reasoning=resolved_reasoning,

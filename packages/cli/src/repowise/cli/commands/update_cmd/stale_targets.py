@@ -9,6 +9,8 @@ from .options import UpdateOptions, UpdateRun
 
 def can_regenerate_pages(run: UpdateRun, opts: UpdateOptions) -> bool:
     """Whether this run's mode writes pages at all."""
+    if opts.defer_docs:
+        return False
     if run.index_only:
         # Index-only renders template wikis only; model pages wait for a model run.
         return resolve_docs_mode(run.state) == "deterministic"
@@ -36,6 +38,29 @@ def load_actionable_stale_targets(run: UpdateRun, opts: UpdateOptions) -> int:
     absent = [path for path in paths if not (run.repo_path / path).exists()]
     run.stale_db_paths, run.stale_deterministic_ids = absent, set()
     return len(paths) - len(absent) + len(page_ids)
+
+
+async def defer_renderer_pages(run: UpdateRun) -> None:
+    """A docs-only renderer change needs no graph rebuild to mark its pages."""
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+    from repowise.core.pipeline.persist.tombstones import mark_deferred_pages
+
+    engine = create_engine(get_db_url_for_repo(run.repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(run.repo_path))
+            if repo is not None:
+                await mark_deferred_pages(
+                    session, repo.id, scope="template", repo_path=run.repo_path
+                )
+    finally:
+        await engine.dispose()
 
 
 def structure_ids_to_render(run: UpdateRun, existing_ids: object) -> set[str]:

@@ -24,7 +24,7 @@ from ..health.biomarker_labels import biomarker_label
 from ..health.crap import measured_crap
 from ..health.finding_identity import finding_public_id
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
-from ..health.scoring import ADVISORY_DIMENSION, is_advisory
+from ..health.scoring import ADVISORY_DIMENSION, finding_is_advisory
 from .analyzer import (
     AnalysisCaches,
     RevisionAnalysis,
@@ -32,7 +32,7 @@ from .analyzer import (
     language_for,
     language_of,
 )
-from .attribution import FindingAttributor, changed_symbols_for
+from .attribution import FindingAttributor, changed_symbols, changed_symbols_for
 from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding, MatchResult
@@ -201,6 +201,11 @@ class ChangeHealthDeltaService:
             waiter.wait(timeout=_WAIT_TIMEOUT_SECONDS)
         return self._compare_uncached(request, pair)
 
+    def eligible_count(self, request: DeltaRequest, pair: RevisionPair) -> int:
+        """Changed files :meth:`compare` would analyse, the main driver of its cost."""
+        eligible, departed, _skipped = _partition(_filter(pair.changes, request))
+        return len(eligible) + len(departed)
+
     # -- cache --------------------------------------------------------------
 
     def _cache_key(self, request: DeltaRequest, pair: RevisionPair) -> str:
@@ -337,6 +342,13 @@ class ChangeHealthDeltaService:
                 subject,
                 sides.rename,
                 departed={old: moves.destinations().get(old, []) for old in gone},
+            ),
+            changed_symbols=changed_symbols(
+                [c for c in eligible if c.head_path in subject]
+                + [c for c in departed if c.base_path in gone],
+                sides.head_run.symbols,
+                sides.base_run.symbols,
+                moves,
             ),
         )
         delta.timing_ms = (time.perf_counter() - started) * 1000
@@ -732,7 +744,7 @@ def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
     measured coverage), not a test's performance finding, and one the registry serves."""
     return (
         (
-            not is_advisory(finding.biomarker_type)
+            not finding_is_advisory(finding)
             or measured_crap(finding.biomarker_type, finding.details) is not None
         )
         and not _is_test_perf(finding)

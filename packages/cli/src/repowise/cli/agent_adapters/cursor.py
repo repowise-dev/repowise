@@ -270,20 +270,57 @@ def cursor_rewrite_hook_matcher() -> str | None:
 # ---------------------------------------------------------------------------
 
 _CAPTURE_EVENT = "afterFileEdit"
-_CAPTURE_HOOK_ENTRY = {"command": "repowise augment --client cursor", "timeout": 5}
+_CAPTURE_HOOK_COMMAND = "repowise-augment"
+_CAPTURE_HOOK_ARGS = "--client cursor"
+_LEGACY_CAPTURE_HOOK_COMMAND = "repowise augment --client cursor"
+
+
+def _capture_hook_entry() -> dict:
+    from repowise.cli.mcp_config import hook_direct_command
+
+    return {
+        "command": hook_direct_command(_CAPTURE_HOOK_COMMAND, _CAPTURE_HOOK_ARGS),
+        "timeout": 5,
+    }
 
 
 def _is_capture_hook(entry: object) -> bool:
     if not isinstance(entry, dict):
         return False
     command = entry.get("command")
-    if not isinstance(command, str):
+    if not isinstance(command, str) or not command.strip():
         return False
-    parts = command.replace("\\", "/").split()
-    if len(parts) < 2:
-        return False
-    exe = parts[0].strip("\"'").rsplit("/", 1)[-1].lower().removesuffix(".exe")
-    return exe == "repowise" and parts[1] == "augment"
+    command = command.strip()
+    quoted = command[0] in "\"'"
+    if quoted:
+        exe, _, rest = command[1:].partition(command[0])
+    else:
+        exe, _, rest = command.partition(" ")
+    name = exe.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if name == _CAPTURE_HOOK_COMMAND:
+        return True
+    return name == "repowise" and rest.split()[:1] == ["augment"]
+
+
+def _refresh_capture_command(entries: list) -> bool:
+    """Point our entry at the running install's script. True when it moved."""
+    from repowise.cli.mcp_config import hook_direct_command, refreshed_direct_command
+
+    changed = False
+    for entry in entries:
+        command = entry.get("command") if isinstance(entry, dict) else None
+        if not isinstance(command, str):
+            continue
+        if command.strip() == _LEGACY_CAPTURE_HOOK_COMMAND:
+            want: str | None = hook_direct_command(_CAPTURE_HOOK_COMMAND, _CAPTURE_HOOK_ARGS)
+        else:
+            want = refreshed_direct_command(
+                command, _CAPTURE_HOOK_COMMAND, _CAPTURE_HOOK_ARGS, repin=True
+            )
+        if want is not None:
+            entry["command"] = want
+            changed = True
+    return changed
 
 
 def _load_hooks_doc(path: Path) -> dict | None:
@@ -322,10 +359,11 @@ def install_cursor_capture_hook() -> Path | None:
     entries = hooks.setdefault(_CAPTURE_EVENT, []) if isinstance(hooks, dict) else None
     if doc is None or not isinstance(entries, list):
         return None
-    if any(_is_capture_hook(entry) for entry in entries):
+    if not any(_is_capture_hook(entry) for entry in entries):
+        doc.setdefault("version", 1)
+        entries.append(_capture_hook_entry())
+    elif not _refresh_capture_command(entries):
         return path
-    doc.setdefault("version", 1)
-    entries.append(dict(_CAPTURE_HOOK_ENTRY))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _write(path, doc)

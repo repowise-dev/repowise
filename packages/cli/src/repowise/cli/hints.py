@@ -153,6 +153,30 @@ def should_show(hint_id: str, *, fmt: str = "text") -> bool:
     return not _signed_in() and _due(hint_id, datetime.now(UTC))
 
 
+#: Set once ``init`` has shown the PR bot line; it is never shown again.
+_PR_BOT_KEY = "pr_bot_line_shown"
+
+
+def pr_bot_link_once() -> str | None:
+    """The PR bot install link for the ``init`` finish panel, the first time only.
+
+    One line, once per machine, under the same switches as the hints (and off
+    in CI, where every run is a first). Marked shown when picked, so a run that
+    picks it is the run that shows it. Never raises.
+    """
+    try:
+        from repowise.cli.platform import store
+        from repowise.cli.platform.links import site_link
+        from repowise.cli.platform.telemetry.environment import is_ci
+
+        if is_ci() or not is_enabled() or store.load().get(_PR_BOT_KEY):
+            return None
+        store.update(**{_PR_BOT_KEY: True})
+        return site_link("bot/install", "cli-init")
+    except Exception:
+        return None
+
+
 def maybe_hint(hint_id: str, *, fmt: str = "text") -> bool:
     """Show the hint on stderr if every rule above allows it. Never raises.
 

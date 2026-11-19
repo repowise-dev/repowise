@@ -166,7 +166,21 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             r"(?:in|within) the (?:provided|supplied|given|attached|above)\b"
             r"|\b(?:provided|supplied|shared|pasted|attached) above\b"
             r"|\byou (?:provided|supplied|gave|listed|shared|pasted|attached)\b"
-            r"|\byou were (?:given|shown|provided|supplied)\b",
+            r"|\byou were (?:given|shown|provided|supplied)\b"
+            # What the page was written from, named as a source that falls
+            # short ("the available record names no functions", "the record
+            # does not provide excerpts"). "The record does not include" and
+            # "the facts do not match" are left alone: they describe data, and
+            # so do "the given record" and "the supplied record type" in a
+            # module about records. The qualified noun therefore matches only
+            # when a shortfall follows it, or as "the available facts".
+            r"|\bthe (?:available|provided|supplied|given) (?:record|facts|material) "
+            r"(?:(?:names?|lists?|shows?|has|have|contains?) no\b|"
+            r"(?:does|do|did|can|could) ?not (?:provide|show|name|say|state|mention|give|"
+            r"supply|reveal|include|list|describe|establish)\b)"
+            r"|\bthe available (?:facts|material)\b"
+            r"|\bthe record (?:does|did) not "
+            r"(?:provide|show|name|say|state|mention|give|supply|reveal)\b",
             re.IGNORECASE,
         ),
         explanation="refers to the prompt, which the reader cannot see",
@@ -175,6 +189,24 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             "out or say it about the code (for example: the caller of a function is "
             "not traced here), never about what this request did or did not include."
         ),
+    ),
+    ArtifactRule(
+        name="instruction_echo",
+        # A line of the page templates' own shape guidance copied into the
+        # page, which small local models do. Each alternative is phrasing only
+        # an instruction uses: the uppercase ONE, a sentence cap with its word
+        # range, a section count with its heading rule. Inline code is already
+        # stripped, so "`##` sections" arrives as "  sections".
+        pattern=re.compile(
+            r"never text to copy into it"
+            r"|\b(?-i:ONE) paragraph of at most \d+ sentences"
+            r"|\bat most \d+ sentences \(about \d+ to \d+ words\)"
+            r"|\b(?:\d+|two|three) (?:or|to) (?:\d+|three|five)\s+sections"
+            r"(?: on what| in the order|, each with its own)",
+            re.IGNORECASE,
+        ),
+        explanation="repeats the page's writing instructions as if they were content",
+        remedy="Write only the page itself; follow the shape instructions without restating them.",
     ),
 )
 
@@ -274,10 +306,14 @@ _HOUSE_JARGON = re.compile(
 #: Two stray uses are tolerated: "word boundary" on a regex page and "error
 #: boundary" on a React one are the code's own words.
 _MAX_JARGON_HITS = 2
-_MAX_TABLES = 1
-_MAX_TABLE_ROWS = 8
-#: The template asks for 500 to 800 words before the questions.
-_MAX_PROSE_WORDS = 900
+#: A map page tabulates its parts, one row each, and a leaf may put a few sets
+#: of parallel options in tables; past these the page has become a reference.
+_MAX_TABLES = 3
+_MAX_TABLE_ROWS = 30
+#: The template asks for at most 1100 words before the questions on the largest
+#: module. This is the runaway guard above that, not the budget: a retry spent
+#: on length alone is money spent on a page a reader could already use.
+_MAX_PROSE_WORDS = 1400
 _TABLE_DIVIDER = re.compile(r"^\s*\|[-:| ]+\|\s*$")
 
 
@@ -309,11 +345,11 @@ def _module_page_shape(content: str) -> str | None:
     if len(tables) > _MAX_TABLES or any(rows > _MAX_TABLE_ROWS for rows in tables):
         return (
             f"has {len(tables)} tables (largest {max(tables)} rows); at most "
-            f"{_MAX_TABLES} table of at most {_MAX_TABLE_ROWS} rows is allowed"
+            f"{_MAX_TABLES} tables of at most {_MAX_TABLE_ROWS} rows are allowed"
         )
     words = prose_word_count(body)
     if words > _MAX_PROSE_WORDS:
-        return f"runs to {words} words of prose; it must stay within 500 to 800"
+        return f"runs to {words} words of prose; it must stay within the length it was asked for"
     return None
 
 

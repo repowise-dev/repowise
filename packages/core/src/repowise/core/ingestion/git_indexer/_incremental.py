@@ -19,6 +19,7 @@ import structlog
 from ._constants import _DEFAULT_CO_CHANGE_COMMIT_LIMIT, _MAX_PARTNERS_PER_FILE
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .fix_shape_cache import FixShapeCache
+from .fix_walk_cache import FixWalkCache
 from .prior_defects import PriorDefects, compute_prior_defects
 from .records import _CommitRec, _should_skip_index
 
@@ -117,7 +118,11 @@ def prior_defect_stage(
         with timed(sp.timings, "rebuild.git.prior_defects"):
             shape_cache = FixShapeCache.load(sp.cache_dir)
             prior_defects = compute_prior_defects(
-                sp.repo, counted_paths, as_of_ts=sp.as_of_ts, shape_cache=shape_cache
+                sp.repo,
+                counted_paths,
+                as_of_ts=sp.as_of_ts,
+                shape_cache=shape_cache,
+                walk_cache=FixWalkCache.load(sp.cache_dir, sp.repo, writable=sp.cache_writable),
             )
             if sp.cache_writable:
                 shape_cache.save()

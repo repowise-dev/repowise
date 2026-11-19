@@ -9,6 +9,7 @@ state-file updates and console reporting stay here.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
@@ -112,6 +114,130 @@ def _repair_module_attribution(repo_path: Path) -> int:
     if changed:
         console.print(f"[dim]Module attribution: [bold]{changed}[/bold] file(s) corrected[/dim]")
     return changed
+
+
+def accept_landed_decisions(repo_path: Path) -> int:
+    """Put in force an agent's decisions whose commits reached the default branch.
+
+    Every update, before the "already up to date" and "no changed files"
+    returns: a squash merge pulled after the branch was indexed changes no
+    file, and a fetch moves the default branch without moving HEAD, so either
+    would otherwise skip the persist step that runs this pass. One store read
+    when nothing waits; git runs only for records that do. No model.
+
+    Failure-isolated like the attribution repair: the next update retries.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.merge_accept import (
+        accept_landed_decisions as _accept,
+    )
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(Path(repo_path)):
+        return 0
+
+    async def _run() -> int:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return (await _accept(session, repo.id, repo_path))["accepted"]
+        finally:
+            await engine.dispose()
+
+    try:
+        accepted = run_async(_run())
+    except Exception as exc:
+        log.debug("decision_landing_check_failed", error=str(exc))
+        return 0
+    if accepted:
+        console.print(
+            f"[dim]Decisions: [bold]{accepted}[/bold] now govern; "
+            "their commits landed on the default branch.[/dim]"
+        )
+    return accepted
+
+
+def keep_decisions_current(repo_path: Path) -> None:
+    """Bring the repo's shared decision copies in step after an update.
+
+    Two copies, each only where the user asked for it: the repo's copy on
+    repowise.dev when ``decisions.sync`` is on (see ``decision_sync_cmd``), and
+    a committed ``.repowise/decisions.yaml`` when one exists. Sync runs first
+    so a decision it brings down reaches the file in the same update. Neither
+    calls a model, and neither can fail the update.
+    """
+    from repowise.cli.commands.decision_sync_cmd import sync_on_update
+
+    sync_on_update(Path(repo_path))
+    refresh_decisions_manifest(Path(repo_path))
+
+
+def refresh_decisions_manifest(repo_path: Path) -> str:
+    """Rewrite an existing ``decisions.yaml`` from the store; never create one.
+
+    The file is opt-in (``decision export`` writes the first one), so an
+    absent file stays absent. One that holds something the store has not read
+    is left alone with one line saying how to reconcile it. Returns the
+    outcome of :func:`~repowise.core.persistence.decision_manifest.refresh_manifest`,
+    or ``"absent"`` / ``"failed"``.
+    """
+    from repowise.core.analysis.decisions.manifest import manifest_path
+
+    if not manifest_path(repo_path).is_file():
+        return "absent"
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.policy_store import load_policy
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.decision_manifest import refresh_manifest
+
+    async def _run() -> tuple[str, int]:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await refresh_manifest(session, repo.id, repo_path)
+        finally:
+            await engine.dispose()
+
+    try:
+        policy = load_policy(repo_path).policy
+        if not has_db_store(Path(repo_path)) or not (policy.enabled and policy.delivers):
+            return "absent"
+        outcome, count = run_async(_run())
+    except Exception as exc:
+        log.debug("decisions_manifest_refresh_failed", error=str(exc))
+        return "failed"
+    if outcome == "written":
+        console.print(f"[dim]Decisions: updated .repowise/decisions.yaml ({count}).[/dim]")
+    elif outcome == "held":
+        console.print(
+            "[dim]Decisions: .repowise/decisions.yaml has changes this index has not "
+            "read; left as is. [bold]repowise decision import[/bold] reconciles it.[/dim]"
+        )
+    return outcome
 
 
 async def _persist_partial_health(
@@ -590,6 +716,9 @@ def _persist_index_only_update(
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
     history_window_changed: bool = False,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
+    stamp_config: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -618,6 +747,12 @@ def _persist_index_only_update(
     # (which also collects repo-wide and non-DB failures) because only these
     # strand data the advancing sync pointer would otherwise skip forever.
     failed_steps: list[str] = []
+    # The deleted-file prune can stop without failing: it refuses a change that
+    # looks like a broken run rather than a commit and leaves the rows alone.
+    # That is not an error and no step was skipped, so it does not belong in
+    # ``degraded`` — but it does stop the sync pointer below, because the index
+    # no longer agrees with the commit about to be recorded (#5410).
+    prune_refusals: list[str] = []
     degraded_before_persist = len(degraded)
     run_async(
         persist_incremental_index(
@@ -638,9 +773,12 @@ def _persist_index_only_update(
             reconcile_full_scope=reconcile_full_scope,
             full_generation_page_ids=full_generation_page_ids,
             vector_store=vector_store,
+            deferred_page_scope=deferred_page_scope,
+            deferred_page_paths=deferred_page_paths,
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals,
             timings=timings,
         )
     )
@@ -672,9 +810,13 @@ def _persist_index_only_update(
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": config_fingerprint(repo_path),
+        "config_fingerprint": (
+            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
+        ),
         "config_dependency_fingerprints": (
-            dependency_fingerprints
+            state.get("config_dependency_fingerprints")
+            if not stamp_config
+            else dependency_fingerprints
             if dependency_fingerprints is not None
             else config_dependency_fingerprints(repo_path)
         ),
@@ -695,6 +837,24 @@ def _persist_index_only_update(
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
     record_repair_marker(new_state, state, failed_steps)
+    if prune_refusals:
+        # The prune refused to apply part of this change set, so the index is
+        # behind the commit it would be recorded against. Leave the pointer
+        # where it is and record the range, exactly like a failed step: the
+        # next update re-covers it, and the repair marker is what stops it
+        # being skipped forever (#5410).
+        record_repair_marker(
+            new_state, state, [*failed_steps, "Deleted-file prune (refused)"]
+        )
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
+        console.print(
+            "[yellow]The deleted-file prune refused part of this change and left "
+            "those rows in place; the sync pointer has not advanced, so the next "
+            "update re-covers this range.[/yellow]"
+        )
+        for refusal in prune_refusals:
+            console.print(f"[yellow]{refusal}[/yellow]")
     if failed_steps:
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
@@ -788,9 +948,11 @@ class PageCheckpointer:
             upsert_repository,
         )
 
+        queue = self._queue
+        assert queue is not None  # start() creates the queue before scheduling this task.
         repo_id: str | None = None
         while True:
-            page = await self._queue.get()
+            page = await queue.get()
             if page is None:
                 return
             if self.failure is not None:
@@ -843,6 +1005,7 @@ def _persist_full_update(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -890,6 +1053,7 @@ def _persist_full_update(
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals if prune_refusals is not None else [],
             timings=timings,
         )
     )
@@ -922,6 +1086,7 @@ async def _persist_full_update_async(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     from .full_persist import FullUpdatePersist, write_full_update
@@ -962,6 +1127,7 @@ async def _persist_full_update_async(
         log=console.print,
         degraded=degraded,
         failed_steps=failed_steps,
+        prune_refusals=prune_refusals if prune_refusals is not None else [],
         timings=timings,
     )
     return await write_full_update(ctx)
@@ -1094,7 +1260,10 @@ def _full_rescore_interval_days() -> float:
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
-            return max(0.0, float(raw))
+            days = float(raw)
+            if math.isnan(days) or days == math.inf:
+                raise ValueError(raw)
+            return max(0.0, days)
         except ValueError:
             if not _FULL_RESCORE_WARNING_SENT:
                 _FULL_RESCORE_WARNING_SENT = True
@@ -1160,21 +1329,6 @@ def parser_changed(repo_path: Path) -> bool:
         return False
 
 
-def health_analyzer_changed(state: dict) -> bool:
-    """Whether the stored health rows were written by a different analyzer.
-
-    A legacy state file with no stamp is **not** a change: the rows it wrote
-    are no more suspect than any other pre-upgrade rows, and treating absence
-    as drift would re-score every existing install once on upgrade for no
-    stated defect. They pick the stamp up on their first re-score from any
-    other trigger.
-    """
-    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-
-    stored = state.get("health_analyzer_version")
-    return stored is not None and stored != HEALTH_ANALYZER_VERSION
-
-
 def security_scanner_changed(state: dict) -> bool:
     """Whether the stored security findings were written by a different scanner.
 
@@ -1187,6 +1341,23 @@ def security_scanner_changed(state: dict) -> bool:
     from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 
     return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def renderer_changed(
+    stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
+) -> bool:
+    """Whether the structural pages were rendered by a different renderer.
+
+    A missing stamp counts as a change; an empty current fingerprint (computing
+    it failed) disables the gate. A wiki with no docs has nothing to re-render,
+    and a model wiki waits for a full update, the run that can re-render it.
+    """
+    return (
+        bool(current_fp)
+        and stored_fp != current_fp
+        and docs_mode != "none"
+        and not (index_only and docs_mode == "llm")
+    )
 
 
 def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
@@ -1226,7 +1397,7 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")
-    if not isinstance(last, (int, float)):
+    if not isinstance(last, int | float):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
 

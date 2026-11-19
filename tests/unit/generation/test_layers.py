@@ -193,9 +193,13 @@ def test_infer_layer_camel_suffix_false_positive_guards():
 
 
 def test_infer_layer_camel_suffix_works_without_lowercase_filename_callers():
-    # sinatra's vendored spec/okjson.rb regression: an ambiguous spec/ dir
-    # with a non-test-shaped file stays non-test even with camel rules live.
-    assert infer_layer("rack-protection/spec/okjson.rb") != "Test"
+    # An ambiguous spec/ dir with a non-test-shaped file stays non-test even
+    # with camel rules live, for a language that does not claim spec/.
+    assert infer_layer("rack-protection/spec/okjson.py") != "Test"
+    # Ruby claims spec/ (RSpec), so sinatra's spec/okjson.rb is Test with or
+    # without the language: a path-only caller reads Ruby off the extension.
+    assert infer_layer("rack-protection/spec/okjson.rb") == "Test"
+    assert infer_layer("rack-protection/spec/okjson.rb", "ruby") == "Test"
 
 
 def test_infer_layer_multi_segment_test_roots():

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
 
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
-from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
+from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
+    register_editor_clients,
+    snapshot_agent_configs,
+    write_editor_project_files,
+)
 from repowise.cli.helpers import (
     console,
     get_head_commit,
@@ -23,6 +29,7 @@ from repowise.cli.ui.glyphs import glyph
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.settings.model import flag
 
 from ._ingest import decision_llm_client
 from ._interactive import (
@@ -120,6 +127,13 @@ def save_run_config(run: InitRun) -> None:
     if opts.commit_limit is not None:
         save_config_partial(repo_path, commit_limit=run.resolved_commit_limit)
 
+    # Written only when the run's choice differs from the file's (#5367): a
+    # prompt answered with the default leaves the file alone.
+    if opts.follow_renames is not None and opts.follow_renames != flag(
+        run.config.get("follow_renames"), False
+    ):
+        save_config_partial(repo_path, follow_renames=opts.follow_renames)
+
 
 def register_clients(run: InitRun) -> None:
     """Global client registration, then the workspace's distill verdict."""
@@ -129,6 +143,10 @@ def register_clients(run: InitRun) -> None:
     )
 
     no_editor_setup = not run.opts.editor_setup
+    if not is_editor_setup_disabled(no_editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            run.agent_configs_before = snapshot_agent_configs(run.repo_path)
     if run.global_mcp_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this repo only). Run "
@@ -208,9 +226,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         base_state,
         {"commit_limit": run.resolved_commit_limit, "max_file_pages": run.max_file_pages},
         run_mode=run_mode,
-        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[
-            docs_mode
-        ],
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
@@ -271,19 +287,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
-    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+    from repowise.core.pipeline.incremental.feature import stamp_graph_update
 
-    graph_cache_enabled = incremental_graph_enabled()
-    base_state["graph_update"] = {
-        "enabled": graph_cache_enabled,
-        "mode": "full",
-        "reason": (
-            "initial full graph build; incremental cache primed"
-            if graph_cache_enabled
-            else "feature disabled"
-        ),
-        "files": [],
-    }
+    stamp_graph_update(base_state)
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
     # Never inherit the previous run's degradation report.
@@ -310,7 +316,9 @@ def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:
         exclude_patterns=run.exclude_patterns if run.exclude_patterns else None,
         commit_limit=run.resolved_commit_limit if run.opts.commit_limit is not None else None,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     # After the config writes, so the first update doesn't false-positive.
     stamp_fresh_index(base_state, repo_path, run.result)
@@ -475,6 +483,8 @@ def complete_setup(run: InitRun) -> None:
         interactive=(sys.stdin.isatty() and not opts.yes),
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
+        configs_before=run.agent_configs_before,
+        claude_repointed=run.mcp_repointed,
     )
     completion = show_completion(
         repo_path=repo_path,

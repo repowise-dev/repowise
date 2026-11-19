@@ -793,7 +793,8 @@ class TestSymbolSearch:
         assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
-        assert top["next"] == "get_symbol"
+        # Ranking fields and the constant pointer stay internal.
+        assert not {"qualified_name", "language", "score", "next"} & set(top)
 
     @pytest.mark.asyncio
     async def test_auto_routes_bare_identifier_to_symbol(self, setup_mcp):
@@ -818,7 +819,7 @@ class TestSymbolSearch:
 
         result = await search_codebase("auth.service.AuthService.login", mode="symbol")
         assert result["results"][0]["symbol_id"] == "src/auth/service.py::login"
-        assert result["results"][0]["qualified_name"] == "auth.service.AuthService.login"
+        assert result["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_symbol_kind_filter(self, setup_mcp):
@@ -830,12 +831,15 @@ class TestSymbolSearch:
         assert not any(r["name"] == "login" for r in result["results"])
 
     @pytest.mark.asyncio
-    async def test_no_match_falls_back_to_grep_hint(self, setup_mcp):
+    async def test_a_complete_empty_scan_sends_no_one_to_grep(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
         result = await search_codebase("NonexistentSymbol", mode="symbol")
         assert result["results"] == []
-        assert "grep_hint" in result
+        # The live-file scan already found every literal match: none.
+        assert result["lines"] == [] and result["complete"] is True
+        assert "grep_hint" not in result
+        assert "Grep" not in result.get("note", "")
 
     @pytest.mark.asyncio
     async def test_excluded_symbol_dropped(self, setup_mcp, monkeypatch):
@@ -886,7 +890,7 @@ class TestPathSearch:
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
-        assert top["next"] == "get_context"
+        assert "next" not in top
 
     @pytest.mark.asyncio
     async def test_a_directory_name_lists_indexed_files_without_a_page(
@@ -907,7 +911,7 @@ class TestPathSearch:
         result = await search_codebase("filters_toml", mode="path")
         files = {r["path"] for r in result["results"]}
         assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
-        assert all(r["next"] == "get_context" for r in result["results"])
+        assert all(r["type"] == "file" for r in result["results"])
         globbed = await search_codebase("filters_toml *.toml", mode="path")
         assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
 
@@ -1153,6 +1157,35 @@ class TestIdentifierGrepHint:
 
         result = await search_codebase("authentication flow for the service")
         assert "grep_hint" not in result
+
+
+class TestEmptyConceptRecoveryHint:
+    @pytest.mark.asyncio
+    async def test_empty_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+        assert "grep_hint" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+
+    @pytest.mark.asyncio
+    async def test_concept_query_with_hits_has_no_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service", mode="concept")
+        if result["results"]:
+            assert "hint" not in result
 
 
 class TestExactMatchSignal:

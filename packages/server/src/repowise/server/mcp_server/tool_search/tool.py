@@ -26,12 +26,15 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import keyless_search_note_meta
 from repowise.server.mcp_server._page_paths import file_candidates
 from repowise.server.mcp_server._query_shape import (
     _VALID_MODES,
     _fetch_limit_for,
     _resolve_mode,
+    query_pattern,
 )
 from repowise.server.mcp_server._retrieval_rank import (
     boost_named_paths,
@@ -182,8 +185,11 @@ async def _concept_search(
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
     _pkg._lead_candidates(response, issue, limit)
-    if grep_hint and not output:
-        response["grep_hint"] = grep_hint
+    if not output:
+        if grep_hint:
+            response["grep_hint"] = grep_hint
+        else:
+            response["hint"] = _NO_HITS_RECOVERY_HINT
     return response, ctx
 
 
@@ -210,36 +216,39 @@ async def search_codebase(
     symbol_kind: str | None = None,
     pattern: str | None = None,
 ) -> dict:
-    """Find code by concept, symbol, or path — hybrid codebase search.
+    """Find code by concept, symbol, or path: hybrid codebase search.
 
     For a how/where/why question call get_answer. Use this to enumerate
     matches, resolve an identifier to a symbol_id, or find files for
-    get_context. Identifier or literal queries return `lines` (path, line,
-    kind, text; definitions first) read from live files; when `complete` is
-    true they are every match, so no grep is needed. `candidates` lists
-    distinct files to Read, best first.
+    get_context. Identifier, literal, `a|b|c` or regex queries return
+    `lines` (path, line, kind, text; definitions first, one group per
+    alternative; `in` names the enclosing symbol until it changes) read
+    from live files; when `complete` is true they are every match, so no
+    grep is needed. `candidates` lists distinct files to Read, best first.
 
     Args:
-        query: identifier, path, or natural language.
-        limit: max results (default 5).
-        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        query: Identifier, `a|b` alternation, regex, path, or natural language.
+        limit: Max results.
+        mode: auto | symbol | path | concept | hybrid.
         kind: implementation | test | config | doc.
         symbol_kind: function | class | method | ...
         page_type: file_page | module_page.
-        repo: alias, or "all" for workspace-wide.
-        pattern: alias for query.
+        repo: Alias, or "all" for workspace-wide.
+        pattern: Alias for query.
     """
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
     if not query.strip():
-        from repowise.server.mcp_server._savings.interaction import note_error_reason
+        from repowise.server.mcp_server._savings.interaction import error_reply
 
-        note_error_reason("invalid_args")
-        return {
-            "results": [],
-            "error": "search_codebase requires `query` (or its alias `pattern`).",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "results": [],
+                "error": "search_codebase requires `query` (or its alias `pattern`).",
+                "_meta": _build_meta(),
+            },
+        )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
     begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
@@ -255,17 +264,25 @@ async def search_codebase(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names, fed
         )
         _pkg._lead_candidates(structured, issue, limit)
-        await attach_line_hits(structured, query, resolved_mode, names, repo)
+        await attach_line_hits(structured, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(structured, ignored)
+        if fed is None and resolved_mode == "symbol":
+            await _pkg.attach_directory_hit(structured, query, repo, limit)
+        _note_keyword_only(structured, query, resolved_mode)
         return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
         # list is already kind-pure and full.
         federated = await _federated_search(query, limit, page_type, kind, fed)
-        if grep_hint and not federated.get("results"):
-            federated["grep_hint"] = grep_hint
+        if not federated.get("results"):
+            if grep_hint:
+                federated["grep_hint"] = grep_hint
+            else:
+                federated["hint"] = _NO_HITS_RECOVERY_HINT
+        await attach_line_hits(federated, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(federated, ignored)
+        _note_keyword_only(federated, query, resolved_mode)
         return _flag_degraded_legs(_drop_echoed_candidates(federated))
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
@@ -274,11 +291,31 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
+    await _pkg.attach_directory_hit(response, query, repo, limit)
+    _note_keyword_only(response, query, resolved_mode)
     return _flag_degraded_legs(_drop_echoed_candidates(response))
 
 
+def _drop_echoed_signatures(response: dict) -> None:
+    """Drop a symbol row's ``signature`` where ``lines`` holds its live
+    definition line with the whole parameter list on it."""
+    definitions = {
+        (item.get("repo"), item.get("path"), item.get("line")): item.get("text") or ""
+        for item in response.get("lines") or ()
+        if isinstance(item, dict) and item.get("kind") == "definition"
+    }
+    for row in response.get("results") or ():
+        if not isinstance(row, dict) or row.get("type") != "symbol":
+            continue
+        text = definitions.get((row.get("repo"), row.get("path"), row.get("start_line")))
+        if text and "(" in text and text.count(")") >= text.count("("):
+            row.pop("signature", None)
+
+
 def _drop_echoed_candidates(response: dict) -> dict:
-    """Drop ``candidates`` that only repeat the result paths in result order."""
+    """Drop ``candidates`` that only repeat the result paths in result order,
+    and signatures ``lines`` already shows."""
+    _drop_echoed_signatures(response)
     candidates = response.get("candidates")
     if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
         return response
@@ -287,6 +324,16 @@ def _drop_echoed_candidates(response: dict) -> dict:
     if [c["path"] for c in candidates] == paths:
         del response["candidates"]
     return response
+
+
+def _note_keyword_only(response: dict, query: str, mode: str) -> None:
+    """Say once that a natural-language search on a keyless index matched words only."""
+    if mode not in ("concept", "hybrid") or not response.get("results"):
+        return
+    if len(query.split()) < 2 or query_pattern(query):
+        return
+    if note := keyless_search_note_meta():
+        response.setdefault("_meta", {}).update(note)
 
 
 def _flag_degraded_legs(response: dict) -> dict:

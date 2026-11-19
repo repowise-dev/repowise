@@ -8,6 +8,8 @@ are not re-indexed.
 
 from __future__ import annotations
 
+import json
+from itertools import zip_longest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -337,6 +339,49 @@ async def test_execute_job_uses_repository_vector_store(session_factory, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_execute_job_writes_fulltext_rows_to_repository_index(session_factory, tmp_path):
+    """A workspace job indexes pages in the repo's own FTS, which search reads (#5602)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    async with session_factory() as session:
+        repo_id = (await get_generation_job(session, job_id)).repository_id
+    repo_fts = MagicMock(name="repo_fts")
+    app_state = SimpleNamespace(
+        session_factory=session_factory,
+        fts=MagicMock(name="primary_fts"),
+        vector_store=None,
+        workspace_fts={repo_id: repo_fts},
+    )
+    refresh_fts = AsyncMock()
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_executor._refresh_fts", refresh_fts),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            side_effect=RuntimeError("no provider"),
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    refresh_fts.assert_awaited_once()
+    assert refresh_fts.await_args.args[0] is repo_fts
+
+
+def test_job_fts_skips_the_primary_index_for_a_member_without_its_own():
+    """A member DB whose FTS failed to open must not write into the primary's index."""
+    from repowise.server.job_executor import _resolve_job_fts
+
+    primary = MagicMock(name="primary_fts")
+    spec = SimpleNamespace(repo_id="member")
+    member_state = SimpleNamespace(fts=primary, workspace_fts={}, workspace_sessions={"member": object()})
+    single_state = SimpleNamespace(fts=primary)
+
+    assert _resolve_job_fts(member_state, spec) is None
+    assert _resolve_job_fts(single_state, spec) is primary
+
+
+@pytest.mark.asyncio
 async def test_incremental_page_regen_passes_repo_path(tmp_path):
     """Incremental regen must forward repo_path to generate_all.
 
@@ -623,6 +668,10 @@ async def test_initial_index_without_provider_writes_deterministic_docs_mode(
     persist_state.assert_called_once()
     assert persist_state.call_args.kwargs["docs_mode"] == "deterministic"
     assert persist_state.call_args.kwargs["llm_client"] is None
+    # The run summary says so too, so the dashboard calls it an index.
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert json.loads(job.config_json)["docs_mode"] == "deterministic"
 
 
 @pytest.mark.asyncio
@@ -650,6 +699,9 @@ async def test_initial_index_with_provider_uses_llm_mode(session_factory, tmp_pa
     assert run_pipeline_mock.await_args.kwargs["mode"] == OrchestratorMode.STANDARD
     assert run_pipeline_mock.await_args.kwargs["generate_docs"] is True
     assert persist_state.call_args.kwargs["docs_mode"] == "llm"
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert json.loads(job.config_json)["docs_mode"] == "llm"
 
 
 @pytest.mark.asyncio
@@ -1134,3 +1186,107 @@ async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_f
         AsyncMock(return_value=([], {"scc_page:scc-1"})),
     ):
         assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}
+
+
+def _callback() -> JobProgressCallback:
+    """A callback whose record writes are no-ops (no running loop): the counts alone."""
+    return JobProgressCallback("job", session_factory=None)
+
+
+def test_concurrent_phases_report_one_coherent_bar():
+    """The four analyses run at once (issue #4691): ticks from every phase
+    count for their own phase, and the record shows the group's sum, never a
+    numerator above its denominator."""
+    cb = _callback()
+    cb.on_phase_start("dead_code", 4)
+    cb.on_phase_start("health", 2 * 1000)
+    cb.on_phase_start("decisions", 2)
+    cb.on_phase_start("doc_drift", 3)  # started last: used to own the total
+    # Interleaved, the way the worker threads deliver them.
+    per_phase = [["health"] * 2000, ["dead_code"] * 4, ["decisions"] * 2, ["doc_drift"] * 3]
+    ticks = [p for row in zip_longest(*per_phase) for p in row if p]
+    seen = []
+    for phase in ticks:
+        cb.on_item_done(phase)
+        completed, total = cb._progress_counts()
+        assert completed <= total
+        seen.append(completed)
+    assert cb._progress_counts() == (2009, 2009)
+    assert seen == sorted(seen)  # the bar only moves forward
+
+
+def test_overshooting_phase_is_capped_at_its_own_total():
+    cb = _callback()
+    cb.on_phase_start("health", 2)
+    cb.on_phase_start("doc_drift", 3)
+    for _ in range(5):
+        cb.on_item_done("health")
+    assert cb._progress_counts() == (2, 5)
+
+
+def test_sequential_phase_starts_a_new_bar():
+    """A phase that starts after the earlier ones finished shows its own
+    progress, as before."""
+    cb = _callback()
+    cb.on_phase_start("parse", 3)
+    for _ in range(3):
+        cb.on_item_done("parse")
+    cb.on_phase_start("graph.imports", 10)
+    cb.on_item_done("graph.imports")
+    assert cb._progress_counts() == (1, 10)
+
+
+def test_phase_done_and_stage_end_the_group():
+    cb = _callback()
+    cb.on_phase_start("parse", 100)
+    cb.on_item_done("parse")
+    cb.on_phase_done("parse")  # finished short of its total (skipped files)
+    cb.on_phase_start("graph.calls", 4)
+    assert cb._progress_counts() == (0, 4)
+    cb.on_phase_start("git", 50)  # concurrent with graph.calls
+    assert cb._progress_counts() == (0, 54)
+    cb.on_stage("analysis")
+    cb.on_phase_start("health", 6)
+    assert cb._progress_counts() == (0, 6)
+
+
+def test_subphase_ticks_count_for_their_parent_and_unknown_ticks_are_ignored():
+    cb = _callback()
+    cb.on_phase_start("generation", 10)
+    cb.on_item_done("generation.llm")  # no start of its own: counts for generation
+    cb.on_item_done("onboarding")  # never started: not part of the bar
+    assert cb._progress_counts() == (1, 10)
+    cb.on_phase_start("generation.llm", 5)  # now its own phase, joining generation
+    cb.on_item_done("generation.llm")
+    assert cb._progress_counts() == (2, 15)
+
+
+def test_phase_without_total_stays_indeterminate():
+    cb = _callback()
+    cb.on_phase_start("traverse", None)
+    cb.on_item_done("traverse")
+    cb.on_item_done("traverse")
+    assert cb._progress_counts() == (2, 0)
+    cb.on_phase_start("parse", 8)  # an unknown total does not hold a group together
+    assert cb._progress_counts() == (0, 8)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_phases_write_a_coherent_record(session_factory, tmp_path):
+    """The job record itself: the phase that starts last no longer pairs every
+    phase's ticks with its own small total (``3,905 / 3 pages``)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    callback = JobProgressCallback(job_id, session_factory)
+    callback.on_phase_start("health", 40)
+    callback.on_phase_start("doc_drift", 3)
+    for _ in range(40):
+        callback.on_item_done("health")
+    callback.on_item_done("doc_drift")
+    callback._min_write_interval_s = 0.0
+    callback._inflight = False
+    callback._sync_job_status(force=True)
+    await callback.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert (job.completed_pages, job.total_pages) == (41, 43)

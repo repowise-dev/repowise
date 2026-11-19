@@ -389,6 +389,31 @@ def import_balance(
     return balance
 
 
+# Reading order of the runtime layers for a table of contents: the engine a
+# newcomer has to understand first, then what it stores, then the surfaces
+# people use it through, then the shared code everything leans on. A curated or
+# community layer (a name this table does not know) reads with the engine.
+_READING_BUCKET: dict[str, int] = {
+    layer_key(name): bucket
+    for bucket, names in enumerate(
+        (
+            ("Service", "Middleware", DEFAULT_LAYER),
+            ("Data",),
+            ("CLI", "API", "UI"),
+            ("Types", "Config", "Utility"),
+        )
+    )
+    for name in names
+}
+
+
+def reading_bucket(layer: str) -> int:
+    """Where a section on *layer* sits in reading order; lower reads first."""
+    if _is_pinned(layer):
+        return len(set(_READING_BUCKET.values()))
+    return _READING_BUCKET.get(layer_key(layer), 0) if layer else 0
+
+
 def is_support_layer(layer: str) -> bool:
     """True for a layer outside the runtime stack: tests, docs and tooling."""
     return _is_pinned(layer)

@@ -80,7 +80,7 @@ def test_validate_store_values() -> None:
 
 
 def test_validate_enabled_must_be_bool() -> None:
-    problems = validate_distill_config({"enabled": "yes"})
+    problems = validate_distill_config({"enabled": "maybe"})
     assert problems == ["distill.enabled: must be true or false"]
 
 

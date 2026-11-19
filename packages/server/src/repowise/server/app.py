@@ -73,9 +73,11 @@ from repowise.server.routers import (
     repos,
     search,
     security,
+    settings,
     setup,
     stats,
     symbols,
+    telemetry,
     webhooks,
     wins,
     workspace,
@@ -359,8 +361,10 @@ _ROUTERS = (
     files,
     external_systems,
     feedback,
+    telemetry,
     actions,
     platform,
+    settings,
     setup,
 )
 

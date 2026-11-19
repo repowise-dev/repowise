@@ -188,6 +188,8 @@ class TestYesNeverAsks:
 
         monkeypatch.setattr(mode_selection, "prompt_file_page_volume", _boom)
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+        # init stops on a folder with no source files, before this question.
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
 
         result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
         assert result.exit_code == 0, result.output

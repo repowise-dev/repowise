@@ -46,8 +46,9 @@ either way.
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No | No |
 | [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | Yes | No |
 | [Kiro](https://kiro.dev/docs/mcp/configuration) | Good | Yes | No | No | No | Yes | No | No | No |
+| [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) | Basic | Yes | No | No | No | No | No | No | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`, `windsurf`.
 
 ### What Good tier does not include
 
@@ -64,6 +65,12 @@ so noisy commands are rewritten there. Transcript mining is still absent.
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is
 worse than narrower breadth.
+
+### Basic tier
+
+Windsurf sits at Basic. repowise writes
+no instructions file or skills there, so the MCP tools are reachable but
+nothing tells the agent when to use them.
 
 ## Paste-config
 
@@ -84,18 +91,52 @@ the plain `mcpServers` JSON most hosts read and is the right default when
 yours is not listed below.
 Hosts people ask about most, none of which repowise writes config for today:
 
-Cline, Windsurf, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
+Cline, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
 
 `print-config` takes one of the target ids above; there is no descriptor to
 name for a host at this tier, which is the point of the tier.
 
 ## The MCP surface
 
-repowise registers **eighteen MCP tools**. A single-repo server advertises **ten**
-of them by default, and workspace mode adds one more automatically for **eleven**. A
-further **seven** are off by default, enabled through the `mcp.tools` config block
-or `--tools +name`. The `lean` profile trims the default surface to **six** tools
-(seven in workspace mode) for agents on a tight context budget.
+repowise registers **eighteen MCP tools**. What a client is listed depends on how it
+loads tool schemas. Claude Code loads a schema only when the model asks for that
+tool, so it gets the standard surface: **ten** tools in a single repo, **eleven** in
+workspace mode. Clients that send every schema with every request (Codex, Cursor, VS
+Code and Copilot, OpenCode, Windsurf, Kiro, Hermes and any client repowise does not
+recognise) get the `core` profile: **five** tools (six in workspace mode),
+`get_answer`, `get_context`, `search_codebase`, `get_symbol` and `get_why`. A
+further **seven** specialists are off for every client.
+
+One setting, `mcp.tools`, changes it for every client: `repowise config set
+mcp.tools <value>`, `repowise agents add --tools <value>`, the `mcp` block in
+`.repowise/config.yaml`, or the Agents page of a repository's dashboard settings.
+`repowise mcp --tools <value>` in one client's server entry pins that client alone
+and wins over the setting. The value is a profile (`core`, `lean`, `standard`,
+`all`), optionally followed by `+name` or `-name`; `+name` or `-name` alone adjusts
+each client's default; plain names are the exact list. The server reads it when it
+starts, so restart it (or the agent) after a change. A tool left out only by a
+client's default still answers if called; `get_overview(include=["tools"])` lists
+the whole surface. The `lean` profile is **six** tools (seven in workspace mode):
+core plus `get_risk`.
+
+`repowise init` and `repowise agents add` print, for each agent they connect, how
+many tools it lists and under which profile; `init --progress json` gives the same
+facts per agent in the summary's `mcp_tools` field.
+
+**Always-load (Claude Code, off by default).** Claude Code keeps every repowise
+schema behind tool search, so the model's first repowise call usually follows a
+tool-search turn. `repowise config set mcp.always_load true` asks it to keep the
+four read tools (`get_answer`, `get_context`, `get_symbol`, `search_codebase`)
+loaded from the first turn instead, for about 2k to 2.6k more tokens per turn,
+depending on the model. Other tools stay deferred, and clients that load every
+schema up front are unaffected. Restart the agent after the change.
+
+`repowise doctor` shows the surface each wired agent gets on that agent's row:
+profile, tool count, any `--tools` pin in its server entry, and `mcp.always_load`
+for Claude Code. `--format json` carries the same facts under `data` (`profile`,
+`tool_count`, `pinned`, `always_load`, `duplicate`). The same row warns when an
+agent loads repowise under two names at once, such as the Claude Code plugin beside
+a project `.mcp.json` entry, and names the entry to keep and the one to remove.
 
 Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
 

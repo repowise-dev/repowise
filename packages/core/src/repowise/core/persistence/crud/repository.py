@@ -414,6 +414,43 @@ async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repo
     return repo
 
 
+async def adopt_moved_repository_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    Run once before an update reads or writes by path: in a moved checkout the
+    exact-path lookups miss, and the update would insert a second row. See
+    :func:`adopt_moved_repository` for the rule.
+
+    Returns True when a row was rewritten. Never raises and never creates a
+    store: a missing store, a locked one or a storage error leaves the update
+    to behave exactly as it did before.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        has_db_store,
+        resolve_db_url,
+    )
+
+    if not has_db_store(root):
+        return False
+    engine = None
+    try:
+        engine = create_engine(resolve_db_url(root))
+        async with get_session(create_session_factory(engine)) as session:
+            if await get_repository_by_path(session, str(root)) is not None:
+                return False
+            return await adopt_moved_repository(session, str(root)) is not None
+    except (SQLAlchemyError, OSError):
+        return False
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
     """Delete a repository and all cascaded children.
 

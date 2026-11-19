@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING
 from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
+from .aiohttp_web import AiohttpWebDialect
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
 from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
+from .drf import DrfDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .fastify import FastifyDialect
@@ -79,6 +81,8 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     AspNetDialect(),
     RustAxumDialect(),
     DjangoDialect(),
+    DrfDialect(),
+    AiohttpWebDialect(),
     JaxRsDialect(),
     MicronautDialect(),
     KtorServerDialect(),

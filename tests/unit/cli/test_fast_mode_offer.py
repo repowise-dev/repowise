@@ -77,7 +77,6 @@ def test_next_steps_are_serve_and_at_most_two_more():
         {},
         {"dead_unreachable": 12, "dead_unused": 30},
         {"hotspot_count": 4, "top_hotspot": "a.py"},
-        {"decision_count": 9},
     ):
         steps = build_contextual_next_steps(**kwargs)
         assert steps[0][0] == "repowise serve"
@@ -86,12 +85,12 @@ def test_next_steps_are_serve_and_at_most_two_more():
 
 def test_next_steps_findings_rank_below_finishing_the_index():
     """A partial index is a worse problem than an unexplored finding."""
-    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40, decision_count=9)
+    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40)
     assert steps[1][0] == "repowise update --full"
 
     # With the index complete, the largest finding gets the row.
     found = build_contextual_next_steps(
-        dead_unreachable=12, dead_unused=30, decision_count=9
+        dead_unreachable=12, dead_unused=30
     )
     assert found[1][0] == "repowise dead-code"
 
@@ -106,18 +105,18 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
     offers the manual connect command naming the real clients."""
     setup = EditorSetupOutcome(editor_setup_disabled=True, claude_code_connected=False)
     cmds = [c for c, _ in build_contextual_next_steps(setup=setup)]
-    assert "repowise mcp ." in cmds
+    assert "repowise agents add" in cmds
     # It outranks the index-only upgrade row: `--no-editor-setup --index-only`
     # is the CI shape, and the Connected lines carry no command for a disabled run,
     # so this row is the only place the connect instructions exist.
-    assert cmds[1] == "repowise mcp ."
+    assert cmds[1] == "repowise agents add"
 
     # Fast mode too, for the same reason.
     fast = [
         c
         for c, _ in build_contextual_next_steps(fast_mode=True, setup=setup)
     ]
-    assert fast[1] == "repowise mcp ."
+    assert fast[1] == "repowise agents add"
     # A skip-setup run opted out of all wiring, so it is never nagged to install
     # hooks even though it is non-interactive with none present.
     assert not any(c.startswith("repowise hook") for c in cmds)
@@ -125,7 +124,7 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
     # A normally-wired run never shows the manual MCP command row.
     wired = EditorSetupOutcome(claude_code_connected=True, interactive=True)
     cmds_wired = [c for c, _ in build_contextual_next_steps(setup=wired)]
-    assert "repowise mcp ." not in cmds_wired
+    assert "repowise agents add" not in cmds_wired
 
 
 def test_next_steps_non_interactive_surfaces_missing_hooks():
@@ -165,15 +164,21 @@ def test_next_steps_interactive_run_does_not_nag_about_hooks():
     assert not any("repowise hook" in n for n in build_status_notes(setup))
 
 
-def test_mcp_status_lines_restart_note_only_on_first_index():
-    first = EditorSetupOutcome(claude_code_connected=True, first_index=True)
+def test_mcp_status_lines_restart_note_names_the_hosts_to_restart():
+    first = EditorSetupOutcome(
+        claude_code_connected=True,
+        restart_hosts=({"id": "claude-code", "name": "Claude Code"}, {"id": "vscode", "name": "VS Code"}),
+        unconnected=({"id": "cursor", "name": "Cursor"},),
+    )
     text = " ".join(build_status_notes(first)).lower()
-    assert "restart" in text and "claude code" in text
-    assert "cursor" in text and "codex" in text  # others are pointed the way too
+    assert "restart" in text and "claude code" in text and "vs code" in text
+    # An installed agent init did not wire gets the command that wires it.
+    assert "repowise agents add --target=cursor --yes" in text
+    assert "repowise mcp" not in text
 
     rerun = EditorSetupOutcome(claude_code_connected=True, first_index=False)
     rerun_text = " ".join(build_status_notes(rerun)).lower()
-    assert "stays connected" in rerun_text
+    assert "already connected" in rerun_text
 
 
 def test_mcp_status_lines_empty_when_absent_and_say_skipped_when_headless():
@@ -242,3 +247,27 @@ def test_declining_the_cost_names_generate_for_the_pages_built_from_code(monkeyp
     run = SimpleNamespace(prior_docs_mode=None, gaps=[], cost_declined=False)
     _generate._after_cost_declined(run)
     assert "Run repowise generate to write it with a model later." in buf.getvalue()
+
+
+def test_next_steps_hand_the_agent_the_background_records_before_findings():
+    steps = build_contextual_next_steps(discovery_records=12, dead_unreachable=4)
+    assert steps[1] == (
+        "repowise decision discover",
+        "a prompt for your agent: check 12 background records on the busiest files",
+    )
+    assert steps[2][0] == "repowise dead-code"
+
+
+def test_next_steps_with_no_background_records_ask_the_agent_to_record():
+    # A keyless index mines no background records; the pass records instead.
+    steps = build_contextual_next_steps(discovery_records=0, hotspot_count=3, top_hotspot="a.py")
+    assert steps[1] == (
+        "repowise decision discover",
+        "a prompt for your agent: record the decisions behind the busiest files",
+    )
+
+
+def test_next_steps_leave_discovery_out_when_the_store_was_not_read():
+    for kwargs in ({"discovery_records": None, "hotspot_count": 3}, {"discovery_records": 0}):
+        cmds = [c for c, _ in build_contextual_next_steps(**kwargs)]
+        assert "repowise decision discover" not in cmds

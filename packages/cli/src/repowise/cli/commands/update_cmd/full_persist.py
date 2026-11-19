@@ -17,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.incremental.persist_index import (
+    BUILD_UNITS_STEP,
     IncrementalPersist,
     capture_commits,
     mark_tombstones,
@@ -32,6 +33,8 @@ from repowise.core.pipeline.incremental.persist_index import (
     rebuild_tree,
     reconcile_generation_scope,
     reconcile_scope,
+    refresh_git_rollups,
+    save_graph_snapshot,
     sweep_retired,
 )
 from repowise.core.pipeline.index_persistence import publish_index_persistence
@@ -347,8 +350,7 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
         persist_git,
         when=_has_git_input,
         range_scoped=True,
-        reraise=lambda ctx: ctx.require_config_rebuild_success
-        or ctx.full_git_summary is not None,
+        reraise=lambda ctx: ctx.require_config_rebuild_success or ctx.full_git_summary is not None,
     ),
     Step("Commit capture", capture_commits, when=_has_git_input),
     Step("Decisions", persist_decisions, guarded=False),
@@ -376,10 +378,12 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
     Step("External systems refresh", refresh_externals, range_scoped=True),
     # Last of the store writes: the steps above upsert rows for deleted paths
     # too. Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step("Generation job record", record_generation_job),
     Step("Page count", count_pages),
     Step("Config rebuild check", check_config_rebuild, guarded=False),
@@ -408,7 +412,7 @@ async def index_full_text(ctx: FullUpdatePersist) -> None:
 async def delete_vectors(ctx: FullUpdatePersist) -> None:
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt
 
-    await ctx.decision_vector_store.delete_many(sorted(ctx.vector_cleanup_ids))
+    await _drop_vectors(ctx, sorted(ctx.vector_cleanup_ids))
     clear_cleanup_debt(Path(ctx.repo_path), "vectors", ctx.vector_cleanup_ids)
 
 
@@ -435,8 +439,7 @@ FULL_UPDATE_CLEANUP: tuple[Step, ...] = (
     Step(
         "Deferred vector cleanup",
         delete_vectors,
-        when=lambda ctx: bool(ctx.vector_cleanup_ids)
-        and ctx.decision_vector_store is not None,
+        when=lambda ctx: bool(ctx.vector_cleanup_ids) and ctx.decision_vector_store is not None,
         on_error=_record_vector_debt,
         reraise=_requires_rebuild,
     ),
@@ -497,6 +500,7 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
             await refresh_planner_stats(ctx.engine)
     finally:
         await ctx.engine.dispose()
+    await save_graph_snapshot(ctx)
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
     return ctx.total_pages
 

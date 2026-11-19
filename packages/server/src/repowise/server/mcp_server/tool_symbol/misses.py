@@ -14,6 +14,7 @@ from repowise.core.persistence.models import WikiSymbol
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._references import path_identity
 
 from .lookup import _bare_name, _parse_symbol_id, _symbol_suggestions
 from .text import _elapsed_ms, _number_lines, _read_file_text
@@ -264,6 +265,47 @@ def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
     return path if target.is_relative_to(root) and target.is_file() else None
 
 
+async def _file_listing(
+    ctx: Any, repository: Any, symbol_id: str, file_path: str, t0: float
+) -> dict | None:
+    """A file passed as an id: its top-level symbols to pass back, else None.
+
+    Names, not bodies: the caller picks one and gets its source in the next
+    call. The cap is the get_context card's.
+    """
+    from repowise.server.mcp_server.tool_context.targets import _SYMBOL_CAP
+
+    path = path_identity(file_path)
+    async with get_session(ctx.session_factory) as session:
+        res = await session.execute(
+            select(WikiSymbol.symbol_id)
+            .where(
+                WikiSymbol.repository_id == repository.id,
+                WikiSymbol.file_path == path,
+                WikiSymbol.parent_name.is_(None),
+            )
+            .order_by(WikiSymbol.start_line, WikiSymbol.symbol_id)
+        )
+        names = [sid.partition("::")[2] for sid in res.scalars().all()]
+    names = [n for n in dict.fromkeys(names) if n]
+    if not names:
+        return None
+    reply: dict[str, Any] = {
+        "symbol_id": symbol_id,
+        "file": path,
+        "kind": "file",
+        "symbols": names[:_SYMBOL_CAP],
+    }
+    if len(names) > _SYMBOL_CAP:
+        reply["symbols_total"] = len(names)
+    reply["note"] = (
+        f'A file, not a symbol. One symbol: get_symbol("{path}::<name>"). Whole file: '
+        f'get_context(targets=["{path}"], include=["skeleton"]).'
+    )
+    reply["_meta"] = _build_meta(timing_ms=_elapsed_ms(t0), repository=repository)
+    return reply
+
+
 async def _not_found_response(
     ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
 ) -> dict:
@@ -276,45 +318,56 @@ async def _not_found_response(
         live = _live_grep_response(ctx, repository, symbol_id, exclude_spec, t0, owners)
         if live is not None:
             return live
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    # Every reply below is a miss.
-    note_error_reason("not_found")
+    # Every reply below is a miss, but for a file whose symbols it can name.
     if file_path := _bare_file_path(ctx, symbol_id, exclude_spec):
-        return {
-            "symbol_id": symbol_id,
-            "error": (
-                f"'{file_path}' is a file, not a symbol. Whole file: "
-                f'get_context(targets=["{file_path}"], include=["skeleton"]). '
-                f'Lines: get_symbol("{file_path}:1-120").'
-            ),
-            "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
-        }
+        listing = await _file_listing(ctx, repository, symbol_id, file_path, t0)
+        if listing is not None:
+            return listing
+        return error_reply(
+            "not_found",
+            {
+                "symbol_id": symbol_id,
+                "error": (
+                    f"'{file_path}' is a file, not a symbol. Whole file: "
+                    f'get_context(targets=["{file_path}"], include=["skeleton"]). '
+                    f'Lines: get_symbol("{file_path}:1-120").'
+                ),
+                "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
+            },
+        )
     async with get_session(ctx.session_factory) as session:
         suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
     if suggestions:
-        return {
+        return error_reply(
+            "not_found",
+            {
+                "symbol_id": symbol_id,
+                "error": (
+                    f"Symbol not found: {symbol_id!r}. A symbol with this name "
+                    "exists at the path(s) below — retry with one of these "
+                    "exact symbol_ids."
+                ),
+                "suggestions": suggestions,
+                "_meta": _build_meta(
+                    timing_ms=_elapsed_ms(t0),
+                    repository=repository,
+                ),
+            },
+        )
+    return error_reply(
+        "not_found",
+        {
             "symbol_id": symbol_id,
             "error": (
-                f"Symbol not found: {symbol_id!r}. A symbol with this name "
-                "exists at the path(s) below — retry with one of these "
-                "exact symbol_ids."
+                f"Symbol not found: {symbol_id!r}. Use get_context to list "
+                "available symbols in the file, then try again with the "
+                "exact symbol_id from that response."
             ),
-            "suggestions": suggestions,
             "_meta": _build_meta(
                 timing_ms=_elapsed_ms(t0),
                 repository=repository,
             ),
-        }
-    return {
-        "symbol_id": symbol_id,
-        "error": (
-            f"Symbol not found: {symbol_id!r}. Use get_context to list "
-            "available symbols in the file, then try again with the "
-            "exact symbol_id from that response."
-        ),
-        "_meta": _build_meta(
-            timing_ms=_elapsed_ms(t0),
-            repository=repository,
-        ),
-    }
+        },
+    )

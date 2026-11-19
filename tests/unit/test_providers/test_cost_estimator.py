@@ -135,3 +135,80 @@ def test_the_embedding_note_names_the_share():
     assert free == "Embedding 1,000 pages with ollama adds no cost."
     assert embedding_note(estimate_cost(plans, "mock", "mock", embedder="mock")) is None
     assert embedding_note(estimate_cost(plans, "mock", "mock")) is None
+
+
+# ---------------------------------------------------------------------------
+# Telemetry-based calibration from .repowise/wiki.db
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_from_wiki_db(tmp_path):
+    """A .repowise/wiki.db with >=3 samples per page_type produces calibrated estimates."""
+    import sqlite3
+
+    from repowise.core.cost_estimator.calibration import load_telemetry_averages
+
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    db_file = repowise_dir / "wiki.db"
+
+    with sqlite3.connect(db_file) as conn:
+        conn.execute(
+            """
+            CREATE TABLE wiki_pages (
+                id TEXT PRIMARY KEY,
+                page_type TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER
+            )
+            """
+        )
+        # 4 samples for module_page: avg input 20,000, avg output 3,000
+        for i in range(4):
+            conn.execute(
+                "INSERT INTO wiki_pages VALUES (?, 'module_page', 20000, 3000)",
+                (f"page-{i}",),
+            )
+        # 2 samples for flow_page: fewer than 3 samples, should not calibrate
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO wiki_pages VALUES (?, 'flow_page', 15000, 2000)",
+                (f"flow-{i}",),
+            )
+
+    telemetry = load_telemetry_averages(tmp_path)
+    assert "module_page" in telemetry
+    assert telemetry["module_page"] == (20000.0, 3000.0)
+    assert "flow_page" not in telemetry  # < 3 samples ignored
+
+    plans = [PageTypePlan("module_page", 10, 4)]
+    est = estimate_cost(plans, "openai", "gpt-5.4-nano", repo_path=tmp_path)
+    assert est.is_calibrated is True
+    assert est.estimated_input_tokens == 200000
+    assert est.estimated_output_tokens == 30000
+    expected = (200000 / 1000) * 0.0002 + (30000 / 1000) * 0.00125
+    assert est.estimated_cost_usd == pytest.approx(expected, rel=1e-6)
+    # Calibrated runs have tighter variance (0.10)
+    assert est.cost_range.low == pytest.approx(expected * 0.90, rel=1e-6)
+    assert est.cost_range.high == pytest.approx(expected * 1.10, rel=1e-6)
+
+
+def test_missing_wiki_db_keeps_heuristics(tmp_path):
+    """When .repowise/wiki.db does not exist, cold-start heuristics are used."""
+    plans = [PageTypePlan("module_page", 10, 4)]
+    est = estimate_cost(plans, "openai", "gpt-5.4-nano", repo_path=tmp_path)
+    assert est.is_calibrated is False
+    inp, out = heuristic_tokens("module_page")
+    assert est.estimated_input_tokens == inp * 10
+    assert est.estimated_output_tokens == out * 10
+
+
+def test_corrupt_or_non_sqlite_db_degrades_cleanly(tmp_path):
+    """Corrupt or non-SQLite files degrade cleanly to empty telemetry."""
+    from repowise.core.cost_estimator.calibration import load_telemetry_averages
+
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "wiki.db").write_text("not a valid sqlite file")
+
+    assert load_telemetry_averages(tmp_path) == {}

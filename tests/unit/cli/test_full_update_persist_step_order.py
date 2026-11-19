@@ -86,9 +86,11 @@ HAPPY_ORDER = [
     "persist_incremental_edges",
     "refresh_external_systems",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "_analyzed_commit",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     "upsert_generation_job",
     # After the session closes.
     "fts.ensure_index",
@@ -257,8 +259,10 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
         "persist_incremental_edges",
         "refresh_external_systems",
         "prune_deleted_file_rows",
+        "prune_absent_synthetic_nodes",
         "_analyzed_commit",
         "finalize_performance_opportunities",
+        "apply_fix_rollups",
         "upsert_generation_job",
         "fts.ensure_index",
         "vectors.delete_many",
@@ -299,7 +303,9 @@ async def test_every_failing_step_degrades_in_order(repo, monkeypatch):
             )
         ),
         REFUSAL,
+        f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
+        f"Git rollups: {FAILURE}",
         f"Generation job record: {FAILURE}",
         f"Full-text search indexing: {FAILURE}",
         f"Deferred vector cleanup: {FAILURE}",
@@ -394,8 +400,10 @@ SHARED_STEPS = [
     "persist_kg",
     "refresh_external_systems",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     "refresh_commit_health_after_update",
 ]
 

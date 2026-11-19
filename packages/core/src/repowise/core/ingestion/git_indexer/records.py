@@ -244,6 +244,8 @@ class GitIndexSummary:
     # (issue #730). None when git is unavailable or the repo has no commits.
     repo_totals: RepoTotals | None = None
     history_coverage: GitHistoryCoverage | None = None
+    # The window the commit walk used, so the change records read the same one.
+    commit_limit: int | None = None
 
 
 _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")

@@ -76,7 +76,7 @@ pip install -i https://mirrors.aliyun.com/pypi/simple/ repowise
 
 任何支持 MCP 的编程智能体都能读这份索引，包括 Claude Code、Codex、Cursor，以及 Trae、Qwen Code、Kimi CLI。
 
-Claude Code 和 Codex 是 Full：MCP 工具、skills、斜杠命令、说明文件、工具调用钩子，还有会话记录挖掘。Cursor、VS Code、OpenCode、Hermes、GitHub Copilot CLI 和 Kiro 是 Good：MCP 工具，加上说明文件或 skills，没有会话记录挖掘（钩子仅限矩阵里写明的）。Trae、Qwen Code、Kimi CLI 以及其他没有单独接入描述的客户端，把下面的输出贴进自己的 MCP 配置。这条命令只打印，不写文件。
+Claude Code 和 Codex 是 Full：MCP 工具、skills、斜杠命令、说明文件、工具调用钩子，还有会话记录挖掘。Cursor、VS Code、OpenCode、Hermes、GitHub Copilot CLI 和 Kiro 是 Good：MCP 工具，加上说明文件或 skills，没有会话记录挖掘（钩子仅限矩阵里写明的）。Windsurf 是 Basic：只写 MCP 配置。Trae、Qwen Code、Kimi CLI 以及其他没有单独接入描述的客户端，把下面的输出贴进自己的 MCP 配置。这条命令只打印，不写文件。
 
 ```bash
 repowise agents print-config claude-code

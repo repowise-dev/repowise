@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import os
 import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 from repowise.core.distill.store import OmissionStore
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_agent_transcripts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep synchronous pricing scans out of the developer's agent sessions."""
+    from repowise.core.distill import session_model
+
+    monkeypatch.setattr(
+        session_model,
+        "resolve_session_model",
+        partial(
+            session_model.resolve_session_model,
+            projects_root=tmp_path / "agent-transcripts" / "claude",
+            codex_sessions_root=tmp_path / "agent-transcripts" / "codex",
+        ),
+    )
 
 
 @pytest.fixture(scope="session")

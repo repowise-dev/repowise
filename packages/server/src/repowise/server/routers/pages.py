@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.generation.nav_titles import apply_outline_labels
 from repowise.core.generation.page_redirects import (
     SupersededError,
     repo_wide_successor_type,
@@ -171,9 +172,30 @@ async def list_pages(
     # models themselves, so FastAPI can't coerce a summary back into a full row.
     if fields == "summary":
         rows = await crud.list_page_summaries(session, repo_id, listing)
-        return [PageSummaryResponse.from_row(r) for r in rows]
-    pages = await crud.list_pages(session, repo_id, **vars(listing))
-    return [PageResponse.from_orm(p) for p in pages]
+        out: list = [PageSummaryResponse.from_row(r) for r in rows]
+    else:
+        pages = await crud.list_pages(session, repo_id, **vars(listing))
+        out = [PageResponse.from_orm(p) for p in pages]
+    await _label_in_place(session, repo_id, out)
+    return out
+
+
+async def _label_in_place(session: AsyncSession, repo_id: str, rows: list) -> None:
+    """Name each outline row in its place: not repeating its parent or the product.
+
+    Read over every outline page of the repository, not just this window of
+    the listing, so a row's label never depends on which request its parent
+    arrived in.
+    """
+    if not any(getattr(r, "nav_title", None) for r in rows):
+        return
+    repository = await crud.get_repository(session, repo_id)
+    outline = await crud.list_outline_labels(session, repo_id)
+    apply_outline_labels(outline, repository.name if repository is not None else "")
+    labels = {o.id: o.nav_title for o in outline}
+    for row in rows:
+        if row.nav_title and row.id in labels:
+            row.nav_title = labels[row.id]
 
 
 @router.get("/lookup", response_model=PageResponse)

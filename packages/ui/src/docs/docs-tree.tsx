@@ -23,7 +23,6 @@ import {
   type OnboardingSlot,
 } from "../lib/page-types";
 import { RAW_GRAPH_ID, displayLabel, treeLabel } from "./page-labels";
-import { groupPagesByLayer, readLayerOrder } from "../lib/layers";
 import { cn } from "../lib/cn";
 import { formatNumber } from "../lib/format";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
@@ -33,17 +32,19 @@ import type { DocPageSummary } from "@repowise-dev/types/docs";
 // real target_path (which never starts with "@") so directory lookups don't
 // collide with module paths.
 const ONBOARDING_DIR_KEY = "@onboarding";
-// Same idea for a layer's grouping row. A layer has no page behind it, so the
-// row needs a key of its own and it must not look like a page id.
-const LAYER_DIR_PREFIX = "@layer:";
-const layerDirKey = (layerId: string) => `${LAYER_DIR_PREFIX}${layerId}`;
-// And for the row holding the modules no layer claimed. Deliberately not a
-// layerDirKey: this row is not a layer, and it opens shut by default.
-const OTHER_MODULES_KEY = "@group:other-modules";
-// The end-to-end walkthroughs get a row of their own, outside Start here: a
-// repo can carry many, and listed there they outnumber the few pages a
+// The end-to-end walkthroughs get a row of their own after the sections: a
+// repo can carry many, and listed at the top they outnumber the few pages a
 // newcomer should open first.
 const WALKTHROUGHS_KEY = "@group:walkthroughs";
+// Small top-level packages the stored tree numbers as one section.
+const SUPPORTING_KEY = "@group:supporting-packages";
+// The bottom row holding what the project has been doing lately.
+const PROJECT_ACTIVITY_KEY = "@group:project-activity";
+// The reference folder's sub-folders, one per kind of deterministic page.
+const REF_CONTRACTS_KEY = "@group:reference:api";
+const REF_FILES_KEY = "@group:reference:files";
+const REF_INFRA_KEY = "@group:reference:infra";
+const REF_CYCLES_KEY = "@group:reference:cycles";
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
 //
@@ -80,12 +81,16 @@ export interface DocsTreeCopy {
   noMatches: string;
   showMore: (next: number, remaining: number) => string;
   stubTitle: string;
-  startHere: string;
   onboarding: string;
   walkthroughs: (count: number) => string;
-  otherModules: (count: number) => string;
+  supportingPackages: (count: number) => string;
   codeReference: string;
   codeReferenceMeta: (counts: { files: number; symbols: number; other: number }) => string;
+  referenceApi: string;
+  referenceFiles: string;
+  referenceInfrastructure: string;
+  referenceCycles: string;
+  projectActivity: string;
 }
 
 
@@ -110,17 +115,21 @@ export const DEFAULT_DOCS_TREE_COPY: DocsTreeCopy = {
   noMatches: "No matching pages",
   showMore: (next, remaining) => `Show ${formatNumber(next)} more (${formatNumber(remaining)} left)`,
   stubTitle: "Built from the index. A model has not written this page yet.",
-  startHere: "Start here",
   onboarding: "Onboarding",
   walkthroughs: (n) => `Walkthroughs (${formatNumber(n)})`,
-  otherModules: (n) => `Other modules (${formatNumber(n)})`,
-  codeReference: "Code reference",
+  supportingPackages: (n) => `Supporting packages (${formatNumber(n)})`,
+  codeReference: "Reference",
   codeReferenceMeta: ({ files, symbols, other }) =>
     [
       `${formatNumber(files)} ${files === 1 ? "file" : "files"}`,
       `${formatNumber(symbols)} ${symbols === 1 ? "symbol" : "symbols"}`,
       ...(other > 0 ? [`${formatNumber(other)} other`] : []),
     ].join(" · "),
+  referenceApi: "API",
+  referenceFiles: "Files",
+  referenceInfrastructure: "Infrastructure",
+  referenceCycles: "Dependency cycles",
+  projectActivity: "Project activity",
 };
 
 // ---------------------------------------------------------------------------
@@ -420,14 +429,16 @@ function buildTree(allPages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[] {
 // component, the editor extension and the MCP server all read one outline
 // instead of each deriving a different one.
 //
-// Shape on a repo with a curated knowledge graph:
+// Shape:
 //
-//   Repository Overview        the root, rendered first
-//   1   onboarding pages       canonical reading order
-//   7   architecture diagram
-//   8   layer pages            dependency spine
-//   8.1   module pages         → file pages → symbol spotlights
-//   8.9   cycle pages
+//   Overview                   the root, rendered first
+//   1   Getting Started        the reading path, in canonical order
+//   3   sections               module pages
+//   3.1   their parts          anything deeper listed flat under a part
+//   11  Supporting packages    small top-level packages, when there are many
+//   12  Walkthroughs           the flow pages
+//       Reference              API, Files (with symbols), Infrastructure, cycles
+//       Project activity
 //
 // A rung the repo has no pages for simply does not appear.
 
@@ -494,72 +505,27 @@ const hidesTreeIcon = (page?: DocPageSummary): boolean =>
 // texture the rule above exists to remove. The file corpus keeps its folder —
 // there the glyph is what says "this row is not part of the outline".
 const isOutlineGroupRow = (path: string): boolean =>
-  path === START_HERE_KEY ||
-  path.startsWith(LAYER_DIR_PREFIX) ||
   path.startsWith(TYPE_GROUP_PREFIX) ||
   path === WALKTHROUGHS_KEY ||
-  path === OTHER_MODULES_KEY;
+  path === SUPPORTING_KEY ||
+  path === PROJECT_ACTIVITY_KEY;
 
 // The single bottom folder holding every deterministic page. Namespaced like
 // the other synthetic keys so it can never collide with a real page id.
 const AUTO_ROOT_KEY = "@group:auto-documented";
-// The pinned reading path at the top of the outline.
-const START_HERE_KEY = "@group:start-here";
 // Top-rung groups that open shut. Everything else on that rung opens.
-const SHUT_BY_DEFAULT = new Set([AUTO_ROOT_KEY, WALKTHROUGHS_KEY, OTHER_MODULES_KEY]);
+const SHUT_BY_DEFAULT = new Set([
+  AUTO_ROOT_KEY,
+  WALKTHROUGHS_KEY,
+  SUPPORTING_KEY,
+  PROJECT_ACTIVITY_KEY,
+]);
 
 function compareSiblings(a: DocPageSummary, b: DocPageSummary): number {
   return (
     (a.display_order ?? 0) - (b.display_order ?? 0) ||
     (a.target_path || a.title).localeCompare(b.target_path || b.title)
   );
-}
-
-/**
- * Say out loud when the layer grouping and the repository disagree.
- *
- * A tree with no layer rows has two very different causes: a repository that
- * genuinely has no layers, and a page listing that stopped carrying the stamp
- * the grouping reads. They render identically, so the difference has to be
- * reported rather than looked at. The overview naming a spine while not one
- * page carries a stamp is the signal that it is the second one.
- *
- * The same goes one module at a time: a single module the layers do not claim
- * is invisible among dozens that are, so it is named here rather than left to
- * be spotted in the tree.
- */
-function reportLayerGrouping(
-  grouping: ReturnType<typeof groupPagesByLayer>,
-  spine: readonly string[],
-  unlayeredModules: readonly DocPageSummary[],
-): void {
-  if (spine.length > 0 && unlayeredModules.length > 0) {
-    console.warn(
-      `[docs-tree] ${unlayeredModules.length} module pages carry no layer stamp, so they are ` +
-        "listed in a group of their own rather than inside a layer: " +
-        unlayeredModules.map((p) => p.target_path || p.title).join(", "),
-    );
-  }
-  if (spine.length > 0 && grouping.stamped === 0) {
-    console.warn(
-      `[docs-tree] the repository overview names ${spine.length} layers, but not one page ` +
-        "carries a layer stamp, so the outline is flat. Check that the page listing still " +
-        "serves layer_id.",
-    );
-  }
-  if (spine.length === 0 && grouping.stamped > 0) {
-    console.warn(
-      `[docs-tree] ${grouping.stamped} pages name a layer, but the repository overview ` +
-        "records no layer order. Grouping by name, which says nothing about which layer " +
-        "depends on which.",
-    );
-  }
-  if (spine.length > 0 && grouping.offSpine.length > 0) {
-    console.warn(
-      `[docs-tree] ${grouping.offSpine.length} layers are stamped on pages but absent from ` +
-        `the overview's spine, so they sort after it wherever page order ties: ${grouping.offSpine.join(", ")}`,
-    );
-  }
 }
 
 /** The deterministic pages, split by kind so the folder can say what it holds. */
@@ -573,30 +539,122 @@ function countReferencePages(pages: DocPageSummary[]) {
   return { files, symbols, other: pages.length - files - symbols };
 }
 
-/** Every deterministic page in one collapsed folder, held apart from the
- *  concept outline. Its interior reuses the filesystem builder, so files stay
- *  navigable by directory and each file holds its own symbols. */
-function buildReferenceFolder(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode | null {
-  if (pages.length === 0) return null;
-  return {
-    name: copy.codeReference,
-    meta: copy.codeReferenceMeta(countReferencePages(pages)),
-    path: AUTO_ROOT_KEY,
-    isDir: true,
-    children: buildTree(pages, copy),
-  };
-}
-
 const pagesOfType = (pages: DocPageSummary[], type: string): DocPageSummary[] =>
   pages.filter((p) => p.page_type === type).sort(compareSiblings);
 
-/**
- * The pages a newcomer reads first, in reading order: the overview, then the
- * onboarding chapters by their stored order. Walkthroughs get their own row.
- */
-function pickStartHerePages(spinePages: DocPageSummary[]): DocPageSummary[] {
-  const overview = spinePages.find((p) => p.page_type === "repo_overview");
-  return [...(overview ? [overview] : []), ...pagesOfType(spinePages, "onboarding")];
+/** Onboarding slots that describe recent activity rather than how the project
+ *  works. They close the outline as "Project activity". Mirrors
+ *  `PROJECT_ACTIVITY_SLOTS` in `core/generation/page_tree.py`. */
+const PROJECT_ACTIVITY_SLOTS = new Set<string>(["active_landscape"]);
+
+const isProjectActivity = (page: DocPageSummary): boolean => {
+  // Stamped on pages written since the stamp existed; older ones by slot.
+  if (page.metadata?.["nav_section"] === "project_activity") return true;
+  if (page.page_type !== "onboarding") return false;
+  const slot = getOnboardingSlot(page) ?? page.target_path.split("/").pop() ?? "";
+  return PROJECT_ACTIVITY_SLOTS.has(slot);
+};
+
+// A section and two rungs below it. Anything deeper is listed, flat, under the
+// second rung: still one click away, never a fourth level of indentation.
+const MAX_OUTLINE_DEPTH = 3;
+
+/** Every descendant of *page* in tree order, for the rung that flattens them. */
+function descendantsOf(
+  page: DocPageSummary,
+  childrenOf: Map<string, DocPageSummary[]>,
+  reached: Set<string>,
+): DocPageSummary[] {
+  const out: DocPageSummary[] = [];
+  for (const child of [...(childrenOf.get(page.id) ?? [])].sort(compareSiblings)) {
+    if (reached.has(child.id)) continue;
+    reached.add(child.id);
+    out.push(child, ...descendantsOf(child, childrenOf, reached));
+  }
+  return out;
+}
+
+/** The stored number when it is one of the outline's two levels ("4", "4.2").
+ *  A deeper one comes from a store numbered before the cap and is not shown. */
+const outlineSection = (page: DocPageSummary): string | undefined => {
+  const section = page.section_number;
+  return section && section.split(".").length <= 2 ? section : undefined;
+};
+
+/** The resource each contract describes, from its path: what follows the
+ *  directories every contract shares, without the extension. */
+function resourceLabels(pages: DocPageSummary[]): Map<string, string> {
+  const dirs = pages.map((p) => p.target_path.split("/").slice(0, -1));
+  let common = dirs[0] ?? [];
+  for (const parts of dirs.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < parts.length && common[i] === parts[i]) i++;
+    common = common.slice(0, i);
+  }
+  // Keep one directory of context even when every contract sits in it.
+  const cut = Math.max(0, Math.min(common.length, ...dirs.map((d) => d.length - 1)));
+  return new Map(
+    pages.map((p) => [
+      p.id,
+      p.target_path.split("/").slice(cut).join("/").replace(/\.[^./]+$/, "") || p.target_path,
+    ]),
+  );
+}
+
+/** Reference pages of one kind as a flat, sorted folder. */
+function referenceGroup(
+  key: string,
+  name: string,
+  pages: DocPageSummary[],
+  label: (page: DocPageSummary) => string,
+): TreeNode | null {
+  if (pages.length === 0) return null;
+  const children: TreeNode[] = pages
+    .map((page) => ({ name: label(page), path: page.id, isDir: false, page, children: [] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { name, path: key, isDir: true, children, meta: formatNumber(pages.length) };
+}
+
+// "Circular Dependency: " and its translations: the folder already says it.
+const CYCLE_PREFIX = /^[^:]{1,40}:\s*/;
+
+/** Every deterministic page in one collapsed folder, held apart from the
+ *  outline, one sub-folder per kind. Files keep their directory tree, each file
+ *  holding its own symbols, so a symbol is reached through its file or by
+ *  search rather than as one of thousands of rows of its own. */
+function buildReferenceFolder(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode | null {
+  if (pages.length === 0) return null;
+  const of = (type: string) => pages.filter((p) => p.page_type === type);
+  const contracts = of("api_contract");
+  const resources = resourceLabels(contracts);
+  const grouped = new Set(["api_contract", "infra_page", "scc_page"]);
+  const files = pages.filter((p) => !grouped.has(p.page_type));
+  const children = [
+    referenceGroup(REF_CONTRACTS_KEY, copy.referenceApi, contracts, (p) => resources.get(p.id) ?? p.target_path),
+    files.length > 0
+      ? {
+          name: copy.referenceFiles,
+          path: REF_FILES_KEY,
+          isDir: true,
+          children: buildTree(files, copy),
+          meta: copy.codeReferenceMeta(countReferencePages(files)),
+        }
+      : null,
+    referenceGroup(REF_INFRA_KEY, copy.referenceInfrastructure, of("infra_page"), (p) => p.target_path),
+    referenceGroup(REF_CYCLES_KEY, copy.referenceCycles, of("scc_page"), (p) =>
+      displayLabel(p).replace(CYCLE_PREFIX, ""),
+    ),
+  ].filter((node): node is TreeNode => node !== null);
+  return { name: copy.codeReference, path: AUTO_ROOT_KEY, isDir: true, children };
+}
+
+/** A group row on the top rung, numbered as the section its pages sit in
+ *  ("12" for pages numbered "12.1", "12.2"). `null` when it holds nothing. */
+function groupRow(path: string, name: string, pages: DocPageSummary[]): TreeNode | null {
+  if (pages.length === 0) return null;
+  const first = pages[0]?.section_number ?? "";
+  const section = first.includes(".") ? first.split(".")[0] : undefined;
+  return { name, path, isDir: true, children: [], ...(section ? { section } : {}) };
 }
 
 function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[] {
@@ -610,8 +668,6 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
   // page never appears in the outline itself.
   const spinePages = visible.filter(isSpinePage);
   const deterministicPages = visible.filter((p) => !isSpinePage(p));
-
-  const referenceFolder = buildReferenceFolder(deterministicPages, copy);
 
   const byId = new Map(spinePages.map((p) => [p.id, p]));
   const childrenOf = new Map<string, DocPageSummary[]>();
@@ -635,105 +691,88 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
   // Reached, not just claimed: a parent cycle would otherwise silently swallow
   // every page in it. Anything the walk misses lands in the tail instead.
   const reached = new Set<string>();
-  function toNode(page: DocPageSummary, parent: DocPageSummary | undefined): TreeNode {
+  function toNode(page: DocPageSummary, parent: DocPageSummary | undefined, depth: number): TreeNode {
     reached.add(page.id);
-    const children = (childrenOf.get(page.id) ?? [])
-      .filter((c) => !reached.has(c.id))
-      .sort(compareSiblings)
-      .map((c) => toNode(c, page));
+    const name = treeLabel(page, parent);
+    // A part named as its section is the section's own page ("Repowise Core"
+    // under Core, "Web Source" under Web): its row folds into the section's
+    // and whatever it holds is listed in its place.
+    const restates = (node: TreeNode) =>
+      node.page?.page_type === "module_page" && node.name.toLowerCase() === name.toLowerCase();
+    const kids: TreeNode[] =
+      depth < MAX_OUTLINE_DEPTH - 1
+        ? (childrenOf.get(page.id) ?? [])
+            .filter((c) => !reached.has(c.id))
+            .sort(compareSiblings)
+            .map((c) => toNode(c, page, depth + 1))
+            .flatMap((node) => (restates(node) ? node.children : [node]))
+        : descendantsOf(page, childrenOf, reached)
+            .map((c): TreeNode => {
+              const section = outlineSection(c);
+              return {
+                name: treeLabel(c, page),
+                path: c.id,
+                isDir: false,
+                page: c,
+                children: [],
+                ...(section ? { section } : {}),
+              };
+            })
+            .filter((node) => !restates(node));
+    const section = outlineSection(page);
     return {
-      name: treeLabel(page, parent),
+      name,
       path: page.id,
-      isDir: children.length > 0,
+      isDir: kids.length > 0,
       page,
-      children,
-      ...(page.section_number ? { section: page.section_number } : {}),
+      children: kids,
+      ...(section ? { section } : {}),
     };
   }
 
   const top: TreeNode[] = [];
-  // Claimed before any row is built, so a chapter that parents a walkthrough
-  // never nests it under itself and it is drawn once, in its own group.
+  // Walkthroughs and project activity are claimed before any row is built, so
+  // a chapter that parents one never nests it and each is drawn once, in its
+  // own group.
   const flows = pagesOfType(spinePages, "flow_page");
-  for (const page of flows) reached.add(page.id);
-  // The reading path is pinned first. The overview is its own row there (its
-  // children are the rest of the outline, drawn below); the chapters keep any
-  // pages they parent.
-  const startPages = pickStartHerePages(spinePages);
-  if (startPages.length > 0) {
-    // Claimed up front, so a chapter never nests another Start here page under
-    // itself and the same page is never drawn twice.
-    for (const page of startPages) reached.add(page.id);
-    const startRows = startPages.map((page) => {
-      if (page.page_type !== "repo_overview") return toNode(page, root ?? undefined);
-      reached.add(page.id);
-      return { name: treeLabel(page, undefined), path: page.id, isDir: false, page, children: [] };
-    });
-    top.push({ name: copy.startHere, path: START_HERE_KEY, isDir: true, children: startRows });
-  }
-  // Walkthroughs read right after orientation and before the chapters they
-  // cross, so their row sits here, shut by default.
-  if (flows.length > 0) {
-    top.push({
-      name: copy.walkthroughs(flows.length),
-      path: WALKTHROUGHS_KEY,
-      isDir: true,
-      children: flows.map((page) => toNode(page, root ?? undefined)),
-    });
-  }
+  const activity = spinePages.filter(isProjectActivity).sort(compareSiblings);
+  for (const page of [...flows, ...activity]) reached.add(page.id);
+
   if (root) {
-    // A root that is not the overview has no row in the reading path.
-    if (!reached.has(root.id)) {
-      reached.add(root.id);
-      top.push({ name: treeLabel(root, undefined), path: root.id, isDir: false, page: root, children: [] });
-    }
-    // The layers are the top rung of the outline, and they are grouping rows
-    // rather than pages: the layer a module belongs to is stamped on the module
-    // itself, so the grouping holds whether or not the wiki describes the layer
-    // anywhere. On a wiki that does parent modules onto a layer page, no child
-    // of the root carries a stamp and this is a no-op.
-    const children = (childrenOf.get(root.id) ?? [])
+    reached.add(root.id);
+    top.push({ name: treeLabel(root, undefined), path: root.id, isDir: false, page: root, children: [] });
+    // The reading path, then the sections, in stored order: one rung, each
+    // row carrying its number. Layers group nothing here.
+    const rows = (childrenOf.get(root.id) ?? [])
       .filter((c) => !reached.has(c.id))
       .sort(compareSiblings);
-    const spine = readLayerOrder(root);
-    const grouping = groupPagesByLayer(children, spine);
-    // A module whose dominant layer came out empty gets no stamp, and left on
-    // the top rung it is drawn exactly like a layer row — one module wearing
-    // the weight of a whole architectural layer. Set those aside for a plainly
-    // named row below the layers. Only when a spine exists: with no layers to
-    // be missing from, there is nothing to say and nothing to move.
-    const unlayeredModules =
-      spine.length > 0
-        ? grouping.ungrouped.filter((p) => p.page_type === "module_page")
-        : [];
-    reportLayerGrouping(grouping, spine, unlayeredModules);
-    // The rest keep their place ahead of the layers: onboarding chapters and
-    // the architecture diagram sort before any module, and that is the order a
-    // reader should meet them in.
-    const unlayered = new Set(unlayeredModules.map((p) => p.id));
-    top.push(
-      ...grouping.ungrouped
-        .filter((child) => !unlayered.has(child.id))
-        .map((child) => toNode(child, root)),
+    // A top-level module numbered inside a section ("13.2") is one of the
+    // small packages the stored tree lists together after the sections.
+    const supporting = rows.filter(
+      (p) => p.page_type === "module_page" && (p.section_number ?? "").includes("."),
     );
-    for (const group of grouping.groups) {
-      top.push({
-        name: group.label,
-        path: layerDirKey(group.id),
-        isDir: true,
-        children: group.pages.map((child) => toNode(child, root)),
-      });
+    const grouped = new Set(supporting.map((p) => p.id));
+    const sections = rows.filter((p) => !grouped.has(p.id));
+    for (const child of sections) top.push(toNode(child, root, 1));
+    const group = groupRow(SUPPORTING_KEY, copy.supportingPackages(supporting.length), supporting);
+    if (group) {
+      group.children = supporting.map((page) => toNode(page, root, 2));
+      top.push(group);
     }
-    // After the real layers, and named for what it is rather than as if it
-    // were one more of them.
-    if (unlayeredModules.length > 0) {
-      top.push({
-        name: copy.otherModules(unlayeredModules.length),
-        path: OTHER_MODULES_KEY,
-        isDir: true,
-        children: unlayeredModules.map((child) => toNode(child, root)),
-      });
-    }
+  } else {
+    // No stored tree yet: the reading path still leads.
+    const lead = [
+      ...pagesOfType(spinePages, "repo_overview"),
+      ...pagesOfType(spinePages, "onboarding").filter((p) => !reached.has(p.id)),
+    ];
+    for (const page of lead) top.push(toNode(page, undefined, 1));
+  }
+
+  // Walkthroughs follow the sections, numbered as one more section.
+  const walkthroughs = groupRow(WALKTHROUGHS_KEY, copy.walkthroughs(flows.length), flows);
+  if (walkthroughs) {
+    walkthroughs.children = flows.map((page) => toNode(page, root ?? undefined, 2));
+    top.push(walkthroughs);
   }
 
   // Concept pages the walk never reached. Grouped by type rather than dropped:
@@ -767,12 +806,23 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
     });
   }
 
-  // The file corpus closes the tree, below every group above it and collapsed.
-  // It is the largest thing in the wiki by a wide margin, and a row whose count
-  // runs to four digits sitting mid-outline reads as the point of the sidebar
-  // rather than as the reference it is. One row at the bottom keeps it in reach
-  // without letting it set the shape of what a reader meets first.
+  // The reference corpus, below the outline and collapsed. It is the largest
+  // thing in the wiki by a wide margin, and a row whose count runs to four
+  // digits mid-outline reads as the point of the sidebar rather than as the
+  // reference it is.
+  const referenceFolder = buildReferenceFolder(deterministicPages, copy);
   if (referenceFolder) top.push(referenceFolder);
+
+  // What has been happening in the project, last: it describes the history,
+  // not how the code works.
+  if (activity.length > 0) {
+    top.push({
+      name: copy.projectActivity,
+      path: PROJECT_ACTIVITY_KEY,
+      isDir: true,
+      children: activity.map((page) => toNode(page, root ?? undefined, 2)),
+    });
+  }
 
   return top;
 }
@@ -915,11 +965,7 @@ function keepContiguousSections(nodes: TreeNode[]): TreeNode[] {
     delete unnumbered.section;
     return unnumbered;
   };
-  // The reading path's chapters open the run, so the outline after them
-  // continues from where they end.
-  return nodes.map((node) =>
-    node.path === START_HERE_KEY ? { ...node, children: node.children.map(keep) } : keep(node),
-  );
+  return nodes.map(keep);
 }
 
 // ---------------------------------------------------------------------------
@@ -936,7 +982,6 @@ function TreeItem({
   forceExpand = false,
   showFreshness = false,
   stubTitle,
-  numbered = depth === 0,
 }: {
   node: TreeNode;
   depth: number;
@@ -950,9 +995,6 @@ function TreeItem({
   showFreshness?: boolean;
   /** Tooltip on the hollow dot marking a page with no prose yet. */
   stubTitle: string;
-  /** Whether the row shows its stored number: the top rung and the reading
-   *  path's chapters. Deeper rows are placed by indentation alone. */
-  numbered?: boolean;
 }) {
   const isExpanded = forceExpand || expandedDirs.has(node.path);
   const isSelected = node.page && node.page.id === selectedPageId;
@@ -979,7 +1021,7 @@ function TreeItem({
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
         <DirChevron hasChildren={hasChildren} isExpanded={isExpanded} />
-        <SectionNumber show={numbered} section={node.section} />
+        <SectionNumber section={node.section} />
         <DirIcon node={node} isExpanded={isExpanded} />
         <span
           className={cn(
@@ -1025,7 +1067,6 @@ function TreeItem({
                 forceExpand={forceExpand}
                 showFreshness={showFreshness}
                 stubTitle={stubTitle}
-                numbered={node.path === START_HERE_KEY}
               />
             ))}
           </div>
@@ -1047,7 +1088,7 @@ function TreeItem({
       )}
       style={{ paddingLeft: `${depth * 16 + 8 + 16}px` }}
     >
-      <SectionNumber show={numbered} section={node.section} />
+      <SectionNumber section={node.section} />
       {!hidesTreeIcon(node.page) && (
         <PageIcon
           pageType={node.page?.page_type ?? "file_page"}
@@ -1096,10 +1137,11 @@ function DirIcon({ node, isExpanded }: { node: TreeNode; isExpanded: boolean }) 
   );
 }
 
-// The stored dotted number, shown on the top rung and the reading path only.
-// Deeper rows are placed by indentation, and "14.3.2" on every file row is noise.
-function SectionNumber({ show, section }: { show: boolean; section?: string | undefined }) {
-  if (!show || !section) return null;
+// The stored dotted number. The outline is numbered two levels deep ("4",
+// "4.2"); deeper rows and the reference folder carry none, so a row shows its
+// number whenever it has one.
+function SectionNumber({ section }: { section?: string | undefined }) {
+  if (!section) return null;
   return (
     <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
       {section}
@@ -1561,7 +1603,7 @@ function TreeSearchBar({
   );
 }
 
-type TreeItemShared = Omit<Parameters<typeof TreeItem>[0], "node" | "depth" | "numbered">;
+type TreeItemShared = Omit<Parameters<typeof TreeItem>[0], "node" | "depth">;
 
 /** The rendered outline, or the empty state, plus the row that pages a capped
  *  search result forward. */

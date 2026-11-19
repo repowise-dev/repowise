@@ -34,6 +34,16 @@ const CYCLE_BODY = [
 ].join("\n");
 
 describe("displayLabel", () => {
+  it("prefers the nav title the server derives, keeping the title for the heading", () => {
+    const page = summary({ page_type: "module_page", title: "Cli Overview", nav_title: "CLI" });
+    expect(displayLabel(page)).toBe("CLI");
+    expect(treeLabel(page, undefined)).toBe("CLI");
+  });
+
+  it("falls back to the title when a backend sends no nav title", () => {
+    expect(displayLabel(summary({ page_type: "module_page", title: "Ingestion" }))).toBe("Ingestion");
+  });
+
   it("names a cycle after the directory its members share", () => {
     const page = summary({
       page_type: "scc_page",

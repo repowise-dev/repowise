@@ -242,7 +242,7 @@ well (AUC 0.742). The score's advantage is effort-aware ranking, Popt +0.134
 
 **Weights are fitted, not hand-set:** a size-controlled logistic fit on files
 scored before their bug window, so a detector earns weight only for defect lift
-beyond being large. Of the 59 detectors, 23 move the defect score; the others
+beyond being large. Of the 59 detectors, 22 move the defect score; the others
 feed the maintainability or performance score, or are advisory.
 
 Reports:

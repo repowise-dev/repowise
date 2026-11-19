@@ -44,11 +44,11 @@ async def test_get_dead_code_summary_says_what_it_counts(setup_mcp):
 
     # A filter that keeps nothing: the totals still count every open finding,
     # and the summary names the filters that emptied the tiers.
-    result = await get_dead_code(directory="nowhere", min_confidence="high")
+    result = await get_dead_code(directory="src/db", min_confidence="high")
     summary = result["summary"]
     assert summary["total_findings"] == 3
     assert summary["filtered_findings"] == 0
-    assert summary["filters"] == {"directory": "nowhere", "min_confidence": 0.7}
+    assert summary["filters"] == {"directory": "src/db", "min_confidence": 0.7}
     assert summary["scope"] == plain["scope"]
 
 
@@ -178,3 +178,66 @@ async def test_the_default_floor_reads_the_cut_confidence(setup_mcp, monkeypatch
     assert result["summary"]["total_findings"] == 3
     low = await get_dead_code(min_confidence="low")
     assert [f["confidence"] for f in low["tiers"]["low"]["findings"]] == [0.27, 0.21, 0.15]
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_names_a_directory_it_does_not_know(setup_mcp):
+    """A directory with no indexed file is an error, never an empty clean list."""
+    from repowise.server.mcp_server import get_dead_code
+
+    missing = await get_dead_code(directory="packages/does-not-exist")
+    assert "summary" not in missing
+    assert "packages/does-not-exist" in missing["error"]
+
+    # An indexed directory with nothing dead, and an unreachable file's
+    # directory that has no graph node, both still answer.
+    assert (await get_dead_code(directory="tests"))["summary"]["filtered_findings"] == 0
+    assert (await get_dead_code(directory="src/legacy"))["summary"]["filtered_findings"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_headline_counts_shown_and_withheld(setup_mcp):
+    """The first line says how many findings are shown and how many were held back."""
+    from repowise.server.mcp_server import get_dead_code
+
+    result = await get_dead_code()
+    assert next(iter(result)) == "headline"
+    assert result["headline"].startswith("3 shown")
+
+    one = await get_dead_code(limit=1, tier="high")
+    assert one["headline"].startswith("1 shown of 2 matching")
+
+
+def test_dead_code_headline_names_withheld_kinds():
+    from repowise.server.mcp_server.tool_dead_code import _headline
+
+    summary = {
+        "withheld_types": {"unused_internal": {"count": 2, "status": "hidden"}},
+    }
+    tiers = {name: {"count": 0, "findings": []} for name in ("high", "medium", "low")}
+    assert _headline(summary, tiers) == (
+        "0 shown, 2 withheld (unused_internal; see summary.withheld_types)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_lists_no_private_symbols_by_default(setup_mcp):
+    """``unused_internal`` measured almost all false: never listed unless asked."""
+    from repowise.server.mcp_server import get_dead_code
+
+    result = await get_dead_code()
+    kinds = {f["kind"] for t in result["tiers"].values() for f in t["findings"]}
+    assert "unused_internal" not in kinds
+
+
+def test_shared_basis_note_is_said_once():
+    from repowise.server.mcp_server.tool_dead_code import _attach_resolution_basis
+
+    note = "Call sites the resolver could not bind are not counted."
+    summary: dict = {}
+    _attach_resolution_basis(
+        summary,
+        [{"language": "python", "note": note}, {"language": "typescript", "note": note}],
+    )
+    assert summary["call_resolution_note"] == note
+    assert summary["call_resolution_basis"] == [{"language": "python"}, {"language": "typescript"}]

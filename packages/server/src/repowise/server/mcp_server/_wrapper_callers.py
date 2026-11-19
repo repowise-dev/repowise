@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.mcp_server._edit_sites import first_call_line
@@ -154,7 +155,7 @@ async def forwarding_wrapper_callers(
             "symbol_id": edge.source_node_id,
             "name": other.name if other else edge.source_node_id.split("::")[-1],
             "kind": other.kind if other else None,
-            "file": other.file_path if other else edge.source_node_id.split("::")[0],
+            "file": other.file_path if other else file_of_symbol(edge.source_node_id),
             "line": other.start_line if other else None,
             "confidence": edge.confidence,
             "edge_type": edge.edge_type,
@@ -167,7 +168,7 @@ async def forwarding_wrapper_callers(
         rows.append(row)
 
     if unreached and len(rows) < limit:
-        seen_files = {sid.split("::")[0] for sid in seen}
+        seen_files = {file_of_symbol(sid) for sid in seen}
         imported = await files_importing(
             session, repo_id, [candidates[w] for w in unreached], seen_files
         )

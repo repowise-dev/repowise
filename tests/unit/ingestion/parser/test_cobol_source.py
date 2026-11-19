@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.ingestion.cobol import code_view, copy_statements, exec_blocks
+from repowise.core.ingestion.cobol import (
+    code_view,
+    copy_statements,
+    exec_blocks,
+    prepare_cobol_source,
+)
 from repowise.core.ingestion.cobol.fragments import is_procedure_fragment
 from repowise.core.ingestion.cobol.grammar_gaps import rewrite_gaps
 from repowise.core.ingestion.parser import ASTParser
 
 from ._helpers import _make_file_info
 
-grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-try:
-    grammar_pack.get_language("cobol")
-except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
+# A fixture, not a module-level skip: every xdist worker collects the same tests.
+pytestmark = pytest.mark.usefixtures("cobol_grammar")
 
 
 def _program(data: str = "", procedure: str = "", header: str = "") -> bytes:
@@ -56,6 +58,7 @@ def _names(parsed) -> dict[str, int]:
         _program(data="       COPY CVACT01Y."),
         _program(data="       01 GROUP-A.\n       COPY CVACT01Y."),
         _program(procedure="           IF WS-A NOT= WS-B CONTINUE END-IF."),
+        _program(procedure='           MOVE "SAY ""HI""" TO WS-A.'),
         _program(procedure="           INSPECT WS-A REPLACING ALL x'00' BY x'40'."),
         _program(procedure="           MOVE Z'regular mail' TO WS-A."),
         _program(procedure='           MOVE z"regular mail" TO WS-A.'),
@@ -74,6 +77,7 @@ def _names(parsed) -> dict[str, int]:
         "copy",
         "copy-under-group",
         "not-equal",
+        "doubled-quote",
         "hex-lowercase",
         "null-terminated-apostrophe",
         "null-terminated-quote",
@@ -98,6 +102,13 @@ def test_a_null_terminated_prefix_is_blanked_and_a_name_ending_in_z_is_kept() ->
     line = "           MOVE Z'A' TO BUZ. MOVE z\"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
     assert rewrite_gaps(line) == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
+
+
+def test_doubled_quotes_in_an_apostrophe_literal_are_left_alone() -> None:
+    source = _program(procedure="""           MOVE 'A""B' TO WS-A.""")
+
+    assert prepare_cobol_source(source) == source
+    assert _parse(source).parse_errors == []
 
 
 def test_sequence_numbers_and_comment_lines_are_ignored() -> None:

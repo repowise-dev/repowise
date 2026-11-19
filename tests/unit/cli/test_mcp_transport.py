@@ -183,7 +183,7 @@ def test_mcp_cli_streamable_http_prints_workspace_summary(
     }
 
 
-def test_run_mcp_dispatches_streamable_http(monkeypatch) -> None:
+def test_run_mcp_dispatches_streamable_http(monkeypatch, isolated_run_mcp) -> None:
     from repowise.server.mcp_server import _server
 
     calls: list[dict[str, str]] = []
@@ -210,7 +210,7 @@ def test_run_mcp_dispatches_streamable_http(monkeypatch) -> None:
     assert watchdog_started is False
 
 
-def test_run_mcp_keeps_existing_stdio_and_sse_dispatch(monkeypatch) -> None:
+def test_run_mcp_keeps_existing_stdio_and_sse_dispatch(monkeypatch, isolated_run_mcp) -> None:
     from repowise.server.mcp_server import _server
 
     calls: list[dict[str, str]] = []
@@ -322,7 +322,7 @@ def test_mcp_cli_no_warning_with_api_key(monkeypatch, tmp_path: Path) -> None:
     assert "SECURITY WARNING" not in result.output
 
 
-def test_run_mcp_sets_host_on_settings(monkeypatch) -> None:
+def test_run_mcp_sets_host_on_settings(monkeypatch, isolated_run_mcp) -> None:
     """run_mcp sets mcp.settings.host (parallel to existing port test)."""
     from repowise.server.mcp_server import _server
 
@@ -337,7 +337,7 @@ def test_run_mcp_sets_host_on_settings(monkeypatch) -> None:
     assert calls == [{"transport": "streamable-http"}]
 
 
-def test_task_group_failure_surfaces_the_real_error(monkeypatch) -> None:
+def test_task_group_failure_surfaces_the_real_error(monkeypatch, isolated_run_mcp) -> None:
     """anyio wraps a child task's error; the wrapper must not be what escapes.
 
     The event loop reports a failed task as an ExceptionGroup, so callers that
@@ -357,7 +357,7 @@ def test_task_group_failure_surfaces_the_real_error(monkeypatch) -> None:
         _server.run_mcp(transport="stdio")
 
 
-def test_nested_task_groups_unwrap_to_the_leaf(monkeypatch) -> None:
+def test_nested_task_groups_unwrap_to_the_leaf(monkeypatch, isolated_run_mcp) -> None:
     import pytest
 
     from repowise.server.mcp_server import _server
@@ -372,7 +372,7 @@ def test_nested_task_groups_unwrap_to_the_leaf(monkeypatch) -> None:
         _server.run_mcp(transport="stdio")
 
 
-def test_a_plain_error_is_left_alone(monkeypatch) -> None:
+def test_a_plain_error_is_left_alone(monkeypatch, isolated_run_mcp) -> None:
     """Only grouped failures are unwrapped; an ungrouped one already names itself."""
     import pytest
 
@@ -387,7 +387,7 @@ def test_a_plain_error_is_left_alone(monkeypatch) -> None:
         _server.run_mcp(transport="stdio")
 
 
-def test_a_group_from_startup_is_unwrapped_too(monkeypatch) -> None:
+def test_a_group_from_startup_is_unwrapped_too(monkeypatch, isolated_run_mcp) -> None:
     """The reason the unwrap moved: it used to cover only `mcp.run`.
 
     Surface construction and transport security run before the transport starts,
@@ -407,7 +407,7 @@ def test_a_group_from_startup_is_unwrapped_too(monkeypatch) -> None:
         _server.run_mcp(transport="stdio")
 
 
-def test_a_crash_carries_the_names_of_every_leaf(monkeypatch) -> None:
+def test_a_crash_carries_the_names_of_every_leaf(monkeypatch, isolated_run_mcp) -> None:
     """One exception travels; the siblings ride along as class names.
 
     `error_type` can only ever name the one that was raised, which cannot say
@@ -441,7 +441,9 @@ def test_a_crash_carries_the_names_of_every_leaf(monkeypatch) -> None:
     )
 
 
-def test_the_root_group_reports_those_names(monkeypatch, tmp_path: Path) -> None:
+def test_the_root_group_reports_those_names(
+    monkeypatch, tmp_path: Path, isolated_run_mcp
+) -> None:
     """End to end through the CLI: the names reach the invocation's outcome."""
 
     from repowise.cli.platform import telemetry
@@ -483,6 +485,7 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
     CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert "error_leaves" not in recorded
+    assert recorded["transport_outcome"] == "server_stopped"
 
 
 def test_the_way_a_session_ended_reaches_the_invocation_outcome(
@@ -523,18 +526,18 @@ def test_a_store_failure_reports_its_reason_code(monkeypatch, tmp_path: Path) ->
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert recorded["transport_outcome"] == "server_fault"
+    # A deliberate exit with a reason, not a crash.
+    assert recorded["transport_outcome"] == "server_refused"
     assert recorded["failure_reason"] == "db_url_unreachable"
 
 
-def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -> None:
+def test_a_client_hanging_up_is_not_an_error_exit(
+    monkeypatch, tmp_path: Path, isolated_run_mcp
+) -> None:
     """A broken pipe used to leave a traceback the host respawns on."""
     from repowise.server.mcp_server import _server
 
     (tmp_path / ".repowise").mkdir()
-    monkeypatch.setattr(
-        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
-    )
     monkeypatch.setattr(
         _server.mcp,
         "run",
@@ -577,3 +580,30 @@ def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
 
     assert result.exit_code == 0
     assert "deprecated" not in result.output
+
+
+def test_workspace_summary_matches_server_detection_for_sibling_and_member(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.commands.mcp_cmd import _workspace_summary
+
+    member = tmp_path / "apps" / "b"
+    sibling = tmp_path / "tools" / "c"
+    (tmp_path / "apps" / "a").mkdir(parents=True)
+    member.mkdir()
+    (sibling / ".repowise").mkdir(parents=True)
+    (sibling / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    WorkspaceConfig(
+        repos=[
+            RepoEntry(path="apps/a", alias="a", is_primary=True),
+            RepoEntry(path="apps/b", alias="b"),
+        ],
+        default_repo="a",
+    ).save(tmp_path)
+
+    # The server serves an indexed non-member single-repo; the banner must not
+    # name the primary as its default repo.
+    assert _workspace_summary(sibling) is None
+    summary = _workspace_summary(member)
+    assert summary is not None
+    assert summary["default_repo"] == "b"

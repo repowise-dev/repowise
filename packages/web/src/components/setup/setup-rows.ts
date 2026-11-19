@@ -34,6 +34,8 @@ export interface SetupRow {
   status: SetupMsg;
   title: SetupMsg;
   detail: SetupMsg;
+  /** A second, quieter line under the detail. */
+  note?: SetupMsg;
   action: SetupAction | null;
   command: string;
   prompt: SetupPromptRow;
@@ -66,8 +68,13 @@ export const ESSENTIALS_TOTAL = 3;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Doctor rows another Setup row already shows. */
-const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook"]);
+/**
+ * Doctor rows another Setup row already shows. `index-freshness` is the index
+ * row's own comparison, which the page reads from the database on every load
+ * rather than from the cached doctor run; it carries the same missing-commit
+ * check, so a rebased-away index still gets the `--since` command here.
+ */
+const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook", "index-freshness"]);
 
 const msg = (key: string, values?: Record<string, string | number>): SetupMsg =>
   values ? { key, values } : { key };
@@ -83,7 +90,35 @@ const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?
 
 // -- index -------------------------------------------------------------------
 
+/**
+ * The indexed commit was rebased or reset away: plain `update` has no base to
+ * diff from and refuses, so name a commit the index covers with `--since`, as
+ * doctor's `index-freshness` row does.
+ */
+function indexMissingRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  const indexed = shortSha(s.index.indexed_commit);
+  const command = "repowise update --since <ref>";
+  return {
+    id: "index-behind",
+    tone: "attention",
+    status: msg("index.statusBehind"),
+    title: msg("index.title"),
+    detail: msg("index.detailMissing", { indexed }),
+    action: { kind: "prompt" },
+    command,
+    prompt: {
+      repoName: o.repoName,
+      title: "Index is behind",
+      state: `The index is at commit ${indexed}, which is no longer in this repository's history (a rebase or reset), so a plain update has no base to diff from. Pick the newest commit the index still covers and pass it with --since.`,
+      command,
+      verify: "status",
+      fix: true,
+    },
+  };
+}
+
 function indexBehindRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  if (s.index.indexed_commit_missing) return indexMissingRow(s, o);
   const values = { indexed: shortSha(s.index.indexed_commit), live: shortSha(s.index.live_head) };
   return {
     id: "index-behind",
@@ -202,6 +237,13 @@ function agentSilentRow(agent: SetupAgent, o: DeriveOptions): SetupRow {
   };
 }
 
+/** At connect time: the agents here that are listed the core tools unless
+ *  Settings turns on more (every client that loads tool schemas up front). */
+function coreToolsNote(agents: SetupAgent[]): { note?: SetupMsg } {
+  const names = agents.filter((a) => a.default_profile === "core").map((a) => a.display_name);
+  return names.length ? { note: msg("agent.coreTools", { agents: names.join(", "), count: names.length }) } : {};
+}
+
 function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   const agents = s.agents ?? [];
   const connected = agents.filter((a) => a.connected);
@@ -263,6 +305,7 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       detail: offer
         ? msg("agent.detailWaitingOther", { agents: names, count: connected.length, other: offer.display_name })
         : msg("agent.detailWaiting", { agents: names, count: connected.length }),
+      ...coreToolsNote(offer ? [...connected, offer] : connected),
       action: connectAction,
       prompt: prompt(`${names} is registered and has not called the index yet.`),
     };
@@ -274,6 +317,7 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     tone: "off",
     status: msg("agent.statusOff"),
     detail,
+    ...coreToolsNote(offer ? [offer] : []),
     action: connectAction,
     prompt: prompt(
       offer
@@ -331,7 +375,7 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       title: "A model for docs, chat and answers",
       state: llm
         ? `The docs are written by a model${s.model.active_provider ? ` (${s.model.active_provider})` : ""}.`
-        : "The docs are built from the index, without a model. Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.",
+        : `The docs are built from the index, without a model.${s.model_available && !s.model.active_provider ? " Until a model is set up, get_answer returns ranked evidence instead of a written answer." : ""} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`,
       command: "repowise generate",
       verify: "status",
     },

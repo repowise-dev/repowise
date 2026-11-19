@@ -145,7 +145,10 @@ def test_show_unknown_id_exits_nonzero_in_both_formats(seeded: Path) -> None:
     assert "Decision not found: 9999" in table.stdout
     as_json = _run("show", "9999", str(seeded), "--format", "json")
     assert as_json.exit_code == 1
-    assert json.loads(as_json.stdout) == {"query": "9999", "decision": None}
+    payload = json.loads(as_json.stdout)
+    assert payload["error"] == "decision_not_found"
+    assert payload["message"] == "Decision not found: 9999"
+    assert payload["query"] == "9999" 
 
 
 # -- list ---------------------------------------------------------------------
@@ -212,7 +215,7 @@ def test_health_table_sections(accepted: Path) -> None:
     assert "Decision Health" in out
     assert "Stale decisions (1):" in out
     assert "aaaaaaaa  Active one  (staleness: 0.70)" in out
-    assert "Proposed decisions (2):" in out
+    assert "Background records (not in force) (2):" in out
     assert "(source: git_archaeology)" in out
 
 
@@ -220,7 +223,7 @@ def test_health_on_an_empty_store(repo: Path) -> None:
     result = _run("health", str(repo))
     assert result.exit_code == 0, result.output
     assert "Stale decisions (" not in result.output
-    assert "Proposed decisions (" not in result.output
+    assert "Background records (" not in result.output
 
 
 # -- add ----------------------------------------------------------------------

@@ -400,6 +400,31 @@ class TestFileTraverser:
 
         assert paths == {"app.py"}
 
+    def test_tool_state_dirs_are_not_indexed(self, tmp_path: Path) -> None:
+        """Every never-source dir the shared walk prunes is skipped by the index too."""
+        files = {
+            ".yarn/plugins/@yarnpkg/plugin-workspace-tools.cjs": "module.exports = {};\n",
+            ".yarn/releases/yarn-4.0.0.cjs": "module.exports = {};\n",
+            ".nox/tests/bin/activate_this.py": "x = 1\n",
+            ".turbo/cache/run.js": "var a = 1;\n",
+            ".nuxt/app.js": "var a = 1;\n",
+            ".pnpm-store/v3/index.js": "var a = 1;\n",
+            "packages/web/.parcel-cache/a.js": "var a = 1;\n",
+            ".eggs/pkg/setup.py": "x = 1\n",
+            "vendor/lib/dep.py": "x = 1\n",
+            "tests/fixtures/sample.py": "x = 1\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert paths == {"app.py"}
+        for rel in files:
+            assert in_blocked_dir(rel)
+
     def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
         (tmp_path / "src" / "build").mkdir(parents=True)
@@ -615,10 +640,10 @@ class TestFileTraverser:
         assert traverser.stats.skipped_oversized == 0
 
     def test_skips_source_past_the_source_ceiling(self, tmp_path: Path) -> None:
-        # The ceiling is a memory budget: tree-sitter peaks at ~95 MB of RSS
-        # per MB of source and the parse pool runs 8 workers.
+        # The hard ceiling is a memory budget: tree-sitter peaks at ~95 MB of RSS
+        # per MB of source (#5280).
         big = tmp_path / "huge.py"
-        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        big.write_bytes(b"x = 1\n" * 1_500_000)  # ~9 MB, over the 8 MB ceiling
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         paths = [f.path for f in traverser.traverse()]
         assert not any("huge.py" in p for p in paths)
@@ -640,15 +665,55 @@ class TestFileTraverser:
         assert traverser.stats.skipped_source_files[0].reason == "minified"
 
     def test_source_ceiling_cannot_be_raised_by_max_file_size_kb(self, tmp_path: Path) -> None:
-        # The source ceiling is a memory budget (~95 MB RSS per MB of source,
-        # times an 8-worker pool), not a preference. Raising the caller-facing
-        # knob must not be able to lift it, or the OOM guard is optional.
+        # The source ceiling is a memory budget (~95 MB RSS per MB of source),
+        # not a preference. Raising the caller-facing knob must not be able
+        # to lift it, or the OOM guard is optional. Above the 8 MB hard ceiling
+        # files stay skipped (#5280).
         big = tmp_path / "huge.py"
-        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        big.write_bytes(b"x = 1\n" * 1_700_000)  # ~10.2 MB, over the 8 MB hard ceiling
         traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)  # 100 MB
         paths = [f.path for f in traverser.traverse()]
         assert not any("huge.py" in p for p in paths)
         assert traverser.stats.skipped_oversized == 1
+
+    def test_source_between_pool_limit_and_hard_ceiling_is_included(self, tmp_path: Path) -> None:
+        # Files between 2 MB and 8 MB are parsed serially rather than dropped (#5280).
+        swift_file = tmp_path / "LargeView.swift"
+        swift_file.write_bytes(b"struct LargeView {\n" + (b"    let field = 1\n" * 180_000) + b"}\n")  # ~3.2 MB
+        assert swift_file.stat().st_size > 2 * 1024 * 1024
+        assert swift_file.stat().st_size < 8 * 1024 * 1024
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("LargeView.swift" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 0
+
+    def test_oversize_source_indexed_with_symbols(self, tmp_path: Path) -> None:
+        # #5280: a Swift file over the pool ceiling is indexed with symbols
+        # (parsed serially); one over the hard ceiling is still skipped. Each
+        # sits just past its threshold, which keeps the serial parse short.
+        pool_max = traverser_mod._SOURCE_POOL_MAX_FILE_SIZE_BYTES
+        hard_max = traverser_mod._SOURCE_MAX_FILE_SIZE_BYTES
+        line = b"    func action() {}\n"
+        serial = tmp_path / "AppScreen.swift"
+        serial.write_bytes(b"struct AppScreen {\n" + line * (pool_max // len(line) + 500) + b"}\n")
+        too_big = tmp_path / "Monolith.swift"
+        too_big.write_bytes(b"struct Monolith {\n" + line * (hard_max // len(line) + 500) + b"}\n")
+        assert pool_max < serial.stat().st_size < hard_max < too_big.stat().st_size
+
+        traverser = FileTraverser(tmp_path)
+        infos = {f.path: f for f in traverser.traverse()}
+        assert "AppScreen.swift" in infos
+        assert "Monolith.swift" not in infos
+        assert traverser.stats.skipped_oversized == 1
+
+        # Ingestion parse_guarded parses the over-pool file serially
+        from repowise.core.pipeline.phases.ingestion import parse_guarded
+        fi = infos["AppScreen.swift"]
+        to_parse = [(0, (fi, serial.read_bytes()), "hash123")]
+        results = parse_guarded(to_parse)
+        assert len(results) == 1
+        assert not isinstance(results[0], tuple | Exception)
+        assert any(s.name == "AppScreen" for s in results[0].symbols)
 
     def test_max_file_size_kb_still_governs_parserless_files(self, tmp_path: Path) -> None:
         # ...but it remains the knob for everything with no parser.
@@ -1616,19 +1681,18 @@ class TestUnknownLanguageFileRecording:
         assert traverser.stats.skipped_unknown_language == 2
         assert traverser.stats.unknown_language_files == []
 
-    def test_does_not_consume_the_size_skip_budget(self, tmp_path: Path) -> None:
-        # The two lists are separate so hundreds of unparsed docs cannot
-        # truncate the oversized-source records, which are shown to the user.
-        for i in range(traverser_mod._MAX_SKIPPED_SOURCE_PATHS + 5):
+    def test_stays_off_the_size_skip_list(self, tmp_path: Path) -> None:
+        # The two lists are separate so unparsed docs never crowd the
+        # oversized-source records, which are shown to the user.
+        for i in range(55):
             (tmp_path / f"doc{i}.rst").write_text("text\n")
         big = tmp_path / "huge.py"
-        big.write_bytes(b"x = 1\n" * 500_000)  # over the source ceiling
+        big.write_bytes(b"x = 1\n" * 1_500_000)  # over the 8 MB source ceiling
 
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         list(traverser.traverse())
 
         assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
-        assert traverser.stats.skipped_source_files_truncated is False
         assert len(traverser.stats.unknown_language_files) == 55
 
     def test_caps_the_list_and_flags_truncation(

@@ -644,11 +644,34 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    def test_match_fstring_sql_helper_branches(self) -> None:
+        from repowise.core.analysis.security.patterns import _PATTERNS
+        from repowise.core.analysis.security.scanner import _match_fstring_sql
+
+        pattern = next(p for p, k, _ in _PATTERNS if k == "fstring_sql")
+        # Case 1: Match starts in masked code (e.g. comment) -> returns None
+        line = '# f"SELECT * FROM users WHERE id = {user_id}"'
+        masked = " " * len(line)
+        assert _match_fstring_sql(pattern, line, masked, [line], 1) is None
+
+        # Case 2: No match in line -> returns None
+        line_no_match = "x = 42"
+        assert _match_fstring_sql(pattern, line_no_match, line_no_match, [line_no_match], 1) is None
+
+        # Case 3: Match valid in unmasked code -> returns Match
+        line_valid = 'q = f"{p}" + f"SELECT * FROM users WHERE id = {uid}"'
+        match = _match_fstring_sql(pattern, line_valid, line_valid, [line_valid], 1)
+        assert match is not None
+        assert "SELECT" in match.group()
 
     @pytest.mark.parametrize(
         ("line", "kind"),
@@ -1513,6 +1536,9 @@ class TestSecretPrecision:
             ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
             ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
             ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+            ("a.ts", 'const REF_API_KEY = "@group:reference:api";\n'),
+            ("config.py", 'DB_PASSWORD = "secrets/db/password"\n'),
+            ("config.py", 'DB_PASSWORD = "/secrets/db/password"\n'),
         ],
     )
     def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
@@ -1527,6 +1553,9 @@ class TestSecretPrecision:
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
             ('password = "plain$password123"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter@db"\n', "hardcoded_password"),
+            ('password = "correct.horse"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:
@@ -1806,3 +1835,63 @@ def test_verbatim_interpolation_trailing_backslash_preserves_following_code(pref
         + "\nNext();\n"
     )
     assert len(masked) == len(source)
+
+
+@pytest.mark.parametrize("strings", [False, True])
+def test_csharp_plain_verbatim_string_preserves_following_code(strings: bool) -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    literal = r'"C:\var\log\""quoted"""'
+    source = f"var logDir = @{literal}; DangerousCall(); // comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("App.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var logDir = @{expected_literal}; DangerousCall(); "
+        + " " * len("// comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)
+
+    secret_src = 'var logDir = @"C:\\var\\log\\";\nvar apiKey = "real_prod_key_123456";\n'
+    findings = scan_source("App.cs", secret_src)
+    assert any(f["kind"] == "hardcoded_secret" for f in findings)
+
+
+def test_objc_nsstring_literal_preserves_backslash_escape() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    source = 'NSString *s = @"hello \\"world\\"";\nint x = 42;\n'
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("main.m")
+    )
+    assert "int x = 42;" in masked
+    assert masked == 'NSString *s = @                 ;\nint x = 42;\n'
+
+
+def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    source = (
+        "fn process<'a>(input: &'static str, extra: &'a str) -> char {\n"
+        "    'outer: loop {\n"
+        "        let quote = '\\'';\n"
+        '        let password = "real_secret_value_1234";\n'
+        "        return 'x';\n"
+        "    }\n"
+        "}\n"
+    )
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("src/lib.rs")
+    )
+    assert "let password = " in masked
+    assert "real_secret_value_1234" not in masked
+    assert "return    ;" in masked
+    assert len(masked) == len(source)
+
+    findings = scan_source("src/lib.rs", source)
+    assert any(f["kind"] == "hardcoded_password" for f in findings)
+

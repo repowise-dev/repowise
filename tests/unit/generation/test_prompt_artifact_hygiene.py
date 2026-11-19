@@ -38,6 +38,10 @@ def _offenders(text: str) -> list[tuple[ArtifactRule, str]]:
     """Every artifact rule ``text`` trips, with the phrase that tripped it."""
     hits = []
     for rule in GENERATION_ARTIFACT_RULES:
+        if rule.name == "instruction_echo":
+            # Matches the templates' own shape phrasing by design: it catches
+            # that phrasing when it comes back in a page.
+            continue
         match = rule.pattern.search(text)
         if match is not None:
             hits.append((rule, match.group(0).strip()))

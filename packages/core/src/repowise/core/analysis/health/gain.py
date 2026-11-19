@@ -24,7 +24,13 @@ from .governance import GOVERNANCE_BIOMARKERS
 from .history_refresh import as_biomarker_result
 from .models import Severity
 from .rows import field
-from .scoring import HISTORY_CATEGORY, biomarker_category, score_file, severity_deduction
+from .scoring import (
+    HISTORY_CATEGORY,
+    biomarker_category,
+    finding_is_advisory,
+    score_file,
+    severity_deduction,
+)
 from .shape_curve import continuous_base
 
 Removal = Iterable[tuple[Any, float]]
@@ -67,10 +73,12 @@ def _lifted(
     after: list[BiomarkerResult] = []
     for f in findings:
         # Governance is written by a later pass that deducts nothing
-        # (``history_refresh``); a stored ``resolved`` row is no longer detected.
+        # (``history_refresh``); a stored ``resolved`` row is no longer detected;
+        # an advisory row deducts nothing, and the scorer here has no language.
         if (
             field(f, "biomarker_type", "") in GOVERNANCE_BIOMARKERS
             or field(f, "status", None) == "resolved"
+            or finding_is_advisory(f)
         ):
             continue
         result = as_biomarker_result(f)

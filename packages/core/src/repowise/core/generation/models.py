@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Iterator, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal
@@ -62,15 +62,23 @@ GENERATION_LEVELS: dict[str, int] = {
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
+# Answer room kept out of a limited window when sizing page material.
+_ANSWER_RESERVE = 4096
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _source_evidence_page_keys() -> set[str]:
     """Return synthesis page keys that have a model-written consumer."""
-    from .onboarding.slots import ONBOARDING_ORDER, PROMOTED_SLOTS
+    from .onboarding.slots import ONBOARDING_SLOTS, PROMOTED_SLOTS
 
     promoted = set(PROMOTED_SLOTS.values())
     return {"repo_overview"} | {
-        f"onboarding/{slot}" for slot in ONBOARDING_ORDER if slot not in promoted
+        f"onboarding/{slot}" for slot in ONBOARDING_SLOTS if slot not in promoted
     }
 
 
@@ -347,6 +355,43 @@ class GenerationConfig:
     # False on ``init --force``: no prior pages are loaded, so the reuse gate
     # has nothing to carry over and every page is regenerated (issue #1089).
     reuse_prior_pages: bool = True
+    # Tokens (prompt plus answer) the model runs with. None keeps every
+    # material budget at full size; a local model sets it (see
+    # ``with_provider_window``) and ``material_budget`` shrinks to fit.
+    context_window: int | None = None
+
+    @property
+    def input_token_limit(self) -> int | None:
+        """Largest page prompt, in 4-characters-per-token estimates, the window takes.
+
+        Local tokenizers run nearer 3 characters per token on code, so the
+        estimate counts a quarter fewer tokens than the window will.
+        """
+        if not self.context_window:
+            return None
+        answer = min(self.max_tokens, _ANSWER_RESERVE, self.context_window // 2)
+        return (self.context_window - answer) * 3 // 4
+
+    def material_budget(self, cap: int, prompt_at_cap: int) -> int:
+        """*cap*, cut by however far a prompt of *prompt_at_cap* tokens overshoots the limit.
+
+        Each page type passes the cap on its largest material block and the
+        size its whole prompt reaches with that block full. The block absorbs
+        the overshoot, down to a quarter of its size; the builders already put
+        their least important material last, so that is what drops.
+        """
+        limit = self.input_token_limit
+        if limit is None or prompt_at_cap <= limit:
+            return cap
+        return max(cap // 4, cap - (prompt_at_cap - limit))
+
+    def with_provider_window(self, provider: Any) -> GenerationConfig:
+        """This config with the provider's window filled in, unless the repo config names one."""
+        if self.context_window:
+            return self
+        window = provider.context_window() if hasattr(provider, "context_window") else None
+        valid = isinstance(window, int) and not isinstance(window, bool) and window > 0
+        return replace(self, context_window=window) if valid else self
 
     def to_dict(self) -> dict[str, Any]:
         """Return the supported plain, rehydratable configuration snapshot."""
@@ -397,6 +442,9 @@ class GenerationConfig:
             values["source_evidence_files"] = _normalize_evidence_files(
                 raw_files, label="generation_context.files"
             )
+
+        if config.get("context_window") is not None:
+            values["context_window"] = _positive_int(config["context_window"], "context_window")
 
         raw_folder_coverage = config.get("folder_coverage")
         if raw_folder_coverage is not None:

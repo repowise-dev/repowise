@@ -42,3 +42,26 @@ def test_a_nested_subproject_keeps_its_setup_py_beside_a_routers_setup_module():
     assert set(roots) == {"libs/foo"}
     assert owner["libs/foo/foo/core.py"] == "libs/foo"
     assert "server/routers/setup.py" not in owner
+
+
+def test_every_registry_package_manifest_is_a_container_root():
+    """Kotlin-DSL Gradle, SwiftPM and Dart packages mark containers too; build
+    config (CMake, Vite) does not, and exact names keep the tool's spelling."""
+    paths = [
+        "app/build.gradle.kts",
+        "app/src/Main.kt",
+        "ios/Package.swift",
+        "ios/Sources/App.swift",
+        "mobile/pubspec.yaml",
+        "mobile/lib/main.dart",
+        "native/CMakeLists.txt",
+        "native/core.cpp",
+        "web/vite.config.js",
+        "web/main.js",
+        "odd/cargo.toml",
+        "odd/lib.rs",
+    ]
+    owner, roots = assign_containers((), paths)
+    assert set(roots) == {"app", "ios", "mobile"}
+    assert owner["app/src/Main.kt"] == "app"
+    assert "native/core.cpp" not in owner

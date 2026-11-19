@@ -46,6 +46,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
                     Page.display_order,
                     Page.section_number,
                     Page.freshness_status,
+                    Page.title,
                 ).where(Page.repository_id == repo_id)
             )
         )
@@ -59,7 +60,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
     before: dict[str, tuple[str | None, int, str | None]] = {}
     metadata_before: dict[str, dict[str, Any]] = {}
 
-    for pid, page_type, target, meta_json, parent, order, section, freshness in rows:
+    for pid, page_type, target, meta_json, parent, order, section, freshness, title in rows:
         # A tombstoned page documents a file that no longer exists. Leaving it
         # in the tree would show deleted files in the navigation, so it keeps
         # its row and its content but loses its place.
@@ -78,6 +79,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
                 page_type=page_type or "",
                 target_path=target or "",
                 metadata=metadata if isinstance(metadata, dict) else {},
+                title=title or "",
             )
         )
 

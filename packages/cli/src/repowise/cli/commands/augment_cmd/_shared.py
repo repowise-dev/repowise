@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -197,11 +197,39 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
     try:
         import yaml
 
+        from repowise.core.settings.model import parse_flag
+
         data = yaml.safe_load(text) or {}
         hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
+        value = hooks.get(flag) if isinstance(hooks, dict) else None
+        if value is None:
+            return default
+        # A value that is neither on nor off reads as off: these fail closed.
+        return parse_flag(value)
     except Exception:
         return False
+
+
+def listed_tools(repo_path: Path, client: str | None, names: Iterable[str]) -> frozenset[str]:
+    """Which of *names* the MCP server here lists to this hook's *client*.
+
+    *client* is the ``--client`` marker (``None`` is Claude Code). The rule is
+    the server's own, over the repo's ``mcp.tools``, so hook text names a tool
+    only when the agent was listed it. A config that cannot be read reads as
+    unset. Called only on paths that already emit text, never per tool call.
+    """
+    from repowise.core.registry.tool_selection import listed_default_tools
+
+    override = None
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        mcp = load_repo_config(repo_path).get("mcp")
+        tools = mcp.get("tools") if isinstance(mcp, dict) else None
+        override = tools if isinstance(tools, (str, list)) else None
+    except Exception:
+        pass
+    return listed_default_tools(names, client=client or "claude_code", override=override)
 
 
 #: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
@@ -456,8 +484,14 @@ def _record_opportunity(
 
 
 @lru_cache(maxsize=8)
-def _find_repo_root(cwd: Path) -> Path | None:
-    """Walk up from cwd to find a directory with .repowise/.
+def _find_roots(cwd: Path) -> tuple[Path, Path] | None:
+    """``(checkout, store)`` for *cwd*: where its files are, where its index is.
+
+    Walks up to the first directory with ``.repowise/``, which is both. A
+    linked git worktree with no ``.repowise/`` of its own, met on the way up,
+    reads its main checkout's index instead: the checkout is the worktree, the
+    store is the main checkout (see
+    :func:`repowise.cli._helpers.paths.borrowed_index_base`).
 
     ``~/.repowise`` is the user-level config dir and a ``.repowise`` at the
     system temp ROOT is always a stray artifact (a tool that indexed with
@@ -468,16 +502,54 @@ def _find_repo_root(cwd: Path) -> Path | None:
     the walk costs up to 20 ``resolve()``/``is_dir()`` syscall pairs. The
     cache lives only as long as the hook process, so it cannot go stale.
     """
+    from repowise.cli._helpers.paths import borrowed_index_base
+
     current = Path(cwd).resolve()
     try:
         skip = {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}
     except (OSError, RuntimeError):
         skip = set()
     for _ in range(20):
-        if current not in skip and (current / ".repowise").is_dir():
-            return current
+        if current not in skip:
+            if (current / ".repowise").is_dir():
+                return current, current
+            base = borrowed_index_base(current)
+            if base is not None:
+                return current, base
         parent = current.parent
         if parent == current:
             break
         current = parent
     return None
+
+
+def _find_repo_root(cwd: Path) -> Path | None:
+    """The directory whose ``.repowise/`` answers for *cwd*, or ``None``.
+
+    Every read and ledger write goes here. In a linked worktree that borrows
+    its main checkout's index this is the main checkout, so file paths must be
+    made relative to :func:`_checkout_root` instead.
+    """
+    roots = _find_roots(cwd)
+    return roots[1] if roots is not None else None
+
+
+def _checkout_root(cwd: Path, repo_path: Path) -> Path:
+    """Where *cwd*'s files live when *repo_path*'s index answers for it.
+
+    The worktree when it borrows *repo_path*'s index, else *repo_path*.
+    Repo-relative paths, file reads and git commands use this; the index,
+    config and ledger use *repo_path*.
+    """
+    roots = _find_roots(cwd)
+    return roots[0] if roots is not None and roots[1] == repo_path else repo_path
+
+
+def _borrowed_index(cwd: Path, repo_path: Path) -> bool:
+    """True when *cwd* is a worktree reading *repo_path*'s index.
+
+    That index describes the main checkout's indexed commit, not this
+    branch, so surfaces anchored on exact lines or on the index's own
+    freshness stay quiet here.
+    """
+    return _checkout_root(cwd, repo_path) != repo_path

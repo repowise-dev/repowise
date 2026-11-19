@@ -13,6 +13,7 @@ import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,11 +51,41 @@ def model_command(scope: Mapping[str, Any] | None) -> str:
     return upgrade_command(scope) or MODEL_COMMAND
 
 
-def answers_upgrade_line(scope: Mapping[str, Any] | None) -> str | None:
+#: What the upgrade line names when no agent CLI on a paid plan is signed in.
+NO_FREE_ROUTE = "a provider key or a local model"
+
+
+@dataclass(frozen=True)
+class FreeRoute:
+    """A signed-in agent CLI billed to a plan quota: adding a model with no new spend.
+
+    Found by ``repowise.core.providers.llm.subscription.detect_free_route``.
+    *provider* is the ``--provider`` value, *cli_name* what the user calls it,
+    *minutes* the estimated run time when the caller knows the page count.
+    """
+
+    provider: str
+    cli_name: str
+    minutes: int | None = None
+
+    def uses(self, *, timed: bool = True) -> str:
+        """``uses your Claude Code sign-in and plan quota, about 5 minutes``."""
+        text = f"uses your {self.cli_name} sign-in and plan quota"
+        if timed and self.minutes:
+            unit = "minute" if self.minutes == 1 else "minutes"
+            text += f", about {self.minutes} {unit}"
+        return text
+
+
+def answers_upgrade_line(
+    scope: Mapping[str, Any] | None, route: FreeRoute | None = None
+) -> str | None:
     """How an index with no model-written prose gets answers and docs; None once it has them.
 
-    The one wording the MCP server and the CLI share. The key is what lets
-    ``get_answer`` synthesize, and the server reads it at start, hence the restart.
+    The one wording the MCP server, ``status`` and ``doctor`` share. With
+    *route* it names the signed-in CLI and its plan quota, else it falls back
+    to :data:`NO_FREE_ROUTE`. The server resolves its provider at start, hence
+    the restart.
     """
     fast = upgrade_command(scope)
     if fast is None and not (
@@ -62,11 +93,35 @@ def answers_upgrade_line(scope: Mapping[str, Any] | None) -> str | None:
     ):
         return None
     command = fast or MODEL_COMMAND
-    no_reindex = "" if fast else " (one command, no re-index)"
+    if route is not None:
+        return (
+            f"answers and docs: `{command} --provider {route.provider}` {route.uses()}; "
+            "then restart the MCP server"
+        )
+    no_reindex = "" if fast else " (no re-index)"
     return (
-        f"answers and docs: set a provider key, run `{command}`{no_reindex}, "
+        f"answers and docs: `{command}`{no_reindex} with {NO_FREE_ROUTE}, "
         "then restart the MCP server"
     )
+
+
+def answers_key_line(route: FreeRoute | None = None) -> str:
+    """For an index a model already wrote, served with no model: what answers need."""
+    if route is not None:
+        return (
+            "answers are not synthesized without a model: "
+            f"`repowise config set provider {route.provider}` {route.uses(timed=False)}; "
+            "then restart the MCP server"
+        )
+    return (
+        f"answers are not synthesized without a model: set {NO_FREE_ROUTE} "
+        "(`repowise config set provider`), then restart the MCP server"
+    )
+
+
+def upgrade_line(scope: Mapping[str, Any] | None, route: FreeRoute | None = None) -> str:
+    """The line for any keyless index: the docs upgrade, else what answers need."""
+    return answers_upgrade_line(scope, route) or answers_key_line(route)
 
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
@@ -308,11 +363,9 @@ def resolve_index_scope(
     }
 
 
-#: What a routine response says instead of the whole canonical scope. The full
-#: object is roughly 900 characters, which on a small ``get_symbol`` response
-#: was about a third of everything the agent received — paid for on every call
-#: to answer a question almost none of them asked.
-COMPACT_INDEX_SCOPE_PROJECTION = "compact"
+#: The env value that asks for the whole canonical scope on routine responses.
+#: A routine response otherwise carries the compact digest: the full object is
+#: roughly 900 characters, about a third of a small ``get_symbol`` reply.
 CANONICAL_INDEX_SCOPE_PROJECTION = "full"
 
 #: Degraded-analysis entries the compact scope names; the count stays exact and
@@ -461,8 +514,10 @@ def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | Non
     """The routine-response projection of a canonical scope.
 
     Keeps what changes how an answer should be read — the run mode, where the
-    prose came from, how much git there is, and whether the index is whole —
-    plus a fingerprint identifying the full object. The call that returns it
+    prose came from, how much git there is, and whether the index is whole.
+    The version, projection name and fingerprint stay on the whole object: they
+    are the same on every response of a session, and an agent acts on none of
+    them. The call that returns the whole object
     (``get_overview(include=["scope"])``) is documented, not repeated on every
     response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.
@@ -475,13 +530,10 @@ def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | Non
     if not isinstance(scope, Mapping):
         return None
     compact: dict[str, Any] = {
-        "version": scope.get("version", INDEX_SCOPE_VERSION),
-        "projection": COMPACT_INDEX_SCOPE_PROJECTION,
         "run_mode": scope.get("run_mode", "unknown"),
         "content_provenance": scope.get("content_provenance", "unknown"),
         "git_tier": scope.get("git_tier", "unknown"),
         "status": _scope_status(scope),
-        "fingerprint": index_scope_fingerprint(scope),
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:

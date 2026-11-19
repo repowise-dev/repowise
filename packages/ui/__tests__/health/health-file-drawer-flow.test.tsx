@@ -211,7 +211,7 @@ describe("HealthFileDrawer what's wrong", () => {
     expect(titles).toEqual([
       expect.stringContaining("Function does too much"),
       expect.stringContaining("Very long function"),
-      expect.stringContaining("Too many paths through one function"),
+      expect.stringContaining("Many paths through one function"),
     ]);
     for (const name of [/Other issues \(2\)/, /Details/, /History & ownership/, /Dependencies/, /Why this score/]) {
       expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");

@@ -75,6 +75,9 @@ export function SetupRowView({ row, action, onOpenPrompt, children }: Props) {
           <span className="sr-only">: {text(row.status)}</span>
         </h3>
         <RowDetail detail={text(row.detail)} />
+        {row.note && (
+          <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{text(row.note)}</p>
+        )}
         {children}
         <div className="mt-1.5">
           <SetupCommand command={row.command} />

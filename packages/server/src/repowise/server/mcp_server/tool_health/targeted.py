@@ -10,7 +10,7 @@ from repowise.core.analysis.health.aggregation import group_rollup
 from repowise.core.analysis.health.rows import scored_rows
 from repowise.core.analysis.health.trends import file_trend
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
-from repowise.server.mcp_server.tool_health.paging import Pager
+from repowise.server.mcp_server.tool_health.paging import Pager, health_call
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
 from repowise.server.mcp_server.tool_health.targets import (
@@ -53,6 +53,7 @@ def build_targeted(
                 for f in data.findings.finding_rows
             ],
             "findings",
+            cap=req.targeted_findings_cap,
         ),
         "findings_total": findings_total,
         **_findings_hidden(data),
@@ -153,12 +154,6 @@ def _file_trends(data: HealthData) -> list[dict[str, Any]]:
             "delta": t.delta,
             "declining": t.declining,
         }
-        # The score floors at 1.0, flattening progress on the worst files.
-        # Carry the unclamped series only where it differs.
-        unclamped = [round(p.unclamped_score, 2) for p in t.points]
-        if unclamped != series:
-            entry["unclamped_series"] = unclamped
-            entry["unclamped_delta"] = t.unclamped_delta
         trends.append(entry)
     return trends
 
@@ -167,22 +162,18 @@ def _defer_to_secondary_rankings(
     result: dict[str, Any], req: HealthRequest, findings_total: int, trends_total: int
 ) -> None:
     """A bare ``module:`` call leads with the rollup; the ranked lists become calls."""
-    targets, repo, view = req.raw_targets, req.repo, req.refactoring_view
     result["secondary_rankings"] = {
-        "findings": {
-            "total": findings_total,
-            "call": (
-                f"get_health(targets={targets!r}, only=['findings'], "
-                f"repo={repo!r}, limit=50, refactoring_view='{view}')"
+        block: {
+            "total": total,
+            "call": health_call(
+                targets=req.raw_targets,
+                only=[block],
+                repo=req.repo,
+                limit=50,
+                refactoring_view=req.refactoring_view,
             ),
-        },
-        "trends": {
-            "total": trends_total,
-            "call": (
-                f"get_health(targets={targets!r}, only=['trends'], "
-                f"repo={repo!r}, limit=50, refactoring_view='{view}')"
-            ),
-        },
+        }
+        for block, total in (("findings", findings_total), ("trends", trends_total))
     }
     for block in ("findings", "trends"):
         result.pop(block, None)

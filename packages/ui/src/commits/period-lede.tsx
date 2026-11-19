@@ -2,6 +2,7 @@ import * as React from "react";
 import type { PeriodHealthSummaryResponse, WinsResponse } from "@repowise-dev/types/history";
 import { PageLede } from "../shared/page-lede";
 import { readPeriodHealth, type PeriodHealthRead } from "./period-health";
+import { formatNumber } from "../lib/format";
 
 /** The window's work in numbers, read from the commit health summary. */
 export interface PeriodWorkRead {
@@ -66,23 +67,23 @@ const CATEGORY_WORDS: Record<string, string> = {
   other: "other work",
 };
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+const plural = (n: number, one: string, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 
 const DEFAULT_COPY: PeriodLedeCopy = {
   unit: (r) => (r.total === 1 ? "commit" : "commits"),
   mix: (r, top, second) =>
     `${r.top?.share ?? 0}% were ${top}${second && r.second ? `, then ${second} at ${r.second.share}%` : ""}.`,
   better: (r) =>
-    `Health moved the right way: ${plural(r.health.findingsBetter, "finding")} resolved or improved, ${r.health.findingsWorse.toLocaleString()} added or worsened.`,
+    `Health moved the right way: ${plural(r.health.findingsBetter, "finding")} resolved or improved, ${formatNumber(r.health.findingsWorse)} added or worsened.`,
   worse: (r) =>
-    `Health slipped: ${plural(r.health.findingsWorse, "finding")} added or worsened, ${r.health.findingsBetter.toLocaleString()} resolved or improved.`,
+    `Health slipped: ${plural(r.health.findingsWorse, "finding")} added or worsened, ${formatNumber(r.health.findingsBetter)} resolved or improved.`,
   flat: (r) =>
     r.health.findingsBetter === 0
       ? "No analysed commit changed a health finding."
       : `Health held even: ${plural(r.health.findingsBetter, "finding")} resolved or improved and as many added or worsened.`,
   notable: (subject, resolved) => `Biggest single cleanup: ${subject}, ${plural(resolved, "finding")} resolved.`,
   coverage: (r) =>
-    `Health counts cover the ${r.health.analysed.toLocaleString()} of ${r.total.toLocaleString()} commits the current analyzer has read; the rest fill in as updates run.`,
+    `Health counts cover the ${formatNumber(r.health.analysed)} of ${formatNumber(r.total)} commits the current analyzer has read; the rest fill in as updates run.`,
   empty: () => "No commits in this window.",
   category: (id) => CATEGORY_WORDS[id] ?? id,
 };
@@ -127,7 +128,7 @@ export function PeriodLede({ summary, wins, period, commitHref, LinkComponent = 
   const mix = r.top ? `${c.mix(r, c.category(r.top.category), r.second ? c.category(r.second.category) : null)} ` : "";
   const Link = LinkComponent;
   return (
-    <PageLede label={period} value={r.total.toLocaleString()} unit={c.unit(r)}>
+    <PageLede label={period} value={formatNumber(r.total)} unit={c.unit(r)}>
       <p>
         {mix}
         {directionSentence(c, r)}

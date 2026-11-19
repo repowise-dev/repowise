@@ -12,6 +12,7 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
+from repowise.core.analysis.test_reach import model
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     MAX_TESTS_PER_TARGET,
@@ -240,6 +241,73 @@ def test_a_test_without_a_sibling_source_still_matches_across_directories() -> N
     )
 
     assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
+
+
+@pytest.mark.parametrize("size", [16, 32, 64])
+@pytest.mark.parametrize("layout", ["flat", "separate"])
+def test_name_matching_generates_convention_names_linearly(monkeypatch, size, layout) -> None:
+    dirs = ["flat" if layout == "flat" else f"package_{i}" for i in range(size)]
+    targets = [f"{directory}/module_{i}.py" for i, directory in enumerate(dirs)]
+    tests = [f"{directory}/test_module_{i}.py" for i, directory in enumerate(dirs)]
+    all_files = set(targets) | set(tests)
+    original = model.paired_test_names
+    calls = 0
+
+    def counted(path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(model, "paired_test_names", counted)
+    found = name_match(targets, tests, targets)
+
+    assert found == {
+        target: model.ReachedBy([test], "name-match", 1, (test,))
+        for target, test in zip(targets, tests, strict=True)
+    }
+    assert calls <= len(all_files) + 2 * len(targets)
+
+
+def test_a_sibling_owner_only_in_the_index_prevents_an_unrelated_name_match() -> None:
+    assert name_match(["elsewhere/x.py"], {"test_x.py"}, {"x.py"}) == {}
+
+
+def test_a_sibling_test_can_belong_to_multiple_sources() -> None:
+    found = name_match(
+        ["src/widget.ts", "src/widget.tsx", "elsewhere/widget.ts"],
+        {"src/widget.test.ts"},
+    )
+    expected = model.ReachedBy(
+        ["src/widget.test.ts"], "name-match", 1, ("src/widget.test.ts",)
+    )
+    assert found == {"src/widget.ts": expected, "src/widget.tsx": expected}
+
+
+def test_unowned_name_matches_keep_their_rank_and_complete_list_beyond_the_cap() -> None:
+    tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET)}
+    tests.add("tests/pkg/test_x.py")
+    ordered = ("tests/pkg/test_x.py", *sorted(tests - {"tests/pkg/test_x.py"}))
+
+    assert name_match(["src/pkg/x.py"], tests) == {
+        "src/pkg/x.py": model.ReachedBy(
+            list(ordered[:MAX_TESTS_PER_TARGET]), "name-match", len(tests), ordered
+        )
+    }
+
+
+@pytest.mark.parametrize("source,test", [("x.py", "test_x.py"), ("test_x.py", "test_test_x.py")])
+def test_root_level_files_including_tests_can_own_sibling_tests(source, test) -> None:
+    assert name_match([source, f"elsewhere/{source}"], {source, test}) == {
+        source: model.ReachedBy([test], "name-match", 1, (test,))
+    }
+
+
+@pytest.mark.parametrize(
+    "targets,tests",
+    [([], set()), ([], {"test_x.py"}), (["x.py"], set()), (["x.py"], {"test_y.py"})],
+)
+def test_empty_or_unmatched_name_lookups_return_nothing(targets, tests) -> None:
+    assert name_match(targets, tests) == {}
 
 
 def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> None:

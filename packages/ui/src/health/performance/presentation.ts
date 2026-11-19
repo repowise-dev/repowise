@@ -13,6 +13,7 @@ import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL } from "../labels";
+import { formatNumber } from "../../lib/format";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -79,7 +80,10 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
 };
 
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
-  proven: "Measured",
+  // Static: the code shows how the cost scales (a loop that grows with data or
+  // is bounded, a per-call cost, or a shape that grows by itself). Nothing
+  // timed it, so this never says "measured".
+  proven: "Loop size known",
   unproven: "Unproven: loop size unknown",
   background_unproven: "Unproven: scheduled job, growth not shown",
 };
@@ -271,8 +275,8 @@ export function opportunityEvidenceLine(opportunity: PerformanceOpportunity): st
 export function affectedSummary(opportunity: PerformanceOpportunity): string {
   const sites = opportunity.affected_call_sites_total;
   const files = opportunity.affected_files_total;
-  const sitePart = `${sites.toLocaleString()} call site${sites === 1 ? "" : "s"}`;
-  const filePart = `${files.toLocaleString()} file${files === 1 ? "" : "s"}`;
+  const sitePart = `${formatNumber(sites)} call site${sites === 1 ? "" : "s"}`;
+  const filePart = `${formatNumber(files)} file${files === 1 ? "" : "s"}`;
   return `${sitePart} across ${filePart}`;
 }
 
@@ -299,7 +303,7 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
   switch (factor.factor) {
     case "affected_call_sites":
       return typeof value === "number"
-        ? `${value.toLocaleString()} call site${value === 1 ? "" : "s"}`
+        ? `${formatNumber(value)} call site${value === 1 ? "" : "s"}`
         : "several call sites";
     case "boundary_kind":
       return !value || value === NO_BOUNDARY
@@ -329,7 +333,7 @@ export function whyRankedLabel(factor: PerformanceWhyRanked): string {
   if (factor.value === null || factor.value === "" || typeof factor.value === "boolean") {
     return `${name} (${sign}${factor.points})`;
   }
-  const value = typeof factor.value === "number" ? factor.value.toLocaleString() : humanizeToken(String(factor.value));
+  const value = typeof factor.value === "number" ? formatNumber(factor.value) : humanizeToken(String(factor.value));
   return `${name}: ${value} (${sign}${factor.points})`;
 }
 

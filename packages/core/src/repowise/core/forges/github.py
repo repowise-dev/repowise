@@ -97,6 +97,7 @@ register(
     GitHub(
         kind=ForgeKind.GITHUB,
         label="GitHub",
+        change_head_ref="refs/pull/{number}/head",
         ci=CiSystem(
             name="github_actions",
             markers=("GITHUB_ACTIONS",),

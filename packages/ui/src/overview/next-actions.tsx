@@ -24,6 +24,7 @@ import { RowOverflow } from "../shared/row-overflow";
 import { Segmented } from "../shared/segmented";
 import { ActionDrawer, type ActionDrawerProps } from "./action-drawer";
 import { OverviewSection } from "./section";
+import { formatNumber } from "../lib/format";
 
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
 const PREVIEW = 5;
@@ -106,8 +107,8 @@ export const NEXT_ACTIONS_COPY: NextActionsCopy = {
   tier: (tier) => ACTION_TIER_LABELS[tier] ?? tier,
   allAnswered: "You have answered everything listed here. Answers are kept until the facts change.",
   showFewer: "Show fewer",
-  showAll: (count) => `Show all ${count.toLocaleString()}`,
-  listing: (shown, total) => `Listing ${shown.toLocaleString()} of ${total.toLocaleString()}.`,
+  showAll: (count) => `Show all ${formatNumber(count)}`,
+  listing: (shown, total) => `Listing ${formatNumber(shown)} of ${formatNumber(total)}.`,
   answered: (count) => `${plural(count, "action")} answered (done, snoozed or dismissed).`,
   notChecked: (checks) => `Not checked: ${checks}.`,
   emptyChecks: (count) =>

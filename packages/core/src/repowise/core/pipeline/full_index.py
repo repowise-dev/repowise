@@ -66,6 +66,10 @@ async def index_repo_full(
     if require_health_success and getattr(result, "health_report", None) is None:
         raise RuntimeError("Health analysis failed during a required configuration rebuild")
 
+    from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
+
+    # The rewrite below would leave a prior update's graph snapshot stale.
+    invalidate_seed_edge_cache(repo_path)
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
     stale_page_ids: list[str] = []

@@ -2,6 +2,7 @@ import * as React from "react";
 import type { OwnerFileEntry } from "@repowise-dev/types/owners";
 import { EmptyState } from "../shared/empty-state";
 import { PathText } from "../shared/path-text";
+import { formatNumber } from "../lib/format";
 import { RelativeTime } from "../shared/relative-time";
 import { isSingleOwner } from "./knowledge-files";
 import type { OwnershipLabels } from "./labels";
@@ -127,7 +128,7 @@ export function OwnerFileTable({
                     />
                   </span>
                 </td>
-                <td className={numCls}>{f.commit_count_90d.toLocaleString()}</td>
+                <td className={numCls}>{formatNumber(f.commit_count_90d)}</td>
                 <td className={`${numCls} text-[var(--color-text-tertiary)]`}>
                   {Math.round(f.churn_percentile)}
                 </td>

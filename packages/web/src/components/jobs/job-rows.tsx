@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { JobResponse } from "@/lib/api/types";
 import { LiveJobProgress } from "@/components/jobs/live-job-progress";
 import { RelativeTime } from "@repowise-dev/ui/shared/relative-time";
@@ -61,7 +62,7 @@ export function JobRows({
                     initialTotal={job.total_pages}
                   />
                 ) : (
-                  `${job.total_pages.toLocaleString()} pages`
+                  `${formatNumber(job.total_pages)} pages`
                 )}
                 {job.model_name && (
                   <span className="text-[var(--color-text-tertiary)]"> · {job.model_name}</span>

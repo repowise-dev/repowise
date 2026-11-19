@@ -288,3 +288,51 @@ def test_status_counts_a_blocked_candidate_as_blocked(tmp_path: Path) -> None:
 
     assert review["acceptable"] == 1
     assert review["blocked"] == 1
+
+
+def test_status_shows_each_sources_last_run_and_last_failure(status_repo: Path) -> None:
+    (status_repo / ".repowise" / "state.json").write_text(
+        json.dumps(
+            {
+                "decision_mining": {
+                    "pr": {
+                        "last_success_commit": "a" * 40,
+                        "last_run_at": "2026-02-03T04:05:06+00:00",
+                        "last_run_commit": "b" * 40,
+                        "last_status": "failed",
+                        "last_failure": "RuntimeError: outage",
+                        "last_failure_at": "2026-02-03T04:05:06+00:00",
+                        "last_failure_commit": "b" * 40,
+                    },
+                    "git_archaeology": {
+                        "last_success_commit": "c" * 40,
+                        "last_run_at": "2026-02-04T05:06:07+00:00",
+                        "last_run_commit": "c" * 40,
+                        "last_status": "ok",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    by_key = {source["key"]: source for source in _status(status_repo)["sources"]}
+
+    assert by_key["pr"]["last_run"] == "2026-02-03T04:05:06+00:00"
+    assert by_key["pr"]["last_run_status"] == "failed"
+    assert by_key["pr"]["last_failure"] == "RuntimeError: outage"
+    assert by_key["pr"]["last_success_commit"] == "a" * 40
+    # A run that succeeded keeps a clean failure column, and a source that
+    # never ran has neither rather than a zero.
+    assert by_key["git_archaeology"]["last_run_status"] == "ok"
+    assert by_key["git_archaeology"]["last_failure"] is None
+    assert by_key["adr"]["last_run"] is None
+    assert by_key["adr"]["last_failure"] is None
+
+
+def test_status_table_names_the_last_run_and_failure_columns(status_repo: Path) -> None:
+    result = CliRunner().invoke(cli, ["decision", "status", str(status_repo)])
+    assert result.exit_code == 0, result.output
+    assert "Last run" in result.output
+    assert "Last failure" in result.output
+

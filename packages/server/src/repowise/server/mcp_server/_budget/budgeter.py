@@ -202,6 +202,11 @@ class _ShedLimits:
             response, headroom=self.headroom, char_budget=self.char_budget
         )
 
+    def excess(self, response: dict[str, Any]) -> int:
+        """Characters *response* is over the fit line; zero or less means it fits."""
+        budget = effective_char_budget() if self.char_budget is None else self.char_budget
+        return response_chars(response) - (budget - self.headroom)
+
 
 def fit_to_budget(
     response: dict[str, Any],
@@ -268,6 +273,12 @@ def _shed_in_rows(
     ``"parent.rows[].field"`` drops *field* from rows; ``"parent.rows[].field[]"``
     trims each row's *field* list from its tail instead. The rest of each row
     stays, so a block made of rows keeps every row's headline.
+
+    The response is measured once. Each row's change is then the row's own
+    size before and after, plus what changed outside it (``truncated`` and,
+    for a dropped mapping, ``_meta``). That holds while every row and field
+    list is reached once in the response; when one is reached twice, each row
+    measures the whole response instead. Either way the same rows shed.
     """
     path, _, leaf = key.partition("[].")
     rows: Any = response
@@ -281,22 +292,85 @@ def _shed_in_rows(
         key=lambda i: len(json.dumps(rows[i][name], default=str)),
         reverse=True,
     )
+    touched = [rows[i] for i in heaviest] + [rows[i][name] for i in heaviest]
+    aliased = not _reached_once(response, touched)
+    excess = limits.excess(response)
     for i in heaviest:
-        if not limits.exceeded(response):
+        if excess <= 0:
             return
         row, label = rows[i], f"{path}[{i}].{name}"
+        scoped = limits if aliased else _RowLimits(
+            limits.headroom,
+            limits.char_budget,
+            limits.record_counts,
+            row=row,
+            offset=excess - response_chars(row),
+        )
+        outside = _member_chars(response, "truncated")
         if leaf.endswith("[]") or isinstance(row[name], list):
             # Past the floor a list still goes row by row, so it loses only what the fit needs.
             keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
-            _shed_tail(response, row, name, label, collector, limits, keep)
+            _shed_tail(response, row, name, label, collector, scoped, keep)
             if not row[name]:
                 row.pop(name)
+        else:
+            value = row.pop(name)
+            collector.add(label, value)
+            if limits.record_counts:
+                # Only a mapping's reduction lands outside the row, in ``_meta``.
+                meta = _member_chars(response, "_meta") if isinstance(value, dict) else 0
+                _record_reduction(response, row, label, name, value, emitted=0)
+                if isinstance(value, dict):
+                    outside += meta - _member_chars(response, "_meta")
+            response["truncated"] = True
+        if aliased:
+            excess = limits.excess(response)
+        else:
+            excess = scoped.excess(response) + _member_chars(response, "truncated") - outside
+
+
+@dataclass(frozen=True)
+class _RowLimits(_ShedLimits):
+    """:class:`_ShedLimits` that sizes the response from one row.
+
+    *offset* is the response's excess less the row's size, fixed while only
+    the row changes, so a check costs the row and not the whole response.
+    """
+
+    row: dict[str, Any]
+    offset: int
+
+    def exceeded(self, response: dict[str, Any]) -> bool:
+        return self.excess(response) > 0
+
+    def excess(self, response: dict[str, Any]) -> int:
+        return response_chars(self.row) + self.offset
+
+
+def _member_chars(container: dict[str, Any], key: str) -> int:
+    """What ``"key":value`` and its comma add to *container*'s compact JSON."""
+    return response_chars({key: container[key]}) - 1 if key in container else 0
+
+
+def _reached_once(response: Any, nodes: list[Any]) -> bool:
+    """False when any of *nodes* is reachable twice from *response*."""
+    wanted = {id(node) for node in nodes}
+    seen: set[int] = set()
+    stack = [response]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            children: Any = node.values()
+        elif isinstance(node, (list, tuple)):
+            children = node
+        else:
             continue
-        value = row.pop(name)
-        collector.add(label, value)
-        if limits.record_counts:
-            _record_reduction(response, row, label, name, value, emitted=0)
-        response["truncated"] = True
+        if id(node) in wanted:
+            if id(node) in seen:
+                return False
+            seen.add(id(node))
+        stack.extend(children)
+    return True
 
 
 def _shed_tail(
@@ -313,13 +387,7 @@ def _shed_tail(
     if not isinstance(rows, (list, dict)):
         return
     total = len(rows)
-    dropped: list[Any] = []
-    while len(rows) > keep and limits.exceeded(response):
-        if isinstance(rows, list):
-            dropped.append(rows.pop())
-        else:
-            name = next(reversed(rows))
-            dropped.append({name: rows.pop(name)})
+    dropped = _pop_tail_until_fit(response, rows, limits, keep)
     if dropped:
         collector.add(label, list(reversed(dropped)))
         if limits.record_counts:
@@ -336,6 +404,52 @@ def _shed_tail(
             # population difference across both passes.
             container[f"{leaf}_omitted"] = collection_total - len(rows)
         response["truncated"] = True
+
+
+def _pop_tail(rows: list[Any] | dict[str, Any]) -> Any:
+    if isinstance(rows, list):
+        return rows.pop()
+    name = next(reversed(rows))
+    return {name: rows.pop(name)}
+
+
+def _pop_tail_until_fit(
+    response: dict[str, Any],
+    rows: list[Any] | dict[str, Any],
+    limits: _ShedLimits,
+    keep: int,
+) -> list[Any]:
+    """Pop rows off the tail of *rows* until *response* fits or *keep* remain.
+
+    Serialising the whole response once per popped row made a long list
+    quadratic: 4,000 rows took about 3,000 full ``json.dumps`` calls. Each pop
+    instead subtracts the row's own compact-JSON size (and its comma) from one
+    measured excess. A row object reached twice in the response would make
+    that arithmetic undercount, so the end state is measured once more and,
+    if the prediction missed, the rows go back and the per-row loop decides.
+    Either way the same rows are dropped.
+    """
+    excess = limits.excess(response)
+    dropped: list[Any] = []
+    while len(rows) > keep and excess > 0:
+        row = _pop_tail(rows)
+        dropped.append(row)
+        # ``[row]`` or ``{name: value}`` minus its brackets is the row as it sat
+        # in its parent, keys converted the way JSON converts them; a comma
+        # went with it unless it was the only one left.
+        excess -= response_chars(row if isinstance(rows, dict) else [row]) - 2
+        excess -= 1 if rows else 0
+    if not dropped or limits.excess(response) == excess:
+        return dropped
+    for row in reversed(dropped):
+        if isinstance(rows, list):
+            rows.append(row)
+        else:
+            rows.update(row)
+    dropped = []
+    while len(rows) > keep and limits.exceeded(response):
+        dropped.append(_pop_tail(rows))
+    return dropped
 
 
 def _record_reduction(
@@ -511,16 +625,32 @@ def _fit_target(
     """
     docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
     symbols = docs.get("symbols") if docs is not None else None
-    if isinstance(symbols, list) and symbols:
+    has_symbols = isinstance(symbols, list) and bool(symbols)
+    if has_symbols:
         query_terms = query_terms_for(name)
         ordered = sorted(symbols, key=lambda s: symbol_priority(s, query_terms), reverse=True)
         # The floor is the whole list's, so a later pass cannot erode it.
         floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
         _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+    _drop_blocks(result, name, tgt, docs, share, collector, record_counts)
+    if has_symbols and _compact_size(tgt) > share:
+        _trim_to_one_symbol(result, name, tgt, share, collector, record_counts)
 
-    def cost() -> int:
-        return len(json.dumps(tgt, separators=(",", ":"), default=str))
 
+def _compact_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), default=str))
+
+
+def _drop_blocks(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    docs: dict[str, Any] | None,
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Drop *tgt*'s optional blocks, largest first, until it fits *share*."""
     # (container, key, label): the target's own blocks and those nested in docs.
     sources = ((tgt, _TARGET_IDENTITY_KEYS, ""), (docs or {}, _DOCS_IDENTITY_KEYS, "docs."))
     blocks = [
@@ -531,27 +661,55 @@ def _fit_target(
     ]
     blocks.sort(key=lambda block: len(json.dumps(block[0][block[1]], default=str)), reverse=True)
     for container, key, label in blocks:
-        if cost() <= share:
+        if _compact_size(tgt) <= share:
             return
-        value = container.pop(key)
-        if collector is not None and value:
-            collector.add(f"{name} :: {label}", value)
-        result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
-        result["truncated"] = True
-        if record_counts and isinstance(value, list):
-            # Keeps a capped list's *_total / *_emitted beside it truthful.
-            _record_reduction(result, container, f"targets.{name}.{label}", key, value, emitted=0)
+        _drop_block(result, name, container, key, label, collector, record_counts)
 
-    if cost() > share and isinstance(symbols, list) and symbols:
-        _trim_symbols(result, name, tgt, list(docs["symbols"]), share, 1, collector, record_counts)
-        head = docs["symbols"][0]
-        docstring = head.get("docstring")
-        if cost() > share and isinstance(docstring, str) and len(docstring) > 200:
-            # One symbol alone over the share: keep it, cut its docstring.
-            if collector is not None:
-                collector.add(f"{name} :: {head.get('name')} docstring", docstring)
-            docs["symbols"][0] = {**head, "docstring": docstring[:200]}
-            result["truncated"] = True
+
+def _drop_block(
+    result: dict[str, Any],
+    name: str,
+    container: dict[str, Any],
+    key: str,
+    label: str,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Drop one block, recording it; a block with a verdict keeps a stub."""
+    value = container.pop(key)
+    if collector is not None and value:
+        collector.add(f"{name} :: {label}", value)
+    if isinstance(value, dict) and "complete" in value:
+        # A block with a completeness verdict keeps its counts, and stops claiming whole.
+        container[key] = {k: v for k, v in value.items() if type(v) is int} | {
+            "complete": False,
+            "reasons": ["dropped to fit the response budget"],
+        }
+    result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
+    result["truncated"] = True
+    if record_counts and isinstance(value, list):
+        # Keeps a capped list's *_total / *_emitted beside it truthful.
+        _record_reduction(result, container, f"targets.{name}.{label}", key, value, emitted=0)
+
+
+def _trim_to_one_symbol(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Keep one symbol; if it alone is over *share*, cut its docstring."""
+    docs = tgt["docs"]
+    _trim_symbols(result, name, tgt, list(docs["symbols"]), share, 1, collector, record_counts)
+    head = docs["symbols"][0]
+    docstring = head.get("docstring")
+    if _compact_size(tgt) > share and isinstance(docstring, str) and len(docstring) > 200:
+        if collector is not None:
+            collector.add(f"{name} :: {head.get('name')} docstring", docstring)
+        docs["symbols"][0] = {**head, "docstring": docstring[:200]}
+        result["truncated"] = True
 
 
 def _trim_symbols(

@@ -31,7 +31,7 @@ from pathlib import Path
 
 from repowise.core.fsutils import repo_relative
 
-from ._shared import _find_repo_root, hook_flag_enabled
+from ._shared import _borrowed_index, _find_repo_root, hook_flag_enabled, listed_tools
 from .fast_lookup import _DB_ENV_VARS
 
 #: Report locations checked when ``coverage.paths`` is not set: the literal
@@ -196,21 +196,23 @@ def _names_some_tests(token: str, previous: str, value_flags: frozenset[str]) ->
     return not (previous.startswith("--") and "=" not in previous)
 
 
-def coverage_reingest_notice(tool_input: dict, cwd: str) -> str | None:
+def coverage_reingest_notice(tool_input: dict, cwd: str, client: str | None = None) -> str | None:
     """Spawn a background ``coverage add`` after a full test run with fresh reports.
 
     ``None`` (silence) in every other case, and on any error: the hook must
     never be the reason an agent's tool call reads as failed. Test runs often
     exit non-zero with a report written, so the exit code is not consulted.
+    *client* is the hook's ``--client`` marker; the notice names
+    ``get_change_risk`` only to a client that is listed it.
     """
     try:
-        return _notice(tool_input, cwd)
+        return _notice(tool_input, cwd, client)
     except Exception:
         # The hook never raises: any failure is silence (no logger on this path).
         return None
 
 
-def _notice(tool_input: dict, cwd: str) -> str | None:
+def _notice(tool_input: dict, cwd: str, client: str | None) -> str | None:
     if not is_full_test_run(tool_input.get("command")):
         return None
     found = _local_index(cwd)
@@ -223,13 +225,18 @@ def _notice(tool_input: dict, cwd: str) -> str | None:
     newest = max(mtime for _path, mtime, _prefix in reports)
     if _already_queued(repo, newest):
         return None
+    reader = (
+        "; get_change_risk reads it once the ingest finishes"
+        if listed_tools(repo, client, ("get_change_risk",))
+        else ""
+    )
     # A mapped ``coverage.paths`` entry keeps its prefix as ``PATH=PREFIX``.
     spawn_coverage_add(repo, [f"{p}={pre}" if pre else p for p, _mtime, pre in reports])
     _write_queued(repo, newest)
     names = ", ".join(repo_relative(p, repo) or p.as_posix() for p, _mtime, _prefix in reports)
     return (
         f"[repowise] Re-ingesting coverage from {names} in the background "
-        f"(log: .repowise/{LOG_FILENAME}); get_change_risk reads it once the ingest finishes."
+        f"(log: .repowise/{LOG_FILENAME}){reader}."
     )
 
 
@@ -242,7 +249,8 @@ def _local_index(cwd: str) -> tuple[Path, Path] | None:
     if any(os.environ.get(name) for name in _DB_ENV_VARS):
         return None
     repo = _find_repo_root(Path(cwd))
-    if repo is None:
+    # A worktree's coverage is not the main checkout's, and the ingest writes.
+    if repo is None or _borrowed_index(Path(cwd), repo):
         return None
     db = repo / ".repowise" / "wiki.db"
     if not db.is_file() or not hook_flag_enabled(repo, "coverage_reingest"):

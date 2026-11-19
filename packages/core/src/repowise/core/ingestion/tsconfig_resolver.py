@@ -6,9 +6,11 @@ alias resolution that ``GraphBuilder._resolve_import()`` calls before falling
 back to the ``external:`` classification.
 
 Design constraints:
-  - Stateless after ``__init__``: safe to share across all files and threads.
-  - One-time I/O at construction time; per-import resolution is O(k) prefix
-    matching + set lookup where k is the number of alias patterns.
+  - Configs are fixed after ``__init__``; the only later state is idempotent
+    memo caches, so one instance is safe to share across files and threads.
+  - Per-import resolution is O(k) prefix matching + set lookups, where k is
+    the number of alias patterns. Candidate paths are checked against a
+    once-per-directory listing, not one filesystem call per candidate.
   - Fully backwards-compatible: if no tsconfig/jsconfig is found in the repo,
     ``resolve()`` always returns ``None`` and behaviour is identical to before.
   - Pattern matching follows TypeScript's exact semantics:
@@ -21,13 +23,19 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
+
+from repowise.core.fs_walk import _is_reparse_point
+
+from .models import TS_JS_LANGUAGES
 
 log = structlog.get_logger(__name__)
 
@@ -143,6 +151,17 @@ class TsconfigResolver:
         # source-file directory -> applicable ResolvedConfig (or None)
         self._file_config_cache: dict[Path, ResolvedConfig | None] = {}
 
+        # Probe caches (see ``_probe``): directory -> resolved directory,
+        # resolved directory -> its listing and its repo-relative prefix.
+        # Files are assumed not to move while one resolver is alive.
+        self._real_dirs: dict[str, Path] = {}
+        self._listings: dict[str, tuple[dict[str, bool], frozenset[str]] | None] = {}
+        self._dir_prefixes: dict[str, str | None] = {}
+
+        # Every config file read, including ``extends`` and ``references``
+        # targets of any name: a graph patch must not treat their edits as inert.
+        self.read_paths: set[Path] = set()
+
         self._discover_configs()
         log.info(
             "tsconfig_resolver_ready",
@@ -249,7 +268,7 @@ class TsconfigResolver:
             return []
         visited = visited | {config.config_path}
 
-        data = self._parse_json_lenient(config.config_path)
+        data = self._read_config(config.config_path)
         references = data.get("references") if data else None
         if not isinstance(references, list):
             return []
@@ -302,7 +321,7 @@ class TsconfigResolver:
         """
         if config_path in visited:
             return None, None, None
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None, None, None
 
@@ -353,7 +372,7 @@ class TsconfigResolver:
             return None
         visited = visited | {config_path}
 
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None
 
@@ -499,7 +518,7 @@ class TsconfigResolver:
         When that config is a solution, the referenced project that owns the
         file applies instead; a file no project owns keeps the solution's.
         """
-        directory = source_file.parent.resolve()
+        directory = self._resolved_dir(source_file.parent)
         config = self._find_config_for_dir(directory)
         if config is None:
             return None
@@ -559,40 +578,110 @@ class TsconfigResolver:
 
     def _try_extensions(self, base: Path) -> str | None:
         """Try common TS/JS extensions and index files, return first ``path_set`` hit."""
+        if "\x00" in str(base):
+            # No file path holds a NUL, and the OS rejects one in a lookup.
+            return None
         # 1. As-is (if template already has extension).
-        rel = self._to_repo_relative(base)
-        if rel is not None and rel in self._path_set:
+        parent, name = base.parent, base.name
+        rel = self._probe(parent, name)
+        if rel is not None:
             return rel
 
-        # 2. Direct extensions. ``Path.with_suffix`` *replaces* the last
-        # ``.``-component, so for specifiers like ``app/layout.config``
-        # Python's pathlib would clobber ``.config`` and probe
-        # ``app/layout.tsx`` — yielding the wrong file. Append the
-        # extension as a string instead so multi-dot module names
-        # (``layout.config``, ``site.metadata``, ``foo.test``) resolve.
+        # 2. Direct extensions, appended to the name as a string:
+        # ``Path.with_suffix`` would replace ``.config`` in ``app/layout.config``
+        # and probe the wrong file.
         for ext in _TS_EXTENSIONS:
-            rel = self._to_repo_relative(Path(str(base) + ext))
-            if rel is not None and rel in self._path_set:
+            rel = self._probe(parent, name + ext)
+            if rel is not None:
                 return rel
 
         # 3. Index files (base is a directory).
         for index in _INDEX_FILES:
-            rel = self._to_repo_relative(base / index)
-            if rel is not None and rel in self._path_set:
+            rel = self._probe(base, index)
+            if rel is not None:
                 return rel
 
         return None
 
-    def _to_repo_relative(self, path: Path) -> str | None:
-        """Convert *path* to a repo-relative POSIX string, or ``None``."""
+    def _probe(self, directory: Path, name: str) -> str | None:
+        """Return the ``path_set`` entry ``(directory / name).resolve()`` lands on, or ``None``.
+
+        Answers from memory: the directory is resolved once and listed once,
+        and a plain entry resolves to ``<real dir>/<name>``. Whenever the OS
+        could resolve the name differently (a link or reparse point, a case-only
+        variant on a case-insensitive filesystem, a name Windows rewrites, a
+        long path), it falls back to the real ``Path.resolve()``.
+        """
+        real_dir = self._resolved_dir(directory)
+        entries = None if _needs_os_resolve(name, real_dir) else self._listing(real_dir)
+        if entries is None:
+            return self._probe_slow(directory / name)
+        exact, folded = entries
+        is_link = exact.get(name)
+        if is_link or (is_link is None and _fold(name) in folded):
+            return self._probe_slow(directory / name)
+        prefix = self._repo_prefix(real_dir)
+        if prefix is None:
+            return None
+        rel = f"{prefix}/{name}" if prefix else name
+        return rel if rel in self._path_set else None
+
+    def _probe_slow(self, path: Path) -> str | None:
         try:
-            return path.resolve().relative_to(self._repo_path).as_posix()
+            rel = path.resolve().relative_to(self._repo_path).as_posix()
         except ValueError:
             return None
+        return rel if rel in self._path_set else None
+
+    def _resolved_dir(self, directory: Path) -> Path:
+        """``directory.resolve()``, memoized for the life of this resolver."""
+        key = str(directory)
+        real = self._real_dirs.get(key)
+        if real is None:
+            real = self._real_dirs[key] = directory.resolve()
+        return real
+
+    def _listing(self, real_dir: Path) -> tuple[dict[str, bool], frozenset[str]] | None:
+        """``{name: is_link_or_reparse_point}`` and casefolded names for *real_dir*.
+
+        A missing directory (or a file) lists as empty, which matches how a
+        non-strict resolve leaves the name as written. ``None`` means the
+        directory could not be read, so the caller asks the OS.
+        """
+        key = str(real_dir)
+        if key in self._listings:
+            return self._listings[key]
+        listing: tuple[dict[str, bool], frozenset[str]] | None
+        try:
+            with os.scandir(real_dir) as it:
+                exact = {entry.name: _is_link_entry(entry) for entry in it}
+            listing = (exact, frozenset(_fold(n) for n in exact))
+        except (FileNotFoundError, NotADirectoryError):
+            listing = ({}, frozenset())
+        except OSError:
+            listing = None
+        self._listings[key] = listing
+        return listing
+
+    def _repo_prefix(self, real_dir: Path) -> str | None:
+        """Repo-relative POSIX path of *real_dir* (``""`` at the root), or ``None`` outside."""
+        key = str(real_dir)
+        if key not in self._dir_prefixes:
+            try:
+                rel = real_dir.relative_to(self._repo_path).as_posix()
+                self._dir_prefixes[key] = "" if rel == "." else rel
+            except ValueError:
+                self._dir_prefixes[key] = None
+        return self._dir_prefixes[key]
 
     # ------------------------------------------------------------------
     # JSON parsing
     # ------------------------------------------------------------------
+
+    def _read_config(self, config_path: Path) -> dict[str, Any] | None:
+        """:meth:`_parse_json_lenient`, noting *config_path* in :attr:`read_paths`."""
+        self.read_paths.add(config_path)
+        return self._parse_json_lenient(config_path)
 
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
@@ -609,6 +698,41 @@ class TsconfigResolver:
         except Exception as exc:
             log.warning("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None
+
+
+# Below Windows' MAX_PATH (260) with room to spare: a longer path can come back
+# from ``resolve()`` with a ``\\?\`` prefix, so let the OS answer it.
+_MAX_IN_MEMORY_PATH = 240
+
+
+def _needs_os_resolve(name: str, real_dir: Path) -> bool:
+    """Whether only the OS can say where ``real_dir / name`` resolves to.
+
+    ``..``/``.`` and an empty name are not plain entries. Windows strips a
+    trailing dot or space, expands an 8.3 short name (``~``) and reads ``:`` as
+    a stream, so those names may resolve to an entry spelled differently.
+    A custom short name set with ``fsutil`` carries no ``~`` and is not caught.
+    """
+    return (
+        not name
+        or name[-1] in ". "
+        or "~" in name
+        or ":" in name
+        or len(str(real_dir)) + len(name) >= _MAX_IN_MEMORY_PATH
+    )
+
+
+def _fold(name: str) -> str:
+    """Key under which a case- or normalization-insensitive filesystem may match *name*."""
+    return unicodedata.normalize("NFD", name).casefold()
+
+
+def _is_link_entry(entry: os.DirEntry[str]) -> bool:
+    """True when resolving *entry* may land somewhere else: a symlink or reparse point."""
+    try:
+        return entry.is_symlink() or _is_reparse_point(entry)
+    except OSError:
+        return True
 
 
 def _glob_regex(patterns: list[str], *, subtree: bool) -> re.Pattern[str] | None:
@@ -692,13 +816,11 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
-    # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue", "astro"}
-
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()
-    if not any(pf.file_info.language in _ts_langs for pf in parsed_files):
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
 
     try:

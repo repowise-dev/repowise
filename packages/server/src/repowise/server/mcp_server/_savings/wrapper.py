@@ -26,7 +26,6 @@ The counterfactual comes from one of two places, in order of trust:
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import inspect
 import json
@@ -34,6 +33,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from repowise.core.mcp_latency import record_call
 from repowise.server.mcp_server._meta import full_meta
 
 from . import counterfactual, interaction
@@ -53,6 +53,99 @@ logger = logging.getLogger(__name__)
 #: counts, never content, so a field before/after of payload size exists.
 _META_FLAGS = ("index_behind", "embedder_degraded")
 _RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding", "degraded")
+
+#: Every property an ``mcp_tool_call`` event may carry. Anything else is
+#: dropped before it is recorded, so a new field is a deliberate edit here.
+MCP_TOOL_CALL_FIELDS = frozenset(
+    {
+        "tool",
+        "status",
+        "duration_ms",
+        "client",
+        "error_reason",
+        "error_source",
+        *_RESULT_ENUMS,
+        *_META_FLAGS,
+        "results_bucket",
+        "response_chars",
+        "response_tokens",
+        "semantic_search",
+        "cold_start",
+        "index_mode",
+        "provider_kind",
+        "empty_result",
+        "include",
+        *(f"{stage}_ms" for stage in interaction.STAGES),
+    }
+)
+
+#: Where each tool keeps the ``include`` values it accepts, read from the tool's
+#: own constant so a value is reported by name as soon as the tool accepts it.
+_INCLUDE_VOCABULARIES: dict[str, tuple[str, str]] = {
+    "get_answer": ("tool_answer.projection", "_INCLUDES"),
+    "get_change_risk": ("tool_change_risk.payload", "_INCLUDE_BLOCKS"),
+    "get_context": ("tool_context.context", "_INCLUDE_BLOCKS"),
+    "get_health": ("tool_health.request", "_KNOWN_INCLUDES"),
+    "get_overview": ("tool_overview.tool", "_INCLUDE_BLOCKS"),
+    "get_risk": ("tool_risk.get_risk", "_INCLUDE_BLOCKS"),
+    "get_why": ("tool_why.tool", "_INCLUDE"),
+}
+
+
+def _include_vocabulary(tool: str) -> frozenset[str]:
+    """The ``include`` values *tool* accepts; empty for a tool not listed."""
+    import importlib
+
+    where = _INCLUDE_VOCABULARIES.get(tool)
+    if where is None:
+        return frozenset()
+    module = importlib.import_module(f"repowise.server.mcp_server.{where[0]}")
+    return frozenset(getattr(module, where[1]))
+
+
+def _include_facets(tool: str, include: Any) -> list[str] | None:
+    """The facets a call asked for, each a known name or ``other``; never free text.
+
+    ``None`` when the call passed no ``include``.
+    """
+    if isinstance(include, str):
+        include = [include]
+    if not isinstance(include, (list, tuple, set, frozenset)) or not include:
+        return None
+    # The vocabulary's own string is sent, never the caller's object.
+    known = {name: name for name in _include_vocabulary(tool)}
+    return sorted({known.get(v, "other") if isinstance(v, str) else "other" for v in include})
+
+
+#: Tool calls started in this process; the first one is the cold start.
+_calls_started = 0
+
+
+def _search_empty(result: dict[str, Any]) -> bool:
+    return result.get("results") == [] and not result.get("lines")
+
+
+def _context_empty(result: dict[str, Any]) -> bool:
+    targets = result.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        return False
+    return all(isinstance(card, dict) and card.get("error") for card in targets.values())
+
+
+def _answer_empty(result: dict[str, Any]) -> bool:
+    return not (
+        result.get("answer") or result.get("symbol_bodies") or counterfactual._answer_paths(result)
+    )
+
+
+#: How each tool says it found nothing, for the tools that have a clear rule.
+#: A tool missing here reports no ``empty_result`` rather than a guess.
+_EMPTY_RULES: dict[str, Callable[[dict[str, Any]], bool]] = {
+    "search_codebase": _search_empty,
+    "get_context": _context_empty,
+    "get_answer": _answer_empty,
+    "get_why": counterfactual._why_served_nothing,
+}
 
 
 def _response_size(result: Any) -> tuple[int, int] | None:
@@ -83,6 +176,44 @@ def _semantic_search_state() -> bool | None:
     from repowise.server.mcp_server._meta import semantic_search_state
 
     return semantic_search_state()
+
+
+def _index_mode() -> str | None:
+    """Who wrote the served index's pages: ``none``, ``template``, ``model`` or ``mixed``.
+
+    Read through the scope cache every response already uses, keyed on the
+    state file's mtime, so this costs no parse on the steady path.
+    """
+    from repowise.core.index_scope import load_index_scope
+    from repowise.server.mcp_server import _state
+
+    live = interaction.current()
+    root = (live.repo_root if live is not None else None) or _state.served_path()
+    if not root:
+        return None
+    scope = load_index_scope(root)
+    return scope.get("content_provenance") if scope else None
+
+
+def _call_facts(tool: str, result: Any) -> dict[str, Any]:
+    """What the call in flight noted on its way: provider, stages, error source, emptiness."""
+    facts: dict[str, Any] = {}
+    live = interaction.current()
+    if live is not None:
+        if live.error_source:
+            facts["error_source"] = live.error_source
+        if live.provider_kind:
+            facts["provider_kind"] = live.provider_kind
+        for stage, ms in live.stage_ms.items():
+            facts[f"{stage}_ms"] = ms
+    if not isinstance(result, dict):
+        return facts
+    if result.get("degraded") == "no-llm-provider":
+        facts["provider_kind"] = "none"
+    rule = _EMPTY_RULES.get(tool)
+    if rule is not None and not result.get("error"):
+        facts["empty_result"] = bool(rule(result))
+    return facts
 
 
 def _results_count_bucket(result: Any) -> str | None:
@@ -144,10 +275,19 @@ def _result_flags(result: dict[str, Any]) -> dict[str, Any]:
     return flags
 
 
-def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
+def _telemetry_properties(
+    tool: str,
+    result: Any,
+    duration_ms: int,
+    *,
+    cold_start: bool | None = None,
+    include: Any = None,
+) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
-    Only coarse enums / booleans / bucketed counts / response size, never user-identifying data.
+    Only coarse enums / booleans / bucketed counts / response size / stage
+    timings / known ``include`` facet names, never user-identifying data, and
+    only keys in :data:`MCP_TOOL_CALL_FIELDS`.
     """
     is_error = isinstance(result, dict) and bool(result.get("error"))
     props: dict[str, Any] = {
@@ -175,10 +315,25 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
     semantic_search = _semantic_search_state()
     if semantic_search is not None:
         props["semantic_search"] = semantic_search
-    return props
+    if cold_start is not None:
+        props["cold_start"] = cold_start
+    index_mode = _index_mode()
+    if index_mode is not None:
+        props["index_mode"] = index_mode
+    try:
+        facets = _include_facets(tool, include)
+    except Exception:  # pragma: no cover - a missing vocabulary drops only this field
+        logger.debug("mcp include facets failed for %s", tool, exc_info=True)
+        facets = None
+    if facets is not None:
+        props["include"] = facets
+    props.update(_call_facts(tool, result))
+    return {key: value for key, value in props.items() if key in MCP_TOOL_CALL_FIELDS}
 
 
-def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
+def _emit_telemetry(
+    tool: str, result: Any, duration_ms: int, *, cold_start: bool, include: Any = None
+) -> None:
     """Emit one anonymous ``mcp_tool_call`` event. Best-effort, never raises.
 
     This is the field-visibility counterpart to the local savings ledger: it
@@ -188,7 +343,10 @@ def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
     """
     from repowise.core.platform import telemetry
 
-    telemetry.record_event("mcp_tool_call", _telemetry_properties(tool, result, duration_ms))
+    telemetry.record_event(
+        "mcp_tool_call",
+        _telemetry_properties(tool, result, duration_ms, cold_start=cold_start, include=include),
+    )
 
 #: ``_meta`` key a tool sets to declare its own counterfactual (see
 #: :func:`declare_replaced`). The wrapper reads it and, on a lean envelope,
@@ -274,14 +432,14 @@ def _observe_baseline(tool: str, result: Any) -> None:
             from repowise.server.mcp_server import _state
 
             record_mcp_dead_end(
-                getattr(_state, "_repo_path", None), tool, response_tokens(result)
+                _state.served_path(), tool, response_tokens(result)
             )
         return
 
     delivered = response_tokens(result)
     from repowise.server.mcp_server import _state
 
-    repo_root = getattr(_state, "_repo_path", None)
+    repo_root = _state.served_path()
     recorded = record_mcp_saving(repo_root, tool, replaced, delivered)
     if recorded and isinstance(result, dict) and full_meta(tool):
         meta = result.setdefault("_meta", {})
@@ -303,11 +461,26 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         return fn
 
     tool = getattr(fn, "__name__", "tool")
+    try:
+        signature: inspect.Signature | None = inspect.signature(fn)
+    except (ValueError, TypeError):  # pragma: no cover - exotic callables
+        signature = None
+
+    def _asked_include(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        if signature is None or "include" not in signature.parameters:
+            return None
+        try:
+            return signature.bind_partial(*args, **kwargs).arguments.get("include")
+        except TypeError:
+            return kwargs.get("include")
 
     @functools.wraps(fn)
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
         import time
 
+        global _calls_started
+        cold_start = _calls_started == 0
+        _calls_started += 1
         _t0 = time.perf_counter()
         result = await fn(*args, **kwargs)
         duration_ms = int((time.perf_counter() - _t0) * 1000)
@@ -316,12 +489,24 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         except Exception:  # pragma: no cover - defensive; savings never break a tool
             logger.debug("mcp savings instrumentation failed for %s", tool, exc_info=True)
         try:
-            _emit_telemetry(tool, result, duration_ms)
+            _emit_telemetry(
+                tool,
+                result,
+                duration_ms,
+                cold_start=cold_start,
+                include=_asked_include(args, kwargs),
+            )
         except Exception:  # pragma: no cover - defensive; telemetry never breaks a tool
             logger.debug("mcp telemetry emit failed for %s", tool, exc_info=True)
+        try:
+            from repowise.server.mcp_server import _state
+
+            record_call(_state.served_path(), tool, duration_ms)
+        except Exception:  # pragma: no cover - defensive; the latency log never breaks a tool
+            logger.debug("mcp latency log failed for %s", tool, exc_info=True)
         return result
 
     # Preserve the original signature so FastMCP builds the correct tool schema.
-    with contextlib.suppress(ValueError, TypeError):  # pragma: no cover - exotic callables
-        _wrapped.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
+    if signature is not None:
+        _wrapped.__signature__ = signature  # type: ignore[attr-defined]
     return _wrapped

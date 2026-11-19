@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,7 @@ from repowise.server.job_state import (
     _stamp_last_sync_commit,
     newer_health_analyzer,
 )
+from repowise.server.managed_checkout import sync_managed_checkout
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
 
@@ -132,11 +134,37 @@ _PHASE_LEVELS = {
 }
 
 
+class _PhaseCount:
+    """One phase's progress within the active group of a JobProgressCallback."""
+
+    __slots__ = ("completed", "done", "total")
+
+    def __init__(self, total: int | None) -> None:
+        self.completed = 0
+        self.total = total
+        self.done = False
+
+    @property
+    def open(self) -> bool:
+        """Still running with a known total. A phase without one adds nothing
+        to the denominator, so it never holds the group together."""
+        return not self.done and self.total is not None and self.completed < self.total
+
+
 class JobProgressCallback:
     """ProgressCallback that writes progress to the GenerationJob record.
 
     The SSE stream endpoint polls the job table, so updating the record
     is sufficient to push live progress to the frontend.
+
+    Phases can run concurrently (ingestion beside git, the four analyses,
+    generation beside its paid tier), so progress is counted per phase. The
+    record shows the phases that are active together as one bar: the sum of
+    their counts, each capped at its own total, over the sum of their totals.
+    A phase that starts while another with a known total is still short of it
+    joins that group; one that starts after every such phase finished begins a
+    new group, as a sequential phase did before. ``on_phase_done`` finishes a
+    phase early and ``on_stage`` starts a fresh group.
     """
 
     def __init__(
@@ -148,8 +176,9 @@ class JobProgressCallback:
         self._job_id = job_id
         self._session_factory = session_factory
         self._events = events
-        self._completed = 0
-        self._total: int | None = None
+        # Phases of the active group; ticks arrive from worker threads.
+        self._phases: dict[str, _PhaseCount] = {}
+        self._lock = threading.Lock()
         self._phase = ""
         self._pending_flush = 0
         self._stopped = False
@@ -167,20 +196,55 @@ class JobProgressCallback:
         self._phase = phase
         if self._events is not None:
             self._events.set_phase(phase, total)
-        # Reset per-phase counters so the bar shows progress within the current phase
-        self._completed = 0
-        self._total = total
+        with self._lock:
+            # Sequential phases start a new group, so the bar shows progress
+            # within the current phase; concurrent ones join the running group.
+            if not any(p.open for p in self._phases.values()):
+                self._phases.clear()
+            self._phases[phase] = _PhaseCount(total)
         self._pending_flush = 0
         # Force a write so the UI's phase label updates promptly.
         self._sync_job_status(force=True)
         logger.info("job_phase_start", job_id=self._job_id, phase=phase, total=total)
 
     def on_item_done(self, phase: str) -> None:
-        self._completed += 1
-        self._pending_flush += 1
-        if self._pending_flush >= self._flush_interval:
+        with self._lock:
+            # A tick for a sub-phase that was never started ("generation.llm"
+            # without its own start) counts for its parent; any other unknown
+            # phase is not part of the group and is not counted.
+            count = self._phases.get(phase) or self._phases.get(phase.split(".", 1)[0])
+            if count is None:
+                return
+            count.completed += 1
+            self._pending_flush += 1
+            if self._pending_flush < self._flush_interval:
+                return
             self._pending_flush = 0
-            self._sync_job_status()
+        self._sync_job_status()
+
+    def on_phase_done(self, phase: str) -> None:
+        with self._lock:
+            count = self._phases.get(phase)
+            if count is not None:
+                count.done = True
+
+    def on_stage(self, stage: str) -> None:
+        with self._lock:
+            self._phases.clear()
+
+    def _progress_counts(self) -> tuple[int, int]:
+        """The active group as ``(completed, total)`` for the job record.
+
+        With no known total in the group the bar is indeterminate: total 0 and
+        the raw count, as a single phase without a total was reported before.
+        """
+        with self._lock:
+            counts = list(self._phases.values())
+        known = [p for p in counts if p.total is not None]
+        if not known:
+            return sum(p.completed for p in counts), 0
+        total = sum(p.total or 0 for p in known)
+        return sum(min(p.completed, p.total or 0) for p in known), total
 
     def on_message(self, level: str, text: str) -> None:
         if self._events is not None:
@@ -232,14 +296,15 @@ class JobProgressCallback:
         self._pending_tasks.clear()
 
     async def _async_update(self) -> None:
+        completed, total = self._progress_counts()
         try:
             async with get_session(self._session_factory) as session:
                 await update_job_status(
                     session,
                     self._job_id,
                     "running",
-                    completed_pages=self._completed,
-                    total_pages=self._total if self._total is not None else 0,
+                    completed_pages=completed,
+                    total_pages=total,
                     current_level=_PHASE_LEVELS.get(self._phase, 0),
                 )
         except Exception as exc:
@@ -373,11 +438,11 @@ async def execute_job(
         # Inside the try, so a missing app_state attribute fails the job
         # instead of leaving it pending.
         session_factory = session_factory_override or app_state.session_factory
-        fts = app_state.fts
 
         spec = await _start_job(session_factory, job_id)
         if spec is None:
             return
+        fts = _resolve_job_fts(app_state, spec)
         vector_store = await _resolve_job_vector_store(app_state, spec)
         logger.info("job_started", job_id=job_id, repo_path=spec.repo_path, mode=spec.mode)
         llm_client, docs_skip_reason = _resolve_llm_client(spec)
@@ -438,9 +503,7 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
         repo = await get_repository(session, job.repository_id)
         if repo is None:
             logger.error("repo_not_found", job_id=job_id, repo_id=job.repository_id)
-            await update_job_status(
-                session, job_id, "failed", error_message="Repository not found"
-            )
+            await update_job_status(session, job_id, "failed", error_message="Repository not found")
             return None
 
         repo_path = repo.local_path
@@ -458,13 +521,25 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
         )
         if mode not in VALID_JOB_MODES:
             valid_str = ", ".join(sorted(VALID_JOB_MODES))
-            raise ValueError(
-                f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-            )
+            raise ValueError(f"Invalid job mode '{mode}'. Expected one of: {valid_str}")
 
         # Mark running
         await update_job_status(session, job_id, "running")
     return spec
+
+
+def _resolve_job_fts(app_state: Any, spec: _JobSpec) -> Any:
+    """The repository's own fulltext index, where search reads it.
+
+    A repository without a registered index (single-repo serve) uses the primary one.
+    A member with its own database whose index failed to open gets ``None``
+    (no fulltext writes), not the primary's index, which holds other pages."""
+    repo_fts = (getattr(app_state, "workspace_fts", None) or {}).get(spec.repo_id)
+    if repo_fts is not None:
+        return repo_fts
+    if spec.repo_id in (getattr(app_state, "workspace_sessions", None) or {}):
+        return None
+    return app_state.fts
 
 
 async def _resolve_job_vector_store(app_state: Any, spec: _JobSpec) -> Any:
@@ -566,6 +641,9 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
         return
     try:
         await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        # A checkout the server owns moves to its remote head first; any
+        # other checkout is indexed as it stands.
+        await asyncio.to_thread(sync_managed_checkout, repo_path)
         await _run_locked_index_job(run, app_state)
     finally:
         release_update_lock(repo_path)
@@ -590,7 +668,7 @@ async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     await run.progress.drain_and_stop()
 
     elapsed = time.monotonic() - run.start
-    pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
+    pages_generated = await _record_index_completion(run, docs, result, all_pages, elapsed)
     await _write_index_state(
         run,
         docs,
@@ -729,9 +807,13 @@ def _provider_failed_to_load(run: _JobRun) -> bool:
 
 
 async def _record_index_completion(
-    run: _JobRun, result: Any, all_pages: list, elapsed: float
+    run: _JobRun, docs: _DocsPlan, result: Any, all_pages: list, elapsed: float
 ) -> int:
-    """Mark the job completed with its run summary; return the pages generated."""
+    """Mark the job completed with its run summary; return the pages generated.
+
+    ``docs_mode`` says who wrote the docs this run, so a client can call a run
+    with no model an index rather than a generation.
+    """
     from repowise.core.generation.models import count_stub_fallbacks
 
     pages_generated = len(all_pages)
@@ -750,6 +832,7 @@ async def _record_index_completion(
                 "file_count": result.file_count,
                 "symbol_count": result.symbol_count,
                 "pages_generated": pages_generated,
+                "docs_mode": docs.docs_mode,
                 "provider_issue": _provider_issue(
                     all_pages, docs_skipped=_provider_failed_to_load(run)
                 ),

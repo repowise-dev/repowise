@@ -15,7 +15,7 @@ from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
-ACTIONS_MODEL_VERSION = 2
+ACTIONS_MODEL_VERSION = 3
 
 #: The places every surface shows first: the overview's next actions.
 NEXT_ACTIONS_HEAD = 3
@@ -32,7 +32,8 @@ ActionRule = Literal[
     "dead_code_batch",
     "coverage_missing",
     "coverage_stale",
-    "decisions_unreviewed",
+    "runtime_missing",
+    "runtime_stale",
 ]
 ACTION_RULES: tuple[str, ...] = get_args(ActionRule)
 

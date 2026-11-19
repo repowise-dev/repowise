@@ -9,6 +9,7 @@ import {
   repoSuffix,
   type AiPromptFlavor,
 } from "./shared";
+import { formatNumber } from "../../lib/format";
 
 // ─────────────────────────────────────────────────────────────────────
 // Dead-code cleanup prompt (bulk: the safe-to-delete pile)
@@ -98,7 +99,7 @@ export function buildDeadCodeAiPrompt({
     "",
     bulletList([
       `Files in this pile: **${files.length}**`,
-      `Estimated reclaimable lines: **${reclaimableLines(findings).toLocaleString()}**`,
+      `Estimated reclaimable lines: **${formatNumber(reclaimableLines(findings))}**`,
       "Source: repowise dead-code analysis (high-confidence, safe-to-delete tier).",
     ]),
     "",

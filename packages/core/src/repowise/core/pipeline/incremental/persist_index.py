@@ -51,6 +51,8 @@ class IncrementalPersist(PersistRun):
     reconcile_full_scope: bool = False
     full_generation_page_ids: set[str] | None = None
     vector_store: Any | None = None
+    deferred_page_scope: str | None = None
+    deferred_page_paths: list[str] | None = None
 
     traversed_paths: frozenset[str] | None = None
     pruned_paths: set[str] = field(default_factory=set)
@@ -66,6 +68,9 @@ class IncrementalPersist(PersistRun):
     deselected_page_ids: list[str] = field(default_factory=list)
     fts_cleanup_ids: set[str] = field(default_factory=set)
     vector_cleanup_ids: set[str] = field(default_factory=set)
+    # Refusals from the deleted-file prune: the prune ran and stopped rather
+    # than failing. The caller uses them to hold the sync pointer (#5410).
+    prune_refusals: list[str] = field(default_factory=list)
 
 
 # --- Steps inside the session -------------------------------------------------
@@ -102,6 +107,16 @@ async def reconcile_generation_scope(ctx: IncrementalPersist) -> None:
     ctx.tombstoned_page_ids += await tombstone_pages_outside_generation(
         ctx.session, ctx.repo_id, ctx.full_generation_page_ids
     )
+
+
+async def restore_complexity(ctx: IncrementalPersist) -> None:
+    # Before the sweep ranks spotlights and the symbol write stores them. The
+    # diffed files are the ones partial health measured; changed_paths can be
+    # wider (a traversal change persists every file).
+    from repowise.core.pipeline.persist import restore_stored_complexity
+
+    measured = [fd.path for fd in ctx.file_diffs or []]
+    await restore_stored_complexity(ctx.session, ctx.repo_id, ctx.parsed_files, measured)
 
 
 async def sweep_retired(ctx: IncrementalPersist) -> None:
@@ -175,6 +190,21 @@ async def rebuild_tree(ctx: IncrementalPersist) -> None:
         await rebuild_page_tree(ctx.session, ctx.repo_id)
 
 
+async def defer_pages(ctx: IncrementalPersist) -> None:
+    from repowise.core.pipeline.persist.tombstones import mark_deferred_pages
+
+    with timed(ctx.timings, "persist.stale_pages"):
+        await mark_deferred_pages(
+            ctx.session,
+            ctx.repo_id,
+            scope=ctx.deferred_page_scope,
+            repo_path=Path(ctx.repo_path),
+            paths=ctx.deferred_page_paths or (),
+            parsed_files=ctx.parsed_files,
+            graph_builder=ctx.graph_builder,
+        )
+
+
 async def persist_git(ctx: IncrementalPersist) -> None:
     with timed(ctx.timings, "persist.git"):
         from repowise.core.pipeline.persist import persist_git_refresh
@@ -186,7 +216,36 @@ async def persist_git(ctx: IncrementalPersist) -> None:
             ctx.git_decay_map,
             ctx.full_git_summary,
             keep_commit_health=not ctx.history_window_changed,
+            gone_paths=_deleted_paths(ctx),
         )
+
+
+def _deleted_paths(ctx: IncrementalPersist) -> set[str]:
+    """Paths this range deleted or renamed away that are gone from disk and git.
+
+    Keyed like ``git_metadata``: relative to the git root, which is not the
+    indexed directory when the index covers a subdirectory.
+    """
+    from repowise.core.pipeline.persist import _FileLiveness
+
+    if not ctx.repo_path:
+        return set()
+    liveness = _FileLiveness(ctx.repo_path, git_root_keyed=True)
+    top = liveness._git_toplevel()
+    try:
+        prefix = Path(ctx.repo_path).resolve().relative_to(top).as_posix() if top else ""
+    except ValueError:
+        return set()
+    candidates = {
+        f"{prefix}/{path}" if prefix else path
+        for fd in ctx.file_diffs or []
+        for path in (
+            fd.path if fd.status == "deleted" else None,
+            getattr(fd, "old_path", None) if fd.status == "renamed" else None,
+        )
+        if path
+    }
+    return {path for path in candidates if not liveness.is_live(path)}
 
 
 async def capture_commits(ctx: IncrementalPersist) -> None:
@@ -272,7 +331,7 @@ async def persist_security(ctx: IncrementalPersist) -> None:
 
 
 async def persist_edges(ctx: IncrementalPersist) -> None:
-    # Refresh graph_edges for the changed files. The full-init path was
+    # Bring graph_edges in line with the rebuilt graph. The full-init path was
     # historically the only writer of edges, so adjacency froze at the last
     # full index: new imports/calls stayed invisible and dropped ones lingered
     # as false paths. Phase E flow-path traversal reads adjacency straight
@@ -283,6 +342,15 @@ async def persist_edges(ctx: IncrementalPersist) -> None:
         await persist_incremental_edges(
             ctx.session, ctx.repo_id, ctx.graph_builder, ctx.parsed_files, ctx.changed_paths
         )
+
+
+async def persist_units(ctx: IncrementalPersist) -> None:
+    # Replaced whole, so a deleted file or a removed member leaves no row and
+    # the prune has nothing to add.
+    from repowise.core.pipeline.persist import persist_build_units
+
+    with timed(ctx.timings, "persist.build_units"):
+        await persist_build_units(ctx.session, ctx.repo_id, ctx.graph_builder)
 
 
 async def backfill_related(ctx: IncrementalPersist) -> None:
@@ -331,10 +399,9 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
     )
 
     await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "code_comment")
-    # A history-window change re-mines these; a walk that only refreshes rows
-    # under new rules does not, so it keeps them.
-    if ctx.full_git_summary is not None and ctx.history_window_changed:
-        await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "git_archaeology")
+    # Mined git archaeology records are kept here even on a history-window
+    # change: this path never re-mines them, so purging would only lose them.
+    # The docs update replaces them when it re-mines (see ``upsert_decisions``).
 
 
 def _left_index(ctx: IncrementalPersist) -> set[str]:
@@ -371,8 +438,35 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
         skip=ctx.skip,
         log=ctx.log,
         degraded=ctx.degraded,
+        prune_refusals=ctx.prune_refusals,
         timings=ctx.timings,
     )
+
+
+async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
+    # Repo-wide aggregates over rows this run rewrites, so they go after both
+    # writers. Fix attribution maps each fix's old line ranges onto
+    # wiki_symbols, which still held the last index's spans until the symbol
+    # step. The git step ranks the table without the files this range deleted;
+    # a row the prune removed on other evidence moves the ranks again, and the
+    # percentile-gated history markers with them.
+    from repowise.core.persistence.crud import recompute_git_percentiles
+    from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+    with timed(ctx.timings, "persist.git_rollups"):
+        if ctx.pruned_paths:
+            await recompute_git_percentiles(ctx.session, ctx.repo_id)
+        await apply_fix_rollups(ctx.session, ctx.repo_id)
+        if ctx.pruned_paths:
+            from .health import refresh_unchanged_history
+
+            try:
+                await refresh_unchanged_history(
+                    ctx.session, ctx.repo_id, ctx.repo_path, skip_paths=set()
+                )
+            except Exception as exc:
+                # Best-effort, as in the health step: the next update re-derives it.
+                ctx.log(f"[yellow]History refresh after the prune skipped: {exc}[/yellow]")
 
 
 async def persist_plugin_records(ctx: IncrementalPersist) -> None:
@@ -396,6 +490,13 @@ def _has_git_input(ctx: IncrementalPersist) -> bool:
     return bool(ctx.git_meta_map or ctx.git_decay_map or ctx.full_git_summary is not None)
 
 
+#: Shared with the docs-mode writer. Skipped when the build collected no units.
+BUILD_UNITS_STEP = Step(
+    "Build units persist",
+    persist_units,
+    when=lambda ctx: getattr(ctx.graph_builder, "build_units", None) is not None,
+)
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -409,7 +510,8 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
-    Step("Retired page sweep", sweep_retired),
+    Step("Stored complexity restore", restore_complexity, when=lambda ctx: bool(ctx.parsed_files)),
+    Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
         mark_tombstones,
@@ -442,6 +544,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
     Step("Related-pages backfill", backfill_related),
     Step(
         "Knowledge-graph persist",
@@ -457,6 +560,13 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
+    Step(
+        "Deferred page staleness",
+        defer_pages,
+        when=lambda ctx: ctx.deferred_page_scope is not None,
+        guarded=False,
+    ),
     # Unguarded and last: plugins see the final rows, and a raise rolls back the update.
     Step("Plugin records", persist_plugin_records, guarded=False),
 )
@@ -511,7 +621,9 @@ async def delete_vector_rows(ctx: IncrementalPersist) -> None:
 
 
 def _lance_dir(ctx: IncrementalPersist) -> Path:
-    return Path(ctx.repo_path) / ".repowise" / "lancedb"
+    from repowise.core.persistence.database import LANCEDB_DIRNAME
+
+    return Path(ctx.repo_path) / ".repowise" / LANCEDB_DIRNAME
 
 
 def _needs_vector_store(ctx: IncrementalPersist) -> bool:
@@ -586,9 +698,12 @@ async def persist_incremental_index(
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
     vector_store: Any | None = None,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
@@ -610,7 +725,8 @@ async def persist_incremental_index(
     The test for membership is "would widening the next run's diff base repair
     this, and would nothing else". Steps that re-derive the whole repo every
     run are deliberately absent (graph nodes, the sweeps, the page tree,
-    related pages, the knowledge graph, the deleted-file prune): they heal
+    related pages, the knowledge graph, the deleted-file prune, the git
+    rollups): they heal
     themselves on the next update, and marking them would let a permanently
     broken one pin the repair window open. So is the commit capture, which
     looks range-scoped and is not: it bounds its walk by the newest
@@ -640,12 +756,37 @@ async def persist_incremental_index(
         reconcile_full_scope=reconcile_full_scope,
         full_generation_page_ids=full_generation_page_ids,
         vector_store=vector_store,
+        deferred_page_scope=deferred_page_scope,
+        deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
         degraded=[] if degraded is None else degraded,
+        prune_refusals=[] if prune_refusals is None else prune_refusals,
         failed_steps=failed_steps,
         timings=timings,
     )
     await _write(ctx)
+
+
+async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
+    """Save the graph the store now holds, for the next update to diff and seed from.
+
+    After the transaction commits and its engine is disposed. A failed save
+    only costs the next update a full reconcile. Skipped when the graph was
+    short: the files outside the change set kept their rows, so the graph no
+    longer describes the store, and a snapshot of it would hide that.
+    """
+    from repowise.core.pipeline.persist.graph import _graph_is_complete
+
+    from .feature import incremental_graph_enabled
+
+    if not incremental_graph_enabled() or ctx.graph_builder is None:
+        return
+    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
+        return
+    from .graph_seed import save_seed_edge_cache
+
+    with timed(ctx.timings, "persist.graph_seed_cache"):
+        await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
 
 async def _write(ctx: IncrementalPersist) -> None:
@@ -722,15 +863,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         if timings is not None:
             timings.stop("persist")
 
-    from .feature import incremental_graph_enabled
-
-    if persisted and incremental_graph_enabled():
-        # The DB transaction is committed and its engine is disposed before we
-        # refresh this optional, sealed snapshot. If the write fails, the next
-        # update safely reloads the authoritative rows from SQL.
-        from .graph_seed import save_seed_edge_cache
-
-        with timed(timings, "persist.graph_seed_cache"):
-            await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
+    if persisted:
+        await save_graph_snapshot(ctx)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))

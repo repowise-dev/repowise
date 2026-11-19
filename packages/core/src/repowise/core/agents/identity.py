@@ -247,6 +247,7 @@ COPILOT = AgentIdentity(
 KIRO = AgentIdentity(
     slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"
 )
+WINDSURF = AgentIdentity(slug="windsurf", display_name="Windsurf", executable="windsurf")
 
 #: Registered identities, by slug. Order is not load-bearing here — the order
 #: agents are *presented* in belongs to the target registry, which is where a
@@ -379,6 +380,6 @@ def resolve_client_identity(client_name: str | None) -> str:
 
 #: The agents shipped with repowise, registered through the same seam a
 #: third-party package would use, so the alias-disjointness check covers them too.
-for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO):
+for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO, WINDSURF):
     register_identity(_shipped)
 del _shipped

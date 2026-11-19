@@ -79,12 +79,17 @@ describe("margin notes over a recorded session", () => {
 
 describe("notesFromAugment", () => {
   it("reads every notice the hook's real formatters write (golden lines shared with the Python test)", () => {
-    const [standingLine, minedLine, fixLine] = golden("augment-edit-notices.txt").split("\n").map((l) => l.trimEnd());
+    const [standingLine, fixLine] = golden("augment-edit-notices.txt").split("\n").map((l) => l.trimEnd());
     expect(notesFromAugment([standingLine])).toEqual([{ kind: "decision", reviewed: true, title: "Use JWT auth" }]);
-    expect(notesFromAugment([minedLine])).toEqual([
+    expect(notesFromAugment([fixLine])).toEqual([{ kind: "fixes", count: 5, age: "2 weeks ago", symbol: "run_pipeline" }]);
+  });
+
+  it("still reads the mined notice an older hook writes", () => {
+    const mined =
+      "[repowise] a.py has a decision recorded in it, mined but not reviewed: Keep the parser allocation-free because reuse the buffer.";
+    expect(notesFromAugment([mined])).toEqual([
       { kind: "decision", reviewed: false, title: "Keep the parser allocation-free" },
     ]);
-    expect(notesFromAugment([fixLine])).toEqual([{ kind: "fixes", count: 5, age: "2 weeks ago", symbol: "run_pipeline" }]);
   });
 
   const standing = "[repowise] a.py is governed by a standing decision: Keep the cache bounded because memory is finite (seen in 3 sessions).";

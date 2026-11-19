@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useFormatter, useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import { CommandLine } from "@repowise-dev/ui/shared/command-line";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { firstPrompts, type FirstPromptFacts } from "@repowise-dev/ui/onboarding/first-prompts";
 import { connectSetupAgent, type SetupResponse } from "@/lib/api/setup";
 import {
   MOMENT_BODY,
@@ -20,6 +21,19 @@ type SetupAgent = NonNullable<SetupResponse["agents"]>[number];
 
 /** Rows shown before the rest are left to Setup, which lists every agent. */
 const AGENTS_SHOWN = 4;
+
+/** How long a connected agent waits for its first call before the card says
+ *  what to check. */
+export const TIPS_AFTER_MS = 2 * 60_000;
+
+/** The `welcome.agent.tips` key with what to check in each agent; any other
+ *  agent gets the generic restart line. */
+const TIP_KEYS: Record<string, string> = {
+  "claude-code": "claudeCode",
+  cursor: "cursor",
+  vscode: "vscode",
+  codex: "codex",
+};
 
 const ROW = "flex flex-col gap-3 py-4 first:pt-0 last:pb-0 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between";
 
@@ -50,16 +64,18 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Step 2: the agents found on this machine, connected ones first, and two
- *  questions to try. */
+/** Step 2: the agents found on this machine, connected ones first, and the
+ *  first prompts to try, built from this repo's index. */
 export function WelcomeStepAgent({
   repoId,
+  repoName,
   setup,
-  hotspotPath,
+  promptFacts,
 }: {
   repoId: string;
+  repoName: string;
   setup: SetupResponse | null;
-  hotspotPath: string | null;
+  promptFacts: FirstPromptFacts;
 }) {
   const t = useTranslations("welcome.agent");
   // Connected here, before the setup data catches up.
@@ -69,10 +85,7 @@ export function WelcomeStepAgent({
     .sort((a, b) => Number(b.connected) - Number(a.connected));
   const agents = found.slice(0, AGENTS_SHOWN);
   const more = found.length - agents.length;
-  const questions = [
-    t("askRisk"),
-    hotspotPath ? t("askHotspot", { path: hotspotPath }) : t("askStart"),
-  ];
+  const questions = firstPrompts(repoName, promptFacts);
 
   return (
     <div className="space-y-8">
@@ -158,6 +171,9 @@ function AgentRow({
   }
 
   const file = firstConfigFile(agent);
+  const waiting = connected && callsKnown && !agent.first_call_at;
+  const tipsDue = useAfter(TIPS_AFTER_MS, waiting);
+  const tipKey = TIP_KEYS[agent.id];
   return (
     <li className={ROW}>
       <div className="min-w-0">
@@ -183,6 +199,20 @@ function AgentRow({
                 })
               : t("installedNoFile")}
         </p>
+        {agent.default_profile === "core" && (
+          <p className={`${MOMENT_CAPTION} pl-3.5`}>{t("coreTools")}</p>
+        )}
+        {tipsDue && (
+          <div role="status" className="mt-2 space-y-1 pl-3.5">
+            <p className={`${MOMENT_CAPTION} font-medium text-[var(--color-text-primary)]`}>{t("tips.title")}</p>
+            <p className={`${MOMENT_CAPTION} [overflow-wrap:anywhere]`}>
+              {tipKey ? t(`tips.${tipKey}`) : t("tips.generic", { name })}
+            </p>
+            <p className={`${MOMENT_CAPTION} [overflow-wrap:anywhere]`}>
+              {t.rich("tips.doctor", { mono: (c) => <span className="font-mono">{c}</span> })}
+            </p>
+          </div>
+        )}
         {!connected && !writesAllowed && (
           <div className="mt-2 pl-3.5">
             <CommandLine command={command} />
@@ -236,6 +266,11 @@ function RowAction({
   }
   return (
     <span className="flex shrink-0 flex-wrap items-center gap-2 pl-3.5 min-[561px]:pl-0">
+      {writesAllowed && (
+        <Button variant="outline" size="sm" className="h-11 min-[561px]:h-8" disabled={busy} onClick={onConnect}>
+          {busy ? t("connecting") : t("connect")}
+        </Button>
+      )}
       <AiPromptButton
         label={t("copyPrompt")}
         copiedLabel={t("copied")}
@@ -244,16 +279,24 @@ function RowAction({
         copyText={buildPrompt}
         className="max-[560px]:h-11"
       />
-      {writesAllowed && (
-        <Button variant="outline" size="sm" className="h-11 min-[561px]:h-8" disabled={busy} onClick={onConnect}>
-          {busy ? t("connecting") : t("connect")}
-        </Button>
-      )}
     </span>
   );
 }
 
-function CopyQuestion({ text }: { text: string }) {
+/** True once `ms` have passed with `active` held; false again when it drops. */
+function useAfter(ms: number, active: boolean): boolean {
+  const [due, setDue] = useState(false);
+  useEffect(() => {
+    setDue(false);
+    if (!active) return;
+    const timer = window.setTimeout(() => setDue(true), ms);
+    return () => window.clearTimeout(timer);
+  }, [ms, active]);
+  return due;
+}
+
+/** A copy button for one prompt or question, sized for touch. */
+export function CopyQuestion({ text }: { text: string }) {
   const t = useTranslations("welcome.agent");
   const [copied, setCopied] = useState(false);
   return (

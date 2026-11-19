@@ -53,6 +53,10 @@ Row shapes (the field names are the SQL columns):
 ``coverage``
     One mapping: ``files_measured``, ``ingested_at``, ``ingested_commit_sha``,
     ``partial``.
+``runtime``
+    One mapping: ``runs`` (stored evidence runs), ``ingested_at`` and
+    ``commit_sha`` of the newest, and ``targets`` (the workload classes the
+    index holds something to run for).
 ``test_map``
     One mapping of path to ``total`` (test files that reach it in the code
     graph) and ``via`` (the walk, or ``mocked-only`` with a total of 0 when
@@ -72,6 +76,7 @@ from typing import Any
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import is_safe
 from repowise.core.analysis.finding_registry import excluded_types, is_served
+from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import lead_and_worth, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
@@ -90,6 +95,7 @@ from .facts import (
     LeadFinding,
     RecentFinding,
     RepoFacts,
+    RuntimeState,
     SecretFacts,
 )
 from .rules.code import FIX_FIRST_ACTIONS, is_fragile
@@ -506,7 +512,6 @@ def build_decisions(summary: Mapping[str, Any]) -> dict[str, Any]:
             DecisionFacts(field(d, "id"), field(d, "title"))
             for d in summary.get("stale_decisions") or []
         ),
-        "proposed_decisions": int(counts.get("proposed") or 0),
         "accepted_decisions": int(counts.get("active") or 0),
     }
 
@@ -522,6 +527,25 @@ def build_coverage(row: Mapping[str, Any], head_sha: str | None) -> dict[str, An
     return {
         "coverage": CoverageState(
             status, _when(row.get("ingested_at")), int(count), bool(row.get("partial"))
+        )
+    }
+
+
+def build_runtime(row: Mapping[str, Any], head_sha: str | None) -> dict[str, Any]:
+    """Runtime evidence as the rules read it; fresh or stale by the one rule
+    every evidence surface uses (``coverage_freshness``)."""
+    targets = tuple(row.get("targets") or ())
+    if not row.get("runs"):
+        return {"runtime": RuntimeState("unknown", targets=targets)}
+    sha = row.get("commit_sha")
+    stale = coverage_freshness(sha, head_sha) == "stale"
+    return {
+        "runtime": RuntimeState(
+            "stale" if stale else "measured",
+            _when(row.get("ingested_at")),
+            sha,
+            int(row["runs"]),
+            targets,
         )
     }
 
@@ -546,6 +570,7 @@ def build_repo_facts(
     dead_code: Rows | None = None,
     decisions: Mapping[str, Any] | None = None,
     coverage: Mapping[str, Any] | None = None,
+    runtime: Mapping[str, Any] | None = None,
     test_map: Mapping[str, Any] | None = None,
     history_commits: int | None = None,
     unavailable: Mapping[str, str] | None = None,
@@ -604,6 +629,7 @@ def build_repo_facts(
     build("dead_code", dead_code, lambda rows: build_dead(rows, known_files))
     build("decisions", decisions, build_decisions)
     build("coverage", coverage, lambda row: build_coverage(row, head_sha))
+    build("runtime", runtime, lambda row: build_runtime(row, head_sha))
     values["unavailable"] = {**missing, **(unavailable or {})}
     return RepoFacts(**values)
 
@@ -625,6 +651,7 @@ __all__ = [
     "build_fix_first_store",
     "build_recent",
     "build_repo_facts",
+    "build_runtime",
     "build_secrets",
     "lead_paths",
     "proven_performance",

@@ -64,21 +64,24 @@ def test_jargon_inside_code_is_not_prose():
     validate_page_shape("module_page", _page(extra=code))
 
 
-def test_a_second_table_is_rejected():
+def test_a_fourth_table_is_rejected():
     table = "| a | b |\n|---|---|\n| 1 | 2 |"
-    with pytest.raises(PageShapeError, match="2 tables"):
-        validate_page_shape("module_page", _page(extra=f"{table}\n\ntext\n\n{table}"))
+    validate_page_shape("module_page", _page(extra="\n\ntext\n\n".join([table] * 3)))
+    with pytest.raises(PageShapeError, match="4 tables"):
+        validate_page_shape("module_page", _page(extra="\n\ntext\n\n".join([table] * 4)))
 
 
-def test_a_long_table_is_rejected():
-    rows = "\n".join(f"| `f{i}.py` | x |" for i in range(12))
-    with pytest.raises(PageShapeError, match="12 rows"):
+def test_a_parts_table_fits_but_a_reference_table_does_not():
+    rows = "\n".join(f"| `f{i}.py` | x |" for i in range(20))
+    validate_page_shape("module_page", _page(extra=f"| Part | Owns |\n|---|---|\n{rows}"))
+    rows = "\n".join(f"| `f{i}.py` | x |" for i in range(40))
+    with pytest.raises(PageShapeError, match="40 rows"):
         validate_page_shape("module_page", _page(extra=f"| File | Role |\n|---|---|\n{rows}"))
 
 
 def test_an_overlong_page_is_rejected_and_the_questions_do_not_count():
     with pytest.raises(PageShapeError, match="words of prose"):
-        validate_page_shape("module_page", _page(extra=_SECTION * 15))
+        validate_page_shape("module_page", _page(extra=_SECTION * 30))
     questions = "\n".join(f"- Question {i} about parsing files?" for i in range(150))
     validate_page_shape("module_page", _page() + questions)
 

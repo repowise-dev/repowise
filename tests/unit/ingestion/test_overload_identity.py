@@ -1882,6 +1882,49 @@ class TestJavaNamedArguments:
         edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
         assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
 
+    @pytest.mark.parametrize("with_t_class", [False, True], ids=["no-t-class", "with-t-class"])
+    def test_type_variable_named_like_repo_class_takes_string_and_array(
+        self, tmp_path: Path, with_t_class: bool
+    ) -> None:
+        """A method type variable `<T>` takes String and array arguments even when a repo class `T` exists."""
+        box_src = (
+            "package acme;\n"
+            "public class Box {\n"
+            "    public void add(Item item) { }\n"
+            "    public <T> void add(T item) { }\n"
+            "    public void text() { add(\"x\"); }\n"
+            "    public void array(String[] names) { add(names); }\n"
+            "}\n"
+        )
+        files = {
+            "acme/Box.java": ("java", box_src),
+            "acme/Item.java": ("java", "package acme;\npublic class Item { }\n"),
+        }
+        if with_t_class:
+            files["acme/T.java"] = ("java", "package acme;\npublic class T { }\n")
+        edges = _edges(tmp_path, files)
+        assert ("acme/Box.java::Box::text", "acme/Box.java::Box::add#1(T)") in edges
+        assert ("acme/Box.java::Box::array", "acme/Box.java::Box::add#1(T)") in edges
+
+    def test_java_type_parameters_caching(self, tmp_path: Path) -> None:
+        """Type parameters and member parameters are cached across multiple tie-breaks."""
+        box_src = (
+            "package acme;\n"
+            "public class Box {\n"
+            "    public void add(Item item) { }\n"
+            "    public <T> void add(T item) { }\n"
+            "    public void call1() { add(\"1\"); }\n"
+            "    public void call2() { add(\"2\"); }\n"
+            "}\n"
+        )
+        files = {
+            "acme/Box.java": ("java", box_src),
+            "acme/Item.java": ("java", "package acme;\npublic class Item { }\n"),
+        }
+        edges = _edges(tmp_path, files)
+        assert ("acme/Box.java::Box::call1", "acme/Box.java::Box::add#1(T)") in edges
+        assert ("acme/Box.java::Box::call2", "acme/Box.java::Box::add#1(T)") in edges
+
 
 @pytest.mark.parametrize(
     ("literal", "kotlin_type"),
