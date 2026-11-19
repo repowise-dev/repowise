@@ -351,7 +351,9 @@ def test_a_file_over_the_size_cap_is_refused_before_it_is_read(indexed) -> None:
     result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
                   "--commit", head, "--format", "json")
     assert result.exit_code == 1
-    assert _json(result)["error"] == "file_too_large"
+    refusal = _json(result)
+    assert refusal["error"] == "file_too_large"
+    assert "repowise config set evidence.max_file_mb 1" in refusal["remedy"]
 
 
 def _status(*args: str):
@@ -663,3 +665,27 @@ def test_a_red_suites_profile_is_stored_with_its_failed_count(indexed) -> None:
     (run,), _ = _stored(root)
     assert run.tests_failed == 2
     assert "2 tests failed" in _status().stdout
+
+
+def _speedscope(root: Path, seconds: float) -> Path:
+    path = root / "app.speedscope.json"
+    path.write_text(json.dumps({
+        "$schema": "https://www.speedscope.app/file-format-schema.json",
+        "exporter": "pyinstrument@5.1.3",
+        "shared": {"frames": [{"name": "build", "file": str(root / "src" / "app.py"), "line": 1}]},
+        "profiles": [{"type": "sampled", "unit": "seconds", "samples": [[0], [0]],
+                      "weights": [seconds / 2, seconds / 2]}],
+    }))
+    return path
+
+
+@pytest.mark.parametrize(("seconds", "warned"), [(0.4, True), (12.0, False)])
+def test_a_short_entry_point_run_is_stored_with_a_warning(indexed, seconds, warned) -> None:
+    root, head = indexed
+
+    result = _add(str(_speedscope(root, seconds)), "--workload", "app update", "--class",
+                  "entry_point", "--commit", head)
+
+    assert result.exit_code == 0, result.output
+    assert ("profile covers 0.4 s" in result.output) is warned
+    assert len(_stored(root)[0]) == 1

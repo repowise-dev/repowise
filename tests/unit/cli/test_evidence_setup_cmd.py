@@ -112,6 +112,8 @@ def test_an_indexed_repository_lists_runtime_targets_and_profiles_first(repo: Pa
     table = _setup()
     assert "entry_point app: python -c" in table.stdout
     assert "Replace <args> with the arguments" in " ".join(table.stdout.split())
+    assert payload["next_call"]["optional"]["workloads"] == ["app"]
+    assert "Optional: app. Fill <args>" in " ".join(table.stdout.split())
 
 
 def test_an_index_that_cannot_be_read_is_not_mistaken_for_none(repo: Path) -> None:
