@@ -124,9 +124,7 @@ REPETITIONS = {
 
 
 def _convert(payload: dict) -> dict:
-    return profile_formats.get("google-benchmark").to_v1(
-        json.dumps(payload).encode()
-    )
+    return profile_formats.get("google-benchmark").to_v1(json.dumps(payload).encode())
 
 
 def _parse(payload: dict):
@@ -150,7 +148,10 @@ def test_each_benchmark_is_one_series_value_with_its_own_unit() -> None:
     assert list(by_name) == ["BM_Sort/1024", "BM_Copy"]
     sort = by_name["BM_Sort/1024"]
     assert (sort["unit"], sort["lower_is_better"], sort["mean"], sort["iterations"]) == (
-        "ns", True, 210.5, 5000
+        "ns",
+        True,
+        210.5,
+        5000,
     )
     copy = by_name["BM_Copy"]
     assert (copy["unit"], copy["mean"], copy["iterations"]) == ("us", 5.75, 120)
@@ -164,10 +165,11 @@ def test_repetition_aggregates_fill_fields_without_duplicate_series() -> None:
     assert [e["name"] for e in entries] == ["BM_Sort/1024"]
     sort = entries[0]
     assert (sort["unit"], sort["lower_is_better"]) == ("ns", True)
-    # The last iteration row's timing and count; the median and stddev
-    # aggregates fill their own fields, and mean/cv add no series.
-    assert sort["mean"] == 210.4
-    assert sort["iterations"] == 5005
+    # The run's own aggregates: ``mean`` and its repetition count come from
+    # the mean aggregate row, median and stddev from theirs, and cv adds
+    # no field.
+    assert sort["mean"] == 210.46666666666665
+    assert sort["iterations"] == 3
     assert sort["median"] == 210.4
     assert sort["stddev"] == 1.4
     assert "cv" not in sort

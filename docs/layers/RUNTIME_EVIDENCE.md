@@ -168,13 +168,13 @@ One file holds one run of one kind.
 | Kind | Entries | Input formats read |
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
-| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, Google Benchmark JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | A v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
+`pprof`, `pytest-benchmark`, `google-benchmark`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -200,6 +200,7 @@ The format is detected from the content, never the file name;
 | Format | Written by | What a benchmark carries |
 |---|---|---|
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
+| `google-benchmark` | a C++ binary built with Google Benchmark, run with `--benchmark_format=json` | `name` (``BM_Sort/1024``) names the series; a plain run carries `mean` from `real_time` with its `iterations`; a run with `--benchmark_repetitions` folds its `mean`, `median` and `stddev` aggregate rows into the entry, and `iterations` is the repetition count. The row's `time_unit` is the unit; the file carries no source path, so no entry claims a function |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to

@@ -61,8 +61,7 @@ profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
 )
-profile_formats.register(
-    "collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
+profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 profile_formats.register(
     "google-benchmark",
     ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),

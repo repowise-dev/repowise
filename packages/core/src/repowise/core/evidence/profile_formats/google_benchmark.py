@@ -22,7 +22,7 @@ from ..format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 _FIRST_KEY = re.compile(rb'\{\s*"context"\s*:')
 
 #: The aggregate rows a repetition run writes, and the field each fills.
-_AGGREGATES = {"median": "median", "stddev": "stddev"}
+_AGGREGATES = {"mean": "mean", "median": "median", "stddev": "stddev"}
 
 
 def sniff(head: bytes) -> bool:
@@ -65,10 +65,12 @@ def _row(entries: dict[str, dict[str, Any]], raw: dict[str, Any]) -> None:
             "write it with --benchmark_format=json",
         )
     if raw.get("run_type") == "aggregate":
-        # Only the aggregates the v1 entry carries; ``mean`` and ``cv`` would
-        # duplicate the series the repetition rows already wrote. An aggregate
-        # row's name is the benchmark's with the aggregate appended
-        # (``BM_Sort/1024_median``), so the suffix names the series to fill.
+        # The aggregates the v1 entry carries; ``cv`` adds nothing the
+        # stddev does not. An aggregate row's name is the benchmark's
+        # with the aggregate appended (``BM_Sort/1024_median``), so the
+        # suffix names the series to fill. The ``mean`` aggregate is the
+        # run's own summary: it wins over any iteration row, and its
+        # ``iterations`` is the repetition count.
         aggregate = str(raw.get("aggregate_name"))
         field = _AGGREGATES.get(aggregate)
         value = raw.get("real_time")
@@ -79,11 +81,16 @@ def _row(entries: dict[str, dict[str, Any]], raw: dict[str, Any]) -> None:
                 _entry(base, raw),
             )
             entry[field] = value
+            if isinstance(raw.get("iterations"), (int, float)):
+                entry["iterations"] = raw["iterations"]
         return
     entry = entries.setdefault(name, _entry(name, raw))
-    if isinstance(raw.get("real_time"), (int, float)):
+    # A plain run carries one timing per name, so its row fills ``mean``; a
+    # repetition run's iteration rows never overwrite what an earlier row (or
+    # the ``mean`` aggregate below them) already stored.
+    if isinstance(raw.get("real_time"), (int, float)) and "mean" not in entry:
         entry["mean"] = raw["real_time"]
-    if isinstance(raw.get("iterations"), (int, float)):
+    if isinstance(raw.get("iterations"), (int, float)) and "iterations" not in entry:
         entry["iterations"] = raw["iterations"]
     if isinstance(raw.get("time_unit"), str):
         entry["unit"] = raw["time_unit"]
