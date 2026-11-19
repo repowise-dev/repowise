@@ -89,9 +89,11 @@ _SNIFF_BYTES = 8192
 # text file for its lines. Past this neither is read; it is reported as skipped.
 _MAX_STREAM_BYTES = 64_000_000
 OVER_LINES = f"over {MAX_LINES} lines"
-_KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "match": 4}
+_KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "string": 4, "match": 5}
 # Under the short mixed-query cap, call sites say more than imports.
-_MIXED_KIND_ORDER = {"definition": 0, "call": 1, "import": 2, "reference": 3, "match": 3}
+_MIXED_KIND_ORDER = {
+    "definition": 0, "call": 1, "import": 2, "reference": 3, "string": 3, "match": 3
+}
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
 # Code punctuation: a leading decorator ``@``, an identifier glued to an opening

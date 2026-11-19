@@ -479,7 +479,7 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
         ("app/widget.py", 1, "import"),
         ("app/widget.py", 6, "call"),
         ("tests/test_widget.py", 1, "import"),
-        *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
+        *(("tests/test_widget.py", n, "string") for n in range(2, 2 + cap)),
     ]
     assert out["lines_omitted"] == 20 - cap
     assert "lines_omitted_by_file" not in out
