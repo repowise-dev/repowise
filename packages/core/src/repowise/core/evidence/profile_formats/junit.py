@@ -133,19 +133,24 @@ def _entry(case: ET.Element, classname: str, suite_file: str | None) -> dict[str
     entry: dict[str, Any] = {"duration_s": _seconds(case.get("time")), "outcome": _outcome(case)}
     if not name:
         return entry
-    named = (case.get("file") or "").strip() or nodeid_test_file(classname) or suite_file
-    path, _ = repo_relative_path(named)
-    if named and path is None:
+    path, outside = _test_file(case, classname, suite_file)
+    if outside:
         # An absolute path names the machine, not the repository: keep the test's own name only.
         entry["id"] = name
-        return entry
-    if path:
+    elif path:
         test_id = f"{path}::{_qualname(classname, path, name)}"
         entry.update(id=test_id, path=path, function=nodeid_function(test_id), exact=True)
     else:
         # Placed on a file at ingest, from the indexed files the classname leads to.
         entry.update(id=f"{classname}::{name}" if classname else name, classname=classname or None)
     return entry
+
+
+def _test_file(case: ET.Element, classname: str, suite_file: str | None) -> tuple[str | None, bool]:
+    """The repo-relative file the report names for *case*, and whether it named one outside the repo."""
+    named = (case.get("file") or "").strip() or nodeid_test_file(classname) or suite_file
+    path, _ = repo_relative_path(named)
+    return path, bool(named) and path is None
 
 
 def _qualname(classname: str, path: str, name: str) -> str:
