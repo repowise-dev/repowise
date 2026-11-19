@@ -297,7 +297,9 @@ def test_keyless_weak_reply_serves_the_ranked_list_and_one_guidance_line():
 def test_keyless_weak_reply_ignores_evidence():
     out = project_answer_payload(_keyless_weak(), question="q", include=["evidence"])
     default = project_answer_payload(_keyless_weak(), question="q")
-    assert out["_meta"].pop("ignored_arguments") == {"include": ["evidence"]}
+    assert out["_meta"].pop("ignored_arguments") == [
+        {"argument": "include", "values": ["evidence"], "requires": "an LLM provider; Read candidate_files"}
+    ]
     assert out == default
 
 
