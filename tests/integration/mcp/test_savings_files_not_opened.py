@@ -94,3 +94,21 @@ async def test_failing_file_bookkeeping_never_changes_the_reply(
     with OmissionStore(_repo_db(repo)) as store:
         # The event still lands; only its file list is lost.
         assert store._conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 2
+
+
+def test_an_ambiguous_symbol_credits_only_files_with_a_rendered_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from repowise.server.mcp_server._savings import reads
+    from repowise.server.mcp_server.tool_symbol.ambiguous import _finish_ambiguous
+
+    noted: list[str] = []
+    monkeypatch.setattr(reads, "note_served", lambda path, _tokens: noted.append(path))
+    response = {
+        "candidates": [{"file": "a.py", "source": "1 x = 1"}],
+        "note": "",
+        "_meta": {},
+    }
+    over_budget = [{"file": "b.py", "fetch_with": "ref"}]
+    _finish_ambiguous(response, 1, over_budget, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
+    assert noted == ["a.py"]
