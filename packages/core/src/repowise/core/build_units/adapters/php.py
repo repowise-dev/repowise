@@ -85,11 +85,13 @@ def units(ctx: ResolverContext) -> Found:
         taken.add(uid)
         by_root[manifest.rel_dir] = uid
         if manifest.name:
-            name_by_root[manifest.rel_dir] = manifest.name
+            # Composer compares package names case-insensitively.
+            name_by_root[manifest.rel_dir] = manifest.name.lower()
         kept.append((uid, manifest))
 
     claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for uid, manifest in kept:
+        requires = {name.lower() for name in manifest.requires}
         deps = {
             target_uid
             for url in manifest.path_repositories
@@ -98,7 +100,7 @@ def units(ctx: ResolverContext) -> Found:
             if (
                 target_uid != uid
                 and _matches(pattern, root)
-                and name_by_root.get(root) in manifest.requires
+                and name_by_root.get(root) in requires
             )
         }
 
