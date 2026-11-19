@@ -51,6 +51,8 @@ def revision_exists(repo_path: str, rev: str) -> bool:
         cwd=repo_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return result.returncode == 0
 

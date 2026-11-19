@@ -325,6 +325,7 @@ def _parse_git_log(
             text=True,
             timeout=60,
             encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             _log.debug("git log failed for %s: %s", repo_path, result.stderr)

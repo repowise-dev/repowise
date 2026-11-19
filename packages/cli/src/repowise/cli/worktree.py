@@ -30,7 +30,7 @@ _SEED_TEMPDIR_STALENESS_SECS = 3600
 def _git_output(args: list[str], cwd: Path) -> str:
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL
+            ["git", *args], cwd=cwd, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return ""

@@ -580,6 +580,8 @@ def _head(root: Path) -> str | None:
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=_GREP_TIMEOUT_S,
         )

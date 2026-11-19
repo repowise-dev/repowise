@@ -103,6 +103,7 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=GIT_TIMEOUT_SECONDS,
     )

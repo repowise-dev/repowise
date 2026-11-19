@@ -230,6 +230,8 @@ def _ps_field(pid: int, field: str) -> str | None:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):

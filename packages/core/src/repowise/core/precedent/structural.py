@@ -401,6 +401,8 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=FORMATTER_TIMEOUT_S,
             env={**os.environ, "NO_COLOR": "1"},
         )
@@ -446,6 +448,8 @@ def _head_commit(root: Path) -> str | None:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT_S,
         )
     except (subprocess.TimeoutExpired, OSError):
