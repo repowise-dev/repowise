@@ -699,7 +699,10 @@ def select_tests(inp: SelectionInput) -> Selection:
     evidence = _Evidence.of(inp, deleted)
     per_file, file_reasons = _tests_per_file(triage.code, evidence)
     tier = _unit_tier({**wide, **triage.unit_candidates, **evidence.unvouched}, inp)
-    run_all += [r for p, r in tier.reasons.items() if p not in wide]
+    # Where each declined path's reason went before the tier: a manifest's with the
+    # triggers, a code file's with the per-file reasons, which need an index.
+    run_all += [r for p, r in tier.reasons.items() if p in triage.unit_candidates]
+    file_reasons += [r for p, r in tier.reasons.items() if p in evidence.unvouched]
     scoped = [p for p in scoped if p not in tier.answered]
     walks = bool(triage.code) or any(inp.scopes[p].routes for p in scoped)
     run_all += _index_reasons(inp, has_code=walks)
