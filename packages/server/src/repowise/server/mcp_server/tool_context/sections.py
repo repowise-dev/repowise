@@ -42,7 +42,7 @@ from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
-from repowise.server.mcp_server._helpers import _decision_body
+from repowise.server.mcp_server._helpers import _decision_body, no_source_field, serves_no_source
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
@@ -686,6 +686,8 @@ async def _references_section(card: CardState) -> None:
         card.data["references"] = await edit_set_block(
             card.session, card.repo_id, root, ref_node, card.query.collector, prose=prose
         )
+    elif ref_node is not None and serves_no_source():
+        card.data["references"] = no_source_field()
     else:
         card.data["references_note"] = "references require a symbol target in the graph"
 

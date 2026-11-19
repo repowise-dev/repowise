@@ -1621,10 +1621,11 @@ export interface DeadCodeSummaryResponse {
  *
  * ``kind`` is the prompt served: ``discover`` asked with no background
  * records to check comes back as ``add``. ``text`` is empty only for
- * ``agreements`` with none stored, and then a surface offers nothing.
+ * ``agreements`` with none stored and ``review_all`` with no background
+ * record left, and then a surface offers nothing.
  */
 export interface DecisionAgentPromptResponse {
-  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  kind: "discover" | "review_all" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
   text: string;
   ids: string[];
   count: number;
@@ -4470,6 +4471,7 @@ export interface SettingView {
   key: string;
   type: "bool" | "int" | "float" | "str" | "list" | "mapping";
   default_note?: string | null;
+  cost_note?: string | null;
   description: string;
   area: string;
   scope: "repo" | "user" | "env";

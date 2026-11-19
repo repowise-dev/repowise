@@ -9,7 +9,7 @@ codex:
   dir: dead-code-cleanup
   frontmatter: |
     name: dead-code-cleanup
-    description: Use when the user asks about unused code, cleanup, deleting files or exports, refactoring old areas, reducing bundle size, code hygiene, technical debt, or maintenance in a Repowise-indexed repository.
+    description: Find unused files and exports, and what is safe to delete in a cleanup.
 ---
 
 # Dead Code Cleanup with Repowise

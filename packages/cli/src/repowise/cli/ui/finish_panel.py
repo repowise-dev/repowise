@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from repowise.cli.agent_targets.tool_surface import surface_lines
 from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, INFO, MODEL, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
@@ -96,6 +97,8 @@ class FinishFacts:
     stood_out: StoodOut = field(default_factory=StoodOut)
     #: The "add a model" block of a run whose documentation was built from the index.
     model_upgrade: ModelUpgrade | None = None
+    #: The PR bot install link, on the one run that shows it; None on every other.
+    pr_bot_url: str | None = None
 
 
 def _n(count: int, noun: str) -> str:
@@ -222,32 +225,43 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     """Which agent can reach the index, and the restart it needs to see it.
 
     Silent without a setup snapshot. A run with editor setup off gets the
-    ``repowise mcp .`` step row instead of a line here.
+    ``repowise agents add`` step row instead of a line here.
     """
     if setup is None:
         return []
     if getattr(setup, "editor_setup_disabled", False):
         return [key_value_table([("Connected", "no editor (editor setup was skipped)")])]
 
+    surfaces = getattr(setup, "tool_surfaces", ())
+    connected = [s["name"] for s in surfaces]
+    if not connected and getattr(setup, "claude_code_connected", False):
+        connected = ["Claude Code"]
     lines: list[RenderableType] = []
-    if getattr(setup, "claude_code_connected", False):
-        lines.append(key_value_table([("Connected", "Claude Code")]))
-        # A first index is the run that wrote the MCP entry, so the client
-        # has not loaded it yet.
-        if getattr(setup, "first_index", True):
+    if connected:
+        lines.append(key_value_table([("Connected", escape(", ".join(connected)))]))
+        # Each of these loads its MCP config only at startup, so a host whose
+        # config this run wrote or moved has not loaded it yet.
+        restart = [h["name"] for h in getattr(setup, "restart_hosts", ())]
+        if restart:
+            slash = " (in Claude Code, /mcp also works)" if "Claude Code" in restart else ""
             lines.append(
                 line(
-                    f"[bold {BRAND}]Restart Claude Code[/] [bold](or run /mcp) "
-                    "to load the repowise tools.[/bold]"
+                    f"[bold {BRAND}]Restart to load the repowise tools:[/] "
+                    f"[bold]{escape(', '.join(restart))}{slash}.[/bold]"
                 )
             )
         else:
             lines.append(
-                dim_line("Claude Code stays connected; restart it only if the tools are not showing.")
+                dim_line("Already connected; restart an agent only if the tools are not showing.")
             )
-    lines.append(
-        dim_line("Cursor or Codex: run [bold]repowise mcp .[/bold] (config in .repowise/mcp.json).")
-    )
+    lines += [dim_line(escape(text)) for text in surface_lines(surfaces)]
+    unconnected = getattr(setup, "unconnected", ())
+    if unconnected:
+        from repowise.cli.editor_setup import connect_command
+
+        names = escape(", ".join(a["name"] for a in unconnected))
+        command = escape(connect_command(a["id"] for a in unconnected))
+        lines.append(dim_line(f"Also installed: {names}. Connect with [bold]{command}[/bold]."))
     # The interactive run offered this hook live; a --yes run skipped the offer.
     if not getattr(setup, "interactive", False) and not getattr(
         setup, "rewrite_hook_installed", False
@@ -284,8 +298,12 @@ def _relative(repo_path: Path, paths: list[Path]) -> list[str]:
     return out
 
 
-def _search_lines(facts: FinishFacts) -> list[RenderableType]:
-    """The command that turns semantic search on, when documentation exists without it."""
+def _search_lines(facts: FinishFacts, *, server: bool = False) -> list[RenderableType]:
+    """The command that turns semantic search on, when documentation exists without it.
+
+    A *server* run keeps only the embedding-failed warning: the reindex hint is
+    a command for someone at the machine.
+    """
     search = facts.scope.get("search") or {}
     if facts.embed_failed:
         return [
@@ -295,7 +313,7 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
                 "[bold]repowise reindex[/bold]."
             )
         ]
-    if not facts.pages or search.get("semantic") == "available":
+    if server or not facts.pages or search.get("semantic") == "available":
         return []
     command = search.get("next_command") or "repowise reindex"
     return [
@@ -323,15 +341,27 @@ def _embed_cost(command: str) -> str:
 
 
 def _footer(
-    facts: FinishFacts, setup: Any, repo_path: Path, files_written: list[Path]
+    facts: FinishFacts,
+    setup: Any,
+    repo_path: Path,
+    files_written: list[Path],
+    *,
+    server: bool = False,
 ) -> list[RenderableType]:
-    lines = _search_lines(facts)
+    lines = _search_lines(facts, server=server)
     if files_written:
         lines.append(
             dim_line(
                 "Files added: "
                 + escape(", ".join(_relative(repo_path, files_written)))
                 + " (not gitignored; [bold]--no-editor-setup[/bold] skips them)."
+            )
+        )
+    if facts.pr_bot_url:
+        lines.append(
+            dim_line(
+                "Review pull requests with this repo's context: add the Repowise PR bot at "
+                + escape(facts.pr_bot_url)
             )
         )
     return lines + autosync_lines(setup)
@@ -379,9 +409,19 @@ def print_finish_panel(
     files_written: list[Path] | None = None,
     owl: str = mascot.DONE,
 ) -> None:
-    """The finish panel on a terminal; the same rows as plain lines off one."""
-    title, metrics, body, footer = _panel_parts(facts, setup, repo_path, files_written)
-    print_completion_panel(console, title, metrics, steps, body=body, footer=footer, owl=owl)
+    """The finish panel on a terminal; the same rows as plain lines off one.
+
+    A server run (no terminal and editor setup off: a stack worker, a CI job)
+    prints no next steps, agent questions or reindex hint: they are commands
+    for someone at the machine, and its log has no one reading them there.
+    """
+    server = not console.is_terminal and bool(getattr(setup, "editor_setup_disabled", False))
+    title, metrics, body, footer = _panel_parts(
+        facts, setup, repo_path, files_written, server=server
+    )
+    print_completion_panel(
+        console, title, metrics, [] if server else steps, body=body, footer=footer, owl=owl
+    )
 
 
 def _panel_parts(
@@ -389,6 +429,8 @@ def _panel_parts(
     setup: Any,
     repo_path: Path | None,
     files_written: list[Path] | None,
+    *,
+    server: bool = False,
 ) -> tuple[str, list[tuple[str, str]], list[RenderableType], list[RenderableType]]:
     body: list[RenderableType] = [
         *stood_out_lines(facts.stood_out),
@@ -398,6 +440,7 @@ def _panel_parts(
     if connected:
         body.append(Text(""))
         body += connected
-    body += ask_lines(agent_questions(facts.top_hotspot))
-    footer = _footer(facts, setup, repo_path or Path("."), files_written or [])
+    if not server:
+        body += ask_lines(agent_questions(facts.top_hotspot))
+    footer = _footer(facts, setup, repo_path or Path("."), files_written or [], server=server)
     return escape(completion_title(facts.scope)), _metrics(facts), body, footer

@@ -112,7 +112,8 @@ async def list_repos() -> dict[str, Any]:
             "_meta": _build_meta(),
         }
 
-    served_name = Path(_state._repo_path).name if _state._repo_path else None
+    served_path = _state.served_path()
+    served_name = Path(served_path).name if served_path else None
     served = _in_scope(_state._served_repo_id, served_name)
     return {
         "workspace": False,
@@ -121,8 +122,8 @@ async def list_repos() -> dict[str, Any]:
         "repos": [
             {
                 "alias": "default",
-                "path": str(_state._repo_path) if _state._repo_path else None,
-                "absolute_path": str(_state._repo_path) if _state._repo_path else None,
+                "path": served_path,
+                "absolute_path": served_path,
                 "is_default": True,
             }
         ]

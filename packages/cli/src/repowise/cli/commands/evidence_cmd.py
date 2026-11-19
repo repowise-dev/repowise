@@ -4,7 +4,7 @@
 benchmark results, test timings or query counts), or a profiler's or
 benchmark runner's own output in a format of
 :data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
-to v1 first), joins its entries to the indexed symbols and stores
+to v1 first; several profiles of one run merged into one), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
 its class, and what did not map. The steps live in
 :mod:`repowise.core.evidence.add`; this module words them.
@@ -38,8 +38,10 @@ from repowise.core.evidence.add import (
     PreparedEvidence,
     check_file_size,
     check_options,
+    detect_environment,
     evidence_caps,
-    prepare_evidence,
+    evidence_paths,
+    prepare_evidence_files,
 )
 from repowise.core.evidence.format_v1 import VALUE_KINDS
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
@@ -58,7 +60,7 @@ def evidence_group() -> None:
 
 
 @evidence_group.command("add")
-@click.argument("file", type=click.Path(dir_okay=False, path_type=Path))
+@click.argument("files", metavar="FILE...", nargs=-1, required=True, type=click.Path(path_type=Path))
 @click.option("--workload", "workload", required=True, help="What ran, e.g. 'cli build'.")
 @click.option(
     "--class",
@@ -86,8 +88,9 @@ def evidence_group() -> None:
 )
 @click.option(
     "--environment",
-    default="unknown",
-    help="Where it ran, one word (local, ci, ...).",
+    default=None,
+    help="Where it ran, one word. Defaults to the OS and whether this is a CI job, "
+    "e.g. linux-ci or macos-local.",
 )
 @click.option(
     "--input-format",
@@ -113,13 +116,13 @@ def evidence_group() -> None:
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
-    file: Path,
+    files: tuple[Path, ...],
     workload: str,
     workload_class: str,
     commit: str | None,
     checkout_root: Path | None,
     dirty: bool | None,
-    environment: str,
+    environment: str | None,
     input_format: str | None,
     value_kind: str | None,
     allow_partial: bool,
@@ -127,11 +130,16 @@ def evidence_add(
     verbose: bool,
     fmt: str,
 ) -> None:
-    """Ingest one evidence FILE for a named workload.
+    """Ingest the evidence of one run of a named workload.
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
-    results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark JSON), detected from its content.
+    results as the tool wrote them (Speedscope JSON, Go pprof, V8 .cpuprofile,
+    collapsed stacks, pytest-benchmark or hyperfine JSON), detected from its
+    content. Several profiles (a parent process and its workers, or a directory
+    holding one file per process) merge into one run; they must share a format,
+    unit, tool and clock.
+    A single profile that spent time starting or waiting on other processes
+    gets a warning that their work is not in it.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -146,12 +154,15 @@ def evidence_add(
         repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+        repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
+        repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
+    environment = environment or detect_environment()
     try:
         check_options(workload, workload_class, environment, commit)
     except EvidenceRefusedError as exc:
@@ -169,15 +180,21 @@ def evidence_add(
     for problem in problems:
         notices.print(f"[yellow]Ignoring {escape(problem)}.[/yellow]")
     try:
-        size = file.stat().st_size
+        paths = evidence_paths(files)
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     except OSError as exc:
-        raise click.BadParameter(f"cannot read {file}: {exc.strerror}", param_hint="FILE") from None
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
+    try:
+        sizes = [path.stat().st_size for path in paths]
+    except OSError as exc:
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
     try:
         # Checked before reading, so a file too large is never loaded.
-        check_file_size(size, max_file_mb, str(file))
-        prepared = prepare_evidence(
-            file.read_bytes(),
-            name=str(file),
+        for path, size in zip(paths, sizes, strict=True):
+            check_file_size(size, max_file_mb, str(path))
+        prepared = prepare_evidence_files(
+            [(str(path), path.read_bytes()) for path in paths],
             checkout_root=root,
             commit=commit,
             dirty=dirty,
@@ -186,18 +203,21 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
-    payload = run_async(
-        _ingest(
-            repo_path=repo_path,
-            prepared=prepared,
-            workload=workload.strip(),
-            workload_class=workload_class,
-            environment=environment,
-            allow_partial=allow_partial,
-            caps=caps,
-            notices=notices,
+    try:
+        payload = run_async(
+            _ingest(
+                repo_path=repo_path,
+                prepared=prepared,
+                workload=workload.strip(),
+                workload_class=workload_class,
+                environment=environment,
+                allow_partial=allow_partial,
+                caps=caps,
+                notices=notices,
+            )
         )
-    )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     if fmt == "json":
         emit_json(payload)
     if not payload["stored"]:
@@ -258,13 +278,15 @@ async def _store(
     payload = stored.payload
     conversion = payload.get("conversion")
     if conversion is not None:
-        _report_conversion(notices, prepared.format, conversion)
+        _report_conversion(notices, prepared.format, conversion, prepared.profiles)
         _warn_short_run(
             notices,
             workload_class,
             prepared.value_kind or prepared.run.value_kind,
             conversion,
         )
+    for warning in payload.get("warnings", ()):
+        notices.print(f"[yellow]{escape(warning['message'])} {escape(warning['remedy'])}[/yellow]")
     if payload["stored"]:
         _report_stored(
             notices,
@@ -286,7 +308,7 @@ async def _store(
     return payload
 
 
-def _report_conversion(notices: Any, name: str, summary: dict[str, Any]) -> None:
+def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
@@ -296,8 +318,9 @@ def _report_conversion(notices: Any, name: str, summary: dict[str, Any]) -> None
     reasons = ", ".join(
         f"{reason} {part:.0%}" for reason, part in summary["skipped_share_by_reason"].items()
     )
+    merged = f" ({profiles} profiles merged into one run)" if profiles > 1 else ""
     notices.print(
-        f"Converted {escape(name)}: {split} of "
+        f"Converted {escape(name)}{merged}: {split} of "
         f"{_total(summary['total'])} {escape(summary['unit'])}; {skipped}"
         + (f" ({escape(reasons)})." if reasons else ".")
     )

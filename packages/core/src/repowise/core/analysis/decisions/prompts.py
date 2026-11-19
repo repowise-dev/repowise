@@ -61,6 +61,15 @@ about is not in that commit's list; that is a correct answer and a common \
 one. Never write a path the commit does not list.\
 """
 
+#: Shared by both commit miners. A subject line or a changelog entry ("Add X")
+#: grounds against the commit text, so the gate cannot catch it; the subject
+#: case is also dropped in code, by ``commit_mining.drop_subject_restatements``.
+_NOT_A_CHANGELOG_RULE = """\
+A commit subject line, or a sentence that only reports what was added or \
+changed with no rule or choice the code keeps following afterwards, is not a \
+decision.\
+"""
+
 
 GIT_ARCHAEOLOGY_PROMPT = (
     """\
@@ -87,7 +96,9 @@ system structure, patterns, migrations, or technology), return a JSON object:
     + """
 
 Return a JSON array. Skip commits that are just bug fixes or minor changes. \
-Return [] if none qualify. Do not hallucinate rationale.
+"""
+    + _NOT_A_CHANGELOG_RULE
+    + """ Return [] if none qualify. Do not hallucinate rationale.
 """
 )
 
@@ -146,7 +157,9 @@ For each decision return a JSON object:
     + """
 
 Return a JSON array. Skip bodies that are just checklists or release noise. \
-Return [] if none qualify.
+"""
+    + _NOT_A_CHANGELOG_RULE
+    + """ Return [] if none qualify.
 """
 )
 

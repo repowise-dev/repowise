@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.git_head import CheckoutMatch, match_checkout
+from repowise.core.ingestion.source_view import DiskSource, SourceView
 
 _log = logging.getLogger("repowise.workspace.registry")
 
@@ -29,12 +30,22 @@ _log = logging.getLogger("repowise.workspace.registry")
 # ---------------------------------------------------------------------------
 
 
+#: :attr:`RepoContext.source` left unset: the checkout at ``path``, when there is one.
+_DISK: Any = object()
+
+
 @dataclass
 class RepoContext:
-    """Holds all resources needed to serve MCP queries for a single repo."""
+    """Holds all resources needed to serve MCP queries for a single repo.
+
+    ``source`` and ``git`` say what the server can read besides the store: the
+    repository's files and its git history. A context built over a store with
+    no checkout (``path`` ``None``, or ``source=None, git=False``) serves every
+    stored fact and names the live ones it cannot.
+    """
 
     alias: str
-    path: Path
+    path: Path | None
     session_factory: async_sessionmaker[AsyncSession]
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
@@ -42,6 +53,15 @@ class RepoContext:
     # None: readiness is not tracked, so searches do not wait for it.
     vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
+    source: SourceView | None = field(default=_DISK, repr=False)
+    git: bool = True
+
+    def __post_init__(self) -> None:
+        if self.source is _DISK:
+            self.source = DiskSource(self.path) if self.path is not None else None
+        if self.path is None:
+            # No checkout to run git in: git would read the process's own directory.
+            self.git = False
 
 
 #: ``Session.info`` key a shared-store context sets to the repository it

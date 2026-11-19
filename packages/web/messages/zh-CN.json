@@ -680,11 +680,11 @@
       "ledeEmpty": "索引器从拉取请求、提交信息、代码注释和你自己的会话里挖掘出决策，你亲手记录时它们也会落到这里——在下方记录，或者用 <code>repowise decision add</code>。每条决策都会保留它出处的那段引用，以及它所约束的文件。",
       "ledeNoGovernance": "还没有任何决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
       "ledeCandidates": "下方有 {count} 条背景记录，挖掘自拉取请求、提交、注释和会话。它们不生效；智能体通过 get_why 询问它们，了解代码背后的原因。",
-      "ledeAcceptedRecords": "已有 {count} 条决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
+      "ledeAcceptedRecords": "有 {count} 条决策约束着这个仓库。智能体在修改其中任何一条指定的文件之前，都会先被告知。",
       "ledeAcceptedMore": "另有 {count} 条是从历史中挖掘出的背景记录。它们不生效；智能体通过 get_why 询问它们，了解背后的原因。",
       "checkoutTitle": "关于这份检出",
       "checkoutDescription": "这些是关于工作区本身的事实，而不是谁对它的声明；它们在索引时推导得出，不调用模型、无需历史记录。正是这些事实最容易绊倒新来的人，无论他是人还是智能体。",
-      "reviewTitle": "记录",
+      "reviewTitle": "全部决策",
       "reviewDescription": "生效中的决策（置顶的排在最前）、你的智能体本周做出的决策、从历史挖掘出的背景记录，以及已退役的决策。任何一条都可以交给智能体去置顶、否决或修改。"
     },
     "contributors": {
@@ -1997,7 +1997,6 @@
   },
   "decisions": {
     "agent": {
-      "discover": "让智能体核查背景记录",
       "agreements": "把工作约定移到 CLAUDE.md",
       "review": "交给智能体核查",
       "edit": "交给智能体修改",
@@ -2029,6 +2028,23 @@
       "unpinned": "已取消置顶。它仍然生效。",
       "pinFailed": "置顶失败：{message}",
       "unpinFailed": "取消置顶失败：{message}"
+    },
+    "hero": {
+      "discoverHeading": "核查最繁忙文件上的 {count} 条背景记录",
+      "discoverDescription": "你的智能体会对照代码及其提交逐条阅读记录，把真实的决策设为生效，忽略其余的。它做了什么，你可以在“本周”里看到。",
+      "addHeading": "记录这个仓库已经在遵循的决策",
+      "addDescription": "你的智能体会阅读代码和历史，记录下它明确遵循的规则，每条都附上出处的引用和提交。每条落地时你都能在这里看到。",
+      "copy": "复制给智能体的提示词",
+      "copied": "已复制。把它粘贴给你的智能体。",
+      "copyFailed": "复制失败。请选中预览内容手动复制。",
+      "footnote": "与 <code>repowise decision discover</code> 输出的文本相同。",
+      "recordMissed": "记录遗漏的决策",
+      "addByHand": "手动添加一条",
+      "reviewAll": "审阅全部记录"
+    },
+    "board": {
+      "movedOnly": "正在显示 {count} 条生效中、且所涉代码在确认后发生过变化的决策。",
+      "showAll": "显示全部生效中的决策"
     }
   },
   "files": {

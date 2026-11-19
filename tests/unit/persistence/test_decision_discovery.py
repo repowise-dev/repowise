@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import json
 
-from repowise.core.persistence.crud.authority import accept_decision, dismiss_candidate
+from repowise.core.persistence.crud.authority import (
+    accept_decision,
+    dismiss_candidate,
+    hold_decision,
+)
 from repowise.core.persistence.crud.decision_discovery import (
     agreement_records,
+    background_records,
     decision_prompt_for,
     discovery_records,
 )
@@ -148,3 +153,36 @@ async def test_agreements_in_force_first_and_retired_left_out(async_session):
     prompt = await decision_prompt_for(async_session, repo.id, "agreements")
     assert prompt.ids == ("law", "bg")
     assert "CLAUDE.md" in prompt.text
+
+
+async def test_review_all_queue_is_the_discovery_set(async_session):
+    """The whole-queue pass skips what discovery skips: agreements, agents' pending records,
+    records an agent confirmed that wait for their commit, and records naming no production
+    file."""
+    repo = await insert_repo(async_session)
+    async_session.add_all(
+        [_git(repo.id, "src/app.py", hot=True, score=0.5), _git(repo.id, "tests/test_app.py")]
+    )
+    await _record(async_session, repo.id, "agree", ["src/app.py"], kind="agreement")
+    await _record(async_session, repo.id, "agent", ["src/app.py"], source="agent")
+    await _record(async_session, repo.id, "tst", ["tests/test_app.py"])
+    await _record(async_session, repo.id, "nofile", [])
+    # A mined record an agent confirmed keeps its source while its commit waits to land.
+    held = await _record(async_session, repo.id, "held", ["src/app.py"])
+    await hold_decision(
+        async_session, held, agent="claude_code", reason="agents would miss it",
+        scope=["src/app.py"], commits=["abc1234"],
+    )
+    await async_session.commit()
+
+    assert await background_records(async_session, repo.id) == []
+    assert (await decision_prompt_for(async_session, repo.id, "review_all")).text == ""
+
+    for i in range(25):
+        await _record(async_session, repo.id, f"r{i:02d}", ["src/app.py"])
+    await async_session.commit()
+
+    found = [rec.id for rec, _meta, _files in await background_records(async_session, repo.id)]
+    # Uncapped, unlike the discovery pass, and ending on id so an offset pages it.
+    assert found == [f"r{i:02d}" for i in range(25)]
+    assert (await decision_prompt_for(async_session, repo.id, "review_all")).text

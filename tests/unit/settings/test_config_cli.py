@@ -20,7 +20,7 @@ _VIEW_KEYS = {
     "key", "type", "default", "description", "area", "scope", "file", "choices", "minimum",
     "maximum", "exclusive_minimum", "env", "internal", "reload",
     "value", "source", "problem", "locked", "changed", "schema_version", "default_note",
-    "out_of_range",
+    "out_of_range", "cost_note",
 }  # fmt: skip
 
 

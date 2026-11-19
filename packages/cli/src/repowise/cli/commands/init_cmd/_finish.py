@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
 
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
-from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
+from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
+    register_editor_clients,
+    snapshot_agent_configs,
+    write_editor_project_files,
+)
 from repowise.cli.helpers import (
     console,
     get_head_commit,
@@ -137,6 +143,10 @@ def register_clients(run: InitRun) -> None:
     )
 
     no_editor_setup = not run.opts.editor_setup
+    if not is_editor_setup_disabled(no_editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            run.agent_configs_before = snapshot_agent_configs(run.repo_path)
     if run.global_mcp_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this repo only). Run "
@@ -473,6 +483,8 @@ def complete_setup(run: InitRun) -> None:
         interactive=(sys.stdin.isatty() and not opts.yes),
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
+        configs_before=run.agent_configs_before,
+        claude_repointed=run.mcp_repointed,
     )
     completion = show_completion(
         repo_path=repo_path,

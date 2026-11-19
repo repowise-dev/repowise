@@ -178,6 +178,14 @@ def tool_counts() -> dict[str, int]:
     }
 
 
+def always_load_facts() -> tuple[list[str], str]:
+    """The read tools ``mcp.always_load`` keeps loaded, and its cost as the setting states it."""
+    from repowise.core.registry.tool_selection import ALWAYS_LOAD_TOOLS
+    from repowise.core.settings import registry
+
+    return sorted(ALWAYS_LOAD_TOOLS), registry.get("mcp.always_load").cost_note or ""
+
+
 #: Complete through twenty, not just the values in use today. A partial map is
 #: a landmine: the counts here feed a module-scope constant and a parametrize
 #: argument in the golden test, so a missing entry is a *collection* error that
@@ -293,6 +301,7 @@ def _tier_list() -> str:
 def render() -> str:
     rows = agent_rows()
     counts = tool_counts()
+    read_tools, always_load_cost = always_load_facts()
     ids = ", ".join(f"`{row['id']}`" for row in rows)
     good = [row["display_name"] for row in rows if row["tier"] == "good"]
     hooked = [row["display_name"] for row in rows if row["tier"] == "good" and row["hook_adapter"]]
@@ -430,9 +439,39 @@ def render() -> str:
             "`-name`; `+name` or `-name` alone adjusts each client's default; plain "
             "names are the exact list. The server reads it when it starts, so restart "
             "it (or the agent) after a change. A tool left out only by a client's "
-            "default still answers if called, and the server's instructions name the "
-            f"command that lists it. The `lean` profile is **{spell(counts['lean'])}** tools "
+            'default still answers if called; `get_overview(include=["tools"])` lists '
+            f"the whole surface. The `lean` profile is **{spell(counts['lean'])}** tools "
             f"({spell(counts['lean_workspace'])} in workspace mode): core plus `get_risk`.",
+            width=_WRAP,
+        ),
+        "",
+        textwrap.fill(
+            "`repowise init` and `repowise agents add` print, for each agent they "
+            "connect, how many tools it lists and under which profile; `init --progress "
+            "json` gives the same facts per agent in the summary's `mcp_tools` field.",
+            width=_WRAP,
+        ),
+        "",
+        textwrap.fill(
+            "**Always-load (Claude Code, off by default).** Claude Code keeps every "
+            "repowise schema behind tool search, so the model's first repowise call "
+            "usually follows a tool-search turn. `repowise config set mcp.always_load "
+            f"true` asks it to keep the {spell(len(read_tools))} read tools ("
+            + ", ".join(f"`{name}`" for name in read_tools)
+            + f") loaded from the first turn instead, for {always_load_cost}. "
+            "Other tools stay deferred, and clients that load every schema up front are "
+            "unaffected. Restart the agent after the change.",
+            width=_WRAP,
+        ),
+        "",
+        textwrap.fill(
+            "`repowise doctor` shows the surface each wired agent gets on that agent's row: "
+            "profile, tool count, any `--tools` pin in its server entry, and `mcp.always_load` "
+            "for Claude Code. `--format json` carries the same facts under `data` (`profile`, "
+            "`tool_count`, `pinned`, `always_load`, `duplicate`). The same row warns when an "
+            "agent loads repowise under two names at once, such as the Claude Code plugin "
+            "beside a project `.mcp.json` entry, and names the entry to keep and the one to "
+            "remove.",
             width=_WRAP,
         ),
         "",
