@@ -729,6 +729,24 @@ def _next_actions_lines(view: dict | None) -> list[str]:
     return lines
 
 
+def _evidence_freshness(repo_path: Path) -> dict | None:
+    """The block ``doctor``'s evidence rows read; ``None`` without a store.
+
+    A store that cannot be read says so under ``error`` (with ``fix`` for one
+    an older repowise wrote), so it never reads like a repository with none.
+    """
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+    from repowise.cli.helpers import StaleIndexError
+    from repowise.core.evidence.setup import UPDATE_COMMAND
+
+    try:
+        return stored_freshness(repo_path)
+    except StaleIndexError as exc:
+        return {"error": exc.message, "fix": UPDATE_COMMAND}
+    except Exception as exc:  # the rest of status still answers
+        return {"error": f"{type(exc).__name__}: {exc}", "fix": None}
+
+
 def _format_relative_time(iso_timestamp: str | None) -> str:
     """Format an ISO 8601 timestamp as a relative time string."""
     if not iso_timestamp:
@@ -1063,6 +1081,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "stale_pages": stale_pages,
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
+                # Coverage and runtime evidence: present, commit, age, fresh or stale.
+                # ``None`` without a store, as the reader opens none.
+                "evidence_freshness": _evidence_freshness(repo_path),
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),

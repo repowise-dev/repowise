@@ -1621,10 +1621,11 @@ export interface DeadCodeSummaryResponse {
  *
  * ``kind`` is the prompt served: ``discover`` asked with no background
  * records to check comes back as ``add``. ``text`` is empty only for
- * ``agreements`` with none stored, and then a surface offers nothing.
+ * ``agreements`` with none stored and ``review_all`` with no background
+ * record left, and then a surface offers nothing.
  */
 export interface DecisionAgentPromptResponse {
-  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  kind: "discover" | "review_all" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
   text: string;
   ids: string[];
   count: number;
@@ -2455,6 +2456,7 @@ export interface FixVerify {
   command: string | null;
   basis: "measured" | "inferred" | "unknown";
   prerequisite?: string | null;
+  measure?: Record<string, unknown> | null;
 }
 
 /** Optional per-call provider/model overrides, as chat accepts. */
@@ -3011,6 +3013,25 @@ export interface KnowledgeMatrixResponse {
   files: ([number, string, number, number | null, boolean, number, number | null, [number, number][], boolean])[];
 }
 
+/** One agent's MCP config for a repo, as ``repowise agents print-config`` prints it. */
+export interface McpClientConfigResponse {
+  repo_id: string;
+  clients: McpClientRef[];
+  target: string;
+  display_name: string;
+  config: string;
+  docs_url?: string | null;
+  profile?: string | null;
+  tool_count: number;
+  always_load?: boolean | null;
+}
+
+/** An agent repowise can print an MCP config for. */
+export interface McpClientRef {
+  id: string;
+  display_name: string;
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -3046,6 +3067,7 @@ export interface McpToolSurfaceResponse {
   profile?: string | null;
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
+  command?: string;
 }
 
 export interface ModuleEdgeResponse {
@@ -4449,6 +4471,7 @@ export interface SettingView {
   key: string;
   type: "bool" | "int" | "float" | "str" | "list" | "mapping";
   default_note?: string | null;
+  cost_note?: string | null;
   description: string;
   area: string;
   scope: "repo" | "user" | "env";

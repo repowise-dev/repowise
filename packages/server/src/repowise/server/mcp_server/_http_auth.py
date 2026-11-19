@@ -260,9 +260,10 @@ def _call_targets(arguments: dict[str, Any]) -> list[tuple[str | None, ...]]:
             return [(repo,)]
         aliases = resolved if isinstance(resolved, list) else [resolved]
         return [(registry.repo_id(alias), alias) for alias in aliases]
-    if repo is not None and not _served_checkout_path(repo, _state._repo_path):
+    if repo is not None and not _served_checkout_path(repo, _state.served_path()):
         return [(repo,)]
-    name = Path(_state._repo_path).name if _state._repo_path else None
+    served = _state.served_path()
+    name = Path(served).name if served else None
     return [(_state._served_repo_id, name)]
 
 

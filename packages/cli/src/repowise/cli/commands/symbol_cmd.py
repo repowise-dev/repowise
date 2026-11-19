@@ -35,6 +35,9 @@ _KEPT = (
     "resolution",
     "suggestions",
     "fallback_lines",
+    # A bare file path: its top-level symbol names.
+    "symbols",
+    "symbols_total",
     "note",
     # Omission-ref reads ("repowise#<hex>") return a different shape entirely:
     # ``content`` is the banked text and ``source`` is the *command* it came
@@ -152,6 +155,22 @@ def _render(projected: dict) -> None:
             + "[/dim]"
         )
         _echo_lines(projected.get("content") or "")
+        if projected.get("note"):
+            console.print(f"[dim]{_ta.as_cli_prose(str(projected['note']))}[/dim]")
+        return
+
+    if projected.get("kind") == "file":
+        # A bare file path: the names to pass back, not a body.
+        from rich.markup import escape
+
+        names = projected.get("symbols") or []
+        # Escaped: a route path like "app/[id]/page.tsx" is not markup.
+        console.print(
+            f"[cyan]{escape(str(projected.get('file', '')))}[/cyan] [dim]file · top-level symbols[/dim]"
+        )
+        _echo_lines("\n".join(names))
+        if projected.get("symbols_total"):
+            console.print(f"[dim]{len(names)} of {projected['symbols_total']} shown.[/dim]")
         if projected.get("note"):
             console.print(f"[dim]{_ta.as_cli_prose(str(projected['note']))}[/dim]")
         return

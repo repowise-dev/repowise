@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
+from repowise.core.analysis.decisions.provenance import normalize_text
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_SELECTED,
     commit_scope_basis,
@@ -95,6 +97,62 @@ def _attribute_to_commit(
     # the model's paths against.
     decision.proposed_files = None
     return sha
+
+
+#: A conventional-commit header (``fix(scope)!: ``). Limited to the standard
+#: types so prose such as ``Decision: use X`` is not read as one.
+_CONVENTIONAL_HEADER = re.compile(
+    r"^(?:feat|fix|refactor|perf|chore|docs|test|tests|build|ci|style|revert)"
+    r"(?:\([^)]*\))?!?:\s",
+    re.IGNORECASE,
+)
+_TRAILING_CHANGE_REF = re.compile(r"\s*\([#!]\d+\)$")
+_LIST_BULLET = re.compile(r"^\s*(?:[-*+]\s+)?")
+_NON_WORD = re.compile(r"[^\w\s]")
+
+
+def _subject_core(text: str) -> str:
+    """*text* without a conventional header, a trailing ``(#123)``, case or punctuation."""
+    text = _TRAILING_CHANGE_REF.sub("", _CONVENTIONAL_HEADER.sub("", text.strip()))
+    return normalize_text(_NON_WORD.sub("", text))
+
+
+def _commit_subjects(commit: dict, subject_key: str) -> set[str]:
+    """The cores of *commit*'s subject and of every squashed subject in its body.
+
+    A squash body lists each folded commit as ``* type(scope): subject``. Only
+    lines carrying a conventional header count, so body prose never does.
+    """
+    lines = [commit.get(subject_key) or ""]
+    for line in (commit.get("body") or "").splitlines():
+        line = _LIST_BULLET.sub("", line, count=1)
+        if _CONVENTIONAL_HEADER.match(line):
+            lines.append(line)
+    return {_subject_core(line) for line in lines} - {""}
+
+
+def drop_subject_restatements(
+    decisions: list[ExtractedDecision], batch: list[dict], subject_key: str
+) -> list[ExtractedDecision]:
+    """*decisions* without the ones whose ``decision`` is a commit subject line.
+
+    A subject announces what a commit changed; it is not a rule the code keeps
+    following. The substring gate grounds it anyway, because the subject is
+    part of the source text, so it is dropped here: a decision carrying a
+    conventional-commit header, or equal to a subject in *batch* (its own or a
+    squashed one in its body) once header, change number, case and
+    punctuation are set aside. Only exact restatements go; a decision that
+    adds to its subject is kept.
+    """
+    subjects = set().union(*(_commit_subjects(c, subject_key) for c in batch))
+    return [
+        d
+        for d in decisions
+        if not (
+            _CONVENTIONAL_HEADER.match((d.decision or "").strip())
+            or _subject_core(d.decision or "") in subjects
+        )
+    ]
 
 
 def _significant_commits(meta: dict) -> list[dict]:

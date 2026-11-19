@@ -89,6 +89,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("why", "why_cmd:why_command"),
     ("distill", "distill_cmd:distill_command"),
     ("expand", "expand_cmd:expand_command"),
+    ("perf", "perf_cmd:perf_group"),
     ("saved", "saved_cmd:saved_command"),
     ("savings", "savings_cmd:savings_group"),
     ("security", "security_cmd:security_command"),
@@ -116,6 +117,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),
     ("hosted", "hosted_cmd:hosted_group"),
+    ("bot", "bot_cmd:bot_group"),
     ("workspace", "workspace_cmd:workspace_group"),
     ("plugins", "plugins_cmd:plugins_command"),
 )

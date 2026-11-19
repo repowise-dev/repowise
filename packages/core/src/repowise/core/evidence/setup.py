@@ -20,11 +20,22 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
-from .runtime_setup import CLASS_ORDER, EVIDENCE_STATUS_COMMAND, RuntimeInputs, runtime_targets
+from .runtime_setup import (
+    ARGS_PLACEHOLDER,
+    CLASS_ORDER,
+    EVIDENCE_STATUS_COMMAND,
+    RuntimeInputs,
+    runtime_targets,
+    timed_target,
+)
 
 #: Builds the index evidence joins to; no model calls, no API key.
 INIT_COMMAND = "repowise init --yes --no-prose"
-SETUP_COMMAND = "repowise evidence setup --format json"
+#: What a person runs; ``SETUP_COMMAND`` is the same plan as JSON for an agent.
+EVIDENCE_SETUP = "repowise evidence setup"
+SETUP_COMMAND = f"{EVIDENCE_SETUP} --format json"
+#: The coverage part of the plan alone.
+COVERAGE_SETUP = "repowise coverage setup"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
 #: Says what is wrong with an index that exists but cannot be read.
 DOCTOR_COMMAND = "repowise doctor"
@@ -158,16 +169,21 @@ def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str
 def _runtime_call(
     repo_root: Path, units: Sequence[dict[str, Any]], done: Collection[str]
 ) -> dict[str, Any] | None:
-    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it."""
+    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it.
+
+    A target with a ``reason`` (an entry point waiting for its arguments) is the agent's to finish, never a step.
+    """
     targets = [
-        t for u in units for t in u.get("runtime", ()) if t["ingest"] and t["workload"] not in done
+        t for u in units for t in u.get("runtime", ())
+        if t["ingest"] and t["reason"] is None and t["workload"] not in done
     ]
     if not targets:
         return None
     best = min(targets, key=lambda t: CLASS_ORDER.index(t["class"]))
     cwd = {"cwd": best["cwd"]}
     return {
-        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile.",
+        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile."
+        + (f" {best['note']}" if best.get("note") else ""),
         "steps": [
             *({**cwd, "run": p} for p in best["prerequisites"]),
             {**cwd, "run": best["command"]},
@@ -217,7 +233,11 @@ def evidence_setup(
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
+    done = _measured_at(runtime, head)
+    next_call = _with_optional(
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done),
+        _optional_entry_points(planned, done),
+    )
     if next_call is not None:
         reason = None
     elif indexed and covered:
@@ -237,6 +257,49 @@ def evidence_setup(
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+
+
+def _with_optional(
+    next_call: dict[str, Any] | None, optional: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """*next_call* carrying *optional* under ``optional``.
+
+    With no step left, the call is still there, with no steps, so an agent
+    that stops at a null ``next_call`` never stops before the entry points.
+    """
+    if optional is None:
+        return next_call
+    if next_call is None:
+        next_call = {"purpose": "Only entry points waiting for their arguments are left.", "steps": []}
+    return {**next_call, "optional": optional}
+
+
+def _optional_entry_points(
+    planned: Sequence[dict[str, Any]], done: Collection[str]
+) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments and not measured here, by workload.
+
+    Never a step, so named here. An entry point counts as measured once any
+    run of it is stored at this commit (``app`` or ``app build``), but not one
+    stored under the unfilled name (``app <args>``). Only names,
+    so the default answer stays small; each target's command and ingest line
+    are in ``units[].runtime``.
+    """
+    workloads = [
+        t["workload"] for u in planned for t in u.get("runtime", ())
+        if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+        and not any(
+            (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
+            for d in done
+        )
+    ]
+    if not workloads:
+        return None
+    return {
+        "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
+        "representative run, then run each command and its ingest line.",
+        "workloads": workloads,
     }
 
 
@@ -282,6 +345,33 @@ def _next_call(
     )
 
 
+def timed_targets(
+    repo_root: str | Path,
+    paths: Iterable[str],
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+) -> dict[str, dict[str, Any]]:
+    """For each repo-relative path in *paths*, the workload ``perf measure``
+    times for a change there (:func:`~.runtime_setup.timed_target`); a path
+    with none is left out. One stack detection for all of them. Blocking reads.
+    """
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    mains = _go_mains(root, stacks)
+    out: dict[str, dict[str, Any]] = {}
+    # Files of one language in one directory share a unit, so its targets are read once.
+    seen: dict[tuple[str, str], dict[str, Any] | None] = {}
+    for path in paths:
+        key = (posixpath.splitext(path)[1], posixpath.dirname(path))
+        if key not in seen:
+            seen[key] = timed_target(stacks, root, runtime, path, mains)
+        target = seen[key]
+        if target:
+            out[path] = target
+    return out
+
+
 def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     """Go ``package main`` directories, read only when a unit is Go."""
     if not any(s.language == "go" for s in stacks):
@@ -292,11 +382,14 @@ def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
 
 
 __all__ = [
+    "COVERAGE_SETUP",
     "COVERAGE_STATUS_COMMAND",
     "DOCTOR_COMMAND",
+    "EVIDENCE_SETUP",
     "INIT_COMMAND",
     "SETUP_COMMAND",
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "timed_targets",
 ]

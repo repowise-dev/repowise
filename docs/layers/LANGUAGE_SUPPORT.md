@@ -29,7 +29,7 @@ resolution and health markers are all static.
 [How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
@@ -153,15 +153,15 @@ vocabulary, and every origin has exactly one confidence:
 | `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
 | `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
 | `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path such as `crate::index::open_ro()` that needs no `use` |
 | `crate_root` | 0.88 | The reference is scoped to its Rust crate |
 | `receiver_import` | 0.88 | The receiver's class was found in an imported file |
-| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
 | `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
 | `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
 | `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
 | `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
-| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
 | `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
 | `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
 | `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
@@ -302,6 +302,34 @@ Why Go and Java are held back from the test-quality markers, and why Kotlin's
 Extract Method waits on its grammar:
 [architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
 Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
+
+## Runtime evidence
+
+Coverage reports and profiles add measured runtime to the static graph.
+`repowise evidence setup` prints, per build unit, the test command that writes
+coverage and the commands that profile it; `coverage add` and `evidence add`
+read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
+Go cover profile format is read for any language, from any tool. A profile
+joins to code only for Python, Go and JavaScript frames.
+
+| Language | Coverage command from setup | Profiles and benchmarks read |
+|----------|-----------------------------|------------------------------|
+| Python | pytest with pytest-cov | Speedscope (pyinstrument, py-spy), collapsed stacks (py-spy), pytest-benchmark JSON |
+| JavaScript | Jest, Vitest or Bun; c8 around other runners | Speedscope |
+| TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
+| Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
+| Java / Kotlin | Maven or Gradle with JaCoCo | no |
+| Rust | `cargo llvm-cov` | no |
+| C# | `dotnet test` with coverlet | no |
+| Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
+| PHP | PHPUnit or Pest | no |
+| Apex | none; the Salesforce CLI test-run JSON is read | no |
+| Object Pascal | none | no |
+| Every other language | none | no |
+
+Formats, the join rules and the workload classes:
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
+[TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
 
 ## Limits
 

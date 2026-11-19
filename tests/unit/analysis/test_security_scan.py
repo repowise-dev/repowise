@@ -1837,6 +1837,40 @@ def test_verbatim_interpolation_trailing_backslash_preserves_following_code(pref
     assert len(masked) == len(source)
 
 
+@pytest.mark.parametrize("strings", [False, True])
+def test_csharp_plain_verbatim_string_preserves_following_code(strings: bool) -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    literal = r'"C:\var\log\""quoted"""'
+    source = f"var logDir = @{literal}; DangerousCall(); // comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("App.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var logDir = @{expected_literal}; DangerousCall(); "
+        + " " * len("// comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)
+
+    secret_src = 'var logDir = @"C:\\var\\log\\";\nvar apiKey = "real_prod_key_123456";\n'
+    findings = scan_source("App.cs", secret_src)
+    assert any(f["kind"] == "hardcoded_secret" for f in findings)
+
+
+def test_objc_nsstring_literal_preserves_backslash_escape() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    source = 'NSString *s = @"hello \\"world\\"";\nint x = 42;\n'
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("main.m")
+    )
+    assert "int x = 42;" in masked
+    assert masked == 'NSString *s = @                 ;\nint x = 42;\n'
+
+
 def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
     from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
     from repowise.core.analysis.security.scanner import scan_source

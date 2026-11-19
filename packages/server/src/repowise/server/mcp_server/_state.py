@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -85,6 +88,42 @@ _release_check: Any = None
 _release_announced: str | None = None
 # Whether a search reply already said its rows are keyword matches only.
 _keyless_search_noted = False
+
+
+# The repo context one request is served from, set by a caller that embeds the
+# tools (see :func:`serving`). Unset on the stdio and HTTP servers, which serve
+# the globals above. A ContextVar, so concurrent requests on one loop never see
+# each other's repo.
+_request_context: ContextVar[Any] = ContextVar("repowise_mcp_request_context", default=None)
+
+
+def request_context() -> Any:
+    """The ``RepoContext`` this request is served from, or ``None`` for the globals."""
+    return _request_context.get()
+
+
+@contextmanager
+def serving(ctx: Any) -> Iterator[Any]:
+    """Serve every tool call inside the block from *ctx*, a ``RepoContext``."""
+    token = _request_context.set(ctx)
+    try:
+        yield ctx
+    finally:
+        _request_context.reset(token)
+
+
+def served_path() -> str | None:
+    """The served checkout's path: the request context's, else :data:`_repo_path`."""
+    ctx = _request_context.get()
+    if ctx is None:
+        return _repo_path
+    return str(ctx.path) if ctx.path is not None else None
+
+
+def git_available() -> bool:
+    """Whether this request may read git history; ``False`` only when its context says so."""
+    ctx = _request_context.get()
+    return ctx is None or bool(ctx.git)
 
 
 def init_tool_state(

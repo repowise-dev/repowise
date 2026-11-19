@@ -99,7 +99,7 @@ async def get_blast_radius(
             },
         )
 
-    collector = OmissionCollector("get_blast_radius", repo_root=_state._repo_path)
+    collector = OmissionCollector("get_blast_radius", repo_root=_state.served_path())
     payload = await blast_radius_payload(
         enricher,
         raw,

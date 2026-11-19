@@ -166,10 +166,36 @@ async def test_reindex_aborts_when_every_item_failed(
         lambda *a, **k: store,
     )
 
-    with pytest.raises(click.ClickException, match="failed in two consecutive batches"):
+    with pytest.raises(click.ClickException, match="failed in two consecutive batches") as exc_info:
         await reindex_cmd._reindex(tmp_path, "openai", batch_size=20)
     assert store.batch_calls == 2
     assert store.single_calls == 0
+    # Two failed batches are as often a setting as an outage (issue #5738).
+    assert "outage" not in exc_info.value.message
+    assert "Last error: embedder down" in exc_info.value.message
+
+
+def test_batch_recovery_keeps_a_refused_dimension_setting_terminal() -> None:
+    """Control: a refused width stays terminal for the whole batch (issue #5738).
+
+    httpx keeps the status on ``.response``, which ``_is_input_specific_error``
+    does not read, so this held before the refusal became a ``ValueError`` too.
+    """
+    import httpx
+
+    request = httpx.Request("POST", "http://localhost:11434/api/embed")
+    refusal = httpx.HTTPStatusError(
+        "400", request=request, response=httpx.Response(400, request=request)
+    )
+    exc = ValueError("Ollama refused dimensions=3072 ...")
+    exc.__cause__ = refusal
+    items = [(f"p{i}", "text", {}) for i in range(4)]
+
+    successful, retry_items, terminal = reindex_cmd._batch_recovery_plan(exc, items)
+
+    assert successful == 0
+    assert retry_items == []
+    assert [item for item, _stage, _exc in terminal] == items
 
 
 def test_batch_recovery_retries_only_failed_input_chunk() -> None:

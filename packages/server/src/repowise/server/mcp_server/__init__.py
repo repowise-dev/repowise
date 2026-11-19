@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from collections.abc import Iterable
 from typing import Any
 
 # ``_state`` is the one submodule that stays eager: every other module in this
@@ -296,20 +297,186 @@ def registered_tool(fn: Any) -> Any:
     return wrapped
 
 
-def _slim_input_schemas(server: Any) -> None:
-    """Drop pydantic's ``title`` keys and ``default: null`` from advertised schemas.
+#: Parameters a tool still accepts but does not advertise: aliases and knobs
+#: agents do not reach for, and no skill, prompt or tool reply tells them to
+#: pass. Every name costs schema bytes on each turn of a host that re-sends
+#: the tool list. docs/agent/MCP_TOOLS.md still documents them.
+_UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
+    "get_context": frozenset({"compact"}),
+    # get_symbol's ``id`` stays listed: get_answer hints say ``get_symbol id='...'``.
+    "get_symbol": frozenset({"reference", "context_lines"}),
+    "get_why": frozenset({"reference"}),
+    "search_codebase": frozenset({"page_type", "pattern"}),
+}
 
-    They restate each parameter's name and optionality, and hosts re-send the
-    tool list on every turn. Arguments are still validated against the
-    function signature, not this dict.
+
+def _args_block(lines: list[str], start: int) -> tuple[dict[str, list[str]], int]:
+    """The ``Args:`` entries after line *start*, by parameter, and where they end.
+
+    ``a, b: text`` documents both names; a deeper-indented line continues the
+    entry above it.
     """
+    import re
+
+    docs: dict[str, list[str]] = {}
+    text: list[str] = []
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith("    ") or not lines[end].strip()):
+        entry = re.match(r"    (\w+(?:, \w+)*): (.*)", lines[end])
+        if entry:
+            text = [entry[2].strip()]
+            docs.update(dict.fromkeys(entry[1].split(", "), text))
+        elif lines[end].strip():
+            text.append(lines[end].strip())
+        end += 1
+    return docs, end
+
+
+def _lift_args(description: str, properties: dict[str, Any]) -> str:
+    """*description* without its ``Args:`` block, each entry moved onto its property.
+
+    The block restates the schema in prose; on the property the text sits where
+    a host shows it, once. An entry for a parameter the schema does not list is
+    dropped.
+    """
+    import inspect
+
+    lines = inspect.cleandoc(description).split("\n")
+    if "Args:" not in lines:
+        return description
+    start = lines.index("Args:")
+    docs, end = _args_block(lines, start)
+    for name, text in docs.items():
+        if name in properties:
+            properties[name].setdefault("description", " ".join(text))
+    return "\n".join(lines[:start] + lines[end:]).strip()
+
+
+def _collapse_optional(prop: dict[str, Any]) -> None:
+    """``anyOf: [T, null]`` as plain ``T``: the parameter's absence from
+    ``required`` already says it is optional."""
+    variants = prop.get("anyOf")
+    if not isinstance(variants, list) or {"type": "null"} not in variants:
+        return
+    rest = [v for v in variants if v != {"type": "null"}]
+    if len(rest) == 1:
+        del prop["anyOf"]
+        prop.update(rest[0])
+    else:
+        prop["anyOf"] = rest
+
+
+def _slim_input_schemas(server: Any) -> None:
+    """Slim every tool registered on *server* (see :func:`_slim_tool`)."""
     for tool in server._tool_manager._tools.values():
-        params = tool.parameters
-        params.pop("title", None)
-        for prop in params.get("properties", {}).values():
-            prop.pop("title", None)
-            if "default" in prop and prop["default"] is None:
-                del prop["default"]
+        _slim_tool(tool)
+
+
+def _slim_tool(tool: Any) -> None:
+    """Advertise *tool*'s schema without what restates it.
+
+    Drops pydantic's ``title`` keys, ``default: null`` and the null branch of
+    an optional parameter, unlists :data:`_UNADVERTISED_PARAMS`, and moves a
+    core tool's ``Args:`` block onto its properties. Hosts re-send the tool
+    list on every turn. Arguments are still validated against the function
+    signature, not this dict, so an unlisted parameter keeps working.
+    """
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    params = tool.parameters
+    params.pop("title", None)
+    properties = params.get("properties", {})
+    for name in _UNADVERTISED_PARAMS.get(tool.name, ()):
+        properties.pop(name, None)
+    for prop in properties.values():
+        prop.pop("title", None)
+        if "default" in prop and prop["default"] is None:
+            del prop["default"]
+        _collapse_optional(prop)
+    # Only the core profile's docstrings are written one entry per
+    # parameter; other tools pack several into one entry, so lifting
+    # theirs would hang one entry's text on the wrong parameter.
+    if tool.description and tool.name in CORE_TOOLS:
+        tool.description = _lift_args(tool.description, properties)
+
+
+def _annotations(safety: str) -> Any:
+    """The ``ToolAnnotations`` a tool of this safety kind is listed with.
+
+    The mcp SDK lives above packages/core, so the registry stores plain hint
+    dicts and this surface materialises them.
+    """
+    from mcp.types import ToolAnnotations
+
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+
+    return ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety])
+
+
+def _register_tools() -> None:
+    """Import every tool module and load plugins, so the registry holds every tool.
+
+    Imported in :data:`_TOOL_MODULES` order, which is the order the server
+    lists tools in.
+    """
+    for name, module in _TOOL_MODULES.items():
+        try:
+            # Read the name, not just the module: a tool package re-exports its
+            # tool lazily, and that read is what imports and registers it.
+            getattr(importlib.import_module(f"{__name__}.{module}"), name)
+        except ImportError as exc:
+            # One tool's optional dependency must not take the whole surface
+            # down: a host respawns a server that dies at import, forever.
+            logging.getLogger("repowise.mcp").warning(
+                "repowise MCP: skipping tool module %s, cannot import %s: %s",
+                module,
+                exc.name or "a dependency",
+                exc,
+            )
+
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()  # plugin tools register before the surface is attached
+
+
+def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
+    """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
+
+    Built from the tool registry with the server's own wrapping and schema
+    slimming, without creating or starting a server. Sorted by name, as the
+    server lists them; a name with no registered tool is skipped. The
+    ``mcp.always_load`` hint is a per-repository setting, so it is not here;
+    a server that honours it adds it per session (``mark_always_loaded``).
+    """
+    from mcp.server.fastmcp.tools import Tool
+    from mcp.types import Tool as MCPTool
+
+    from repowise.core.registry import mcp_tool_registry
+
+    _register_tools()
+    wanted = set(names)
+    tools: dict[str, Any] = {}
+    for entry in mcp_tool_registry.entries():
+        # The server keeps the first tool registered under a name.
+        if entry.name in wanted and entry.name not in tools:
+            tool = Tool.from_function(
+                registered_tool(entry.fn), annotations=_annotations(entry.safety)
+            )
+            _slim_tool(tool)
+            tools[entry.name] = tool
+    return [
+        MCPTool(
+            name=tool.name,
+            title=tool.title,
+            description=tool.description,
+            inputSchema=tool.parameters,
+            outputSchema=tool.output_schema,
+            annotations=tool.annotations,
+            icons=tool.icons,
+            _meta=tool.meta,
+        ).model_dump(by_alias=True, mode="json", exclude_none=True)
+        for _, tool in sorted(tools.items())
+    ]
 
 
 def ensure_full_surface() -> Any:
@@ -332,36 +499,12 @@ def ensure_full_surface() -> Any:
     if _surface_applied:
         return _mcp
 
-    for name, module in _TOOL_MODULES.items():
-        try:
-            # Read the name, not just the module: a tool package re-exports its
-            # tool lazily, and that read is what imports and registers it.
-            getattr(importlib.import_module(f"{__name__}.{module}"), name)
-        except ImportError as exc:
-            # One tool's optional dependency must not take the whole surface
-            # down: a host respawns a server that dies at import, forever.
-            logging.getLogger("repowise.mcp").warning(
-                "repowise MCP: skipping tool module %s, cannot import %s: %s",
-                module,
-                exc.name or "a dependency",
-                exc,
-            )
-
-    # The mcp SDK lives above packages/core, so the registry stores plain
-    # hint dicts and this surface materialises them into ToolAnnotations.
-    from mcp.types import ToolAnnotations
+    _register_tools()
 
     from repowise.core.registry import mcp_tool_registry
-    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
-    from repowise.core.registry.plugins import load_plugins
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    load_plugins()  # plugin tools register before the surface is attached
-    mcp_tool_registry.apply(
-        _mcp,
-        middleware=registered_tool,
-        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
-    )
+    mcp_tool_registry.apply(_mcp, middleware=registered_tool, annotations_for=_annotations)
     _slim_input_schemas(_mcp)
 
     # Snapshot the full registered surface so per-server tool selection
@@ -479,4 +622,5 @@ __all__ = [
     "mcp",
     "run_mcp",
     "search_codebase",
+    "tool_definitions",
 ]
