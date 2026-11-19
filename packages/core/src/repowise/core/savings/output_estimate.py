@@ -25,7 +25,9 @@ Rules, chosen so every credited token traces back to a benchmark row:
   the cross-model median bare output. Any other model, or an unknown one, is
   credited the lowest reduction measured on any model: the benchmark has no
   arm for it, and the smallest effect we observed is the most we can defend.
-  The best row is never used as a fallback.
+  The best row is never used as a fallback. A measured row is credited its
+  point estimate, even where its interval spans zero; the data file keeps
+  each row's interval beside it so the basis stays checkable.
 
 The baseline is the benchmark's per-session bare output, not the session's
 own transcript. A real session is usually longer than a one-question bench
@@ -150,7 +152,10 @@ def _per_session(model: str | None, calibration: _Calibration) -> tuple[str, flo
     """``(basis, reduction, output tokens saved per session)`` for *model*."""
     from statistics import median  # report time only; kept off the writers' import path
 
+    from repowise.core.distill.session_model import normalize_model_id
+
     rows = calibration.rows
+    model = normalize_model_id(model) if model else model
     if model in rows:
         bare, repowise = rows[model]
         return MEASURED, _reduction(bare, repowise), max(0, round(bare - repowise))

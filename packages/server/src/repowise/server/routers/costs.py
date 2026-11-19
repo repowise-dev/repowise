@@ -225,6 +225,13 @@ def _output_estimate_fields(report: Any) -> dict[str, Any]:
     estimate = report.output_estimate
     if estimate is None:
         return {}
+    try:
+        return _output_estimate_payload(report, estimate)
+    except Exception:  # an estimate is never worth a failed response
+        return {}
+
+
+def _output_estimate_payload(report: Any, estimate: Any) -> dict[str, Any]:
     return {
         "output_tokens_saved_estimated": estimate.output_tokens_saved,
         "output_usd_saved_estimated": estimate.output_usd_saved,

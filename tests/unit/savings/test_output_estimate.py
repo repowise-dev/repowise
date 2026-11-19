@@ -227,3 +227,9 @@ def test_sql_and_pure_builders_agree_on_the_estimate(tmp_path: Path, fixed_calib
     assert from_sql.output_estimate is not None
     assert from_sql.output_estimate.sessions == 3
     assert asdict(from_sql.output_estimate) == asdict(from_pure.output_estimate)
+
+
+def test_a_context_window_tag_still_finds_the_model_s_own_row(fixed_calibration) -> None:
+    estimate = estimate_output([("claude-sonnet-4-6[1m]", 15.0, 1)])
+    row = estimate.per_model[0]
+    assert (row.basis, row.output_tokens_per_session) == (MEASURED, 1_000)

@@ -304,10 +304,11 @@ class SavingsResponse(BaseModel):
     reread_tokens_est: int = 0
 
     #: Output tokens agents did not write, *estimated* from the paired
-    #: benchmark per agent session with an MCP call, priced
-    #: at each session's captured output rate. Separate from the recorded
-    #: ``saved_output_tokens``. The total adds this to the priced input saving.
-    #: All null when no calibration could be loaded.
+    #: benchmark per agent session with an MCP call, priced at that session's
+    #: captured output rate. Each model is credited the benchmark's point
+    #: estimate. Separate from the recorded ``saved_output_tokens``. The total
+    #: adds this to the priced input saving. All null when no calibration
+    #: could be loaded.
     output_tokens_saved_estimated: int | None = None
     output_usd_saved_estimated: float | None = None
     total_usd_saved_estimated: float | None = None

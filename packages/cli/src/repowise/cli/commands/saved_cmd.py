@@ -329,13 +329,13 @@ def _output_estimate_summary(report: SavingsReport) -> dict:
             "output_tokens_saved_estimated": None,
             "output_usd_saved_estimated": None,
             "total_usd_saved_estimated": None,
-            "output_calibration": None,
+            "calibration": None,
         }
     return {
         "output_tokens_saved_estimated": estimate.output_tokens_saved,
         "output_usd_saved_estimated": estimate.output_usd_saved,
         "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
-        "output_calibration": {
+        "calibration": {
             "source": estimate.source,
             "version": estimate.version,
             "sessions": estimate.sessions,

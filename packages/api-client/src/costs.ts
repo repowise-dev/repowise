@@ -103,6 +103,33 @@ export interface Savings {
   missed_window_days: number;
   reread_events: number;
   reread_tokens_est: number;
+  /** Output tokens agents did not write, estimated from the paired benchmark
+   *  per session with an MCP call. Null when no calibration could be loaded. */
+  output_tokens_saved_estimated?: number | null;
+  output_usd_saved_estimated?: number | null;
+  /** Priced input saving plus the estimated output saving. */
+  total_usd_saved_estimated?: number | null;
+  calibration?: SavingsOutputCalibration | null;
+}
+
+export interface SavingsOutputModelRow {
+  model: string | null;
+  /** "measured" | "anthropic_fallback" | "other_fallback" */
+  basis: string;
+  sessions: number;
+  reduction: number;
+  output_tokens_per_session: number;
+  output_tokens_saved: number;
+  output_rate_usd_per_million: number | null;
+  output_usd_saved: number | null;
+}
+
+export interface SavingsOutputCalibration {
+  source: string;
+  version: string;
+  sessions: number;
+  unpriced_output_tokens_saved: number;
+  per_model: SavingsOutputModelRow[];
 }
 
 // ---------------------------------------------------------------------------

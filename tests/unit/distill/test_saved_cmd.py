@@ -283,7 +283,7 @@ def test_saved_labels_the_output_estimate_as_from_the_benchmark(repo_cwd: Path) 
 
     summary = json.loads(as_json.output)["summary"]
     assert summary["output_tokens_saved_estimated"] > 0
-    assert summary["output_calibration"]["per_model"][0]["basis"] == "measured"
+    assert summary["calibration"]["per_model"][0]["basis"] == "measured"
     assert summary["total_usd_saved_estimated"] == pytest.approx(
         summary["estimated_usd"] + summary["output_usd_saved_estimated"]
     )
