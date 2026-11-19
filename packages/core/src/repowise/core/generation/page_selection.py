@@ -73,11 +73,20 @@ class PageSelectionIntent:
     unwritten: bool = False
     stale: bool = False
     path_globs: tuple[str, ...] = ()
+    # Literal directory prefixes under the repository root (the server's
+    # ``path_prefix``). Not globs: ``src`` selects ``src`` and ``src/...`` only,
+    # and characters like ``[``, ``*`` or a trailing space are part of the name.
+    path_prefixes: tuple[str, ...] = ()
     page_ids: tuple[str, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
-            self.all_pages or self.unwritten or self.stale or self.path_globs or self.page_ids
+            self.all_pages
+            or self.unwritten
+            or self.stale
+            or self.path_globs
+            or self.path_prefixes
+            or self.page_ids
         )
 
 
@@ -125,6 +134,16 @@ def _matches_glob(record: PageRecord, matchers: list[Any]) -> bool:
     return any(m.match_file(c) for m in matchers for c in candidates)
 
 
+def _under_prefix(record: PageRecord, prefixes: tuple[str, ...]) -> bool:
+    """True if *record*'s target path is a root-relative prefix or lies under it.
+
+    Compared literally at a path-separator boundary: ``src`` matches ``src`` and
+    ``src/a.py``, not ``srcs/c.py`` nor ``vendor/src/b.py``.
+    """
+    norm = record.target_path.replace("\\", "/")
+    return any(norm == p or norm.startswith(f"{p}/") for p in prefixes)
+
+
 def resolve_page_selection(
     records: list[PageRecord],
     intent: PageSelectionIntent,
@@ -141,6 +160,7 @@ def resolve_page_selection(
       cascade pull in the module pages above them even when those are written.
     * ``stale`` — every page whose freshness is stale or expired.
     * ``path_globs`` — every page whose ``target_path`` matches a glob/prefix.
+    * ``path_prefixes`` — every page at or under a literal root-relative directory.
     * ``page_ids`` — the named ids, when they exist. Names that match no record
       are returned in ``unknown_page_ids`` instead of being included.
     """
@@ -161,6 +181,8 @@ def resolve_page_selection(
     if intent.path_globs:
         matchers = _compile_globs(intent.path_globs)
         selected.update(r.page_id for r in records if _matches_glob(r, matchers))
+    if intent.path_prefixes:
+        selected.update(r.page_id for r in records if _under_prefix(r, intent.path_prefixes))
 
     unknown: list[str] = []
     for pid in intent.page_ids:

@@ -48,8 +48,8 @@ def _build_generate_intent(config: dict) -> Any:
     if kind == "page_ids":
         return PageSelectionIntent(page_ids=tuple(sel.get("page_ids") or ()))
     if kind == "path_prefix":
-        anchored = _root_anchored_prefix(sel.get("path_prefix") or "")
-        return PageSelectionIntent(path_globs=(anchored,) if anchored else ())
+        prefix = _root_relative_prefix(sel.get("path_prefix") or "")
+        return PageSelectionIntent(path_prefixes=(prefix,) if prefix else ())
     if kind == "ranked":
         # The seed comes from build_ranked_seed and short-circuits resolve_scope,
         # so the intent is unused; return an empty one rather than picking a kind.
@@ -57,18 +57,16 @@ def _build_generate_intent(config: dict) -> Any:
     return PageSelectionIntent(unwritten=True)
 
 
-def _root_anchored_prefix(prefix: str) -> str:
-    """A server path prefix as a root-anchored glob for the shared engine.
+def _root_relative_prefix(prefix: str) -> str:
+    """A server path prefix as a literal directory under the repository root.
 
-    ``path_globs`` go through the gitignore engine (#5779), where a bare name
-    such as ``src`` matches at any depth. A server prefix has always meant the
-    directory under the repository root, so it is anchored with a leading
-    ``/``: ``src`` selects ``src`` and everything under it, never
-    ``vendor/src`` or ``lib/src`` (each extra page is an LLM call). Empty or
-    slash-only prefixes select nothing, as before.
+    It does not go through the gitignore engine of ``path_globs`` (#5779): there
+    a bare ``src`` matches at any depth (``vendor/src``, ``lib/src`` — each extra
+    page is an LLM call), and ``[``, ``*`` or a trailing space would be read as
+    pattern syntax. Only separators are normalized; empty or slash-only
+    prefixes select nothing, as before.
     """
-    trimmed = prefix.replace("\\", "/").strip("/")
-    return f"/{trimmed}" if trimmed else ""
+    return prefix.replace("\\", "/").strip("/")
 
 
 def _effective_cascade(config: dict) -> str:
