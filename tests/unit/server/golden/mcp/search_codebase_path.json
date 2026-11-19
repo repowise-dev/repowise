@@ -5,7 +5,6 @@
       "page_id": "file_page:src/auth/service.py",
       "title": "Auth Service",
       "score": 119.981,
-      "next": "get_context",
       "path": "src/auth/service.py"
     }
   ],
