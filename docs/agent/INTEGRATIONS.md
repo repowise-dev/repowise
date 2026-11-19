@@ -127,8 +127,8 @@ facts per agent in the summary's `mcp_tools` field.
 schema behind tool search, so the model's first repowise call usually follows a
 tool-search turn. `repowise config set mcp.always_load true` asks it to keep the
 four read tools (`get_answer`, `get_context`, `get_symbol`, `search_codebase`)
-loaded from the first turn instead, for about 2k to 2.6k more tokens per turn,
-depending on the model. Other tools stay deferred, and clients that load every
+loaded from the first turn instead, for about 2.5k more tokens a turn.
+Other tools stay deferred, and clients that load every
 schema up front are unaffected. Restart the agent after the change.
 
 `repowise doctor` shows the surface each wired agent gets on that agent's row:
