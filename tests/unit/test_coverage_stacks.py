@@ -727,8 +727,8 @@ def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
     [
         ("/opt/py lib/repowise/jacoco.gradle", '"/opt/py lib/repowise/jacoco.gradle"'),
         ("C:/Users/a b/repowise/jacoco.gradle", '"C:/Users/a b/repowise/jacoco.gradle"'),
-        # The setup output's one quoting rule leaves a path holding $ or a backtick as it is.
-        ("/home/$u/jacoco.gradle", "/home/$u/jacoco.gradle"),
+        # A shell would expand `$u`, so the path is single-quoted like any other.
+        ("/home/$u/jacoco.gradle", "'/home/$u/jacoco.gradle'"),
     ],
 )
 def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, installed, argument):

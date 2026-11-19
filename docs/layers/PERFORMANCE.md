@@ -181,8 +181,10 @@ get_health(include=["performance"], only=["performance_measured"])
 get_health(opportunity_id="perf...")
 ```
 
-`performance_measured` lists the functions stored runs ranked, each with its
-workload class, age, sample size, explained share and interval
+`performance_measured` lists, for each workload's newest run, the functions
+ranked by self time (waits excluded), each with its workload class, age, sample
+size, interval and where the run's time went (repo code itself, waits,
+libraries)
 ([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
 stored it says `no_runtime_data` and names `repowise evidence setup`.
 
