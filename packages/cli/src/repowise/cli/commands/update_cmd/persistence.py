@@ -12,6 +12,7 @@ import contextlib
 import math
 import os
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -718,7 +719,7 @@ def _persist_index_only_update(
     history_window_changed: bool = False,
     deferred_page_scope: str | None = None,
     deferred_page_paths: list[str] | None = None,
-    stamp_config: bool = True,
+    stale_config_buckets: Collection[str] = (),
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -731,6 +732,11 @@ def _persist_index_only_update(
 
     ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
     re-render a renderer change asked for failed, so the next run retries it.
+
+    ``stale_config_buckets`` names dependency buckets whose work this run did
+    not finish (a deferred-docs run leaves ``generation`` stale): their hashes
+    are kept from the stored state so the next run sees exactly those buckets
+    as changed, instead of the whole config (#5944).
 
     ``timings`` is the run's phase table. Its ``run`` row is closed here, at
     the state write, and the whole table lands in ``state.json`` as
@@ -791,6 +797,7 @@ def _persist_index_only_update(
     from repowise.core.repo_config import config_dependency_fingerprints
 
     from .command import _current_renderer_fingerprint
+    from .config_changes import retain_stale_buckets
 
     last_full_rescore_at, health_analyzer_version, security_scanner_version = (
         _rescore_stale_findings(
@@ -804,22 +811,24 @@ def _persist_index_only_update(
             timings=timings,
         )
     )
+    stored_dependency_fps = state.get("config_dependency_fingerprints")
+    stamped_dependency_fps = retain_stale_buckets(
+        stored_dependency_fps,
+        (
+            dependency_fingerprints
+            if dependency_fingerprints is not None
+            else config_dependency_fingerprints(repo_path)
+        ),
+        stale_config_buckets,
+    )
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": (
-            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
-        ),
-        "config_dependency_fingerprints": (
-            state.get("config_dependency_fingerprints")
-            if not stamp_config
-            else dependency_fingerprints
-            if dependency_fingerprints is not None
-            else config_dependency_fingerprints(repo_path)
-        ),
+        "config_fingerprint": config_fingerprint(repo_path),
+        "config_dependency_fingerprints": stamped_dependency_fps,
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
         # at its old value, so ``renderer_changed`` stays true and every later
@@ -843,9 +852,7 @@ def _persist_index_only_update(
         # where it is and record the range, exactly like a failed step: the
         # next update re-covers it, and the repair marker is what stops it
         # being skipped forever (#5410).
-        record_repair_marker(
-            new_state, state, [*failed_steps, "Deleted-file prune (refused)"]
-        )
+        record_repair_marker(new_state, state, [*failed_steps, "Deleted-file prune (refused)"])
         new_state["last_sync_commit"] = state.get("last_sync_commit")
         new_state["last_docs_commit"] = state.get("last_docs_commit")
         console.print(

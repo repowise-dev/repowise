@@ -16,10 +16,18 @@ def build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) 
     paths = [fd.path for fd in file_diffs]
     if not exclude_patterns:
         return paths
+    excluded = _excluded_path_filter(exclude_patterns)
+    return [p for p in paths if not excluded(p)]
+
+
+def _excluded_path_filter(exclude_patterns: list[str]):
+    """A membership predicate for the walk's exclude patterns; never matches when empty."""
+    if not exclude_patterns:
+        return lambda _path: False
     import pathspec
 
     spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-    return [p for p in paths if not spec.match_file(p)]
+    return lambda path: spec.match_file(path)
 
 
 def _record_structural_episodes(repo_path: Any, traverser: Any) -> None:
@@ -1107,6 +1115,12 @@ async def rebuild_graph_and_git(
         repo_path, enabled=patch_graph, timings=timings, log=log
     )
 
+    # Excluded paths are dropped before the patch gate (#5944): an
+    # add/delete/rename of a path the walk never indexes would otherwise
+    # read as "an unindexed file was added or removed" and force a full
+    # graph rebuild on almost every commit.
+    _excluded = _excluded_path_filter(exclude_patterns)
+
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
         repo_path,
@@ -1123,7 +1137,7 @@ async def rebuild_graph_and_git(
             path
             for fd in file_diffs
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
+            if path and not _excluded(path)
         },
         # Only a plain in-place edit proves the file existed before and after.
         presence_changed={
@@ -1132,7 +1146,7 @@ async def rebuild_graph_and_git(
             if getattr(fd, "status", None) != "modified"
             or getattr(fd, "old_path", None) not in (None, getattr(fd, "path", None))
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
+            if path and not _excluded(path)
         },
     )
     if previous_seed_edges is not None:

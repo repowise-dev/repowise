@@ -919,7 +919,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -1047,7 +1046,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
@@ -1587,11 +1586,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
         run.working_tree_diffs
         and run.head
         and run.head == run.base_ref
-        and not (
-            run.config.health_changed
-            or run.full_generation
-            or rework_pending(run)
-        )
+        and not (run.config.health_changed or run.full_generation or rework_pending(run))
     )
 
 
@@ -2090,7 +2085,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 
