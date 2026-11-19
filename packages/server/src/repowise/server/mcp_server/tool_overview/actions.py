@@ -63,6 +63,13 @@ def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str
         block[name] = row
     # ``unavailable`` stays the sorted name list older readers expect;
     # ``unavailable_reasons`` says why each one is missing.
+    setup = view.get("setup") or {}
+    if setup.get("open"):
+        # Only while steps are left, and only what an agent acts on: how many,
+        # whether to offer the pass, and since when it could have.
+        block["setup"] = {
+            k: v for k, v in setup.items() if k in ("open", "offer", "first_call_at") and v
+        }
     reasons = view.get("unavailable") or {}
     if reasons:
         block["unavailable"] = sorted(reasons)
@@ -86,8 +93,36 @@ async def _build_next_actions(
 
     try:
         async with session.begin_nested():
-            view = await load_actions_view(session, repository.id, **_cross_repo_cut(alias))
+            setup = await setup_facts(session, repository)
+            view = await load_actions_view(
+                session, repository.id, setup=setup, **_cross_repo_cut(alias)
+            )
         return compact_actions_view(view, full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)
         return {}, f"Next actions could not be read from this index ({type(exc).__name__})."
+
+
+async def setup_facts(session: Any, repository: Any) -> Any | None:
+    """The live setup facts when the checkout is on this machine, else ``None``.
+
+    This call is an agent call, so the pass is offered from it on even before
+    the ledger records it. ``get_health`` reads the same facts to open a
+    setup step by id. The rewrite hook lives in the agent's settings,
+    which the server does not read, so the distill step stays out here.
+    """
+    from pathlib import Path
+
+    from repowise.core.persistence.crud.analysis.setup_facts import (
+        load_setup_facts,
+        with_current_call,
+    )
+
+    root = Path(repository.local_path or "")
+    if not repository.local_path or not root.is_dir():
+        return None
+    try:
+        return with_current_call(await load_setup_facts(session, repository.id, root))
+    except Exception as exc:  # the rest of the actions must not fail on its account
+        logger.warning("get_overview: setup steps unavailable: %s", exc)
+        return None

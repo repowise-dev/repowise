@@ -96,7 +96,7 @@ def invalidate(repo_id: str | None = None) -> None:
 async def setup_payload(session: AsyncSession, repo: Repository) -> dict[str, Any]:
     """The payload for *repo*; only a repo with no probe yet waits for one."""
     probe = await _current_probe(repo.id, Path(repo.local_path))
-    index = await _index_section(session, repo)
+    index = await index_section(session, repo)
     coverage_stored = await _coverage_ingested_at(session, repo.id)
     full = _full_checks.get(repo.id)
     return _assemble(repo.id, probe, index, coverage_stored, full[1] if full else None)
@@ -205,10 +205,86 @@ def _assemble(
     }
 
 
+# -- setup steps ----------------------------------------------------------------
+
+
+async def setup_facts(session: AsyncSession, repo: Repository) -> Any | None:
+    """The live setup facts for *repo*, or ``None`` when its checkout is not on this machine.
+
+    The rewrite hook's state comes from the last probe's doctor rows when
+    there is one; the server never reads the agent's settings itself.
+    """
+    from repowise.core.persistence.crud.analysis.setup_facts import load_setup_facts
+
+    root = Path(repo.local_path)
+    if not root.is_dir():
+        return None
+    return await load_setup_facts(session, repo.id, root, rewrite_hook=_cached_rewrite_hook(repo.id))
+
+
+#: The ``hooks.*`` flags that let the augment hook serve Read and search results.
+READ_HOOK_FLAGS = ("read_skeleton", "read_reread", "search_digest")
+
+
+async def setup_sections(session: AsyncSession, repo: Repository) -> dict[str, Any]:
+    """The Setup payload's ``setup`` and ``read_hooks`` sections, each with its flag.
+
+    ``setup`` is the same ranked view Do next reads (``load_actions_view``):
+    the steps are its visible ``improve_signal`` actions, in its order.
+    """
+    from repowise.core.analysis.actions.setup import AGENT_CALLS_UNLOCK, SYNCED_COMMITS_UNLOCK
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+
+    out: dict[str, Any] = {"setup_available": False, "setup": None}
+    try:
+        async with session.begin_nested():
+            facts = await setup_facts(session, repo)
+            view = (
+                await load_actions_view(session, repo.id, setup=facts) if facts is not None else None
+            )
+    except Exception:  # the rest of the page must not fail on its account
+        logger.warning("setup: setup steps unavailable for %s", repo.id, exc_info=True)
+        view = None
+    if view is not None and view.get("setup") is not None:
+        week = view["horizons"]["week"]["actions"]
+        out["setup_available"] = True
+        out["setup"] = {
+            **view["setup"],
+            "actions": [a for a in week if a["tier"] == "improve_signal"],
+            "thresholds": {
+                "agent_calls": AGENT_CALLS_UNLOCK,
+                "synced_commits": SYNCED_COMMITS_UNLOCK,
+            },
+        }
+    out["read_hooks_available"], out["read_hooks"] = _read_hooks(Path(repo.local_path))
+    return out
+
+
+def _read_hooks(root: Path) -> tuple[bool, dict[str, bool]]:
+    """Whether each Read/search hook surface is switched on for this repo (registry flags)."""
+    from repowise.core.repo_config import load_repo_config
+    from repowise.core.settings import resolve
+
+    try:
+        config = load_repo_config(root)
+        return True, {f: bool(resolve(f"hooks.{f}", config).value) for f in READ_HOOK_FLAGS}
+    except (OSError, ValueError):
+        logger.warning("setup: could not read the hook flags in %s", root, exc_info=True)
+        return False, dict.fromkeys(READ_HOOK_FLAGS, False)
+
+
+def _cached_rewrite_hook(repo_id: str) -> bool | None:
+    probe = _probes.get(repo_id)
+    if probe is None:
+        return None
+    state = _rewrite_hook(_checks(probe.doctor), [])["state"]
+    return {"installed": True, "not_installed": False}.get(state)
+
+
 # -- index -------------------------------------------------------------------
 
 
-async def _index_section(session: AsyncSession, repo: Repository) -> dict[str, Any]:
+async def index_section(session: AsyncSession, repo: Repository) -> dict[str, Any]:
     from repowise.core.git_head import read_head_commit
     from repowise.core.index_freshness import index_state, indexed_commit_missing
     from repowise.core.persistence.crud import index_synced_at

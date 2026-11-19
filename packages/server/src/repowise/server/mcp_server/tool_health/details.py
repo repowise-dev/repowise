@@ -198,7 +198,15 @@ async def _action_detail_response(
     session: Any, repository: Any, action_id: str, alias: str | None = None
 ) -> dict[str, Any]:
     """One Do next action in full, serialized as the REST actions route does."""
-    action = await load_action(session, repository.id, action_id, **_cross_repo_cut(alias))
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    action = await load_action(
+        session,
+        repository.id,
+        action_id,
+        setup=await setup_facts(session, repository),
+        **_cross_repo_cut(alias),
+    )
     result = {
         "mode": "action",
         "fix_id": action_id,

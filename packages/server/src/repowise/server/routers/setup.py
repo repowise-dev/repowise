@@ -25,6 +25,7 @@ from repowise.core.platform import account, onboarding
 from repowise.server.auth import get_authenticator
 from repowise.server.deps import auth_is_open, client_is_local, get_db_session, verify_api_key
 from repowise.server.routers._local_git import resolve_local_repo
+from repowise.server.schemas.actions import ActionsSetup, NextAction
 from repowise.server.services import setup_cli, setup_status
 
 router = APIRouter(tags=["setup"], dependencies=[Depends(verify_api_key)])
@@ -149,6 +150,33 @@ class OnboardingState(BaseModel):
     signed_in: bool
 
 
+class SetupThresholds(BaseModel):
+    """The usage each depth row unlocks at."""
+
+    agent_calls: int
+    synced_commits: int
+
+
+class SetupSteps(ActionsSetup):
+    """Setup steps left (the same rows Do next shows) and the agent-pass offer."""
+
+    #: The visible ``improve_signal`` actions, in Do next's order.
+    actions: list[NextAction] = Field(default_factory=list)
+    thresholds: SetupThresholds
+
+
+class SetupReadHooks(BaseModel):
+    """Whether each Read/search hook surface is on for this repo (``hooks.*`` flags).
+
+    The flags only; the augment hook that carries them is the Claude Code
+    agent row's hooks.
+    """
+
+    read_skeleton: bool
+    read_reread: bool
+    search_digest: bool
+
+
 class SetupResponse(BaseModel):
     repo_id: str
     generated_at: str
@@ -174,6 +202,12 @@ class SetupResponse(BaseModel):
     onboarding: OnboardingState
     #: Whether this caller may use the write routes.
     writes_allowed: bool
+    #: ``False`` when the setup steps could not be read; ``setup`` is then ``None``.
+    setup_available: bool = False
+    setup: SetupSteps | None = None
+    #: ``False`` when ``.repowise/config.yaml`` could not be read.
+    read_hooks_available: bool = False
+    read_hooks: SetupReadHooks | None = None
 
 
 class SetupFileChange(BaseModel):
@@ -294,6 +328,7 @@ async def get_setup(
     payload = await setup_status.setup_payload(session, repo)
     return {
         **payload,
+        **await setup_status.setup_sections(session, repo),
         "onboarding": _onboarding_state(),
         "writes_allowed": auth_is_open(request),
     }

@@ -106,8 +106,10 @@ export {
 } from "./ai-prompts/area-prompt";
 export {
   buildConnectEvidencePrompt,
+  buildFinishSetupPrompt,
   buildSetupAiPrompt,
   CONNECT_EVIDENCE,
+  FINISH_SETUP,
   type SetupPromptRow,
 } from "./ai-prompts/setup-prompt";
 export {

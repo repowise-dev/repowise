@@ -704,6 +704,7 @@ def _next_actions_summary(view: dict | None) -> dict | None:
             for name, h in view["horizons"].items()
         },
         "unavailable": sorted(view.get("unavailable") or {}),
+        "setup": view.get("setup"),
     }
 
 
@@ -727,6 +728,23 @@ def _next_actions_lines(view: dict | None) -> list[str]:
         lines.append(f"  {render_title(top['title'])}")
         lines.append("  [dim]Run [bold]repowise next[/bold] for the list.[/dim]")
     return lines
+
+
+def _setup_tail(repo_path: Path, view: dict | None) -> str | None:
+    """The agent-pass offer, on the first status after the first agent call, once."""
+    from repowise.core.analysis.actions.rules._text import plural
+    from repowise.core.setup_state import read_setup_state, write_setup_state
+
+    setup = (view or {}).get("setup") or {}
+    if not setup.get("offer") or read_setup_state(repo_path).get("status_tail_shown"):
+        return None
+    write_setup_state(repo_path, status_tail_shown=True)
+    from repowise.cli.commands.next_cmd import PROMPT_LINE
+
+    return (
+        f"[cyan]●[/cyan] {plural(setup['open'], 'setup step')} left. "
+        f"Your agent can finish them: [bold]{PROMPT_LINE}[/bold]"
+    )
 
 
 def _evidence_freshness(repo_path: Path) -> dict | None:
@@ -1249,7 +1267,11 @@ def _closing_lines(repo_path: Path, incomplete: dict | None, path: str | None) -
     if incomplete is not None:
         lines = [_incomplete_line(incomplete)]
     else:
-        lines = _next_actions_lines(_load_actions(repo_path))
+        view = _load_actions(repo_path)
+        lines = _next_actions_lines(view)
+        tail = _setup_tail(repo_path, view)
+        if tail:
+            lines.append(tail)
     settings_line = suggested_line(len(suggested_for(repo_path)), path)
     if settings_line:
         lines.append(f"[dim]{settings_line}[/dim]")
