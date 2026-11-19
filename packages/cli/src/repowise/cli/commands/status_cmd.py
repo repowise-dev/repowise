@@ -571,12 +571,15 @@ def _query_health_line(repo_path: Path) -> str | None:
     # the bounded /10 average trails in parens, never as a verification claim.
     perf = data.get("performance_average")
     causes = data.get("performance_causes")
-    perf_part = (
-        f" · {causes['now']} of {causes['production']} production perf causes "
-        f"worth fixing now ({format_score(perf)})"
-        if perf is not None and causes
-        else ""
-    )
+    if perf is None or not causes:
+        perf_part = ""
+    elif not causes["production"]:
+        perf_part = f" · no production perf causes ({format_score(perf)})"
+    else:
+        perf_part = (
+            f" · {causes['now']} of {causes['production']} production perf causes "
+            f"worth fixing now ({format_score(perf)})"
+        )
     # ``None`` when the repo has no hotspot files, so the segment is dropped
     # rather than printing a 10.0 that would read as "your hotspots are
     # perfect" when there are none to score.
@@ -1210,8 +1213,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         parts = [_answers_line(repo_path, scope)]
         if scope["search"]["semantic"] != "available":
             reindex = scope["search"]["next_command"] or "repowise reindex"
-            parts.append(f"{reindex} adds semantic search")
-        console.print(f"[dim]{'; '.join(p for p in parts if p)}.[/dim]")
+            parts.append(f"{reindex} adds semantic search.")
+        console.print(f"[dim]{' '.join(p for p in parts if p)}[/dim]")
     elif upgrade_command(scope):
         console.print(
             f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
