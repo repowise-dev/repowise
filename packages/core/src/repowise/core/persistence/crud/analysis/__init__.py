@@ -70,6 +70,7 @@ from .doc_drift import (
 from .evidence import (
     EVIDENCE_ROW_TABLES,
     EvidenceWrite,
+    benchmark_results,
     delete_evidence_runs,
     hotness_for_symbols,
     hotness_inputs,
@@ -168,6 +169,7 @@ __all__ = [
     "PayoffContext",
     "backfill_is_test",
     "backfill_module_attribution",
+    "benchmark_results",
     "clear_unanalysed_scores",
     "count_refactoring_suggestions",
     "coverage_by_module",

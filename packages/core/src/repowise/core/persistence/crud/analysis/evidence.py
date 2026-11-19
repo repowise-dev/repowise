@@ -196,6 +196,21 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
 
 
+async def benchmark_results(
+    session: AsyncSession, run_ids: list[str]
+) -> list[EvidenceBenchmarkResult]:
+    """The benchmark rows of *run_ids*, one statement per chunk."""
+    out: list[EvidenceBenchmarkResult] = []
+    for i in range(0, len(run_ids), _BATCH_SIZE):
+        result = await session.execute(
+            select(EvidenceBenchmarkResult).where(
+                EvidenceBenchmarkResult.run_id.in_(run_ids[i : i + _BATCH_SIZE])
+            )
+        )
+        out.extend(result.scalars())
+    return out
+
+
 async def hotness_inputs(
     session: AsyncSession, repository_id: str
 ) -> tuple[list[RunFacts], dict[str, list[CostFacts]]] | None:
