@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,3 +98,17 @@ def test_the_baseline_sits_beside_perf_measures_without_replacing_it(tmp_path: P
     path.with_name("old.json").write_text('{"version": 9}')
     with pytest.raises(BaselineError, match="save it again"):
         load_snapshot(tmp_path, "old")
+
+
+@pytest.mark.parametrize("workload", [
+    {"benchmarks": {}},
+    {"run_id": "r1"},
+    {"run_id": "r1", "benchmarks": {"BenchmarkJoin": 1}},
+    {"run_id": "r1", "benchmarks": {"BenchmarkJoin": {"allocs_per_op": "1"}}},
+])
+def test_a_hand_edited_baseline_is_refused_not_crashed_on(tmp_path: Path, workload) -> None:
+    path = snapshot_path(tmp_path, "edited")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 1, "workloads": {"w": workload}}))
+    with pytest.raises(BaselineError, match="save it again"):
+        load_snapshot(tmp_path, "edited")

@@ -175,13 +175,31 @@ def load_snapshot(repowise_dir: Path, name: str) -> dict[str, Any]:
         ) from None
     except (OSError, ValueError) as exc:
         raise BaselineError(f"baseline {name!r} could not be read: {exc}") from None
-    if not isinstance(raw, dict) or raw.get("version") != SNAPSHOT_VERSION or not isinstance(
-        raw.get("workloads"), dict
-    ):
+    if not _well_formed(raw):
         raise BaselineError(
             f"baseline {name!r} is not an exact baseline of this version; save it again"
         )
     return raw
+
+
+def _well_formed(raw: Any) -> bool:
+    """Whether *raw* has the shape :func:`snapshot` writes, down to each exact value."""
+    if not isinstance(raw, dict) or raw.get("version") != SNAPSHOT_VERSION:
+        return False
+    workloads = raw.get("workloads")
+    return isinstance(workloads, dict) and all(
+        isinstance(w, dict)
+        and isinstance(w.get("run_id"), str)
+        and isinstance(w.get("benchmarks"), dict)
+        and all(
+            isinstance(values, dict)
+            and all(
+                isinstance(v, int | float) and not isinstance(v, bool) for v in values.values()
+            )
+            for values in w["benchmarks"].values()
+        )
+        for w in workloads.values()
+    )
 
 
 __all__ = [
