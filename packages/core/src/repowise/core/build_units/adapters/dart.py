@@ -42,7 +42,8 @@ def _parse_pubspec(manifest: Path) -> dict | None:
     """Parse *manifest* as YAML, return the dict or None (logged)."""
     try:
         data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+    # ValueError: a timestamp-shaped scalar that is no real date (2023-02-30).
+    except (OSError, ValueError, yaml.YAMLError) as exc:
         log.warning("build_units_pubspec_unreadable", manifest=str(manifest), error=str(exc))
         return None
     return data if isinstance(data, dict) else None

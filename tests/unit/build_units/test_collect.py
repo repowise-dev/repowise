@@ -795,6 +795,15 @@ def test_dart_non_utf8_pubspec_falls_back_alone(tmp_path):
     assert "dart" not in index.failed_ecosystems
 
 
+def test_dart_pubspec_with_an_impossible_date_falls_back_alone(tmp_path):
+    index = _collect(tmp_path, {
+        "good/pubspec.yaml": "name: good\n", "good/g.dart": "class Good {}\n",
+        "bad/pubspec.yaml": "name: bad\ncreated: 2023-02-30\n", "bad/b.dart": "class Bad {}\n",
+    })
+    assert set(index.units) == {"dart:good", "manifest:bad"}
+    assert "dart" not in index.failed_ecosystems
+
+
 def test_dart_pub_workspace_root_ruled_out(tmp_path):
     index = _collect(tmp_path, {
         "pubspec.yaml": (
