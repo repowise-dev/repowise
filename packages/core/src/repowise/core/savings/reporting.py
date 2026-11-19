@@ -149,6 +149,8 @@ def build_report(
     fallback_rate: FallbackRate | None = None,
 ) -> SavingsReport:
     """Build a hand-checkable report while keeping opportunities separate."""
+    from repowise.core.savings.output_estimate import estimate_output, session_groups
+
     if as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     if days is not None and days < 0:
@@ -291,4 +293,5 @@ def build_report(
         subagent_saved_input_tokens=sum(event.saved_input_tokens for event in in_subagent),
         backfilled_saved_input_tokens=backfilled_tokens,
         backfilled_input_savings_usd=backfilled_usd,
+        output_estimate=estimate_output(session_groups(scoped)),
     )

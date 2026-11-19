@@ -4289,6 +4289,33 @@ export interface SavingsOpportunityRow {
   estimated_potential_input_tokens?: number;
 }
 
+/** Where the output estimate comes from, so the figure is reproducible. */
+export interface SavingsOutputCalibration {
+  source: string;
+  version: string;
+  per_question?: boolean;
+  questions_per_session_cap?: number;
+  formula?: string;
+  sessions?: number;
+  questions?: number;
+  unpriced_output_tokens_saved?: number;
+  per_model?: SavingsOutputModelRow[];
+}
+
+/** The output estimate for sessions on one model and output rate. */
+export interface SavingsOutputModelRow {
+  model?: string | null;
+  basis: string;
+  sessions?: number;
+  questions?: number;
+  mcp_calls_per_question?: number;
+  reduction?: number;
+  output_tokens_per_question?: number;
+  output_tokens_saved?: number;
+  output_rate_usd_per_million?: number | null;
+  output_usd_saved?: number | null;
+}
+
 /**
  * What agents avoided in one repository over one window.
  *
@@ -4353,6 +4380,10 @@ export interface SavingsResponse {
   subagent_saved_input_tokens?: number;
   backfilled_saved_input_tokens?: number;
   backfilled_input_savings_usd?: number;
+  output_tokens_saved_estimated?: number | null;
+  output_usd_saved_estimated?: number | null;
+  total_usd_saved_estimated?: number | null;
+  calibration?: SavingsOutputCalibration | null;
 }
 
 export interface SearchResultResponse {

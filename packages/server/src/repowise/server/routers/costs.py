@@ -20,6 +20,7 @@ from repowise.server.schemas import (
     SavingsAgentRow,
     SavingsBreakdownRow,
     SavingsOpportunityRow,
+    SavingsOutputCalibration,
     SavingsResponse,
 )
 
@@ -217,7 +218,28 @@ async def get_savings(
         subagent_saved_input_tokens=report.subagent_saved_input_tokens,
         backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
         backfilled_input_savings_usd=report.backfilled_input_savings_usd,
+        **_output_estimate_fields(report),
     )
+
+
+def _output_estimate_fields(report: Any) -> dict[str, Any]:
+    """The benchmark-estimated output fields; empty (all null) without a calibration."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {}
+    try:
+        return _output_estimate_payload(report, estimate)
+    except Exception:  # an estimate is never worth a failed response
+        return {}
+
+
+def _output_estimate_payload(report: Any, estimate: Any) -> dict[str, Any]:
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": SavingsOutputCalibration(**estimate.calibration()),
+    }
 
 
 def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreakdownRow]:

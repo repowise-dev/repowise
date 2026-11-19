@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.savings.contracts import (
     OpportunityObservation,
@@ -25,6 +25,9 @@ from repowise.core.savings.reporting import (
     backfill_usd,
     breakdown_rows,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.savings.output_estimate import OutputEstimate
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
@@ -367,6 +370,7 @@ class SavingsRepository:
         except Exception:
             # A backfill is a refinement; it must never cost the report.
             backfilled_tokens, backfilled_usd = 0, 0.0
+        output_estimate = self._output_estimate(where, params)
         return SavingsReport(
             unique_events=int(row[0]),
             successful_or_usable_partial_events=int(row[1]),
@@ -410,8 +414,8 @@ class SavingsRepository:
             subagent_saved_input_tokens=int(row[21]),
             backfilled_saved_input_tokens=backfilled_tokens,
             backfilled_input_savings_usd=backfilled_usd,
+            output_estimate=output_estimate,
         )
-
 
     def _unpriced_groups(
         self, where: str, params: list[Any], repository_id: str
@@ -453,3 +457,17 @@ class SavingsRepository:
             (str(agent), session_rates.get(str(session)) if session else None, int(tokens))
             for agent, session, tokens in groups
         ]
+
+    def _output_estimate(self, where: str, params: list[Any]) -> OutputEstimate | None:
+        """The benchmark-calibrated output estimate; ``None`` rather than a failed report.
+
+        Imported here, not at module top: the event writers import this module
+        on the hook path and never build a report.
+        """
+        from repowise.core.savings.output_estimate import SESSION_GROUPS_SQL, estimate_output
+
+        try:
+            groups = self._conn.execute(SESSION_GROUPS_SQL.format(where=where), params).fetchall()
+        except sqlite3.Error:
+            return None
+        return estimate_output(groups)

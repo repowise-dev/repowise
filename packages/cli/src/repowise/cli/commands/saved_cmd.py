@@ -174,6 +174,7 @@ def saved_command(
                     "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
+                    **_output_estimate_summary(report),
                 },
                 "rows": rows,
                 "opportunities": {
@@ -229,6 +230,7 @@ def saved_command(
     console.print()
     console.print(table)
     _print_evidence_and_pricing(report)
+    _print_output_estimate(report)
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
@@ -330,6 +332,54 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         console.print(
             f"  [dim]In subagents: {report.subagent_saved_input_tokens:,} tokens over "
             f"{report.subagent_events:,} events.[/dim]"
+        )
+
+
+def _output_estimate_summary(report: SavingsReport) -> dict:
+    """The benchmark-estimated output fields, named as on the savings endpoint."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {
+            "output_tokens_saved_estimated": None,
+            "output_usd_saved_estimated": None,
+            "total_usd_saved_estimated": None,
+            "calibration": None,
+        }
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": estimate.calibration(),
+    }
+
+
+def _print_output_estimate(report: SavingsReport) -> None:
+    """Output tokens agents did not write, labelled as a benchmark estimate.
+
+    Kept on its own lines rather than folded into the recorded figures above:
+    no session measures the output it did not write, so this is the paired
+    benchmark's per-model difference per question, applied to the questions
+    each session that used Repowise asked, and the label says so.
+    """
+    estimate = report.output_estimate
+    if estimate is None or not estimate.sessions:
+        return
+    console.print(
+        f"  Output saved (estimated from benchmark): "
+        f"[bold]{estimate.output_tokens_saved:,}[/bold] tokens, "
+        f"[bold green]${estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim]over {estimate.questions:,.0f} questions in {estimate.sessions:,} sessions; "
+        f"calibration {estimate.version}[/dim]"
+    )
+    console.print(
+        f"  Estimated total: [bold green]"
+        f"${report.priced_input_savings_usd + estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim](input priced + output estimated)[/dim]"
+    )
+    if estimate.unpriced_output_tokens_saved:
+        console.print(
+            f"  [dim]{estimate.unpriced_output_tokens_saved:,} estimated output tokens come "
+            f"from sessions with no recorded model or output rate and are not priced.[/dim]"
         )
 
 
