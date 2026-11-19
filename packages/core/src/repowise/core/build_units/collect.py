@@ -10,6 +10,7 @@ import structlog
 from repowise.core.build_units.adapters import (
     Found,
     cargo,
+    dart,
     dotnet,
     go,
     gradle,
@@ -40,6 +41,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("maven", maven.units),
     ("php", php.units),
     ("python", python.units),
+    ("dart", dart.units),
     ("swift", swift.units),
     ("pascal", pascal.units),
 )

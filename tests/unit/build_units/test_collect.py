@@ -9,6 +9,7 @@ import networkx as nx
 import pytest
 
 from repowise.core.build_units.adapters import cargo as cargo_adapter
+from repowise.core.build_units.adapters import dart as dart_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.adapters import maven as maven_adapter
@@ -251,6 +252,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(dart_adapter, "package_manifests", boom)
     monkeypatch.setattr(swift_adapter, "package_manifests", boom)
     monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
     index = _collect(tmp_path, {
@@ -259,6 +261,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
         # Manifests alone do not wake an adapter: there is no source for it to own.
         "pyproject.toml": "[project]\nname = 'root'\n",
         "pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId></project>",
+        "pkg/pubspec.yaml": "name: pkg\n",
         "spm/Package.swift": _PACKAGE_SWIFT_LIB,
         "composer.json": '{"name": "acme/test"}',
     })
@@ -713,6 +716,168 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+def test_dart_path_deps_and_dev_deps_linked(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  lib:\n"
+            "    path: ../lib\n"
+            "dev_dependencies:\n"
+            "  testkit:\n"
+            "    path: ../testkit\n"
+        ),
+        "app/lib/main.dart": "void main() {}",
+        "lib/pubspec.yaml": "name: lib\n",
+        "lib/lib/lib.dart": "class Lib {}\n",
+        "testkit/pubspec.yaml": "name: testkit\n",
+        "testkit/test_test.dart": "",
+    })
+    assert _deps(index) == {
+        "dart:app": ("dart:lib", "dart:testkit"),
+        "dart:lib": (),
+        "dart:testkit": (),
+    }
+    app = index.unit("dart:app")
+    assert (app.root, app.manifest, app.name, app.source) == (
+        "app", "app/pubspec.yaml", "app", "pubspec"
+    )
+    assert _owners(index, "app/lib/main.dart") == ["dart:app"]
+    assert _owners(index, "lib/lib/lib.dart") == ["dart:lib"]
+
+
+def test_dart_path_dep_outside_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  other: {path: ../../elsewhere}\n"
+        ),
+        "elsewhere/pubspec.yaml": "name: other\n",
+        "elsewhere/other.dart": "",
+        "app/main.dart": "void main() {}",
+    })
+    # The path dep points outside the repo (../../elsewhere from app/),
+    # so it links nothing even though there's a package with that name
+    assert _deps(index) == {"dart:app": (), "dart:other": ()}
+
+
+def test_dart_hosted_dep_named_like_in_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  http: ^1.0.0\n"
+        ),
+        "http/pubspec.yaml": "name: http\n",
+        "http/http.dart": "",
+        "app/main.dart": "void main() {}",
+    })
+    assert _deps(index) == {"dart:app": (), "dart:http": ()}
+
+
+def test_dart_unparseable_pubspec_falls_back(tmp_path):
+    index = _collect(tmp_path, {
+        "good/pubspec.yaml": "name: good\n",
+        "good/g.dart": "class Good {}\n",
+        "bad/pubspec.yaml": "name: [broken\n",
+        "bad/b.dart": "class Bad {}\n",
+    })
+    assert set(index.units) == {"dart:good", "manifest:bad"}
+    assert _owners(index, "bad/b.dart") == ["manifest:bad"]
+
+
+def test_dart_non_utf8_pubspec_falls_back_alone(tmp_path):
+    _write(tmp_path, {"good/pubspec.yaml": "name: good\n", "good/g.dart": "class Good {}\n",
+                      "bad/b.dart": "class Bad {}\n"})
+    (tmp_path / "bad").mkdir(exist_ok=True)
+    (tmp_path / "bad/pubspec.yaml").write_bytes(b"name: bad\n# \xff\xfe\n")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"dart:good", "manifest:bad"}
+    assert "dart" not in index.failed_ecosystems
+
+
+def test_dart_pubspec_with_an_impossible_date_falls_back_alone(tmp_path):
+    index = _collect(tmp_path, {
+        "good/pubspec.yaml": "name: good\n", "good/g.dart": "class Good {}\n",
+        "bad/pubspec.yaml": "name: bad\ncreated: 2023-02-30\n", "bad/b.dart": "class Bad {}\n",
+    })
+    assert set(index.units) == {"dart:good", "manifest:bad"}
+    assert "dart" not in index.failed_ecosystems
+
+
+def test_dart_pub_workspace_root_ruled_out(tmp_path):
+    index = _collect(tmp_path, {
+        "pubspec.yaml": (
+            "environment:\n"
+            "  sdk: '>=3.0.0'\n"
+            "workspace:\n"
+            "  - pkgs/a\n"
+            "  - pkgs/b\n"
+        ),
+        "pkgs/a/pubspec.yaml": (
+            "name: a\n"
+            "dependencies:\n"
+            "  b: {path: ../b}\n"
+        ),
+        "pkgs/a/a.dart": "class A {}\n",
+        "pkgs/b/pubspec.yaml": "name: b\n",
+        "pkgs/b/b.dart": "class B {}\n",
+    })
+    assert set(index.units) == {"dart:a", "dart:b"}
+    assert _owners(index, "pubspec.yaml") == []
+    assert index.unit("dart:a").deps == ("dart:b",)
+
+
+def test_dart_duplicate_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/pubspec.yaml": "name: same\n",
+        "a/a.dart": "class A {}\n",
+        "b/pubspec.yaml": "name: same\n",
+        "b/b.dart": "class B {}\n",
+    })
+    assert set(index.units) == {"dart:same", "manifest:b"}
+    assert index.unit("dart:same").root == "a"
+    assert _owners(index, "b/b.dart") == ["manifest:b"]
+
+
+def test_dart_adapter_beats_fallback(tmp_path):
+    index = _collect(tmp_path, {
+        "pkg/pubspec.yaml": "name: pkg\n",
+        "pkg/lib.dart": "class Pkg {}\n",
+    })
+    assert set(index.units) == {"dart:pkg"}
+    assert _owners(index, "pkg/lib.dart") == ["dart:pkg"]
+
+
+def test_dart_absolute_path_dep_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  lib: {path: /opt/lib}\n"
+        ),
+        "app/main.dart": "void main() {}",
+    })
+    assert _deps(index) == {"dart:app": ()}
+
+
+def test_dart_root_pubspec_with_path_dep(tmp_path):
+    index = _collect(tmp_path, {
+        "pubspec.yaml": (
+            "name: root\n"
+            "dependencies:\n"
+            "  core: {path: packages/core}\n"
+        ),
+        "packages/core/pubspec.yaml": "name: core\n",
+        "packages/core/core.dart": "",
+        "main.dart": "void main() {}",
+    })
+    assert _deps(index) == {"dart:root": ("dart:core",), "dart:core": ()}
+    root_unit = index.unit("dart:root")
+    assert (root_unit.root, root_unit.manifest) == ("", "pubspec.yaml")
 
 
 _PACKAGE_SWIFT_APP = (
