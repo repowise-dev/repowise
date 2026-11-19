@@ -216,3 +216,22 @@ def test_once_completed_later_rows_appear_quietly_without_the_offer() -> None:
     rows = {a["rule"] for a in view["horizons"]["week"]["actions"]}
     assert {"always_load_suggested", "distill_suggested"} <= rows
     assert view["setup"]["open"] == 2 and view["setup"]["offer"] is None
+
+
+@pytest.mark.parametrize(
+    "unread",
+    [
+        {"unavailable": {"sync_hook": "Could not be read on this machine."}, "sync_hook": None},
+        {"background_records": None},
+        {"coverage_ingested": None},
+        {"synced_commits": None},
+    ],
+)
+def test_zero_steps_with_an_unread_fact_is_not_completed(unread: dict) -> None:
+    ruled = rule_actions(RepoFacts(anchor=None))
+    done = replace(
+        FRESH, sync_hook=True, coverage_ingested=True, runtime_stored=True, background_records=0
+    )
+    assert rank_actions(ruled, {}, now=NOW, setup=done)["setup"]["completed"] is True
+    partial = rank_actions(ruled, {}, now=NOW, setup=replace(done, **unread))["setup"]
+    assert partial["open"] == 0 and partial["completed"] is False

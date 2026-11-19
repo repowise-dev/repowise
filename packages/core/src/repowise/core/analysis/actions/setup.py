@@ -76,6 +76,18 @@ class SetupFacts:
     completed: bool = False
     unavailable: Mapping[str, str] = field(default_factory=dict)
 
+    @property
+    def readable(self) -> bool:
+        """Every fact behind the setup steps was read on this pass.
+
+        Only then can zero steps mean done: a step whose fact could not be
+        read has no row, and must not switch the offer off for good. The
+        rewrite hook is left out, since only the CLI reads it and its step
+        unlocks later.
+        """
+        facts = (self.coverage_ingested, self.runtime_stored, self.background_records)
+        return not self.unavailable and None not in facts and self.synced_commits is not None
+
     def unlocks(self) -> dict[str, bool]:
         """Which depth rows usage has unlocked."""
         calls = self.claude_code_calls >= AGENT_CALLS_UNLOCK
@@ -98,7 +110,7 @@ def setup_block(
     """
     week = horizons.get("week") or {}
     left = int((week.get("by_tier") or {}).get("improve_signal", 0))
-    completed = setup.completed or left == 0
+    completed = setup.completed or (left == 0 and setup.readable)
     offered = left > 0 and not dismissed and not completed and (setup.agent_calls or 0) > 0
     return {
         "open": left,
