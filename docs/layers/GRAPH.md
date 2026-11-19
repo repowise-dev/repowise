@@ -170,7 +170,10 @@ void handle(UserRepo repo) {     // parameter declares the type
 The families map onto the same scopes as the base origins (same file, same
 package, import, global), and a typed origin shares its untyped twin's
 confidence: the inferred type had to declare the method before any edge was
-emitted. Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift,
+emitted. A Python function whose every `return` hands on an imported module
+(`def load(): import mod; return mod`) types its call as that module, so
+`load().f()` and `m = load(); m.f()` reach `mod.f` under the return-type and
+local-typed origins. Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift,
 TypeScript, Rust and C++. Other languages use the base origins and say so on
 every edge.
 

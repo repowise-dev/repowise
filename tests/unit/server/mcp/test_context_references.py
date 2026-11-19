@@ -272,6 +272,37 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
     assert "app/lazy.py" not in out["files"]
 
 
+_ANOTHER_HIDDEN_USE = "\n\ndef later():\n    d = _catalog()\n    return d.backend_of(2)\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tail", "complete"),
+    [("", True), (_ANOTHER_HIDDEN_USE, False)],
+)
+async def test_a_module_object_call_the_graph_resolved_is_listed(
+    session, repo_id, tmp_path, tail, complete
+):
+    """Once the graph resolves ``c.backend_of`` through the returned module, the
+    line is a call site; only a use it left unresolved keeps the set incomplete."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[
+            ("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'}),
+            ("app/lazy.py::run", _SYM, "calls", {"call_lines_json": "[10]"}),
+        ],
+    )
+    (tmp_path / "app" / "lazy.py").write_text(_MODULE_OBJECT_USER + tail, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is complete
+    assert ("app/lazy.py" in out["files"]) is True
+    assert ("reasons" in out) is not complete
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("body", "names"),
