@@ -4,8 +4,8 @@ A new derived table, one row per (run, function), rebuilt whole with
 ``symbol_hotness``. Local SQLite stores get it from the models through
 ``init_db``; neither path can change a key later, so the key here is final.
 
-Revision ID: 0134
-Revises: 0133
+Revision ID: 0135
+Revises: 0134
 Create Date: 2026-11-19
 """
 
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0134"
-down_revision: str | None = "0133"
+revision: str = "0135"
+down_revision: str | None = "0134"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
