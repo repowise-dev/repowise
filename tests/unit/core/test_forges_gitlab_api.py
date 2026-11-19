@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import ssl
 from pathlib import Path
 
 import httpx
@@ -343,6 +344,21 @@ def test_a_long_retry_after_waits_the_cap(retry_after, wait, waits) -> None:
 @pytest.mark.parametrize("error", [httpx.ProxyError, httpx.UnsupportedProtocol])
 def test_an_error_that_would_only_repeat_is_not_retried(error, waits) -> None:
     handler, calls = _flaky(error)
+    with _client(handler) as client, pytest.raises(GitLabError):
+        client.request("GET", "user")
+    assert calls == ["GET"] and waits == []
+
+
+def test_a_bad_certificate_is_not_retried(waits) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        try:
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        except ssl.SSLError as cause:
+            raise httpx.ConnectError("handshake failed", request=request) from cause
+
     with _client(handler) as client, pytest.raises(GitLabError):
         client.request("GET", "user")
     assert calls == ["GET"] and waits == []

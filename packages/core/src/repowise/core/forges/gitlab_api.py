@@ -12,6 +12,7 @@ retried with backoff first; see :meth:`GitLabClient._send`.
 
 from __future__ import annotations
 
+import ssl
 import time
 from collections.abc import Iterator, Mapping
 from typing import Any
@@ -144,9 +145,22 @@ class GitLabClient:
 
 def _worth_retrying(idempotent: bool, *, status: int = 0, exc: Exception | None = None) -> bool:
     if exc is not None:
+        if _is_tls_failure(exc):
+            return False  # a bad certificate or handshake fails the same way every time
         never_sent = isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
         return never_sent or (idempotent and isinstance(exc, _TRANSIENT))
     return status == 429 or (idempotent and status in _RETRY_STATUSES)
+
+
+def _is_tls_failure(exc: BaseException) -> bool:
+    """httpx raises a TLS handshake or certificate failure as ConnectError; the
+    ssl error sits in the exception chain."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, ssl.SSLError):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def _retry_wait(response: httpx.Response, backoff: float) -> float:
