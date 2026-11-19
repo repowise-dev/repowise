@@ -732,6 +732,8 @@ def _shed_in_rows_measured(response, key, collector, limits, requested) -> None:
         if not limits.exceeded(response):
             return
         row, label = rows[i], f"{path}[{i}].{name}"
+        if name not in row:
+            continue
         if leaf.endswith("[]") or isinstance(row[name], list):
             keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
             _shed_tail(response, row, name, label, collector, limits, keep)
@@ -795,18 +797,9 @@ def test_shed_in_rows_sheds_what_measuring_every_row_sheds(aliased: str, key: st
                     fast, slow = copy.deepcopy(original), copy.deepcopy(original)
                     fast_drops = OmissionCollector("t", store_path=Path("unused.db"))
                     slow_drops = OmissionCollector("t", store_path=Path("unused.db"))
-                    outcomes = []
-                    for shed, response, drops in (
-                        (_shed_in_rows, fast, fast_drops),
-                        (_shed_in_rows_measured, slow, slow_drops),
-                    ):
-                        try:
-                            shed(response, key, drops, limits, requested)
-                            outcomes.append(None)
-                        except KeyError as exc:
-                            # A row listed twice loses its field on the first visit.
-                            outcomes.append(repr(exc))
-                    assert outcomes[0] == outcomes[1], (seed, fraction)
+                    # A row listed twice sheds at its first index and is skipped after.
+                    _shed_in_rows(fast, key, fast_drops, limits, requested)
+                    _shed_in_rows_measured(slow, key, slow_drops, limits, requested)
                     assert json.dumps(fast) == json.dumps(slow), (seed, fraction)
                     assert fast_drops._chunks == slow_drops._chunks, (seed, fraction)
 
