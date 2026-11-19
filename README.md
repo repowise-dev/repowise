@@ -19,8 +19,8 @@ You get the same answers in a dashboard: what calls this, what breaks, what to f
 
 <table align="center">
 <tr>
-<td align="center" width="260"><a href="docs/BENCHMARKS.md#per-model-agent-loop"><b>Up to 99% fewer files opened</b></a><br /><sub>fewer on every model tested · <em>31.6% less output</em></sub></td>
-<td align="center" width="260"><a href="docs/BENCHMARKS.md#4-command-output-compression"><b>Up to 99% less noise</b></a><br /><sub>from test runs, installs and git output · <em>every error line kept</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#per-model-agent-loop"><b>Up to 99% fewer files opened</b></a><br /><sub>fewer on every model tested · <em>up to 47% faster</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#per-model-agent-loop"><b>Up to 51% less output</b></a><br /><sub>Sonnet 4.6 · <em>31.6% less, best of five context tools</em></sub></td>
 <td align="center" width="260"><a href="docs/BENCHMARKS.md#1-finding-the-right-files"><b>88% of the right files</b></a><br /><sub>found in one call · <em>next best tool: 61%</em></sub></td>
 </tr>
 </table>
@@ -93,16 +93,14 @@ Without an index, an agent rediscovers your codebase on every task: grep, open a
 file, open three more, grep again. Repowise answers those questions ahead of time,
 so the agent asks once and gets on with the work.
 
-In a measured run on `django/django`, an agent with Repowise made **3.8 tool calls
-instead of 7.2**, opened **3.0 files instead of 7.2** and wrote **31.6% less**, with
-answers just as good. That is the largest saving of the five context tools we
-tested. On a small local model the output cut reaches **47.9%**.
-[How it was measured →](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop)
-
 Across five models, an agent with Repowise opened **up to 99% fewer files**, wrote
-**up to 51% less** and answered **up to 47% faster** (Sonnet 4.6), and every model
-opened fewer files. The newest flagship, Opus 5.5, got all **48 of 48** answers
-right. [Per model →](docs/BENCHMARKS.md#per-model-agent-loop)
+**up to 51% less** and answered **up to 47% faster** (Sonnet 4.6), with 71 of 72
+answers right. Every model opened fewer files.
+[Per model →](docs/BENCHMARKS.md#per-model-agent-loop)
+
+Side by side with four other context tools on `django/django`, Repowise saved the
+most: **3.8 tool calls instead of 7.2** and **31.6% less output**, with answers just
+as good. [How it was measured →](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop)
 
 - Your agent gets **ten task-shaped MCP tools**. Ask about several files at once
   and get callers, risk, tests, owners and the reasons behind the code in one answer.
@@ -246,21 +244,19 @@ the code it governs, plus docs checked against the code.<br />
 ---
 
 <a id="hosted"></a>
-<a id="foresight"></a>
 
-## Hosted, and Foresight
+## Hosted
 
 Everything above runs free on your own machine. [repowise.dev](https://www.repowise.dev/?src=oss_readme_section)
-runs it for you, private repos included, and is where **Foresight** arrives first:
-models trained on years of real commits and fixes that rank the files a fix will
-touch, name what a change forgot, and explain every answer, with no LLM.
-[What Foresight does →](docs/business/FORESIGHT.md)
+runs it for you: indexed in the cloud and current on every push, private repos
+included, one MCP endpoint for Claude, ChatGPT and Cursor, Jira and Confluence, team
+workspaces, and the [PR bot](#the-pr-bot) on every repository.
 
-<a href="https://www.repowise.dev/?src=oss_readme_section"><img src=".github/assets/hosted-foresight.webp" alt="Hosted at repowise.dev: everything in this README with nothing to run, private repos included, one MCP endpoint for Claude, ChatGPT and Cursor, the PR bot with free deterministic review and AI review for cents a pull request, Jira and Confluence, and team workspaces. Coming to repowise.dev: Foresight, models trained on how real codebases change that rank the files a fix will touch, flag what a change forgot, and explain every answer." width="100%" /></a>
+<a href="https://www.repowise.dev/?src=oss_readme_section"><img src=".github/assets/hosted.webp" alt="Hosted at repowise.dev: everything in this README with nothing to run, private repos included, one MCP endpoint for Claude, ChatGPT and Cursor, a shared dashboard, Jira and Confluence, and team workspaces. The PR bot at repowise.dev/bot: AI code review that knows your whole repo, with breaking callers, AI bug review and about 15 cents a reviewed PR, free checks on public repos." width="100%" /></a>
 
 <p align="center">
   <a href="https://www.repowise.dev/login?mode=signup&src=oss_readme_section"><img src="https://img.shields.io/badge/START_FREE-hosted-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Start free on hosted repowise.dev" /></a>
-  <a href="https://www.repowise.dev/foresight?src=oss_readme_section"><img src="https://img.shields.io/badge/FORESIGHT-join_the_waitlist-0A0A0A?style=for-the-badge&labelColor=B9A3E3" alt="Join the Foresight waitlist" /></a>
+  <a href="https://www.repowise.dev/bot?src=oss_readme_section"><img src="https://img.shields.io/badge/PR_BOT-repowise.dev%2Fbot-0A0A0A?style=for-the-badge&labelColor=B9A3E3" alt="See the Repowise PR bot" /></a>
 </p>
 
 Already indexed locally? `repowise publish` puts the repo on repowise.dev in one
@@ -294,16 +290,27 @@ always gets the same answer.
 
 <a id="the-pr-bot"></a>
 
-**On every pull request.** The free **[Repowise PR Bot](https://github.com/apps/repowise-bot)**
-posts one comment, edited in place on every push, with the callers outside the PR,
-the tests and companion files it is missing, and its change risk. A green PR gets no
-comment at all.
+**On every pull request.** The **[Repowise PR bot](https://www.repowise.dev/bot?src=oss_readme_bot)**
+is AI code review that knows your whole repo. It checks each PR against the index:
+
+- **Breaking callers:** every caller outside the PR that a changed function reaches.
+- **Coverage on changed lines:** the added lines no test runs, from your CI's report.
+- **Security on added lines:** secrets and risky calls, flagged on the line.
+- **Health before and after:** the touched files scored on both sides, and the dead
+  code a change leaves.
+- **Change risk and reviewers:** risk against your repo's history, and who owns the code.
+- **AI bug review:** bugs found on the diff line, each with a prompt for your agent.
+
+One comment, kept current. A clean PR gets a short "safe to merge", and the
+**Repowise review** check can gate the merge. Checks are free on public repos. AI
+review runs on Pro or Teams at about 15 cents a reviewed PR, with no seat fee.
 
 <img src=".github/assets/pr-bot/pr-page-blast-map-dark.png" alt="The dark Repowise per-PR analysis page showing change risk, repository health, changed contracts, outside callers, newly added findings, and a blast-radius treemap of the repository" width="100%" />
 
-<sub>A real comment on a real PR: [repowise-dev/repowise#1204](https://github.com/repowise-dev/repowise/pull/1204) ·
-[its analysis page →](https://repowise.dev/pr/repowise-dev/repowise/1204) ·
-[install the PR bot →](https://github.com/apps/repowise-bot)</sub>
+<sub>A real review on a real PR: [repowise-dev/repowise#5127](https://github.com/repowise-dev/repowise/pull/5127) ·
+[its analysis page →](https://repowise.dev/pr/repowise-dev/repowise/5127) ·
+[see the PR bot →](https://www.repowise.dev/bot?src=oss_readme_bot) ·
+[install on GitHub →](https://github.com/apps/repowise-bot)</sub>
 
 <a id="change-evidence"></a>
 
@@ -396,12 +403,12 @@ advertised surface, against answer keys we did not write.
 
 | | Result |
 |---|---|
-| **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
-| **Fewer files on every model** | **Up to 99% fewer files** opened, up to 51% less output, up to 47% faster (Sonnet 4.6); 48 of 48 answers right on Opus 5.5. *Five models, 24 questions on code newer than the models* |
-| **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
+| **Fewer files on every model** | **Up to 99% fewer files** opened, **up to 51% less output**, **up to 47% faster**, 71 of 72 answers right (Sonnet 4.6); 48 of 48 right on Opus 5.5. *Five models, 24 questions on code newer than the models* |
+| **Less work than other context tools** | **31.6% less output**, 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2. The best of five context tools. *n=43, p<0.0001* |
+| **Finding the right files** | **88%** of the files a fix needed, against 61% for the next tool, on a sealed set. *n=42, p=0.00004* |
+| **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
 | **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
-| **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
 **[Every result, in plain English, with the method →](docs/BENCHMARKS.md)** ·
@@ -412,8 +419,8 @@ advertised surface, against answer keys we did not write.
 
 No single product competes with all of this, so there is no single table. Rows marked
 *measured* are head-to-head numbers that link to
-**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, where the sample sizes, the tests and the
-rows we lose live. Unmarked rows are capability presence, not measurements.
+**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, with the sample sizes, the tests and every
+row. Unmarked rows are capability presence, not measurements.
 
 ### As an agent context layer
 
@@ -439,8 +446,7 @@ rows we lose live. Unmarked rows are capability presence, not measurements.
 lightest tool measured, about ten times lighter than the next, and roughly as fast as
 the fastest. Building the *whole* index, CodeGraph is **22x faster than we are**,
 because by then we have also built the git-history layer, the wiki, the decisions and
-the health pass. If a call graph is all you need, that is the right trade and you
-should take it. With model-written prose on, it is **135x**.
+the health pass. With model-written prose on, it is **135x**.
 
 <sub>Competitors measured at CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0 and
 code-review-graph 2.3.7 in August 2026. Repowise compiler-graded figures are from main
@@ -457,7 +463,6 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
 | **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
 | **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705, *p=0.054, not significant* |
-| Business impact (resolution time) | ❌ *we could not replicate this on open data* | ✅ Code Red study |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
 | Pre-merge change-risk scoring | ✅ 0-10 + directives | ✅ |
 | Concrete cross-file refactoring plans | ✅ graph-aware + blast radius | ⚠️ within-function only |
@@ -467,30 +472,22 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 
 CodeScene is the only other vendor in this category with a published empirical defect
 study, which is why it is the one we ran head to head. It flags about 27 files where
-we flag 132, so if you want a short list to act on, its threshold is the better fit.
-
-### Documentation generators
-
-DeepWiki, Google Code Wiki and Swimm generate documentation from a repository, which
-overlaps one of our layers. **We have not measured against them**, so there is no
-table here.
+we flag 132.
 
 ### The PR bot, against LLM review bots
 
-| | Repowise PR Bot | CodeRabbit | Greptile |
+| | Repowise PR bot | CodeRabbit | Greptile |
 |---|---|---|---|
-| LLM calls per PR | ✅ **zero** | ❌ every review | ❌ every review |
-| Same diff, same review | ✅ deterministic | ❌ sampled output | ❌ sampled output |
-| Your code sent to a model provider | ✅ never | ❌ yes | ❌ yes |
+| Price | ✅ **about 15 cents a reviewed PR**, no seat fee | per developer seat | per developer seat, plus credits |
 | Symbol-level blast radius | ✅ call graph | ❌ | ⚠️ prose, from context |
 | Co-change partners missing from the PR | ✅ git history | ❌ | ❌ |
 | Change risk vs the repo's own history | ✅ 0-10 + percentile | ❌ | ❌ |
-| Silent on a clean PR | ✅ by default | ⚠️ configurable | ⚠️ configurable |
+| Quiet on a clean PR | ✅ one short "safe to merge" | ⚠️ configurable | ⚠️ configurable |
 
-An LLM reviewer is a different product: it can read intent, and it can be wrong in a
-new way on every run. This one does set arithmetic over a call graph and a git
-history, so pushing the same diff twice gives the same review twice. Full side-by-side
-comparisons: **[repowise.dev/compare →](https://www.repowise.dev/compare)**
+Repowise reads a pull request the way the repo's longest-serving engineer would, with
+every caller, the history of the touched files and the decisions that govern them in
+hand. The checks behind that need no model and are free on public repos. Full
+side-by-side comparisons: **[repowise.dev/compare →](https://www.repowise.dev/compare)**
 
 </details>
 
@@ -673,8 +670,8 @@ tool, code-search layer for agents, docs generator and test-impact service.
 | **Self-hosted, commercial** | your VPC or an air-gapped network | nothing at all in air-gapped mode |
 | **Hosted** ([repowise.dev](https://www.repowise.dev)) | our managed indexer | your code goes to the platform |
 
-Graph, git, health, change risk, tests, dead code and PR review make **zero LLM
-calls**, and raw source is never stored. Prose is optional and runs on your own
+Graph, git, health, change risk, tests, dead code and the PR bot's checks make **zero
+LLM calls**, and raw source is never stored. AI review on pull requests is opt-in. Prose is optional and runs on your own
 provider or fully offline through Ollama.
 
 **Evidence you can hand to someone else.**
