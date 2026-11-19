@@ -334,6 +334,9 @@ async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_sessi
                       is_test=True),
             HealthFileMetric(repository_id=rid, file_path="vendor/lib/test_x.py",
                              is_test=True, code_origin="vendored"),
+            # No stored origin: its path says vendored.
+            GraphNode(repository_id=rid, node_id="vendor/lib/test_y.py", node_type="file",
+                      is_test=True),
             GraphNode(repository_id=rid, node_id="src/cli.py", node_type="file",
                       is_entry_point=True),
         ]

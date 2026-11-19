@@ -216,8 +216,14 @@ async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, 
     entries = await session.execute(files(GraphNode.is_entry_point.is_(True)))
     if any(origin(r) == "production" for r in entries):
         found.append("entry_point")
-    tests = await session.execute(files(GraphNode.is_test.is_(True), ours).limit(50))
-    has_tests = any(origin(r) not in _NOT_OURS for r in tests)
+    is_test = GraphNode.is_test.is_(True)
+    # One test file with a stored origin of ours settles it; only an index
+    # without stored origins reads every test file's path.
+    stored = files(is_test, HealthFileMetric.code_origin.not_in(_NOT_OURS)).limit(1)
+    has_tests = (await session.execute(stored)).first() is not None or any(
+        origin(r) not in _NOT_OURS
+        for r in await session.execute(files(is_test, HealthFileMetric.code_origin.is_(None)))
+    )
     if not found and not has_tests:
         # Every benchmark path rule has "bench" in it.
         benches = await session.execute(files(GraphNode.node_id.ilike("%bench%"), ours))
