@@ -19,8 +19,6 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from repowise.core.providers.llm.base import parse_retry_after
-
 #: Largest page GitLab serves.
 PER_PAGE = 100
 
@@ -29,9 +27,12 @@ _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 #: Methods safe to send twice. A POST that timed out or met a 5xx may have
 #: landed, and sending it again would post a second note.
 _IDEMPOTENT = frozenset({"GET", "HEAD", "PUT", "DELETE"})
-#: Seconds before each retry; a ``Retry-After`` up to the cap wins.
+#: Seconds before each retry; a ``Retry-After`` wins, clamped to the cap.
 _BACKOFF = (1.0, 4.0)
 _RETRY_AFTER_CAP = 30.0
+#: Failures that clear up on their own: a timeout, a dropped or broken answer.
+#: A proxy or URL scheme error would only repeat.
+_TRANSIENT = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 
 _STATUS_HINTS = {
     401: "GitLab rejected the token (401): it is missing, expired or revoked.",
@@ -135,7 +136,7 @@ class GitLabClient:
                 continue
             if wait is None or not _worth_retrying(idempotent, status=response.status_code):
                 break
-            time.sleep(min(parse_retry_after(response.headers) or wait, _RETRY_AFTER_CAP))
+            time.sleep(_retry_wait(response, wait))
         if response.is_success:
             return response
         raise _error(response, method, path)
@@ -144,8 +145,21 @@ class GitLabClient:
 def _worth_retrying(idempotent: bool, *, status: int = 0, exc: Exception | None = None) -> bool:
     if exc is not None:
         never_sent = isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
-        return never_sent or (idempotent and isinstance(exc, httpx.TransportError))
+        return never_sent or (idempotent and isinstance(exc, _TRANSIENT))
     return status == 429 or (idempotent and status in _RETRY_STATUSES)
+
+
+def _retry_wait(response: httpx.Response, backoff: float) -> float:
+    """GitLab's ``Retry-After`` in seconds, clamped to the cap, else *backoff*.
+
+    Parsed here, not with the LLM providers' ``parse_retry_after``: that one
+    drops a value over 600 s, and a long ask should wait the cap, not 1 s.
+    """
+    try:
+        asked = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return backoff
+    return min(asked, _RETRY_AFTER_CAP) if asked > 0 else backoff
 
 
 def _error(response: httpx.Response, method: str, path: str) -> GitLabError:

@@ -332,6 +332,30 @@ def test_a_rate_limit_or_a_refused_connection_is_retried_for_any_method(waits) -
     assert calls == ["POST"] * 3 and waits == [7.0, 4.0]
 
 
+@pytest.mark.parametrize(("retry_after", "wait"), [("900", 30.0), ("12", 12.0), ("soon", 1.0)])
+def test_a_long_retry_after_waits_the_cap(retry_after, wait, waits) -> None:
+    answers = [httpx.Response(429, headers={"Retry-After": retry_after}), httpx.Response(200, json={})]
+    with _client(lambda request: answers.pop(0)) as client:
+        client.request("GET", "user")
+    assert waits == [wait]
+
+
+@pytest.mark.parametrize("error", [httpx.ProxyError, httpx.UnsupportedProtocol])
+def test_an_error_that_would_only_repeat_is_not_retried(error, waits) -> None:
+    handler, calls = _flaky(error)
+    with _client(handler) as client, pytest.raises(GitLabError):
+        client.request("GET", "user")
+    assert calls == ["GET"] and waits == []
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError])
+def test_a_broken_answer_to_a_read_is_retried(error, waits) -> None:
+    handler, calls = _flaky(error)
+    with _client(handler) as client:
+        assert client.request("GET", "user") == {"id": 1}
+    assert len(calls) == 2 and waits == [1.0]
+
+
 def test_a_dropped_read_is_retried(waits) -> None:
     handler, calls = _flaky(httpx.ReadTimeout)
     with _client(handler) as client:
