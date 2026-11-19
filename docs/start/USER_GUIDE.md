@@ -148,7 +148,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 
 | Command | What it is for |
 |---|---|
-| `repowise serve` | API, web dashboard and MCP server together. `--no-ui` for the API alone. |
+| `repowise serve` | API and web dashboard together. `--no-ui` for the API alone. Agents reach the index through the MCP entry `init` writes, not through `serve`. |
 | `repowise mcp` | MCP server on stdio, for editors and agents. |
 
 **Spend fewer tokens**

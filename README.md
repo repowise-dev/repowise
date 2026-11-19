@@ -68,11 +68,11 @@ The agent installs Repowise, indexes the repo with no API key, connects itself t
 the index, and asks you before anything costs money. To do it by hand:
 
 ```bash
-uv tool install repowise          # or: pipx install repowise / pip install repowise
+uv tool install repowise          # needs Python 3.11+ and Git. Or: pipx install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
                                   # answers and docs: run repowise generate (one command, no re-index)
-repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
+repowise serve                    # local dashboard (needs Node 20+; first run downloads the UI)
 ```
 
 `serve` opens the dashboard in your browser. After a first index it starts with a short
@@ -723,7 +723,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ```bash
 repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # answers and docs with a model, on an existing index (no re-index)
-repowise serve [PATH]     # MCP server + local dashboard
+repowise serve            # local dashboard and API
 repowise update [PATH]    # incremental update (--workspace for every repo)
 repowise watch            # re-index on file change
 repowise search "<q>"     # hybrid search (fulltext / semantic / symbol / path)

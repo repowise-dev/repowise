@@ -44,7 +44,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`hook backfill`](#repowise-hook-backfill), [`hook rewrite`](#repowise-hook-rewrite-installuninstallstatus), [`hook
   read-skeleton|search-digest|read-reread`](#repowise-hook-read-skeletonsearch-digestread-reread),
   [`hook health-gate`](#repowise-hook-health-gate-installuninstallstatus), [`augment`](#repowise-augment)
-- **Server:** [`serve`](#repowise-serve-path), [`mcp`](#repowise-mcp-path)
+- **Server:** [`serve`](#repowise-serve), [`mcp`](#repowise-mcp-path)
 - **Workspace:** [`workspace list`](#repowise-workspace-list), [`workspace add`](#repowise-workspace-add-path),
   [`workspace remove`](#repowise-workspace-remove-alias), [`workspace scan`](#repowise-workspace-scan-path), [`workspace update`](#repowise-workspace-update), [`workspace
   set-default`](#repowise-workspace-set-default-alias), [`workspace diagnostics`](#repowise-workspace-diagnostics),
@@ -408,7 +408,7 @@ repowise wiki-styles
 
 ---
 
-### `repowise serve [PATH]`
+### `repowise serve`
 
 Start the API server and web UI.
 
