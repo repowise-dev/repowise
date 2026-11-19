@@ -403,6 +403,36 @@ class TestSubagentsKeepTheirOwnState:
         assert "stale" in context
         assert "changed on disk" not in context
 
+    def test_an_edit_by_another_window_after_a_skeleton_is_stale(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replaced Read keeps no content record, but its order still counts."""
+        from repowise.cli.commands.augment_cmd import read_skeleton
+        from repowise.cli.commands.augment_cmd.replacement import Offer
+
+        (repo / ".repowise" / "config.yaml").write_text(
+            "hooks:\n  read_skeleton: true\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            read_skeleton,
+            "skeleton_replacement",
+            lambda repo_path, rel, **kw: Offer(
+                key=rel,
+                text=f"[repowise] Skeleton of {rel}.\ndef a(): ...",
+                raw_tokens=10_000,
+                new_tokens=20,
+                category="skeleton_served",
+                filter_name="read_skeleton",
+            ),
+        )
+        self._as(None)
+        assert "Skeleton of" in (_served(_read(repo)) or "")
+        changed = _BODY + "\nedited"
+        self._as("agent-1")
+        self._edit(repo, changed)
+        self._as(None)
+        assert "stale" in (_read(repo, content=changed).context or "")
+
     def test_an_outside_write_after_a_subagent_edit_is_still_an_outside_change(
         self, repo: Path
     ) -> None:

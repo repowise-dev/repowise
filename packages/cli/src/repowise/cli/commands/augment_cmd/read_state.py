@@ -164,7 +164,7 @@ def _mtime_ns(path: Path) -> int:
 
 
 def _edited_by_another_window(
-    repo_path: Path, checkout: Path, rel: str, session_id: str, prior_meta: object
+    repo_path: Path, checkout: Path, rel: str, session_id: str, read_mt: object
 ) -> bool:
     """Whether another context window of this session Edited *rel* since this one read it.
 
@@ -172,13 +172,13 @@ def _edited_by_another_window(
     the last write is a session Edit when the mtime it left is the mtime now,
     and it came after this window's read when the read saw another mtime.
     """
-    if not isinstance(prior_meta, dict):
+    if not isinstance(read_mt, int):
         return False
     try:
         edit_mt = int(_edit_marker_path(repo_path, session_id, rel).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    if edit_mt == -1 or edit_mt == prior_meta.get("mt"):
+    if edit_mt == -1 or edit_mt == read_mt:
         return False
     return _mtime_ns(checkout / rel) == edit_mt
 
@@ -228,6 +228,9 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         # tool call it happened on. The whole basis of the re-read collapse,
         # and every field is load-bearing — see :mod:`.reread`.
         "read_meta": {},
+        # Per path, the file's mtime_ns at this window's last Read, replaced or
+        # not: the order of an Edit another window made (:func:`_edited_by_another_window`).
+        "read_mt": {},
         "stale_notified": [],
         # Files already flagged as changed-under-the-agent, so the notice is
         # once per file per session like every other one here.
@@ -285,6 +288,9 @@ def _save_session_state(repo_path: Path, state: dict) -> bool:
     reads = state.get("reads", {})
     if isinstance(meta, dict) and len(meta) > len(reads):
         state["read_meta"] = {k: v for k, v in meta.items() if k in reads}
+    read_mt = state.get("read_mt")
+    if isinstance(read_mt, dict) and len(read_mt) > len(reads):
+        state["read_mt"] = {k: v for k, v in read_mt.items() if k in reads}
     path = _session_state_path(repo_path, state.get("session_id", ""))
     try:
         first_write = not path.exists()
@@ -426,14 +432,15 @@ def _handle_read_post(
     fired: list[tuple[str, str]] = []  # (category, text) for the efficacy ledger
 
     # Stale-read: this window Read the file, then it (or another window of the
-    # session, such as a subagent) Edited/Wrote it, and it is now Reading it again. The fresh Read is fine — the flag is about any
-    # reasoning still anchored on the pre-edit excerpt.
+    # session, such as a subagent) Edited/Wrote it, and it is now Reading it
+    # again. The fresh Read is fine; the flag is about any reasoning still
+    # anchored on the pre-edit excerpt.
     last_read = state["reads"].get(rel)
     last_edit = state["edits"].get(rel)
     edited_since_read = (
         last_read is not None and last_edit is not None and last_read < last_edit
     ) or _edited_by_another_window(
-        repo_path, checkout, rel, session_id, state["read_meta"].get(rel)
+        repo_path, checkout, rel, session_id, state["read_mt"].get(rel)
     )
     if edited_since_read and rel not in state["stale_notified"]:
         state["stale_notified"].append(rel)
@@ -450,6 +457,7 @@ def _handle_read_post(
     prior_meta = state["read_meta"].get(rel)
     state["seq"] += 1
     state["reads"][rel] = state["seq"]
+    state["read_mt"][rel] = _mtime_ns(checkout / rel)
 
     served, on_emitted = _collapse_replacement(
         repo_path,
