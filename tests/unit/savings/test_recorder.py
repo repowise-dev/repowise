@@ -240,3 +240,16 @@ def test_relocating_the_ledger_refiles_every_row_under_the_new_root(tmp_path: Pa
 def test_relocating_without_a_ledger_creates_none(tmp_path: Path) -> None:
     assert recorder.relocate_ledger(tmp_path) == 0
     assert not recorder.sidecar_path(tmp_path).exists()
+
+
+def test_dropped_writes_are_counted_by_reason(tmp_path: Path) -> None:
+    """Recording fails silently by design; the count is how a silent ledger is diagnosed."""
+    before = recorder.dropped_writes()
+    # No .repowise/: the repository has not opted in.
+    assert recorder.record_event(tmp_path, {"surface": "mcp"}) is False
+    (tmp_path / ".repowise").mkdir()
+    # Opted in, but the payload is not an event.
+    assert recorder.record_event(tmp_path, {"surface": "nonsense"}) is False
+    after = recorder.dropped_writes()
+    assert after.get("no_sidecar", 0) == before.get("no_sidecar", 0) + 1
+    assert after.get("rejected", 0) == before.get("rejected", 0) + 1

@@ -72,6 +72,7 @@ INTERNAL_TAGS = frozenset(
         "owners",
         "platform",
         "providers",
+        "runtime-evidence",
         "setup",
         "stats",
         "telemetry",

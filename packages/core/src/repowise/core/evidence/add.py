@@ -292,13 +292,17 @@ def prepare_evidence_files(
     (a parent and its workers) and merge into one: they share the run's
     options (workload, class, commit, clock), and must share a format, unit
     and tool. A v1 file or benchmark results stand alone, and mixed formats,
-    units, tools or clocks are refused with the reason. The merged run does
-    not depend on the order the files are named in.
+    units, tools or clocks are refused with the reason. JUnit XML reports (a
+    Maven or Gradle report directory, one file per test class) read as one
+    report, and the other files beside them are left out
+    (:func:`_junit_reports_as_one`). The merged run does not depend on the
+    order the files are named in.
     """
     from .profile_convert import merge_runs
 
     if not files:
         raise _bad_option("FILE", "name at least one evidence file.")
+    files = _junit_reports_as_one(files, input_format_name)
     digests = [hashlib.sha256(data).hexdigest() for _, data in files]
     if len(set(digests)) < len(digests):
         raise EvidenceRefusedError(
@@ -349,6 +353,29 @@ def prepare_evidence_files(
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
     return replace(parts[0], run=run, profiles=len(parts))
+
+
+def _junit_reports_as_one(
+    files: Sequence[tuple[str, bytes]], input_format_name: str | None
+) -> Sequence[tuple[str, bytes]]:
+    """Several files holding JUnit XML reports as one report; *files* as given otherwise.
+
+    The files that are not JUnit XML (Surefire's ``.txt`` summaries,
+    ``failsafe-summary.xml``) are left out.
+    """
+    from .profile_formats import SNIFF_BYTES, junit
+
+    if len(files) < 2 or input_format_name not in (None, "junit"):
+        return files
+    reports = [(name, data) for name, data in files if junit.sniff(data[:SNIFF_BYTES])]
+    if not reports:
+        return files
+    try:
+        combined = junit.combine(data for _, data in reports)
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    name = reports[0][0] if len(reports) == 1 else f"{reports[0][0]} and {len(reports) - 1} more"
+    return [(name, combined)]
 
 
 def _check_value_kind(
@@ -453,6 +480,7 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
+    doc = await _placed_tests(session, repo.id, doc)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(
@@ -555,6 +583,20 @@ def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[s
             "to one `repowise evidence add` (several files, or the directory holding them)."
         ),
     }
+
+
+async def _placed_tests(session: Any, repo_id: str, doc: EvidenceDocument) -> EvidenceDocument:
+    """*doc* with each test named only by its classname placed on an indexed file.
+
+    See :func:`~.ingest.place_test_entries`; the file list is read only when a test needs it.
+    """
+    if not any(entry.get("classname") for entry in doc.entries):
+        return doc
+    from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
+
+    from .ingest import place_test_entries
+
+    return place_test_entries(doc, await health_file_paths(session, repo_id))
 
 
 async def ingest_evidence(

@@ -241,12 +241,12 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, hyperfine JSON, or a v1 document |
-| `test_timing` | Per test: duration and outcome | A v1 document |
+| `test_timing` | Per test: duration and outcome | JUnit XML, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -291,6 +291,38 @@ The format is detected from the content, never the file name;
 - Machine details, parameters and `extra_info` are not read.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
 
+### Test reports as the runner wrote them
+
+| Format | Written by | What a test carries |
+|---|---|---|
+| `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
+
+- A Maven or Gradle report directory, one file per test class, is one run:
+  pass the directory (or several report files) as FILE. The files in it that
+  are not JUnit XML (Surefire's `.txt` summaries, `failsafe-summary.xml`, a
+  file that declares a document type) are left out.
+- A test is stored under its `path::qualname` id, the id coverage contexts
+  use, and linked to its indexed test function, parameters cut
+  (`test_adds[1]` and `addsItem()` link to `test_adds` and `addsItem`).
+- A runner that does not write the file (pytest's default report, Surefire,
+  Gradle) names the test by its dotted `classname`; the test is placed on the
+  one indexed file that name leads to (`com.acme.CartTest` to
+  `src/test/java/com/acme/CartTest.java`) among the files the health index
+  holds. A name that leads to no file, or to two, keeps its timing under the
+  runner's name, counted under `unlinked` as `unplaced`. jest-junit names files
+  only with its `addFileAttribute` option set, so `setup` prints no flag for
+  jest. A path outside the repository (an absolute `file`) is not stored: the
+  test is placed by its classname, or keeps only its own name when the
+  classname is that path.
+- A single report that declares a document type is refused.
+- Timing is not exact evidence: a test's time includes its fixtures. A fixture
+  shared by a class or module runs inside the first test that needs it, so the
+  first test of each `classname` is stored with `first_in_class`. A test run
+  again in one report (a rerun plugin) keeps its first attempt; the rest are
+  counted as `duplicate`.
+- `--commit` is required; the report records none. Captured output,
+  properties and failure messages are not read.
+
 ## The `repowise-evidence-v1` document
 
 Any tool can write this shape directly; converted formats become it before
@@ -324,7 +356,7 @@ they are joined.
 |---|---|
 | `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
-| `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required) |
+| `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
 
 - A **location** is `path` (repo-relative, forward slashes), `function` (the
@@ -356,7 +388,8 @@ two candidates. Skip reasons: `unknown_file`, `unknown_symbol`,
 `ambiguous_symbol`, `generated`, `vendored`, `dirty_file` (the file differs
 from the commit measured, checked when that commit is HEAD) and `duplicate`. A
 benchmark or test keeps its row without its function and is counted under
-`unlinked` instead.
+`unlinked` instead; a test whose dotted name leads to no single indexed file
+is counted there as `unplaced`.
 
 **Profile frames** go through one resolver:
 

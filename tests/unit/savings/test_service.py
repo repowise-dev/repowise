@@ -29,6 +29,8 @@ def _record(
     evidence_kind: str = "measured",
     occurred_at: datetime | str | None = None,
     priced: bool = False,
+    session_id: str | None = None,
+    subagent_id: str | None = None,
 ) -> None:
     event_id = new_event_id()
     payload: dict = {
@@ -47,6 +49,8 @@ def _record(
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": baseline,
         "delivered_input_tokens": 0,
+        "session_id": session_id,
+        "subagent_id": subagent_id,
     }
     if priced:
         payload.update(
@@ -187,6 +191,11 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
         pre_budget_input_tokens=30_000,
         delivered_input_tokens=2_000,
     )
+    # A session with a captured rate and an unpriced event beside it, which the
+    # report backfills, and an event recorded inside a subagent.
+    _record(tmp_path, baseline=300, agent="claude_code", session_id="s-1", priced=True)
+    _record(tmp_path, baseline=200, agent="claude_code", session_id="s-1")
+    _record(tmp_path, baseline=150, agent="codex", subagent_id="agent-1")
 
     as_of = datetime.now(UTC)
     from_sql = load_report(tmp_path, as_of=as_of)
@@ -212,7 +221,11 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     # Floats compared with a tolerance: SQLite sums the priced tokens in table
     # order and the pure builder in list order, and float addition is not
     # associative, so exact equality here would be a flake waiting to happen.
-    for key in ("priced_input_savings_usd", "priced_output_savings_usd"):
+    for key in (
+        "priced_input_savings_usd",
+        "priced_output_savings_usd",
+        "backfilled_input_savings_usd",
+    ):
         assert sql.pop(key) == pytest.approx(pure.pop(key))
     assert sql == pure
 
@@ -226,10 +239,83 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     # The reduction fields are only compared above while the fixture actually
     # carries baselines. The percentile in particular is a rank, so a builder
     # that was off by one would agree on a one-event population by accident.
-    assert from_sql.baseline_events == 5
-    assert from_sql.reducing_events == 5
+    assert from_sql.baseline_events == 8
+    assert from_sql.reducing_events == 8
     assert from_sql.input_reduction_ratio is not None
     assert from_sql.input_reduction_ratio_p90 is not None
+    # Only the session's own event is backfilled: no pricing cache here.
+    assert from_sql.backfilled_saved_input_tokens == 200
+    assert from_sql.backfilled_input_savings_usd == pytest.approx(200 * 5.0 / 1_000_000)
+    assert (from_sql.subagent_events, from_sql.subagent_saved_input_tokens) == (1, 150)
+
+
+def test_the_backfill_falls_back_to_the_agents_rate_in_both_builders(tmp_path: Path) -> None:
+    """An unpriced event outside any priced session takes its agent's cached rate.
+
+    Both builders take the same callable, so this compares them on the branch
+    the parity fixture above cannot reach without a pricing cache.
+    """
+    import sqlite3
+
+    from repowise.core.savings.contracts import SavingsEvent
+    from repowise.core.savings.repository import SavingsRepository
+
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000, agent="codex")
+    _record(tmp_path, baseline=400, agent="unknown")
+    _record(tmp_path, baseline=300, agent="claude_code", session_id="s-1", priced=True)
+    _record(tmp_path, baseline=100, agent="claude_code", session_id="s-1")
+    rates = {"codex": 1.25}
+
+    database = tmp_path / ".repowise" / "omissions" / "omissions.db"
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    as_of = datetime.now(UTC)
+    from_sql = SavingsRepository(connection).report(
+        str(tmp_path), as_of=as_of, fallback_rate=rates.get
+    )
+    rows = connection.execute("SELECT * FROM savings_events").fetchall()
+    connection.close()
+    events = [
+        SavingsEvent.from_mapping(
+            {**dict(row), "is_usable": bool(row["is_usable"])}, accept_event_id=True
+        )
+        for row in rows
+    ]
+    from_pure = build_report(events, as_of=as_of, fallback_rate=rates.get)
+
+    for report in (from_sql, from_pure):
+        # codex at its cached rate, the session event at its session's rate,
+        # and the unknown agent, with no rate anywhere, left unpriced.
+        assert report.backfilled_saved_input_tokens == 1_100
+        assert report.backfilled_input_savings_usd == pytest.approx(
+            (1_000 * 1.25 + 100 * 5.0) / 1_000_000
+        )
+        assert report.unpriced_saved_input_tokens == 1_500
+        assert report.priced_input_savings_usd == pytest.approx(300 * 5.0 / 1_000_000)
+
+
+def test_a_failing_backfill_never_costs_the_report(tmp_path: Path) -> None:
+    """The backfill is a refinement on top of the report, never a reason to lose it."""
+    import sqlite3
+
+    from repowise.core.savings.repository import SavingsRepository
+
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000)
+
+    def boom(agent: str) -> float | None:
+        raise RuntimeError("pricing exploded")
+
+    connection = sqlite3.connect(tmp_path / ".repowise" / "omissions" / "omissions.db")
+    try:
+        report = SavingsRepository(connection).report(
+            str(tmp_path), as_of=datetime.now(UTC), fallback_rate=boom
+        )
+    finally:
+        connection.close()
+    assert report.saved_input_tokens == 1_000
+    assert report.backfilled_saved_input_tokens == 0
 
 
 def test_a_measured_mcp_event_divides_by_what_its_saving_was_computed_against(
@@ -381,3 +467,36 @@ def test_agent_calls_give_each_agent_its_first_and_last_mcp_call(tmp_path: Path)
     assert set(calls) == {"codex", "claude_code"}
     assert calls["codex"][0].startswith("2026-10-01")
     assert calls["codex"][1].startswith("2026-10-03")
+
+
+@pytest.mark.parametrize(
+    ("source", "backfilled"),
+    [("session_model:claude_code", 1_000), ("session_model:unknown", 0)],
+)
+def test_the_report_backfills_from_the_cached_rate_but_never_the_default(
+    tmp_path: Path, source: str, backfilled: int
+) -> None:
+    """A sighted model is evidence; the default used when nothing was sighted is not."""
+    from repowise.core.savings import pricing
+
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000, agent="claude_code")
+    snapshot = pricing.PricingSnapshot(
+        model="claude-sonnet-4-6",
+        pricing_source=source,
+        pricing_version="pricing:test",
+        input_rate_usd_per_million=3.0,
+        output_rate_usd_per_million=15.0,
+    )
+    pricing.clear_pricing_cache()
+    try:
+        pricing._write_cache(
+            pricing._cache_path(tmp_path), pricing._Snapshots(newest=snapshot, agents={})
+        )
+        report = load_report(tmp_path)
+    finally:
+        pricing.clear_pricing_cache()
+    assert report is not None
+    assert report.unpriced_saved_input_tokens == 1_000
+    assert report.backfilled_saved_input_tokens == backfilled
+    assert report.backfilled_input_savings_usd == pytest.approx(backfilled * 3.0 / 1_000_000)

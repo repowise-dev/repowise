@@ -1,8 +1,8 @@
 """``repowise evidence``: ingest what a real run showed and join it to the code.
 
 ``evidence add`` reads one ``repowise-evidence-v1`` file (a profile,
-benchmark results, test timings or query counts), or a profiler's or
-benchmark runner's own output in a format of
+benchmark results, test timings or query counts), or a profiler's,
+benchmark runner's or test runner's own output in a format of
 :data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
 to v1 first; several profiles of one run merged into one), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
@@ -132,14 +132,15 @@ def evidence_add(
 ) -> None:
     """Ingest the evidence of one run of a named workload.
 
-    FILE is a repowise-evidence-v1 document, or a profile or benchmark
-    results as the tool wrote them (Speedscope JSON, Go pprof, V8 .cpuprofile,
-    collapsed stacks, pytest-benchmark or hyperfine JSON), detected from its
-    content. Several profiles (a parent process and its workers, or a directory
-    holding one file per process) merge into one run; they must share a format,
-    unit, tool and clock.
+    FILE is a repowise-evidence-v1 document, or a profile, benchmark
+    results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
+    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON, JUnit
+    XML), detected from its content. Several profiles (a parent process and its
+    workers, or a directory holding one file per process) merge into one run;
+    they must share a format, unit, tool and clock.
     A single profile that spent time starting or waiting on other processes
-    gets a warning that their work is not in it.
+    gets a warning that their work is not in it. JUnit XML reports (a Maven or
+    Gradle report directory) read as one run; other files beside them are left out.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -156,6 +157,7 @@ def evidence_add(
         repowise evidence add bench.json --workload "go bench" --class benchmark --format json
         repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
+        repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
@@ -463,8 +465,23 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
                       f"{escape(optional['purpose'])}")
 
 
+def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
+    """How a unit's tests write JUnit XML, and the line that ingests it."""
+    if not timings:
+        return []
+    how = (
+        f"add [cyan]{escape(timings['flag'])}[/cyan] to the test command"
+        if timings["flag"]
+        else "written by default"
+    )
+    lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
+    if timings["ingest"]:
+        lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
+    return lines
+
+
 def _setup_lines(unit: dict[str, Any]) -> list[str]:
-    """One unit's coverage plan, in words."""
+    """One unit's coverage plan, test timings and runtime targets, in words."""
     cov = unit["coverage"]
     tools = ", ".join(t for t in (unit["runner"], unit["package_manager"]) if t)
     head = f"[bold]{unit['stack']}[/bold]" + (f" ({escape(tools)})" if tools else "")
@@ -478,6 +495,7 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
         lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
+    lines += _timings_lines(unit.get("test_timings"))
     for target in unit.get("runtime", ()):
         head = f"  {target['class']} [bold]{escape(target['workload'])}[/bold]"
         if not target["command"]:

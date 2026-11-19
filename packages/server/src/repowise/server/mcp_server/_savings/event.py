@@ -168,7 +168,9 @@ def _record(interaction: Interaction, result: Any) -> bool:
     # So the tool call takes an unpriced event and starts a background scan
     # that prices the calls after it; the report counts priced and unpriced
     # tokens separately for exactly this reason.
-    pricing = resolve_pricing_snapshot(interaction.repo_root, allow_scan=False)
+    pricing = resolve_pricing_snapshot(
+        interaction.repo_root, allow_scan=False, agent=interaction.agent
+    )
     if pricing is None:
         warm_pricing_snapshot(interaction.repo_root)
 

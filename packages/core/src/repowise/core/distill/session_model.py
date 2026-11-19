@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from repowise.core.fs_walk import iter_glob
@@ -60,6 +61,11 @@ class ResolvedModel:
     agent: str
     #: Human label, e.g. ``"detected from Claude Code session"``.
     source: str
+    #: Each detected agent's own newest model, from the same transcript pass,
+    #: keyed by agent slug. Empty when nothing was sighted.
+    per_agent: Mapping[str, ResolvedModel] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
 
 
 _DEFAULT = ResolvedModel(DEFAULT_MODEL, DEFAULT_MODEL, "unknown", "default")
@@ -85,6 +91,13 @@ def normalize_model_id(raw: str) -> str:
     return _ALIASES.get(cleaned, cleaned)
 
 
+#: Agents whose model this module can detect, as agent registry slugs. An
+#: event from one of these is priced at that agent's own model or not at all:
+#: never at another agent's, which is how a Claude Code session came to be
+#: priced as a Codex model whenever a Codex run happened to be newer.
+DETECTED_AGENTS = frozenset({"claude_code", "codex"})
+
+
 def resolve_session_model(
     repo_root: Path,
     *,
@@ -95,33 +108,44 @@ def resolve_session_model(
 
     *projects_root* / *codex_sessions_root* override the Claude Code and Codex
     transcript roots (for tests); both default to their real ``~/`` locations.
-    Returns the Sonnet :data:`_DEFAULT` when nothing is detectable.
+    Returns the Sonnet :data:`_DEFAULT` when nothing is detectable. The result
+    also carries each detected agent's own newest model in ``per_agent``: one
+    pass over the transcripts answers both, so pricing per agent costs no
+    second scan.
     """
     try:
-        return _resolve(Path(repo_root), projects_root, codex_sessions_root)
+        sightings = _resolve(Path(repo_root), projects_root, codex_sessions_root)
     except Exception:
         return _DEFAULT
+    if not sightings:
+        return _DEFAULT
+    newest = max(sightings.values(), key=lambda pair: pair[1])[0]
+    return replace(
+        newest, per_agent={agent: resolved for agent, (resolved, _ts) in sightings.items()}
+    )
 
 
 def _resolve(
     repo_root: Path, projects_root: Path | None, codex_sessions_root: Path | None
-) -> ResolvedModel:
-    candidates: list[tuple[str, str, _Sighting]] = []
-    claude = _claude_code_sighting(repo_root, projects_root)
-    if claude is not None:
-        candidates.append(("claude_code", "Claude Code", claude))
-    codex = _codex_sighting(repo_root, codex_sessions_root)
-    if codex is not None:
-        candidates.append(("codex", "Codex", codex))
-    if not candidates:
-        return _DEFAULT
-    agent, label, sighting = max(candidates, key=lambda c: c[2].ts)
-    return ResolvedModel(
-        model=normalize_model_id(sighting.model),
-        raw=sighting.model,
-        agent=agent,
-        source=f"detected from {label} session",
-    )
+) -> dict[str, tuple[ResolvedModel, float]]:
+    """Each agent's newest model sighting and the transcript mtime it came from."""
+    found: dict[str, tuple[ResolvedModel, float]] = {}
+    for agent, label, sighting in (
+        ("claude_code", "Claude Code", _claude_code_sighting(repo_root, projects_root)),
+        ("codex", "Codex", _codex_sighting(repo_root, codex_sessions_root)),
+    ):
+        if sighting is None:
+            continue
+        found[agent] = (
+            ResolvedModel(
+                model=normalize_model_id(sighting.model),
+                raw=sighting.model,
+                agent=agent,
+                source=f"detected from {label} session",
+            ),
+            sighting.ts,
+        )
+    return found
 
 
 # -- Claude Code ----------------------------------------------------------

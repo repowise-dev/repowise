@@ -361,7 +361,10 @@ def _record_event(
 
     Attribution is real here rather than ``unknown``. The hook was handed the
     serving agent's own adapter, so which agent saved these tokens is evidence,
-    not a guess.
+    not a guess. The session and subagent ids come from the same hook payload
+    (:func:`.read_state.bind_agent`); a subagent's payload adds an ``agent_id``
+    to its parent's ``session_id``. Ids the event contract would refuse are
+    left out rather than costing the event.
 
     Pricing is read from cache only, never resolved. Detecting the agent's
     model means scanning local transcripts -- around six seconds when the
@@ -378,9 +381,13 @@ def _record_event(
         from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
         from repowise.core.savings.pricing import resolve_pricing_snapshot
 
+        from .read_state import bound_ids
+
         agent = slug_for_hook_adapter(hook_adapter)
+        # Not ``session_id``: that parameter is the host session the files credit keys on.
+        ledger_session_id, subagent_id = (_ledger_id(value) for value in bound_ids())
         event_id = new_event_id()
-        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False, agent=agent)
         recorder.record_event_on(
             connection,
             repo_path,
@@ -391,6 +398,8 @@ def _record_event(
                 "surface": "hook",
                 "integration": agent,
                 "agent": agent,
+                "session_id": ledger_session_id,
+                "subagent_id": subagent_id,
                 "operation": filter_name,
                 "evidence_kind": "measured",
                 "estimator": "chars_per_token_floor_v1",
@@ -432,6 +441,15 @@ def record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
             con.close()
     except Exception:
         return
+
+
+#: The event contract's bound on an id. A longer one would reject the event.
+_MAX_LEDGER_ID = 128
+
+
+def _ledger_id(value: str) -> str | None:
+    """*value* as a ledger id, or None when empty or longer than the contract allows."""
+    return value if 0 < len(value) <= _MAX_LEDGER_ID else None
 
 
 def record_forgone(

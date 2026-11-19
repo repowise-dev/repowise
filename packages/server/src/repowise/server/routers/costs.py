@@ -221,6 +221,10 @@ async def get_savings(
         files_per_day=_files_rows(report.files_per_day, "day"),
         files_per_agent=_files_rows(report.files_per_agent, "agent"),
         files_per_surface=_files_rows(report.files_per_surface, "surface"),
+        subagent_events=report.subagent_events,
+        subagent_saved_input_tokens=report.subagent_saved_input_tokens,
+        backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
+        backfilled_input_savings_usd=report.backfilled_input_savings_usd,
         **_output_estimate_fields(report),
     )
 

@@ -331,6 +331,15 @@ class SavingsResponse(BaseModel):
     files_per_day: list[SavingsFilesRow] = []
     files_per_agent: list[SavingsFilesRow] = []
     files_per_surface: list[SavingsFilesRow] = []
+    #: Attribution and report-time pricing. Each is part of a total above,
+    #: never added to it. ``backfilled_*`` prices unpriced tokens at the rate
+    #: another event of the same session captured, else at the cached rate for
+    #: the event's agent, so ``priced_input_savings_usd`` keeps meaning "rate
+    #: captured when it happened".
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0
     #: Output tokens agents did not write, *estimated* from the paired
     #: benchmark per question asked in each agent session with an MCP call
     #: (``calibration.formula``), priced at that session's captured output rate. Each model is credited the benchmark's point

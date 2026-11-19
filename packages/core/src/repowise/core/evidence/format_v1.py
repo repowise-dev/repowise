@@ -29,6 +29,11 @@ symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
 the function costs: its own time and the built-ins and libraries it called,
 never time spent waiting; ``total`` adds its callees in the repo.
+A test entry with no ``path`` may carry ``classname``, the dotted name a
+JUnit report gives it (``tests.unit.test_x.TestC``): ingest places it on the
+indexed file that name leads to. ``"first_in_class": true`` marks the first
+test a run reports for its class, whose time may include fixtures the whole
+class shares.
 ``"exact": true`` says ``function``
 is the symbol's own name, so it never falls back to a bare-name match (a
 benchmark named by its node id). Paths are repo-relative, and the
@@ -359,12 +364,15 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
         return None, "no_value"
     where, _ = _location(raw)
     test_file, _ = repo_relative_path(raw.get("path"))
+    classname, _ = _name(raw.get("classname")) if test_file is None else (None, None)
     return {
         "test_id": test_id,
         "test_file": test_file,
         "location": where,
         "duration_s": duration,
         "outcome": outcome,
+        "classname": classname,
+        "first_in_class": raw["first_in_class"] if isinstance(raw.get("first_in_class"), bool) else None,
     }, None
 
 

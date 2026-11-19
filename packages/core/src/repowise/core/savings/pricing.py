@@ -21,6 +21,12 @@ for exactly that reason.
 The cache is filled by ``repowise distill`` run directly, by ``repowise saved``,
 and by :func:`warm_pricing_snapshot`, which the long-lived MCP and web servers
 call to scan on a background thread, off every tool call and request.
+
+The snapshot is keyed by agent, not only by repository. One scan records the
+newest model per detected agent, and an event from a detected agent is priced
+at that agent's model or left unpriced, never at another agent's: a repository
+used from both Claude Code and Codex used to price every event at whichever
+of the two ran last.
 """
 
 from __future__ import annotations
@@ -41,8 +47,10 @@ from typing import Any
 _TTL_SECONDS = 24 * 60 * 60
 
 #: Cache file format. Bump when the payload shape changes; an unreadable or
-#: unrecognised file is treated as absent, never as an error.
-_CACHE_VERSION = 1
+#: unrecognised file is treated as absent, never as an error. Version 2 adds
+#: the per-agent snapshots; a version 1 file reads as absent and the next scan
+#: rewrites it.
+_CACHE_VERSION = 2
 
 _CACHE_NAME = "pricing-snapshot.json"
 
@@ -83,13 +91,40 @@ class PricingSnapshot:
         }
 
 
-#: repository root -> (snapshot, monotonic deadline). Bounds the disk read as
+@dataclass(frozen=True, slots=True)
+class _Snapshots:
+    """One scan's result: the newest model across agents, and each agent's own."""
+
+    newest: PricingSnapshot | None
+    agents: dict[str, PricingSnapshot]
+
+    def for_agent(self, agent: str | None) -> PricingSnapshot | None:
+        """The rate for an event from *agent*; ``None`` asks for the newest model.
+
+        A detected agent with no sighting of its own gets ``None`` when another
+        agent was sighted, since the newest model is then that other agent's.
+        When nothing was sighted the newest is the default rate, and every
+        agent shares it as before.
+        """
+        if agent is None:
+            return self.newest
+        own = self.agents.get(agent)
+        if own is not None:
+            return own
+        from repowise.core.distill.session_model import DETECTED_AGENTS
+
+        if agent in DETECTED_AGENTS and self.agents:
+            return None
+        return self.newest
+
+
+#: repository root -> (snapshots, monotonic deadline). Bounds the disk read as
 #: well as the scan for a long-lived process such as the MCP server.
-_memo: dict[str, tuple[PricingSnapshot | None, float]] = {}
+_memo: dict[str, tuple[_Snapshots, float]] = {}
 
 
 def resolve_pricing_snapshot(
-    repo_root: str | Path | None, *, allow_scan: bool = True
+    repo_root: str | Path | None, *, allow_scan: bool = True, agent: str | None = None
 ) -> PricingSnapshot | None:
     """The pricing snapshot to stamp on an event, or ``None`` when unpriced.
 
@@ -98,13 +133,17 @@ def resolve_pricing_snapshot(
     unpriced event rather than triggering a transcript scan. Whichever surface
     next runs with scanning allowed refills the cache for it.
 
+    *agent* is the event's agent slug (:meth:`_Snapshots.for_agent`). Omitted,
+    the newest model across agents is returned.
+
     Never raises: an unpriced event is a correct event, and the report reports
     priced and unpriced tokens separately for exactly this reason.
     """
     if repo_root is None:
         return None
     try:
-        return _resolve(Path(repo_root), allow_scan=allow_scan)
+        snapshots = _resolve(Path(repo_root), allow_scan=allow_scan)
+        return snapshots.for_agent(agent) if snapshots is not None else None
     except Exception:
         return None
 
@@ -168,7 +207,7 @@ def warm_pricing_snapshot(repo_root: str | Path | None) -> None:
             _warm_started.pop(key, None)
 
 
-def _resolve(repo_root: Path, *, allow_scan: bool) -> PricingSnapshot | None:
+def _resolve(repo_root: Path, *, allow_scan: bool) -> _Snapshots | None:
     key = str(repo_root)
     now = time.monotonic()
     memoized = _memo.get(key)
@@ -243,32 +282,33 @@ def snapshot_for_model(model: str | None, pricing_source: str) -> PricingSnapsho
     )
 
 
-def _scan(repo_root: Path) -> PricingSnapshot | None:
-    """Detect the coding agent's model and freeze its rates."""
+
+def _scan(repo_root: Path) -> _Snapshots | None:
+    """Detect each coding agent's model and freeze its rates, in one transcript pass."""
     from repowise.core.distill.session_model import resolve_session_model
 
-    resolved = resolve_session_model(repo_root)
+    newest = resolve_session_model(repo_root)
+    per_agent = newest.per_agent
     # Machine-readable provenance rather than the detector's human label, so a
     # consumer can tell a detected rate from the default without parsing prose.
     # ``unknown`` is the detector's own word for "nothing found", and stays
     # distinguishable from a real agent.
-    return snapshot_for_model(resolved.model, f"session_model:{resolved.agent}")
+    agents = {
+        agent: snapshot
+        for agent, resolved in per_agent.items()
+        if (snapshot := snapshot_for_model(resolved.model, f"session_model:{agent}")) is not None
+    }
+    snapshots = _Snapshots(
+        newest=snapshot_for_model(newest.model, f"session_model:{newest.agent}"), agents=agents
+    )
+    if snapshots.newest is None and not agents:
+        return None
+    return snapshots
 
 
-def _read_cache(path: Path) -> tuple[PricingSnapshot, float] | None:
-    """The cached snapshot and its age in seconds, or ``None`` if unusable."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict) or raw.get("version") != _CACHE_VERSION:
-        return None
-    resolved_at = raw.get("resolved_at")
-    # ``bool`` is an ``int``, and True would read as one second past the epoch.
-    if not isinstance(resolved_at, int | float) or isinstance(resolved_at, bool):
-        return None
-    age = time.time() - float(resolved_at)
-    if age > _TTL_SECONDS:
+def _snapshot_from(raw: Any) -> PricingSnapshot | None:
+    """One cached snapshot, or ``None`` when absent or unusable."""
+    if not isinstance(raw, dict):
         return None
     try:
         snapshot = PricingSnapshot(
@@ -285,16 +325,48 @@ def _read_cache(path: Path) -> tuple[PricingSnapshot, float] | None:
     # over-long model would make the event contract reject the whole event.
     if not snapshot.model or len(snapshot.model) > _MAX_MODEL_LENGTH:
         return None
-    return snapshot, max(0.0, age)
+    return snapshot
 
 
-def _write_cache(path: Path, snapshot: PricingSnapshot) -> None:
+def _read_cache(path: Path) -> tuple[_Snapshots, float] | None:
+    """The cached snapshots and their age in seconds, or ``None`` if unusable."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != _CACHE_VERSION:
+        return None
+    resolved_at = raw.get("resolved_at")
+    # ``bool`` is an ``int``, and True would read as one second past the epoch.
+    if not isinstance(resolved_at, int | float) or isinstance(resolved_at, bool):
+        return None
+    age = time.time() - float(resolved_at)
+    if age > _TTL_SECONDS:
+        return None
+    agents_raw = raw.get("agents")
+    agents = {
+        str(agent): snapshot
+        for agent, value in (agents_raw.items() if isinstance(agents_raw, dict) else ())
+        if (snapshot := _snapshot_from(value)) is not None
+    }
+    snapshots = _Snapshots(newest=_snapshot_from(raw.get("newest")), agents=agents)
+    if snapshots.newest is None and not agents:
+        return None
+    return snapshots, max(0.0, age)
+
+
+def _write_cache(path: Path, snapshots: _Snapshots) -> None:
     """Write the cache atomically, or not at all.
 
     A torn file reads back as absent, which costs another six-second scan, so
     the temporary-then-replace is about latency here as much as correctness.
     """
-    payload = {"version": _CACHE_VERSION, "resolved_at": time.time(), **snapshot.as_payload()}
+    payload = {
+        "version": _CACHE_VERSION,
+        "resolved_at": time.time(),
+        "newest": snapshots.newest.as_payload() if snapshots.newest else None,
+        "agents": {agent: snap.as_payload() for agent, snap in snapshots.agents.items()},
+    }
     # Unique per thread as well as per process: two threads in the MCP server
     # resolving at once would otherwise interleave writes into one temp file,
     # and os.replace would atomically publish the mixture.

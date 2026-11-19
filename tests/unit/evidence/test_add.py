@@ -7,11 +7,17 @@ import json
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from repowise.core.evidence.add import EvidenceRefusedError, ingest_evidence
 from repowise.core.persistence import create_session_factory, get_session
 from repowise.core.persistence.database import create_engine
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.models import (
+    EvidenceTestTiming,
+    HealthFileMetric,
+    Repository,
+    WikiSymbol,
+)
 from tests.unit.cli.test_evidence_cmd import _git_repo, _index, _stored
 
 
@@ -88,6 +94,62 @@ def test_no_repository_row_reads_as_no_index(tmp_path: Path) -> None:
         )
 
     assert asyncio.run(run()) == {"stored": False, "reason": "no_index"}
+
+
+def _index_test_file(root: Path) -> None:
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "tests/test_app.py"
+                session.add(HealthFileMetric(repository_id="r1", file_path=path, code_origin="test"))
+                session.add(
+                    WikiSymbol(
+                        repository_id="r1", file_path=path,
+                        symbol_id=f"{path}::TestBuild::test_builds", name="test_builds",
+                        qualified_name="TestBuild.test_builds", kind="method", start_line=2,
+                        end_line=3,
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+
+
+def _timings(root: Path) -> list:
+    async def read() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                rows = await session.execute(select(EvidenceTestTiming))
+                return sorted(rows.scalars(), key=lambda r: r.test_id)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_a_junit_report_is_stored_as_test_timings_on_its_test_functions(indexed) -> None:
+    root, head = indexed
+    _index_test_file(root)
+    report = b"""<testsuites><testsuite name="pytest">
+    <testcase classname="tests.test_app.TestBuild" name="test_builds[x]" time="2.5" />
+    <testcase classname="tests.test_app.TestBuild" name="test_gone" time="0.1" />
+    <testcase classname="nowhere.Mod" name="test_y" time="0.2" />
+    </testsuite></testsuites>"""
+
+    payload = _ingest(root, report, workload="pytest tests", workload_class="unit_test", commit=head)
+
+    assert payload["stored"] is True
+    assert (payload["kind"], payload["input_format"], payload["matched"]) == ("test_timing", "junit", 3)
+    assert payload["unlinked"] == {"unknown_symbol": 1, "unplaced": 1}
+    assert [(r.test_id, r.test_file, r.symbol_id, r.duration_s, r.first_in_class) for r in _timings(root)] == [
+        ("nowhere.Mod::test_y", None, None, 0.2, True),
+        ("tests/test_app.py::TestBuild::test_builds[x]", "tests/test_app.py",
+         "tests/test_app.py::TestBuild::test_builds", 2.5, True),
+        ("tests/test_app.py::TestBuild::test_gone", "tests/test_app.py", None, 0.1, False),
+    ]
 
 
 # ---------------------------------------------------------------------------

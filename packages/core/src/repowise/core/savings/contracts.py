@@ -455,6 +455,20 @@ class SavingsReport:
     files_per_day: tuple[Mapping[str, Any], ...] = ()
     files_per_agent: tuple[Mapping[str, Any], ...] = ()
     files_per_surface: tuple[Mapping[str, Any], ...] = ()
+    #: The share of the window recorded inside a subagent (events with a
+    #: ``subagent_id``). Part of the totals above, never added to them.
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    #: Unpriced tokens priced at report time, never written back to an event.
+    #: The rate is the newest one an event of the same session (and surface,
+    #: since session ids are hashed per surface) captured, else
+    #: the cached rate for the event's agent. A subset of
+    #: ``unpriced_saved_input_tokens``, which keeps its meaning (no rate was
+    #: captured when the event happened), and reported apart from
+    #: ``priced_input_savings_usd`` so a reader can tell captured from
+    #: backfilled dollars.
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0
     #: Output tokens saved, estimated per session from the paired benchmark
     #: (see :mod:`repowise.core.savings.output_estimate`). Kept apart from the
     #: recorded ``saved_output_tokens``, which no producer measures. Null when
