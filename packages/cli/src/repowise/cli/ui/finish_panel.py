@@ -1,7 +1,8 @@
 """The one panel ``repowise init`` ends on.
 
-Read top to bottom it answers, in order: what did I get, can my agent reach it,
-what do I ask it, what do I run next, and what did init leave in my repo.
+Read top to bottom it answers, in order: what did I get, can my agent reach it
+and what needs a restart, what do I ask it first, what do I run next, and what
+did init leave in my repo. The rest waits in ``repowise next`` and the dashboard.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from rich.text import Text
 
 from repowise.cli.agent_targets.tool_surface import surface_lines
 from repowise.cli.ui import mascot
-from repowise.cli.ui.brand import BRAND, INFO, MODEL, WARN, key_value_table
+from repowise.cli.ui.brand import BRAND, INFO, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
 from repowise.cli.ui.result_panels import build_completion_panel, print_completion_panel
 
@@ -38,8 +39,6 @@ class StoodOut:
     hotspot_file: str | None = None
     hotspot_commits: int | None = None
     decision_candidates: int | None = None
-    #: Background records the agent's discovery pass would check (``decision discover``).
-    discovery_records: int | None = None
 
     def as_summary(self) -> dict[str, Any]:
         """The same findings for ``--progress json``, one key each, null when not measured."""
@@ -69,15 +68,6 @@ class StoodOut:
 
 
 @dataclass(frozen=True)
-class ModelUpgrade:
-    """The command that adds a model, and the source on this machine it uses."""
-
-    command: str
-    #: e.g. "Uses your Claude Code sign-in"; None when nothing was detected.
-    source: str | None = None
-
-
-@dataclass(frozen=True)
 class FinishFacts:
     """What the run produced, already counted; the panel only formats it."""
 
@@ -85,18 +75,15 @@ class FinishFacts:
     files: int
     symbols: int
     languages: str
-    graph_nodes: int
-    graph_edges: int
     elapsed: str
-    top_hotspot: str = ""
+    #: The one question for the agent, from ``core.agent_prompts.first_prompt``.
+    first_prompt: str = ""
     #: The documentation count, e.g. "42 pages"; None when none was built.
     pages: str | None = None
     #: Model spend, e.g. "$0.12 (40,000 tokens)"; None for a keyless run.
     spend: str | None = None
     embed_failed: int = 0
     stood_out: StoodOut = field(default_factory=StoodOut)
-    #: The "add a model" block of a run whose documentation was built from the index.
-    model_upgrade: ModelUpgrade | None = None
     #: The PR bot install link, on the one run that shows it; None on every other.
     pr_bot_url: str | None = None
 
@@ -130,10 +117,7 @@ def _metrics(facts: FinishFacts) -> list[tuple[str, str]]:
         rows.append(("Cost", facts.spend))
     if facts.pages:
         rows.append(("Search", _search_label(facts)))
-    rows += [
-        ("Graph", f"{_n(facts.graph_nodes, 'node')} · {_n(facts.graph_edges, 'edge')}"),
-        ("Elapsed", facts.elapsed),
-    ]
+    rows.append(("Elapsed", facts.elapsed))
     return rows
 
 
@@ -178,38 +162,44 @@ def _decisions_value(s: StoodOut) -> str:
     return f"{count:,} background {noun} from history"
 
 
-def stood_out_lines(s: StoodOut) -> list[RenderableType]:
-    """Up to four findings from data the run already has; an unmeasured one is left out."""
-    rows: list[tuple[str, str]] = []
-    if s.health_score is not None:
-        rows.append(("Health", _health_value(s)))
-    if s.dead_unreachable is not None:
-        rows.append(("Dead code", _dead_value(s)))
+def and_join(names: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _findings(s: StoodOut) -> list[tuple[str, str, str]]:
+    """``(label, value, mention)`` for each measured finding, the hotspot first.
+
+    The hotspot leads because the first question is about it.
+    """
+    out = []
     if s.hotspot_file:
-        rows.append(("Hotspot", _hotspot_value(s)))
-    if s.decision_candidates is not None:
-        rows.append(("Decisions", _decisions_value(s)))
-    if not rows:
-        return []
-    return [Text(""), line("[bold]What stood out[/bold]"), key_value_table(rows, label_width=10, value_style=INFO)]
+        out.append(("Hotspot", _hotspot_value(s), "the hotspot"))
+    if s.health_score is not None:
+        out.append(("Health", _health_value(s), "health"))
+    if s.dead_unreachable is not None:
+        out.append(("Dead code", _dead_value(s), "dead code"))
+    if s.decision_candidates:
+        records = _decisions_value(s)
+        out.append(("Decisions", records, records.removesuffix(" from history")))
+    return out
 
 
-def model_upgrade_lines(upgrade: ModelUpgrade | None) -> list[RenderableType]:
-    """What a model adds and the exact command for the source this machine has."""
-    if upgrade is None:
+def stood_out_lines(s: StoodOut) -> list[RenderableType]:
+    """One headline finding, then one dim line naming the rest; unmeasured ones are left out."""
+    findings = _findings(s)
+    if not findings:
         return []
-    command = f"[{MODEL}]{escape(upgrade.command)}[/]"
-    if upgrade.source:
-        how = f"{escape(upgrade.source)}: {command}"
-    else:
-        how = f"{command} needs a key, or [{MODEL}]--provider ollama[/] for a local model."
-    return [
+    label, value, _ = findings[0]
+    lines: list[RenderableType] = [
         Text(""),
-        line(f"[bold {MODEL}]Add a model when you want more[/]"),
-        line("Answers for your agent and docs that explain how and why: one command, no re-index."),
-        line(how),
-        dim_line("Or press m next time on the plan screen."),
+        line("[bold]What stood out[/bold]"),
+        key_value_table([(label, value)], label_width=10, value_style=INFO),
     ]
+    if findings[1:]:
+        rest = and_join([mention for _, _, mention in findings[1:]])
+        lines.append(dim_line(f"Also in the dashboard: {rest}.", indent=16))
+    return lines
 
 
 def line(markup: str, indent: int = 2) -> Padding:
@@ -237,31 +227,31 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     if not connected and getattr(setup, "claude_code_connected", False):
         connected = ["Claude Code"]
     lines: list[RenderableType] = []
+    restart = [h["name"] for h in getattr(setup, "restart_hosts", ())]
     if connected:
         lines.append(key_value_table([("Connected", escape(", ".join(connected)))]))
         # Each of these loads its MCP config only at startup, so a host whose
         # config this run wrote or moved has not loaded it yet.
-        restart = [h["name"] for h in getattr(setup, "restart_hosts", ())]
         if restart:
-            slash = " (in Claude Code, /mcp also works)" if "Claude Code" in restart else ""
             lines.append(
-                line(
-                    f"[bold {BRAND}]Restart to load the repowise tools:[/] "
-                    f"[bold]{escape(', '.join(restart))}{slash}.[/bold]"
-                )
+                line(f"[bold {BRAND}]Restart {escape(and_join(restart))}[/] to load the repowise tools.")
             )
         else:
             lines.append(
                 dim_line("Already connected; restart an agent only if the tools are not showing.")
             )
     lines += [dim_line(escape(text)) for text in surface_lines(surfaces)]
+    after = ["In Claude Code, /mcp also works."] if "Claude Code" in restart else []
     unconnected = getattr(setup, "unconnected", ())
     if unconnected:
         from repowise.cli.editor_setup import connect_command
 
-        names = escape(", ".join(a["name"] for a in unconnected))
+        names = escape(and_join([a["name"] for a in unconnected]))
+        verb, them = ("is", "it") if len(unconnected) == 1 else ("are", "them")
         command = escape(connect_command(a["id"] for a in unconnected))
-        lines.append(dim_line(f"Also installed: {names}. Connect with [bold]{command}[/bold]."))
+        after.append(f"{names} {verb} installed: [bold]{command}[/bold] connects {them}.")
+    if after:
+        lines.append(dim_line(" ".join(after)))
     # The interactive run offered this hook live; a --yes run skipped the offer.
     if not getattr(setup, "interactive", False) and not getattr(
         setup, "rewrite_hook_installed", False
@@ -272,20 +262,15 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     return lines
 
 
-def agent_questions(top_hotspot: str = "") -> list[str]:
-    """Two questions that show off the index on any repo."""
-    second = (
-        f"Why does {top_hotspot} change so often, and what breaks if I edit it?"
-        if top_hotspot
-        else "Which files are riskiest to change, and why?"
-    )
-    return ["How is this repo organised, and where should I start reading?", second]
-
-
-def ask_lines(questions: list[str]) -> list[RenderableType]:
-    lines: list[RenderableType] = [Text(""), line("[bold]Try asking your agent[/bold]")]
-    lines += [line(f'[dim]"{escape(q)}"[/dim]', indent=4) for q in questions]
-    return lines
+def ask_lines(prompt: str) -> list[RenderableType]:
+    """The one question to ask once the agent has the tools; nothing without one."""
+    if not prompt:
+        return []
+    return [
+        Text(""),
+        line("[bold]Then ask your agent[/bold]"),
+        line(f'[dim]"{escape(prompt)}"[/dim]', indent=4),
+    ]
 
 
 def _relative(repo_path: Path, paths: list[Path]) -> list[str]:
@@ -342,7 +327,6 @@ def _embed_cost(command: str) -> str:
 
 def _footer(
     facts: FinishFacts,
-    setup: Any,
     repo_path: Path,
     files_written: list[Path],
     *,
@@ -364,20 +348,7 @@ def _footer(
                 + escape(facts.pr_bot_url)
             )
         )
-    return lines + autosync_lines(setup)
-
-
-def autosync_lines(setup: Any) -> list[RenderableType]:
-    """Whether the post-commit hook keeps the index synced; silent without editor setup."""
-    if setup is None or getattr(setup, "editor_setup_disabled", False):
-        return []
-    if getattr(setup, "autosync_hook_installed", False):
-        return [dim_line("Auto-sync: on, the index updates after each commit.")]
-    return [
-        dim_line(
-            "Auto-sync: off. [bold]repowise hook install[/bold] keeps the index synced on commit."
-        )
-    ]
+    return lines
 
 
 def build_finish_panel(
@@ -389,7 +360,7 @@ def build_finish_panel(
     files_written: list[Path] | None = None,
     owl: str = mascot.DONE,
 ) -> Any:
-    """The init completion panel: counts, Connected, questions, steps, receipt.
+    """The init completion panel: counts, Connected, the first question, steps, receipt.
 
     *owl* is the title owl's state: how the run finished.
     """
@@ -432,15 +403,12 @@ def _panel_parts(
     *,
     server: bool = False,
 ) -> tuple[str, list[tuple[str, str]], list[RenderableType], list[RenderableType]]:
-    body: list[RenderableType] = [
-        *stood_out_lines(facts.stood_out),
-        *model_upgrade_lines(facts.model_upgrade),
-    ]
+    body: list[RenderableType] = stood_out_lines(facts.stood_out)
     connected = connected_lines(setup)
     if connected:
         body.append(Text(""))
         body += connected
     if not server:
-        body += ask_lines(agent_questions(facts.top_hotspot))
-    footer = _footer(facts, setup, repo_path or Path("."), files_written or [], server=server)
+        body += ask_lines(facts.first_prompt)
+    footer = _footer(facts, repo_path or Path("."), files_written or [], server=server)
     return escape(completion_title(facts.scope)), _metrics(facts), body, footer
