@@ -183,11 +183,11 @@ def evidence_add(
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
     except OSError as exc:
-        raise click.BadParameter(f"cannot read {exc.filename}: {exc.strerror}", param_hint="FILE") from None
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
     try:
         sizes = [path.stat().st_size for path in paths]
     except OSError as exc:
-        raise click.BadParameter(f"cannot read {exc.filename}: {exc.strerror}", param_hint="FILE") from None
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
     try:
         # Checked before reading, so a file too large is never loaded.
         for path, size in zip(paths, sizes, strict=True):

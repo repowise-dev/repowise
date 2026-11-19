@@ -299,8 +299,8 @@ def prepare_evidence_files(
     if len(set(digests)) < len(digests):
         raise EvidenceRefusedError(
             "invalid_evidence",
-            "the same profile was given twice, so its samples would count twice",
-            "name each profile once",
+            "two of the files are byte-identical, so one profile's samples would count twice",
+            "name each profile once; two processes rarely write identical profiles",
         )
     ordered = [f for _, f in sorted(zip(digests, files, strict=True), key=lambda pair: pair[0])]
     parts = [

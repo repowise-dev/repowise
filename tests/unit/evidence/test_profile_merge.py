@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from repowise.core.evidence.format_v1 import EvidenceFormatError
@@ -10,8 +12,8 @@ from repowise.core.evidence.profile_formats import ProfileRun, Stack
 from repowise.core.frame_resolver import ProfileFrame
 
 
-def _frame(path: str, function: str = "f", language: str = "python") -> ProfileFrame:
-    return ProfileFrame(path=path, line=1, language=language, function=function)  # type: ignore[arg-type]
+def _frame(path: str, function: str = "f", language: Any = "python") -> ProfileFrame:
+    return ProfileFrame(path=path, line=1, language=language, function=function)
 
 
 MAIN, WORK = _frame("/r/app.py", "main"), _frame("/r/app.py", "work")

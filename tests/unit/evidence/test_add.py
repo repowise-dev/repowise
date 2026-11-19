@@ -138,6 +138,17 @@ def test_a_single_profile_that_waited_on_workers_is_stored_with_a_warning(indexe
     assert "75%" in warning["message"] and "evidence add" in warning["remedy"]
 
 
+def test_a_worker_profile_idle_in_its_pool_gets_no_warning(indexed) -> None:
+    root, head = indexed
+    # The worker's idle stacks have no repo frame: parked in its pool, not waiting on a child.
+    worker = _sampled(root, [["build"], [_POOL]], [4.0, 4.0])
+
+    payload = _ingest(root, worker, workload="app", workload_class="entry_point", commit=head)
+
+    assert payload["conversion"]["child_process_share"] == 0.0
+    assert "warnings" not in payload
+
+
 def test_a_parent_and_its_workers_merge_into_one_run(indexed) -> None:
     root, head = indexed
     files = [("parent.json", _parent(root)), ("w1.json", _worker(root)), ("w2.json", _worker(root, 2.0))]
@@ -191,7 +202,7 @@ def _collapsed(root: Path) -> bytes:
          {"value_kind": "wall"}, "different tools"),
         (lambda r: [("a", _parent(r)), ("b", _sampled(r, [["build"]], [1.0]).replace(
             b'"unit": "seconds"', b'"unit": "none"'))], {}, "different units"),
-        (lambda r: [("a", _parent(r)), ("b", _parent(r))], {}, "given twice"),
+        (lambda r: [("a", _parent(r)), ("b", _parent(r))], {}, "byte-identical"),
         (lambda r: [("a", _speedscope(r)), ("b", json.dumps({
             "format": "repowise-evidence-v1", "kind": "profile", "value_kind": "wall",
             "unit": "samples", "total": 1, "symbols": []}).encode())], {}, "different formats"),

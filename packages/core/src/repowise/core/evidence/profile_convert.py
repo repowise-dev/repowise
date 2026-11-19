@@ -401,7 +401,9 @@ class _Tally:
             (k for k in range(len(frames) - 1, -1, -1) if not self._unmaintained[frames[k]]), None
         )
         tail = frames if at is None else frames[at + 1 :]
-        if any(self._child[i] for i in tail):
+        # Only under a repo frame: a worker's own idle stacks (parked in its
+        # pool's queue, no repo frame) are not this process waiting on another.
+        if at is not None and any(self._child[i] for i in tail):
             self.child_processes += weight
         if any(self._wait[i] for i in tail):
             self.buckets["waits"] += weight
