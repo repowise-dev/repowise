@@ -106,6 +106,37 @@ describe("AddRepoWizard", () => {
     expect(adapter.onDone).toHaveBeenCalledWith("r1", null);
   });
 
+  it("indexes without a model when none is configured, instead of stopping on an error", async () => {
+    const adapter = makeAdapter({
+      preflight: vi.fn().mockResolvedValue(
+        makePreflight({
+          provider: { ok: false, name: null, model: null, error: "No active provider configured." },
+          estimate: null,
+        }),
+      ),
+    });
+    render(<AddRepoWizard adapter={adapter} open onOpenChange={vi.fn()} />);
+
+    await fillAndSubmitDetails();
+
+    await waitFor(() => expect(adapter.onDone).toHaveBeenCalledWith("r1", "job-1"));
+    expect(adapter.startIndex).toHaveBeenCalledWith("r1");
+    expect(screen.queryByText(/check failed/)).toBeNull();
+  });
+
+  it("says what a run without a model gives, and offers a signed-in agent CLI", async () => {
+    const adapter = makeAdapter({
+      getProviderStatus: vi
+        .fn()
+        .mockResolvedValue({ provider: null, model: null, signedIn: ["Claude Code"] }),
+    });
+    render(<AddRepoWizard adapter={adapter} open onOpenChange={vi.fn()} />);
+
+    expect(await screen.findByText(/No model set up, so Repowise indexes the code/)).toBeTruthy();
+    expect(screen.getByText(/Claude Code is signed in here: choose it under Models/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Models" })).toHaveAttribute("href", "/settings");
+  });
+
   it("anchors path-shaped registration failures to the path field", async () => {
     const adapter = makeAdapter({
       createRepo: vi
