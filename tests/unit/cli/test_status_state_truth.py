@@ -127,6 +127,23 @@ def test_json_carries_the_evidence_freshness_block(tmp_path, monkeypatch) -> Non
     assert data["evidence_freshness"] == FRESHNESS
 
 
+def test_an_unreadable_store_is_named_not_null(monkeypatch) -> None:
+    from repowise.cli.commands import _evidence_freshness
+    from repowise.cli.helpers import StaleIndexError
+
+    def raise_(exc):
+        def read(_path):
+            raise exc
+
+        return read
+
+    monkeypatch.setattr(_evidence_freshness, "stored_freshness", raise_(StaleIndexError()))
+    stale = status_cmd._evidence_freshness(Path("."))
+    assert stale["fix"] == "repowise update" and stale["error"]
+    monkeypatch.setattr(_evidence_freshness, "stored_freshness", raise_(OSError("locked")))
+    assert status_cmd._evidence_freshness(Path(".")) == {"error": "OSError: locked", "fix": None}
+
+
 def test_json_total_tokens_match_the_page_rows(tmp_path, monkeypatch) -> None:
     data = json.loads(_status(tmp_path, monkeypatch, {"last_sync_commit": "abc"}, fmt="json"))
     assert data["state"]["total_tokens"] == data["page_tokens"] == 1125

@@ -122,3 +122,13 @@ def test_the_connect_line_shows_only_without_runtime_evidence(monkeypatch) -> No
     # A store that cannot say stays silent.
     monkeypatch.setattr(health_module, "_load_evidence_freshness", lambda _path: None)
     assert "No runtime evidence" not in _run(monkeypatch)[0]
+
+
+def test_the_connect_line_comes_last(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(health_module, "_load_measured_costs", lambda _path: None)
+    monkeypatch.setattr(health_module, "_load_evidence_freshness", lambda _path: {})
+    for name in ("_render_files_table", "_render_findings_table", "_render_connect_line"):
+        monkeypatch.setattr(health_module, name, lambda *_a, _n=name: calls.append(_n))
+    _run(monkeypatch)
+    assert calls == ["_render_files_table", "_render_findings_table", "_render_connect_line"]

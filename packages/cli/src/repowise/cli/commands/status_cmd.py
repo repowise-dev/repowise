@@ -730,13 +730,21 @@ def _next_actions_lines(view: dict | None) -> list[str]:
 
 
 def _evidence_freshness(repo_path: Path) -> dict | None:
-    """The block ``doctor``'s evidence rows read; ``None`` when the store cannot answer."""
+    """The block ``doctor``'s evidence rows read; ``None`` without a store.
+
+    A store that cannot be read says so under ``error`` (with ``fix`` for one
+    an older repowise wrote), so it never reads like a repository with none.
+    """
     from repowise.cli.commands._evidence_freshness import stored_freshness
+    from repowise.cli.helpers import StaleIndexError
+    from repowise.core.evidence.setup import UPDATE_COMMAND
 
     try:
         return stored_freshness(repo_path)
-    except Exception:
-        return None
+    except StaleIndexError as exc:
+        return {"error": exc.message, "fix": UPDATE_COMMAND}
+    except Exception as exc:  # the rest of status still answers
+        return {"error": f"{type(exc).__name__}: {exc}", "fix": None}
 
 
 def _format_relative_time(iso_timestamp: str | None) -> str:

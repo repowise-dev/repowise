@@ -618,7 +618,8 @@ repowise status --workspace --format json
 - **Single repo:** a **Next** block: count worth doing this week (or quarter if quiet) and the first; JSON `next_actions`; `repowise next` lists them.
 - **JSON `evidence_freshness`:** `reference_commit` (HEAD) and, for `coverage` and `runtime`, `present`, `commit_sha`,
   `ingested_at`, `age_days` and `freshness` (`current`, `stale` or `unknown`); `runtime.runs` counts stored runs. The
-  same block `doctor`'s evidence rows read. `null` when the store cannot be read.
+  same block `doctor`'s evidence rows read. `null` without a store; `{"error", "fix"}` when the store cannot be read
+  (`fix` is `repowise update` for a store an older repowise wrote).
 
 ---
 

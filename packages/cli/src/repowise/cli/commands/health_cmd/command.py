@@ -613,14 +613,14 @@ def _render_table(
     narrowed = bool(opts.file_filter or opts.module_filter)
     causes = None if narrowed else _load_perf_causes(repo_path, coverage.covered_nloc)
     _render_performance_section(report, coverage, causes)
-    if not narrowed:
-        measured = _load_measured_costs(repo_path)
-        _render_measured_costs(measured)
-        # A ranked view means runs are stored; only without one is the store asked.
-        if measured is None:
-            _render_connect_line(_load_evidence_freshness(repo_path))
+    measured = None if narrowed else _load_measured_costs(repo_path)
+    _render_measured_costs(measured)
     _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
+    # Last, so it is the line a reader leaves with. A ranked view means runs
+    # are stored; only without one is the store asked.
+    if not narrowed and measured is None:
+        _render_connect_line(_load_evidence_freshness(repo_path))
 
 
 def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) -> None:
