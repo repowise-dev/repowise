@@ -296,20 +296,91 @@ def registered_tool(fn: Any) -> Any:
     return wrapped
 
 
-def _slim_input_schemas(server: Any) -> None:
-    """Drop pydantic's ``title`` keys and ``default: null`` from advertised schemas.
+#: Parameters a tool still accepts but does not advertise: aliases and knobs
+#: agents do not reach for, and no skill, prompt or tool reply tells them to
+#: pass. Every name costs schema bytes on each turn of a host that re-sends
+#: the tool list. docs/agent/MCP_TOOLS.md still documents them.
+_UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
+    "get_context": frozenset({"compact", "symptom"}),
+    "get_symbol": frozenset({"id", "reference", "context_lines"}),
+    "get_why": frozenset({"reference"}),
+    "search_codebase": frozenset({"page_type", "pattern"}),
+}
 
-    They restate each parameter's name and optionality, and hosts re-send the
-    tool list on every turn. Arguments are still validated against the
-    function signature, not this dict.
+
+def _lift_args(description: str, properties: dict[str, Any]) -> str:
+    """*description* without its ``Args:`` block, each entry moved onto its property.
+
+    The block restates the schema in prose; on the property the text sits where
+    a host shows it, once. An entry for a parameter the schema does not list is
+    dropped. ``a, b: text`` documents both names.
     """
+    import inspect
+    import re
+
+    lines = inspect.cleandoc(description).split("\n")
+    if "Args:" not in lines:
+        return description
+    start = lines.index("Args:")
+    end = start + 1
+    docs: dict[tuple[str, ...], list[str]] = {}
+    names: tuple[str, ...] = ()
+    while end < len(lines) and (lines[end].startswith("    ") or not lines[end].strip()):
+        entry = re.match(r"    (\w+(?:, \w+)*): (.*)", lines[end])
+        if entry:
+            names = tuple(entry[1].split(", "))
+            docs[names] = [entry[2].strip()]
+        elif lines[end].strip() and names:
+            docs[names].append(lines[end].strip())
+        end += 1
+    for entry_names, text in docs.items():
+        for name in entry_names:
+            if name in properties:
+                properties[name].setdefault("description", " ".join(text))
+    return "\n".join(lines[:start] + lines[end:]).strip()
+
+
+def _collapse_optional(prop: dict[str, Any]) -> None:
+    """``anyOf: [T, null]`` as plain ``T``: the parameter's absence from
+    ``required`` already says it is optional."""
+    variants = prop.get("anyOf")
+    if not isinstance(variants, list) or {"type": "null"} not in variants:
+        return
+    rest = [v for v in variants if v != {"type": "null"}]
+    if len(rest) == 1:
+        del prop["anyOf"]
+        prop.update(rest[0])
+    else:
+        prop["anyOf"] = rest
+
+
+def _slim_input_schemas(server: Any) -> None:
+    """Advertise each tool's schema without what restates it.
+
+    Drops pydantic's ``title`` keys, ``default: null`` and the null branch of
+    an optional parameter, unlists :data:`_UNADVERTISED_PARAMS`, and moves a
+    core tool's ``Args:`` block onto its properties. Hosts re-send the tool
+    list on every turn. Arguments are still validated against the function
+    signature, not this dict, so an unlisted parameter keeps working.
+    """
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
     for tool in server._tool_manager._tools.values():
         params = tool.parameters
         params.pop("title", None)
-        for prop in params.get("properties", {}).values():
+        properties = params.get("properties", {})
+        for name in _UNADVERTISED_PARAMS.get(tool.name, ()):
+            properties.pop(name, None)
+        for prop in properties.values():
             prop.pop("title", None)
             if "default" in prop and prop["default"] is None:
                 del prop["default"]
+            _collapse_optional(prop)
+        # Only the core profile's docstrings are written one entry per
+        # parameter; other tools pack several into one entry, so lifting
+        # theirs would hang one entry's text on the wrong parameter.
+        if tool.description and tool.name in CORE_TOOLS:
+            tool.description = _lift_args(tool.description, properties)
 
 
 def ensure_full_surface() -> Any:
