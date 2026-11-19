@@ -3061,10 +3061,15 @@ class EvidenceRun(Base):
     # A capped sample of the entries that did not map, for the diagnostic.
     unmatched_sample_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The run's whole value (samples or time), and the part with a resolved
-    # repo frame on the stack: their ratio is how much of the run repo code
-    # explains.
+    # production frame anywhere on the stack (kept for older readers; it says
+    # nothing about cost).
     total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     explained_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Where a profile run's time went (``evidence.profile_convert``): production
+    # repo code itself, blocked in waits, in libraries. NULL: not recorded.
+    repo_self_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     # How many samples the whole run holds, whatever its unit: the ``n`` of a
     # share's interval. NULL when the profiler counted none (a traced or an
     # evented profile).
@@ -3076,6 +3081,9 @@ class EvidenceRun(Base):
     mapping_partial: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # Tests that failed in a profiled test suite (the run is still a full
+    # workload); NULL when the profile does not say.
+    tests_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_evidence_runs_repo_ingested", "repository_id", "ingested_at"),
@@ -3094,8 +3102,9 @@ def _repository_fk() -> Any:
 class EvidenceSymbolCost(Base):
     """One symbol's cost in one profile run, in the run's ``unit``.
 
-    ``symbol_id`` is the id at the evidence commit. ``self`` is time in the
-    symbol's own body, ``total`` includes its callees. Sample counts are kept
+    ``symbol_id`` is the id at the evidence commit. ``self`` is what the
+    symbol costs: its own body and the built-ins and libraries it called,
+    waits excluded; ``total`` includes its callees. Sample counts are kept
     beside the values because a time unit hides how many samples it rests on.
     ``call_count`` comes only from deterministic tracers, never inferred.
     """
@@ -3271,17 +3280,23 @@ class SymbolHotness(Base):
     )
     # The basis run (``evidence_runs.id``) the numbers below come from.
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # 1-based place among the run's production functions by inclusive time;
-    # NULL when the evidence is stale.
+    # 1-based place among the run's production functions by self time (the
+    # cost, waits excluded); NULL when the evidence is stale or the function
+    # cost nothing itself.
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Samples on the function and in the whole run; NULL when not counted.
+    # Self samples on the function and samples in the whole run; NULL when not counted.
     samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # The interval of the function's share of all samples; NULL without counts.
+    # The interval of the function's self share of all samples; NULL without counts.
     share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # How much of the run production code explains (``evidence.status``).
+    # The share of the run with a production frame anywhere on the stack (kept
+    # for older readers; ``repo_self_share`` is the one surfaces state).
     explained_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The basis run's split (``evidence.status.time_split``).
+    repo_self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_share: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Functions the run measured outside production code: counted, not listed.
     run_unlisted: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # ``cpu`` or ``wall``.
@@ -3290,6 +3305,40 @@ class SymbolHotness(Base):
     ordering_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # ``current``, ``body_unchanged`` (older commit, same body) or ``stale``.
     freshness: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class WorkloadHotness(Base):
+    """The read model per workload: the ranked functions of each workload's newest run.
+
+    One row per (run, function), so a function two workloads both rank is
+    listed under each. Derived with ``symbol_hotness`` by
+    ``evidence.hotness`` and rebuilt whole; the run's own facts (workload,
+    commit, age, time split) are read from ``evidence_runs``.
+    """
+
+    __tablename__ = "workload_hotness"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    # ``evidence_runs.id``: the workload's newest run.
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # 1-based place among the run's production functions by self time.
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``ranked`` or ``lead_candidate``.
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    total_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The interval of the self share; NULL without sample counts.
+    share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Self samples on the function; NULL when not counted.
+    samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``current`` or ``body_unchanged``: a stale row is never ranked.
+    freshness: Mapped[str] = mapped_column(String(16), nullable=False)
+    # A deterministic tracer ran: the rank orders, and no share is given.
+    ordering_only: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 

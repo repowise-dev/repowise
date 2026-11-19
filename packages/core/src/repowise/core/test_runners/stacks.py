@@ -99,6 +99,8 @@ class Stack:
     workstation: str = ""
     #: The unit's directory, repo-relative POSIX; ``""`` is the repository root.
     root: str = ""
+    #: The test paths ``test`` names, relative to ``root``; empty when the runner picks.
+    test_paths: tuple[str, ...] = ()
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -348,7 +350,8 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
-    tool, setup, base, installs = _python_tool(root, paths, files, _pytest_args(paths, files))
+    args = _pytest_args(paths, files)
+    tool, setup, base, installs = _python_tool(root, paths, files, args)
     notes: list[str] = []
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
@@ -359,7 +362,8 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     requires = _run_lines(test.prepare) + installs
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
-        notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
+        notes=tuple(notes), requires=requires, test_paths=tuple(args.split()), pattern=_PYTEST,
+        skip=_PYTEST_ONE_FILE, editor=editor,
     )
 
 
@@ -380,7 +384,11 @@ _DELEGATES = re.compile(
 _C8 = "npx --yes c8 --reporter=lcov "
 _JEST_FLAGS = "--coverage --coverageReporters=lcov"
 # reportOnFailure: Vitest skips the report when one test fails, losing the whole run's coverage.
-_VITEST_FLAGS = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+# reportsDirectory: the command line beats a config's own directory, so the report lands where
+# the printed ingest path looks.
+_VITEST_FLAGS = (
+    "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
+)
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
 #: The test script ``npm init`` writes, which runs nothing.
@@ -388,6 +396,11 @@ _NO_TESTS = "no test specified"
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
+#: ``npx``, ``bunx`` and any ``<tool> exec`` (``pnpm exec``, ``nub exec --node``) run the command
+#: after their own flags. A flag that takes a value (``--prefix pkg``) leaves the value where the
+#: runner would be, so the line names no runner. ``-p``/``--package`` stop the match outright: their
+#: value is a package name, often the runner's own, and is not the command.
+_EXEC_WRAPPER = re.compile(r"^(?:npx|bunx|[\w.-]+\s+exec)(?:\s+-(?!(?:p|-package)(?![\w-]))\S+)*\s+")
 
 
 def _node_runner(script: str) -> str | None:
@@ -406,7 +419,7 @@ def _node_runner(script: str) -> str | None:
 
 def _command_runner(command: str) -> str | None:
     """:func:`_node_runner` for one simple command."""
-    words = re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command).split()
+    words = _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
     head = words[0] if words else ""
     if head in ("c8", "nyc"):
         # Both default to text and html reports; without lcov, their report step writes it.

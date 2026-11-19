@@ -27,6 +27,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
@@ -1326,21 +1327,6 @@ def parser_changed(repo_path: Path) -> bool:
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-
-
-def health_analyzer_changed(state: dict) -> bool:
-    """Whether the stored health rows were written by a different analyzer.
-
-    A legacy state file with no stamp is **not** a change: the rows it wrote
-    are no more suspect than any other pre-upgrade rows, and treating absence
-    as drift would re-score every existing install once on upgrade for no
-    stated defect. They pick the stamp up on their first re-score from any
-    other trigger.
-    """
-    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-
-    stored = state.get("health_analyzer_version")
-    return stored is not None and stored != HEALTH_ANALYZER_VERSION
 
 
 def security_scanner_changed(state: dict) -> bool:

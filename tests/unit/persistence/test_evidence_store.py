@@ -343,6 +343,8 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
         # init_db may create the tables before the migration runs.
         _init_db(migrated)
     command.upgrade(config, "0131")
+    command.stamp(config, "0132")  # 0132 is not the evidence store's; it refuses a warm start
+    command.upgrade(config, "head")
 
     created = tmp_path / "created.db"
     _init_db(created)
@@ -350,6 +352,12 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
         assert _columns(migrated, table) == _columns(created, table), table
         assert _indexes(migrated, table) == _indexes(created, table), table
 
+    command.downgrade(config, "0133")
+    assert "wait_value" not in _columns(migrated, "evidence_runs")
+    assert "wait_share" not in _columns(migrated, "symbol_hotness")
+    command.downgrade(config, "0132")
+    assert "tests_failed" not in _columns(migrated, "evidence_runs")
+    command.stamp(config, "0131")
     command.downgrade(config, "0124")
     for table in _TABLES:
         assert _columns(migrated, table) == {}
@@ -375,7 +383,7 @@ def test_an_existing_store_gains_the_tables_on_init(tmp_path: Path) -> None:
 
 
 def test_a_store_from_before_the_hotness_basis_gains_its_columns_on_init(tmp_path: Path) -> None:
-    """The reconciler adds the nullable columns 0131 adds; keys stay as they were."""
+    """The reconciler adds the nullable columns later migrations add; keys stay as they were."""
     old = tmp_path / "old.db"
     command.upgrade(_alembic_config(old), "0125")
     with sqlite3.connect(old) as connection:
@@ -385,3 +393,17 @@ def test_a_store_from_before_the_hotness_basis_gains_its_columns_on_init(tmp_pat
     _init_db(created)
     for table in ("evidence_runs", "evidence_symbol_costs", "symbol_hotness"):
         assert _columns(old, table) == _columns(created, table), table
+
+
+def test_workload_hotness_migration_matches_the_model_and_downgrades(tmp_path: Path) -> None:
+    """Derived and rebuilt whole, keyed by run and function; local stores get it from init_db."""
+    table = Base.metadata.tables["workload_hotness"]
+    assert [c.name for c in table.primary_key.columns] == ["repository_id", "run_id", "symbol_id"]
+    migrated = tmp_path / "migrated.db"
+    config = _alembic_config(migrated)
+    command.upgrade(config, "head")
+    created = tmp_path / "created.db"
+    _init_db(created)
+    assert _columns(migrated, "workload_hotness") == _columns(created, "workload_hotness")
+    command.downgrade(config, "-1")
+    assert _columns(migrated, "workload_hotness") == {}

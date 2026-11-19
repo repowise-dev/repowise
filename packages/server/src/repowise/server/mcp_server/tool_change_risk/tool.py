@@ -371,7 +371,7 @@ async def get_change_risk(
             ``HEAD`` when the tree is clean.
         per_commit: with a range, one compact row per commit (up to 30).
         include: ``"findings"`` (with changed symbols), ``"diagnostics"``,
-            ``"scales"``, ``"evidence"``, ``"tests"`` (why each runs).
+            ``"scales"``, ``"tests"`` (why each runs).
         finding_id: expand one ``health_delta`` finding.
         extensions: file suffixes to count, e.g. ``[".py"]``.
         exclude_patterns, include_paths: gitignore-style paths to omit, keep

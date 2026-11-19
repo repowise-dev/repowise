@@ -26,6 +26,9 @@ export interface WelcomeMomentProps {
   figures: WelcomeFigures;
   /** The busiest file: the risk card's change and an example question. */
   hotspotPath: string | null;
+  /** The least healthy file and a recorded decision, for the first prompts. */
+  worstPath?: string | null;
+  decisionTitle?: string | null;
 }
 
 interface Loaded {
@@ -66,7 +69,15 @@ async function loadExtras(repoId: string, hotspotPath: string | null, needTests:
  * on the server, stores the current version as seen so What's new stays
  * quiet, and takes the session's one interruption.
  */
-export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPath }: WelcomeMomentProps) {
+export function WelcomeMoment({
+  repoId,
+  repoName,
+  fileCount,
+  figures,
+  hotspotPath,
+  worstPath = null,
+  decisionTitle = null,
+}: WelcomeMomentProps) {
   const search = useSearchParams()?.toString() ?? "";
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -98,7 +109,7 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
       years={loaded.years}
       lenses={loaded.lenses}
       setup={loaded.setup}
-      hotspotPath={hotspotPath}
+      promptFacts={{ hotspot: hotspotPath, worst: worstPath, decision: decisionTitle }}
     />
   );
 }

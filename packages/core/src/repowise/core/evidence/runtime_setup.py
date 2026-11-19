@@ -52,33 +52,69 @@ _MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _COMMAND_WORDS = frozenset({"pytest", "python", "py.test"})
 _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run"), ("pipenv", "run"))
 
-# pyinstrument through its API: the ``pyinstrument -r speedscope`` command
-# wrote only import frames on Windows, and its renderer drops most frames
-# unless the filter threshold is 0. The profile is written at exit, so a
-# program that calls ``sys.exit`` is still profiled; the path is fixed before
-# the program runs, so a ``chdir`` does not move it. A run that fails (an
-# uncaught exception, or ``sys.exit`` with a nonzero code) writes no profile
-# and an older one is removed first, so ``evidence add`` has nothing to store;
-# ceiling: a bare ``raise SystemExit(1)``, ``from sys import exit``, or a
-# program that installs its own ``sys.excepthook`` still counts as clean; a
-# failing test fails the suite's run too. Double quotes
-# outside, single inside: one spelling for sh and PowerShell.
+# pyinstrument through its API, sampling every 10 ms (100 Hz, as Go's pprof
+# and py-spy do) and written by the recipe as a sampled speedscope profile:
+# one sample per pyinstrument sample, weighted by the wall time it covered.
+# That keeps the sample count, so every share has an interval, and keeps the
+# file small: the renderer's evented output (no sample count) grew to about
+# 100 MB for a 10-minute run. A frame is pyinstrument's own identifier
+# (``co_name``, file, first line). The path is fixed before the program runs,
+# so a ``chdir`` does not move it, and an older profile is removed first. The
+# profile is written at exit when the run succeeded: no uncaught exception and
+# an outermost exit code in ``{ok}``. Only the program's own exit is judged
+# (``try``/``except SystemExit`` around the run, through ``exec`` since ``-c``
+# is one line), so a ``sys.exit`` a test catches does not fail the run. A run
+# stopped by Ctrl-C still writes what it collected: the interrupt unwinds the
+# program, which exits as usual. SIGTERM (what a timeout sends) writes the
+# profile in the handler, then ends the process with ``os._exit(143)``, so a
+# non-daemon thread or a program that swallows the interrupt cannot keep a
+# timed-out run alive. ``W`` writes once and is named so the run's own
+# ``except ... as e`` cannot unbind it. ``n`` holds the failed-test count a
+# pytest run reports; it lands in the profile as ``testsFailed``. Ceiling: a program that installs its own
+# ``sys.excepthook`` hides its crashes, one that installs its own SIGINT or
+# SIGTERM handler loses the partial profile, and Windows delivers no SIGTERM
+# on a kill. Double quotes outside, single inside: one spelling for sh and
+# PowerShell.
 _PYINSTRUMENT = (
-    "import sys,os,atexit;from pyinstrument import Profiler;"
-    "from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();"
+    "import sys,os,atexit,signal,json;from pyinstrument import Profiler,__version__ as V;"
+    "p=Profiler(interval=0.01);"
     "o=os.path.abspath('{out}');os.makedirs(os.path.dirname(o),exist_ok=True);"
-    "os.path.exists(o) and os.remove(o);f=[];"
+    "os.path.exists(o) and os.remove(o);f=[];c=[0];i=[];n=[];F={{}};"
     "sys.excepthook=(lambda h:lambda *a:(f.append(1),h(*a)))(sys.excepthook);"
-    "x=sys.exit;sys.exit=lambda c=None:(c in (None,0) or f.append(1),x(c));"
-    "atexit.register(lambda:(p.stop(),f or open(o,'w',encoding='utf-8').write("
-    "p.output(SpeedscopeRenderer(processor_options={{'filter_threshold':0}})))));"
-    "p.start();{run}"
+    # chr(36) is ``$``, which sh and PowerShell expand inside double quotes.
+    "w=lambda r:json.dump({{chr(36)+'schema':'https://www.speedscope.app/file-format-schema.json',"
+    "'exporter':'pyinstrument@'+V,'profiles':[{{'type':'sampled','name':'python','unit':'seconds',"
+    "'startValue':0,'endValue':sum(t for _,t in r),"
+    "'samples':[[F.setdefault(x.partition(chr(1))[0],len(F)) for x in k] for k,_ in r],"
+    "'weights':[round(t,6) for _,t in r]}}],"
+    "'shared':{{'frames':[(lambda a:{{'name':a[0],'file':a[1],'line':int(a[2])}})((x.split(chr(0))+['','0'])[:3]) for x in F]}},"
+    "**({{'testsFailed':n[0]}} if n else {{}})}},open(o,'w',encoding='utf-8'),separators=(',',':'));"
+    "W=lambda:(lambda r:(i or not f and c[0] in {ok}) and w(r))(p.stop().frame_records);"
+    "signal.signal(signal.SIGINT,lambda *a:(i.append(1),signal.default_int_handler(*a)));"
+    "signal.signal(signal.SIGTERM,lambda *a:(i.append(1),W(),os._exit(143)));"
+    "atexit.register(W);"
+    "p.start();exec('try:'+chr(10)+' {run}'+chr(10)+'except SystemExit as e:'+chr(10)+' c[0]=e.code;raise')"
+)
+#: Exit codes a profiled run may end with and still be stored. pytest's 1 means
+#: the suite ran and some tests failed: the profile still measured the whole
+#: workload, and the count is recorded. 2 to 5 (interrupted, internal error,
+#: usage error, no tests) and any crash are refused, unless the recipe's own
+#: Ctrl-C or SIGTERM handler saw the run stopped.
+_CLEAN_EXITS = "(None,0)"
+_TEST_EXITS = "(None,0,1)"
+#: How the Python suite recipe may be cut short. A Windows kill delivers no
+#: SIGTERM, so only Ctrl-C is promised everywhere.
+SUBSET_NOTE = (
+    "A subset of the tests is enough: failing tests are fine, and a run stopped with Ctrl-C "
+    "(or SIGTERM, which a timeout sends outside Windows) still writes its profile."
 )
 #: Stands for an entry point's arguments; a shell refuses to run it as printed.
 ARGS_PLACEHOLDER = "<args>"
 _ARGS_REASON = (
     f"Replace {ARGS_PLACEHOLDER} with the arguments of a representative run, then run it; "
-    "with no arguments the program only prints its usage."
+    "with no arguments the program only prints its usage. Replace it in the ingest line's "
+    "workload too, with a short name for those arguments (the subcommand), so runs with "
+    "different arguments keep separate histories."
 )
 
 
@@ -225,6 +261,7 @@ def _target(
     prerequisites: Sequence[str] = (),
     reason: str | None = None,
     timed: str | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     """One runtime target, JSON-ready.
 
@@ -255,6 +292,7 @@ def _target(
         "ingest": ingest,
         "reason": reason,
         **({"timed": timed} if command and timed else {}),
+        **({"note": note} if command and note else {}),
     }
 
 
@@ -293,8 +331,10 @@ def _python_launcher(stack: Stack) -> tuple[str, list[str]]:
     return python, [*stack.requires, f"{python} -m pip install pyinstrument"]
 
 
-def _pyinstrument(launcher: str, out: str, run: str) -> str:
-    return f'{launcher} -c "{_PYINSTRUMENT.format(out=out, run=run)}"'
+def _pyinstrument(launcher: str, out: str, run: str, ok: str = _CLEAN_EXITS) -> str:
+    # *run* sits in a single-quoted literal that ``exec`` reads.
+    quoted = run.replace("\\", "\\\\").replace("'", "\\'")
+    return f'{launcher} -c "{_PYINSTRUMENT.format(out=out, run=quoted, ok=ok)}"'
 
 
 def _python_targets(
@@ -309,9 +349,11 @@ def _python_targets(
 
     def profiled(cls: str, name: str, run: str, extra: Sequence[str] = ()) -> dict[str, Any]:
         workload, profile = _named(root, name, ".speedscope.json")
-        command = _pyinstrument(launcher, _from(root, profile), run)
+        suite = cls == "unit_test"
+        command = _pyinstrument(launcher, _from(root, profile), run, _TEST_EXITS if suite else _CLEAN_EXITS)
         return _target(cls, workload, cwd=cwd, command=command, profile=profile, commit=commit,
-                       input_format="speedscope", prerequisites=[*needs, *extra])
+                       input_format="speedscope", prerequisites=[*needs, *extra],
+                       note=SUBSET_NOTE if suite else None)
 
     for name, (module, function) in sorted(console_scripts(repo_root / root).items()):
         argv = f"sys.argv=['{name}']+sys.argv[1:];"
@@ -334,7 +376,14 @@ def _python_targets(
     if _declares_pytest_benchmark(repo_root, root):
         out.append(_pytest_benchmark(stack, repo_root, commit))
     if stack.test:
-        run = "import pytest;sys.exit(pytest.main(sys.argv[1:]))"
+        # The paths the unit's coverage command runs (``tests/unit`` beside
+        # ``tests/integration``), so the profile never collects slower suites.
+        paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
+        # The plugin keeps the failed count for the profile (``n``).
+        run = (
+            f"import pytest;sys.exit(pytest.main({paths!r}+sys.argv[1:],plugins=[type('R',(),"
+            "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
+        )
         # A launcher outside uv whose installs do not bring pytest installs it here.
         extra = (
             [f"{launcher} -m pip install pytest"]
@@ -540,12 +589,21 @@ def _unit_targets(
 
 
 def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
-    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen."""
+    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen.
+
+    Its ingest line names the workload per arguments (``app <args>``), so an
+    ``init`` run and an ``update`` run of one program never share a history.
+    """
     if target["class"] != "entry_point" or not target["command"]:
         return target
+    ingest = target["ingest"]
+    if ingest:
+        workload = target["workload"]
+        ingest = ingest.replace(f'--workload "{workload}"', f'--workload "{workload} {ARGS_PLACEHOLDER}"')
     return {
         **target,
         "command": f"{target['command']} {ARGS_PLACEHOLDER}",
+        "ingest": ingest,
         "reason": target["reason"] or _ARGS_REASON,
     }
 

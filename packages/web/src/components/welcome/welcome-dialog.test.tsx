@@ -2,12 +2,13 @@
 
 import React from "react";
 import { SWRConfig } from "swr";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupResponse } from "@/lib/api/setup";
 import type { WelcomeLens } from "@/lib/welcome-moment";
 import { WelcomeDialog } from "./welcome-dialog";
 import { showsHostedRow } from "./welcome-step-yours";
+import { TIPS_AFTER_MS } from "./welcome-step-agent";
 
 const mocks = vi.hoisted(() => ({
   connectSetupAgent: vi.fn(),
@@ -84,7 +85,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof WelcomeDialog>>
         years={9}
         lenses={LENSES}
         setup={setup()}
-        hotspotPath="scheduler/planner.py"
+        promptFacts={{ hotspot: "scheduler/planner.py" }}
         {...props}
       />
     </SWRConfig>,
@@ -165,6 +166,24 @@ describe("WelcomeDialog", () => {
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
+  it("tells a connected agent to ask one question, then says what to check after two minutes", () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog();
+      fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+      expect(screen.getByText("Connected. Restart it, then ask it one question about this repo.")).toBeTruthy();
+      expect(screen.queryByText("Not seeing it?")).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(TIPS_AFTER_MS);
+      });
+      expect(screen.getByText("Not seeing it?")).toBeTruthy();
+      expect(screen.getByText(/In Claude Code, run \/mcp/)).toBeTruthy();
+      expect(screen.getByText("repowise doctor")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks before turning sync off, and says what else goes", async () => {
     mocks.setSetupHook.mockResolvedValue({ ok: true, command: "repowise hook uninstall" });
     renderDialog();
@@ -188,7 +207,8 @@ describe("WelcomeDialog", () => {
     const core = screen.getAllByText(/Lists the core repowise tools by default/);
     expect(core).toHaveLength(1);
     expect(core[0]!.closest("li")?.textContent).toContain("Cursor");
-    expect(screen.getByText("How does the main flow in this repo work, end to end?")).toBeTruthy();
+    expect(screen.getByText(/Use Repowise to give me a tour of orbit-api/)).toBeTruthy();
+    expect(screen.getByText(/Before I change scheduler\/planner.py, use Repowise/)).toBeTruthy();
     expect(screen.queryByText(/riskiest/)).toBeNull();
   });
 

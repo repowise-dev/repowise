@@ -10,13 +10,17 @@ import structlog
 from repowise.core.build_units.adapters import (
     Found,
     cargo,
+    dart,
     dotnet,
     go,
     gradle,
     manifest_roots,
     maven,
     npm,
+    pascal,
+    php,
     python,
+    swift,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -35,7 +39,11 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("npm", npm.units),
     ("go", go.units),
     ("maven", maven.units),
+    ("php", php.units),
     ("python", python.units),
+    ("dart", dart.units),
+    ("swift", swift.units),
+    ("pascal", pascal.units),
 )
 
 

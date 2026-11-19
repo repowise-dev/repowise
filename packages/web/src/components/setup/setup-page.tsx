@@ -6,9 +6,11 @@ import { useFormatter, useTranslations } from "next-intl";
 import { Callout } from "@repowise-dev/ui/shared/callout";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
+import { firstPrompts } from "@repowise-dev/ui/onboarding/first-prompts";
 import { tourHref } from "@/lib/tour";
 import { SETTINGS_LINK, SettingsGroup, repoSettingsHref, type SettingsGroupId } from "@/components/settings/settings-groups";
 import type { SetupResponse } from "@/lib/api/setup";
+import { CopyQuestion } from "@/components/welcome/welcome-step-agent";
 import { HostedSetupCard } from "./hosted-setup-card";
 import { SetupRowView, useSetupText } from "./setup-row";
 import { firstCallerName, type SetupRow, type SetupView } from "./setup-rows";
@@ -63,7 +65,7 @@ export function SetupPage({ repoId, repoName }: { repoId: string; repoName: stri
       </SettingsGroup>
     );
   }
-  return <SetupLoaded repoId={repoId} setup={data} view={view} />;
+  return <SetupLoaded repoId={repoId} repoName={repoName} setup={data} view={view} />;
 }
 
 function SetupSkeleton({ label }: { label: string }) {
@@ -83,7 +85,17 @@ function SetupSkeleton({ label }: { label: string }) {
   );
 }
 
-function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResponse; view: SetupView }) {
+function SetupLoaded({
+  repoId,
+  repoName,
+  setup,
+  view,
+}: {
+  repoId: string;
+  repoName: string;
+  setup: SetupResponse;
+  view: SetupView;
+}) {
   const t = useTranslations("setup");
   const format = useFormatter();
   const controls = useSetupControls(repoId);
@@ -110,7 +122,11 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
         }
         onOpenPrompt={() => controls.openRowPrompt(row)}
       >
-        {row.files?.length ? <SkippedFiles files={row.files} /> : null}
+        {row.files?.length ? (
+          <SkippedFiles files={row.files} />
+        ) : row.id === "agent" && row.tone === "waiting" ? (
+          <FirstQuestion repoName={repoName} />
+        ) : null}
       </SetupRowView>
     ));
 
@@ -173,6 +189,20 @@ function RowGroup({
       </div>
       {children}
     </section>
+  );
+}
+
+/** A connected agent that has not called yet: the one question to ask it. */
+function FirstQuestion({ repoName }: { repoName: string }) {
+  const t = useTranslations("setup");
+  const [prompt] = firstPrompts(repoName);
+  return (
+    <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-[var(--color-border-default)] py-1 pl-3 pr-1">
+      <p className="min-w-0 py-1.5 text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+        <span className="font-medium text-[var(--color-text-primary)]">{t("askOne")}</span> {prompt}
+      </p>
+      <CopyQuestion text={prompt!} />
+    </div>
   );
 }
 

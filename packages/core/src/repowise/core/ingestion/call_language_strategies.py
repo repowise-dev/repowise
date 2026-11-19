@@ -251,9 +251,12 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     ),
     # JavaScript has no return types to type the inner call with, so a chain binds nothing.
     "javascript": _LanguageCallStrategies(chain_bare_fallback=False),
-    # Rust types a local or parameter, and walks a `self.field` receiver
-    # through the struct's field declarations.
-    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # Rust walks a module-path receiver (`crate::a::f()`, `super::f()`) down
+    # the module tree, types a local or parameter, and walks a `self.field`
+    # receiver through the struct's field declarations.
+    "rust": _LanguageCallStrategies(
+        member=("_resolve_rust_module_path",), member_fallback=_TYPED_RECEIVER
+    ),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
     # Pascal types a field, parameter or local (``FToast: TToast``); a typed

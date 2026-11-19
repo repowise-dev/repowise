@@ -27,7 +27,8 @@ SETTINGS = (
         "evidence.max_symbols_per_run",
         "int",
         1500,
-        "Most functions stored from one profile, costliest first; the rest are counted.",
+        "Most functions stored from one profile, costliest self time (waits excluded) first; "
+        "the rest are counted.",
         minimum=1,
     ),
     _s(
@@ -58,14 +59,15 @@ SETTINGS = (
         "int",
         10,
         "A measured function is ranked when it is among this many production functions with "
-        "the most inclusive time in its run.",
+        "the most self time in its run (built-ins and libraries it calls included, waits "
+        "excluded).",
         minimum=1,
     ),
     _s(
         "evidence.rank_min_samples",
         "int",
         30,
-        "Fewest samples on a function for it to be ranked; below this the run has not enough "
+        "Fewest self samples on a function for it to be ranked; below this the run has not enough "
         "samples in repo code. Runs that count no samples rank by their order alone.",
         minimum=1,
     ),

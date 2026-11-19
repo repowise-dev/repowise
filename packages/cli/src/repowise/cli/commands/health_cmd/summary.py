@@ -88,11 +88,12 @@ _MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in
 
 
 def _render_measured_costs(view: dict[str, Any] | None) -> None:
-    """What stored runs measured (``crud.measured_costs``), one block per run.
+    """What each workload's newest run measured (``crud.measured_costs``), one
+    block per run.
 
-    Each block opens with its basis and how much of the run production code
-    explains, so a ranked function is never read without its workload.
-    Silent without ranked evidence.
+    Each block opens with its basis and where the run's time went, so a ranked
+    function is never read without its workload. Rows lead with the function's
+    self time, the cost it is ranked by. Silent without ranked evidence.
     """
     from rich.markup import escape
 
@@ -108,13 +109,6 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
             for row in rows:
                 console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
                 console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
-    linked = view.get("on_static_findings") or []
-    if linked:
-        many = len(linked) != 1
-        console.print(
-            f"[dim]{len(linked)} measured function{'s' if many else ''} already "
-            f"{'carry' if many else 'carries'} a static cause, shown with that cause.[/dim]"
-        )
 
 
 def _pct(value: float | None) -> str:
@@ -122,7 +116,10 @@ def _pct(value: float | None) -> str:
 
 
 def _run_basis(run: dict[str, Any]) -> str:
-    """``entry_point "api" at abc1234, 3 days old: repo code explains 11% of 5,300 samples``."""
+    """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
+    libraries 12% of 5,300 samples``."""
+    from repowise.core.evidence.status import split_words
+
     parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
     if run.get("commit"):
         parts.append(f"at {run['commit'][:7]}")
@@ -130,11 +127,14 @@ def _run_basis(run: dict[str, Any]) -> str:
         parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
     basis = ", ".join(parts)
     samples = run.get("samples")
-    of = f" of {samples:,} samples" if samples else " of the run"
-    explained = f"repo code explains {_pct(run.get('explained_share'))}{of}"
+    split = split_words(run)
+    if split is None:
+        where = "time split unknown (stored before it was recorded; add the profile again)"
+    else:
+        where = split + (f" of {samples:,} samples" if samples else " of the run")
     if run.get("ordering_only"):
-        explained += "; traced, so the order counts and no share is given"
-    return f"{basis}: {explained}"
+        where += "; traced, so the order counts and no share is given"
+    return f"{basis}: {where}"
 
 
 def _row_facts(row: dict[str, Any]) -> str:
@@ -143,7 +143,9 @@ def _row_facts(row: dict[str, Any]) -> str:
         interval = ""
         if row.get("share_low") is not None and row.get("share_high") is not None:
             interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
-        parts.append(f"{_pct(row['share'])} of the run{interval}")
+        parts.append(f"self {_pct(row['share'])} of the run{interval}")
+    if row.get("inclusive") is not None:
+        parts.append(f"with callees {_pct(row['inclusive'])}")
     if row.get("samples") is not None:
         parts.append(f"{row['samples']:,} samples")
     callers = row.get("callers_total")
@@ -158,6 +160,8 @@ def _row_facts(row: dict[str, Any]) -> str:
         parts.append(f"nearest test {tests[0]}")
     else:
         parts.append("no test reaches it")
+    if row.get("on_static_findings"):
+        parts.append(f"static cause {', '.join(row['on_static_findings'])}")
     return " · ".join(parts)
 
 

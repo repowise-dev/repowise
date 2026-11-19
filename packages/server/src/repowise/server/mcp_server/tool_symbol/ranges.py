@@ -1,4 +1,4 @@
-"""Live line-range reads: ``path/to/file.py:140-180`` ids."""
+"""Live line-range reads: ``path/to/file.py:140-180`` and ``path/to/file.py:140`` ids."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import WikiSymbol
+from repowise.core.symbol_spans import symbol_at
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
@@ -20,6 +24,7 @@ from repowise.server.mcp_server._meta import completeness_line as _completeness_
 from repowise.server.mcp_server._references import (
     path_identity,
     source_reference,
+    symbol_identity,
 )
 
 from .text import _number_lines, _read_file_text, _slice_text
@@ -30,6 +35,12 @@ from .text import _number_lines, _read_file_text, _slice_text
 # imports, module docstrings, decorators between symbols — without falling
 # back to a whole-file Read.
 _RANGE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)-(?P<end>\d+)$")
+
+# "path/to/file.py:120" (or "path:120:5" with a column), the line a stack
+# trace or editor names. It stands for the innermost indexed symbol holding
+# that line; a line outside every symbol reads the lines around it.
+_LINE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::\d+)?$")
+_LINE_WINDOW = 10
 
 # Range reads are bounded tighter than symbol reads: the caller names exact
 # lines, so a large range is a deliberate choice to cap.
@@ -76,6 +87,9 @@ async def _resolve_range_read(
 
     if end < start:
         start, end = end, start
+    total_lines = len(text.splitlines())
+    if start > max(total_lines, 1):
+        return _err("not_found", f"Line {start} is past the end of {path!r} ({total_lines} lines).")
     requested_end = end
     requested_truncated = (end - start + 1) > _MAX_RANGE_LINES
     if requested_truncated:
@@ -131,6 +145,44 @@ async def _resolve_range_read(
 
     declare_replaced(response, read_credit(repo_root, path, text))
     return response
+
+
+async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
+    """The id a ``path:line`` id stands for, else None for any other id.
+
+    The innermost indexed symbol holding the line, or a range of the lines
+    around it when no symbol does (a file the index lacks, or an excluded one,
+    which the range read then names). A path neither indexed nor on disk is
+    not a location, so it gets None too.
+    """
+    line_match = _LINE_ID_RE.match(symbol_id.strip())
+    if not line_match or "::" in symbol_id:
+        return None
+    path = path_identity(line_match.group("path"))
+    line = int(line_match.group("line"))
+    if ctx.path and not _pkg.is_excluded(path, _get_exclude_spec(ctx.path)):
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
+            res = await session.execute(
+                select(WikiSymbol).where(
+                    WikiSymbol.repository_id == repository.id, WikiSymbol.file_path == path
+                )
+            )
+            rows = res.scalars().all()
+        # Neither indexed nor on disk: a "name:12" id, not a location, so the
+        # symbol lookup answers it with its not-found suggestions.
+        if not rows and not (Path(str(ctx.path)) / path).is_file():
+            return None
+        # A row with no recorded position never owns a line.
+        owner = symbol_at((r for r in rows if r.start_line > 0), line)
+        if owner is not None:
+            return symbol_identity(owner.symbol_id)
+        text = _read_file_text(Path(str(ctx.path)), path)
+        if text is not None and line > len(text.splitlines()):
+            # Past the end: the range read refuses the line itself rather than
+            # serving the file's last lines in its place.
+            return f"{path}:{line}-{line}"
+    return f"{path}:{max(1, line - _LINE_WINDOW)}-{line + _LINE_WINDOW}"
 
 
 async def _range_id_read(symbol_id: str, context_lines: int, ctx: Any, t0: float) -> dict | None:

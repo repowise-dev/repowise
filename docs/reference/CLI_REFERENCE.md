@@ -469,8 +469,8 @@ repowise search "rate limit" --all              # workspace, fan-out
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `fulltext` |
-| `--limit` | Max results. | `10` |
+| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `auto` |
+| `--limit` | Max results. | `5` |
 | `--all` | Every workspace repo, merged. | off |
 
 Plus `--repo`, `--no-workspace`, `--format` and `--full` as in the [shared options](#shared-options-ask-context-symbol-why).
@@ -478,8 +478,8 @@ Plus `--repo`, `--no-workspace`, `--format` and `--full` as in the [shared optio
 - `search_codebase` retrieval: full-text and vector fused, excludes and tombstones honoured, decision / test pages demoted unless asked for.
 - `fulltext` and `semantic` both run the fused `concept` search; without an embedder the vector leg drops and `--mode
   semantic` says so. `auto` routes identifier to symbol, path to files, prose to concept, mixed to `hybrid`.
-- Hits: `score`, `title`, `page_type`, `path`, `snippet`, plus `candidates` (openable files). Symbol hits add `name`,
-  `qualified_name`, `kind`, `line`, `symbol_id`. Synthesized answers: `repowise ask`.
+- Hits: `score`, `title`, `page_type`, `path`, `snippet`, plus `candidates` (openable files). Symbol hits carry `name`,
+  `kind`, `path`, `line`, `symbol_id` and no `score` (their order is the rank). Synthesized answers: `repowise ask`.
 
 ---
 
@@ -515,7 +515,7 @@ repowise context src/api/routes.py::login --include callers --include metrics
 |------|--------------|---------|
 | `--include` | Opt-in block, repeatable; values below. | |
 | `--no-compact` | Add structure, imports, docstrings. | off |
-| `--symptom` | Issue text, error or stack trace for `--include suspects`. | |
+| `--symptom` | Issue text, error or stack trace to rank suspects against; adds `--include suspects`. | |
 
 Plus the [shared options](#shared-options-ask-context-symbol-why).
 
@@ -1190,6 +1190,7 @@ Ingest coverage reports and gate a change on patch coverage in CI.
 repowise coverage setup                 # how to write a report here (`evidence setup`, coverage part)
 repowise coverage add [PATHS...]        # ingest (+ per-test map when contexts exist)
 repowise coverage status                # ingested coverage + "Test-to-code map" counts
+repowise coverage export [REPORT] [-o FILE]  # the per-test map as gzipped JSON, for upload from CI
 repowise coverage check [REVSPEC]       # gate a change on patch coverage (CI)
 repowise coverage suggest-gates
 repowise coverage add web.lcov api.lcov          # merged, hit wins
@@ -1219,6 +1220,9 @@ repowise coverage add .coverage                  # per-test map
 - *Test-to-code map* (which test covers which lines: "which tests exercise this change"): from a context-recorded
   `.coverage` or per-test lcov; without contexts, per-file only. Separate from the per-file aggregate and `health`.
   `.coverage` lacks executable lines, so gives only this map; `coverage lcov` exports per-file data.
+- `export`: writes the stored map, or with `REPORT` (a `.coverage` with contexts or a per-test lcov) that report's
+  map with no index needed, to `-o` (default `per-test-map.json.gz`) in the stored layout, format
+  `repowise-test-map-v1`: a few MB where the raw `.coverage` is too big to send. Exits 1 when there is no map.
 
 #### `repowise coverage check [REVSPEC]`
 
@@ -1392,8 +1396,10 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
   A benchmark or test is kept without its function instead, counted under `unlinked`.
 - A converted profile joins frames only under `--checkout-root`, each checked by a second signal,
-  and prints how much of the run repo code explains and the share of repo frame time skipped, by
-  reason. The JSON payload carries the same under `conversion`.
+  and prints where the run's time went (production repo code itself, waits such as event-loop
+  selects, joins and sleeps, and libraries) and the share of repo frame time skipped, by reason.
+  Functions are stored and ranked by self time, waits excluded. The JSON payload carries the same
+  under `conversion`.
 - Evidence from another commit than HEAD is stored with its commit and reads as stale; it is never
   re-mapped. The same file added again with the same flags against the same index restamps the
   stored run; after `repowise update` it is joined afresh.
@@ -1404,9 +1410,9 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   one document either way.
 - `status` lists the newest run of each workload (kind, name, environment) and how many runs each
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
-  `unknown` when either commit is missing), how much of the run repo code explains
-  (`explained_share`, unknown when the run gave no total or explained value, or a total of 0),
-  and its counts.
+  `unknown` when either commit is missing), where its time went (`repo_self_share`,
+  `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
+  total), and its counts.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
