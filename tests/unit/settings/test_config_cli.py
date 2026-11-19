@@ -279,6 +279,17 @@ def test_set_then_its_undo_returns_the_file_to_its_bytes(repo, start, key, value
         assert path.read_bytes() == original
 
 
+def test_undo_of_a_value_starting_with_a_dash_runs(repo):
+    _write_config(repo, {"mcp": {"tools": ["-get_why"]}})
+    out = _json(repo, "set", "mcp.tools", "core")
+    path = shlex.quote(str(repo))
+    assert out["undo"] == [f"repowise config set mcp.tools --path {path} -- -get_why"]
+    # Run as written: the value after "--" is not read as an option.
+    result = CliRunner().invoke(cli, shlex.split(out["undo"][0])[1:])
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["mcp"]["tools"] == ["-get_why"]
+
+
 def test_set_then_reset_on_a_file_without_the_key_restores_its_bytes(repo):
     from repowise.core.repo_config import save_repo_config
 

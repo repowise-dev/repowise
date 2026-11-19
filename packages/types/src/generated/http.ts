@@ -3012,6 +3012,25 @@ export interface KnowledgeMatrixResponse {
   files: ([number, string, number, number | null, boolean, number, number | null, [number, number][], boolean])[];
 }
 
+/** One agent's MCP config for a repo, as ``repowise agents print-config`` prints it. */
+export interface McpClientConfigResponse {
+  repo_id: string;
+  clients: McpClientRef[];
+  target: string;
+  display_name: string;
+  config: string;
+  docs_url?: string | null;
+  profile?: string | null;
+  tool_count: number;
+  always_load?: boolean | null;
+}
+
+/** An agent repowise can print an MCP config for. */
+export interface McpClientRef {
+  id: string;
+  display_name: string;
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -3047,6 +3066,7 @@ export interface McpToolSurfaceResponse {
   profile?: string | null;
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
+  command?: string;
 }
 
 export interface ModuleEdgeResponse {
