@@ -55,7 +55,7 @@ repowise mcp --transport sse --port 7338  # legacy SSE transport
 
 That default is what Claude Code is listed: it loads a tool's schema only when the model asks for it, so a larger surface costs only the tool names each turn. Every other client (Codex, Cursor, VS Code and Copilot, OpenCode, Windsurf, Kiro, Hermes, and any client that announces a name repowise does not recognise) sends every listed schema with every request, so with nothing configured it is listed the `core` profile instead. The server reads the client's name from the MCP handshake.
 
-**The `core` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase` and `get_why`, plus `list_repos` in workspace mode: about 1,800 tokens of schema against about 4,200 for the standard set.
+**The `core` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase` and `get_why`, plus `list_repos` in workspace mode: about 1,400 tokens of schema against about 3,300 for the standard set.
 
 **The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean` (or `core`), `repowise init` skips the Claude Code tool-search recommendation.
 
@@ -122,6 +122,10 @@ Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools
 
 A value outside a closed vocabulary (a misspelled `kind`, `include` key or `mode`) is dropped, never applied as a filter matching nothing, and named in `ignored_arguments` with the valid values. [Per-tool shapes](../reference/MCP_RESPONSE_FIELDS.md#ignored-arguments).
 
+### Parameters accepted but not advertised
+
+A parameter marked "Accepted, not advertised" below is left out of the schema `tools/list` sends, since hosts re-send that schema on every turn, and agents rarely pass it. The server still validates and applies it when a call passes it.
+
 ---
 
 ## Which tool for which question
@@ -183,8 +187,8 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
 | `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `facts`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
-| `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
-| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
+| `compact` | bool | `true` | `false` adds the structure block, imports and docstrings. Accepted, not advertised |
+| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words. Accepted, not advertised |
 | `repo` | string | default repo | `"all"` returns an error |
 
 Target kinds:
@@ -210,10 +214,10 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max) or `"repowise#<ref>"` |
+| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max), `"path/file.py:140"` (the innermost symbol holding line 140, else lines 130 to 150; a trailing `:column` is ignored) or `"repowise#<ref>"`. A bare file path returns the file's top-level symbol names (15 max) to pass back as `"path/file.py::<name>"` |
 | `id` | string | none | Alias for `symbol_id` |
-| `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged |
-| `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
+| `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged. Accepted, not advertised |
+| `context_lines` | int | `0` | Extra lines before and after, 0 to 50. Accepted, not advertised |
 | `depth` | int | `1` | 2 or 3 adds the bodies it calls, transitively |
 | `query` | string | none | Omission refs: keep lines matching this regex or substring. Read as `symbol_id` when none is given |
 | `repo` | string | default repo | `"all"` not supported |
@@ -234,12 +238,12 @@ Hybrid search routed by query shape: identifiers hit the symbol index, paths res
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
-| `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments` |
+| `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments`. Accepted, not advertised |
 | `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Symbol filter, e.g. `function`, `class`, `method` |
-| `page_type` | string | none | One page type, usually `file_page` or `module_page` |
+| `page_type` | string | none | One page type, usually `file_page` or `module_page`. Accepted, not advertised |
 | `repo` | string | default repo | Or `"all"` for every repo |
 
 **Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
@@ -312,7 +316,7 @@ Why code is shaped as it is: decision records, falling back to git archaeology a
 | `query` | string | none | A question or a path. Omit for the decision health dashboard |
 | `targets` | list[string] | none | Paths to anchor a question to, or to ask about alone |
 | `id` | string | none | A decision id or `ev_...` evidence id from an earlier response |
-| `reference` | object | none | An evidence reference this tool emitted, unchanged |
+| `reference` | object | none | An evidence reference this tool emitted, unchanged. Accepted, not advertised |
 | `repo` | string | default repo | Or `"all"`, only with a `query` |
 
 Modes: a question searches decisions; a path (or `targets` alone) returns the rules in force (`decisions`), then at most two background records (`candidates`, labelled as not binding), and stops; `include=["history"]` adds the origin story, `alignment`, withdrawn records (`history`), git archaeology, rationale comments and episodes. A path that was renamed or split into a package is answered at its new location, with `moved_from` naming the old one. `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots). With `decisions.mode: off` every call returns `{"decisions": "off", "note": "Decisions are off for this repository."}` and reads nothing.
@@ -354,7 +358,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`; misses go to `unresolved` |
-| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance`, `defect`, `maintainability`, `advisory` |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance` (also adds `performance_measured`, what stored profiles ranked), `defect`, `maintainability`, `advisory` |
 | `only` | list[string] | none | Keep these top-level keys; identity, totals and recovery always survive |
 | `limit` | int | `20` | Rows per ranked list, max 50; `0` for none |
 | `cursor` | int | `0` | Offset into a ranked list (or `fix_first` when named in `only`); `recovery` names the next call |
@@ -391,6 +395,7 @@ get_health(fix_id="act_...")
 get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"], limit=10)
 get_health(include=["coverage"], only=["coverage"])
 ```
 

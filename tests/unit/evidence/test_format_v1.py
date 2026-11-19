@@ -27,6 +27,7 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
             tool={"name": "pyinstrument", "version": "4.6.2"},
             total=5300,
             explained=580,
+            total_samples=5300,
             skipped={"outside_repo": 812, "vendored": 3},
             symbols=[
                 {"path": "src/app/cli.py", "function": "build", "line": 40, "self": 12,
@@ -38,6 +39,8 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
     assert (doc.kind, doc.commit_sha, doc.dirty) == ("profile", SHA, False)
     assert (doc.tool_name, doc.tool_version) == ("pyinstrument", "4.6.2")
     assert (doc.value_kind, doc.unit, doc.total, doc.explained) == ("wall", "samples", 5300, 580)
+    assert doc.total_samples == 5300
+    assert parse_evidence(_doc(symbols=[], total_samples=-1)).total_samples is None
     assert doc.skipped == {"outside_repo": 812, "vendored": 3}
     assert doc.units_total == 817
     first, second = doc.entries

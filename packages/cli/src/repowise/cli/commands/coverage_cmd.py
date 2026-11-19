@@ -422,6 +422,22 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     return [default] if default.is_file() else []
 
 
+@coverage_group.command("setup")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
+@format_option()
+def coverage_setup(repo: str | None, fmt: str) -> None:
+    """Print how to collect coverage here (the coverage part of `evidence setup`).
+
+    Per build unit: the test command with coverage, what it needs first, where
+    the report lands and the exact `repowise coverage add` line. Writes nothing.
+    """
+    from repowise.cli.commands.evidence_cmd import _print_setup
+
+    _print_setup(repo, fmt, coverage_only=True)
+
+
 @coverage_group.command("status")
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."

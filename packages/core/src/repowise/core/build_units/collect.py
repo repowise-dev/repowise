@@ -16,6 +16,8 @@ from repowise.core.build_units.adapters import (
     manifest_roots,
     maven,
     npm,
+    pascal,
+    php,
     python,
     swift,
 )
@@ -36,8 +38,10 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("npm", npm.units),
     ("go", go.units),
     ("maven", maven.units),
+    ("php", php.units),
     ("python", python.units),
     ("swift", swift.units),
+    ("pascal", pascal.units),
 )
 
 

@@ -17,6 +17,8 @@ _BLOCK_STOP = re.compile(r"/\*|\*/")
 _RAW_BACKTICK_STOP = re.compile("`")
 _INTERPOLATED_STOP = re.compile(r'[{}"\\]')
 _INTERPOLATED_VERBATIM_STOP = re.compile(r'[{}]|"')
+_VERBATIM_STRING_STOP = re.compile(r'""|"')
+_RUST_CHAR_LITERAL = re.compile(r"'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.))'")
 # Languages whose block comments nest, and Go, whose backtick string is raw: a
 # backslash there is a character, not an escape.
 _NESTED_COMMENT_SUFFIXES = (".kt", ".kts", ".scala", ".sc", ".swift", ".rs", ".dart")
@@ -29,6 +31,8 @@ def mask_dialect(file_path: str) -> dict[str, bool]:
     return {
         "nested_comments": lowered.endswith(_NESTED_COMMENT_SUFFIXES),
         "raw_backticks": lowered.endswith(_RAW_BACKTICK_SUFFIXES),
+        "verbatim_strings": lowered.endswith(".cs"),
+        "lifetimes": lowered.endswith(".rs"),
     }
 
 
@@ -55,12 +59,15 @@ def mask_comments_and_strings(
     nested_comments: bool = False,
     raw_backticks: bool = False,
     hash_comments: bool = True,
+    verbatim_strings: bool = False,
+    lifetimes: bool = False,
 ) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
-    one does not open a comment. Newlines are never blanked. *nested_comments*
-    and *raw_backticks* come from :func:`mask_dialect`; *hash_comments* false
+    one does not open a comment. Newlines are never blanked. *nested_comments*,
+    *raw_backticks*, *verbatim_strings* and *lifetimes* come from
+    :func:`mask_dialect`; *hash_comments* false
     keeps a ``#`` line, which is code in C, Rust, C# or Swift (``#include``).
     """
     out: list[str] = []
@@ -94,6 +101,16 @@ def mask_comments_and_strings(
             state = "code"
             continue
         if state in {"string", "template"}:
+            if state == "string" and verbatim and quote == '"':
+                match = _VERBATIM_STRING_STOP.search(source, i)
+                stop = size if match is None else match.end()
+                if strings:
+                    blank(i, stop)
+                i = stop
+                if match is not None and match.group() == '"':
+                    state = "code"
+                    verbatim = False
+                continue
             pattern = (
                 _STRING_STOP[quote * (3 if triple else 1)]
                 if state == "string"
@@ -221,6 +238,16 @@ def mask_comments_and_strings(
             i += 1
             state = "template"
         elif char in {"'", '"'}:
+            if lifetimes and char == "'":
+                char_lit = _RUST_CHAR_LITERAL.match(source, i)
+                if char_lit is not None:
+                    if strings:
+                        blank(i, char_lit.end())
+                    i = char_lit.end()
+                else:
+                    # Rust lifetime ('a, 'static, '_) or loop label ('outer:).
+                    i += 1
+                continue
             quote = char
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
@@ -232,6 +259,8 @@ def mask_comments_and_strings(
                     verbatim = True
                 elif source.endswith("$", 0, i):
                     is_interpolated = True
+                elif verbatim_strings and source.endswith("@", 0, i):
+                    verbatim = True
             if strings:
                 blank(i, i + width)
             i += width

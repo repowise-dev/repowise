@@ -45,6 +45,8 @@ _PACKAGE_DEP_RE = re.compile(
     re.DOTALL,
 )
 _URL_RE = re.compile(r'url\s*:\s*"[^"]*"')
+# Strings first, so a "//" inside one is not taken for a comment.
+_STRING_OR_COMMENT_RE = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|//[^\n]*|/\*[\s\S]*?\*/')
 
 
 class SwiftPackage(NamedTuple):
@@ -54,14 +56,16 @@ class SwiftPackage(NamedTuple):
     path_deps: tuple[str, ...]
 
 
-def _strip_whole_line_comments(text: str) -> str:
-    """Remove lines whose stripped content starts with ``//``.
+def _strip_comments(text: str) -> str:
+    """Remove ``//`` line comments and ``/* */`` blocks outside string literals.
 
-    This prevents commented-out ``.package(path: ...)`` lines from being
-    picked up. In-line comments and URLs containing ``//`` are left alone.
+    This keeps commented-out ``.package(path: ...)`` calls from being picked
+    up while a ``//`` inside a string (``"https://..."``) survives. Strings are
+    ``"..."`` with backslash escapes and triple-quoted multi-line literals.
+    Nested block comments and raw ``#"..."#`` strings are not special-cased.
     """
-    return "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("//")
+    return _STRING_OR_COMMENT_RE.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else " ", text
     )
 
 
@@ -78,7 +82,7 @@ def parse_package_manifest(path: Path) -> SwiftPackage | None:
     except (OSError, UnicodeDecodeError):
         return None
 
-    text = _strip_whole_line_comments(text)
+    text = _strip_comments(text)
 
     # Package name must be the FIRST argument of Package(.
     name_match = _PACKAGE_NAME_RE.search(text)

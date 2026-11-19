@@ -14,11 +14,16 @@ FLAVORS: tuple[str, ...] = get_args(Flavor)
 
 _INDEX = "Repowise, a code-intelligence index, "
 
+#: Who the agent is, alone. ``packages/ui`` mirrors it as ``REPO_ROLE``.
+ROLE: dict[str, str] = {
+    "generic": "You are a senior engineer in this repository.",
+    "claude-code": "You are Claude Code in this repository.",
+    "claude-code-mcp": "You are Claude Code in this repository, which Repowise indexes and serves over MCP.",
+    "cursor": "Work in this repository.",
+}
+
 _WHO: dict[str, str] = {
-    "generic": "You are a senior engineer in this repository. " + _INDEX,
-    "claude-code": "You are Claude Code in this repository. " + _INDEX,
-    "claude-code-mcp": "You are Claude Code in this repository, which Repowise indexes and serves over MCP. ",
-    "cursor": "Work in this repository. " + _INDEX,
+    flavor: f"{role} " + ("" if flavor == "claude-code-mcp" else _INDEX) for flavor, role in ROLE.items()
 }
 
 OPENINGS: dict[str, dict[str, str]] = {

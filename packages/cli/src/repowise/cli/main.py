@@ -89,6 +89,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("why", "why_cmd:why_command"),
     ("distill", "distill_cmd:distill_command"),
     ("expand", "expand_cmd:expand_command"),
+    ("perf", "perf_cmd:perf_group"),
     ("saved", "saved_cmd:saved_command"),
     ("savings", "savings_cmd:savings_group"),
     ("security", "security_cmd:security_command"),

@@ -39,8 +39,8 @@ export function priorityLabel(priority: ReviewPriority): string {
 }
 
 /**
- * Review-priority pill. The priority is **repo-relative** (where the commit
- * sits in its own repo's risk distribution), not the absolute calibration band
+ * Size-and-spread pill. The priority is **repo-relative** (where the commit
+ * sits in its own repo's diff-size distribution), not an absolute danger score
  * — so it stays meaningful on repos whose typical commit is large.
  */
 export function PriorityBadge({
@@ -57,7 +57,7 @@ export function PriorityBadge({
         STYLES[priority],
         className,
       )}
-      title="Review priority relative to this repo's own commit-risk distribution"
+      title="Size and spread relative to this repo's own commit distribution"
     >
       <span
         aria-hidden

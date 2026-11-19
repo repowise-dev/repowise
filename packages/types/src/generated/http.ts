@@ -2455,6 +2455,7 @@ export interface FixVerify {
   command: string | null;
   basis: "measured" | "inferred" | "unknown";
   prerequisite?: string | null;
+  measure?: Record<string, unknown> | null;
 }
 
 /** Optional per-call provider/model overrides, as chat accepts. */

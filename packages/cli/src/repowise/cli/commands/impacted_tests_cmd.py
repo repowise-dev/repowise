@@ -198,6 +198,7 @@ async def _collect(
             indexed_commit=repo_row.head_commit if repo_row else None,
             read_source=checkout.read,
             scope_groups=plan.groups if plan else None,
+            project_dirs=plan.project_dirs if plan else None,
         )
         return await _decide(session, repo_id, out, *decide)
 
