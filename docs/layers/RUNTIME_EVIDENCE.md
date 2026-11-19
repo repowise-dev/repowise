@@ -312,8 +312,8 @@ The format is detected from the content, never the file name;
   A failed top-level benchmark is counted under `skipped` as `failed`; output with no
   result line is refused. Text that PowerShell 5 redirected (UTF-16) reads
   the same. Custom metrics (`MB/s`, `b.ReportMetric`) are not read. A
-  benchmark that logs while it runs splits its result line in the text
-  output; `-json` output keeps it whole.
+  result that a benchmark's own printing split over two lines is joined
+  back.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
 
 ## The `repowise-evidence-v1` document
