@@ -892,7 +892,14 @@ def _file_sites(
             continue
         is_def = not def_seen and def_start <= n <= def_end
         def_seen = def_seen or is_def
-        kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
+        calls = _calls_here(text, hits, n, graph_calls, live) or (
+            # Where the file's own class defines that member, a call may be either.
+            judge.member
+            and not judge.own
+            and not is_def
+            and _member_call(text, hits, n, prose, PurePosixPath(rel).suffix in _SCOPED_EXTENSIONS)
+        )
+        kind = _line_kind(is_def, n in imports, calls)
         if kind == "import" and prose(n, hits):
             kind = "reference"  # ``import`` opening a docstring sentence
         elif kind == "reference" and prose.in_string(n, hits):
@@ -911,6 +918,46 @@ def _calls_here(
     if live:
         return any(_CALL_AFTER.match(text, m.end()) for m in hits)
     return n in graph_calls
+
+
+# A member named on a receiver: ``obj.name``, ``obj?.name``, ``ptr->name``; not the
+# last dot of a spread (``...name``) or a range (``..name``).
+_RECEIVER_BEFORE = re.compile(r"(?:\?\.|(?<!\.)\.|->)\s*$")
+# ``Type::name`` in a language whose ``::`` is a scope operator; not a bare
+# ``::name`` (C++ global scope).
+_SCOPED_BEFORE = re.compile(r"(?<=[\w>)\]])::\s*$")
+#: Languages whose ``::`` scopes a name; elsewhere it is a slice step
+#: (``rows[n::name(2)]``) or a method reference, never a receiver.
+_SCOPED_EXTENSIONS = REGISTRY.extensions_for(("c", "cpp", "rust", "php", "ruby", "perl"))
+
+
+def _member_call(
+    text: str, hits: list[re.Match[str]], n: int, prose: _ProseLines, scoped: bool
+) -> bool:
+    """Whether line *n* calls the member on a receiver, in code; a ``::``
+    receiver counts only where *scoped*.
+
+    The graph binds a method call only when it can type the receiver, so a
+    call on a parameter, fixture or attribute of unknown type has no call
+    line; the line is in the set already, and the text shows the call.
+    """
+    return any(
+        (
+            _RECEIVER_BEFORE.search(text, 0, m.start())
+            or (scoped and _SCOPED_BEFORE.search(text, 0, m.start()))
+        )
+        and _CALL_AFTER.match(text, m.end())
+        and not _DEFINED_BEFORE.search(text, 0, m.start())
+        and prose.is_code(n, m)
+        for m in hits
+    )
+
+
+# A definition written on a receiver: ``def self.name(``, ``fun <T> List<T>.name(``,
+# where only a type follows the keyword, so ``for sub in subs: sub.name(`` is a call.
+_DEFINED_BEFORE = re.compile(
+    r"\b(?:def|fun|func|function|fn|sub)\s+(?:<[^>]*>\s*)?(?:<[^>]*>|[\w$.?*&\[\]:>])*$"
+)
 
 
 def _line_kind(is_def: bool, is_import: bool, in_graph: bool) -> str:
