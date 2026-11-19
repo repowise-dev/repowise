@@ -35,6 +35,8 @@ async def test_freshness_block_reads_the_newest_coverage_and_run(async_session) 
     assert (cov["present"], cov["commit_sha"], cov["age_days"], cov["freshness"]) == (
         True, "head", 2, "current"
     )
-    # The newest run decides, even when an older one measured HEAD.
-    assert (rt["commit_sha"], rt["age_days"], rt["freshness"], rt["runs"]) == ("old", 3, "stale", 2)
+    # A run at HEAD decides, even when another commit's run was ingested later.
+    assert (rt["commit_sha"], rt["age_days"], rt["freshness"], rt["runs"]) == ("head", 9, "current", 2)
+    other = (await load_evidence_freshness(async_session, rid, "newer", now=now))["runtime"]
+    assert (other["commit_sha"], other["freshness"]) == ("old", "stale")
     assert rt["ingested_at"].endswith("+00:00")

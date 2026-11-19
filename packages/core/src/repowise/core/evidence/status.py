@@ -147,7 +147,9 @@ async def load_evidence_freshness(
         if ingest is not None
         else dict(ABSENT)
     )
-    runs, newest = await newest_evidence_run(session, repository_id)
+    runs, newest = await newest_evidence_run(
+        session, repository_id, prefer_commit=reference_commit
+    )
     runtime = (
         freshness_entry(newest.commit_sha, newest.ingested_at, reference_commit, now)
         if newest is not None
