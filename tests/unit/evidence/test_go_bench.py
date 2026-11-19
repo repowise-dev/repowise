@@ -101,6 +101,8 @@ def test_repeats_keep_the_fewest_allocations_and_a_shared_procs_suffix_is_droppe
 @pytest.mark.parametrize("results", [
     # GOMAXPROCS=1 prints no suffix: a sub-benchmark's own dash is its name.
     ("BenchmarkJoin/size-64  10  1 ns/op", "BenchmarkJoin/size-128  10  1 ns/op"),
+    # A lone sub-benchmark: nothing shows its -64 is GOMAXPROCS.
+    ("BenchmarkJoin/size-64  10  1 ns/op",),
     # -cpu 1,4: one series per procs value.
     ("BenchmarkJoin/size-64  10  1 ns/op", "BenchmarkJoin/size-64-4  10  1 ns/op"),
 ])
@@ -148,3 +150,23 @@ def test_only_a_format_that_asks_gets_the_checkout(monkeypatch: pytest.MonkeyPat
         b"x", name="f", checkout_root=FIXTURE, commit="a" * 40, input_format_name="one-arg"
     )
     assert prepared.doc is not None and [e["name"] for e in prepared.doc.entries] == ["b"]
+
+
+def test_a_sub_benchmarks_procs_suffix_needs_a_witness() -> None:
+    # -v (and -json) print each name without the suffix on its === RUN line.
+    verbose = _lines("=== RUN   BenchmarkJoin/size-64", "BenchmarkJoin/size-64-8  10  1 ns/op")
+    assert [e["name"] for e in _convert(verbose)] == [f"{PKG}.BenchmarkJoin/size-64"]
+    # A top-level result is a witness too: a Go identifier holds no "-".
+    top = _lines("BenchmarkA-8  10  1 ns/op", "BenchmarkJoin/size-64-8  10  1 ns/op")
+    assert [e["name"] for e in _convert(top)] == [f"{PKG}.BenchmarkA", f"{PKG}.BenchmarkJoin/size-64"]
+
+
+def test_a_failed_sub_benchmark_counts_once_with_its_parent() -> None:
+    data = _lines(
+        "--- FAIL: BenchmarkBroken",
+        "    --- FAIL: BenchmarkBroken/n=1",
+        "    --- FAIL: BenchmarkBroken/n=2",
+        "BenchmarkJoin-8  1000  50 ns/op",
+    )
+    doc = parse_evidence(json.dumps(profile_formats.get("go-bench").to_v1(data, FIXTURE)))
+    assert doc.skipped == {"failed": 1}
