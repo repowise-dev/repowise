@@ -1046,7 +1046,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
@@ -1408,9 +1408,14 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
+        or run.config.generation_changed
         or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
@@ -1586,7 +1591,11 @@ def _working_tree_only(run: UpdateRun) -> bool:
         run.working_tree_diffs
         and run.head
         and run.head == run.base_ref
-        and not (run.config.health_changed or run.full_generation or rework_pending(run))
+        and not (
+            run.config.health_changed
+            or run.full_generation
+            or rework_pending(run)
+        )
     )
 
 

@@ -31,13 +31,16 @@ def retain_stale_buckets(
     A deferred-docs run finishes the traversal, git and health work a config
     edit asked for but not the page generation; stamping those buckets while
     leaving ``generation`` at its stored hash is what makes the next run see
-    exactly the unfinished work.
+    exactly the unfinished work. A stale bucket with no stored hash (legacy
+    state, or a bucket the old index never tracked) is stamped with an empty
+    sentinel so it still reads as changed instead of being stamped current.
     """
-    if not stale or not isinstance(stored, dict):
+    if not stale:
         return current
+    stored_map = stored if isinstance(stored, dict) else {}
     return {
         **current,
-        **{bucket: stored[bucket] for bucket in stale if bucket in stored},
+        **{bucket: stored_map.get(bucket, "") for bucket in stale},
     }
 
 
