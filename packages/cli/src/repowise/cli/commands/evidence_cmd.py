@@ -71,8 +71,7 @@ def evidence_group() -> None:
 @click.option(
     "--commit",
     default=None,
-    help="The full SHA measured. Defaults to the file's commit_sha; required for a "
-    "converted file.",
+    help="The full SHA measured. Defaults to the file's commit_sha; required for a converted file.",
 )
 @click.option(
     "--checkout-root",
@@ -112,7 +111,9 @@ def evidence_group() -> None:
     default=False,
     help="Store the run even when more than half its entries did not map (flagged partial).",
 )
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
@@ -134,10 +135,10 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
     results as the tool wrote them (Speedscope JSON, Go pprof, V8 .cpuprofile,
-    collapsed stacks, pytest-benchmark or hyperfine JSON), detected from its
-    content. Several profiles (a parent process and its workers, or a directory
-    holding one file per process) merge into one run; they must share a format,
-    unit, tool and clock.
+    collapsed stacks, Python cProfile/pstats, pytest-benchmark or hyperfine JSON),
+    detected from its content. Several profiles (a parent process and its workers,
+    or a directory holding one file per process) merge into one run; they must
+    share a format, unit, tool and clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it.
     A profile's frames join to the indexed functions only under the checkout
@@ -308,10 +309,31 @@ async def _store(
     return payload
 
 
+
+
+def _ordering_skipped_summary(summary: dict[str, Any]) -> str:
+    """Format skipped repo frames summary for an ordering-only conversion."""
+    skipped_counts = {
+        r: c for r, c in summary.get("skipped", {}).items() if r != "outside_repo"
+    }
+    if not skipped_counts:
+        return "all repo frames resolved" if summary.get("symbols") else "no repo frames"
+    reasons = ", ".join(
+        f"{r} ({c})" if c > 1 else r for r, c in sorted(skipped_counts.items())
+    )
+    total_skipped = sum(skipped_counts.values())
+    suffix = "s" if total_skipped != 1 else ""
+    return f"{total_skipped} repo frame{suffix} skipped ({reasons})"
+
+
 def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
+    if summary.get("total") is None:
+        skipped = _ordering_skipped_summary(summary)
+        notices.print(f"Converted {escape(name)}: ordering of functions only; {skipped}.")
+        return
     rate = summary["skip_rate"]
     split = split_words(summary) or "repo code itself unknown"
     skipped = "no repo frames" if rate is None else f"{rate:.0%} of repo frame time skipped"
@@ -343,8 +365,8 @@ def _warn_short_run(
     per = _SECONDS.get(summary["unit"])
     if workload_class != "entry_point" or value_kind != "wall" or per is None:
         return
-    seconds = summary["total"] * per
-    if seconds >= _SHORT_RUN_S:
+    seconds = summary["total"] * per if summary.get("total") is not None else None
+    if seconds is None or seconds >= _SHORT_RUN_S:
         return
     notices.print(
         f"[yellow]This entry point's profile covers {seconds:.1f} s: a run "
@@ -399,7 +421,9 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
 
 
 @evidence_group.command("setup")
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @format_option()
 def evidence_setup_command(repo: str | None, fmt: str) -> None:
     """Print how to collect evidence here; run nothing, write nothing.
@@ -549,7 +573,9 @@ async def _index_read_error(repo_path: Path) -> str | None:
 
 
 @evidence_group.command("status")
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @format_option()
 def evidence_status_command(repo: str | None, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
@@ -604,8 +630,10 @@ def _status_line(run: dict[str, Any]) -> str:
     )
 
 
-def _total(value: float) -> str:
+def _total(value: float | None) -> str:
     """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    if value is None:
+        return "unknown"
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 

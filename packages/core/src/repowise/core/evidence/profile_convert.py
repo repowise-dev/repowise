@@ -42,7 +42,7 @@ function is on every stack.
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -198,10 +198,10 @@ class ProfileConversion:
 
     document: dict[str, Any]
     unit: str
-    #: The run's whole weight, empty stacks included.
-    total: float
-    #: Weight on stacks with a resolved production frame.
-    explained: float
+    #: The run's whole weight, empty stacks included; None when ordering only.
+    total: float | None
+    #: Weight on stacks with a resolved production frame; None when ordering only.
+    explained: float | None
     #: Frame-occurrence weight by outcome: ``resolved`` or the skip reason.
     frame_time: dict[str, float] = field(default_factory=dict)
     #: Self weight charged to no symbol: ``module_body`` or the innermost repo frame's skip reason.
@@ -219,11 +219,13 @@ class ProfileConversion:
 
     @property
     def explained_share(self) -> float | None:
+        if self.total is None or self.explained is None:
+            return None
         return self.explained / self.total if self.total > 0 else None
 
     def share(self, value: float) -> float | None:
         """*value* over the run's weight, rounded; None for an empty run."""
-        return round(value / self.total, 4) if self.total > 0 else None
+        return round(value / self.total, 4) if self.total is not None and self.total > 0 else None
 
     @property
     def repo_frame_time(self) -> float:
@@ -232,17 +234,23 @@ class ProfileConversion:
 
     @property
     def skip_rate(self) -> float | None:
-        """Share of repo frame time that did not resolve; None with no repo frames."""
+        """Share of repo frame time that did not resolve; None with no repo frames or ordering-only."""
+        if self.total is None:
+            return None
         repo = self.repo_frame_time
         return (repo - self.frame_time.get("resolved", 0.0)) / repo if repo > 0 else None
 
     def summary(self) -> dict[str, Any]:
         repo = self.repo_frame_time
-        skipped = {
-            k: round(v / repo, 4)
-            for k, v in sorted(self.frame_time.items(), key=lambda kv: -kv[1])
-            if k not in ("resolved", "outside_root") and repo > 0
-        }
+        skipped = (
+            {
+                k: round(v / repo, 4)
+                for k, v in sorted(self.frame_time.items(), key=lambda kv: -kv[1])
+                if k not in ("resolved", "outside_root") and repo > 0
+            }
+            if self.total is not None
+            else {}
+        )
         share, rate = self.explained_share, self.skip_rate
         return {
             "total": self.total,
@@ -254,11 +262,14 @@ class ProfileConversion:
             "explained_share": None if share is None else round(share, 4),
             "skip_rate": None if rate is None else round(rate, 4),
             "skipped_share_by_reason": skipped,
-            "self_unattributed": {
-                k: round(v / self.total, 4) for k, v in sorted(self.self_unattributed.items())
-            }
-            if self.total > 0
-            else {},
+            "self_unattributed": (
+                {
+                    k: round(v / self.total, 4)
+                    for k, v in sorted(self.self_unattributed.items())
+                }
+                if self.total is not None and self.total > 0
+                else {}
+            ),
             "symbols": len(self.document["symbols"]),
         }
 
@@ -306,25 +317,31 @@ def convert_profile(
         "kind": "profile",
         "value_kind": kind,
         "unit": run.unit,
-        "total": tally.total,
-        "explained": tally.explained,
-        "repo_self": tally.buckets["repo_self"],
-        "waits": tally.buckets["waits"],
-        "libraries": tally.buckets["libraries"],
+        **(
+            {}
+            if run.ordering_only
+            else {
+                "total": tally.total,
+                "explained": tally.explained,
+                "repo_self": tally.buckets["repo_self"],
+                "waits": tally.buckets["waits"],
+                "libraries": tally.buckets["libraries"],
+            }
+        ),
         "skipped": dict(sorted(skipped.items())),
         "symbols": entries,
     }
     # The run's sample count only when every stack counted its samples: a
     # partial count would put the wrong ``n`` under every share's interval.
-    if run.stacks and all(s.samples is not None for s in run.stacks):
+    if not run.ordering_only and run.stacks and all(s.samples is not None for s in run.stacks):
         document["total_samples"] = tally.samples
     if run.tool_name:
         document["tool"] = {"name": run.tool_name, "version": run.tool_version}
     return ProfileConversion(
         document,
         run.unit,
-        tally.total,
-        tally.explained,
+        None if run.ordering_only else tally.total,
+        None if run.ordering_only else tally.explained,
         dict(tally.frame_time),
         dict(tally.self_unattributed),
         tally.buckets["repo_self"],
@@ -356,13 +373,19 @@ class _Tally:
         self._resolved = {r.index: r for r in resolution.resolved}
         self._origins = origins
         self._symbols: dict[str, tuple[str, IndexedSymbol]] = {}
-        self._inclusive: Counter[str] = Counter()
-        self._own: Counter[str] = Counter()
+        self._inclusive: defaultdict[str, float] = defaultdict(float)
+        self._own: defaultdict[str, float] = defaultdict(float)
         self._inclusive_n: Counter[str] = Counter()
         self._own_n: Counter[str] = Counter()
-        self.frame_time: Counter[str] = Counter()
+        self._calls: Counter[str] = Counter()
+        for r in resolution.resolved:
+            if not r.folded and r.symbol is not None and r.index < len(frames):
+                frame = frames[r.index]
+                if frame.calls is not None:
+                    self._calls[r.symbol.symbol_id] += frame.calls
+        self.frame_time: defaultdict[str, float] = defaultdict(float)
         #: Self weight whose innermost repo frame has no symbol row, by why.
-        self.self_unattributed: Counter[str] = Counter()
+        self.self_unattributed: defaultdict[str, float] = defaultdict(float)
         #: The run's weight in ``repo_self``, ``waits`` and ``libraries``.
         self.buckets: Counter[str] = Counter({"repo_self": 0.0, "waits": 0.0, "libraries": 0.0})
         self.child_processes = 0.0
@@ -444,6 +467,7 @@ class _Tally:
                     if counted
                     else {}
                 ),
+                **({"calls": self._calls[sid]} if sid in self._calls else {}),
             }
             for sid in order
         ]
