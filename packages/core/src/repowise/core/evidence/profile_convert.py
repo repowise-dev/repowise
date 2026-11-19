@@ -401,7 +401,8 @@ _SOURCE_MAP_RE = re.compile(r"^\s*//[#@]\s*sourceMappingURL=")
 
 
 def _names_source_map(lines: Sequence[str]) -> bool:
-    tail = [ln for ln in lines[-5:] if ln.strip()]
+    """Whether one of the last five non-blank lines is a source map comment."""
+    tail = [ln for ln in reversed(lines) if ln.strip()][:5]
     return any(_SOURCE_MAP_RE.match(ln) for ln in tail)
 
 

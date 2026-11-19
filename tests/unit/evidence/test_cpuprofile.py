@@ -181,8 +181,9 @@ def test_typescript_frames_of_the_checkout_are_refused() -> None:
 
 def test_bundled_or_compiled_javascript_with_a_source_map_is_refused(tmp_path: Path) -> None:
     (tmp_path / "dist").mkdir()
+    # Blank lines after the comment do not hide it.
     (tmp_path / "dist" / "main.js").write_text(
-        "function a() {}\n//# sourceMappingURL=main.js.map\n", encoding="utf-8"
+        "function a() {}\n//# sourceMappingURL=main.js.map\n" + "\n" * 6, encoding="utf-8"
     )
     dep = tmp_path / "node_modules" / "dep"
     dep.mkdir(parents=True)
