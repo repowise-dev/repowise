@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { browserTimeZone } from "@repowise-dev/ui/lib/format";
 import {
   Select,
@@ -145,14 +146,16 @@ export function DisplaySection() {
 
 
   /** The zone lives in cookies the server reads, so a refresh re-renders every
-   *  date, server and client, in the new zone. */
+   *  date, server and client, in the new zone. That redraw remounts this page
+   *  (see `DisplayTimeZone`), so a toast confirms it instead of the row tick. */
   function handleTimeZoneChange(next: string) {
     setTimeZone(next);
     document.cookie = timeZoneCookie(TIME_ZONE_COOKIE, next);
+    const shown = next === AUTO_TIME_ZONE ? browserTimeZone() : next;
     if (next === AUTO_TIME_ZONE) {
-      document.cookie = timeZoneCookie(DETECTED_TIME_ZONE_COOKIE, browserTimeZone());
+      document.cookie = timeZoneCookie(DETECTED_TIME_ZONE_COOKIE, shown);
     }
-    markSaved("timeZone");
+    toast.success(t("display.timeZoneSaved", { zone: shown }));
     router.refresh();
   }
 
@@ -174,7 +177,6 @@ export function DisplaySection() {
           label={t("display.timeZoneLabel")}
           htmlFor="time-zone"
           hint={t("display.timeZoneHint")}
-          {...tick("timeZone")}
         >
           <TimeZoneField
             id="time-zone"

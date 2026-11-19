@@ -34,6 +34,14 @@ describe("TimeZoneSync", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("does not refresh again for a zone it already reported", () => {
+    // The server's Intl rejected the zone and rendered UTC; another refresh
+    // would only repeat on every load.
+    document.cookie = `${DETECTED_TIME_ZONE_COOKIE}=Europe/Berlin; path=/`;
+    render(<TimeZoneSync zone="UTC" />);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("leaves an explicit choice alone", () => {
     document.cookie = `${TIME_ZONE_COOKIE}=Asia/Tokyo; path=/`;
     render(<TimeZoneSync zone="Asia/Tokyo" />);

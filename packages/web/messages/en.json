@@ -1186,6 +1186,7 @@
       "timeZoneAuto": "This browser, {zone}",
       "timeZoneSearch": "Search time zones",
       "timeZoneNoMatch": "No time zone matches.",
+      "timeZoneSaved": "Dates now show in {zone}.",
       "chatDockLabel": "Ask Repowise",
       "chatDockHint": "The chat pill in the bottom-right of every repository page. Hiding it also hides the two controls below, and does not affect the full chat page.",
       "chatDockAria": "Show the Ask Repowise chat pill",

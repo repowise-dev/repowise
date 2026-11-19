@@ -34,7 +34,9 @@ export function TimeZoneSync({ zone }: { zone: string }) {
     const { preference } = resolveViewerTimeZone(readCookie(TIME_ZONE_COOKIE), undefined);
     if (preference !== AUTO_TIME_ZONE) return;
     const detected = browserTimeZone();
-    if (detected === zone) return;
+    // Already reported and still not rendered: the server's Intl does not
+    // know this zone. Refreshing again would only repeat on every load.
+    if (detected === zone || readCookie(DETECTED_TIME_ZONE_COOKIE) === detected) return;
     document.cookie = timeZoneCookie(DETECTED_TIME_ZONE_COOKIE, detected);
     router.refresh();
     // `zone` is the server's answer at mount; a later change comes from this

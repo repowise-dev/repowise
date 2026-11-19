@@ -17,9 +17,13 @@ const SRC = join(__dirname, "../src");
 /** The one module allowed to call the raw APIs. */
 const ALLOWED = new Set(["lib/format.ts"]);
 
-/** `.toLocaleString(`, `.toLocaleDateString(`, `.toLocaleTimeString(`, and any
- *  `Intl.DateTimeFormat(` call. Prose in comments has no leading dot or paren. */
-const RAW = /\.toLocale(?:Date|Time)?String\(|\bIntl\.DateTimeFormat\(/;
+/** `.toLocaleString(`, `.toLocaleDateString(`, `.toLocaleTimeString(`, any
+ *  `Intl.DateTimeFormat(` call, and the local-zone `Date` readers
+ *  (`.getHours()`, `.getDate()`, `.toDateString()`...), which read the
+ *  runtime's zone instead of the viewer's. `getUTC*` stays allowed for code
+ *  that works in UTC on purpose. Prose in comments has no leading dot or paren. */
+const RAW =
+  /\.toLocale(?:Date|Time)?String\(|\bIntl\.DateTimeFormat\(|\.get(?:Hours|Minutes|Date|Day|Month|FullYear)\(\)|\.to(?:Date|Time)String\(/;
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -48,6 +52,9 @@ describe("no raw date or number formatting outside format.ts", () => {
     expect(RAW.test('d.toLocaleDateString("en-US")')).toBe(true);
     expect(RAW.test("n.toLocaleString()")).toBe(true);
     expect(RAW.test("new Intl.DateTimeFormat(undefined, opts)")).toBe(true);
+    expect(RAW.test("d.getHours()")).toBe(true);
+    expect(RAW.test("d.toDateString()")).toBe(true);
+    expect(RAW.test("d.getUTCDate()")).toBe(false);
     expect(RAW.test("// formatDate, not toLocaleDateString(): ...")).toBe(false);
   });
 });
