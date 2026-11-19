@@ -40,7 +40,7 @@ from tests.unit.server.conftest import create_test_repo
         ),
         (
             {"selection": {"kind": "path_prefix", "path_prefix": "src/"}},
-            PageSelectionIntent(path_globs=("src/",)),
+            PageSelectionIntent(path_globs=("/src",)),
         ),
         ({}, PageSelectionIntent(unwritten=True)),
         (
@@ -53,6 +53,28 @@ from tests.unit.server.conftest import create_test_repo
 )
 def test_build_generate_intent(config: dict, expected: PageSelectionIntent) -> None:
     assert _build_generate_intent(config) == expected
+
+
+@pytest.mark.parametrize("prefix", ["src", "src/", "/src", "src\\"])
+def test_path_prefix_selection_stays_root_anchored(prefix: str) -> None:
+    """A server path prefix selects under the root directory only (#5849 review).
+
+    The shared gitignore engine matches a bare name at any depth, so the prefix
+    is anchored before it reaches it: ``src`` must not pull in ``vendor/src`` or
+    ``lib/src``, which would regenerate pages (LLM calls) nobody asked for.
+    """
+    from repowise.core.generation.page_selection import resolve_page_selection
+
+    records = [
+        PageRecord("module_page:src", "module_page", "src", is_template=False),
+        PageRecord("file_page:src/a.py", "file_page", "src/a.py", is_template=False),
+        PageRecord("file_page:vendor/src/b.py", "file_page", "vendor/src/b.py", is_template=False),
+        PageRecord("module_page:lib/src", "module_page", "lib/src", is_template=False),
+        PageRecord("file_page:srcs/c.py", "file_page", "srcs/c.py", is_template=False),
+    ]
+    intent = _build_generate_intent({"selection": {"kind": "path_prefix", "path_prefix": prefix}})
+    selected = resolve_page_selection(records, intent).page_ids
+    assert set(selected) == {"module_page:src", "file_page:src/a.py"}
 
 
 # ---------------------------------------------------------------------------
