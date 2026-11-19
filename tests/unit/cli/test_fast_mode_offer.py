@@ -138,7 +138,8 @@ def test_mcp_status_lines_restart_note_names_the_hosts_to_restart():
     text = " ".join(build_status_notes(first)).lower()
     assert "restart claude code and vs code to load the repowise tools." in text
     # An installed agent init did not wire gets the command that wires it.
-    assert "cursor is installed: repowise agents add --target=cursor --yes connects it." in text
+    assert "also installed" in text and "cursor" in text
+    assert "repowise agents add --target=cursor --yes" in text
     assert "repowise mcp" not in text
 
     rerun = EditorSetupOutcome(claude_code_connected=True, first_index=False)

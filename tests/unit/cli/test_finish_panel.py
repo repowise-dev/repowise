@@ -141,6 +141,16 @@ def test_restart_names_every_host_this_run_wrote():
     assert "In Claude Code, /mcp also works." in text
 
 
+def test_restart_says_both_when_it_names_every_connected_host():
+    hosts = ({"id": "claude-code", "name": "Claude Code"}, {"id": "vscode", "name": "VS Code"})
+    surfaces = tuple({"id": h["id"], "name": h["name"]} for h in hosts)
+    setup = EditorSetupOutcome(
+        claude_code_connected=True, restart_hosts=hosts, tool_surfaces=surfaces
+    )
+    text = _render("built_from_code", setup)
+    assert "Restart both to load the repowise tools. In Claude Code, /mcp also works." in text
+
+
 def test_restart_without_claude_code_skips_the_mcp_tip():
     setup = EditorSetupOutcome(
         claude_code_connected=True, restart_hosts=({"id": "codex", "name": "Codex"},)
@@ -161,8 +171,8 @@ def test_an_unconnected_agent_gets_its_connect_command_never_mcp_dot():
     setup = EditorSetupOutcome(
         claude_code_connected=True, unconnected=({"id": "cursor", "name": "Cursor"},)
     )
-    text = " ".join(_render("built_from_code", setup).split())
-    assert "Cursor is installed: repowise agents add --target=cursor --yes connects it." in text
+    text = " ".join(_render("built_from_code", setup).replace("│", " ").split())
+    assert "Also installed Cursor repowise agents add --target=cursor --yes" in text
     assert "repowise mcp ." not in text
 
 
@@ -221,21 +231,31 @@ def test_a_server_run_prints_no_laptop_next_steps(setup, server):
         assert (laptop in text) is not server, laptop
 
 
-def test_panel_states_what_each_wired_agent_lists():
+def test_panel_leaves_tool_profiles_to_the_json_and_dashboard():
     surface = {
-        "id": "vscode",
-        "name": "VS Code",
-        "profile": "core",
+        "id": "claude-code",
+        "name": "Claude Code",
+        "profile": "standard",
         "adjustments": [],
-        "tool_count": 5,
+        "tool_count": 10,
         "tools": [],
         "change_command": "repowise config set mcp.tools <core|lean|standard|all>",
-        "always_load": None,
+        "always_load": {"enabled": False, "tools": ["get_answer"], "cost": "x", "command": "y"},
     }
-    setup = EditorSetupOutcome(claude_code_connected=True, tool_surfaces=(surface,))
+    setup = EditorSetupOutcome(
+        claude_code_connected=True,
+        tool_surfaces=(surface,),
+        restart_hosts=({"id": "claude-code", "name": "Claude Code"},),
+        unconnected=({"id": "codex", "name": "Codex CLI"}, {"id": "cursor", "name": "Cursor"}),
+    )
     text = _render("built_from_code", setup)
-    assert "VS Code: lists 5 MCP tools (core profile)" in text
-    assert "repowise config set mcp.tools <core|lean|standard|all>" in text
+    assert "Restart Claude Code to load the repowise tools." in text
+    assert "MCP tools" not in text
+    assert "always-load" not in text
+    assert "mcp.tools" not in text
+    also = next(line for line in text.splitlines() if "Also installed" in line)
+    assert "Codex CLI, Cursor" in also
+    assert "repowise agents add --target=codex,cursor --yes" in text
 
 
 def test_bracketed_file_names_render_literally():

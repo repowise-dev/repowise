@@ -17,7 +17,6 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
-from repowise.cli.agent_targets.tool_surface import surface_lines
 from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, INFO, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
@@ -211,6 +210,11 @@ def dim_line(markup: str, indent: int = 2) -> Padding:
     return line(f"[dim]{markup}[/dim]", indent)
 
 
+#: The agent block's own label column: as wide as "Also installed", so the
+#: connect command under it fits a 100-column panel on one line.
+_AGENT_LABEL = 14
+
+
 def connected_lines(setup: Any) -> list[RenderableType]:
     """Which agent can reach the index, and the restart it needs to see it.
 
@@ -220,7 +224,11 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     if setup is None:
         return []
     if getattr(setup, "editor_setup_disabled", False):
-        return [key_value_table([("Connected", "no editor (editor setup was skipped)")])]
+        return [
+            key_value_table(
+                [("Connected", "no editor (editor setup was skipped)")], label_width=_AGENT_LABEL
+            )
+        ]
 
     surfaces = getattr(setup, "tool_surfaces", ())
     connected = [s["name"] for s in surfaces]
@@ -229,29 +237,38 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     lines: list[RenderableType] = []
     restart = [h["name"] for h in getattr(setup, "restart_hosts", ())]
     if connected:
-        lines.append(key_value_table([("Connected", escape(", ".join(connected)))]))
+        lines.append(
+            key_value_table([("Connected", escape(", ".join(connected)))], label_width=_AGENT_LABEL)
+        )
         # Each of these loads its MCP config only at startup, so a host whose
         # config this run wrote or moved has not loaded it yet.
         if restart:
-            lines.append(
-                line(f"[bold {BRAND}]Restart {escape(and_join(restart))}[/] to load the repowise tools.")
-            )
+            who = "both" if len(restart) == 2 and set(restart) == set(connected) else and_join(restart)
+            restart_line = f"[bold {BRAND}]Restart {escape(who)}[/] to load the repowise tools."
+            if "Claude Code" in restart:
+                restart_line += " [dim]In Claude Code, /mcp also works.[/dim]"
+            lines.append(line(restart_line))
         else:
             lines.append(
                 dim_line("Already connected; restart an agent only if the tools are not showing.")
             )
-    lines += [dim_line(escape(text)) for text in surface_lines(surfaces)]
-    after = ["In Claude Code, /mcp also works."] if "Claude Code" in restart else []
+    # The per-agent tool profiles and the always-load switch stay out of this
+    # panel: --progress json carries them as mcp_tools, the dashboard's Agents
+    # page shows them, and always_load is suggested once usage warrants it.
     unconnected = getattr(setup, "unconnected", ())
     if unconnected:
         from repowise.cli.editor_setup import connect_command
 
-        names = escape(and_join([a["name"] for a in unconnected]))
-        verb, them = ("is", "it") if len(unconnected) == 1 else ("are", "them")
         command = escape(connect_command(a["id"] for a in unconnected))
-        after.append(f"{names} {verb} installed: [bold]{command}[/bold] connects {them}.")
-    if after:
-        lines.append(dim_line(" ".join(after)))
+        lines.append(
+            key_value_table(
+                [
+                    ("Also installed", escape(", ".join(a["name"] for a in unconnected))),
+                    ("", f"[bold]{command}[/bold]"),
+                ],
+                label_width=_AGENT_LABEL,
+            )
+        )
     # The interactive run offered this hook live; a --yes run skipped the offer.
     if not getattr(setup, "interactive", False) and not getattr(
         setup, "rewrite_hook_installed", False
