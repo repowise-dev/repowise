@@ -141,6 +141,7 @@ def test_git_show_of_a_commit_still_routes_as_a_diff(command: str) -> None:
         (r'cd /d "C:\my repo" && pytest -q', "test_output"),
         (r"cd /D C:\repo && git diff", "git_diff"),
         (r"cd C:\repo & pytest -q", "test_output"),
+        (r"cd /d C:\my repo && pytest -q", "test_output"),
     ],
 )
 def test_a_leading_cd_matches_the_command_after_it(command: str, filter_name: str) -> None:

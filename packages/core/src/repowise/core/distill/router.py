@@ -89,9 +89,10 @@ def select_filter(
 # A leading ``cd <dir> &&`` (or ``;``, or cmd.exe's ``&``): the shape agents use
 # to run a command somewhere else. The matchers anchor at the start of the
 # command, so the segment after it is the one to match. cmd.exe's
-# ``cd /d <dir>`` (change drive too) is the same shape with a switch.
+# ``cd /d <dir>`` (change drive too) is the same shape with a switch, and its
+# cd takes an unquoted path with spaces up to the separator.
 _CD_PREFIX_RE = re.compile(
-    r"""^cd\s+(?:/d\s+)?(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&?|;)\s*"""
+    r"""^cd\s+(?:/d\s+)?(?:"[^"]*"|'[^']*'|[^\s;&|][^;&|]*?)\s*(?:&&?|;)\s*"""
 )
 
 
