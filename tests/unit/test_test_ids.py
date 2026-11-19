@@ -30,7 +30,7 @@ def test_nodeid_without_phase(test_id: str, expected: str) -> None:
     ("test_id", "expected"),
     [
         ("tests/test_x.py::TestC::test_f|run", "tests/test_x.py"),
-        ("tests\test_x.py::test_f", "tests\test_x.py"),
+        ("tests\\test_x.py::test_f", "tests\\test_x.py"),
         ("test_x.py::test_f", "test_x.py"),
         ("MySuite", None),
         ("", None),
