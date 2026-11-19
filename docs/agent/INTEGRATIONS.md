@@ -131,6 +131,13 @@ loaded from the first turn instead, for about 2k to 2.6k more tokens per turn,
 depending on the model. Other tools stay deferred, and clients that load every
 schema up front are unaffected. Restart the agent after the change.
 
+`repowise doctor` shows the surface each wired agent gets on that agent's row:
+profile, tool count, any `--tools` pin in its server entry, and `mcp.always_load`
+for Claude Code. `--format json` carries the same facts under `data` (`profile`,
+`tool_count`, `pinned`, `always_load`, `duplicate`). The same row warns when an
+agent loads repowise under two names at once, such as the Claude Code plugin beside
+a project `.mcp.json` entry, and names the entry to keep and the one to remove.
+
 Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
 
 ## Adding an agent

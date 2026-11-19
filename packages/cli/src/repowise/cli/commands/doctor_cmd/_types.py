@@ -16,7 +16,9 @@ class DoctorCheck(NamedTuple):
     ``id`` is the stable machine key (lowercase kebab); ``name`` is display
     text and may change. ``ok`` is False only when ``level`` is ``fail``, so
     a ``warn`` row never fails the run. ``fix`` is the exact command that
-    resolves the row, when one is known. Build rows with :func:`_check`.
+    resolves the row, when one is known. ``data`` carries a row's facts under
+    stable keys for an agent reading the JSON, when the row has any. Build
+    rows with :func:`_check`.
     """
 
     name: str
@@ -25,6 +27,14 @@ class DoctorCheck(NamedTuple):
     id: str = ""
     level: Level = "ok"
     fix: str | None = None
+    data: dict | None = None
+
+    def as_json(self) -> dict:
+        """The row for ``--format json``; ``data`` only on a row that has facts."""
+        row = self._asdict()
+        if row["data"] is None:
+            del row["data"]
+        return row
 
 
 def _check(
@@ -35,10 +45,11 @@ def _check(
     check_id: str,
     warn: bool = False,
     fix: str | None = None,
+    data: dict | None = None,
 ) -> DoctorCheck:
     """A row; *warn* marks a passing row the user should still look at."""
     level: Level = "fail" if not ok else ("warn" if warn else "ok")
-    return DoctorCheck(name, ok, detail, check_id, level, fix)
+    return DoctorCheck(name, ok, detail, check_id, level, fix, data)
 
 
 _LEVEL_MARKUP = {

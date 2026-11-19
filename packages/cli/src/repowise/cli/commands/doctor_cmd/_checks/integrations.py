@@ -60,7 +60,9 @@ def _agent_target_checks(
 
     Returns ``(checks, needs_refresh)``; ``needs_refresh`` drives ``--repair``.
     """
-    from repowise.cli.agent_targets.registry import all_targets
+    from repowise.cli.agent_targets.registry import all_targets, diagnose, loaded_servers
+
+    from .mcp_surface import host_surface, with_surface
 
     checks: list[DoctorCheck] = []
     needs_refresh = False
@@ -79,21 +81,32 @@ def _agent_target_checks(
     for target in targets:
         name, check_id = f"Agent: {target.id}", f"agent-{target.id}"
         try:
-            report = target.doctor(repo_path=repo_path)
+            report = diagnose(target, repo_path=repo_path)
         except Exception as exc:
             detail = f"Could not check: {exc}"
             checks.append(_check(name, True, detail, check_id=check_id, warn=True))
             continue
+        try:
+            surface = (
+                host_surface(target.id, loaded_servers(target, repo_path), repo_path)
+                if repo_path is not None
+                else None
+            )
+        except Exception:  # the surface is extra; it never costs the host's own report
+            surface = None
+        # The surface rides on the host's own row: one line per host, with the
+        # same facts under stable keys in the JSON.
+        data = {"host": target.id, **surface} if surface is not None else None
         if report.status.value in ("ok", "not-installed"):
-            detail = report.issues[0] if report.issues else "wired up"
-            checks.append(_check(name, True, detail, check_id=check_id))
+            detail = with_surface(report.issues[0] if report.issues else "wired up", surface)
+            checks.append(_check(name, True, detail, check_id=check_id, data=data))
             continue
         # Only conditions the repair pass can actually resolve drive it. A
         # plugin the CLI cannot rewrite, or a fix that is a different command,
         # would otherwise buy a global config write that changes nothing and
         # then report advice for a condition the user does not have.
         needs_refresh = needs_refresh or report.repairable
-        detail = "; ".join(report.issues)
+        detail = with_surface("; ".join(report.issues), surface)
         if report.fix_command:
             detail += f" (run: {report.fix_command})"
         # Stale is a warn and broken a fail; only broken changes the exit code.
@@ -105,6 +118,7 @@ def _agent_target_checks(
                 check_id=check_id,
                 warn=True,
                 fix=report.fix_command or None,
+                data=data,
             )
         )
     return checks, needs_refresh

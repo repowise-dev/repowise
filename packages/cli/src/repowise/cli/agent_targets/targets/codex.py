@@ -39,7 +39,13 @@ from pathlib import Path
 from repowise.cli.errors import reasoned_error
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
+from ..formats.server_entry import (
+    RENAME_HINT,
+    RemoteServerEntryError,
+    ServerSpec,
+    agents_remove_command,
+    read_servers,
+)
 from ..types import (
     Capability,
     DoctorReport,
@@ -51,6 +57,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -1230,6 +1237,22 @@ class CodexTarget:
             str(project_hooks_path(repo)),
             str(instructions_path(repo)),
         ]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``[mcp_servers]`` in the user ``config.toml`` and the project's ``.codex/config.toml``."""
+        user = user_hooks_path().parent / "config.toml"
+        maps = [ServerMap(user, Scope.USER, read_servers(user, "mcp_servers"))]
+        if repo_path is not None:
+            project = project_config_path(repo_path)
+            maps.append(
+                ServerMap(
+                    project,
+                    Scope.PROJECT,
+                    read_servers(project, "mcp_servers"),
+                    remove_command=agents_remove_command(ID, "project"),
+                )
+            )
+        return maps
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Codex wiring.
