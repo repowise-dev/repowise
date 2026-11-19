@@ -245,6 +245,60 @@ def _mirrored_by_rival(target: str, test: str, rivals: Iterable[str]) -> bool:
     )
 
 
+def _index_tests(
+    test_list: list[str],
+) -> tuple[dict[str, list[int]], dict[str, list[int]], dict[tuple[str, str], list[str]]]:
+    """Positions in *test_list* by file name and by each prefix of the name a qualifier
+    could follow, so a target reads its candidates off two lookups; and the tests by
+    directory and name, for the sibling-ownership rule."""
+    by_name: dict[str, list[int]] = {}
+    by_prefix: dict[str, list[int]] = {}
+    by_dir_and_name: dict[tuple[str, str], list[str]] = {}
+    for position, path in enumerate(test_list):
+        dir_path, _, name = path.rpartition("/")
+        by_dir_and_name.setdefault((dir_path, name), []).append(path)
+        by_name.setdefault(PurePath(path).name, []).append(position)
+        for prefix in qualified_name_prefixes(PurePath(path).name):
+            by_prefix.setdefault(prefix, []).append(position)
+    return by_name, by_prefix, by_dir_and_name
+
+
+def _owners(
+    all_files: Iterable[str], tests_by_dir_and_name: Mapping[tuple[str, str], list[str]]
+) -> dict[str, set[str]]:
+    """The files beside which each test sits under a name they claim."""
+    owned_by: dict[str, set[str]] = {}
+    for source in all_files:
+        dir_path = source.rpartition("/")[0]
+        for name in paired_test_names(source):
+            for test in tests_by_dir_and_name.get((dir_path, name), ()):
+                if source != test:
+                    owned_by.setdefault(test, set()).add(source)
+    return owned_by
+
+
+def _candidates(
+    target: str,
+    test_list: list[str],
+    by_name: Mapping[str, list[int]],
+    by_prefix: Mapping[str, list[int]],
+) -> list[str]:
+    """Tests whose file name is a paired name of *target* or a qualified one, in input order."""
+    positions: set[int] = set()
+    for name in paired_test_names(target):
+        positions.update(by_name.get(name, ()))
+    for lead in qualified_name_leads(target):
+        positions.update(by_prefix.get(lead, ()))
+    return [test_list[position] for position in sorted(positions)]
+
+
+def _most_mirrored(target: str, found: list[str]) -> list[str]:
+    """The tests in *found* sharing the most trailing directories with *target*, when any share one."""
+    overlaps = [(_directory_overlap(target, test), test) for test in found]
+    best = max(overlap for overlap, _ in overlaps)
+    return [test for overlap, test in overlaps if overlap == best] if best > 0 else found
+
+
 def tests_matching_by_name(
     targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
 ) -> dict[str, ReachedBy]:
@@ -274,30 +328,11 @@ def tests_matching_by_name(
     siblings_by_dir = {directory: SiblingNames(files) for directory, files in files_by_dir.items()}
 
     test_list = list(test_files)
-    tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
-    # Positions in *test_list* by file name, and by each prefix of the name a
-    # qualifier could follow, so a target reads its candidates off two lookups.
-    positions_by_name: dict[str, list[int]] = {}
-    positions_by_prefix: dict[str, list[int]] = {}
-    for position, path in enumerate(test_list):
-        dir_path, _, name = path.rpartition("/")
-        tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
-        file_name = PurePath(path).name
-        positions_by_name.setdefault(file_name, []).append(position)
-        for prefix in qualified_name_prefixes(file_name):
-            positions_by_prefix.setdefault(prefix, []).append(position)
+    by_name, by_prefix, tests_by_dir_and_name = _index_tests(test_list)
+    owned_by = _owners(all_files, tests_by_dir_and_name)
 
-    owned_by: dict[str, set[str]] = {}
-    for source in all_files:
-        dir_path, _, _ = source.rpartition("/")
-        for name in paired_test_names(source):
-            for test in tests_by_dir_and_name.get((dir_path, name), ()):
-                if source != test:
-                    owned_by.setdefault(test, set()).add(source)
-
-    test_set = set(test_files)
     sources_by_name: dict[str, list[str]] = {}
-    for path in all_files - test_set:
+    for path in all_files - set(test_list):
         sources_by_name.setdefault(path.rpartition("/")[2], []).append(path)
 
     out: dict[str, ReachedBy] = {}
@@ -305,27 +340,12 @@ def tests_matching_by_name(
         # Same-directory files; the target itself never claims a name from itself.
         siblings = siblings_by_dir[target.rpartition("/")[0]]
         rivals = [f for f in sources_by_name.get(target.rpartition("/")[2], ()) if f != target]
-
-        positions: set[int] = set()
-        for name in paired_test_names(target):
-            positions.update(positions_by_name.get(name, ()))
-        for lead in qualified_name_leads(target):
-            positions.update(positions_by_prefix.get(lead, ()))
-
         found = [
             test
-            for test in (test_list[position] for position in sorted(positions))
+            for test in _candidates(target, test_list, by_name, by_prefix)
             if _names_target(target, test, siblings, owned_by)
             and not _mirrored_by_rival(target, test, rivals)
         ]
-
-        if not found:
-            continue
-
-        overlaps = [(_directory_overlap(target, test), test) for test in found]
-        best = max(overlap for overlap, _ in overlaps)
-        if best > 0:
-            found = [test for overlap, test in overlaps if overlap == best]
-
-        out[target] = capped(target, found, "name-match")
+        if found:
+            out[target] = capped(target, _most_mirrored(target, found), "name-match")
     return out
