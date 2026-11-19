@@ -138,6 +138,8 @@ def test_git_show_of_a_commit_still_routes_as_a_diff(command: str) -> None:
         ("cd /d/repo && git diff HEAD~1", "git_diff"),
         ("cd src && ls -la", "file_listing"),
         ("cd C:/work/repo && uv run ruff check .", "lint_output"),
+        (r'cd /d "C:\my repo" && pytest -q', "test_output"),
+        (r"cd /D C:\repo && git diff", "git_diff"),
     ],
 )
 def test_a_leading_cd_matches_the_command_after_it(command: str, filter_name: str) -> None:
