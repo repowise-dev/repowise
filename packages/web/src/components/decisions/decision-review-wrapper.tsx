@@ -16,6 +16,7 @@ import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import type { DecisionLaneCounts, DecisionRecord } from "@repowise-dev/types/decisions";
 import {
   getDecisionAgentPrompt,
+  getDecisionHealth,
   getDecisionLaneCounts,
   listDecisions,
   patchDecision,
@@ -33,11 +34,8 @@ const RECENT_DIGEST_ROWS = 5;
 interface Props {
   repoId: string;
   pageSize?: number;
-  /**
-   * Churn hotspot files no decision in force names, from `/decisions/health`.
-   * Undefined when the page could not read it; the digest then leaves the row out.
-   */
-  ungovernedHotspots?: string[] | undefined;
+  /** The server's lane-count read, so the badges have numbers on first paint. */
+  initialLaneCounts?: DecisionLaneCounts | undefined;
   /** False on a store with no records: the digest and the list have nothing to show. */
   hasRecords?: boolean;
 }
@@ -54,13 +52,31 @@ function sectionCounts(counts: DecisionLaneCounts): Partial<Record<DecisionSecti
 }
 
 /**
+ * Records per lane, under the one key every reader on the page shares.
+ *
+ * The lede and the tab badges both read this, and the review refresh
+ * revalidates every key under `/api/repos/{id}/decisions`, so after a write
+ * the headline and the In force badge move together.
+ */
+export function useDecisionLaneCounts(
+  repoId: string,
+  fallbackData?: DecisionLaneCounts | undefined,
+) {
+  return useSWR(
+    [`/api/repos/${repoId}/decisions/lane-counts`],
+    () => getDecisionLaneCounts(repoId),
+    fallbackData ? { fallbackData } : undefined,
+  );
+}
+
+/**
  * The digest and the full record under one piece of state, so "Review 222" in
  * the digest can open In force narrowed to the decisions whose code moved.
  */
 export function DecisionsBoard({
   repoId,
   pageSize = 50,
-  ungovernedHotspots,
+  initialLaneCounts,
   hasRecords = true,
 }: Props) {
   const t = useTranslations("decisions");
@@ -80,8 +96,15 @@ export function DecisionsBoard({
   // Deliberately not /decisions/counts: that endpoint groups the status
   // column, which is the projection rather than the authority, so its
   // "active" would contradict the lane a reader then opened.
-  const { data: counts } = useSWR([`/api/repos/${repoId}/decisions/lane-counts`], () =>
-    getDecisionLaneCounts(repoId),
+  const { data: counts } = useDecisionLaneCounts(repoId, initialLaneCounts);
+  // The digest's ungoverned-hotspots row: churn hotspots no decision in force
+  // names. Under the decisions prefix so an accept that starts governing a
+  // hotspot drops it from the row without a reload. A failure only drops the
+  // row. Ceiling: the rollup also ships the stale and background lists this
+  // page never shows; upgrade path is a counts-only health read.
+  const { data: health } = useSWR(
+    hasRecords ? [`/api/repos/${repoId}/decisions/health`] : null,
+    () => getDecisionHealth(repoId),
   );
   const { data: recent } = useSWR(
     hasRecords ? [`/api/repos/${repoId}/decisions`, "digest", "recent", RECENT_DIGEST_ROWS] : null,
@@ -122,7 +145,7 @@ export function DecisionsBoard({
       <DecisionDigest
         needsReview={counts?.needs_review}
         onReviewNeedsReview={() => showList("in_force", true)}
-        ungovernedHotspots={ungovernedHotspots}
+        ungovernedHotspots={health?.ungoverned_hotspots}
         ungovernedAction={
           add?.text ? (
             <AiPromptButton variant="ghost" copyText={() => add.text} label={t("hero.recordMissed")} />
