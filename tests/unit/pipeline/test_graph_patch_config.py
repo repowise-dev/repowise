@@ -18,12 +18,12 @@ from typing import Any
 import pytest
 
 from repowise.core.pipeline.incremental import build_repo_graph
-from repowise.core.pipeline.incremental.graph import build_filtered_patch_paths
 from repowise.core.pipeline.incremental.config_inputs import (
     _digest,
     _unread_unindexed,
     presence_read,
 )
+from repowise.core.pipeline.incremental.graph import build_filtered_patch_paths
 from repowise.core.pipeline.incremental.resolution_cache import (
     load_config_inputs,
     load_resolutions,

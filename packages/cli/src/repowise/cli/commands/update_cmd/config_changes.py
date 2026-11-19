@@ -53,7 +53,9 @@ def classify_config_changes(
     # stamped its broad fingerprint while intentionally leaving the generation
     # bucket for a later docs run. That residual bucket must not trigger another
     # graph rebuild while docs are still deferred.
-    deferred_generation_only = defer_generation and dependency_changes == {"generation"}
+    deferred_generation_only = (
+        defer_generation and not fingerprint_changed and dependency_changes == {"generation"}
+    )
     config_changed = (fingerprint_changed or bool(dependency_changes)) and not deferred_generation_only
     legacy_config_change = fingerprint_changed and changed_dependencies is None
     # Each area is invalidated by its own dependencies and by every area it
