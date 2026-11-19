@@ -50,10 +50,9 @@ SETTINGS: tuple[Setting, ...] = (
         "mcp.always_load",
         "bool",
         False,
-        "Ask clients that defer tool schemas (Claude Code) to load get_answer, "
-        "get_context, search_codebase and get_symbol up front: removes one "
-        "tool-loading turn before the first call and costs about 2k tokens per "
-        "turn. Other tools stay deferred.",
+        "Claude Code only: load get_answer, get_context, search_codebase and "
+        "get_symbol from the first turn instead of through tool search, for about "
+        "2k to 2.6k more tokens per turn depending on the model.",
         reload="restart",
     ),
     _e(

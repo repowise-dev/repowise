@@ -328,10 +328,25 @@ class TestSearchPatternAlias:
     @pytest.mark.asyncio
     async def test_schema_accepts_pattern_without_query(self):
         # The original failure was FastMCP's own validation, before the body ran.
+        # pattern is not advertised, but that validation still takes it.
         from repowise.server.mcp_server import mcp
 
         tools = await mcp.list_tools()
         schema = next(t for t in tools if t.name == "search_codebase").inputSchema
+        arg_model = mcp._tool_manager.get_tool("search_codebase").fn_metadata.arg_model
 
-        assert "pattern" in schema["properties"]
         assert "query" not in schema.get("required", [])
+        assert arg_model.model_validate({"pattern": "AuthService"}).pattern == "AuthService"
+
+    @pytest.mark.asyncio
+    async def test_unadvertised_pattern_works_through_the_server(self, setup_mcp):
+        import json
+
+        from repowise.server.mcp_server import mcp
+
+        result = await mcp.call_tool("search_codebase", {"pattern": "AuthService"})
+        content = result.content if hasattr(result, "content") else result[0]
+        payload = json.loads(content[0].text)
+
+        assert "error" not in payload
+        assert payload["mode"] == "symbol"

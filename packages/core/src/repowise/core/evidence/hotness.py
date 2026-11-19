@@ -39,6 +39,17 @@ Only ``production`` code (``code_origin``) gets rows: test, tooling and
 generated code stays in the evidence tables and is never listed; each row
 counts how many such functions its run measured (``run_unlisted``). A
 ``unit_test`` workload is ranked like any other; readers list it apart.
+
+Two read models come out of one derivation (:class:`Hotness`):
+
+- ``symbol_hotness``: one row per function, from its basis run, for readers
+  that ask about a function (``get_context``);
+- ``workload_hotness``: the ranked functions of each workload's newest run
+  (by workload name and environment, as ``evidence status`` groups them), one
+  row per run and function, for readers that list what each workload
+  measured. A function two workloads both rank is listed under each, so no
+  workload hides behind another's basis, and a superseded run of a workload
+  is never listed.
 """
 
 from __future__ import annotations
@@ -107,6 +118,7 @@ class RunFacts:
     repo_self_value: float | None = None
     wait_value: float | None = None
     library_value: float | None = None
+    environment: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -166,6 +178,16 @@ class _Row:
     unlisted: int = 0
 
 
+@dataclass(frozen=True)
+class Hotness:
+    """The rows of both read models, without ``repository_id``."""
+
+    #: ``symbol_hotness``: one per function, from its basis run.
+    symbols: list[dict[str, Any]]
+    #: ``workload_hotness``: the ranked functions of each workload's newest run.
+    workloads: list[dict[str, Any]]
+
+
 def derive_hotness(
     runs: Sequence[RunFacts],
     costs: Mapping[str, Sequence[CostFacts]],
@@ -174,8 +196,8 @@ def derive_hotness(
     *,
     head_commit: str | None,
     rules: HotnessRules,
-) -> list[dict[str, Any]]:
-    """The ``symbol_hotness`` rows (without ``repository_id``) for *runs*.
+) -> Hotness:
+    """Both read models for *runs*.
 
     *costs* holds each run's cost rows by run id, *origins* the
     ``code_origin`` of every current symbol's file and *head_commit* the
@@ -186,7 +208,7 @@ def derive_hotness(
         for row in _run_rows(run, costs.get(run.id, ()), current, origins, head_commit, rules):
             rows_by_symbol.setdefault(row.symbol_id, []).append(row)
 
-    out: list[dict[str, Any]] = []
+    symbols: list[dict[str, Any]] = []
     for symbol_id in sorted(rows_by_symbol):
         rows = rows_by_symbol[symbol_id]
         leading = [r for r in rows if r.tier != "measured" and _may_lead(r)]
@@ -194,8 +216,53 @@ def derive_hotness(
             for r in leading:
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
-        out.append(_stored(basis, run_count=len({r.run.id for r in rows})))
-    return out
+        symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
+    newest = newest_runs(runs)
+    workloads = [
+        _workload_row(r)
+        for rows in rows_by_symbol.values()
+        for r in rows
+        if r.run.id in newest and r.tier != "measured"
+    ]
+    workloads.sort(key=lambda w: (w["run_id"], w["rank"], w["symbol_id"]))
+    return Hotness(symbols, workloads)
+
+
+def newest_runs(runs: Iterable[Any]) -> set[str]:
+    """The id of each workload's newest run, by name and environment.
+
+    *runs* carry ``id``, ``workload_name``, ``environment`` and
+    ``measured_at`` (the ingest time when the run did not say).
+    """
+    newest: dict[tuple[str, str], Any] = {}
+    for run in runs:
+        key = (run.workload_name, run.environment)
+        if key not in newest or _age_key(run) > _age_key(newest[key]):
+            newest[key] = run
+    return {run.id for run in newest.values()}
+
+
+def _age_key(run: Any) -> tuple[float, str]:
+    return (run.measured_at.timestamp() if run.measured_at else 0.0, run.id)
+
+
+def _workload_row(row: _Row) -> dict[str, Any]:
+    """One ranked function of one run (``workload_hotness``)."""
+    run, cost = row.run, row.cost
+    shares = not row.ordering_only
+    return {
+        "run_id": run.id,
+        "symbol_id": row.symbol_id,
+        "rank": row.rank,
+        "tier": row.tier,
+        "total_share": _share(cost.total_value, run.total_value) if shares else None,
+        "self_share": _share(cost.self_value, run.total_value) if shares else None,
+        "share_low": row.share.low if row.share is not None else None,
+        "share_high": row.share.high if row.share is not None else None,
+        "samples": row.samples,
+        "freshness": row.freshness,
+        "ordering_only": row.ordering_only,
+    }
 
 
 def _run_rows(
@@ -233,7 +300,7 @@ def _run_rows(
             run.unlisted_symbols if run.unlisted_symbols is not None else row.unlisted - len(rows)
         )
     kept = _one_per_symbol(rows)
-    _rank(kept, _run_samples(run), rules)
+    _rank(kept, run_samples(run), rules)
     return kept
 
 
@@ -302,7 +369,7 @@ def _samples(run: RunFacts, cost: CostFacts) -> int | None:
     return None
 
 
-def _run_samples(run: RunFacts) -> int | None:
+def run_samples(run: RunFacts) -> int | None:
     """Samples in the whole run: counted, or its total when the unit is samples."""
     if run.total_samples is not None:
         return run.total_samples
@@ -355,7 +422,7 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "share_low": row.share.low if row.share is not None else None,
         "share_high": row.share.high if row.share is not None else None,
         "samples": row.samples,
-        "run_samples": _run_samples(run),
+        "run_samples": run_samples(run),
         "rank": row.rank,
         "explained_share": run_share(run.total_value, run.explained_value),
         **time_split(run),
@@ -379,16 +446,19 @@ async def rebuild_symbol_hotness(
     head_commit: str | None,
     rules: HotnessRules,
 ) -> int | None:
-    """Rebuild the repository's ``symbol_hotness`` from its stored profile runs.
+    """Rebuild the repository's ``symbol_hotness`` and ``workload_hotness``
+    from its stored profile runs.
 
-    Returns the rows written, or ``None`` when no profile run is stored: then
-    nothing is read past one indexed lookup and one delete on the key prefix
-    clears any rows left, so an index without evidence pays next to nothing.
+    Returns the ``symbol_hotness`` rows written, or ``None`` when no profile
+    run is stored: then nothing is read past one indexed lookup and one delete
+    per table on the key prefix clears any rows left, so an index without
+    evidence pays next to nothing.
     Partial runs are not a basis.
     """
     from repowise.core.persistence.crud import (
         hotness_inputs,
         replace_symbol_hotness,
+        replace_workload_hotness,
         stored_bodies,
     )
 
@@ -398,6 +468,7 @@ async def rebuild_symbol_hotness(
     if inputs is None:
         # One delete on the key prefix: rows left from runs no longer stored go.
         await replace_symbol_hotness(session, repository_id, [])
+        await replace_workload_hotness(session, repository_id, [])
         return None
     runs, costs = inputs
     current = CurrentFunctions.from_bodies(await stored_bodies(session, repository_id, None))
@@ -405,9 +476,10 @@ async def rebuild_symbol_hotness(
         file_of_symbol(current.current_id(cost)) for rows in costs.values() for cost in rows
     }
     origins = await load_origins(session, repository_id, paths)
-    rows = derive_hotness(runs, costs, current, origins, head_commit=head_commit, rules=rules)
-    await replace_symbol_hotness(session, repository_id, rows)
-    return len(rows)
+    hotness = derive_hotness(runs, costs, current, origins, head_commit=head_commit, rules=rules)
+    await replace_symbol_hotness(session, repository_id, hotness.symbols)
+    await replace_workload_hotness(session, repository_id, hotness.workloads)
+    return len(hotness.symbols)
 
 
 async def refresh_symbol_hotness(
@@ -437,10 +509,13 @@ __all__ = [
     "TIERS",
     "CostFacts",
     "CurrentFunctions",
+    "Hotness",
     "HotnessRules",
     "RunFacts",
     "derive_hotness",
     "hotness_rules",
+    "newest_runs",
     "rebuild_symbol_hotness",
     "refresh_symbol_hotness",
+    "run_samples",
 ]

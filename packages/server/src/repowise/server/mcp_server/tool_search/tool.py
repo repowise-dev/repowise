@@ -216,7 +216,7 @@ async def search_codebase(
     symbol_kind: str | None = None,
     pattern: str | None = None,
 ) -> dict:
-    """Find code by concept, symbol, or path — hybrid codebase search.
+    """Find code by concept, symbol, or path: hybrid codebase search.
 
     For a how/where/why question call get_answer. Use this to enumerate
     matches, resolve an identifier to a symbol_id, or find files for
@@ -227,14 +227,14 @@ async def search_codebase(
     distinct files to Read, best first.
 
     Args:
-        query: identifier, `a|b` alternation, regex, path, or natural language.
-        limit: max results (default 5).
-        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        query: Identifier, `a|b` alternation, regex, path, or natural language.
+        limit: Max results.
+        mode: auto | symbol | path | concept | hybrid.
         kind: implementation | test | config | doc.
         symbol_kind: function | class | method | ...
         page_type: file_page | module_page.
-        repo: alias, or "all" for workspace-wide.
-        pattern: alias for query.
+        repo: Alias, or "all" for workspace-wide.
+        pattern: Alias for query.
     """
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)

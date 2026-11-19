@@ -6,18 +6,14 @@ benchmark runner's own output in a format of
 :data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
 to v1 first), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
-its class, and what did not map.
+its class, and what did not map. The steps live in
+:mod:`repowise.core.evidence.add`; this module words them.
 """
 
 from __future__ import annotations
 
-import json
-import math
-import re
-import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 from rich.markup import escape
@@ -37,20 +33,17 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.core.evidence import EVIDENCE_FORMAT
+from repowise.core.evidence.add import (
+    EvidenceRefusedError,
+    PreparedEvidence,
+    check_file_size,
+    check_options,
+    evidence_caps,
+    prepare_evidence,
+)
 from repowise.core.evidence.format_v1 import VALUE_KINDS
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
-from repowise.core.git_sha import is_full_sha
-
-
-@dataclass(frozen=True)
-class _Input:
-    """The file as read: a v1 document (written or converted), or a profile run still to convert."""
-
-    format: str
-    text: str | None = None
-    doc: Any = None
-    run: Any = None
 
 
 def _resolve_repo(path: str | None, notices: Any) -> Path:
@@ -159,7 +152,10 @@ def evidence_add(
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
-    _check_options(workload, workload_class, environment, commit)
+    try:
+        check_options(workload, workload_class, environment, commit)
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
 
     repo_path = _resolve_repo(repo, notices)
     ensure_repowise_dir(repo_path)
@@ -169,22 +165,36 @@ def evidence_add(
 
     from repowise.core.repo_config import load_repo_config
 
-    caps = _caps(load_repo_config(repo_path), notices)
-    read = _read_evidence(file, caps[0], fmt, input_format, root)
-    _check_value_kind(read, value_kind)
+    max_file_mb, caps, problems = evidence_caps(load_repo_config(repo_path))
+    for problem in problems:
+        notices.print(f"[yellow]Ignoring {escape(problem)}.[/yellow]")
+    try:
+        size = file.stat().st_size
+    except OSError as exc:
+        raise click.BadParameter(f"cannot read {file}: {exc.strerror}", param_hint="FILE") from None
+    try:
+        # Checked before reading, so a file too large is never loaded.
+        check_file_size(size, max_file_mb, str(file))
+        prepared = prepare_evidence(
+            file.read_bytes(),
+            name=str(file),
+            checkout_root=root,
+            commit=commit,
+            dirty=dirty,
+            input_format_name=input_format,
+            value_kind=value_kind,
+        )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     payload = run_async(
         _ingest(
             repo_path=repo_path,
-            root=root,
-            read=read,
-            value_kind=value_kind,
+            prepared=prepared,
             workload=workload.strip(),
             workload_class=workload_class,
-            commit=_measured_commit(commit, read),
-            dirty=dirty if dirty is not None or read.doc is None else read.doc.dirty,
             environment=environment,
             allow_partial=allow_partial,
-            caps=caps[1],
+            caps=caps,
             notices=notices,
         )
     )
@@ -194,165 +204,12 @@ def evidence_add(
         raise click.exceptions.Exit(1)
 
 
-def _check_options(
-    workload: str, workload_class: str, environment: str, commit: str | None
-) -> None:
-    """Refuse a usage error in the flags before anything is opened."""
-    if workload_class == "production":
-        raise click.BadParameter(
-            "production is set only by a verified source (a request-log or "
-            "statement ingest, a connector), never by a flag. Use entry_point for a "
-            "profiled command or request replay, load_test for a load test.",
-            param_hint="--class",
-        )
-    if workload_class not in FLAG_WORKLOAD_CLASSES:
-        raise click.BadParameter(
-            f"{workload_class!r} is not one of {', '.join(FLAG_WORKLOAD_CLASSES)}.",
-            param_hint="--class",
-        )
-    if not workload.strip():
-        raise click.BadParameter("name the workload that ran.", param_hint="--workload")
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", environment):
-        raise click.BadParameter(
-            "one word of up to 32 letters, digits, '.', '_' or '-'.", param_hint="--environment"
-        )
-    if commit is not None and not is_full_sha(commit):
-        raise click.BadParameter(
-            "the full 40- or 64-character SHA, e.g. $(git rev-parse HEAD).", param_hint="--commit"
-        )
-
-
-def _read_evidence(
-    file: Path, max_file_mb: float, fmt: str, input_format: str | None, root: Path
-) -> _Input:
-    """*file* read as v1 or as a registered format; refuses one too large or unreadable."""
-    from repowise.core.evidence import EvidenceFormatError, parse_evidence
-    from repowise.core.evidence.profile_convert import refuse_typescript
-
-    try:
-        size = file.stat().st_size
-    except OSError as exc:
-        raise click.BadParameter(f"cannot read {file}: {exc.strerror}", param_hint="FILE") from None
-    if size > max_file_mb * 1024 * 1024:
-        emit_refusal(
-            "file_too_large",
-            f"{file} is {size / 1048576:.1f} MB, over evidence.max_file_mb ({max_file_mb:g}).",
-            fmt,
-            remedy=f"Run `repowise config set evidence.max_file_mb {math.ceil(size / 1048576)}`, "
-            "then add the file again, or ingest a smaller run.",
-        )
-    data = file.read_bytes()
-    name = _input_format(input_format, data)
-    try:
-        if not data.strip():
-            # Every reader would name a format the file lacks; the run that writes it never finished.
-            raise EvidenceFormatError(
-                f"{file} is empty: the profiled run probably crashed or stopped before writing it",
-                "run the command again, check its output for a crash, then ingest the file it writes",
-            )
-        if name == EVIDENCE_FORMAT:
-            text = data.decode("utf-8", errors="replace")
-            return _Input(name, text=text, doc=parse_evidence(text))
-        input_format = profile_formats.get(name)
-        if input_format.to_v1 is not None:
-            text = json.dumps(input_format.to_v1(data), sort_keys=True)
-            return _Input(name, text=text, doc=parse_evidence(text))
-        run = input_format.read(data)
-        refuse_typescript(run, str(root))
-        return _Input(name, run=run)
-    except EvidenceFormatError as exc:
-        emit_refusal("invalid_evidence", str(exc), fmt, remedy=exc.hint)
-        raise  # unreachable: emit_refusal exits
-
-
-def _input_format(given: str | None, data: bytes) -> str:
-    """``--input-format`` checked against the registry, else the format sniffed.
-
-    A file no profile format claims is read as v1, whose parser says what is
-    wrong with it.
-    """
-    from repowise.core.evidence.profile_formats import SNIFF_BYTES, detect_profile_format
-
-    names = [EVIDENCE_FORMAT, *(name for name, _ in profile_formats.all())]
-    if given is not None:
-        if given not in names:
-            raise click.BadParameter(
-                f"{given!r} is not one of {', '.join(names)}.", param_hint="--input-format"
-            )
-        return given
-    head = data[:SNIFF_BYTES]
-    if EVIDENCE_FORMAT.encode() in head:
-        return EVIDENCE_FORMAT
-    return detect_profile_format(head) or EVIDENCE_FORMAT
-
-
-def _check_value_kind(read: _Input, value_kind: str | None) -> None:
-    """A converted profile needs its clock; a v1 file's own must not be contradicted."""
-    if read.doc is not None:
-        if value_kind is not None and read.doc.value_kind is None:
-            raise click.BadParameter(
-                f"a {read.doc.kind} file records no clock; --value-kind names the clock "
-                "of a profile only, so leave it out.",
-                param_hint="--value-kind",
-            )
-        if value_kind is not None and read.doc.value_kind != value_kind:
-            raise click.BadParameter(
-                f"the file's value_kind is {read.doc.value_kind}; --value-kind only names "
-                "the clock of a converted profile, so pass the same or none.",
-                param_hint="--value-kind",
-            )
-        return
-    if value_kind is None and read.run.value_kind is None:
-        raise click.BadParameter(
-            f"a {read.format} profile does not say which clock it sampled: pass "
-            "--value-kind cpu for on-CPU sampling, wall for wall-clock time.",
-            param_hint="--value-kind",
-        )
-
-
-def _measured_commit(commit: str | None, read: _Input) -> str:
-    """The commit the run measured: ``--commit`` or the file's, which must agree.
-
-    A converted file's commit is what its tool recorded, never taken on its
-    own: ``--commit`` is required and the recorded one only cross-checks it.
-    """
-    in_file = read.doc.commit_sha if read.doc is not None else None
-    converted = read.format != EVIDENCE_FORMAT
-    if commit is not None and in_file is not None and commit != in_file:
-        raise click.BadParameter(
-            f"the {read.format} file records commit {in_file}, so it did not measure "
-            f"{commit}; pass the commit the run measured."
-            if converted
-            else f"the file says it measured {in_file}; pass the same commit or none.",
-            param_hint="--commit",
-        )
-    measured = commit or (None if converted else in_file)
-    if measured is None:
-        raise click.BadParameter(
-            "say which commit was measured: --commit $(git rev-parse HEAD) at the time "
-            "of the run" + ("." if converted else ", or commit_sha in the file."),
-            param_hint="--commit",
-        )
-    return measured
-
-
-def _caps(config: Any, notices: Any) -> tuple[float, Any]:
-    """``evidence.max_file_mb`` and the store caps, from *config*."""
-    from repowise.core.evidence.ingest import EvidenceCaps
-    from repowise.core.settings import resolve
-
-    def value(key: str) -> Any:
-        resolved = resolve(f"evidence.{key}", config)
-        if resolved.problem:
-            notices.print(f"[yellow]Ignoring {escape(resolved.problem)}.[/yellow]")
-        return resolved.value
-
-    return value("max_file_mb"), EvidenceCaps(
-        max_symbols_per_run=value("max_symbols_per_run"),
-        max_rows_per_run=value("max_rows_per_run"),
-        history_runs=value("history_runs"),
-        max_runs=value("max_runs"),
-    )
+def _refuse(exc: EvidenceRefusedError, fmt: str) -> NoReturn:
+    """A usage error for an option at fault, else the refusal for the file."""
+    if exc.option is not None:
+        raise click.BadParameter(str(exc), param_hint=exc.option) from None
+    emit_refusal(exc.code, str(exc), fmt, remedy=exc.hint)
+    raise exc  # unreachable: emit_refusal exits
 
 
 async def _ingest(*, repo_path: Path, **ingest: Any) -> dict[str, Any]:
@@ -373,157 +230,66 @@ async def _store(
     session: Any,
     *,
     repo_path: Path,
-    root: Path,
-    read: _Input,
-    value_kind: str | None,
+    prepared: PreparedEvidence,
     workload: str,
     workload_class: str,
-    commit: str,
-    dirty: bool | None,
     environment: str,
     allow_partial: bool,
     caps: Any,
     notices: Any,
 ) -> dict[str, Any]:
-    from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
-    from repowise.core.evidence import parse_evidence
-    from repowise.core.evidence.hotness import refresh_symbol_hotness
-    from repowise.core.evidence.ingest import (
-        RunProvenance,
-        cap_rows,
-        entry_paths,
-        join_entries,
-        load_origins,
-        load_symbols,
-        run_fields,
-        run_key,
-        stamp_bodies,
-        unlisted_count,
-    )
-    from repowise.core.persistence.crud import save_evidence_run
+    """Store the run (:func:`~repowise.core.evidence.add.store_evidence`) and say what happened."""
+    from repowise.core.evidence.add import store_evidence
 
     target = await open_ingest_target(session, repo_path, what="evidence", out=notices)
     if target is None:
         return {"stored": False, "reason": "no_index"}
-    index_commit = getattr(target.repo, "head_commit", None)
-
-    changed, dirty = _tree_state(root, commit, dirty)
-
-    text, doc, conversion = read.text, read.doc, None
-    if read.run is not None:
-        conversion = await _convert(session, target.repo.id, read.run, root, changed, value_kind)
-        text = json.dumps(conversion.document, sort_keys=True)
-        doc = parse_evidence(text)
-        _report_conversion(notices, read.format, conversion)
-        _warn_short_run(notices, workload_class, doc.value_kind, conversion)
-
-    paths = entry_paths(doc)
-    origins = await load_origins(session, target.repo.id, paths)
-    joined = join_entries(
-        doc,
-        await load_symbols(session, target.repo.id, paths),
-        origins,
-        changed or frozenset(),
-    )
-    # A benchmark or test keeps its row without its function, so only the
-    # kinds that need the join can be mostly unmapped.
-    partial = doc.kind in ("profile", "query_count") and mostly_unmapped(
-        joined.matched, len(doc.entries)
-    )
-    provenance = RunProvenance(
-        workload_name=workload,
+    stored = await store_evidence(
+        session,
+        target.repo,
+        prepared,
+        repo_path=repo_path,
+        workload=workload,
         workload_class=workload_class,
-        commit_sha=commit,
-        checkout_root=str(root),
-        dirty=dirty,
         environment=environment,
-        tests_failed=read.run.tests_failed if read.run is not None else None,
+        allow_partial=allow_partial,
+        caps=caps,
     )
-    summary = _summary(doc, provenance, joined, partial, index_commit, target.head_sha)
-    summary["input_format"] = read.format
+    payload = stored.payload
+    conversion = payload.get("conversion")
     if conversion is not None:
-        summary["conversion"] = conversion.summary()
-    refused = _refusal(summary, partial and not allow_partial, bool(joined.rows), notices)
-    if refused is not None:
-        return refused
-
-    rows, truncated = cap_rows(doc.kind, joined.rows, caps)
-    if doc.kind == "profile":
-        await stamp_bodies(
-            session,
-            target.repo.id,
-            rows,
-            index_at_measured_commit=index_commit is not None and index_commit == commit,
+        _report_conversion(notices, prepared.format, conversion)
+        _warn_short_run(
+            notices,
+            workload_class,
+            prepared.value_kind or prepared.run.value_kind,
+            conversion,
         )
-    write = await save_evidence_run(
-        session,
-        target.repo.id,
-        run_fields(
-            doc,
-            provenance,
-            joined,
-            key=run_key(text, provenance, doc.kind, index_commit),
-            truncated=truncated,
-            mapping_partial=partial,
-            unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
-        ),
-        rows,
-        history_runs=caps.history_runs,
-        max_runs=caps.max_runs,
-    )
-    if doc.kind == "profile":
-        # Profiles are what the read model is built from, and the save may
-        # have pruned an older one. Best effort: the run stays stored.
-        await refresh_symbol_hotness(
-            session, target.repo.id, head_commit=index_commit, repo_path=repo_path
+    if payload["stored"]:
+        _report_stored(
+            notices,
+            payload,
+            payload["restamped"],
+            stored.rows_kept,
+            payload["truncated"],
+            payload["index_commit"],
         )
-
-    _report_stored(notices, summary, write.restamped, len(rows), truncated, index_commit)
-    return {
-        **summary,
-        "stored": True,
-        "run_id": write.run_id,
-        "restamped": write.restamped,
-        "rows_written": write.rows_written,
-        "truncated": truncated,
-        "runs_pruned": write.runs_pruned,
-    }
-
-
-async def _convert(
-    session: Any,
-    repo_id: str,
-    run: Any,
-    root: Path,
-    changed: frozenset[str] | None,
-    value_kind: str | None,
-) -> Any:
-    """*run*'s frames joined to the index at *root*, as a v1 document (or a refusal)."""
-    from repowise.core.evidence.profile_convert import convert_profile
-    from repowise.core.frame_resolver import checkout_reader, frame_paths, load_frame_symbols
-
-    symbols, origins = await load_frame_symbols(
-        session,
-        repo_id,
-        frame_paths(run.frames, root=str(root)),
-        fold_case=sys.platform == "win32",
-    )
-    return convert_profile(
-        run,
-        root=str(root),
-        symbols_by_file=symbols,
-        dirty_paths=changed or (),
-        origins=origins,
-        read_lines=checkout_reader(root),
-        value_kind=value_kind,
-    )
+    elif payload["reason"] == "mostly_unmapped":
+        refuse_partial(
+            "evidence file",
+            "write each entry's path relative to the repository root and its "
+            "function as the qualified name repowise indexed",
+            out=notices,
+        )
+    else:
+        notices.print("[red]No entry matched an indexed function, so nothing was stored.[/red]")
+    return payload
 
 
-def _report_conversion(notices: Any, name: str, conversion: Any) -> None:
+def _report_conversion(notices: Any, name: str, summary: dict[str, Any]) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
-    summary = conversion.summary()
     rate = summary["skip_rate"]
     split = split_words(summary) or "repo code itself unknown"
     skipped = "no repo frames" if rate is None else f"{rate:.0%} of repo frame time skipped"
@@ -532,7 +298,7 @@ def _report_conversion(notices: Any, name: str, conversion: Any) -> None:
     )
     notices.print(
         f"Converted {escape(name)}: {split} of "
-        f"{_total(conversion.total)} {escape(conversion.unit)}; {skipped}"
+        f"{_total(summary['total'])} {escape(summary['unit'])}; {skipped}"
         + (f" ({escape(reasons)})." if reasons else ".")
     )
 
@@ -543,87 +309,25 @@ _SECONDS = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
 _SHORT_RUN_S = 3.0
 
 
-def _warn_short_run(notices: Any, workload_class: str, value_kind: str | None, conversion: Any) -> None:
+def _warn_short_run(
+    notices: Any, workload_class: str, value_kind: str | None, summary: dict[str, Any]
+) -> None:
     """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
 
     A program that deferred to another process or printed its usage exits 0
     having measured nothing representative, and its run would still rank.
     """
-    per = _SECONDS.get(conversion.unit)
+    per = _SECONDS.get(summary["unit"])
     if workload_class != "entry_point" or value_kind != "wall" or per is None:
         return
-    if conversion.total * per >= _SHORT_RUN_S:
+    seconds = summary["total"] * per
+    if seconds >= _SHORT_RUN_S:
         return
     notices.print(
-        f"[yellow]This entry point's profile covers {conversion.total * per:.1f} s: a run "
+        f"[yellow]This entry point's profile covers {seconds:.1f} s: a run "
         "that deferred its work or printed its usage measures little. Check its output, and "
         "if it did no real work, run it again with arguments that do.[/yellow]"
     )
-
-
-def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool | None]:
-    """Files that differ from *commit*, and *dirty* filled in from them.
-
-    Files that differ from the commit are skipped: their lines are not the
-    ones measured. Known only when the commit is the checkout's HEAD and git
-    can say; otherwise the tree's state stays unknown.
-    """
-    from repowise.core.analysis.health.coverage import live_head_commit
-    from repowise.core.evidence.ingest import uncommitted_paths
-
-    at_head = live_head_commit(root, None) == commit
-    changed = uncommitted_paths(root) if at_head else None
-    if dirty is None and changed is not None:
-        dirty = bool(changed)
-    return changed, dirty
-
-
-def _summary(
-    doc: Any,
-    provenance: Any,
-    joined: Any,
-    partial: bool,
-    index_commit: str | None,
-    head_sha: str | None,
-) -> dict[str, Any]:
-    """What the run held and how it mapped, stored or not."""
-    from collections import Counter
-
-    commit = provenance.commit_sha
-    return {
-        "kind": doc.kind,
-        "workload": provenance.workload_name,
-        "class": provenance.workload_class,
-        "commit_sha": commit,
-        "index_commit": index_commit,
-        "stale": head_sha is not None and commit != head_sha,
-        "dirty": provenance.dirty,
-        "entries": len(doc.entries),
-        "matched": joined.matched,
-        "skipped": dict(sorted((Counter(doc.skipped) + joined.skipped).items())),
-        "unlinked": dict(sorted(joined.unlinked.items())),
-        "mapping_partial": partial,
-        "unmatched_sample": joined.unmatched_sample,
-        "tests_failed": provenance.tests_failed,
-    }
-
-
-def _refusal(
-    summary: dict[str, Any], refuse_partial_run: bool, any_rows: bool, notices: Any
-) -> dict[str, Any] | None:
-    """The payload for a run that is not stored, or None to store it."""
-    if refuse_partial_run:
-        refuse_partial(
-            "evidence file",
-            "write each entry's path relative to the repository root and its "
-            "function as the qualified name repowise indexed",
-            out=notices,
-        )
-        return {**summary, "stored": False, "reason": "mostly_unmapped"}
-    if not any_rows:
-        notices.print("[red]No entry matched an indexed function, so nothing was stored.[/red]")
-        return {**summary, "stored": False, "reason": "nothing_matched"}
-    return None
 
 
 def _report_stored(

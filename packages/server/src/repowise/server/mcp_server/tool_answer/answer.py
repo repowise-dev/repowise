@@ -1058,17 +1058,14 @@ async def get_answer(
     """Answer a how, where, or why question in one evidence-grounded call.
 
     High confidence may be used directly; medium and low lead with the
-    evidence to verify. ``candidate_files`` ranks files worth opening that
+    evidence to verify. `candidate_files` ranks files worth opening that
     the citations do not name.
 
     Args:
-        question: One question about one subject. Split "where is X and
-            when does Y run" into two calls; do not paste a whole
-            multi-part task.
-        scope: repository-relative path prefix.
-        repo: usually omitted.
-        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
-            adds ``retrieval_quality``.
+        question: One question about one subject; split a multi-part task.
+        scope: Repository-relative path prefix.
+        repo: Usually omitted.
+        include: ["evidence"] expands evidence; ["diagnostics"] adds retrieval_quality.
     """
     return await _projected_get_answer(
         question=question,
