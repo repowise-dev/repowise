@@ -57,6 +57,7 @@ from ._shared import (
 _READ_NUDGE_MIN_LINES = 100  # Read output lines before a replacement is worth it
 _READ_NUDGE_MIN_SAVINGS = 1500  # estimated tokens saved must clear this
 _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
+_MAX_CREDITED = 200  # credited paths kept per session state file
 
 
 #: Per-session state lives in its own file, and that is not a detail.
@@ -82,13 +83,22 @@ _STATE_DIR = "hook-sessions"
 #: The ``agent_id`` of the hook event this process is handling, "" on a main
 #: thread. One hook event per process, so it is bound once at dispatch.
 _agent_id = ""
+#: The ``session_id`` of the same hook event, "" when the payload names none.
+_session_id = ""
 
 
 def bind_agent(payload: dict) -> None:
     """Key this process's session state on the payload's subagent, when it names one."""
-    global _agent_id
+    global _agent_id, _session_id
     agent = payload.get("agent_id")
     _agent_id = agent if isinstance(agent, str) else ""
+    session = payload.get("session_id")
+    _session_id = session if isinstance(session, str) else ""
+
+
+def bound_ids() -> tuple[str, str]:
+    """``(session_id, agent_id)`` of the hook event this process handles, "" when absent."""
+    return _session_id, _agent_id
 
 #: Session files older than this are swept, once, when a session first writes.
 #: A session lasts hours at the outside and the files are a few KB, so this is
@@ -251,6 +261,10 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         # File ranges served by repowise MCP responses this session, kept for
         # the read-after-served KPI (see read_enrich; rel -> [[start, end]]).
         "served": {},
+        # Paths this session was credited as not opening (a replaced Read, or
+        # a repowise MCP answer that served the file), newest last and capped
+        # at _MAX_CREDITED. A later Read of one is noted so the credit lapses.
+        "credited": [],
     }
     try:
         state = json.loads(
@@ -493,6 +507,8 @@ def _handle_read_post(
             fired.append((served.category, served.text))
             state["skeletonized"].append(rel)
 
+    on_emitted = _files_not_opened(repo_path, rel, session_id, state, served, on_emitted)
+
     _record_read_meta(checkout, rel, tool_input, tool_output, state, replaced=served is not None)
 
     if not _save_session_state(repo_path, state):
@@ -592,6 +608,56 @@ def _same_range(tool_input: dict, prior: dict) -> bool:
     ) == prior.get("lim")
 
 
+def _files_not_opened(repo_path: Path, rel: str, session_id: str, state: dict, served, on_emitted):
+    """Credit a replaced Read, or queue the note that cancels an earlier credit.
+
+    A Read of a credited path is noted once, after the response, and the path
+    leaves the credited list. Never changes what this Read returns.
+    """
+    try:
+        if served is not None:
+            note_credited(state, [rel])
+        elif session_id and rel in state["credited"]:
+            state["credited"].remove(rel)
+            return _then(on_emitted, lambda: _record_file_read(repo_path, session_id, rel))
+    except Exception:  # bookkeeping only; the Read result is already decided
+        return on_emitted
+    return on_emitted
+
+
+def note_credited(state: dict, paths: list[str]) -> None:
+    """Mark *paths* as credited this session, keeping the newest :data:`_MAX_CREDITED`."""
+    credited = state.setdefault("credited", [])
+    for path in paths:
+        if path in credited:
+            credited.remove(path)
+        credited.append(path)
+    del credited[:-_MAX_CREDITED]
+
+
+def _then(first, second):
+    """Run *second* after *first*; either may be None. For deferred writes."""
+    if first is None:
+        return second
+
+    def both() -> None:
+        try:
+            first()
+        finally:
+            second()
+
+    return both
+
+
+def _record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
+    try:
+        from ._shared import record_file_read
+
+        record_file_read(repo_path, session_id, rel)
+    except Exception:
+        return
+
+
 def _collapse_replacement(
     repo_path: Path,
     checkout: Path,
@@ -660,6 +726,7 @@ def _collapse_replacement(
             tool_response=tool_output,
             build=lambda: collapse(rel, content, prior_meta, touched=touched),
             forgone_gate=lambda: _claim_forgone(rel, state),
+            session_id=state.get("session_id", ""),
         )
     except Exception:
         return None, None
@@ -722,6 +789,7 @@ def _skeleton_replacement(
                 min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
             ),
             forgone_gate=lambda: _claim_forgone(rel, state),
+            session_id=state.get("session_id", ""),
         )
     except Exception:
         # Everything is inside the try, gates included. A malformed config or

@@ -103,6 +103,47 @@ export interface Savings {
   missed_window_days: number;
   reread_events: number;
   reread_tokens_est: number;
+
+  /** Parts of the totals above, never added to them. `backfilled_*` prices
+   *  unpriced tokens at report time from the session's or agent's rate. */
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
+  /** Output tokens agents did not write, estimated from the paired benchmark
+   *  per question asked in each session with an MCP call. Null when no calibration could be loaded. */
+  output_tokens_saved_estimated?: number | null;
+  output_usd_saved_estimated?: number | null;
+  /** Priced input saving plus the estimated output saving. */
+  total_usd_saved_estimated?: number | null;
+  calibration?: SavingsOutputCalibration | null;
+}
+
+export interface SavingsOutputModelRow {
+  model: string | null;
+  /** "measured" | "anthropic_fallback" | "other_fallback" */
+  basis: string;
+  sessions: number;
+  questions: number;
+  mcp_calls_per_question: number;
+  reduction: number;
+  output_tokens_per_question: number;
+  output_tokens_saved: number;
+  output_rate_usd_per_million: number | null;
+  output_usd_saved: number | null;
+}
+
+export interface SavingsOutputCalibration {
+  source: string;
+  version: string;
+  /** True: credited per question asked, not once per session. */
+  per_question: boolean;
+  questions_per_session_cap: number;
+  formula: string;
+  sessions: number;
+  questions: number;
+  unpriced_output_tokens_saved: number;
+  per_model: SavingsOutputModelRow[];
 }
 
 // ---------------------------------------------------------------------------

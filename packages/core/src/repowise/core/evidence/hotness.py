@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
@@ -232,7 +232,8 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
     """The id of each workload's newest run, by name and environment.
 
     *runs* carry ``id``, ``workload_name``, ``environment`` and
-    ``measured_at`` (the ingest time when the run did not say).
+    ``measured_at``; a run that did not say when it was measured counts from
+    its ``ingested_at`` when it carries one.
     """
     newest: dict[tuple[str, str], Any] = {}
     for run in runs:
@@ -243,7 +244,11 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
 
 
 def _age_key(run: Any) -> tuple[float, str]:
-    return (run.measured_at.timestamp() if run.measured_at else 0.0, run.id)
+    at = run.measured_at or getattr(run, "ingested_at", None)
+    if at is None:
+        return (0.0, run.id)
+    # SQLite hands back the stored UTC time without its zone.
+    return (at.replace(tzinfo=at.tzinfo or UTC).timestamp(), run.id)
 
 
 def _workload_row(row: _Row) -> dict[str, Any]:

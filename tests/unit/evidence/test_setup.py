@@ -182,3 +182,34 @@ def test_reports_of_every_unit_are_ingested_in_one_call(tmp_path: Path) -> None:
     plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
 
     assert plan["next_call"]["steps"][0]["run"] == "repowise coverage add a/coverage.out b/coverage.out"
+
+
+def test_each_unit_says_how_its_tests_write_junit_timings(tmp_path: Path) -> None:
+    _python(tmp_path)
+    java = tmp_path / "svc"
+    (java / "src" / "test" / "java").mkdir(parents=True)
+    (java / "pom.xml").write_text("<project></project>")
+    (java / "src" / "test" / "java" / "CartTest.java").write_text("class CartTest {}")
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+
+    timings = {unit["root"]: unit["test_timings"] for unit in plan["units"]}
+    assert timings[""] == {
+        "flag": "--junitxml=junit.xml",
+        "report": "junit.xml",
+        "ingest": 'repowise evidence add junit.xml --workload "pytest tests" --class unit_test '
+        "--commit " + "a" * 40,
+    }
+    # Surefire writes its reports by default.
+    assert timings["svc"]["flag"] is None
+    assert timings["svc"]["report"] == "svc/target/surefire-reports"
+    # Timings rank tests; they are never a step of the loop.
+    assert "junit" not in json.dumps(plan["next_call"])
+
+
+def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    (unit,) = evidence_setup(tmp_path, indexed=True, coverage_only=True)["units"]
+
+    assert "test_timings" not in unit
