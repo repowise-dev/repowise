@@ -175,3 +175,114 @@ async def test_router_patch_unknown_repo_404(monkeypatch):
             request=None,
         )
     assert exc.value.status_code == 404
+
+
+def test_surface_command_reproduces_the_override(tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    assert describe_tool_surface(str(tmp_path))["command"] == "repowise config reset mcp.tools"
+
+    set_tool_override(str(tmp_path), ["core", "+get_health"])
+    assert describe_tool_surface(str(tmp_path))["command"] == (
+        "repowise config set mcp.tools core,+get_health"
+    )
+
+    # A value starting with "-" would read as an option without the separator.
+    set_tool_override(str(tmp_path), ["-get_why"])
+    assert describe_tool_surface(str(tmp_path))["command"] == (
+        "repowise config set mcp.tools -- -get_why"
+    )
+
+
+def test_client_tool_surface_per_client(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _tool_selection
+    from repowise.server.mcp_server._tool_selection import client_tool_surface
+
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
+    rw = tmp_path / ".repowise"
+    rw.mkdir()
+
+    claude = client_tool_surface(str(tmp_path), "claude_code")
+    cursor = client_tool_surface(str(tmp_path), "cursor")
+    assert (claude["profile"], cursor["profile"]) == ("standard", "core")
+    assert len(cursor["tools"]) < len(claude["tools"])
+    assert claude["always_load"] is False
+    assert cursor["always_load"] is None
+
+    (rw / "config.yaml").write_text(
+        "mcp:\n  tools: [+get_health]\n  always_load: true\n", encoding="utf-8"
+    )
+    cursor = client_tool_surface(str(tmp_path), "cursor")
+    assert cursor["profile"] == "core"
+    assert "get_health" in cursor["tools"]
+    assert client_tool_surface(str(tmp_path), "claude_code")["always_load"] is True
+
+    # An exact list is the same tools for every client, under no profile.
+    (rw / "config.yaml").write_text("mcp:\n  tools: [get_answer]\n", encoding="utf-8")
+    assert client_tool_surface(str(tmp_path), "cursor") == {
+        "profile": None,
+        "tools": ["get_answer"],
+        "always_load": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_config_runs_print_config(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from repowise.server.routers import mcp as mcp_router
+    from repowise.server.services.setup_cli import CliRun
+
+    (tmp_path / ".repowise").mkdir()
+    calls: list[list[str]] = []
+
+    async def fake_repo_path(_request, repo_id):
+        return str(tmp_path) if repo_id == "r1" else None
+
+    def fake_run(args, *, cwd, timeout):
+        calls.append(args)
+        if args[:2] == ["agents", "print-config"]:
+            return CliRun(0, f'{{"config": "snippet for {args[2]}", "docs_url": "u"}}', "")
+        return CliRun(1, "", "boom")
+
+    monkeypatch.setattr(mcp_router, "_repo_path_for", fake_repo_path)
+    monkeypatch.setattr(mcp_router.setup_cli, "run_cli", fake_run)
+    monkeypatch.setattr(
+        mcp_router.setup_cli,
+        "agents_json",
+        lambda _p: {
+            "agents": [
+                {"id": "claude-code", "display_name": "Claude Code"},
+                {"id": "cursor", "display_name": "Cursor"},
+            ]
+        },
+    )
+    monkeypatch.setattr(mcp_router, "_clients", None)
+
+    first = await mcp_router.get_client_config(request=None, repo_id="r1")
+    assert first.target == "claude-code"
+    assert first.config == "snippet for claude-code"
+    assert first.profile == "standard"
+    assert first.always_load is False
+    assert [c.id for c in first.clients] == ["claude-code", "cursor"]
+
+    cursor = await mcp_router.get_client_config(request=None, repo_id="r1", target="cursor")
+    assert (cursor.display_name, cursor.profile, cursor.always_load) == ("Cursor", "core", None)
+    assert calls[-1] == ["agents", "print-config", "cursor", str(tmp_path), "--format", "json"]
+
+    with pytest.raises(HTTPException) as unknown:
+        await mcp_router.get_client_config(request=None, repo_id="r1", target="nope")
+    assert unknown.value.status_code == 404
+    with pytest.raises(HTTPException) as missing:
+        await mcp_router.get_client_config(request=None, repo_id="gone")
+    assert missing.value.status_code == 404
+
+    malformed = CliRun(0, '{"config": 3}', "")
+    monkeypatch.setattr(mcp_router.setup_cli, "run_cli", lambda *a, **k: malformed)
+    with pytest.raises(HTTPException) as bad:
+        await mcp_router.get_client_config(request=None, repo_id="r1", target="cursor")
+    assert bad.value.status_code == 502
+
+    monkeypatch.setattr(mcp_router.setup_cli, "run_cli", lambda *a, **k: CliRun(None, "", "x"))
+    with pytest.raises(HTTPException) as failed:
+        await mcp_router.get_client_config(request=None, repo_id="r1", target="cursor")
+    assert failed.value.status_code == 502

@@ -28,8 +28,11 @@ from repowise.core.registry import ToolEntry, mcp_tool_registry
 from repowise.core.registry.tool_selection import (
     ALL,
     ALWAYS_LOAD_TOOLS,
+    DEFERRED_SCHEMA_CLIENTS,
     PROFILES,
     AvailabilityFacts,
+    default_profile,
+    is_delta,
     normalize_override,
     resolve_enabled_tools,
     split_profile,
@@ -373,6 +376,43 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
         "profile": split_profile(normalize_override(override))[0],
         "profiles": {name: sorted(resolve(name)) for name in PROFILES},
         "tools": tools,
+        "command": _config_command(override),
+    }
+
+
+def _config_command(override: str | Sequence[str] | None) -> str:
+    """The ``repowise config`` command that leaves ``mcp.tools`` at *override*."""
+    from repowise.core.settings.views import set_command
+
+    tokens = normalize_override(override)
+    return set_command("mcp.tools", tokens) if tokens else "repowise config reset mcp.tools"
+
+
+def client_tool_surface(repo_path: str | None, client: str) -> dict[str, Any]:
+    """What one client lists for a repo: its profile, tool names and always-load state.
+
+    *client* is an agent slug (``claude_code``). ``profile`` is ``None`` when
+    ``mcp.tools`` is an exact list of names; ``always_load`` is ``None`` for a
+    client that loads every schema up front, where the setting does nothing.
+    """
+    _ensure_registered()
+    override = _read_config_override(repo_path)
+    tokens = normalize_override(override)
+    named, rest = split_profile(tokens)
+    exact = bool(rest) and named is None and not is_delta(rest)
+    names = resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=override,
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+    return {
+        "profile": None if exact else named or default_profile(client),
+        "tools": sorted(names),
+        "always_load": (
+            _read_always_load(repo_path) if client in DEFERRED_SCHEMA_CLIENTS else None
+        ),
     }
 
 

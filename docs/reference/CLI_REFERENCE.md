@@ -515,7 +515,7 @@ repowise context src/api/routes.py::login --include callers --include metrics
 |------|--------------|---------|
 | `--include` | Opt-in block, repeatable; values below. | |
 | `--no-compact` | Add structure, imports, docstrings. | off |
-| `--symptom` | Issue text, error or stack trace for `--include suspects`. | |
+| `--symptom` | Issue text, error or stack trace to rank suspects against; adds `--include suspects`. | |
 
 Plus the [shared options](#shared-options-ask-context-symbol-why).
 

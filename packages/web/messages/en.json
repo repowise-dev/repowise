@@ -1103,7 +1103,18 @@
       "title": "Editor config",
       "description": "Paste this into Claude Code, Cursor or Cline to let the agent query this codebase. Replace the path with the repo you want served, and index it first so there is something to answer from.",
       "serverLabel": "MCP server",
-      "serverHint": "Goes in your editor's MCP config file."
+      "serverHint": "Pick your agent: the config is in its own format, with the repository's path filled in. Index the repository first so there is something to answer from.",
+      "agent": "Agent",
+      "repo": "Repository",
+      "snippet": "{agent} MCP config",
+      "surface": "{agent} lists {count} tools, the {profile} profile.",
+      "surfaceExact": "{agent} lists {count} tools, the exact list in mcp.tools.",
+      "alwaysLoadOn": "Read tools load from the first turn (mcp.always_load is on).",
+      "alwaysLoadOff": "Read tools load through tool search (mcp.always_load is off).",
+      "docs": "{agent} MCP docs",
+      "loading": "Loading the config...",
+      "loadFailed": "Could not load the config",
+      "noRepos": "Add a repository first: the config points the agent at one."
     },
     "mcpTools": {
       "title": "Tool surface",
@@ -1121,6 +1132,8 @@
       "restart": "Applies when the MCP server next starts: restart it, or your agent.",
       "coreBadge": "core",
       "tokens": "~{n} tokens",
+      "sameAs": "Same as",
+      "alwaysLoad": "Load the read tools up front",
       "perRepoLabel": "Tools per repository",
       "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
       "chooseTools": "Choose tools",
