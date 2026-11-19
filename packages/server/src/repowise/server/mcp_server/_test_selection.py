@@ -168,6 +168,10 @@ def _change_identity(change: Any) -> str:
 
 def _tree_stamp(root: str) -> str | None:
     """What the checkout's dirty paths are and when each last changed; ``None`` when git fails."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         out = subprocess.run(
             # .repowise is excluded: the server writes there on every call.
