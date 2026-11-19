@@ -20,7 +20,8 @@ import posixpath
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote
 
 from repowise.core.callable_spans import body_span
@@ -159,6 +160,97 @@ def resolve_frames(
     return FrameResolution(tuple(resolved), tuple(reasons))
 
 
+def frame_paths(frames: Iterable[ProfileFrame], *, root: str) -> set[str]:
+    """The repo-relative paths of the *frames* that sit under *root*.
+
+    What a caller loads symbols for before :func:`resolve_frames`, so a
+    profile with frames in thousands of runtime files reads only its own.
+    """
+    paths = _PathMap(root, {}, ())
+    return {rel for frame in frames if (rel := paths.relative(frame.path)) is not None}
+
+
+def checkout_reader(root: str | Path) -> Callable[[str], list[str] | None]:
+    """A ``read_lines`` for :func:`resolve_frames` that reads files under *root*."""
+    base = Path(root)
+
+    def read_lines(rel: str) -> list[str] | None:
+        try:
+            return (base / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+
+    return read_lines
+
+
+async def load_frame_symbols(
+    session: Any, repository_id: str, paths: Collection[str], *, fold_case: bool = False
+) -> tuple[dict[str, list[IndexedSymbol]], dict[str, str]]:
+    """``symbols_by_file`` and ``origins`` for :func:`resolve_frames`, from the store.
+
+    A path is indexed when it has a symbol or a stored health row, so a file
+    indexed with no symbols still maps (to an empty list). Paths match
+    exactly; with *fold_case* (a Windows checkout) a path no exact match found
+    is looked up again without case, and :func:`resolve_frames` then takes the
+    index's spelling.
+    """
+    symbols: dict[str, list[IndexedSymbol]] = {}
+    origins: dict[str, str] = {}
+    await _load_spans(session, repository_id, sorted(set(paths)), symbols, origins, fold=False)
+    if fold_case:
+        found = {p.casefold() for p in symbols}
+        missed = sorted({p.lower() for p in paths if p.casefold() not in found})
+        # A lower() lookup cannot use the path index, so only the misses take it.
+        await _load_spans(session, repository_id, missed, symbols, origins, fold=True)
+    return symbols, origins
+
+
+async def _load_spans(
+    session: Any,
+    repository_id: str,
+    wanted: list[str],
+    symbols: dict[str, list[IndexedSymbol]],
+    origins: dict[str, str],
+    *,
+    fold: bool,
+) -> None:
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
+    from repowise.core.workspace.repo_index import IndexedSymbol
+
+    def match(column: Any, chunk: list[str]) -> Any:
+        return (func.lower(column) if fold else column).in_(chunk)
+
+    for i in range(0, len(wanted), 400):
+        chunk = wanted[i : i + 400]
+        rows = await session.execute(
+            select(
+                WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name,
+                WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line,
+                WikiSymbol.end_line,
+            ).where(WikiSymbol.repository_id == repository_id, match(WikiSymbol.file_path, chunk))
+        )
+        for r in rows:
+            symbols.setdefault(r.file_path, []).append(
+                IndexedSymbol(
+                    symbol_id=r.symbol_id, name=r.name, qualified_name=r.qualified_name,
+                    kind=r.kind, signature="", file_path=r.file_path,
+                    start_line=r.start_line, end_line=r.end_line, visibility="",
+                )
+            )
+        metrics = await session.execute(
+            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                HealthFileMetric.repository_id == repository_id,
+                match(HealthFileMetric.file_path, chunk),
+            )
+        )
+        for path, origin in metrics:
+            symbols.setdefault(path, [])
+            if origin:
+                origins[path] = origin
+
+
 def _resolve(
     frame: ProfileFrame,
     paths: _PathMap,
@@ -166,11 +258,11 @@ def _resolve(
     origins: Mapping[str, str] | None,
     read_lines: Callable[[str], list[str] | None] | None,
 ) -> tuple[str, _Hit] | SkipReason:
-    if frame.language not in ("go", "python", "javascript"):
-        return "unsupported_language"
     rel = paths.relative(frame.path)
     if rel is None:
         return "outside_root"
+    if frame.language not in ("go", "python", "javascript"):
+        return "unsupported_language"
     if frame.line < 1:
         return "bad_line"
     indexed = paths.indexed(rel)
@@ -464,5 +556,8 @@ __all__ = [
     "ProfileFrame",
     "ResolvedFrame",
     "SkipReason",
+    "checkout_reader",
+    "frame_paths",
+    "load_frame_symbols",
     "resolve_frames",
 ]

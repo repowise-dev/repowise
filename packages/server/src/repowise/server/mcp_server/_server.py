@@ -134,6 +134,13 @@ def _is_keyless_name(name: str) -> bool:
     return not name or name == "mock"
 
 
+def _embedder_lacks_key(name: str) -> bool:
+    """Whether *name* needs an API key and none is set: it builds as keyless."""
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    return bool(EMBEDDER_KEY_ENVS.get(name)) and _persisted_embedder_key(name) is None
+
+
 def _persisted_embedder_key(name: str) -> str | None:
     """The configured embedder's API key: env > repo ``.env`` > global config.
 
@@ -431,10 +438,12 @@ async def _warm_lancedb() -> None:
     ``_failure_shield``), so the two never overlap.
 
     A keyless embedder never runs the vector leg, so nothing reads LanceDB and
-    the import is skipped: no tool call waits on it.
+    the import is skipped: no tool call waits on it. That includes a keyed
+    embedder with no key, which :func:`_resolve_embedder` serves as keyless.
     """
     try:
-        if _is_keyless_name(_configured_embedder_name()):
+        name = _configured_embedder_name()
+        if _is_keyless_name(name) or _embedder_lacks_key(name):
             return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:

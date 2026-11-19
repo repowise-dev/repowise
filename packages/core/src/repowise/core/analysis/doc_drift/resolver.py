@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 from repowise.core.ingestion.special_handlers import iter_make_targets
 
@@ -322,7 +324,11 @@ def readings(doc: str, raw: str, target: str, *, is_link: bool) -> tuple[str, ..
     first, then the root ("Run ``./scripts/setup.sh``" in ``docs/``).
     """
     if is_link:
-        return (target if raw.startswith(("/", "#")) else join_relative(doc, target),)
+        if raw.startswith("#"):
+            return (target,)
+        with suppress(UnicodeDecodeError):
+            target = unquote(target, errors="strict")
+        return (target if raw.startswith("/") else join_relative(doc, target),)
     relative = join_relative(doc, target)
     if relative == target:
         return (target,)

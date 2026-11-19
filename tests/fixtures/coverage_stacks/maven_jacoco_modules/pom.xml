@@ -1,0 +1,1 @@
+<project><modules><module>core</module></modules><build><plugins><plugin><artifactId>jacoco-maven-plugin</artifactId></plugin></plugins></build></project>

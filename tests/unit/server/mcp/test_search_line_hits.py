@@ -479,7 +479,7 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
         ("app/widget.py", 1, "import"),
         ("app/widget.py", 6, "call"),
         ("tests/test_widget.py", 1, "import"),
-        *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
+        *(("tests/test_widget.py", n, "string") for n in range(2, 2 + cap)),
     ]
     assert out["lines_omitted"] == 20 - cap
     assert "lines_omitted_by_file" not in out
@@ -864,7 +864,8 @@ def test_the_small_set_bound_is_inclusive(tmp_path):
     assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons
 
 
-def test_oversized_text_is_streamed_for_its_lines(tmp_path):
+def test_oversized_text_is_streamed_for_its_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", 30.0)
     lines = [f"let row{i} = {i}" for i in range(200_000)]
     lines[150_000] = 'let banner = "section1234"'
     (tmp_path / "Big.swift").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1053,3 +1054,60 @@ def test_a_group_drops_its_tests_only_beside_shipped_code():
 
     assert groups == [[shipped], only_tests]
     assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]
+
+
+@pytest.mark.parametrize("query", ["backend_of", "pkg.catalog.backend_of"])
+async def test_an_incomplete_edit_set_says_which_search_lists_every_line(
+    tree, session, monkeypatch, query
+):
+    # An uncommitted file the index never read names the symbol: the edit set
+    # cannot vouch for it, and the hint names the scan that reads it. A
+    # qualified query's edit set scans the bare name, and the hint names it.
+    (await session.get(GraphNode, "lh_sym")).qualified_name = "pkg.catalog.backend_of"
+    await session.commit()
+    (tree / "app" / "late.py").write_text(
+        "import pkg.catalog as c\nc.backend_of('n')\n", encoding="utf-8"
+    )
+    _dirty(monkeypatch, frozenset({"app/late.py"}))
+
+    out = await search_codebase(query, mode="symbol")
+
+    assert out["complete"] is False
+    assert out["hint"] == _edit_sites.incomplete_hint("backend_of")
+    follow = await search_codebase(r"\bbackend_of\b")
+    assert ("app/late.py", 2) in {(r["path"], r["line"]) for r in follow["lines"]}
+
+
+async def test_a_cut_naming_where_the_rest_are_gets_no_hint(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["complete"] is False
+    assert "hint" not in out
+
+
+async def test_a_cut_to_the_line_cap_gets_no_hint(tree, monkeypatch):
+    # The edit set is whole; the lines past the cap are under _meta.omitted,
+    # and the text search would stop at the same cap.
+    monkeypatch.setattr(_line_hits, "MAX_LINES", 1)
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["reasons"] == [_line_hits.OVER_LINES]
+    assert "hint" not in out
+
+
+@pytest.mark.parametrize(
+    ("name", "ok"),
+    [("backend_of", True), ("$el", True), ("été", True), ("_x1", True), ("1x", False), ("a b", False)],
+)
+def test_the_hint_takes_a_name_any_letter_opens(name, ok):
+    assert bool(_line_hits._IDENTIFIER.fullmatch(name)) is ok

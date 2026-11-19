@@ -49,17 +49,17 @@ import pathspec
 from ..ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
+from ..test_runners import JS_SUFFIXES, PYTHON_SUFFIXES
 from .test_selection import (
-    JS_SUFFIXES,
     NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
-    PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
     TestSelectionConfig,
     full_run_on_spec,
     full_run_reason,
     is_code_file,
     is_documentation,
+    is_ordinary_module,
     is_runnable_test,
 )
 
@@ -171,13 +171,21 @@ class Scope:
         return self.basis == NO_TESTS_NEEDED
 
 
-def needs_namers(path: str, config: TestSelectionConfig) -> bool:
-    """Whether :func:`trigger_scopes` needs to know who names *path*."""
+def needs_namers(
+    path: str, config: TestSelectionConfig, project_dirs: Collection[str] | None = None
+) -> bool:
+    """Whether :func:`trigger_scopes` needs to know who names *path*.
+
+    *project_dirs* are :func:`~.test_selection.project_dirs`, as for the
+    functions below; ``None`` lets a file's name decide.
+    """
     if is_fixture_data(path, config):
         return True
     if is_test_related_path(path) or _configured(path, config):
         return False
-    return _ecosystem(path) is not None or (full_run_reason(path) is None and _is_asset(path))
+    return _ecosystem(path, project_dirs) is not None or (
+        full_run_reason(path, project_dirs=project_dirs) is None and _is_asset(path)
+    )
 
 
 def is_fixture_data(path: str, config: TestSelectionConfig) -> bool:
@@ -198,13 +206,16 @@ def is_manifest(path: str) -> bool:
     return _ecosystem(path) is not None
 
 
-def keeps_full_run(path: str, config: TestSelectionConfig) -> bool:
+def keeps_full_run(
+    path: str, config: TestSelectionConfig, project_dirs: Collection[str] | None = None
+) -> bool:
     """Whether *path* runs everything whatever names it, so no namer search can help."""
-    if full_run_reason(path, config.full_run_on) is None or is_fixture_data(path, config):
+    why = full_run_reason(path, config.full_run_on, project_dirs)
+    if why is None or is_fixture_data(path, config):
         return False
     if is_test_related_path(path) or _configured(path, config):
         return True
-    return full_run_reason(path) != PACKAGE_INIT_REASON and _ecosystem(path) is None
+    return why != PACKAGE_INIT_REASON and _ecosystem(path, project_dirs) is None
 
 
 def trigger_scopes(
@@ -212,6 +223,7 @@ def trigger_scopes(
     tracked: Collection[str],
     namers: Mapping[str, Collection[str]],
     config: TestSelectionConfig,
+    project_dirs: Collection[str] | None = None,
 ) -> dict[str, Scope]:
     """The :class:`Scope` each of *paths* runs instead of every test, where it has one.
 
@@ -222,7 +234,8 @@ def trigger_scopes(
     tree = _Tree(tuple(tracked))
     out: dict[str, Scope] = {}
     for path in paths:
-        if scope := _trigger_scope(path, tree, tuple(namers.get(path, ())), config):
+        named = tuple(namers.get(path, ()))
+        if scope := _trigger_scope(path, tree, named, config, project_dirs):
             out[path] = scope
     return out
 
@@ -276,17 +289,21 @@ class _Tree:
 
 
 def _trigger_scope(
-    path: str, tree: _Tree, namers: tuple[str, ...], config: TestSelectionConfig
+    path: str,
+    tree: _Tree,
+    namers: tuple[str, ...],
+    config: TestSelectionConfig,
+    project_dirs: Collection[str] | None,
 ) -> Scope | None:
     if _configured(path, config):
         return None  # the config asked for a full run
     if is_fixture_data(path, config):
         return _readers_scope(namers)
-    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
+    why = full_run_reason(path, project_dirs=project_dirs)
+    if is_test_related_path(path) or why == SHARED_TEST_DATA_REASON:
         return None  # read by tests anywhere: the test-tree rule decides
-    if eco := _ecosystem(path):
+    if eco := _ecosystem(path, project_dirs):
         return _ecosystem_scope(path, eco, tree, namers)
-    why = full_run_reason(path)
     if why == PACKAGE_INIT_REASON:
         return _package_scope(path, tree)
     if why is not None or not _is_asset(path):
@@ -309,7 +326,11 @@ def _configured(path: str, config: TestSelectionConfig) -> bool:
     return bool(config.full_run_on) and full_run_on_spec(config.full_run_on).match_file(path)
 
 
-def _ecosystem(path: str) -> tuple[str, tuple[str, ...], bool] | None:
+def _ecosystem(
+    path: str, project_dirs: Collection[str] | None = None
+) -> tuple[str, tuple[str, ...], bool] | None:
+    if is_ordinary_module(path, project_dirs):
+        return None
     for lang, suffixes, scoped, spec in _ECOSYSTEM_SPECS:
         if spec.match_file(path):
             return lang, suffixes, scoped

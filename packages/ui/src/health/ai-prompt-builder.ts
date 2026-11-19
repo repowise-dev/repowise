@@ -104,7 +104,12 @@ export {
   type AreaPromptFinding,
   type BuildAreaPromptOptions,
 } from "./ai-prompts/area-prompt";
-export { buildSetupAiPrompt, type SetupPromptRow } from "./ai-prompts/setup-prompt";
+export {
+  buildConnectEvidencePrompt,
+  buildSetupAiPrompt,
+  CONNECT_EVIDENCE,
+  type SetupPromptRow,
+} from "./ai-prompts/setup-prompt";
 export {
   buildPerformanceAreaPrompt,
   type BuildPerformanceAreaPromptOptions,

@@ -207,6 +207,9 @@ async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path, mo
     prefix says which ref shape to fetch.
     """
     _outside_ci(monkeypatch)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
     seed = tmp_path / "seed"
     url = "https://git.corp.example/group/project.git"
     base, head = _repo_with_request(seed, url=url, ref="refs/merge-requests/5/head")
@@ -237,7 +240,10 @@ async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path, mo
     newer = _commit(seed, {"extra.py": "y = 1\n"}, "feat: more")
     _git(seed, "checkout", "-q", "main")
     _git(seed, "update-ref", "refs/merge-requests/5/head", newer)
-    _git(bare, "fetch", "-q", str(seed), "+refs/merge-requests/5/head:refs/merge-requests/5/head")
+    _git(
+        bare, f"--git-dir={bare}", "fetch", "-q", str(seed),
+        "+refs/merge-requests/5/head:refs/merge-requests/5/head",
+    )
     again = await client.post(url_change, json={"change_id": "mr:5"})
     assert again.json()["change_id"] == f"mr:5@{base}...{newer}"
 

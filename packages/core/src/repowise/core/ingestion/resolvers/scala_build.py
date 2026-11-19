@@ -27,8 +27,15 @@ _SBT_PROJECT_RE = re.compile(
     r'(?:project|Project)\b[^\n]*?\.in\(\s*file\(\s*"([^"]+)"\s*\)\s*\)',
     re.DOTALL,
 )
-# Match .dependsOn(...) calls, capturing the argument list inside parens.
-_DEPENDS_ON_RE = re.compile(r'\.dependsOn\s*\(([^)]*)\)', re.DOTALL)
+# Match the start of a .dependsOn( call; the argument list is read balanced.
+_DEPENDS_ON_RE = re.compile(r'\.dependsOn\s*\(')
+# Strings first so a "//" inside one is not taken for a comment.
+_STRING_OR_COMMENT_RE = re.compile(
+    r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|//[^\n]*|/\*[\s\S]*?\*/'
+)
+# A top-level val declaration ends the previous project's text.
+_VAL_DECL_RE = re.compile(r'^(?:lazy\s+)?val\s', re.MULTILINE)
+_SEQ_ARG_RE = re.compile(r'(?:Seq|List|Vector)\s*\((.*)\)\s*$', re.DOTALL)
 _MILL_OBJECT_RE = re.compile(
     r'object\s+(\w+)\s+extends\s+([\w.]+(?:\s*with\s+[\w.]+)*)',
 )
@@ -54,14 +61,58 @@ class ScalaProjectIndex:
         ]
 
 
+def _strip_comments(text: str) -> str:
+    """*text* without ``//`` and ``/* */`` comments (nested block comments are not tracked)."""
+    return _STRING_OR_COMMENT_RE.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else " ", text
+    )
+
+
+def _balanced_args(text: str, start: int) -> str:
+    """The text after the ``(`` before *start* up to its matching ``)``; parens inside strings are not skipped."""
+    depth = 1
+    for i in range(start, len(text)):
+        depth += (text[i] == "(") - (text[i] == ")")
+        if depth == 0:
+            return text[start:i]
+    return text[start:]
+
+
+def _split_top_level(args_text: str) -> list[str]:
+    """Split *args_text* on commas outside parentheses."""
+    pieces: list[str] = []
+    depth = 0
+    last = 0
+    for i, ch in enumerate(args_text):
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            pieces.append(args_text[last:i])
+            last = i + 1
+    pieces.append(args_text[last:])
+    return pieces
+
+
 def _parse_depends_on_args(args_text: str) -> list[str]:
-    """Parse dependsOn arguments, extracting project names by leading identifier."""
+    """Parse dependsOn arguments, extracting project names by leading identifier.
+
+    ``Seq(a, b): _*`` is unwrapped; ``a % "test->test"`` yields ``a``.
+    """
     result: list[str] = []
-    for piece in args_text.split(","):
-        match = re.match(r"\s*(\w+)", piece)
-        if match:
-            result.append(match.group(1))
+    for piece in _split_top_level(args_text):
+        piece = re.sub(r":\s*_\*\s*$", "", piece.strip())
+        if seq := _SEQ_ARG_RE.match(piece):
+            result.extend(_parse_depends_on_args(seq.group(1)))
+        elif match := re.match(r"\w+", piece):
+            result.append(match.group(0))
     return result
+
+
+def _project_deps(project_text: str) -> tuple[str, ...]:
+    """The project names every ``dependsOn`` call in *project_text* names, deduped in order."""
+    deps: list[str] = []
+    for call in _DEPENDS_ON_RE.finditer(project_text):
+        deps.extend(_parse_depends_on_args(_balanced_args(project_text, call.end())))
+    return tuple(dict.fromkeys(deps))
 
 
 def _parse_build_sbt(repo_path: Path) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
@@ -73,25 +124,18 @@ def _parse_build_sbt(repo_path: Path) -> tuple[dict[str, str], dict[str, tuple[s
     if not build.is_file():
         return {}, {}
     try:
-        text = build.read_text(encoding="utf-8", errors="ignore")
+        text = _strip_comments(build.read_text(encoding="utf-8", errors="ignore"))
     except Exception:
         return {}, {}
     projects: dict[str, str] = {}
-    depends_on: dict[str, list[str]] = {}
-    matches = list(_SBT_PROJECT_RE.finditer(text))
-    for i, match in enumerate(matches):
+    depends_on: dict[str, tuple[str, ...]] = {}
+    decl_starts = [m.start() for m in _VAL_DECL_RE.finditer(text)]
+    for match in _SBT_PROJECT_RE.finditer(text):
         name = match.group(1)
         projects[name] = match.group(2).strip("./")
-        # Get text from this project to the next one (or end of file)
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        project_text = text[start:end]
-        # Find all dependsOn calls in this project's text
-        deps = []
-        for dep_match in _DEPENDS_ON_RE.finditer(project_text):
-            args_text = dep_match.group(1)
-            deps.extend(_parse_depends_on_args(args_text))
-        depends_on[name] = tuple(dict.fromkeys(deps))  # dedupe, preserve order
+        # The project's text ends at the next val declaration, matched or not.
+        end = next((pos for pos in decl_starts if pos > match.start()), len(text))
+        depends_on[name] = _project_deps(text[match.end() : end])
     return projects, depends_on
 
 

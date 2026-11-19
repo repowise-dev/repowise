@@ -177,52 +177,25 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 
 ```python
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"])
 get_health(opportunity_id="perf...")
 ```
 
-## Runtime evidence format
+`performance_measured` lists, for each workload's newest run, the functions
+ranked by self time (waits excluded), each with its workload class, age, sample
+size, interval and where the run's time went (repo code itself, waits,
+libraries)
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
+stored it says `no_runtime_data` and names `repowise evidence setup`.
 
-Evidence from a real run (a profile, benchmark results, test timings, query
-counts) normalizes to one JSON shape, `repowise-evidence-v1`, before it is
-joined to the code by
-[`repowise evidence add`](../reference/CLI_REFERENCE.md#repowise-evidence). One
-file holds one run of one kind:
+## Runtime evidence
 
-```json
-{ "format": "repowise-evidence-v1", "kind": "profile",
-  "commit_sha": "<40 hex>", "dirty": false,
-  "tool": { "name": "pyinstrument", "version": "4.6.2" },
-  "value_kind": "wall", "unit": "samples", "total": 5300, "explained": 580,
-  "skipped": { "outside_repo": 812 },
-  "symbols": [ { "path": "src/app/cli.py", "function": "build", "line": 40,
-                 "self": 12, "total": 410 } ] }
-```
-
-| `kind` | Entry list | Entry fields |
-|---|---|---|
-| `profile` | `symbols` | location; `self` and `total` in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
-| `benchmark` | `benchmarks` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
-| `test_timing` | `tests` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required) |
-| `query_count` | `queries` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
-
-- A location is `path` (repo-relative, forward slashes), `function` (the
-  qualified name) and `line` (where the function starts).
-- `value_kind` (`cpu` or `wall`) and `unit` are required for a profile.
-  `total` and `explained` (the value with a repo frame on the stack) say how
-  much of the run repo code explains.
-- `commit_sha` (the full 40-character lowercase SHA), `dirty` and `tool` are
-  optional. `tool` fields and `unit` are single words. `skipped` carries the
-  entries the converter dropped, by reason (lowercase words; anything else
-  counts as `other`).
-- A test timing's unit is seconds and a query count's is statements, whatever
-  the document says. An optional location that breaks the path rules is
-  dropped and the entry kept.
-- Paths stay repo-relative. The format has no field for labels, environment
-  variables or command lines, and fields it does not name are never read.
-- A file that is not this format, names another `kind` or carries a malformed
-  `commit_sha` is refused with a hint. A bad entry (an absolute path, a path
-  outside the repo, no value, statement text instead of a digest, a repeat) is
-  skipped and counted by reason. A missing value is unknown, never zero.
+The findings above come from structure. To add what a real run showed (a
+profile, benchmark results, test timings or query counts), follow
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md): `repowise evidence setup` prints
+what to run here, `repowise evidence add` joins the result to the indexed
+functions, and `repowise evidence status` shows what is stored and how fresh it
+is.
 
 ## Limits
 

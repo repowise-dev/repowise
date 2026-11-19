@@ -344,3 +344,19 @@ def test_go_span_lookup_sees_functions_only() -> None:
     syms = {"t.go": [_sym("t.go", "t.T", 10, 20, "struct"), _sym("t.go", "t.f", 30, 40)]}
     frame = ProfileFrame(f"{ROOT}/t.go", 12, "go", function="t.x", start_line=10)
     assert resolve_frames([frame], root=ROOT, symbols_by_file=syms).skipped == {"no_span": 1}
+
+
+def test_a_frame_outside_the_root_is_outside_whatever_its_language() -> None:
+    frame = ProfileFrame("C:/Python/lib/json.py", 5, "unknown", function="x")  # type: ignore[arg-type]
+    assert _resolve(frame).skipped == {"outside_root": 1}
+
+
+def test_frame_paths_lists_only_files_under_the_root() -> None:
+    from repowise.core.frame_resolver import frame_paths
+
+    frames = [
+        ProfileFrame(f"{ROOT}/pkg/app.py", 5, "python"),
+        ProfileFrame("C:/work/other/pkg/app.py", 5, "python"),
+        ProfileFrame("<built-in>", 0, "python"),
+    ]
+    assert frame_paths(frames, root=ROOT) == {"pkg/app.py"}

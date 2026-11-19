@@ -43,7 +43,10 @@ _UNKNOWN_ONLY_HINT = (
 #: Keys built only when ``include`` asks (blocks.py, pillars.py): a missing
 #: include, not a misspelling, is why such a key is absent.
 _INCLUDE_OF_KEY = {
-    **dict.fromkeys(("performance_opportunities", "performance_summary"), "performance"),
+    **dict.fromkeys(
+        ("performance_opportunities", "performance_summary", "performance_measured"),
+        "performance",
+    ),
     **dict.fromkeys(
         (
             "refactoring_opportunities",

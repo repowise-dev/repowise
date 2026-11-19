@@ -8,14 +8,19 @@ them from the server, and ``tests/fixtures/agent_prompts`` pins the bytes.
 from __future__ import annotations
 
 from .action import render_action
+from .evidence import CONNECT_EVIDENCE, render_connect_evidence
+from .fix_and_verify import render_fix_and_verify
 from .fix_first import render_fix_item, render_verify_lines
 from .preamble import FLAVORS, Flavor
 from .refactoring import render_opportunity, render_plan
 
 __all__ = [
+    "CONNECT_EVIDENCE",
     "FLAVORS",
     "Flavor",
     "render_action",
+    "render_connect_evidence",
+    "render_fix_and_verify",
     "render_fix_item",
     "render_opportunity",
     "render_plan",

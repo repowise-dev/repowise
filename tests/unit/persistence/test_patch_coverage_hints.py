@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from dataclasses import replace
 
-from repowise.core.analysis.health.coverage import file_coverage
+from repowise.core.analysis.health.coverage import TestCoverage, file_coverage
 from repowise.core.analysis.patch_coverage import (
     PatchScope,
     compute_patch_coverage,
     read_test_hints,
 )
-from repowise.core.persistence.models import GraphEdge, GraphNode, TestCoverageEntry, WikiSymbol
+from repowise.core.persistence.crud import save_test_coverage
+from repowise.core.persistence.models import GraphEdge, GraphNode, WikiSymbol
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -58,17 +58,23 @@ async def _index(session, repo_id: str) -> None:
                     ("tests/test_io.py", "src/auth.py", "imports"),
                 )
             ),
-            TestCoverageEntry(
-                repository_id=repo_id,
-                test_id="tests/test_util.py::test_x",
-                test_file="tests/test_util.py",
-                source_file="src/util.py",
-                covered_lines_json=json.dumps([3, 4]),
-                source_format="coverage.py",
-            ),
         ]
     )
     await session.flush()
+    await save_test_coverage(
+        session,
+        repo_id,
+        [
+            TestCoverage(
+                test_id="tests/test_util.py::test_x",
+                file_path="src/util.py",
+                covered_lines=[3, 4],
+                source_format="coverage.py",
+                test_file="tests/test_util.py",
+            )
+        ],
+        source_format="coverage.py",
+    )
 
 
 async def test_each_range_gets_its_strongest_evidence(async_session):

@@ -9,9 +9,9 @@ is chosen when any of these hold:
 1. there is no change to select from;
 2. a changed or deleted file can change any test: a dependency lock or
    manifest no ecosystem scope covers, build configuration (a Makefile, a
-   Dockerfile), runtime or package manager configuration (``.nvmrc``,
-   ``.tool-versions``), a shared test helper, CI config, Repowise's own
-   config, or a path listed in ``tests.full_run_on``;
+   Dockerfile, a ``setup.py`` at a project root), runtime or package manager
+   configuration (``.nvmrc``, ``.tool-versions``), a shared test helper, CI
+   config, Repowise's own config, or a path listed in ``tests.full_run_on``;
 3. a changed or deleted file sits in a test tree but is not code (data, a
    snapshot, a golden file), or is a helper module no test imports;
 4. a changed file is neither code nor documentation and has no scope (below),
@@ -67,7 +67,6 @@ from __future__ import annotations
 
 import functools
 import re
-import shlex
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
@@ -75,6 +74,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
@@ -83,19 +83,26 @@ from ..test_paths import (
     is_test_related_path,
     is_test_support_module,
     is_test_support_path,
+    nodeid_without_phase,
     paired_test_names,
 )
+from ..test_runners import PYTHON_SUFFIXES, TEST_CODE_SUFFIXES, is_code_file
+
+# Runner rendering moved to its owner; these names stay importable from here.
+from ..test_runners import RUN_ALL as RUN_ALL
+from ..test_runners import RUNNERS as RUNNERS
+from ..test_runners import format_args as format_args
+from ..test_runners import left_out as left_out
+from ..test_runners import resolve_runner as resolve_runner
+from ..test_runners import runner_args as runner_args
+from ..test_runners import runner_notes as runner_notes
 
 if TYPE_CHECKING:
     from .selection_scopes import Scope
 
-#: Printed alone instead of arguments when every test must run.
-RUN_ALL = ":all"
-
-RUNNERS = ("auto", "pytest", "go", "jest", "files")
-
 SHARED_TEST_DATA_REASON = "shared test data can change any test"
 DEPENDENCIES_REASON = "dependencies can change any test"
+BUILD_CONFIG_REASON = "build or test configuration can change any test"
 
 # (why it forces a full run, gitwildmatch patterns). The config extends these,
 # never replaces them. Ceiling: no opt-out until someone needs one.
@@ -129,7 +136,7 @@ _FULL_RUN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "build or test configuration can change any test",
+        BUILD_CONFIG_REASON,
         (
             "pyproject.toml",
             "setup.py",
@@ -192,6 +199,13 @@ _DEFAULT_SPECS = tuple(
     (why, pathspec.PathSpec.from_lines("gitwildmatch", patterns))
     for why, patterns in _FULL_RUN_GROUPS
 )
+# A data file in a test-data tree (``tests/fixtures/app/package.json``) is read
+# by tests, never by this repo's build, so the test-data rule decides it before
+# the manifest rules. Code there keeps the first group it matches.
+_DATA_FIRST_SPECS = tuple(sorted(_DEFAULT_SPECS, key=lambda s: s[0] != SHARED_TEST_DATA_REASON))
+# The groups a Python module's name can match (``setup.py``, ``noxfile.py``):
+# those count only at a project root (:func:`is_ordinary_module`).
+_PROJECT_ROOT_GROUPS = frozenset({DEPENDENCIES_REASON, BUILD_CONFIG_REASON})
 
 # Documentation only: ``docs/`` and root-level project meta. A doc or image
 # anywhere else may be package data a test reads, so it is not skipped.
@@ -214,20 +228,6 @@ _ROOT_META = (
 # A root file only reads as project meta with no extension or a prose one:
 # ``history.json`` or ``changes.yaml`` is data a test may load.
 _DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
-
-# Extensions a test runner collects tests from; anything else in a test tree
-# (data, snapshots, golden files) is read by tests, not run.
-_TEST_CODE_SUFFIXES = frozenset(
-    {".py", ".go", ".java", ".kt", ".kts", ".scala", ".groovy", ".rb", ".cs", ".fs"}
-    | {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
-    | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp", ".cls"}
-    | {".t", ".pl", ".pm"}
-)
-
-PYTHON_SUFFIXES = (".py",)
-JS_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
-# coverage.py names each phase of a test as its own context.
-_PHASES = ("|run", "|setup", "|teardown")
 
 
 @dataclass(frozen=True)
@@ -486,11 +486,6 @@ def scope_kind(path: str) -> str | None:
     return None
 
 
-def is_code_file(path: str) -> bool:
-    """A file with an extension a test runner loads, test or not."""
-    return PurePosixPath(path).suffix.lower() in _TEST_CODE_SUFFIXES
-
-
 def is_test_helper(path: str) -> bool:
     """Code in a test tree that is neither a test nor a directory-scoped file."""
     return (
@@ -529,7 +524,7 @@ def is_runnable_test(
 def _runnable_name(path: str) -> bool:
     p = PurePosixPath(path)
     return (
-        p.suffix.lower() in _TEST_CODE_SUFFIXES
+        p.suffix.lower() in TEST_CODE_SUFFIXES
         and not is_test_support_module(path)
         and is_test_path(p.name)
     )
@@ -541,12 +536,59 @@ def full_run_on_spec(patterns: tuple[str, ...]) -> pathspec.PathSpec:
     return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 
-def full_run_reason(path: str, extra: Iterable[str] = ()) -> str | None:
-    """Why a change to *path* can change any test, or ``None``."""
-    specs = list(_DEFAULT_SPECS)
+def project_dirs(tracked: Iterable[str]) -> frozenset[str]:
+    """The repository root and each directory holding a package manifest no module can be.
+
+    The directories where a file named like a module counts as build config
+    (:func:`is_ordinary_module`). Manifest roles are the language registry's;
+    a module-named one (``setup.py``) is left out, or it would vouch for itself.
+    """
+    dirs = {
+        str(PurePosixPath(p).parent)
+        for p in tracked
+        if _LANG_REGISTRY.is_package_manifest(p) and not _module_named(p)
+    }
+    return frozenset({".", *dirs})
+
+
+def _module_named(path: str) -> bool:
+    p = PurePosixPath(path)
+    return p.suffix in PYTHON_SUFFIXES and p.stem.isidentifier()
+
+
+def is_ordinary_module(path: str, project_dirs: Collection[str] | None) -> bool:
+    """Whether *path*, though named like a build file, is a plain module where it sits.
+
+    Python imports any file whose name is an identifier, so a ``setup.py`` or
+    ``noxfile.py`` inside a package (``core/evidence/setup.py``) is a module
+    like any other: packaging and nox read them only at a project root, one of
+    *project_dirs* (:func:`project_dirs`). With *project_dirs* unknown
+    (``None``) the name decides, which runs everything. A real nested
+    ``setup.py`` with no other manifest beside it is selected as code, and
+    code no test is known to reach still runs everything.
+    """
+    return (
+        project_dirs is not None
+        and _module_named(path)
+        and str(PurePosixPath(path).parent) not in project_dirs
+    )
+
+
+def full_run_reason(
+    path: str, extra: Iterable[str] = (), project_dirs: Collection[str] | None = None
+) -> str | None:
+    """Why a change to *path* can change any test, or ``None``.
+
+    *project_dirs* (:func:`project_dirs`) tell a build file from a module of
+    the same name (:func:`is_ordinary_module`).
+    """
+    specs = list(_DEFAULT_SPECS if is_code_file(path) else _DATA_FIRST_SPECS)
     if extra := tuple(extra):
         specs.append(("it matches tests.full_run_on", full_run_on_spec(extra)))
+    module = is_ordinary_module(path, project_dirs)
     for why, spec in specs:
+        if module and why in _PROJECT_ROOT_GROUPS:
+            continue
         if spec.match_file(path):
             return why
     if PurePosixPath(path).name == "__init__.py" and not is_test_related_path(path):
@@ -604,6 +646,8 @@ class SelectionInput:
     always_run_tests: Mapping[str, str] = field(default_factory=dict)
     # :func:`~.selection_scopes.trigger_scopes`' answer; *tiers* holds each route's rows.
     scopes: Mapping[str, Scope] = field(default_factory=dict)
+    # :func:`project_dirs` of the checkout; None when unknown, so names decide.
+    project_dirs: Collection[str] | None = None
 
 
 @dataclass
@@ -622,7 +666,9 @@ def select_tests(inp: SelectionInput) -> Selection:
     paths = sorted(set(inp.changed) | deleted)
     unneeded = [p for p in paths if p in inp.scopes and inp.scopes[p].needs_no_tests]
     scoped = [p for p in paths if p in inp.scopes and p not in unneeded]
-    triage = _triage([p for p in paths if p not in inp.scopes], inp.config, inp.doc_readers)
+    triage = _triage(
+        [p for p in paths if p not in inp.scopes], inp.config, inp.doc_readers, inp.project_dirs
+    )
     triage.skipped = sorted([*triage.skipped, *unneeded])
     triage.basis.update(dict.fromkeys(unneeded, NO_TESTS_NEEDED))
     run_all = [*_empty_change_reasons(paths, inp.label), *triage.run_all]
@@ -654,7 +700,9 @@ def select_tests(inp: SelectionInput) -> Selection:
             *((t, t) for t in always),
         ]
     )
-    notes = _notes(inp, triage.skipped, always, traced)
+    notes = _function_notes(triage.code, per_file, evidence) + _notes(
+        inp, triage.skipped, always, traced
+    )
     besides = {f for _, f in in_scope} | set(always)
     broadcast = _broadcast(evidence, test_files, besides)
     # A route through a file changed since the index was built may be shorter
@@ -741,6 +789,27 @@ _UNPLACED_REASON = "the graph has no edge from it into the repository's code"
 _EVERY_SUBSET = "runs with every subset: "
 
 
+def _function_notes(
+    code: list[str], per_file: Mapping[str, tuple[list[_TestRef], str]], ev: _Evidence
+) -> list[str]:
+    """One line per changed file the tests covering its changed functions answer."""
+    out = []
+    for path in code:
+        if path not in ev.functions:
+            continue
+        files = {f for _, f in per_file[path][0] if f}
+        covering = files & {f for _, f in ev.covered.get(path, ())}
+        line = (
+            f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
+            "change in it sits inside function bodies, so measured tests that only import "
+            "it are left out"
+        )
+        if unmeasured := len(files - covering):
+            line += f"; {unmeasured} test file(s) the map never ran still run for it"
+        out.append(f"{line}.")
+    return out
+
+
 def _always_running(inp: SelectionInput) -> dict[str, str]:
     """``{test file: why it runs with every subset}``; a detected reason wins.
 
@@ -767,9 +836,10 @@ def _why(
         tests, basis = per_file[path]
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
+        by_coverage = FUNCTION_COVERAGE_VIA if path in ev.functions else "coverage"
         for _, test_file in tests:
             if test_file and test_file not in out:
-                via = "coverage" if test_file in covered else vias.get(test_file, basis)
+                via = by_coverage if test_file in covered else vias.get(test_file, basis)
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
 
@@ -795,8 +865,13 @@ IMPORT_CLOSURE_VIA = "import-closure"
 # The vias that put a test in by imports alone (a conftest broadcast included).
 _IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
 
+#: How :attr:`Selection.why` names a test that covers a changed function's body,
+#: in a file whose every change sits inside function bodies (``function_hunks``).
+FUNCTION_COVERAGE_VIA = "function-coverage"
+
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
+    FUNCTION_COVERAGE_VIA: f"{FUNCTION_COVERAGE_VIA}: it covers the changed function lines",
     BROADCAST_VIA: (
         f"{BROADCAST_VIA}: a conftest above it is on the route and keeps every test under it"
     ),
@@ -836,12 +911,15 @@ def explain_test(selection: Selection, test: str) -> tuple[bool, list[str]]:
 
 
 def _triage(
-    paths: list[str], config: TestSelectionConfig, doc_readers: Mapping[str, str]
+    paths: list[str],
+    config: TestSelectionConfig,
+    doc_readers: Mapping[str, str],
+    project_dirs: Collection[str] | None = None,
 ) -> _Triage:
     """Full-run triggers, documentation and test-tree data first; code for the tiers."""
     out = _Triage()
     for path in paths:
-        if why := full_run_reason(path, config.full_run_on):
+        if why := full_run_reason(path, config.full_run_on, project_dirs):
             out.run_all.append(f"{path} changed: {why}.")
             out.basis[path] = "full-run"
         elif is_documentation(path) and (reader := doc_readers.get(path)):
@@ -1035,11 +1113,13 @@ _HELPER_REASON = "a shared test helper can change any test"
 _GAP_TRACED = (None, "route", "package")
 
 
-def _gap_kind(path: str, config: TestSelectionConfig) -> str | None:
+def _gap_kind(
+    path: str, config: TestSelectionConfig, project_dirs: Collection[str] | None
+) -> str | None:
     """``"route"``, ``"package"``, ``None`` (cannot reach a change), or a full-run reason."""
     if is_documentation(path):
         return None
-    why = full_run_reason(path, config.full_run_on)
+    why = full_run_reason(path, config.full_run_on, project_dirs)
     if why == PACKAGE_INIT_REASON:
         return "package"
     if why is None or why == _HELPER_REASON or (why in _GAP_INERT and is_code_file(path)):
@@ -1066,7 +1146,10 @@ class GapPlan:
 
 
 def plan_gap(
-    index_gap: Collection[str], config: TestSelectionConfig, change: Collection[str] = ()
+    index_gap: Collection[str],
+    config: TestSelectionConfig,
+    change: Collection[str] = (),
+    project_dirs: Collection[str] | None = None,
 ) -> GapPlan:
     """Classify each file changed since the index was built, once.
 
@@ -1089,7 +1172,7 @@ def plan_gap(
                 "run `repowise update` before selecting.",
             )
         )
-    kinds = {p: _gap_kind(p, config) for p in counted}
+    kinds = {p: _gap_kind(p, config, project_dirs) for p in counted}
     triggers = [(p, k) for p, k in kinds.items() if k not in _GAP_TRACED]
     if triggers:
         path, why = triggers[0]
@@ -1099,7 +1182,7 @@ def plan_gap(
                 "run `repowise update` before selecting.",
             )
         )
-    if any(full_run_reason(p, config.full_run_on) for p in change):
+    if any(full_run_reason(p, config.full_run_on, project_dirs) for p in change):
         return GapPlan()
     candidates = tuple(p for p, k in kinds.items() if k is not None and may_carry_edges(p))
     return GapPlan(
@@ -1168,6 +1251,10 @@ class _Evidence:
     known_tests: tuple[str, ...]
     plugin_loader: str | None
     gap: frozenset[str] = frozenset()
+    # Changed files their covering tests answer (``function_covered``), and the
+    # test files the per-test map measured (``measured_test_files``).
+    functions: frozenset[str] = frozenset()
+    measured: frozenset[str] = frozenset()
     # Tests every subset runs (unplaced and detected always-run).
     every_subset: frozenset[str] = frozenset()
     # Explanations that do not force a full run, gathered while deciding.
@@ -1198,6 +1285,8 @@ class _Evidence:
             known_tests=tuple(inp.known_tests),
             plugin_loader=inp.plugin_loader,
             gap=frozenset(inp.index_gap or ()),
+            functions=frozenset(inp.tiers.get("function_covered") or ()),
+            measured=frozenset(inp.tiers.get("measured_test_files") or ()),
             every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
         )
 
@@ -1246,10 +1335,11 @@ def _file_tests(
     the base), so having no test of its own is not a reason.
     """
     found = ev.found(path)
-    tests = ev.present([*ev.covered.get(path, ()), *found])
+    covered = _covering(path, ev)
+    tests = ev.present([*covered, *found])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
-    tests = _expand_scopes(path, tests, scopes, ev)
+    tests = _function_scoped(path, _expand_scopes(path, tests, scopes, ev), covered, ev)
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
@@ -1265,6 +1355,27 @@ def _file_tests(
     if not (route_only or tests or helpers or basis in _SELF_SUFFICIENT):
         reasons.append(_no_test_reason(path, basis, ev))
     return tests, basis, reasons
+
+
+def _covering(path: str, ev: _Evidence) -> list[_TestRef]:
+    """*path*'s covering tests; whole files for a file answered by its changed functions,
+    since a fixture set up once per file runs the change for every test sharing it
+    while coverage credits only the first."""
+    covered = ev.covered.get(path, ())
+    if path in ev.functions:
+        return [(f, f) if f else (t, f) for t, f in covered]
+    return list(covered)
+
+
+def _function_scoped(
+    path: str, tests: list[_TestRef], covered: list[_TestRef], ev: _Evidence
+) -> list[_TestRef]:
+    """*tests* less, for a file answered by its changed functions, the measured tests
+    that do not cover them: those only import them. One the map never ran stays."""
+    if path not in ev.functions:
+        return tests
+    mine = {f for _, f in covered}
+    return [(t, f) for t, f in tests if f in mine or f not in ev.measured]
 
 
 def _scope_files(path: str, found: list[_TestRef], basis: str) -> tuple[set[str], str]:
@@ -1475,128 +1586,7 @@ def _runnable(selected: list[_TestRef]) -> tuple[tuple[str, ...], tuple[str, ...
 
 def _node_id(test_id: str, test_file: str) -> str:
     """A runnable id: ``file::name`` rebased on the resolved file, else the file."""
-    for phase in _PHASES:
-        if test_id.endswith(phase):
-            test_id = test_id[: -len(phase)]
-            break
+    test_id = nodeid_without_phase(test_id)
     if "::" not in test_id:
         return test_file
     return f"{test_file}::{test_id.split('::', 1)[1]}"
-
-
-# The test files each runner takes; ``files`` takes every one.
-_RUNNER_SUFFIXES = {"pytest": PYTHON_SUFFIXES, "go": (".go",), "jest": JS_SUFFIXES}
-
-
-def _takes(runner: str, test: str) -> bool:
-    """Whether *test* (a file or node id) is in *runner*'s language; case-blind."""
-    return test.split("::", 1)[0].lower().endswith(_RUNNER_SUFFIXES[runner])
-
-
-def _all_python(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
-    return bool(files) and all(_takes("pytest", f) for f in files)
-
-
-def _all_go(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
-    # A changed Go file's own package counts even with no selected test file.
-    return bool(files or packages) and all(f.endswith("_test.go") for f in files)
-
-
-def _all_js(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
-    return bool(files) and all(_takes("jest", f) for f in files)
-
-
-# ``auto`` picks the first runner every selected test file belongs to.
-_AUTO_RUNNERS = (("pytest", _all_python), ("go", _all_go), ("jest", _all_js))
-
-
-def resolve_runner(selection: Selection, runner: str) -> str:
-    """*runner*, or for ``auto`` the one every selected test file belongs to."""
-    if runner != "auto":
-        return runner
-    files, packages = selection.test_files, selection.packages
-    return next((name for name, fits in _AUTO_RUNNERS if fits(files, packages)), "files")
-
-
-def _pytest_args(selection: Selection) -> list[str]:
-    return [t for t in selection.tests if _takes("pytest", t)]
-
-
-def _go_args(selection: Selection) -> list[str]:
-    go_tests = [f for f in selection.test_files if f.endswith("_test.go")]
-    dirs = list(dict.fromkeys(str(PurePosixPath(f).parent) for f in go_tests))
-    for package in selection.packages:
-        if package not in dirs:
-            dirs.append(package)
-    return ["." if d == "." else f"./{d}" for d in dirs]
-
-
-def _jest_args(selection: Selection) -> list[str]:
-    return [f for f in selection.test_files if _takes("jest", f)]
-
-
-def _file_args(selection: Selection) -> list[str]:
-    return list(selection.test_files)
-
-
-_RUNNER_ARGS = {"pytest": _pytest_args, "go": _go_args, "jest": _jest_args}
-
-
-def runner_args(selection: Selection, runner: str) -> list[str]:
-    """Arguments for *runner* (already resolved); ``[RUN_ALL]`` for a full run.
-
-    Each runner gets only the tests it can run, so a job per language can share
-    one selection; :func:`runner_notes` names the rest. ``tests.always_run``
-    entries are appended as written, but one in another runner's language is
-    left to that runner. jest and vitest get file paths, meant for
-    ``--runTestsByPath``.
-    """
-    if selection.run_all:
-        return [RUN_ALL]
-    args = _RUNNER_ARGS.get(runner, _file_args)(selection)
-    always = [t for t in selection.always_run if _runs(t, runner)]
-    return list(dict.fromkeys([*args, *always]))
-
-
-def _runs(test: str, runner: str) -> bool:
-    """Whether *runner* can run *test*; a directory or glob it cannot tell is kept."""
-    if runner not in _RUNNER_SUFFIXES or not is_code_file(test.split("::", 1)[0]):
-        return True
-    return _takes(runner, test)
-
-
-def left_out(selection: Selection, runner: str) -> dict[str, list[str]]:
-    """Selected tests *runner*'s arguments leave out, keyed by the runner that takes them.
-
-    A test no named runner takes (Kotlin, Swift) is keyed ``files``. Empty on a
-    full run, where every runner runs everything of its own.
-    """
-    if selection.run_all:
-        return {}
-    out: dict[str, list[str]] = {}
-    for test in dict.fromkeys((*selection.test_files, *selection.always_run)):
-        if not _runs(test, runner):
-            owner = next((r for r in _RUNNER_SUFFIXES if _takes(r, test)), "files")
-            out.setdefault(owner, []).append(test)
-    return out
-
-
-def runner_notes(selection: Selection, runner: str) -> list[str]:
-    """One line naming what :func:`left_out` found, so nothing is dropped silently.
-
-    A pipeline running one runner needs a job per runner for these.
-    """
-    left = left_out(selection, runner)
-    if not left:
-        return []
-    counts = ", ".join(f"{len(tests)} for {owner}" for owner, tests in sorted(left.items()))
-    first = next(iter(left.values()))[0]
-    return [
-        f"Selected tests for other runners are not in these {runner} arguments ({counts}; "
-        f"e.g. {first}); run them in a job per runner."
-    ]
-
-
-def format_args(args: Iterable[str]) -> str:
-    """One shell-quoted line."""
-    return shlex.join(args)

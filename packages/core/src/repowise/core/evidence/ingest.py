@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import local_symbol_id
+
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
 
 #: Every workload class a run may carry, in the order of how far a claim may go.
@@ -52,6 +54,8 @@ class RunProvenance:
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
+    #: Tests that failed in the profiled suite, as the profile reports it; None when not said.
+    tests_failed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -78,13 +82,22 @@ class Joined:
 def symbol_lookup(
     symbols: Iterable[IndexedSymbol],
 ) -> dict[str, list[IndexedSymbol]]:
-    """Indexed symbols of one file by qualified name and by bare name."""
+    """Indexed symbols of one file by qualified name, by id after the file and by bare name.
+
+    The id after the file (``TestCache::test_get``) is how a test runner
+    names a test, so a benchmark result names its function that way.
+    """
     out: dict[str, list[IndexedSymbol]] = {}
     for sym in symbols:
-        out.setdefault(sym.qualified_name, []).append(sym)
-        if sym.name != sym.qualified_name:
-            out.setdefault(sym.name, []).append(sym)
+        for key in dict.fromkeys((sym.qualified_name, local_symbol_id(sym.symbol_id), sym.name)):
+            if key:
+                out.setdefault(key, []).append(sym)
     return out
+
+
+def _exact(sym: IndexedSymbol, function: str) -> bool:
+    """*function* names *sym* by its qualified name or its id after the file."""
+    return function in (sym.qualified_name, local_symbol_id(sym.symbol_id))
 
 
 def resolve_location(
@@ -93,15 +106,18 @@ def resolve_location(
 ) -> tuple[str | None, str | None]:
     """The symbol id a ``{path, function, line}`` names, or ``(None, reason)``.
 
-    Exact: the qualified name first, the bare name when that is all the file
-    declares under it. More than one match is narrowed by the start line and
-    refused when it stays ambiguous.
+    Exact: the qualified name or the id after the file first, the bare name
+    when that is all the file declares under it, unless the location says
+    ``exact``. More than one match is narrowed by the start line and refused
+    when it stays ambiguous.
     """
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
     found = names.get(location["function"], [])
-    by_qualified = [s for s in found if s.qualified_name == location["function"]]
+    by_qualified = [s for s in found if _exact(s, location["function"])]
+    if location.get("exact"):
+        found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method
     # reported as ``read`` is not the module's own ``read``.
@@ -256,14 +272,16 @@ def cap_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     """The rows kept under the cap, and how many were dropped.
 
-    A profile keeps its costliest symbols (inclusive, then self, then id, so
-    the cut is stable); other kinds keep the document's order.
+    A profile keeps its costliest symbols (self, the cost waits excluded,
+    then inclusive, then id, so the cut is stable): a leaf that does the work
+    outlives the frames that only call it. Other kinds keep the document's
+    order.
     """
     if kind == "profile":
         limit = caps.max_symbols_per_run
         rows = sorted(
             rows,
-            key=lambda r: (-(r["total_value"] or 0.0), -(r["self_value"] or 0.0), r["symbol_id"]),
+            key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
         )
     else:
         limit = caps.max_rows_per_run
@@ -285,6 +303,8 @@ def run_key(
         provenance.checkout_root,
         str(provenance.dirty),
         provenance.source,
+        # Only when known, so a run that never reports it keeps its key.
+        *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -300,8 +320,9 @@ def run_fields(
     key: str,
     truncated: int,
     mapping_partial: bool,
+    unlisted: int | None = None,
 ) -> dict[str, Any]:
-    """The ``evidence_runs`` row for one ingest."""
+    """The ``evidence_runs`` row for one ingest; *unlisted* from :func:`unlisted_count`."""
     skipped = Counter(doc.skipped) + joined.skipped
     outside = skipped.get("outside_repo", 0)
     return {
@@ -329,8 +350,21 @@ def run_fields(
         "unmatched_sample_json": json.dumps(joined.unmatched_sample),
         "total_value": doc.total,
         "explained_value": doc.explained,
+        "repo_self_value": doc.repo_self,
+        "wait_value": doc.waits,
+        "library_value": doc.libraries,
+        "total_samples": doc.total_samples,
+        "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
+        "tests_failed": provenance.tests_failed,
     }
+
+
+def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]) -> int:
+    """Profile rows outside production code: counted before a cap drops any, never listed."""
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+
+    return sum(origins.get(file_of_symbol(row["symbol_id"])) != "production" for row in rows)
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
@@ -399,6 +433,35 @@ async def load_origins(
     return {path: stored.get(path) or path_origin(path) for path in wanted}
 
 
+async def stamp_bodies(
+    session: Any,
+    repository_id: str,
+    rows: Iterable[dict[str, Any]],
+    *,
+    index_at_measured_commit: bool,
+) -> None:
+    """Give each profile row its function's lineage and, when the index is at
+    the commit measured, its body digest (``function_facts``).
+
+    The digest is what tells a later index whether the measured body is still
+    the one indexed. Joined at another commit, the indexed body may not be the
+    one measured, so none is stored and the row reads stale once HEAD moves.
+    """
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+    from repowise.core.persistence.crud import stored_bodies
+
+    rows = list(rows)
+    paths = {file_of_symbol(row["symbol_id"]) for row in rows}
+    bodies = {b.symbol_id: b for b in await stored_bodies(session, repository_id, paths)}
+    for row in rows:
+        body = bodies.get(row["symbol_id"])
+        if body is None:
+            continue
+        row["lineage_id"] = body.lineage_id
+        if index_at_measured_commit:
+            row["body_digest"] = body.digest
+
+
 def uncommitted_paths(checkout_root: str | Path) -> frozenset[str] | None:
     """Tracked files under *checkout_root* that differ from its HEAD, repo-relative.
 
@@ -434,6 +497,8 @@ __all__ = [
     "resolve_location",
     "run_fields",
     "run_key",
+    "stamp_bodies",
     "symbol_lookup",
     "uncommitted_paths",
+    "unlisted_count",
 ]

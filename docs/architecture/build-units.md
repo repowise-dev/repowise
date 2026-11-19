@@ -2,7 +2,8 @@
 
 A build unit is one thing a build tool declares: a .NET project, a Cargo
 crate, an npm workspace package, a Gradle project, a Go module, a Maven
-module, a Python distribution. `repowise.core.build_units` reads them once,
+module, a Python distribution, a Composer package, a Delphi or Lazarus project or package.
+`repowise.core.build_units` reads them once,
 from the resolver indexes the graph build already holds, and stores one
 answer to three questions:
 
@@ -31,12 +32,12 @@ Paths are relative to `packages/core/src/repowise/core/`.
 
 | Field | Meaning |
 |---|---|
-| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `scala:<project name>`, `manifest:<root>` (`manifest:.` at the repo root) |
-| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `scala` or `manifest` |
+| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `scala:<project name>`, `php:<composer name>` / `php:<dir>` when unnamed, `manifest:<root>` (`manifest:.` at the repo root) |
+| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `php`, `pascal`, `scala` or `manifest` |
 | `name` | The name the build tool uses (assembly, crate, package, module path, artifactId) |
 | `root` | Repo-relative POSIX directory, `""` at the repo root |
 | `manifest` | Repo-relative path of the file that declares the unit |
-| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `sbt`, `manifest-root` |
+| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `composer`, `pascal`, `sbt`, `manifest-root` |
 | `deps` | Sorted ids of the in-repo units this one depends on. Third-party dependencies are not units |
 
 `BuildUnitIndex` holds every unit by id and the owners of each file:
@@ -98,9 +99,11 @@ Which units exist is decided per manifest:
 | npm, yarn, pnpm | The TypeScript resolver's workspace reader (`ingestion/resolvers/ts_workspace`) | One unit per workspace member; non-member `package.json` files are ruled out | Member names in `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies` |
 | Go | `GoPackageIndex` (`ingestion/resolvers/go_workspace.py`) and `scan_go_mod` | One unit per module (`go.mod`), not per package | `require` entries naming another module of the repo |
 | Maven | `load_maven_reactor` (`ingestion/external_systems/maven_model.py`) | One unit per module of the root `pom.xml` reactor, followed recursively, with coordinates inherited from local parents | `<dependencies>` naming another module's `groupId:artifactId`, inherited and at every scope |
+| PHP | `repo_composer_manifests` in `ingestion/composer.py` | One unit per first-party `composer.json` | `require`/`require-dev` names that live at one of the manifest's path repositories, globs included |
 | Python | `pyproject.toml` read with `read_toml_or_none`, names normalised as PyPI does | One unit per `pyproject.toml` naming a distribution (`[project] name`, else `[tool.poetry] name`) | `[project]` dependencies and optional dependencies, Poetry dependencies, uv `workspace = true` sources, matched by name; uv and Poetry `path` sources matched by the directory they point at |
 | Scala | `ScalaProjectIndex` (`ingestion/resolvers/scala_build.py`) | One unit per `project.in(file(...))` definition in `build.sbt` | `dependsOn` arguments matching other subprojects by identifier |
-| Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby, PHP, Swift, Dart and the rest) | None |
+| Delphi, Lazarus | `PascalProjectIndex` (`ingestion/resolvers/pascal.py`) | One unit per readable `.dpr`, `.dpk`, `.lpr` and `.lpk`, listing the files its `uses` and `contains` clauses reach | `.dpk` `requires`, `.lpk` `RequiredPkgs`, `.lpi` `RequiredPackages`, and `.dproj` `DCC_UsePackage` under `UsePackages`, matched by name to packages of the same toolchain, the requiring project's directory first |
+| Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby, Swift, Dart and the rest) | None |
 
 ### Ceilings
 
@@ -124,7 +127,21 @@ answer:
 - **sbt subprojects must be written `project.in(file(...))`.** Other forms (`project in file(...)`,
   a bare `lazy val x = project`), `LocalProject`/`ProjectRef` arguments and cross-projects are not
   read; Mill builds and single-project builds fall back to a `manifest:` unit. Only the leading
-  identifier of each `dependsOn` argument is read, so `core % "test->test"` links `core`.
+  identifier of each `dependsOn` argument is read, so `core % "test->test"` links `core`, and
+  `Seq(a, b): _*` is unwrapped. Comments are ignored. An aggregate-only root (no `src/`) gets a
+  `manifest:.` unit, so root-level files such as `project/*.scala` keep an owner.
+- **PHP only reads path repositories.** A `composer.json` requiring a package
+  by name without a `{"type": "path"}` repository pointing at it links nothing;
+  reading `composer show --tree` / `composer.lock` is the upgrade path.
+- **Pascal files follow `uses`.** A build script's `dcc -U` paths are not
+  known, so a name the project's paths do not place takes the same-named file
+  in a directory the project already reaches. When that does not single one
+  out, every candidate is listed, and a project built for several platforms
+  lists each platform's files. Conditional defines
+  and `.dproj` build configurations are not evaluated, so a unit or package
+  named under any of them counts. Pascal declares no package manifest, so an
+  unreadable project gets no `manifest:` unit: its files go to the deepest
+  other unit.
 - **The fallback has no deps.** Ecosystems without an adapter get correct
   roots and ownership but no edges until an adapter is added.
 
@@ -186,8 +203,7 @@ adapter fails on any of them.
 ## Adding an adapter
 
 Open adapter requests: Ruby
-([#5802](https://github.com/repowise-dev/repowise/issues/5802)), PHP
-([#5803](https://github.com/repowise-dev/repowise/issues/5803)), Swift
+([#5802](https://github.com/repowise-dev/repowise/issues/5802)), Swift
 ([#5804](https://github.com/repowise-dev/repowise/issues/5804)), Dart
 ([#5805](https://github.com/repowise-dev/repowise/issues/5805)), Elixir
 ([#5806](https://github.com/repowise-dev/repowise/issues/5806)). C and C++

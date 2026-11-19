@@ -121,6 +121,7 @@ async def _seed(session: AsyncSession, module_paths):
             settings_json="{}", created_at=_NOW, updated_at=_NOW,
         )
     )
+    await session.flush()  # the store enforces foreign keys; the repository row goes first
     for p in module_paths:
         session.add(
             Page(
