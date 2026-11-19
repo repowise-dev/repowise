@@ -173,6 +173,8 @@ export default async function OverviewPage({ params }: Props) {
               fileCount={stats.file_count}
               figures={welcomeFigures(summary)}
               hotspotPath={summary.top_hotspots[0]?.file_path ?? null}
+              worstPath={health.worst_performer_path}
+              decisionTitle={summary.recent_decisions[0]?.title ?? null}
             />
           </>
         ),

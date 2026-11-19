@@ -191,7 +191,9 @@ def build_contextual_next_steps(
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 
     # Documentation built from the index gets the panel's "add a model" block

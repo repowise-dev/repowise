@@ -163,7 +163,7 @@ def test_ordering_without_a_share() -> None:
 
     from repowise.cli.commands.evidence_cmd import _report_conversion
 
-    _report_conversion(Notices(), "app.prof", conv)
+    _report_conversion(Notices(), "app.prof", conv.summary(), 1)
     assert len(messages) == 1
     assert "ordering of functions only" in messages[0]
     assert "%" not in messages[0]

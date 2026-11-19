@@ -13,7 +13,7 @@ By hand: the [Quickstart](start/QUICKSTART.md) gets you indexed and connected to
 your agent in under five minutes, with no API key.
 
 <div align="center">
-  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools (all ten on Claude Code, five by default on other clients)" width="100%" />
 </div>
 
 For a map of every layer and how they feed each other, read

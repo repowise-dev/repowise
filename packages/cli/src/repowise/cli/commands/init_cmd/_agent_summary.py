@@ -64,12 +64,19 @@ def _relative(repo_path: Path, paths: list[Path]) -> list[str]:
     return out
 
 
-def _restart_required(run: InitRun) -> bool:
-    """Whether the editor must restart (or run /mcp) to load the tools, as the panel says."""
-    setup = run.setup_outcome
-    if setup is None or setup.editor_setup_disabled or not setup.claude_code_connected:
-        return False
-    return bool(setup.first_index or run.mcp_repointed)
+def _connect(run: InitRun) -> list[dict[str, str]]:
+    """Installed agents init did not wire, each with the command that wires it."""
+    from repowise.cli.editor_setup import connect_command
+
+    return [
+        {**agent, "command": connect_command([agent["id"]])}
+        for agent in getattr(run.setup_outcome, "unconnected", ())
+    ]
+
+
+def _hosts_to_restart(run: InitRun) -> list[dict[str, str]]:
+    """The agents to restart to load the tools, as the panel names them."""
+    return list(getattr(run.setup_outcome, "restart_hosts", ()))
 
 
 def _spend(result: Any) -> dict[str, Any]:
@@ -96,12 +103,15 @@ def run_summary(run: InitRun, gaps: list[str]) -> dict[str, Any]:
     return agent_events.summary_fields(
         agent_events.STATUS_DEGRADED if gaps else agent_events.STATUS_READY,
         mode=_stored_mode(run.repo_path),
-        restart_required=_restart_required(run),
+        restart_required=bool(_hosts_to_restart(run)),
+        restart_hosts=_hosts_to_restart(run),
         spend=_spend(run.result),
         warnings=[*run.run_warnings, *gaps],
         files_written=_relative(run.repo_path, run.files_written),
         next_commands=_next_commands(run),
         findings=run.stood_out.as_summary() if run.stood_out is not None else None,
+        mcp_tools=list(getattr(run.setup_outcome, "tool_surfaces", ())),
+        connect=_connect(run),
     )
 
 

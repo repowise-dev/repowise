@@ -32,6 +32,9 @@ _ANSWER_SWITCHES: tuple[tuple[str, bool, str], ...] = (
     ("LEAN_HIGH", False, "Drop re-read evidence from high-confidence answers."),
 )
 
+#: Measured per request: about 2.6k on current flagship models, 1.9k on smaller ones.
+_ALWAYS_LOAD_COST = "about 2k to 2.6k more tokens per turn, depending on the model"
+
 SETTINGS: tuple[Setting, ...] = (
     _s(
         "mcp.tools",
@@ -50,10 +53,10 @@ SETTINGS: tuple[Setting, ...] = (
         "mcp.always_load",
         "bool",
         False,
-        "Ask clients that defer tool schemas (Claude Code) to load get_answer, "
-        "get_context, search_codebase and get_symbol up front: removes one "
-        "tool-loading turn before the first call and costs about 2k tokens per "
-        "turn. Other tools stay deferred.",
+        "Claude Code only: load the four read tools (get_answer, get_context, "
+        "search_codebase, get_symbol) from the first turn instead of through tool "
+        f"search, for {_ALWAYS_LOAD_COST}.",
+        cost_note=_ALWAYS_LOAD_COST,
         reload="restart",
     ),
     _e(

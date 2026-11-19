@@ -1139,7 +1139,8 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 (`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
-which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
+which clients were wired up, which to restart, and the `repowise agents add`
+command for any other agent installed on the machine.
 
 ---
 

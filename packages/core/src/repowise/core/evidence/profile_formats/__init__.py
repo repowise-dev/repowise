@@ -30,7 +30,7 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, pprof, pstats, pytest_benchmark, speedscope
+from . import collapsed, cpuprofile, hyperfine, pprof, pstats, pytest_benchmark, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -57,10 +57,12 @@ class ProfileFormat:
 profile_formats: SeamRegistry[ProfileFormat] = SeamRegistry("profile-format")
 profile_formats.register("speedscope", ProfileFormat(speedscope.sniff, speedscope.read))
 profile_formats.register("pprof", ProfileFormat(pprof.sniff, pprof.read))
+profile_formats.register("cpuprofile", ProfileFormat(cpuprofile.sniff, cpuprofile.read))
 profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
 )
+profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 profile_formats.register("pstats", ProfileFormat(pstats.sniff, pstats.read))
 

@@ -12,7 +12,11 @@ point-in-time (overwritten per ingest run), mirroring ``coverage_files``.
 
 from __future__ import annotations
 
+import gzip
 import json
+import re
+import sys
+import zlib
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from typing import Any
@@ -186,6 +190,89 @@ async def save_test_coverage(
     await session.execute(
         delete(TestCoverageTest).where(TestCoverageTest.repository_id == repository_id)
     )
+    layout = _layout(rows, source_format)
+    tests = [
+        {
+            "repository_id": repository_id,
+            "test_no": no,
+            "test_id": test_id,
+            "test_file": test_file,
+        }
+        for no, (test_id, test_file) in enumerate(layout.tests)
+    ]
+    at = _now_utc()
+    sources = [
+        {
+            "repository_id": repository_id,
+            "source_file": source,
+            "tests_json": tests_json,
+            "test_count": count,
+            "source_format": source_format,
+            "ingested_at": at,
+            "ingested_commit_sha": ingested_commit_sha,
+        }
+        for source, (count, tests_json) in layout.sources.items()
+    ]
+    for table, values in ((TestCoverageTest, tests), (TestCoverageSource, sources)):
+        for i in range(0, len(values), _BULK_ROWS):
+            await session.execute(insert(table.__table__), values[i : i + _BULK_ROWS])
+    return TestMapWrite(written=len(rows), merged=merged, dropped_tests=dropped)
+
+
+# --- The portable per-test map --------------------------------------------
+#
+# What ``repowise coverage export`` writes and a hosted upload carries: the
+# stored layout itself, so a million-pair map travels as a few MB of gzip
+# instead of a raw ``.coverage`` database that takes gigabytes to parse. Each
+# source file's entry is its ``tests_json`` text exactly as stored, kept as
+# text so a reader holds one string per file, never a Python object per pair.
+
+#: ``format`` of a portable per-test map.
+PER_TEST_MAP_FORMAT = "repowise-test-map-v1"
+
+_GZIP_MAGIC = b"\x1f\x8b"
+# A source's tests_json as the engine writes it: compact, non-empty,
+# ``[[test_no,"1-4,9"],...]``.
+# Line numbers stop at seven digits: no source file has ten million lines.
+_LINE = r"\d{1,7}"
+_RANGES = rf"{_LINE}(?:-{_LINE})?(?:,{_LINE}(?:-{_LINE})?)*"
+# Test numbers stop at nine digits, well past the stored row cap.
+_TEST_NO = r"\d{1,9}"
+_ENTRIES_RE = re.compile(rf'\[\[{_TEST_NO},"{_RANGES}"\](?:,\[{_TEST_NO},"{_RANGES}"\])*\]')
+_TEST_NO_RE = re.compile(rf'\[({_TEST_NO}),"')
+_SPAN_RE = re.compile(r"(\d+)-(\d+)")
+_JSON_COMPACT = (",", ":")
+
+
+class PerTestMapError(ValueError):
+    """Bytes that are not a portable per-test map, or expand past the limit."""
+
+
+@dataclass(frozen=True)
+class PerTestMap:
+    """A per-test map in the stored layout, tests numbered densely from 0."""
+
+    __test__ = False
+
+    source_format: str
+    # ``(test_id, test_file)`` by test number.
+    tests: tuple[tuple[str, str | None], ...]
+    # Source file -> ``(test_count, tests_json)``, ``tests_json`` being the
+    # stored ``[[test_no, "1-4,9"], ...]`` text, sorted by test number.
+    sources: dict[str, tuple[int, str]]
+    ingested_commit_sha: str | None = None
+
+    @property
+    def pair_count(self) -> int:
+        return sum(count for count, _ in self.sources.values())
+
+
+def _layout(rows: list[Any], source_format: str) -> PerTestMap:
+    """Deduped records (:func:`cap_test_map` output) as a :class:`PerTestMap`.
+
+    Tests are numbered in the order they first appear, which for capped rows
+    is the stable test file, test id order.
+    """
     by_test: dict[str, list[Any]] = {}
     for rec in rows:
         by_test.setdefault(rec.test_id, []).append(rec)
@@ -195,32 +282,275 @@ async def save_test_coverage(
         by_source.setdefault(rec.file_path, []).append(
             (test_no[rec.test_id], _encode_lines(rec.covered_lines))
         )
-    tests = [
-        {
-            "repository_id": repository_id,
-            "test_no": no,
-            "test_id": test_id,
-            "test_file": _test_file(by_test[test_id]) or None,
-        }
-        for test_id, no in test_no.items()
-    ]
-    at = _now_utc()
-    sources = [
-        {
-            "repository_id": repository_id,
-            "source_file": source,
-            "tests_json": json.dumps(sorted(entries), separators=(",", ":")),
-            "test_count": len(entries),
-            "source_format": source_format,
-            "ingested_at": at,
-            "ingested_commit_sha": ingested_commit_sha,
-        }
-        for source, entries in by_source.items()
-    ]
-    for table, values in ((TestCoverageTest, tests), (TestCoverageSource, sources)):
-        for i in range(0, len(values), _BULK_ROWS):
-            await session.execute(insert(table.__table__), values[i : i + _BULK_ROWS])
-    return TestMapWrite(written=len(rows), merged=merged, dropped_tests=dropped)
+    return PerTestMap(
+        source_format=source_format,
+        tests=tuple((t, _test_file(by_test[t]) or None) for t in test_no),
+        sources={
+            source: (len(entries), json.dumps(sorted(entries), separators=_JSON_COMPACT))
+            for source, entries in by_source.items()
+        },
+    )
+
+
+def per_test_map_from_records(records: list[Any], source_format: str) -> PerTestMap:
+    """*records* (``TestCoverage``), repeated pairs merged, as a :class:`PerTestMap`."""
+    rows, _, _ = cap_test_map(records, max_rows=sys.maxsize)
+    return _layout(rows, source_format)
+
+
+def _renumbered(
+    tmap: PerTestMap,
+    order: list[int],
+    sources: dict[str, list[tuple[int, str]]],
+    test_files: dict[int, str | None] | None = None,
+) -> PerTestMap:
+    """*tmap* with only the tests in *order*, renumbered by their place in it."""
+    new_no = {old: new for new, old in enumerate(order)}
+    out: dict[str, tuple[int, str]] = {}
+    for source, entries in sources.items():
+        kept = sorted((new_no[no], ranges) for no, ranges in entries if no in new_no)
+        if kept:
+            out[source] = (len(kept), json.dumps(kept, separators=_JSON_COMPACT))
+    return replace(
+        tmap,
+        tests=tuple(
+            (tmap.tests[no][0], tmap.tests[no][1] if test_files is None else test_files.get(no))
+            for no in order
+        ),
+        sources=out,
+    )
+
+
+def cap_per_test_map(
+    tmap: PerTestMap, max_rows: int = MAX_TEST_COVERAGE_ROWS
+) -> tuple[PerTestMap, tuple[str, ...]]:
+    """``(map, dropped_tests)``: :func:`cap_test_map`'s rule on a :class:`PerTestMap`.
+
+    Tests in test file, test id order are kept while fewer than *max_rows*
+    pairs are kept, the one that reaches the cap whole; later ones are dropped
+    whole, so ``pair_count >= max_rows`` marks a cut map (:func:`map_is_truncated`).
+    """
+    if tmap.pair_count < max_rows:
+        return tmap, ()
+    decoded = {source: _decode_tests(text) for source, (_, text) in tmap.sources.items()}
+    pairs = [0] * len(tmap.tests)
+    for entries in decoded.values():
+        for no, _ in entries:
+            pairs[no] += 1
+    order = sorted(range(len(tmap.tests)), key=lambda n: (tmap.tests[n][1] or "", tmap.tests[n][0]))
+    kept: list[int] = []
+    dropped: list[str] = []
+    rows = 0
+    for no in order:
+        if rows >= max_rows:
+            dropped.append(tmap.tests[no][0])
+        else:
+            kept.append(no)
+            rows += pairs[no]
+    if not dropped:
+        return tmap, ()
+    return _renumbered(tmap, kept, decoded), tuple(dropped)
+
+
+def _union_ranges(texts: list[str]) -> str:
+    """The union of range *texts*, merged span by span, never expanded to lines.
+
+    Spans are what an untrusted map holds, so a wide one costs no memory here;
+    reversed spans cover nothing and drop out.
+    """
+    spans = sorted(s for text in texts for s in _spans(text) if s[0] <= s[1])
+    out: list[list[int]] = []
+    for lo, hi in spans:
+        if out and lo <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], hi)
+        else:
+            out.append([lo, hi])
+    return ",".join(str(lo) if lo == hi else f"{lo}-{hi}" for lo, hi in out)
+
+
+def remap_per_test_map(
+    tmap: PerTestMap, source_paths: dict[str, str], test_paths: dict[str, str]
+) -> PerTestMap:
+    """*tmap* with its paths rewritten, for a map measured on another checkout.
+
+    A source file missing from *source_paths* is dropped (no change query can
+    name it), and two that land on one path merge, their lines unioned. A test
+    file missing from *test_paths* becomes ``None``. Tests left covering
+    nothing are dropped.
+    """
+    merged: dict[str, dict[int, list[str]]] = {}
+    for source, (_, text) in tmap.sources.items():
+        target = source_paths.get(source)
+        if target is None:
+            continue
+        into = merged.setdefault(target, {})
+        for no, ranges in _decode_tests(text):
+            into.setdefault(no, []).append(ranges)
+    sources = {
+        target: [(no, u) for no, texts in by_no.items() if (u := _union_ranges(texts))]
+        for target, by_no in merged.items()
+    }
+    used = sorted({no for entries in sources.values() for no, _ in entries})
+    files = {no: test_paths.get(tmap.tests[no][1] or "") for no in used}
+    return _renumbered(tmap, used, sources, files)
+
+
+def dump_per_test_map(tmap: PerTestMap) -> bytes:
+    """*tmap* as gzipped JSON (``format`` :data:`PER_TEST_MAP_FORMAT`)."""
+    doc = {
+        "format": PER_TEST_MAP_FORMAT,
+        "source_format": tmap.source_format,
+        "ingested_commit_sha": tmap.ingested_commit_sha,
+        "tests": [list(t) for t in tmap.tests],
+        "sources": {source: text for source, (_, text) in tmap.sources.items()},
+    }
+    return gzip.compress(json.dumps(doc, separators=_JSON_COMPACT).encode(), mtime=0)
+
+
+def is_per_test_map(raw: bytes) -> bool:
+    """Whether *raw* opens like a portable per-test map, gzipped or plain."""
+    head = raw[:4096]
+    if head.startswith(_GZIP_MAGIC):
+        try:
+            head = zlib.decompressobj(wbits=31).decompress(head, 512)
+        except zlib.error:
+            return False
+    return head.lstrip()[:1] == b"{" and PER_TEST_MAP_FORMAT.encode() in head[:512]
+
+
+def _gunzip(raw: bytes, max_bytes: int) -> bytes:
+    """*raw* inflated, refusing past *max_bytes* without inflating further."""
+    inflater = zlib.decompressobj(wbits=31)
+    out = bytearray()
+    try:
+        chunk = inflater.decompress(raw, max_bytes + 1)
+        out += chunk
+        while inflater.unconsumed_tail and len(out) <= max_bytes:
+            out += inflater.decompress(inflater.unconsumed_tail, max_bytes + 1 - len(out))
+    except zlib.error as exc:
+        raise PerTestMapError(f"not valid gzip: {exc}") from exc
+    if len(out) > max_bytes:
+        raise PerTestMapError(f"expands past {max_bytes} bytes")
+    return bytes(out)
+
+
+def _read_doc(raw: bytes, max_bytes: int) -> dict:
+    """The JSON object in *raw* (gzipped or plain), at most *max_bytes* inflated."""
+    if raw.startswith(_GZIP_MAGIC):
+        raw = _gunzip(raw, max_bytes)
+    elif len(raw) > max_bytes:
+        raise PerTestMapError(f"larger than {max_bytes} bytes")
+    try:
+        doc = json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise PerTestMapError("not JSON") from exc
+    if not isinstance(doc, dict) or doc.get("format") != PER_TEST_MAP_FORMAT:
+        raise PerTestMapError(f"format is not {PER_TEST_MAP_FORMAT}")
+    return doc
+
+
+def _is_test_item(item: Any) -> bool:
+    return (
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and bool(item[0])
+        and (item[1] is None or isinstance(item[1], str))
+    )
+
+
+def _checked_tests(tests: Any) -> list[tuple[str, str | None]]:
+    """``tests`` as ``(test_id, test_file)`` pairs, each one checked."""
+    if not isinstance(tests, list):
+        raise PerTestMapError("needs a `tests` list")
+    if not all(_is_test_item(item) for item in tests):
+        raise PerTestMapError("each test is [test_id, test_file or null]")
+    return [(item[0], item[1] or None) for item in tests]
+
+
+def _checked_sources(sources: Any, n_tests: int) -> tuple[dict[str, tuple[int, str]], set[int]]:
+    """``(source -> (test_count, tests_json), test numbers used)``, each entry checked.
+
+    The shape is checked whole by a pattern and the numbers read from it, never
+    decoded entry by entry (a large map has a million entries).
+    """
+    if not isinstance(sources, dict):
+        raise PerTestMapError("needs a `sources` object")
+    checked: dict[str, tuple[int, str]] = {}
+    used: set[int] = set()
+    for source, text in sources.items():
+        if not source or not isinstance(text, str) or not _ENTRIES_RE.fullmatch(text):
+            raise PerTestMapError(f"tests of {str(source)[:200]} are not compact tests_json")
+        numbers = [int(no) for no in _TEST_NO_RE.findall(text)]
+        seen = set(numbers)
+        if len(seen) < len(numbers) or max(numbers) >= n_tests:
+            raise PerTestMapError(f"tests of {source[:200]} repeat or name unknown tests")
+        if any(int(lo) > int(hi) for lo, hi in _SPAN_RE.findall(text)):
+            raise PerTestMapError(f"tests of {source[:200]} hold a reversed line range")
+        used |= seen
+        checked[source] = (len(numbers), text)
+    return checked, used
+
+
+def _short_text(value: Any) -> str | None:
+    return value[:64] if isinstance(value, str) and value else None
+
+
+def load_per_test_map(raw: bytes, *, max_bytes: int) -> PerTestMap:
+    """Read and check a portable per-test map from untrusted bytes.
+
+    Gzipped or plain JSON, at most *max_bytes* once inflated. Every source
+    entry is checked (test numbers in range, unique per file, ranges well
+    formed) one file at a time. Raises :class:`PerTestMapError`.
+    """
+    doc = _read_doc(raw, max_bytes)
+    tests = _checked_tests(doc.get("tests"))
+    sources, used = _checked_sources(doc.get("sources"), len(tests))
+    tmap = PerTestMap(
+        source_format=_short_text(doc.get("source_format")) or "unknown",
+        tests=tuple(tests),
+        sources=sources,
+        ingested_commit_sha=_short_text(doc.get("ingested_commit_sha")),
+    )
+    if len(used) < len(tests):
+        # Tests covering nothing would count as measured; renumber them away.
+        tmap = _renumbered(
+            tmap, sorted(used), {s: _decode_tests(t) for s, (_, t) in sources.items()}
+        )
+    return tmap
+
+
+async def get_per_test_map(session: AsyncSession, repository_id: str) -> PerTestMap | None:
+    """The stored per-test map of *repository_id*, ``None`` when it has none."""
+    rows = (
+        (
+            await session.execute(
+                select(TestCoverageSource)
+                .where(TestCoverageSource.repository_id == repository_id)
+                .order_by(TestCoverageSource.source_file.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None
+    tests = (
+        await session.execute(
+            select(TestCoverageTest.test_no, TestCoverageTest.test_id, TestCoverageTest.test_file)
+            .where(TestCoverageTest.repository_id == repository_id)
+            .order_by(TestCoverageTest.test_no.asc())
+        )
+    ).all()
+    latest = max(rows, key=lambda r: r.ingested_at)
+    # save_test_coverage numbers tests densely from 0, the numbering the
+    # stored tests_json texts use; load_per_test_map refuses any other.
+    return PerTestMap(
+        source_format=latest.source_format or "unknown",
+        tests=tuple((test_id, test_file) for _, test_id, test_file in tests),
+        sources={r.source_file: (r.test_count, r.tests_json) for r in rows},
+        ingested_commit_sha=latest.ingested_commit_sha,
+    )
 
 
 async def _source_rows(

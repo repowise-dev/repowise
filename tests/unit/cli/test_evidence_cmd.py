@@ -285,6 +285,28 @@ def test_invalid_files_are_refused_as_json(indexed) -> None:
     assert _json(result)["error"] == "invalid_evidence"
 
 
+def test_a_profile_of_bundled_code_is_refused_against_the_index(indexed) -> None:
+    root, head = indexed
+    (root / "src" / "bundle.js").write_text("function a() {}\n//# sourceMappingURL=bundle.js.map\n")
+    url = (root / "src" / "bundle.js").as_uri()
+    profile = root / "app.cpuprofile"
+    profile.write_text(json.dumps({
+        "nodes": [
+            {"id": 1, "callFrame": {"functionName": "(root)", "url": "", "lineNumber": -1,
+                                    "columnNumber": -1}, "children": [2]},
+            {"id": 2, "callFrame": {"functionName": "a", "url": url, "lineNumber": 0,
+                                    "columnNumber": 10}},
+        ],
+        "startTime": 0, "endTime": 2000, "samples": [2], "timeDeltas": [1000],
+    }))
+    result = _add(str(profile), "--workload", "w", "--class", "entry_point", "--commit", head,
+                  "--format", "json")
+    assert result.exit_code == 1
+    out = _json(result)
+    assert out["error"] == "invalid_evidence" and "source map" in out["message"]
+    assert _stored(root) == ([], [])
+
+
 @pytest.mark.parametrize("given", [(), ("--input-format", "pprof")])
 def test_an_empty_profile_is_named_as_such(indexed, given) -> None:
     # A test binary that panicked leaves a zero-byte profile behind.
@@ -689,3 +711,62 @@ def test_a_short_entry_point_run_is_stored_with_a_warning(indexed, seconds, warn
     assert result.exit_code == 0, result.output
     assert ("profile covers 0.4 s" in result.output) is warned
     assert len(_stored(root)[0]) == 1
+
+
+def test_several_profiles_and_a_directory_merge_into_one_tagged_run(
+    indexed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.evidence.test_add import _parent, _worker
+
+    root, head = indexed
+    monkeypatch.setenv("CI", "true")
+    workers = root / "workers"
+    workers.mkdir()
+    (workers / "w1.speedscope.json").write_bytes(_worker(root, 6.0))
+    (workers / "w2.speedscope.json").write_bytes(_worker(root, 2.0))
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
+
+    result = _add(str(parent), str(workers), "--workload", "app", "--class", "entry_point",
+                  "--commit", head, "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["profiles"], payload["conversion"]["total"]) == (3, 12.0)
+    assert payload["environment"].endswith("-ci") and "warnings" not in payload
+    (run,), _ = _stored(root)
+    assert run.environment == payload["environment"]
+
+    text = _add(str(parent), str(workers), "--workload", "app", "--class", "entry_point",
+                "--commit", head)
+    assert "3 profiles merged into one run" in text.output
+
+
+def test_a_parent_profile_alone_warns_its_workers_were_not_profiled(indexed) -> None:
+    from tests.unit.evidence.test_add import _parent
+
+    root, head = indexed
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
+
+    result = _add(str(parent), "--workload", "app", "--class", "entry_point", "--commit", head)
+
+    assert result.exit_code == 0, result.output
+    assert "75% of this run went to starting or waiting on other processes" in result.output
+
+
+def test_mixed_formats_in_one_run_are_refused_as_json(indexed) -> None:
+    from tests.unit.evidence.test_add import _parent
+
+    root, head = indexed
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
+    stacks = root / "stacks.txt"
+    stacks.write_text(f"build ({root / 'src' / 'app.py'}:1) 5\n")
+
+    result = _add(str(parent), str(stacks), "--workload", "app", "--class", "entry_point",
+                  "--commit", head, "--value-kind", "wall", "--format", "json")
+
+    assert result.exit_code == 1, result.output
+    assert "different formats" in result.stdout
+    assert _stored(root) == ([], [])

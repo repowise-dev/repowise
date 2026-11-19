@@ -47,6 +47,35 @@ class McpToolSurfaceResponse(BaseModel):
     #: Each profile's tools in this mode, for building a selection off one.
     profiles: dict[str, list[str]] = Field(default_factory=dict)
     tools: list[McpToolInfo]
+    #: The ``repowise config`` command that sets this surface, for an agent.
+    command: str = ""
+
+
+class McpClientRef(BaseModel):
+    """An agent repowise can print an MCP config for."""
+
+    id: str
+    display_name: str
+
+
+class McpClientConfigResponse(BaseModel):
+    """One agent's MCP config for a repo, as ``repowise agents print-config`` prints it."""
+
+    repo_id: str
+    #: Every agent with a config to print, in the CLI's order.
+    clients: list[McpClientRef]
+    target: str
+    display_name: str
+    #: The snippet to paste, in the agent's own format (JSON, TOML or YAML).
+    config: str
+    docs_url: str | None = None
+    #: The profile this agent lists (``core``, ``lean``, ``standard``, ``all``),
+    #: or ``None`` when ``mcp.tools`` is an exact list of names.
+    profile: str | None = None
+    tool_count: int
+    #: Whether ``mcp.always_load`` is on, for an agent that defers tool
+    #: schemas; ``None`` for one that loads every schema up front.
+    always_load: bool | None = None
 
 
 class UpdateMcpToolsRequest(BaseModel):

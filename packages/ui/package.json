@@ -110,6 +110,7 @@
     "./security": "./src/security/index.ts",
     "./security/*": "./src/security/*.tsx",
     "./onboarding": "./src/onboarding/index.ts",
+    "./onboarding/first-prompts": "./src/onboarding/first-prompts.ts",
     "./onboarding/*": "./src/onboarding/*.tsx",
     "./present": "./src/present/index.ts",
     "./present/*": "./src/present/*.tsx",

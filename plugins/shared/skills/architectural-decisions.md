@@ -9,7 +9,7 @@ codex:
   dir: architectural-decisions
   frontmatter: |
     name: architectural-decisions
-    description: Use when a task asks why code is built a certain way, proposes architectural changes, compares implementation approaches, or mentions decision markers such as WHY, DECISION, TRADEOFF, or ADR in a Repowise-indexed repository.
+    description: Why code is built this way, design tradeoffs, ADRs and decision records in this repo.
 ---
 
 # Architectural Decisions with Repowise

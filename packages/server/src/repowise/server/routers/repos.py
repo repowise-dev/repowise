@@ -617,7 +617,9 @@ async def generate_estimate(
     gen_config = _build_generation_config(repo_path, job_config, wiki_style)
 
     # Price with the repo's configured provider/model, if one resolves.
-    _client, provider_name, model_name, provider_error = resolve_provider(str(repo_path), provider)
+    _client, provider_name, model_name, provider_error = resolve_provider(
+        str(repo_path), provider, repo_id=repo_id
+    )
     priced_with = {"name": provider_name, "model": model_name, "error": provider_error}
 
     session_factory = _resolve_repo_session_factory(request.app.state, repo_id)
@@ -741,7 +743,7 @@ async def preflight_index(
 
     exclude_patterns = _repo_exclude_patterns(repo, repo_path)
 
-    provider = await probe_provider(repo_path)
+    provider = await probe_provider(repo_path, repo_id)
 
     try:
         file_count = await asyncio.to_thread(count_files, repo_path, exclude_patterns)

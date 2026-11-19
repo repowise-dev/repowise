@@ -1,6 +1,7 @@
 export * from "./decisions-table";
 export * from "./decision-review-lanes";
 export * from "./decision-agent-prompts";
+export * from "./decision-digest";
 export * from "./decision-review-drawer";
 export * from "./decision-confirm";
 export * from "./decision-origin";

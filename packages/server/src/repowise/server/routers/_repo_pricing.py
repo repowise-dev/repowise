@@ -12,14 +12,15 @@ from typing import Any
 
 
 def resolve_provider(
-    repo_path: str, provider: str | None = None
+    repo_path: str, provider: str | None = None, *, repo_id: str | None = None
 ) -> tuple[Any, str | None, str | None, str | None]:
     """``(client, provider name, model name, error)`` for the repo's chat provider.
 
     *provider* prices another provider with the key and model resolved for
     the repo, before it is made the repo's choice. A provider that fails to
     resolve is reported through ``error`` with a ``None`` client rather than
-    raised: both callers still answer with a partial payload.
+    raised: both callers still answer with a partial payload. *repo_id*
+    resolves as a job does, so a choice left in the legacy per-repo store counts.
     """
     llm_client = None
     provider_name: str | None = None
@@ -28,7 +29,9 @@ def resolve_provider(
     try:
         from repowise.server.provider_config import get_chat_provider_instance
 
-        llm_client = get_chat_provider_instance(repo_path=repo_path, provider_override=provider)
+        llm_client = get_chat_provider_instance(
+            repo_path=repo_path, repo_id=repo_id, provider_override=provider
+        )
         provider_name = getattr(llm_client, "provider_name", None)
         model_name = getattr(llm_client, "model_name", None)
     except Exception as exc:
@@ -36,9 +39,29 @@ def resolve_provider(
     return llm_client, provider_name, model_name, provider_error
 
 
-async def probe_provider(repo_path: str) -> dict[str, Any]:
-    """Live smoke test of the repo's provider (the same probe the CLI uses at init)."""
-    llm_client, provider_name, model_name, provider_error = resolve_provider(repo_path)
+def _provider_configured(repo_path: str, repo_id: str | None) -> bool:
+    """Whether a provider is chosen for *repo_path*, even one that fails to load.
+
+    An unreadable selection counts as configured, so a broken setup is shown
+    rather than indexed past without a model.
+    """
+    from repowise.server.provider_config import resolve_for_repo
+
+    try:
+        return bool(resolve_for_repo(repo_id, repo_path).provider)
+    except Exception:
+        return True
+
+
+async def probe_provider(repo_path: str, repo_id: str | None = None) -> dict[str, Any]:
+    """Live smoke test of the repo's provider (the same probe the CLI uses at init).
+
+    ``configured`` is False only when no provider is chosen at all: the index
+    then runs without a model, which is not a failure.
+    """
+    llm_client, provider_name, model_name, provider_error = resolve_provider(
+        repo_path, repo_id=repo_id
+    )
     provider_ok = False
     if llm_client is not None:
         try:
@@ -48,6 +71,7 @@ async def probe_provider(repo_path: str) -> dict[str, Any]:
             provider_error = str(exc)
     return {
         "ok": provider_ok,
+        "configured": llm_client is not None or _provider_configured(repo_path, repo_id),
         "name": provider_name,
         "model": model_name,
         "error": provider_error,

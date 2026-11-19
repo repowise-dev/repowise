@@ -37,9 +37,9 @@ def test_instructions_stay_short() -> None:
     # already flags what it says about uncommitted edits, so that stays there.
     # Built here, not read from ``mcp.instructions``, which any earlier
     # create_mcp_server call in the process rewrites.
-    from repowise.server.mcp_server._server import _instructions
+    from repowise.core.registry.instructions import server_instructions
 
-    base = _instructions()
+    base = server_instructions(None)
     assert len(base) <= _BASE_INSTRUCTIONS_CHARS
     assert "uncommitted" not in base
 
@@ -115,8 +115,8 @@ def test_instructions_name_no_tool_the_server_does_not_serve(
 
 
 def test_the_decisions_line_is_dropped_without_get_why() -> None:
-    from repowise.server.mcp_server._server import _instructions
+    from repowise.core.registry.instructions import server_instructions
 
     line = "- 3 decisions govern files here: get_why(targets=[file]) first."
-    assert line in _instructions({"get_why"}, line)
-    assert "get_why" not in _instructions({"get_answer", "get_risk"}, line)
+    assert line in server_instructions({"get_why"}, repo_line=line)
+    assert "get_why" not in server_instructions({"get_answer", "get_risk"}, repo_line=line)
