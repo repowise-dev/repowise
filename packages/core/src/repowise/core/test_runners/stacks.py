@@ -384,7 +384,11 @@ _DELEGATES = re.compile(
 _C8 = "npx --yes c8 --reporter=lcov "
 _JEST_FLAGS = "--coverage --coverageReporters=lcov"
 # reportOnFailure: Vitest skips the report when one test fails, losing the whole run's coverage.
-_VITEST_FLAGS = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+# reportsDirectory: the command line beats a config's own directory, so the report lands where
+# the printed ingest path looks.
+_VITEST_FLAGS = (
+    "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
+)
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
 #: The test script ``npm init`` writes, which runs nothing.
@@ -392,6 +396,11 @@ _NO_TESTS = "no test specified"
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
+#: ``npx``, ``bunx`` and any ``<tool> exec`` (``pnpm exec``, ``nub exec --node``) run the command
+#: after their own flags. A flag that takes a value (``--prefix pkg``) leaves the value where the
+#: runner would be, so the line names no runner. ``-p``/``--package`` stop the match outright: their
+#: value is a package name, often the runner's own, and is not the command.
+_EXEC_WRAPPER = re.compile(r"^(?:npx|bunx|[\w.-]+\s+exec)(?:\s+-(?!(?:p|-package)(?![\w-]))\S+)*\s+")
 
 
 def _node_runner(script: str) -> str | None:
@@ -410,7 +419,7 @@ def _node_runner(script: str) -> str | None:
 
 def _command_runner(command: str) -> str | None:
     """:func:`_node_runner` for one simple command."""
-    words = re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command).split()
+    words = _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
     head = words[0] if words else ""
     if head in ("c8", "nyc"):
         # Both default to text and html reports; without lcov, their report step writes it.
