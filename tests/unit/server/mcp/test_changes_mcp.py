@@ -18,6 +18,7 @@ from sqlalchemy import update
 from repowise.core import attribution
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitMetadata
+from repowise.core.suspects.index import NOTE
 
 _FULL = {
     "abc1234": "abc1234" + "0" * 33,
@@ -226,7 +227,7 @@ async def test_suspects_rank_recent_changes_against_the_targets(setup_mcp, sessi
     top = block["suspects"][0]
     assert (top["id"], top["rank"]) == ("pr-2", 1)
     assert "text" in top["signals"] and "recency" in top["signals"]
-    assert "not a cause" in block["note"]
+    assert block["note"] == NOTE  # a row has evidence beyond recency: nothing to widen
     for row in block["suspects"]:
         assert not {"term py", "term src"} & set(row["signals"].get("text", {}).get("evidence", []))
 
@@ -242,11 +243,13 @@ async def test_a_typed_symptom_is_the_suspects_text_query(setup_mcp, session):
         result = await get_context(
             targets=["src/db/models.py"], include=["suspects"], symptom="token refresh fails"
         )
-        ignored = await get_context(targets=["src/db/models.py"], symptom="token refresh fails")
+        alone = await get_context(targets=["src/db/models.py"], symptom="token refresh fails")
     top = result["suspects"]["suspects"][0]
     assert top["id"] == "pr-2"
     assert "term refresh" in top["signals"]["text"]["evidence"]
-    assert any(a["argument"] == "symptom" for a in ignored["ignored_arguments"])
+    # A symptom alone asks for suspects; it is never dropped as an ignored argument.
+    assert alone["suspects"]["suspects"][0]["id"] == "pr-2"
+    assert "ignored_arguments" not in alone
 
 
 @pytest.mark.asyncio

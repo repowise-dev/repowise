@@ -43,7 +43,7 @@ Optional ``include`` parameter widens the response:
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
                             targets' files and the typed ``symptom`` text (the
                             targets' path words without one), each with the
-                            signals that fired
+                            signals that fired; a ``symptom`` alone adds it
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
   - include=["files"]     → on a directory, every file under it (capped, with
@@ -184,10 +184,9 @@ async def get_context(
     collector = OmissionCollector("get_context", repo_root=ctx.path)
     ignored: list[dict[str, Any]] = []
     include_set = _include_set(include, ignored)
-    if symptom and "suspects" not in include_set:
-        ignored.append(
-            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
-        )
+    # A symptom has one reading: rank suspects on it.
+    if symptom and symptom.strip():
+        include_set.add("suspects")
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time
