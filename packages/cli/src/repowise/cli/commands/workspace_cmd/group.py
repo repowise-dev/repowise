@@ -304,9 +304,10 @@ def workspace_remove(alias: str) -> None:
     metavar="GLOB",
     help=(
         "Skip discovered repos whose path matches this glob, matched like "
-        ".gitignore (e.g. 'test-repos/*'). 'legacy' and 'legacy/' match at any "
-        "depth (older versions matched only the top level); write '/legacy' "
-        "for the top-level one only. Repeatable."
+        ".gitignore (e.g. 'test-repos/*'). A slashless name such as 'legacy' "
+        "now matches at any depth (older versions skipped only the top-level "
+        "one), and 'legacy/' does too; write '/legacy' for the top-level one "
+        "only. Repeatable."
     ),
 )
 @click.option(
