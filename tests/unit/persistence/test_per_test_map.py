@@ -159,6 +159,7 @@ _GOOD = {
         {"sources": {"src/a.py": [[0, "1"]]}},
         {"sources": {"src/a.py": '[[0,"9-2"]]'}},
         {"sources": {"src/a.py": '[[0,"1-99999999999"]]'}},
+        {"sources": {"src/a.py": f'[[{"9" * 5000},"1"]]'}},
     ],
 )
 def test_malformed_maps_are_refused(change: dict) -> None:

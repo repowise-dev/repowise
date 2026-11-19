@@ -236,8 +236,10 @@ _GZIP_MAGIC = b"\x1f\x8b"
 # Line numbers stop at seven digits: no source file has ten million lines.
 _LINE = r"\d{1,7}"
 _RANGES = rf"{_LINE}(?:-{_LINE})?(?:,{_LINE}(?:-{_LINE})?)*"
-_ENTRIES_RE = re.compile(rf'\[\[\d+,"{_RANGES}"\](?:,\[\d+,"{_RANGES}"\])*\]')
-_TEST_NO_RE = re.compile(r'\[(\d+),"')
+# Test numbers stop at nine digits, well past the stored row cap.
+_TEST_NO = r"\d{1,9}"
+_ENTRIES_RE = re.compile(rf'\[\[{_TEST_NO},"{_RANGES}"\](?:,\[{_TEST_NO},"{_RANGES}"\])*\]')
+_TEST_NO_RE = re.compile(rf'\[({_TEST_NO}),"')
 _SPAN_RE = re.compile(r"(\d+)-(\d+)")
 _JSON_COMPACT = (",", ":")
 
