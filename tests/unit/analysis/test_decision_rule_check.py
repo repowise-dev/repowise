@@ -188,3 +188,21 @@ def test_cited_literals_are_numbers_quoted_values_and_code_spans() -> None:
     literals = cited_literals(['a 30 s timeout, errors="replace", and `max(ccn)` per 5 files'])
 
     assert literals == {"30", "replace", "max(ccn)"}
+
+
+@pytest.mark.parametrize("failing", ["head", "base"])
+def test_a_failed_blob_read_gives_no_verdict(repo: Path, monkeypatch, failing: str) -> None:
+    import repowise.core.analysis.decisions.rule_check as rule_check
+
+    _later(repo, {"limits.py": _LIMITS.replace("return 1", "return 2")})
+    head = _git(repo, "rev-parse", "HEAD")
+    real = rule_check.cat_file_batch
+
+    def flaky(repo_path, specs, **kwargs):
+        reads_head = all(spec.startswith(head) for spec in specs)
+        return None if reads_head == (failing == "head") else real(repo_path, specs, **kwargs)
+
+    monkeypatch.setattr(rule_check, "cat_file_batch", flaky)
+    claim = RuleClaim(texts=("`size_limit`",), quotes=(), scope=("limits.py",), anchor=_RECORDED)
+
+    assert check_rules(repo, {"d": claim}) == {}

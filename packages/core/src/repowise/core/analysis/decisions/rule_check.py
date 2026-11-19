@@ -286,9 +286,12 @@ def commit_times(repo_path: Path | str, shas: Iterable[str]) -> dict[str, dateti
     return {asked: times[full] for asked in shas for full in times if full.startswith(asked)}
 
 
-def _blobs(repo: str, rev: str, paths: Iterable[str]) -> dict[str, str]:
+def _blobs(repo: str, rev: str, paths: Iterable[str]) -> dict[str, str] | None:
+    """Each path's text at *rev*; a path *rev* lacks is absent. None when git failed."""
     specs = sorted(set(paths))
-    read = cat_file_batch(repo, [f"{rev}:{p}" for p in specs]) or []
+    read = cat_file_batch(repo, [f"{rev}:{p}" for p in specs])
+    if read is None or len(read) != len(specs):
+        return None
     return {
         spec.split(":", 1)[1]: data.decode("utf-8", "replace")
         for spec, data in read
@@ -327,17 +330,25 @@ class _Reader:
     _spans: dict[str, list] = field(default_factory=dict)
     _parser: object = None
 
-    def load_head(self, paths: Iterable[str]) -> None:
+    # A failed read reports False and records nothing: an unread file must
+    # never pass for one that is absent, which would read the rule as untouched.
+    def load_head(self, paths: Iterable[str]) -> bool:
         wanted = [p for p in set(paths) if p not in self._head_text]
         got = _blobs(self.repo, self.head, wanted)
+        if got is None:
+            return False
         for p in wanted:
             self._head_text[p] = _Text(got[p]) if p in got else None
+        return True
 
-    def load_base(self, base: str, paths: Iterable[str]) -> None:
+    def load_base(self, base: str, paths: Iterable[str]) -> bool:
         wanted = [p for p in set(paths) if (base, p) not in self._base_text]
         got = _blobs(self.repo, base, wanted)
+        if got is None:
+            return False
         for p in wanted:
             self._base_text[(base, p)] = _Text(got[p]) if p in got else None
+        return True
 
     def head_text(self, path: str) -> _Text | None:
         return self._head_text.get(path)
@@ -562,9 +573,8 @@ def _check_base(
         return {cid: RuleCheck(HOLDS, "spans_unchanged") for cid in ids}, {}
     paths = sorted({p for cid in ids for p in claims[cid].scope} | {f for cid in ids for f, _ in claims[cid].quotes})
     diffs = _diff(reader.repo, base, reader.head, paths)
-    if diffs is None:
+    if diffs is None or not reader.load_base(base, diffs):
         return {}, {}
-    reader.load_base(base, diffs)
     out: dict[str, RuleCheck] = {}
     pending: dict[str, set[str]] = {}
     for cid in ids:
@@ -597,7 +607,8 @@ def check_rules(
         if (base := _base_commit(line, claim.anchor)) is not None:
             by_base.setdefault(base, []).append(cid)
 
-    reader.load_head(p for c in claims.values() for p in (*c.scope, *(f for f, _ in c.quotes)))
+    if not reader.load_head(p for c in claims.values() for p in (*c.scope, *(f for f, _ in c.quotes))):
+        return {}
     out: dict[str, RuleCheck] = {}
     pending: dict[str, set[str]] = {}
     for base, ids in by_base.items():
