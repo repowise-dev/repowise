@@ -533,7 +533,11 @@ def _node_targets(
         rel = _owned(root, roots, path)
         if rel is None:
             continue
-        name, profile = _named(root, f"node {rel}", ".cpuprofile")
+        # A directory, not one file: ``--cpu-prof`` writes each process and
+        # worker thread its own profile there (a fixed name would let a child
+        # overwrite the parent's), and ``evidence add`` merges the directory
+        # into one run. Cleaned first, so an older run's files never join it.
+        name, profile = _named(root, f"node {rel}", "")
         if path.endswith(_TS):
             out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
                                reason="A TypeScript profile's positions are in the compiled JavaScript; "
@@ -541,12 +545,9 @@ def _node_targets(
             continue
         if not path.endswith(_JS):
             continue
-        command = (
-            f"node --cpu-prof --cpu-prof-dir={posixpath.dirname(_from(root, profile))} "
-            f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
-        )
+        command = f"node --cpu-prof --cpu-prof-dir={_from(root, profile)} {rel}"
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="cpuprofile"))
+                           input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
     return out
 
 
