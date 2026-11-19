@@ -232,7 +232,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). A `call` line is one the graph binds to the symbol; for a method it is also a call of it on any receiver in code (`db.name(...)`), in languages whose comments and strings are read, outside files whose own class defines that member. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). A `call` line is one the graph binds to the symbol; for a method it is also a call of it on any receiver in code (`db.name(...)`), in languages whose comments and strings are read, outside files whose own class defines that member. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why, and `hint` gives the `search_codebase` regex query that lists the live lines naming the symbol (left out when the only reason is the response budget, which names where the rest are). Three more kinds follow the code sites:
 
 - `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
@@ -381,6 +381,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
+- When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
