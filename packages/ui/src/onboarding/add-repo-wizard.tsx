@@ -62,6 +62,8 @@ export const COST_GATE_USD = 2.0;
 export interface AddRepoPreflightResult {
   provider: {
     ok: boolean;
+    /** False only when no provider is chosen; absent on an older server. */
+    configured?: boolean;
     name: string | null;
     model: string | null;
     error: string | null;
@@ -221,7 +223,9 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
         setPreflight(result);
         // No model configured: index without one, as the CLI does. The
         // error step is for a configured provider that fails its check.
-        if (!result.provider.ok && result.provider.name) {
+        const nothingChosen = result.provider.configured === false
+          || (result.provider.configured === undefined && result.provider.name == null);
+        if (!result.provider.ok && !nothingChosen) {
           setStep("provider-error");
           return;
         }
@@ -436,7 +440,9 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
                 <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-outdated)]" />
                 <div className="min-w-0">
                   <p className="font-medium text-[var(--color-text-primary)]">
-                    {preflight.provider.name} check failed
+                    {preflight.provider.name
+                      ? `${preflight.provider.name} check failed`
+                      : "The configured model provider could not be loaded"}
                   </p>
                   {preflight.provider.error && (
                     <p className="mt-0.5 break-words text-xs text-[var(--color-text-secondary)]">

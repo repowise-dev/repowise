@@ -33,10 +33,12 @@ export type JobRunKind = "index" | "docs";
 export function jobRunKind(job: OutcomeJob | null | undefined): JobRunKind {
   const config = job?.config ?? {};
   if (config.mode === "generate" || config.mode === "single_page") return "docs";
-  // `docs_mode` is set when an index job finishes; spent tokens cover a
-  // summary written before the server recorded it.
-  if (config.docs_mode === "llm") return "docs";
-  return Number(config.total_input_tokens ?? 0) > 0 ? "docs" : "index";
+  // `docs_mode` is set when an index job finishes; spent tokens also cover a
+  // sync that rewrote changed pages, and a summary from an older server.
+  if (config.docs_mode === "llm" || Number(config.total_input_tokens ?? 0) > 0) return "docs";
+  if (config.docs_mode) return "index";
+  // No summary (a failed run): a full resync exists to rewrite the docs.
+  return config.mode === "full_resync" ? "docs" : "index";
 }
 
 export function providerIssue(job: OutcomeJob | null | undefined): ProviderIssue | null {

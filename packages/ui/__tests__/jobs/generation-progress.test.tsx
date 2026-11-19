@@ -301,6 +301,21 @@ describe("GenerationProgress", () => {
     expect(screen.getByText("Indexing failed")).toBeTruthy();
   });
 
+  it("says generation failed for a failed full resync, which rewrites the docs", () => {
+    render(
+      <GenerationProgress
+        job={{ id: "j1", status: "failed", total_pages: 0, completed_pages: 0, config: { mode: "full_resync" } }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Generation failed")).toBeTruthy();
+  });
+
   it("keeps a clean run quiet", () => {
     render(
       <GenerationProgress

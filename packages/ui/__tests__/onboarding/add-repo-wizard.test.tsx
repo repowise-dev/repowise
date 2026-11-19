@@ -110,7 +110,13 @@ describe("AddRepoWizard", () => {
     const adapter = makeAdapter({
       preflight: vi.fn().mockResolvedValue(
         makePreflight({
-          provider: { ok: false, name: null, model: null, error: "No active provider configured." },
+          provider: {
+            ok: false,
+            configured: false,
+            name: null,
+            model: null,
+            error: "No active provider configured.",
+          },
           estimate: null,
         }),
       ),
@@ -122,6 +128,24 @@ describe("AddRepoWizard", () => {
     await waitFor(() => expect(adapter.onDone).toHaveBeenCalledWith("r1", "job-1"));
     expect(adapter.startIndex).toHaveBeenCalledWith("r1");
     expect(screen.queryByText(/check failed/)).toBeNull();
+  });
+
+  it("stops on a chosen provider that fails to load, even without its name", async () => {
+    const adapter = makeAdapter({
+      preflight: vi.fn().mockResolvedValue(
+        makePreflight({
+          provider: { ok: false, configured: true, name: null, model: null, error: "bad base URL" },
+          estimate: null,
+        }),
+      ),
+    });
+    render(<AddRepoWizard adapter={adapter} open onOpenChange={vi.fn()} />);
+
+    await fillAndSubmitDetails();
+
+    expect(await screen.findByText("The configured model provider could not be loaded")).toBeTruthy();
+    expect(screen.getByText("bad base URL")).toBeTruthy();
+    expect(adapter.startIndex).not.toHaveBeenCalled();
   });
 
   it("says what a run without a model gives, and offers a signed-in agent CLI", async () => {

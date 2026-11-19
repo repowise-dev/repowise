@@ -1345,7 +1345,7 @@
     },
     "explorer": {
       "emptyTitle": "No documentation yet",
-      "emptyBody": "Docs are built from the code when this repo is indexed. To have a model write the how and why, add an API key, sign in to Claude Code, Codex or OpenCode, or run a local model.",
+      "emptyBody": "No pages yet. Indexing this repo builds docs from the code. To have a model write the how and why, add an API key, sign in to Claude Code, Codex or OpenCode, or run a local model.",
       "hideTree": "Hide pages tree",
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",

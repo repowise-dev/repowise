@@ -1344,7 +1344,7 @@
     },
     "explorer": {
       "emptyTitle": "还没有文档",
-      "emptyBody": "仓库建立索引后，文档会根据代码生成。若想让模型写出原理和缘由，请添加 API 密钥、登录 Claude Code、Codex 或 OpenCode，或运行本地模型。",
+      "emptyBody": "还没有页面。为这个仓库建立索引会根据代码生成文档。若想让模型写出原理和缘由，请添加 API 密钥、登录 Claude Code、Codex 或 OpenCode，或运行本地模型。",
       "hideTree": "隐藏页面树",
       "showTree": "显示页面树",
       "askQuestion": "结合源码解释「{title}」，并列出它所依赖的文件。",

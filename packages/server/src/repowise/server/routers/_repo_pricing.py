@@ -36,8 +36,26 @@ def resolve_provider(
     return llm_client, provider_name, model_name, provider_error
 
 
+def _provider_configured(repo_path: str) -> bool:
+    """Whether a provider is chosen for *repo_path*, even one that fails to load.
+
+    An unreadable selection counts as configured, so a broken setup is shown
+    rather than indexed past without a model.
+    """
+    from repowise.server.provider_config import resolve_for_repo
+
+    try:
+        return bool(resolve_for_repo(repo_path=repo_path).provider)
+    except Exception:
+        return True
+
+
 async def probe_provider(repo_path: str) -> dict[str, Any]:
-    """Live smoke test of the repo's provider (the same probe the CLI uses at init)."""
+    """Live smoke test of the repo's provider (the same probe the CLI uses at init).
+
+    ``configured`` is False only when no provider is chosen at all: the index
+    then runs without a model, which is not a failure.
+    """
     llm_client, provider_name, model_name, provider_error = resolve_provider(repo_path)
     provider_ok = False
     if llm_client is not None:
@@ -48,6 +66,7 @@ async def probe_provider(repo_path: str) -> dict[str, Any]:
             provider_error = str(exc)
     return {
         "ok": provider_ok,
+        "configured": llm_client is not None or _provider_configured(repo_path),
         "name": provider_name,
         "model": model_name,
         "error": provider_error,
