@@ -7,11 +7,14 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..decision_graph import sync_links_from_record
 from ..models import DecisionAcceptance, DecisionEvidence, DecisionRecord, GitMetadata, _now_utc
+
+logger = structlog.get_logger(__name__)
 
 
 async def _fill_git_meta_gaps(
@@ -213,6 +216,63 @@ async def _rule_scopes(
     return {rid: [p for p in ps if p in keep] for rid, ps in affected_by_id.items()}
 
 
+def _moved_in_force(
+    decisions: list[DecisionRecord], rule_files: dict[str, list[str]]
+) -> tuple[list[DecisionRecord], list[DecisionRecord]]:
+    """In-force records whose rule files moved since their anchor, and the rest with a verdict.
+
+    A verdict on a record that no longer qualifies (its files back to unmoved
+    after a grant, or a scope left with only test files) no longer describes it.
+    """
+    moved, settled = [], []
+    for d in decisions:
+        if d.status != "active" or d.source == "conventions":
+            continue
+        if rule_files.get(d.id) and (d.staleness_score or 0.0) > 0.0:
+            moved.append(d)
+        elif d.rule_check is not None:
+            settled.append(d)
+    return moved, settled
+
+
+def _due(moved: list[DecisionRecord], repo_path: Path) -> list[DecisionRecord]:
+    """The records changed since their last verdict: never checked, or a named file
+    committed after the commit that verdict was read at."""
+    from repowise.core.analysis.decisions.extractor import _as_aware_utc
+    from repowise.core.analysis.decisions.rule_check import commit_times
+
+    checked_at = commit_times(repo_path, {d.rule_checked_commit for d in moved} - {None})
+    return [
+        d
+        for d in moved
+        if d.rule_check is None
+        or d.rule_checked_commit not in checked_at
+        or (
+            d.last_code_change is not None
+            and _as_aware_utc(d.last_code_change) > checked_at[d.rule_checked_commit]
+        )
+    ]
+
+
+async def _code_quotes(session: AsyncSession, ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """``(file, quote)`` of each record's evidence written in a code file, by id."""
+    from repowise.core.analysis.decisions.rule_check import CODE_QUOTE_SOURCES
+
+    quotes: dict[str, list[tuple[str, str]]] = {}
+    ev = DecisionEvidence
+    for start in range(0, len(ids), 500):  # one read per 500 ids, under the bind ceiling
+        rows = await session.execute(
+            select(ev.decision_id, ev.evidence_file, ev.source_quote).where(
+                ev.decision_id.in_(ids[start : start + 500]),
+                ev.source.in_(sorted(CODE_QUOTE_SOURCES)),
+            )
+        )
+        for did, path, quote in rows.all():
+            if path and quote:
+                quotes.setdefault(did, []).append((path, quote))
+    return quotes
+
+
 async def _recheck_rules(
     session: AsyncSession,
     decisions: list[DecisionRecord],
@@ -224,86 +284,43 @@ async def _recheck_rules(
 ) -> int:
     """Re-read whether each in-force record's rule still holds; the count of rows written.
 
-    Only records whose files moved since their anchor, and only when something
-    changed since the last verdict: never checked, or a file it names committed
-    after the commit that verdict was read at. A git failure leaves rows as they were.
+    Best-effort: a git failure or timeout leaves every verdict as it was and
+    the churn pass that ran before it stands.
     """
-    from repowise.core.analysis.decisions.extractor import _as_aware_utc
     from repowise.core.analysis.decisions.landing import record_landing
-    from repowise.core.analysis.decisions.rule_check import (
-        CODE_QUOTE_SOURCES,
-        RuleClaim,
-        check_rules,
-        commit_times,
-    )
+    from repowise.core.analysis.decisions.rule_check import RuleClaim, check_rules
     from repowise.core.analysis.decisions.staleness import _anchor
 
-    moved = [
-        d
-        for d in decisions
-        if d.status == "active"
-        and d.source != "conventions"
-        and rule_files.get(d.id)
-        and (d.staleness_score or 0.0) > 0.0
-    ]
-    if not moved:
-        return 0
-    checked_at = commit_times(repo_path, {d.rule_checked_commit for d in moved} - {None})
-    due = [
-        d
-        for d in moved
-        if d.rule_check is None
-        or d.rule_checked_commit not in checked_at
-        or (
-            d.last_code_change is not None
-            and _as_aware_utc(d.last_code_change) > checked_at[d.rule_checked_commit]
-        )
-    ]
-    if not due:
-        return 0
-
-    quotes: dict[str, list[tuple[str, str]]] = {}
-    ids = [d.id for d in due]
-    for start in range(0, len(ids), 500):
-        rows = await session.execute(
-            select(
-                DecisionEvidence.decision_id,
-                DecisionEvidence.evidence_file,
-                DecisionEvidence.source_quote,
-            ).where(
-                DecisionEvidence.decision_id.in_(ids[start : start + 500]),
-                DecisionEvidence.source.in_(sorted(CODE_QUOTE_SOURCES)),
-            )
-        )
-        for did, path, quote in rows.all():
-            if path and quote:
-                quotes.setdefault(did, []).append((path, quote))
-
-    claims = {}
+    moved, settled = _moved_in_force(decisions, rule_files)
+    for dec in settled:
+        dec.rule_check = dec.rule_check_basis = dec.rule_checked_commit = None
+    try:
+        due = _due(moved, repo_path) if moved else []
+        quotes = await _code_quotes(session, [d.id for d in due])
+        claims = {}
+        for dec in due:
+            evidence = json.loads(dec.evidence_commits_json or "[]")
+            landing = record_landing(evidence, landings, dec.created_at)
+            anchor = _anchor(dec.created_at, landing.at if landing else None, grants.get(dec.id))
+            if anchor is not None:
+                claims[dec.id] = RuleClaim(
+                    texts=(dec.title or "", dec.decision or ""),
+                    quotes=tuple(quotes.get(dec.id, ())),
+                    scope=tuple(rule_files[dec.id]),
+                    anchor=anchor,
+                )
+        verdicts = check_rules(repo_path, claims)
+    except Exception as exc:  # git missing, a timeout: the churn verdict stands
+        logger.warning("decision_rule_check_skipped", error=str(exc))
+        return len(settled)
     for dec in due:
-        landing = record_landing(
-            json.loads(dec.evidence_commits_json or "[]"), landings, dec.created_at
-        )
-        anchor = _anchor(dec.created_at, landing.at if landing else None, grants.get(dec.id))
-        if anchor is not None:
-            claims[dec.id] = RuleClaim(
-                texts=(dec.title or "", dec.decision or ""),
-                quotes=tuple(quotes.get(dec.id, ())),
-                scope=tuple(rule_files[dec.id]),
-                anchor=anchor,
-            )
-    verdicts = check_rules(repo_path, claims)
-    written = 0
-    for dec in due:
-        found = verdicts.get(dec.id)
-        if found is None:
+        if (found := verdicts.get(dec.id)) is None:
             continue
         if (dec.rule_check, dec.rule_check_basis) != (found.verdict, found.basis):
             dec.rule_check, dec.rule_check_basis = found.verdict, found.basis
             dec.updated_at = now
         dec.rule_checked_commit = found.commit
-        written += 1
-    return written
+    return len(settled) + len(verdicts)
 
 
 def _rescore_staleness(

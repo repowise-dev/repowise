@@ -24,6 +24,7 @@ code, never text in it, so only evidence written in a code file is looked for.
 from __future__ import annotations
 
 import bisect
+import os
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -229,8 +230,17 @@ class _Text:
 # ---------------------------------------------------------------------------
 
 
+#: Paths in a ``git diff`` pathspec are file names, never globs or magic.
+_LITERAL_PATHS = {**os.environ, "GIT_LITERAL_PATHSPECS": "1"}
+
+
+def _rev_parse(repo: str, rev: str) -> str | None:
+    shown = run_git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo)
+    return (shown.stdout.strip() or None) if shown.returncode == 0 else None
+
+
 def _first_parent_line(repo: str, head: str) -> list[tuple[int, str]]:
-    """``(commit time, sha)`` on *head*'s first-parent line, oldest first."""
+    """``(commit time, sha)`` on *head*'s first-parent line, sorted for bisecting by time."""
     shown = run_git(["log", "--first-parent", "--format=%ct %H", head], repo)
     if shown.returncode != 0:
         return []
@@ -249,7 +259,9 @@ def _diff(repo: str, base: str, head: str, paths: list[str]) -> dict[str, FileDi
     for at in range(0, len(paths), _ARGV_CHUNK):
         chunk = paths[at : at + _ARGV_CHUNK]
         shown = run_git(
-            ["diff", "--unified=0", "--no-renames", *DIFF_ARGS, base, head, "--", *chunk], repo
+            ["diff", "--unified=0", "--no-renames", *DIFF_ARGS, base, head, "--", *chunk],
+            repo,
+            env=_LITERAL_PATHS,
         )
         if shown.returncode != 0:
             return None
@@ -260,13 +272,16 @@ def _diff(repo: str, base: str, head: str, paths: list[str]) -> dict[str, FileDi
 def commit_times(repo_path: Path | str, shas: Iterable[str]) -> dict[str, datetime]:
     """Commit time of each of *shas* git holds; the rest are absent."""
     shas = sorted(set(shas))
-    if not shas:
-        return {}
-    shown = run_git(["log", "--no-walk=unsorted", "--format=%H %ct", *shas], str(repo_path))
-    if shown.returncode != 0:
-        return {}
-    rows = (line.split() for line in shown.stdout.splitlines() if line.strip())
-    times = {sha: datetime.fromtimestamp(int(ct), UTC) for sha, ct in rows}
+    times: dict[str, datetime] = {}
+    for at in range(0, len(shas), _ARGV_CHUNK):
+        chunk = shas[at : at + _ARGV_CHUNK]
+        shown = run_git(
+            ["log", "--no-walk=unsorted", "--ignore-missing", "--format=%H %ct", *chunk],
+            str(repo_path),
+        )
+        if shown.returncode == 0:
+            rows = (line.split() for line in shown.stdout.splitlines() if line.strip())
+            times.update((sha, datetime.fromtimestamp(int(ct), UTC)) for sha, ct in rows)
     # Stored shas are full, but answer for whatever spelling was asked.
     return {asked: times[full] for asked in shas for full in times if full.startswith(asked)}
 
@@ -281,15 +296,18 @@ def _blobs(repo: str, rev: str, paths: Iterable[str]) -> dict[str, str]:
     }
 
 
-def _present_anywhere(repo: str, head: str, names: Iterable[str]) -> set[str]:
-    """Which of *names* occur as whole words anywhere in the tree at *head*."""
+def _present_anywhere(repo: str, head: str, names: Iterable[str]) -> set[str] | None:
+    """Which of *names* occur as whole words anywhere in the tree at *head*; None if git failed."""
     names = sorted(set(names))
     found: set[str] = set()
     for at in range(0, len(names), _ARGV_CHUNK):
         args = ["grep", "-h", "-o", "-w", "-F", "-I"]
         for name in names[at : at + _ARGV_CHUNK]:
             args += ["-e", name]
-        found.update(line.strip() for line in run_git([*args, head, "--"], repo).stdout.splitlines())
+        shown = run_git([*args, head, "--"], repo)
+        if shown.returncode > 1:  # 1 is "no match"
+            return None
+        found.update(line.strip() for line in shown.stdout.splitlines())
     return found & set(names)
 
 
@@ -403,41 +421,115 @@ def _names_any(lines: list[str], tokens: Iterable[str]) -> bool:
     return any(_word_re(t).search(text) for t in tokens)
 
 
-def _check_one(
-    reader: _Reader, claim: RuleClaim, base: str, diffs: Mapping[str, FileDiff]
-) -> tuple[RuleCheck | None, set[str]]:
+@dataclass
+class _Claim:
+    """One claim read against one anchor commit."""
+
+    reader: _Reader
+    claim: RuleClaim
+    base: str
+    diffs: Mapping[str, FileDiff]
+
+    @property
+    def files(self) -> list[str]:
+        return list(dict.fromkeys([*self.claim.scope, *(f for f, _ in self.claim.quotes)]))
+
+    def at_base(self, path: str) -> _Text | None:
+        return self.reader.base_text(self.base, path, path in self.diffs)
+
+    def in_base(self, token: str) -> bool:
+        pattern = _word_re(token)
+        return any((t := self.at_base(p)) is not None and pattern.search(t.raw) for p in self.files)
+
+    def in_head(self, token: str) -> bool:
+        pattern = _word_re(token)
+        return any(
+            (t := self.reader.head_text(p)) is not None and pattern.search(t.raw)
+            for p in self.files
+        )
+
+    def quotes_at_head(self) -> dict[str, list[tuple[int, int]]] | None:
+        """Head lines of each quote that was in the code at the anchor; None if one is gone."""
+        found: dict[str, list[tuple[int, int]]] = {}
+        for path, quote in self.claim.quotes:
+            before, after = self.at_base(path), self.reader.head_text(path)
+            # Never in the code as written, or the file itself moved (the HEAD
+            # artifact check owns that): nothing to look for.
+            if before is None or after is None or before.locate(quote) is None:
+                continue
+            where = after.locate(quote, edited=True)
+            if where is None:
+                return None
+            found.setdefault(path, []).append(where)
+        return found
+
+    def homes(self, names: set[str]) -> dict[str, set[str]]:
+        """The scope files that define each of *names*."""
+        out: dict[str, set[str]] = {}
+        for path in self.files:
+            text = self.reader.head_text(path)
+            if text is None:
+                continue
+            defined = {s.name for s in self.reader.symbols(path)}
+            for name in names:
+                if {name, name.rsplit(".", 1)[-1]} & defined and _word_re(name).search(text.raw):
+                    out.setdefault(name, set()).add(path)
+        return out
+
+
+def _touching_hunks(
+    read: _Claim,
+    path: str,
+    home: dict[str, set[str]],
+    tokens: tuple[set[str], set[str]],
+    commented: list[tuple[int, int]],
+) -> list[list[str]]:
+    """The changed lines of each hunk in *path* that lands on what the rule points at.
+
+    *tokens* is the names the scope only uses and the literals the rule states.
+    """
+    diff, text = read.diffs.get(path), read.reader.head_text(path)
+    if diff is None or text is None:
+        return []
+    used, literals = tokens
+    own = {n for n, paths in home.items() if path in paths}
+    leaves = {n.rsplit(".", 1)[-1] for n in own} | own
+    bodies = [(s.start_line, s.end_line) for s in read.reader.symbols(path) if s.name in leaves]
+    uses = _occurrences(text, used)
+    return [
+        lines
+        for lo, hi, lines in _hunks(diff)
+        if _overlaps(lo, hi, commented)
+        or _overlaps(lo, hi, uses)
+        or _names_any(lines, used | literals)
+        or (_overlaps(lo, hi, bodies) and _names_any(lines, own))
+    ]
+
+
+def _literal_gone(read: _Claim, literals: set[str], touched: dict[str, list[list[str]]]) -> str | None:
+    """A stated literal a hunk on the rule removed and the file no longer has anywhere."""
+    for literal in sorted(literals):
+        pattern = _word_re(literal)
+        for path, hunks in touched.items():
+            after = read.reader.head_text(path)
+            removed = any(pattern.search(line) for lines in hunks for line in lines)
+            if removed and not (after is not None and pattern.search(after.raw)):
+                return literal
+    return None
+
+
+def _check_one(read: _Claim) -> tuple[RuleCheck | None, set[str]]:
     """The verdict, or None with the names whose absence decides it, read from git."""
-    files = list(dict.fromkeys([*claim.scope, *(f for f, _ in claim.quotes)]))
-    names = cited_identifiers([*claim.texts, *(q for _, q in claim.quotes)])
-    literals = cited_literals(claim.texts)
-
-    def at_base(path: str) -> _Text | None:
-        return reader.base_text(base, path, path in diffs)
-
-    quote_spans: dict[str, list[tuple[int, int]]] = {}
-    for path, quote in claim.quotes:
-        before = at_base(path)
-        if before is None or before.locate(quote) is None:
-            continue  # never in the code as written, so nothing to look for now
-        after = reader.head_text(path)
-        if after is None:
-            continue  # the file itself moved; the HEAD artifact check owns that
-        found = after.locate(quote, edited=True)
-        if found is None:
-            return RuleCheck(DRIFTED, "quote_gone"), set()
-        quote_spans.setdefault(path, []).append(found)
-
-    anchored = {
-        n for n in names if any((t := at_base(p)) is not None and _word_re(n).search(t.raw) for p in files)
-    }
-    absent = {
-        n
-        for n in anchored
-        if not any((t := reader.head_text(p)) is not None and _word_re(n).search(t.raw) for p in files)
-    }
+    claim = read.claim
+    quotes = read.quotes_at_head()
+    if quotes is None:
+        return RuleCheck(DRIFTED, "quote_gone"), set()
+    cited = cited_identifiers([*claim.texts, *(q for _, q in claim.quotes)])
+    anchored = {n for n in cited if read.in_base(n)}
+    absent = {n for n in anchored if not read.in_head(n)}
     if absent:
         return None, absent
-    if not anchored and not quote_spans:
+    if not anchored and not quotes:
         return RuleCheck(UNKNOWN, "no_anchor"), set()
 
     # The rule is touched where a change lands on a line naming what it cites,
@@ -445,56 +537,43 @@ def _check_one(
     # read inside its own definition, not at its callers, and only on lines that
     # name what the rule cites: a parameter added to a function the rule names
     # leaves the rule as it was.
-    home: dict[str, set[str]] = {}
-    for path in files:
-        text = reader.head_text(path)
-        for name in anchored:
-            leaf = name.rsplit(".", 1)[-1]
-            if (
-                text is not None
-                and _word_re(name).search(text.raw)
-                and any(s.name in (name, leaf) for s in reader.symbols(path))
-            ):
-                home.setdefault(name, set()).add(path)
-    literals = {
-        lit for lit in literals if any((t := at_base(p)) is not None and _word_re(lit).search(t.raw) for p in files)
-    }
-    used = anchored - home.keys()
-    governed = {path: _quote_spans(reader, path, found) for path, found in quote_spans.items()}
-    on_code = any(governs for _spans, governs in governed.values())
-    touched: list[FileDiff] = []
-    for path in files:
-        diff = diffs.get(path)
-        text = reader.head_text(path)
-        if diff is None or text is None:
-            continue
-        own = {n for n, paths in home.items() if path in paths}
-        leaves = {n.rsplit(".", 1)[-1] for n in own} | own
-        bodies = [(s.start_line, s.end_line) for s in reader.symbols(path) if s.name in leaves]
+    home = read.homes(anchored)
+    tokens = (anchored - home.keys(), {lit for lit in cited_literals(claim.texts) if read.in_base(lit)})
+    governed = {path: _quote_spans(read.reader, path, found) for path, found in quotes.items()}
+    touched = {}
+    for path in read.files:
         commented = governed.get(path, ([], False))[0]
-        uses = _occurrences(text, used)
-        for lo, hi, lines in _hunks(diff):
-            if (
-                _overlaps(lo, hi, commented)
-                or _overlaps(lo, hi, uses)
-                or _names_any(lines, used | literals)
-                or (_overlaps(lo, hi, bodies) and _names_any(lines, own))
-            ):
-                touched.append(diff)
-                break
+        if hunks := _touching_hunks(read, path, home, tokens, commented):
+            touched[path] = hunks
     if not touched:
         return RuleCheck(HOLDS, "spans_unchanged"), set()
-    for literal in sorted(literals):
-        pattern = _word_re(literal)
-        for diff in touched:
-            after = reader.head_text(diff.path)
-            if any(pattern.search(line) for line in diff.removed) and not (
-                after is not None and pattern.search(after.raw)
-            ):
-                return RuleCheck(DRIFTED, f"literal_gone:{literal}"), set()
-    if on_code:
+    if (literal := _literal_gone(read, tokens[1], touched)) is not None:
+        return RuleCheck(DRIFTED, f"literal_gone:{literal}"), set()
+    if any(governs for _spans, governs in governed.values()):
         return RuleCheck(HOLDS, "quote_present"), set()
     return RuleCheck(UNKNOWN, "spans_touched"), set()
+
+
+def _check_base(
+    reader: _Reader, claims: Mapping[str, RuleClaim], base: str, ids: list[str]
+) -> tuple[dict[str, RuleCheck], dict[str, set[str]]]:
+    """Verdicts for the claims anchored at *base*, and the names each still has to find."""
+    if base == reader.head:
+        return {cid: RuleCheck(HOLDS, "spans_unchanged") for cid in ids}, {}
+    paths = sorted({p for cid in ids for p in claims[cid].scope} | {f for cid in ids for f, _ in claims[cid].quotes})
+    diffs = _diff(reader.repo, base, reader.head, paths)
+    if diffs is None:
+        return {}, {}
+    reader.load_base(base, diffs)
+    out: dict[str, RuleCheck] = {}
+    pending: dict[str, set[str]] = {}
+    for cid in ids:
+        verdict, absent = _check_one(_Claim(reader, claims[cid], base, diffs))
+        if verdict is not None:
+            out[cid] = verdict
+        else:
+            pending[cid] = absent
+    return out, pending
 
 
 def check_rules(
@@ -504,47 +583,35 @@ def check_rules(
 
     One first-parent log, then per distinct anchor commit one ``git diff`` and
     one blob batch over the union of its claims' files, so the cost follows the
-    number of distinct anchors, not the number of records.
+    number of distinct anchors, not the number of records. A claim anchored
+    before the history this checkout holds gets no verdict.
     """
     repo = str(repo_path)
-    line = _first_parent_line(repo, head)
-    if not line or not claims:
+    head_sha = _rev_parse(repo, head) if claims else None
+    line = _first_parent_line(repo, head_sha) if head_sha else []
+    if not line:
         return {}
-    head_sha = line[-1][1]
     reader = _Reader(repo, head_sha)
-
     by_base: dict[str, list[str]] = {}
     for cid, claim in claims.items():
-        base = _base_commit(line, claim.anchor)
-        if base is not None:
+        if (base := _base_commit(line, claim.anchor)) is not None:
             by_base.setdefault(base, []).append(cid)
 
     reader.load_head(p for c in claims.values() for p in (*c.scope, *(f for f, _ in c.quotes)))
     out: dict[str, RuleCheck] = {}
     pending: dict[str, set[str]] = {}
     for base, ids in by_base.items():
-        paths = sorted({p for cid in ids for p in claims[cid].scope} | {f for cid in ids for f, _ in claims[cid].quotes})
-        if base == head_sha:
-            out.update((cid, RuleCheck(HOLDS, "spans_unchanged")) for cid in ids)
-            continue
-        diffs = _diff(repo, base, head_sha, paths)
-        if diffs is None:
-            continue
-        reader.load_base(base, diffs)
-        for cid in ids:
-            verdict, absent = _check_one(reader, claims[cid], base, diffs)
-            if verdict is not None:
-                out[cid] = verdict
-            else:
-                pending[cid] = absent
+        decided, left = _check_base(reader, claims, base, ids)
+        out.update(decided)
+        pending.update(left)
 
     # A cited name missing from the record's files may have moved, not gone:
-    # one grep over the whole tree settles every such record at once.
+    # one grep over the whole tree settles every such record at once. When git
+    # cannot answer, nothing is called gone.
     present = _present_anywhere(repo, head_sha, {n for names in pending.values() for n in names})
     for cid, absent in pending.items():
-        gone = sorted(absent - present)
+        gone = sorted(absent - present) if present is not None else []
         out[cid] = (
             RuleCheck(DRIFTED, f"symbol_gone:{gone[0]}") if gone else RuleCheck(UNKNOWN, "moved")
         )
     return {cid: replace(found, commit=head_sha) for cid, found in out.items()}
-

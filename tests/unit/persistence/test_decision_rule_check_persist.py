@@ -219,3 +219,32 @@ def test_files_gone_still_read_stale_whatever_the_rule_verdict() -> None:
         )
         == "stale"
     )
+
+
+async def test_a_git_failure_leaves_the_churn_verdict_standing(session, repo: Path, monkeypatch):
+    import repowise.core.analysis.decisions.rule_check as rule_check
+
+    def boom(*_args, **_kwargs):
+        raise TimeoutError("git took too long")
+
+    monkeypatch.setattr(rule_check, "check_rules", boom)
+    _commit(repo, {"src/retry.py": _SRC.replace("return 1", "return 2")}, _LATER)
+    rec = await _accepted(session, decision="`retry_limit` allows three tries", files=["src/retry.py"])
+
+    await recompute_decision_staleness(session, _REPO_ID, {}, repo)
+
+    assert rec.staleness_score == 1.0
+    assert rec.rule_check is None
+    assert await current_currency(session, rec) == "needs_review"
+
+
+async def test_a_verdict_on_a_record_whose_files_no_longer_moved_is_cleared(session, repo: Path):
+    rec = await _accepted(session, decision="retry three times", files=["src/retry.py"], moved=("x",))
+    rec.rule_check, rec.rule_check_basis = "drifted", "quote_gone"
+    await session.flush()
+
+    await recompute_decision_staleness(session, _REPO_ID, {}, repo)
+
+    assert rec.staleness_score == 0.0
+    assert rec.rule_check is None
+    assert await current_currency(session, rec) == "active"
