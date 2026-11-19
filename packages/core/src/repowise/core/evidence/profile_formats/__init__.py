@@ -33,7 +33,17 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, go_bench, hyperfine, junit, pprof, pytest_benchmark, speedscope
+from . import (
+    collapsed,
+    cpuprofile,
+    go_bench,
+    google_benchmark,
+    hyperfine,
+    junit,
+    pprof,
+    pytest_benchmark,
+    speedscope,
+)
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -70,6 +80,10 @@ profile_formats.register(
 )
 profile_formats.register(
     "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
+)
+profile_formats.register(
+    "google-benchmark",
+    ProfileFormat(google_benchmark.sniff, to_v1=google_benchmark.to_v1),
 )
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
