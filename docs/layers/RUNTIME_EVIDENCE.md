@@ -61,7 +61,10 @@ read, a program with no profiler flag).
   killed run leaves nothing.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and a reason in
   place of its ingest line, since its `.cpuprofile` output is not among the
-  formats this build reads; a TypeScript `bin` gets a reason only.
+  formats this build reads; a TypeScript `bin` gets a reason only. The command
+  writes into a directory of its own (`.repowise/node-bin-cli-js`), cleaned
+  first, where every process and worker thread leaves its own profile; the
+  ingest line names that directory, so the run's files merge into one run.
 - `repowise coverage setup` prints the same plan with the coverage part only.
 
 ### Python example
@@ -135,6 +138,7 @@ repowise evidence add .repowise/app.speedscope.json --workload "app" --class ent
 repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/pytest-bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
 repowise evidence add run.json --workload "nightly tests" --class unit_test --environment ci   # a v1 file with commit_sha
+repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
 ```
 
 | Flag | What it does |
@@ -144,7 +148,7 @@ repowise evidence add run.json --workload "nightly tests" --class unit_test --en
 | `--commit` | The full 40- or 64-character SHA measured. Required for a converted file. For a v1 file it defaults to `commit_sha`, must agree with it, and is required when the file has none. |
 | `--checkout-root` | The checkout the run used. Default: the repository root. |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes. Default: the file's `dirty`, else the working tree when `--commit` is HEAD. |
-| `--environment` | Where it ran, one word of up to 32 characters (`local`, `ci`). Default `unknown`. |
+| `--environment` | Where it ran, one word of up to 32 characters. Default: the OS and whether this is a CI job (`linux-ci`, `macos-local`, `windows-local`). |
 | `--input-format` | Read the file as this format instead of detecting it from the content. |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled, when its format does not say. For a v1 file, leave it out or pass the file's own `value_kind`. |
 | `--allow-partial` | Store a profile or query-count run even when more than half its entries did not map (flagged partial). |
@@ -159,19 +163,54 @@ evidence.max_file_mb <n>` line that admits the file. The text output names what 
 stored, what was skipped by reason and whether the run reads as stale. An
 `entry_point` profile that covers under 3 seconds is stored with a warning: a
 program that deferred its work or printed its usage measured little. The JSON
-result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
-`stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
-`unmatched_sample`, `tests_failed`, `input_format`, `conversion` (for a converted profile:
-`total`, `unit`, `repo_self_share`, `wait_share`, `library_share`,
-`explained_share`, `skip_rate`, `skipped_share_by_reason`,
-`self_unattributed`, `symbols`), and once stored `run_id`, `restamped`,
+result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `environment`,
+`index_commit`, `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`,
+`mapping_partial`, `unmatched_sample`, `tests_failed`, `input_format`, `profiles`,
+`conversion` (for a converted profile: `total`, `unit`, `repo_self_share`,
+`wait_share`, `library_share`, `child_process_share`, `explained_share`,
+`skip_rate`, `skipped_share_by_reason`, `self_unattributed`, `symbols`),
+`warnings` when there is one, and once stored `run_id`, `restamped`,
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
+### Several profiles of one run
+
+A profile of one process misses the work of the processes it starts. When a
+run has workers, profile each process and pass every file to one `evidence
+add` (several FILE arguments, or a directory holding them): they merge into
+one run before the join, so the run is stored, ranked and superseded as one,
+and its shares are over every process's samples. The files share the run's
+flags (workload, class, commit, clock) and must share a format, a unit and a
+tool; mixed ones, the same file twice, and v1 files or benchmark results given
+together are refused with the reason. The merged run does not depend on the
+order the files are named in.
+
+A single profile that spent at least 1% of its time starting or waiting on
+other processes is stored with a warning (`warnings`, `code:
+unprofiled_child_processes`, with the share). The signal is the parent's own
+frames below its innermost repo frame, so what it sees depends on the format:
+
+| Format | Seen | Not seen |
+|---|---|---|
+| Speedscope, collapsed stacks (Python) | `multiprocessing` and process pools, `subprocess`, `os.fork` and `os.posix_spawn` frames | Workers the parent never waited on while sampled; `py-spy --subprocesses`, which already holds the children, still warns |
+| Go pprof | `os/exec` and `os.(*Process)` frames | Goroutines are in the profile already, so only other processes count |
+| `.cpuprofile` (when read) | `child_process`, `cluster` and worker-thread frames | Which file belongs to which process |
+
+With several profiles no warning is given: which process each file sampled is
+not recorded, so a missing worker cannot be told apart.
+
+Every run carries an environment tag, the OS and whether it ran in a CI job
+(`linux-ci`, `macos-local`), unless `--environment` names another. Runs of
+one workload in different environments keep separate histories. The tag does
+not catch everything that slows one machine (antivirus scanning on file open
+did once); two agreeing runs are the guard.
+
 A server that receives the same file calls
 `repowise.core.evidence.add.ingest_evidence(session, repo, data, repo_path=..., workload=..., workload_class=...)`
-with the file's bytes, an open session, the repository row and the checkout the
-index was built from, plus the other options above as keywords. It runs the
+with the file's bytes (or `(name, bytes)` pairs for the profiles of one run),
+an open session, the repository row and the checkout the index was built from,
+plus the other options above as keywords. Its environment defaults to
+`unknown`: only the machine that ran the profile can tag it. It runs the
 same checks, stores the same run and returns the same result; a file or option
 it will not take raises `EvidenceRefusedError` with a `code`, the `option` at
 fault and a `hint`.
@@ -194,18 +233,19 @@ the first profile it asks for is the one closest to real use.
 
 ## Kinds and input formats
 
-One file holds one run of one kind.
+One file holds one run of one kind; the profiles of one run's processes may come in
+several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 
 | Kind | Entries | Input formats read |
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
-| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, hyperfine JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | JUnit XML, or a v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `pytest-benchmark`, `junit`, `collapsed`, or one a plugin registers).
+`pprof`, `pytest-benchmark`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -231,6 +271,7 @@ The format is detected from the content, never the file name;
 | Format | Written by | What a benchmark carries |
 |---|---|---|
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
+| `hyperfine` | `hyperfine --export-json PATH` | one series per result, named `command 1`, `command 2`, ... (the command line is never stored); `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds` (the number of timed runs) |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to
@@ -243,6 +284,7 @@ The format is detected from the content, never the file name;
   cross-check only: a file that recorded another commit is refused. Its `dirty`
   flag is kept unless `--dirty` or `--clean` says otherwise.
 - Machine details, parameters and `extra_info` are not read.
+- A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
 
 ### Test reports as the runner wrote them
 
@@ -251,7 +293,9 @@ The format is detected from the content, never the file name;
 | `junit` | `pytest --junitxml=junit.xml`, Maven Surefire (`target/surefire-reports`) and Gradle (`build/test-results/test`) by default, Vitest `--reporter=junit`, jest with `jest-junit` | `classname`, `name`, `time` in seconds, and the outcome from a `failure`, `error` or `skipped` child; `file` when the runner writes it |
 
 - A Maven or Gradle report directory, one file per test class, is one run:
-  pass the directory as FILE.
+  pass the directory (or several report files) as FILE. The files in it that
+  are not JUnit XML (Surefire's `.txt` summaries, `failsafe-summary.xml`, a
+  file that declares a document type) are left out.
 - A test is stored under its `path::qualname` id, the id coverage contexts
   use, and linked to its indexed test function, parameters cut
   (`test_adds[1]` and `addsItem()` link to `test_adds` and `addsItem`).
@@ -262,10 +306,10 @@ The format is detected from the content, never the file name;
   holds. A name that leads to no file, or to two, keeps its timing under the
   runner's name, counted under `unlinked` as `unplaced`. jest-junit names files
   only with its `addFileAttribute` option set, so `setup` prints no flag for
-  jest. A path outside the repository (an absolute `file`) is not stored; the
-  test keeps only its own name.
-- In a report directory, other XML files (`failsafe-summary.xml`) are left
-  out. A report that declares a document type is refused.
+  jest. A path outside the repository (an absolute `file`) is not stored: the
+  test is placed by its classname, or keeps only its own name when the
+  classname is that path.
+- A single report that declares a document type is refused.
 - Timing is not exact evidence: a test's time includes its fixtures. A fixture
   shared by a class or module runs inside the first test that needs it, so the
   first test of each `classname` is stored with `first_in_class`. A test run

@@ -228,3 +228,21 @@ def test_an_absolute_file_falls_back_to_the_classname() -> None:
         "tests/test_b.py::TestB::test_add",
     ]
     assert doc.skipped == {}
+
+
+def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Path) -> None:
+    from repowise.core.evidence.add import prepare_evidence_files
+
+    prepared = prepare_evidence_files(
+        [
+            ("TEST-com.acme.CartTest.xml", SUREFIRE),
+            ("com.acme.CartTest.txt", b"Tests run: 2, Failures: 0"),
+            ("failsafe-summary.xml", b"<failsafe-summary result='0'/>"),
+            ("vitest.xml", VITEST),
+        ],
+        checkout_root=tmp_path,
+        commit="a" * 40,
+    )
+
+    assert prepared.format == "junit"
+    assert len(prepared.doc.entries) == 3

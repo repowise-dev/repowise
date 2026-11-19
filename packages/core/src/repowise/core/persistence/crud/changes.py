@@ -29,6 +29,9 @@ from .history import author_clause, current_delta_clause
 
 _update_change = _row_updater("change_id")
 
+#: How much of an id a change listing prints; ``find_changes`` reads that back.
+LISTED_ID_CHARS = 19
+
 #: The one JSON layout ``changes.evidence_json`` is written in. The attention
 #: filter below matches text in this layout, so both read it from here.
 _EVIDENCE_SEPARATORS = (", ", ": ")
@@ -434,8 +437,9 @@ async def find_changes(
 ) -> list[Change]:
     """Changes *ref* names, newest first: the one with that id, else the one
     with that forge ref (``#12``, ``!7``, as listings print it), else up to
-    *limit* that landed a commit starting with *ref* (7+ hex). More than one
-    means a short sha is ambiguous.
+    *limit* whose id starts with *ref* (a listed id, cut at
+    :data:`LISTED_ID_CHARS`), else up to *limit* that landed a commit starting
+    with *ref* (7+ hex). More than one means a short ref is ambiguous.
     """
     row = (
         await session.execute(
@@ -454,6 +458,18 @@ async def find_changes(
     ).scalar_one_or_none()
     if by_forge_ref is not None:
         return [by_forge_ref]
+    if len(ref) >= LISTED_ID_CHARS and "-" in ref:
+        # A long id as `changes list` prints it, cut short (``commit-0123456789ab``).
+        rows = await session.execute(
+            select(Change)
+            .where(
+                Change.repository_id == repository_id,
+                Change.change_id.like(f"{escape_like(ref)}%", escape=LIKE_ESCAPE),
+            )
+            .order_by(Change.merged_at.desc().nulls_last())
+            .limit(limit)
+        )
+        return list(rows.scalars().all())
     if not is_sha_prefix(ref.lower()):
         return []
     sha = escape_like(ref.lower())

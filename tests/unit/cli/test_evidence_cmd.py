@@ -712,17 +712,60 @@ def test_a_directory_of_junit_reports_is_one_run(indexed) -> None:
     assert (payload["input_format"], payload["kind"], payload["entries"]) == ("junit", "test_timing", 2)
 
 
-def test_a_directory_is_read_only_as_junit_reports(indexed) -> None:
+def test_several_profiles_and_a_directory_merge_into_one_tagged_run(
+    indexed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.evidence.test_add import _parent, _worker
+
     root, head = indexed
-    (root / "empty").mkdir()
+    monkeypatch.setenv("CI", "true")
+    workers = root / "workers"
+    workers.mkdir()
+    (workers / "w1.speedscope.json").write_bytes(_worker(root, 6.0))
+    (workers / "w2.speedscope.json").write_bytes(_worker(root, 2.0))
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
 
-    no_reports = _add(str(root / "empty"), "--workload", "w", "--class", "unit_test", "--commit", head)
-    other_format = _add(
-        str(root / "src"), "--workload", "w", "--class", "unit_test", "--commit", head,
-        "--input-format", "pprof",
-    )
+    result = _add(str(parent), str(workers), "--workload", "app", "--class", "entry_point",
+                  "--commit", head, "--format", "json")
 
-    assert no_reports.exit_code == 2
-    assert "holds no .xml report" in no_reports.stderr
-    assert other_format.exit_code == 2
-    assert "only JUnit XML reports" in other_format.stderr
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["profiles"], payload["conversion"]["total"]) == (3, 12.0)
+    assert payload["environment"].endswith("-ci") and "warnings" not in payload
+    (run,), _ = _stored(root)
+    assert run.environment == payload["environment"]
+
+    text = _add(str(parent), str(workers), "--workload", "app", "--class", "entry_point",
+                "--commit", head)
+    assert "3 profiles merged into one run" in text.output
+
+
+def test_a_parent_profile_alone_warns_its_workers_were_not_profiled(indexed) -> None:
+    from tests.unit.evidence.test_add import _parent
+
+    root, head = indexed
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
+
+    result = _add(str(parent), "--workload", "app", "--class", "entry_point", "--commit", head)
+
+    assert result.exit_code == 0, result.output
+    assert "75% of this run went to starting or waiting on other processes" in result.output
+
+
+def test_mixed_formats_in_one_run_are_refused_as_json(indexed) -> None:
+    from tests.unit.evidence.test_add import _parent
+
+    root, head = indexed
+    parent = root / "parent.speedscope.json"
+    parent.write_bytes(_parent(root))
+    stacks = root / "stacks.txt"
+    stacks.write_text(f"build ({root / 'src' / 'app.py'}:1) 5\n")
+
+    result = _add(str(parent), str(stacks), "--workload", "app", "--class", "entry_point",
+                  "--commit", head, "--value-kind", "wall", "--format", "json")
+
+    assert result.exit_code == 1, result.output
+    assert "different formats" in result.stdout
+    assert _stored(root) == ([], [])
