@@ -2063,7 +2063,7 @@ def test_codex_keeps_user_keys_added_to_its_server_table(tmp_path: Path) -> None
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20", 'startup_timeout_sec = 20\nenv_key = "mine"'
+            "startup_timeout_sec = 60", 'startup_timeout_sec = 60\nenv_key = "mine"'
         ),
         encoding="utf-8",
     )
@@ -2094,8 +2094,8 @@ def test_codex_preserves_an_env_table_rather_than_choking_on_it(tmp_path: Path) 
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20",
-            'startup_timeout_sec = 20\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
+            "startup_timeout_sec = 60",
+            'startup_timeout_sec = 60\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
         ),
         encoding="utf-8",
     )
@@ -2124,7 +2124,7 @@ def test_codex_refuses_a_value_it_cannot_rewrite_without_a_traceback(tmp_path: P
     config_path = repo / ".codex" / "config.toml"
     before = config_path.read_text(encoding="utf-8")
     config_path.write_text(
-        before.replace("startup_timeout_sec = 20", "startup_timeout_sec = 20\nports = [1, 2]"),
+        before.replace("startup_timeout_sec = 60", "startup_timeout_sec = 60\nports = [1, 2]"),
         encoding="utf-8",
     )
     poisoned = config_path.read_text(encoding="utf-8")

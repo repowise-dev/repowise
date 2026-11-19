@@ -146,8 +146,20 @@ def server_table(repo_path: Path) -> dict[str, object]:
         "command": "repowise",
         "args": ["mcp"],
         "cwd": str(repo_path.resolve()),
-        "startup_timeout_sec": 20,
+        "required": True,
+        "startup_timeout_sec": STARTUP_TIMEOUT_SEC,
     }
+
+
+#: How long Codex waits for the server before giving up on it. ``required``
+#: (above) is what makes Codex wait at all: without it the first turn starts
+#: while the server is still booting, the deferred repowise tools are not in the
+#: tool catalog yet, and an agent that looks once concludes there are none. The
+#: cost of ``required`` is that Codex will not start when the command is missing,
+#: which ``doctor`` reports. A healthy server answers in seconds, so this is
+#: only the ceiling on a slow cold start (a large index on a cold disk), set well
+#: above the measured handshake so a slow machine is not cut off.
+STARTUP_TIMEOUT_SEC = 60
 
 
 #: Seconds a Codex augment hook may run before Codex gives up on it. This is a
@@ -999,6 +1011,61 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     return found
 
 
+#: What to run when repowise is not installed where Codex can launch it.
+INSTALL_COMMAND = "pip install repowise"
+
+
+def resolve_command_missing() -> bool:
+    """True when this install has no console script to point an entry at."""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    return resolve_repowise_command() == "repowise"
+
+
+def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
+    """One issue per ``required`` repowise server whose command Codex cannot find.
+
+    ``required`` makes Codex refuse to start when the server fails to launch, so
+    a ``repowise`` that is not on PATH (a venv that is not activated, an
+    uninstall) stops the whole agent rather than just the tools. Reads the user
+    ``config.toml`` and the project one; an unreadable file says nothing.
+    """
+    import shutil
+
+    from repowise.cli.editor_integrations.claude_config import _is_our_entry
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    paths = [user_hooks_path().parent / "config.toml"]
+    if repo_path is not None:
+        paths.append(project_config_path(repo_path))
+    issues: list[str] = []
+    for path in paths:
+        try:
+            servers = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers")
+        except (OSError, ValueError):
+            continue
+        for name, entry in (servers or {}).items() if isinstance(servers, dict) else ():
+            if not isinstance(entry, dict) or entry.get("required") is not True:
+                continue
+            if not _is_our_entry(entry) or shutil.which(entry["command"]):
+                continue
+            pinned = resolve_repowise_command()
+            if pinned == "repowise":
+                fix = f"install repowise so `repowise` is on PATH ({INSTALL_COMMAND})"
+            elif repo_path is not None and path == project_config_path(repo_path):
+                # The project file may be committed: a machine's absolute path
+                # there would break every other checkout, so PATH is the fix.
+                fix = f"put {Path(pinned).parent} on PATH"
+            else:
+                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH'
+
+            issues.append(
+                f"Codex will not start: [mcp_servers.{name}] in {path} is required and "
+                f"launches `{entry['command']}`, which is not on PATH. To fix, {fix}."
+            )
+    return issues
+
+
 class CodexTarget:
     """Descriptor for the Codex CLI. See the module docstring."""
 
@@ -1264,8 +1331,12 @@ class CodexTarget:
         # are wired by different commands and go stale independently.
         stale = stale_prompts()
 
+        # A required server that cannot launch stops Codex itself, so it is
+        # reported first, and even on a machine with no hook installed.
+        unlaunchable = unlaunchable_required_servers(repo_path)
+
         matcher = codex_rewrite_hook_matcher()
-        if matcher is None and not stale:
+        if matcher is None and not stale and not unlaunchable:
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.NOT_INSTALLED,
@@ -1273,7 +1344,7 @@ class CodexTarget:
                 fix_command="repowise hook rewrite install",
             )
 
-        issues: list[str] = []
+        issues: list[str] = list(unlaunchable)
         if stale:
             issues.append(
                 f"{len(stale)} of the {len(bundled_prompts())} Codex slash commands in "
@@ -1301,6 +1372,14 @@ class CodexTarget:
 
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+        fix_command: str | None = (
+            "repowise agents add --target=codex" if stale else "repowise hook rewrite install"
+        )
+        if unlaunchable:
+            # Codex not starting outranks every other issue, and no repowise
+            # command changes what an entry launches: the install when there is
+            # nothing to point at, otherwise the edit the issue spells out.
+            fix_command = INSTALL_COMMAND if resolve_command_missing() else None
         # Stale prompts win the fix slot: `agents add` rewrites them *and* the
         # hook, where `hook rewrite install` only does the hook. It is also the
         # honest command for the case `refresh` cannot reach: a machine with
@@ -1314,10 +1393,8 @@ class CodexTarget:
             target_id=ID,
             status=DoctorStatus.STALE,
             issues=tuple(issues),
-            fix_command=(
-                "repowise agents add --target=codex" if stale else "repowise hook rewrite install"
-            ),
-            repairable=matcher_stale,
+            fix_command=fix_command,
+            repairable=matcher_stale and not unlaunchable,
         )
 
 
