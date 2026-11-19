@@ -88,7 +88,8 @@ HOST_OUTPUT_CAP_TOKENS = HOST_OUTPUT_CAP_CHARS // 4
 #: An unlisted harness gets ``None``, meaning no cap: a cap is a claim that a
 #: host truncated, and asserting one we never observed is precisely how this
 #: happened. ``_accounting`` never clips below what was actually delivered,
-#: so the invariant holds whatever this table says.
+#: so the invariant holds whatever this table says. Codex's entry is its
+#: measured plateau (``formulas.CODEX_OUTPUT_CAP_CHARS``).
 _HARNESS_OUTPUT_CAP_TOKENS: dict[str, int | None] = {
     "claude_code": HOST_OUTPUT_CAP_TOKENS,
     "codex": CODEX_OUTPUT_CAP_TOKENS,
@@ -416,8 +417,8 @@ def _accounting(candidate: _Candidate) -> tuple[int, int]:
 
     Whose truncation matters, and it used to be nobody's in particular:
     Claude Code's 30,000-character cap was charged to every source, Codex
-    included, and Codex does not truncate. See
-    ``_HARNESS_OUTPUT_CAP_TOKENS`` for the measurement.
+    included, and Codex truncates at a higher plateau. See
+    ``formulas.CODEX_OUTPUT_CAP_CHARS`` for the measurement.
 
     The cap never clips below ``delivered``. A host cannot have truncated
     below what it demonstrably handed the model, so this is not a fudge but

@@ -23,9 +23,8 @@ TRANSCRIPT_ESTIMATOR = "transcript_marker_v1"
 #: claim. A result that escaped it still banks what was actually delivered:
 #: the transcript accounting never clips below the delivery.
 #:
-#: Rows recorded under an earlier, higher cap are capped again at report time
-#: (``service.load_report``), so an existing ledger shows what a fresh
-#: backfill would record.
+#: The report applies the same cap to rows stored above it
+#: (``service.load_report``), so a ledger shows what a fresh backfill records.
 CODEX_OUTPUT_CAP_CHARS = 40_100
 #: The same cap in tokens. Token estimates are ``len // 4`` throughout, so
 #: capping characters and capping tokens agree exactly.

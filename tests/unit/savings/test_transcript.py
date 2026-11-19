@@ -796,8 +796,7 @@ def test_codex_is_capped_at_its_own_measured_plateau(repo: Path) -> None:
     """
     baseline, _ = _accounting_for("codex", delivered=100, omitted=5_000_000)
 
-    # 40,100 characters: Codex's measured truncation plateau. The largest
-    # result it ever delivered (2,552,250) credited 638,062 here.
+    # 40,100 characters: Codex's measured truncation plateau.
     assert baseline == 10_025
 
 

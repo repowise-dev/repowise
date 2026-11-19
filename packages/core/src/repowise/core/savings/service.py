@@ -102,10 +102,9 @@ def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]]
 def _cap_codex_backfill(connection: sqlite3.Connection) -> None:
     """Report Codex transcript events at today's cap, whenever they were recorded.
 
-    The backfill once capped a Codex result at the largest output ever seen
-    rather than at Codex's plateau, so a ledger written then holds single
-    events crediting hundreds of thousands of tokens. The rows stay as written;
-    this shadows ``savings_events`` on this read-only handle with a temp view
+    A ledger can hold Codex backfill rows stored above
+    ``CODEX_OUTPUT_CAP_TOKENS``, single events crediting hundreds of thousands
+    of tokens. The rows stay as written; this shadows ``savings_events`` on this read-only handle with a temp view
     (SQLite resolves an unqualified name in ``temp`` before ``main``) that
     re-applies ``CODEX_OUTPUT_CAP_TOKENS`` exactly as the backfill does today:
     never below what was delivered. Every aggregate in the report then reads
@@ -131,7 +130,10 @@ def _cap_codex_backfill(connection: sqlite3.Connection) -> None:
             "saved_input_tokens": f"MAX({baseline} - delivered_input_tokens, 0)",
         }
         names = [row[1] for row in connection.execute("PRAGMA main.table_info(savings_events)")]
-        if not names:
+        # A view naming a missing column would fail every report query, which
+        # loses the report; reading the rows uncapped is the better failure.
+        required = {*capped, "integration", "estimator", "result_state", "delivered_input_tokens"}
+        if not required <= set(names):
             return
         columns = ", ".join(
             f"CASE WHEN {over} THEN {capped[name]} ELSE {name} END AS {name}"
