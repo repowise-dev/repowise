@@ -623,3 +623,20 @@ def test_removing_every_agent_clears_the_shared_agents_md(repo: Path) -> None:
     assert not agents_md.exists(), "shared AGENTS.md survived removing every agent"
     notes = [note for agent in payload["agents"] for w in agent["writes"].values() for note in w["notes"]]
     assert not any("still reads the same managed block" in note for note in notes)
+
+
+def test_init_names_a_host_to_restart_only_when_its_config_changed(repo: Path) -> None:
+    from repowise.cli.editor_setup import detect_editor_setup_outcome, snapshot_agent_configs
+
+    before = snapshot_agent_configs(repo)
+    _run(["agents", "add", str(repo), "--target", "vscode", "--scope", "project", "-y"])
+    outcome = detect_editor_setup_outcome(
+        repo, interactive=False, first_index=False, configs_before=before
+    )
+    assert [h["id"] for h in outcome.restart_hosts] == ["vscode"]
+    assert [s["id"] for s in outcome.tool_surfaces] == ["vscode"]
+
+    again = detect_editor_setup_outcome(
+        repo, interactive=False, first_index=False, configs_before=snapshot_agent_configs(repo)
+    )
+    assert again.restart_hosts == ()

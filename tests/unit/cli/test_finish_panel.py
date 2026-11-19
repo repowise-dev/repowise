@@ -121,17 +121,20 @@ def test_title_and_scope_line_come_from_the_naming_table():
 
 
 def test_restart_claude_code_is_inside_the_panel_on_a_first_index():
-    text = _render("built_from_code", EditorSetupOutcome(claude_code_connected=True))
+    setup = EditorSetupOutcome(
+        claude_code_connected=True, restart_hosts=({"id": "claude-code", "name": "Claude Code"},)
+    )
+    text = _render("built_from_code", setup)
     panel_lines = [line for line in text.splitlines() if line.startswith("│")]
-    assert any("Restart Claude Code" in line for line in panel_lines)
+    assert any("Restart to load the repowise tools: Claude Code" in line for line in panel_lines)
     assert any("Claude Code" in line and "Connected" in line for line in panel_lines)
 
 
 def test_rerun_does_not_shout_restart():
     setup = EditorSetupOutcome(claude_code_connected=True, first_index=False)
     text = _render("built_from_code", setup)
-    assert "Restart Claude Code" not in text
-    assert "stays connected" in text
+    assert "Restart to load" not in text
+    assert "Already connected" in text
 
 
 def test_panel_names_example_questions_files_and_auto_sync():

@@ -124,6 +124,8 @@ class InitRun:
     scope_embedder: str | None = None
     # What the finish reported, kept for the --progress json summary.
     mcp_repointed: bool = False
+    #: Agent config bytes before setup wrote anything, to name the hosts to restart.
+    agent_configs_before: dict[str, Any] | None = None
     setup_outcome: Any = None
     files_written: list[Path] = field(default_factory=list)
     next_steps: list[tuple[str, str]] = field(default_factory=list)

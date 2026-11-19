@@ -33,6 +33,8 @@ _SUMMARY_KEYS = {
     "next",
     "findings",
     "mcp_tools",
+    "restart_hosts",
+    "connect",
 }
 
 _KEYS = (

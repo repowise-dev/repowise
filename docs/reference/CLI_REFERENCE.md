@@ -174,7 +174,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 - **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude.json`) and Claude Desktop MCP entry, Claude Code
   PostToolUse/SessionStart hooks (`~/.claude/settings.json`). Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
 - **`--no-editor-setup`.** Writes only `.repowise/` (scratch checkouts, throwaway venvs, worktrees, CI); skips the post-commit hook (git hooks dir) and `--distill-hook` offer (user-level hook).
-  - One `repowise` MCP key per config, so a second `init` repoints it; `repowise mcp .` prints config for manual setup.
+  - One `repowise` MCP key per config, so a second `init` repoints it; `repowise agents print-config <agent>` prints config for manual setup.
   - `--no-distill-hook`, `--no-claude-md`, `--no-agents` still save to repo config: they mean "never".
   - `REPOWISE_SKIP_EDITOR_SETUP=1`: same switch, beats `--editor-setup`.
 - **`--save-key`.** On so scripted `init` leaves an answering MCP server (env keys die with their shell). Read by
@@ -216,10 +216,11 @@ and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then de
 
 - Each line: `v` (schema, `1`), `event` (`stage`, `phase`, `warning`, last `summary`). `phase`: `state` (`start`/`done`/`failed`), `completed`, `total`, `unit`, `elapsed_s`.
 - `summary`: `status` (`ready`/`degraded`/`interrupted`/`failed` = exit `0`/`2`/`130`/other), `mode` (`key` from index
-  scope, `label`, `run_mode`), `restart_required` (restart or `/mcp` to load tools), `spend` (`tokens`, `usd`),
+  scope, `label`, `run_mode`), `restart_required` (true when any agent must restart to load the tools), `restart_hosts` (`id`, `name` of each), `spend` (`tokens`, `usd`),
   `warnings`, `files_written`, `next` (commands, `repowise serve` first), `mcp_tools` (per wired agent: `id`,
   `name`, `profile`, `adjustments`, `tool_count`, `tools`, `change_command`, `always_load` with `enabled`, `tools`,
-  `cost`, `command`, or null for a client that loads every schema up front).
+  `cost`, `command`, or null for a client that loads every schema up front), `connect` (installed agents init did not wire:
+  `id`, `name`, `command`).
 
 </details>
 

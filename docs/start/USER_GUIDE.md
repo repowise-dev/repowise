@@ -104,7 +104,7 @@ runs `repowise update`.
 
 `--no-editor-setup` (or `REPOWISE_SKIP_EDITOR_SETUP=1`) skips all of it, the
 project-local files and the machine-wide registration alike: only `.repowise/`
-is written, and `repowise mcp .` prints the config to connect a client by hand.
+is written, and `repowise agents print-config <agent>` prints the config to connect a client by hand.
 `--no-hook` skips only the post-commit hook.
 
 `.repowise/` is safe to delete and rebuild, and safe to gitignore. Committing it

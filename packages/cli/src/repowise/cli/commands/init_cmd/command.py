@@ -342,7 +342,7 @@ def _check_folder_coverage(
         "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
-        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        ".repowise/ is touched, and 'repowise agents print-config <agent>' prints the config "
         "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
         "does not turn setup back on."
