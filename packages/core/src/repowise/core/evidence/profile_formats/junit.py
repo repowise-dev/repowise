@@ -34,6 +34,7 @@ import re
 from collections.abc import Iterable, Iterator
 from typing import Any
 from xml.etree import ElementTree as ET
+from xml.parsers import expat
 
 from repowise.core.interchange import repo_relative_path
 from repowise.core.test_paths import (
@@ -60,13 +61,18 @@ def combine(reports: Iterable[bytes]) -> bytes:
 
     Maven Surefire and Gradle write one file per test class into a
     directory; ingest reads one document per run. Other XML beside them
-    (``failsafe-summary.xml``, ``testng-results.xml``) is left out; a file
+    (``failsafe-summary.xml``, ``testng-results.xml``), or a file that
+    declares a document type, is left out; a file
     that is not XML, or a directory with no JUnit report, raises
     :class:`EvidenceFormatError`.
     """
     out = ET.Element("testsuites")
     for data in reports:
-        root = _parse(data, junit_only=False)
+        try:
+            root = _parse(data, junit_only=False)
+        except _DocumentTypeError:
+            # A JUnit report never declares one (testng-results.xml does): not a report.
+            continue
         if root.tag in _ROOT_TAGS:
             out.extend(list(root) if root.tag == "testsuites" else [root])
     if not len(out):
@@ -96,10 +102,35 @@ def to_v1(data: bytes) -> dict[str, Any]:
     }
 
 
+class _DocumentTypeError(EvidenceFormatError):
+    """The file declares a document type, which no JUnit XML report has."""
+
+
+def _declares_doctype(data: bytes) -> bool:
+    """Whether *data* declares a document type, read by expat in whatever encoding it names.
+
+    The parser stops at the declaration, before any entity in it is defined;
+    a file that is not well-formed is left for the real parse to report.
+    """
+
+    def stop(*_: object) -> None:
+        raise _DocumentTypeError("", "")
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = stop
+    try:
+        parser.Parse(data, True)
+    except _DocumentTypeError:
+        return True
+    except expat.ExpatError:
+        return False
+    return False
+
+
 def _parse(data: bytes, *, junit_only: bool = True) -> ET.Element:
     """The root element; a document type (and so any entity) is refused, never expanded."""
-    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-        raise EvidenceFormatError(
+    if _declares_doctype(data):
+        raise _DocumentTypeError(
             "the file declares a document type; a JUnit XML report has none",
             "ingest the JUnit XML file the test run wrote",
         )

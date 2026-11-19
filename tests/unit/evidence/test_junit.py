@@ -182,3 +182,34 @@ def test_a_converted_report_needs_the_commit(tmp_path: Path) -> None:
         prepare_evidence(SUREFIRE, name="r.xml", checkout_root=tmp_path)
 
     assert refused.value.option == "--commit"
+
+
+_ENTITY_REPORT = '<!DOCTYPE t [<!ENTITY a "aaaa">]><testsuite><testcase name="&a;"/></testsuite>'
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\xff\xfe" + _ENTITY_REPORT.encode("utf-16-le"),
+        ('<?xml version="1.0" encoding="UTF-16"?>' + _ENTITY_REPORT).encode("utf-16"),
+        _ENTITY_REPORT.encode("utf-16-be"),
+    ],
+    ids=["utf16_bom", "utf16_declared", "utf16_be_no_bom"],
+)
+def test_a_document_type_is_refused_in_any_encoding(data: bytes) -> None:
+    with pytest.raises(EvidenceFormatError, match="document type"):
+        junit.to_v1(data)
+
+
+def test_a_utf16_report_without_a_document_type_reads() -> None:
+    data = '<testsuite><testcase classname="a.b" name="t" time="1"/></testsuite>'.encode("utf-16")
+
+    assert [e["test_id"] for e in _doc(data).entries] == ["a.b::t"]
+
+
+def test_a_file_with_a_document_type_in_a_report_directory_is_left_out() -> None:
+    testng = b'<!DOCTYPE testng-results SYSTEM "x.dtd"><testng-results/>'
+
+    combined = junit.combine([testng, SUREFIRE])
+
+    assert len(_doc(combined).entries) == 2
