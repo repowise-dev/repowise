@@ -127,6 +127,41 @@ function CommandLine({ prefix, command }: { prefix: string; command: string }) {
   );
 }
 
+/** The `mcp.always_load` switch: the registry's description, and the command that does the same. */
+function AlwaysLoadRow({
+  setting,
+  onChange,
+  labels,
+  saveState,
+  saveError,
+}: {
+  setting: RegistrySetting;
+  onChange?: ((on: boolean) => void) | undefined;
+  labels: McpToolSurfaceLabels;
+  saveState?: SaveState | undefined;
+  saveError?: string | null | undefined;
+}) {
+  const id = React.useId();
+  const on = setting.value === true;
+  const readOnly = !onChange || setting.writable === false || setting.locked === true;
+  return (
+    <SettingsRow
+      inline
+      label={labels.alwaysLoad}
+      htmlFor={id}
+      hint={
+        <>
+          {setting.description}
+          <CommandLine prefix={labels.sameAs} command={`repowise config set ${MCP_ALWAYS_LOAD_KEY} ${on}`} />
+        </>
+      }
+      {...(saveState ? { saveState, saveError: saveError ?? null } : {})}
+    >
+      <Switch id={id} checked={on} disabled={readOnly} onCheckedChange={(v) => onChange?.(v)} />
+    </SettingsRow>
+  );
+}
+
 export function McpToolSurfaceEditor({
   surface,
   profile,
@@ -142,8 +177,6 @@ export function McpToolSurfaceEditor({
 }: McpToolSurfaceEditorProps) {
   const labels = { ...DEFAULT_MCP_TOOL_SURFACE_LABELS, ...overrides };
   const selectId = React.useId();
-  const alwaysLoadId = React.useId();
-  const alwaysLoadOn = alwaysLoad?.value === true;
   const core = new Set(surface.profiles?.core ?? []);
   const available = surface.tools.filter((t) => !(t.requires_workspace && !surface.is_workspace));
   const on = available.filter((t) => enabled.has(t.name));
@@ -180,28 +213,12 @@ export function McpToolSurfaceEditor({
           </select>
         </SettingsRow>
         {alwaysLoad && (
-          <SettingsRow
-            inline
-            label={labels.alwaysLoad}
-            htmlFor={alwaysLoadId}
-            hint={
-              <>
-                {alwaysLoad.description}
-                <CommandLine
-                  prefix={labels.sameAs}
-                  command={`repowise config set ${MCP_ALWAYS_LOAD_KEY} ${alwaysLoadOn}`}
-                />
-              </>
-            }
+          <AlwaysLoadRow
+            setting={alwaysLoad}
+            onChange={onAlwaysLoadChange}
+            labels={labels}
             {...(savedTool === MCP_ALWAYS_LOAD_KEY ? { saveState, saveError } : {})}
-          >
-            <Switch
-              id={alwaysLoadId}
-              checked={alwaysLoadOn}
-              disabled={!onAlwaysLoadChange || alwaysLoad.writable === false || alwaysLoad.locked === true}
-              onCheckedChange={(v) => onAlwaysLoadChange?.(v)}
-            />
-          </SettingsRow>
+          />
         )}
       </SettingsRows>
       <p className="text-xs text-[var(--color-text-secondary)]">
