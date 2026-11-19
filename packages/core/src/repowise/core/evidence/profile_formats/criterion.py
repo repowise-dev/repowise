@@ -29,13 +29,13 @@ def _json_object(data: bytes) -> dict[str, Any]:
 
 def sniff(head: bytes) -> bool:
     """Recognize Criterion's five top-level estimate keys, even with a null slope."""
-    return _ESTIMATE_KEYS <= _json_object(head).keys()
+    return _ESTIMATE_KEYS.issubset(_json_object(head))
 
 
 def to_v1(data: bytes, source_path: Path | None = None) -> dict[str, Any]:
     """Convert one estimates file, taking the series name from local metadata when available."""
     doc = _json_object(data)
-    if not _ESTIMATE_KEYS <= doc.keys():
+    if not _ESTIMATE_KEYS.issubset(doc):
         raise EvidenceFormatError(
             "the file is not Criterion JSON: missing estimate keys",
             "pass the estimates.json written by cargo bench",

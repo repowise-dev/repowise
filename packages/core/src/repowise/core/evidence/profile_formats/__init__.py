@@ -26,16 +26,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
 from . import collapsed, cpuprofile, criterion, hyperfine, junit, pprof, pytest_benchmark, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -59,6 +56,13 @@ class ProfileFormat:
             raise ValueError("a format has exactly one of read and to_v1")
         if self.to_v1_from_path is not None and self.to_v1 is None:
             raise ValueError("a format with to_v1_from_path also needs to_v1")
+
+    def convert_to_v1(self, data: bytes, name: str | Path) -> dict[str, Any]:
+        """Convert a benchmark, using the source path only for local files."""
+        if self.to_v1_from_path is not None and isinstance(name, Path):
+            return self.to_v1_from_path(data, name)
+        assert self.to_v1 is not None
+        return self.to_v1(data)
 
 
 #: Format name -> format, in the order formats are sniffed and listed.

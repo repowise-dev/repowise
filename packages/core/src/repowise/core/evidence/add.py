@@ -255,11 +255,7 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                if reader.to_v1_from_path is not None and isinstance(name, Path):
-                    converted = reader.to_v1_from_path(data, name)
-                else:
-                    converted = reader.to_v1(data)
-                text = json.dumps(converted, sort_keys=True)
+                text = json.dumps(reader.convert_to_v1(data, name), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
