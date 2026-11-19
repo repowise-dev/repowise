@@ -1335,20 +1335,11 @@ def _file_tests(
     the base), so having no test of its own is not a reason.
     """
     found = ev.found(path)
-    covered = ev.covered.get(path, ())
-    if path in ev.functions:
-        # Whole files: a fixture set up once per file runs the change for every
-        # test sharing it, while coverage credits only the first.
-        covered = [(f, f) if f else (t, f) for t, f in covered]
+    covered = _covering(path, ev)
     tests = ev.present([*covered, *found])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
-    tests = _expand_scopes(path, tests, scopes, ev)
-    if path in ev.functions:
-        # A test the map measured that does not cover the changed functions
-        # only imports them; one it never ran keeps the graph's word.
-        mine = {f for _, f in covered}
-        tests = [(t, f) for t, f in tests if f in mine or f not in ev.measured]
+    tests = _function_scoped(path, _expand_scopes(path, tests, scopes, ev), covered, ev)
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
@@ -1364,6 +1355,27 @@ def _file_tests(
     if not (route_only or tests or helpers or basis in _SELF_SUFFICIENT):
         reasons.append(_no_test_reason(path, basis, ev))
     return tests, basis, reasons
+
+
+def _covering(path: str, ev: _Evidence) -> list[_TestRef]:
+    """*path*'s covering tests; whole files for a file answered by its changed functions,
+    since a fixture set up once per file runs the change for every test sharing it
+    while coverage credits only the first."""
+    covered = ev.covered.get(path, ())
+    if path in ev.functions:
+        return [(f, f) if f else (t, f) for t, f in covered]
+    return list(covered)
+
+
+def _function_scoped(
+    path: str, tests: list[_TestRef], covered: list[_TestRef], ev: _Evidence
+) -> list[_TestRef]:
+    """*tests* less, for a file answered by its changed functions, the measured tests
+    that do not cover them: those only import them. One the map never ran stays."""
+    if path not in ev.functions:
+        return tests
+    mine = {f for _, f in covered}
+    return [(t, f) for t, f in tests if f in mine or f not in ev.measured]
 
 
 def _scope_files(path: str, found: list[_TestRef], basis: str) -> tuple[set[str], str]:

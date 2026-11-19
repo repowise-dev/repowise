@@ -28,7 +28,7 @@ import builtins
 import json
 import re
 import sys
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,28 +186,45 @@ def touched_functions(
     inert = _inert_lines(before, after, hunks)
     if inert is None:
         return None
-    measured = before if side == "old" else after
     found: dict[tuple[str, ...], Body] = {}
-    for old_start, old_count, new_start, new_count in hunks:
-        removed = before.code(range(old_start, old_start + old_count))
-        added = [n for n in after.code(range(new_start, new_start + new_count)) if n not in inert]
-        if not (before.inside(removed) and after.inside(added)):
+    for hunk in hunks:
+        hit = _hunk_functions(before, after, inert, side, hunk)
+        if hit is None:
             return None
-        if not (removed or added):
-            continue  # blank lines, comments or new inert statements: no function to look up
-        # A pure insertion or deletion has no lines on one side: its two neighbours there.
-        if side == "old":
-            near = (
-                range(old_start, old_start + old_count) if old_count else (old_start, old_start + 1)
-            )
-        else:
-            near = added or (new_start, new_start + 1)
-        # A neighbour may be blank or a comment and still sit in the function.
-        hit = {b.chain: b for line in near if (b := innermost(measured.bodies, line)) is not None}
-        if not hit:
-            return None  # a change no function holds on the measured side
         found.update(hit)
     return FileFunctions(path, tuple(found.values())) if found else None
+
+
+def _hunk_functions(
+    before: _Source, after: _Source, inert: set[int], side: str, hunk
+) -> dict[tuple[str, ...], Body] | None:
+    """The functions one hunk touches on *side*; ``None`` when it changes code outside them.
+
+    Empty for a hunk of blank lines, comments or new inert statements.
+    """
+    old_start, old_count, new_start, new_count = hunk
+    removed = before.code(range(old_start, old_start + old_count))
+    added = [n for n in after.code(range(new_start, new_start + new_count)) if n not in inert]
+    if not (before.inside(removed) and after.inside(added)):
+        return None
+    if not (removed or added):
+        return {}
+    measured = before if side == "old" else after
+    # A neighbour may be blank or a comment and still sit in the function.
+    hit = {
+        b.chain: b
+        for line in _near(side, hunk, added)
+        if (b := innermost(measured.bodies, line)) is not None
+    }
+    return hit or None  # a change no function holds on the measured side
+
+
+def _near(side: str, hunk, added: list[int]) -> Iterable[int]:
+    """The lines a hunk touches on *side*; for a pure insertion or deletion, its two neighbours."""
+    old_start, old_count, new_start, _ = hunk
+    if side == "old":
+        return range(old_start, old_start + old_count) if old_count else (old_start, old_start + 1)
+    return added or (new_start, new_start + 1)
 
 
 def _inert_lines(before: _Source, after: _Source, hunks) -> set[int] | None:
@@ -220,26 +237,32 @@ def _inert_lines(before: _Source, after: _Source, hunks) -> set[int] | None:
     ``None`` when the old file star-imports, which could bind any name.
     """
     known = _mentioned(before.tree)
-    exports = _declares_all(before.tree)
     if known is None:
         return None
+    exports = _declares_all(before.tree)
     deferred = _defers_annotations(after.tree)
     binds_re = _imports_re(after.tree)
     inserted = [range(s, s + c) for _, o_c, s, c in hunks if o_c == 0 and c]
     out: set[int] = set()
     for stmt in after.tree.body:
-        end = stmt.end_lineno or stmt.lineno
-        first = min([stmt.lineno, *(d.lineno for d in _decorators(stmt))])
-        if not any(first in r and end in r for r in inserted):
-            continue
-        names = _inert_names(stmt, deferred, binds_re)
+        span = _inserted_span(stmt, inserted)
+        names = _inert_names(stmt, deferred, binds_re) if span else None
         if (
             names
             and not (set(names) & known)
             and all(_new_name_is_private(n, stmt, exports) for n in names)
         ):
-            out.update(range(first, end + 1))
+            out.update(span)
     return out
+
+
+def _inserted_span(stmt: ast.stmt, inserted: list[range]) -> range | None:
+    """*stmt*'s lines, decorators included, when one pure insertion holds them all."""
+    end = stmt.end_lineno or stmt.lineno
+    first = min([stmt.lineno, *(d.lineno for d in _decorators(stmt))])
+    if any(first in r and end in r for r in inserted):
+        return range(first, end + 1)
+    return None
 
 
 def _new_name_is_private(name: str, stmt: ast.stmt, exports: bool) -> bool:
@@ -303,23 +326,43 @@ def _imports_re(tree: ast.Module) -> bool:
 def _inert_names(stmt: ast.stmt, deferred: bool, binds_re: bool) -> list[str] | None:
     """The names *stmt* binds, when running it at import can neither fail nor run repo code."""
     if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-        args = stmt.args
-        every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
-        annotated = stmt.returns is not None or any(a and a.annotation for a in every)
-        defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
-        if stmt.decorator_list or (annotated and not deferred):
-            return None
-        return [stmt.name] if all(_literal(d) for d in defaults) else None
+        return _inert_def(stmt, deferred)
     if isinstance(stmt, ast.Import):
-        if all(a.name.split(".")[0] in sys.stdlib_module_names for a in stmt.names):
-            return [a.asname or a.name.split(".")[0] for a in stmt.names]
-        return None
+        return _inert_import(stmt)
     if isinstance(stmt, ast.ImportFrom):
-        root = (stmt.module or "").split(".")[0]
-        if stmt.level == 0 and root in sys.stdlib_module_names and root != "__future__":
-            names = [a.asname or a.name for a in stmt.names]
-            return None if "*" in names else names
+        return _inert_import_from(stmt)
+    return _inert_constant(stmt, deferred, binds_re)
+
+
+def _inert_def(stmt: ast.FunctionDef | ast.AsyncFunctionDef, deferred: bool) -> list[str] | None:
+    """An undecorated ``def`` with literal defaults and annotations Python does not evaluate."""
+    args = stmt.args
+    every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    annotated = stmt.returns is not None or any(a and a.annotation for a in every)
+    defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+    if stmt.decorator_list or (annotated and not deferred):
         return None
+    return [stmt.name] if all(_literal(d) for d in defaults) else None
+
+
+def _inert_import(stmt: ast.Import) -> list[str] | None:
+    """``import`` of standard-library modules only."""
+    if all(a.name.split(".")[0] in sys.stdlib_module_names for a in stmt.names):
+        return [a.asname or a.name.split(".")[0] for a in stmt.names]
+    return None
+
+
+def _inert_import_from(stmt: ast.ImportFrom) -> list[str] | None:
+    """``from <stdlib> import name``; a star import could bind any name."""
+    root = (stmt.module or "").split(".")[0]
+    if stmt.level or root not in sys.stdlib_module_names or root == "__future__":
+        return None
+    names = [a.asname or a.name for a in stmt.names]
+    return None if "*" in names else names
+
+
+def _inert_constant(stmt: ast.stmt, deferred: bool, binds_re: bool) -> list[str] | None:
+    """``NAME = <constant>``, annotated only when annotations are deferred."""
     target, value = None, None
     if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
         target, value = stmt.targets[0], stmt.value
@@ -350,26 +393,37 @@ def _constant(node: ast.expr, binds_re: bool) -> bool:
     func = node.func
     if isinstance(func, ast.Name) and func.id in _LITERAL_CONTAINERS:
         return all(_literal(a) for a in node.args)
-    pattern = node.args[0] if node.args else None
-    if not (
-        binds_re
-        and isinstance(func, ast.Attribute)
-        and func.attr == "compile"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "re"
-        and len(node.args) <= 2
-        and isinstance(pattern, ast.Constant)
-        and isinstance(pattern.value, str)
-    ):
-        return False
-    flags = _re_flags(node.args[1]) if len(node.args) == 2 else 0
-    if flags is None:
+    return binds_re and _compiles(node)
+
+
+def _compiles(call: ast.Call) -> bool:
+    """Whether *call* is ``re.compile(<str literal>[, re.X | ...])`` with a pattern that compiles."""
+    pattern = _compile_pattern(call)
+    flags = _re_flags(call.args[1]) if len(call.args) == 2 else 0
+    if pattern is None or flags is None:
         return False
     try:
-        re.compile(pattern.value, flags)
+        re.compile(pattern, flags)
     except re.error:
         return False
     return True
+
+
+def _compile_pattern(call: ast.Call) -> str | None:
+    """The literal pattern of a ``re.compile(pattern[, flags])`` call, else ``None``."""
+    func = call.func
+    pattern = call.args[0] if call.args else None
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "compile"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "re"
+        and len(call.args) <= 2
+        and isinstance(pattern, ast.Constant)
+        and isinstance(pattern.value, str)
+    ):
+        return pattern.value
+    return None
 
 
 def _re_flags(node: ast.expr) -> int | None:
@@ -414,18 +468,20 @@ def read_sides(
         blob = blobs.get((rev, f"./{path}"))
         return None if blob is None else blob.decode("utf-8", errors="replace")
 
-    out: dict[str, tuple[str | None, str | None]] = {}
-    for p in paths:
-        new: str | None
-        if working_tree:
-            try:
-                new = (Path(repo_path) / p).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                new = None
-        else:
-            new = text(change.head or "", p)
-        out[p] = (text(change.base, p), new)
-    return out
+    return {
+        p: (
+            text(change.base, p),
+            _read_text(Path(repo_path) / p) if working_tree else text(change.head or "", p),
+        )
+        for p in paths
+    }
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 #: Decorators whose function runs once for every later caller in the process.
@@ -458,6 +514,19 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
     key = await _RUN_ONCE.key(session, repo_id, "run_once", str(repo_path), _tree_stamp(repo_path))
     if key in _RUN_ONCE:
         return _RUN_ONCE.get(key)
+    calls, methods, module_calls = await _execution_edges(session, repo_id)
+    by_file, by_name, classes, hooks = await _python_symbols(session, repo_id)
+    decorated = _decorator_seeds(repo_path, by_file, by_name)
+    if decorated is None:
+        return None
+    seeds = _module_seeds(repo_path, module_calls) | hooks | decorated
+    seeds |= {t for c in classes for t in calls.get(c, ())}
+    return _RUN_ONCE.remember(key, _reach(seeds, calls, methods))
+
+
+async def _execution_edges(session, repo_id: str):
+    """``(calls, methods, module_calls)``: who calls whom, each class's methods, and the
+    calls made by a Python module's top-level code as ``(path, target, call lines)``."""
     from sqlalchemy import text
 
     from ..ingestion.models import EXECUTION_EDGE_TYPES
@@ -483,6 +552,14 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
         calls.setdefault(source, set()).add(target)
         if source.endswith(".py::__module__"):
             module_calls.append((source.removesuffix("::__module__"), target, lines))
+    return calls, methods, module_calls
+
+
+async def _python_symbols(session, repo_id: str):
+    """``(by_file, by_name, classes, hooks)`` over the indexed Python symbols: each file's
+    ``(start line, id)`` pairs, ids by name, the classes and a conftest's pytest hooks."""
+    from sqlalchemy import text
+
     symbols = await session.execute(
         text(
             "SELECT symbol_id, file_path, name, kind, start_line FROM wiki_symbols "
@@ -501,12 +578,13 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
             classes.add(symbol_id)
         elif name.startswith("pytest_") and path.rsplit("/", 1)[-1] == "conftest.py":
             hooks.add(symbol_id)
-    seeds = _module_seeds(repo_path, module_calls) | hooks
-    seeds |= {t for c in classes for t in calls.get(c, ())}
-    decorated = _decorator_seeds(repo_path, by_file, by_name)
-    if decorated is None:
-        return None
-    seeds |= decorated
+    return by_file, by_name, classes, hooks
+
+
+def _reach(
+    seeds: set[str], calls: Mapping[str, set[str]], methods: Mapping[str, set[str]]
+) -> frozenset[str]:
+    """*seeds*, everything they call, and the implicit methods of every class reached."""
     reached: set[str] = set()
     frontier = list(seeds)
     while frontier:
@@ -518,7 +596,7 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
         frontier.extend(
             m for m in methods.get(node, ()) if _IMPLICIT_DUNDERS.fullmatch(m.rsplit("::", 1)[-1])
         )
-    return _RUN_ONCE.remember(key, frozenset(reached))
+    return frozenset(reached)
 
 
 def _tree_stamp(repo_path) -> str | None:
@@ -570,11 +648,8 @@ def _module_seeds(repo_path, module_calls: list[tuple[str, str, str]]) -> set[st
 
 def _main_blocks(path: Path) -> list[range]:
     """Line ranges of the module-level ``if __name__ == "__main__":`` blocks in *path*."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    if "__main__" not in text:
+    text = _read_text(path)
+    if text is None or "__main__" not in text:
         return []
     try:
         tree = ast.parse(text)
@@ -583,12 +658,18 @@ def _main_blocks(path: Path) -> list[range]:
     return [
         range(stmt.lineno, (stmt.end_lineno or stmt.lineno) + 1)
         for stmt in tree.body
-        if isinstance(stmt, ast.If)
+        if _is_main_guard(stmt)
+    ]
+
+
+def _is_main_guard(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.If)
         and isinstance(test := stmt.test, ast.Compare)
         and isinstance(test.left, ast.Name)
         and test.left.id == "__name__"
         and any(isinstance(c, ast.Constant) and c.value == "__main__" for c in test.comparators)
-    ]
+    )
 
 
 def _decorator_seeds(
@@ -609,27 +690,34 @@ def _decorator_seeds(
     if ran is None or ran[0] not in (0, 1):
         return None
     out: set[str] = set()
-    for row in ran[1].decode("utf-8", errors="replace").splitlines():
-        path, _, rest = row.partition(":")
-        number, _, line = rest.partition(":")
-        match = _DECORATOR_LINE.match(line)
-        if match is None or not number.isdigit():
-            continue
-        name, args = match.group(2), match.group(3) or ""
-        # A decorator split over lines may name its scope on the next one.
-        shared_fixture = (
-            name == "fixture"
-            and bool(args)
-            and not _FILE_SCOPED.search(args)
-            and ("scope" in args or not args.rstrip().endswith(")"))
-        )
-        if name in _MEMO_DECORATORS or shared_fixture:
-            below = [(start, s) for start, s in by_file.get(path, ()) if start > int(number)]
+    for path, number, name, args in _decorator_lines(ran[1]):
+        if name in _MEMO_DECORATORS or _shared_fixture(name, args):
+            below = [(start, s) for start, s in by_file.get(path, ()) if start > number]
             if below:
                 out.add(min(below)[1])
         else:
             out |= by_name.get(name, set())
     return out
+
+
+def _decorator_lines(grep_output: bytes) -> Iterator[tuple[str, int, str, str]]:
+    """``(path, line, decorator name, what follows it)`` for each ``git grep -n`` row."""
+    for row in grep_output.decode("utf-8", errors="replace").splitlines():
+        path, _, rest = row.partition(":")
+        number, _, line = rest.partition(":")
+        match = _DECORATOR_LINE.match(line)
+        if match is not None and number.isdigit():
+            yield path, int(number), match.group(2), match.group(3) or ""
+
+
+def _shared_fixture(name: str, args: str) -> bool:
+    """A fixture whose scope spans test files, or may: a split decorator names it on a later line."""
+    return (
+        name == "fixture"
+        and bool(args)
+        and not _FILE_SCOPED.search(args)
+        and ("scope" in args or not args.rstrip().endswith(")"))
+    )
 
 
 async def function_scoped_lines(
