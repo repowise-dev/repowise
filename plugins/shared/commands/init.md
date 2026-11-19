@@ -78,16 +78,16 @@ If the user does not answer, or you are running unattended, take option 1.
 
 - **Built from code:** the command is `repowise init --yes --no-prose`.
   Go to Step 3b.
-- **Written by a model:** the same command, then Step 4 before `generate`.
+- **Written by a model:** the same command; Step 6 adds the model after it.
   Go to Step 3b.
 - **Index only:** the command is `repowise init --yes --no-prose --mode fast`.
   Go to Step 3b.
+- **Show me the flags:** print the reference below, then ask whether you
+  should build the command or they will.
 
 If the user names directories to leave out (`vendor/`, `generated/`, data or
 build output), add each as `-x 'PATTERN'`. `.gitignore` is already respected.
 Do not ask about this separately.
-- **Show me the flags:** print the reference below, then ask whether you
-  should build the command or they will.
 
 ```
 repowise init [PATH]
@@ -183,12 +183,12 @@ Whichever you pick, say which in one line so the user can correct you. If
 `init` prints the old and new target of the global entry, relay it: the user
 may want it pointed back.
 
-Then continue to Step 5. Step 4 comes after it, for a model only.
+Then continue to Step 5. Step 4 is used only by Step 6, for a model.
 
 ## Step 4: Provider selection (written by a model only)
 
 **Skip this entire step unless the user chose documentation written by a
-model.** It runs after Step 6 has built the index. A missing key is not a
+model.** Step 6 runs it, after Step 5 has built the index. A missing key is not a
 blocker: if the user has no key, do not stop and do not ask again. Tell them they
 can add a model later with `repowise generate`, and go to Step 7.
 

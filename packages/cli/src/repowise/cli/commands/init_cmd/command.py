@@ -513,8 +513,9 @@ def _check_folder_coverage(
         "Progress output. 'rich' (default) draws a live checklist in a terminal "
         "and one short line per step anywhere else. 'json' writes one JSON event "
         "per line to stdout (stages, steps, warnings) and ends with a summary "
-        "line: status, mode, restart_required, spend, warnings, files_written "
-        "and next commands. Human text goes to stderr."
+        "line: status, mode, restart_required, restart_hosts, spend, warnings, "
+        "files_written, next commands, mcp_tools and connect. Human text goes "
+        "to stderr."
     ),
 )
 @click.option(
@@ -611,7 +612,7 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
         return
     index_repository(run)
     # Before anything is written for an agent: an index of nothing helps no one.
-    if not getattr(run.result, "file_count", 0):
+    if not opts.resume and not getattr(run.result, "file_count", 0):
         raise reasoned_error(
             f"No source files to index in {repo_path} (.gitignore and excludes applied). "
             "Run init in a code repository: repowise init <path>",
@@ -623,8 +624,8 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     if get_head_commit(repo_path) is None:
         # Said, not a gap: the code index is complete, only history is missing.
         note = (
-            "No git history here, so hotspots, ownership and decisions are empty. "
-            "Commit this folder to a git repository, then run repowise update."
+            "No git commits here, so hotspots, ownership and decisions are empty. "
+            "Commit this folder to git, then run repowise update."
         )
         console.print(f"[{WARN}]{note}[/]")
         run.run_warnings.append(note)

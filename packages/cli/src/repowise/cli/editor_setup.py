@@ -179,7 +179,9 @@ def detect_editor_setup_outcome(
 
     Called after registration and the hook offers, so what it reads is final.
     *configs_before* is :func:`snapshot_agent_configs` from before setup ran;
-    without it only Claude Code can be named for a restart.
+    without it (the workspace path takes none) only Claude Code can be named
+    for a restart. Another process editing an agent's config during the run
+    also names that agent, which errs toward one restart too many.
     Every probe is defensive: a failure degrades to "not set up" rather than
     crashing ``init``. All but one are local file reads; the autosync probe
     spawns ``git rev-parse`` once, because ``core.hooksPath`` and worktrees make

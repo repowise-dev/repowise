@@ -462,4 +462,4 @@ def test_a_folder_without_git_says_what_is_missing(tmp_path, monkeypatch) -> Non
     _a_source_file(tmp_path)
     result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "No git history here" in result.output
+    assert "No git commits here" in result.output
