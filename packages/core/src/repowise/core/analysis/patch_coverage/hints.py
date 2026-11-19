@@ -32,6 +32,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from ...symbol_spans import symbol_at
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,16 +98,6 @@ class TestHint:
         }
 
 
-def innermost_symbol(spans: Iterable[SymbolSpan], line: int) -> SymbolSpan | None:
-    """The narrowest span containing *line*: a method over its class."""
-    containing = [s for s in spans if s.start_line <= line <= s.end_line]
-    return min(
-        containing,
-        key=lambda s: (s.end_line - s.start_line, -s.start_line, s.symbol_id),
-        default=None,
-    )
-
-
 def translate_spans(
     spans: Iterable[SymbolSpan], hunks: Iterable[tuple[int, int, int, int]]
 ) -> list[SymbolSpan]:
@@ -159,7 +151,7 @@ def build_hints(
     """
     hints = []
     for a, b in hint_ranges(f):
-        sym = innermost_symbol(spans, a)
+        sym = symbol_at(spans, a)
         tests, basis, total = _evidence(f.file_path, sym, (a, b), per_test, reached)
         hints.append(
             TestHint(
@@ -295,7 +287,7 @@ async def _read_test_hints(
         per_test = await tests_covering_files(session, repository_id, set(paths))
 
     placed = {
-        f.file_path: [innermost_symbol(spans.get(f.file_path, ()), a) for a, _b in hint_ranges(f)]
+        f.file_path: [symbol_at(spans.get(f.file_path, ()), a) for a, _b in hint_ranges(f)]
         for f in files
     }
     reached = await _walk_tests(session, repository_id, placed)

@@ -16,6 +16,13 @@ import click
 from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands._report_ingest import (
+    indexed_file_keys,
+    open_ingest_target,
+    refuse_partial,
+    report_stored_partial,
+    report_unmapped,
+)
 from repowise.cli.commands.coverage_check_cmd import coverage_check
 from repowise.cli.commands.coverage_suggest_gates_cmd import coverage_suggest_gates
 from repowise.cli.helpers import (
@@ -32,7 +39,6 @@ from repowise.core.analysis.health.coverage.contexts import (
     PER_TEST_COVERAGE_COMMAND,
     is_coverage_data_file,
 )
-from repowise.core.workspace.update import get_head_commit
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
@@ -41,16 +47,42 @@ def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
+#: How a ``coverage add`` run ended, reported as its telemetry ``outcome``. The
+#: first two stored coverage; every other one stored nothing, or (``--strict``)
+#: stored it and still failed.
+INGEST_OUTCOMES = frozenset(
+    {
+        "ingested",
+        "partial",
+        "no_report",
+        "no_index",
+        "mostly_unmapped",
+        "misaligned",
+        "unreadable",
+        "unmapped",
+        "strict_unmapped",
+    }
+)
+_STORED = frozenset({"ingested", "partial"})
+
+
+def _record_ingest_outcome(outcome: str, files_matched: int | None = None) -> None:
+    """Report how the run ended and a bucket of the report files that mapped."""
+    from repowise.cli.platform import telemetry
+
+    fields: dict[str, str] = {"outcome": outcome}
+    if files_matched is not None:
+        fields["files_matched_bucket"] = telemetry.bucket_count(files_matched)
+    telemetry.add_command_outcome(**fields)
+
+
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
     """Canonical repo file keys to resolve report paths against.
 
-    Sourced from the persisted health metrics (one row per indexed file);
-    these already carry the repo-relative POSIX key the resolver needs.
+    Kept as this module's name because ``coverage check`` imports it and
+    tests replace it; ``coverage add`` passes it on as the key loader.
     """
-    from repowise.core.persistence.crud import get_health_metrics
-
-    metrics = await get_health_metrics(session, repo_id)
-    return {m.file_path for m in metrics}
+    return await indexed_file_keys(session, repo_id)
 
 
 @click.group("coverage")
@@ -178,23 +210,20 @@ def coverage_add(
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
             )
+            _record_ingest_outcome("no_report")
             raise click.exceptions.Exit(1)
         console.print(
             f"Discovered {len(report_paths)} report(s): "
             + ", ".join(p.name for p in report_paths[:5])
         )
 
-    async def _do() -> bool:
+    async def _do() -> tuple[str, int | None]:
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
             get_session,
         )
-        from repowise.core.persistence.crud import (
-            get_repository_by_path,
-            save_coverage_files,
-            save_test_coverage,
-        )
+        from repowise.core.persistence.crud import save_coverage_files, save_test_coverage
 
         url = get_db_url_for_repo(repo_path)
         # An index from an older repowise lacks newer columns; back-fill them.
@@ -202,32 +231,17 @@ def coverage_add(
         engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo_row = await get_repository_by_path(session, str(repo_path))
-            if repo_row is None:
-                console.print(
-                    "[yellow]No index yet. Run `repowise init` once before "
-                    "adding coverage.[/yellow]"
-                )
-                return False
-            repo_keys = await _repo_file_keys(session, repo_row.id)
-            if not repo_keys:
-                console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
-                return False
-
-            # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
-            # column names the last *indexed* commit; coverage describes the
-            # working tree. They diverge when you commit, run your tests, then
-            # ``coverage add`` without an intervening ``repowise update`` — the
-            # report would be labelled with the older indexed commit (issue
-            # #1747). HEAD is the right answer for a report written since the
-            # last commit; one left over from earlier measures the tree as of
-            # its own date, so the stamp moves back to the commit that was HEAD
-            # then (issue #3901). Resolve both from disk — the same source the
-            # health pass uses.
-            head_sha = (
-                get_head_commit(Path(repo_path))
-                or getattr(repo_row, "head_commit", None)
+            target = await open_ingest_target(
+                session, repo_path, what="coverage", load_keys=_repo_file_keys
             )
+            if target is None:
+                return "no_index", None
+            repo_row, repo_keys = target.repo, target.file_keys
+
+            # The live HEAD (#1747). A report left over from earlier measures
+            # the tree as of its own date, so its stamp moves back to the
+            # commit that was HEAD then (#3901, below).
+            head_sha = target.head_sha
 
             # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             # The same read init runs; a ``.coverage`` comes back in *errors*
@@ -291,6 +305,9 @@ def coverage_add(
                     map_paths.append(report_path)
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format
+            # Reported as a bucket: the files either leg mapped, so a map-only
+            # ``.coverage`` ingest does not read as zero.
+            files_matched = max(resolved.matched, len({r.file_path for r in map_records}))
 
             # A fragment is stored only with --allow-partial: of the per-file
             # coverage or of the map, either one withholds both.
@@ -303,14 +320,9 @@ def coverage_add(
                         map_skipped, repo_keys, mapped={r.file_path for r in map_records}
                     )
                 )
-                hint = prefix_hint(suggested)
                 part = "report" if resolved.mapping_partial else "per-test map"
-                console.print(
-                    f"[red]More than half the {part} did not map to the repo tree, so "
-                    f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
-                    "or pass [cyan]--allow-partial[/cyan] to store the fragment."
-                )
-                return False
+                refuse_partial(part, prefix_hint(suggested))
+                return "mostly_unmapped", files_matched
 
             agg_matched = 0
             # Both writes stamp the commit that was HEAD when their own reports
@@ -336,12 +348,7 @@ def coverage_add(
                     f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
                     f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
                 )
-                if skipped:
-                    sample = ", ".join(skipped[:5])
-                    console.print(
-                        f"[yellow]{len(skipped)} report file(s) did not map to the "
-                        f"repo tree[/yellow] (e.g. {escape(sample)})."
-                    )
+                report_unmapped(skipped, "report file(s)")
             if map_records:
                 saved = await save_test_coverage(
                     session,
@@ -363,42 +370,40 @@ def coverage_add(
                         "runs every test while the map is truncated.[/yellow]"
                     )
             if partial:
-                console.print(
-                    "[yellow]Stored a fragment (--allow-partial): more than half the "
-                    "report did not map to the repo tree, and the stored coverage is "
-                    "flagged partial.[/yellow]"
-                )
+                report_stored_partial("coverage")
 
             if not agg_matched and not map_records:
                 if resolved.alignment.reasons:
                     # Every mapped file was dropped as misaligned; the warning above says why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return False
+                    return "misaligned", files_matched
                 if len(errors) == len(report_paths) and not map_readable:
                     # No report was readable as coverage; the lines above say why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return False
+                    return "unreadable", files_matched
                 console.print(
                     "[red]No report files mapped to indexed source files.[/red] "
                     "If paths look prefixed (e.g. build/…), set "
                     "[cyan]coverage.strip_prefix[/cyan] in .repowise/config.yaml."
                 )
-                return False
+                return "unmapped", files_matched
             if strict and unmapped:
                 console.print(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
                 )
-                return False
+                return "strict_unmapped", files_matched
             console.print(
                 "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
-            return True
+            return ("partial" if partial else "ingested"), files_matched
 
     # A refresh is commonly scripted as `coverage add ... || exit 1`, so a run
     # that stored nothing has to be distinguishable from a complete one by its
     # exit status alone.
-    if not run_async(_do()):
+    outcome, files_matched = run_async(_do())
+    _record_ingest_outcome(outcome, files_matched)
+    if outcome not in _STORED:
         raise click.exceptions.Exit(1)
     from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
 
@@ -415,6 +420,22 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     """
     default = repo_path / ".coverage"
     return [default] if default.is_file() else []
+
+
+@coverage_group.command("setup")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
+@format_option()
+def coverage_setup(repo: str | None, fmt: str) -> None:
+    """Print how to collect coverage here (the coverage part of `evidence setup`).
+
+    Per build unit: the test command with coverage, what it needs first, where
+    the report lands and the exact `repowise coverage add` line. Writes nothing.
+    """
+    from repowise.cli.commands.evidence_cmd import _print_setup
+
+    _print_setup(repo, fmt, coverage_only=True)
 
 
 @coverage_group.command("status")
@@ -532,3 +553,72 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
 
     run_async(_do())
+
+
+@coverage_group.command("export")
+@click.argument(
+    "report", required=False, type=click.Path(exists=True, dir_okay=False, readable=True)
+)
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
+@click.option(
+    "--output",
+    "-o",
+    "output",
+    default="per-test-map.json.gz",
+    show_default=True,
+    help="File to write the gzipped map to.",
+)
+def coverage_export(report: str | None, repo: str | None, output: str) -> None:
+    """Write the per-test map as a small gzipped file, for an upload from CI.
+
+    With no REPORT, the map `coverage add` stored; with one (a `.coverage` with
+    per-test contexts, or a per-test lcov), that report's map, no index needed.
+    Either way in the stored layout: a few MB where the raw database is
+    gigabytes to parse.
+    """
+    from repowise.core.persistence.crud.analysis.coverage_map import (
+        dump_per_test_map,
+        per_test_map_from_records,
+    )
+
+    async def _stored():
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.crud.analysis.coverage_map import get_per_test_map
+
+        repo_path = _resolve_coverage_repo(repo)
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        async with get_session(create_session_factory(engine)) as session:
+            repo_row = await get_repository_by_path(session, str(repo_path))
+            return await get_per_test_map(session, repo_row.id) if repo_row else None
+
+    if report:
+        from repowise.core.analysis.health.coverage.contexts import parse_contexts_file
+
+        parsed = parse_contexts_file(report)
+        tmap = (
+            per_test_map_from_records(parsed.records, parsed.source_format)
+            if parsed.has_contexts
+            else None
+        )
+    else:
+        tmap = run_async(_stored())
+    if tmap is None:
+        console.print(
+            "[yellow]No per-test map to export.[/yellow] Record one with "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], then "
+            "[cyan]repowise coverage export .coverage[/cyan]."
+        )
+        raise click.exceptions.Exit(1)
+    data = dump_per_test_map(tmap)
+    Path(output).write_bytes(data)
+    console.print(
+        f"Wrote {escape(output)}: {len(tmap.tests)} tests, {tmap.pair_count} test-file pairs, "
+        f"{len(data) / 1e6:.1f} MB."
+    )

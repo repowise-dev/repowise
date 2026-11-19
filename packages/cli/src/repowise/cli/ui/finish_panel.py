@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from repowise.cli.agent_targets.tool_surface import surface_lines
 from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, INFO, MODEL, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
@@ -222,32 +223,43 @@ def connected_lines(setup: Any) -> list[RenderableType]:
     """Which agent can reach the index, and the restart it needs to see it.
 
     Silent without a setup snapshot. A run with editor setup off gets the
-    ``repowise mcp .`` step row instead of a line here.
+    ``repowise agents add`` step row instead of a line here.
     """
     if setup is None:
         return []
     if getattr(setup, "editor_setup_disabled", False):
         return [key_value_table([("Connected", "no editor (editor setup was skipped)")])]
 
+    surfaces = getattr(setup, "tool_surfaces", ())
+    connected = [s["name"] for s in surfaces]
+    if not connected and getattr(setup, "claude_code_connected", False):
+        connected = ["Claude Code"]
     lines: list[RenderableType] = []
-    if getattr(setup, "claude_code_connected", False):
-        lines.append(key_value_table([("Connected", "Claude Code")]))
-        # A first index is the run that wrote the MCP entry, so the client
-        # has not loaded it yet.
-        if getattr(setup, "first_index", True):
+    if connected:
+        lines.append(key_value_table([("Connected", escape(", ".join(connected)))]))
+        # Each of these loads its MCP config only at startup, so a host whose
+        # config this run wrote or moved has not loaded it yet.
+        restart = [h["name"] for h in getattr(setup, "restart_hosts", ())]
+        if restart:
+            slash = " (in Claude Code, /mcp also works)" if "Claude Code" in restart else ""
             lines.append(
                 line(
-                    f"[bold {BRAND}]Restart Claude Code[/] [bold](or run /mcp) "
-                    "to load the repowise tools.[/bold]"
+                    f"[bold {BRAND}]Restart to load the repowise tools:[/] "
+                    f"[bold]{escape(', '.join(restart))}{slash}.[/bold]"
                 )
             )
         else:
             lines.append(
-                dim_line("Claude Code stays connected; restart it only if the tools are not showing.")
+                dim_line("Already connected; restart an agent only if the tools are not showing.")
             )
-    lines.append(
-        dim_line("Cursor or Codex: run [bold]repowise mcp .[/bold] (config in .repowise/mcp.json).")
-    )
+    lines += [dim_line(escape(text)) for text in surface_lines(surfaces)]
+    unconnected = getattr(setup, "unconnected", ())
+    if unconnected:
+        from repowise.cli.editor_setup import connect_command
+
+        names = escape(", ".join(a["name"] for a in unconnected))
+        command = escape(connect_command(a["id"] for a in unconnected))
+        lines.append(dim_line(f"Also installed: {names}. Connect with [bold]{command}[/bold]."))
     # The interactive run offered this hook live; a --yes run skipped the offer.
     if not getattr(setup, "interactive", False) and not getattr(
         setup, "rewrite_hook_installed", False

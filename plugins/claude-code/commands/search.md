@@ -19,14 +19,14 @@ repowise search "$ARGUMENTS"
 
 ## Search modes
 
-The default mode is `fulltext` (SQLite FTS5). You can specify a mode:
+The default mode is `auto`: an identifier goes to the symbol index, prose to fused keyword and semantic search. You can specify a mode:
 
-- `--mode fulltext`: fast keyword search (default)
-- `--mode semantic`: vector similarity search using embeddings. Requires an embedding provider to be configured. If this fails with an error, suggest running `/repowise:reindex` first.
+- `--mode fulltext`: fused keyword and semantic search, the same search as `--mode semantic`
+- `--mode semantic`: fused keyword and semantic search. The semantic half needs an embedding provider; without one it warns and shows full-text results. If it errors, suggest running `/repowise:reindex` first.
 - `--mode symbol`: fuzzy match on symbol names (functions, classes, variables)
 
 Other flags:
-- `--limit N`: max results (default: 10)
+- `--limit N`: max results (default: 5)
 
 ## Present results
 

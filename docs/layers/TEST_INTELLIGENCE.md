@@ -96,9 +96,12 @@ Feed any other runner through the normalized JSON:
 
 coverage.py dynamic contexts ([Quick start](#quick-start)) like
 `tests/test_auth.py::TestLogin::test_ok|run` become test ids, with no runtime dependency
-on coverage.py; per-test LCOV uses distinct `TN:` names and skips blank ones. A report
-with no contexts still stores the per-file aggregate, and `coverage add` says so. The
-map is capped at 250,000 rows, and the CLI reports how many were dropped.
+on coverage.py. The `|setup`, `|run` and `|teardown` contexts of one test merge into its
+nodeid (`tests/test_auth.py::TestLogin::test_ok`), and the test's file is the path before
+`::`. Per-test LCOV uses distinct `TN:` names and skips blank ones. A report with no
+contexts still stores the per-file aggregate, and `coverage add` says so. The map is
+capped at 2,000,000 (test, file) pairs, about 80,000 tests at 25 files each. Past the
+cap whole tests are left out, the CLI says how many, and test selection runs everything.
 
 ## Impacted tests
 
@@ -119,6 +122,13 @@ the plain range, and a single SHA is one commit; change risk follows the same ru
   guess never passes for evidence: otherwise it says "unknown, run the full suite to be
   safe", and with no map it prompts for `coverage add` on a report with contexts
   ([every case](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
+- When every change to a Python file sits inside function bodies and the map was
+  measured at either end of the change, the test files covering those functions are
+  the answer for that file: tests that only import it are left out. Adding a
+  standard-library import, a literal constant or an undecorated function is allowed
+  beside them. Any other module-level change (an import, a constant, a decorator, a
+  class body, a default value), a function that runs at import, from a memo or from a
+  session fixture, or a function no test covers keeps the graph's answer.
 - The graph also links tests to wiring no import states
   ([details](../architecture/test-intelligence.md#test-wiring-edges)).
 - The headline counts the tests the change reaches. Two groups run but are counted

@@ -35,6 +35,7 @@ from typing import Any, TypeVar
 import structlog
 
 from .models import HeritageRelation, ParsedFile, symbol_id_language
+from .symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -236,7 +237,7 @@ class HeritageResolver:
         # inside a `mod` anchors the mod's impl to the top-level one, as it did
         # before this change. Telling those apart needs the relation to carry
         # the scope it was declared in, which it does not.
-        composed = f"{file_path}::{rel.child_name}"
+        composed = make_symbol_id(file_path, rel.child_name)
         if (
             composed in self._file_type_ids.get(file_path, ())
             or rel.child_name in self._file_ambiguous_types.get(file_path, ())

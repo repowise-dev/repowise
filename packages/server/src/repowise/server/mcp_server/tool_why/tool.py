@@ -45,22 +45,20 @@ async def get_why(
     reference: dict[str, Any] | None = None,
     include: list[str] | None = None,
 ) -> dict:
-    """Why this code is shaped this way — decision records + evidence commits.
+    """Why this code is shaped this way: decision records and evidence commits.
 
-    Call before a refactor or pattern divergence. Query: a question, a file
-    path, a question with ``targets``, or nothing (decision dashboard).
-    A path gets the rules in force first, then labelled background records.
-    ``authority: accepted`` means somebody signed the decision;
-    ``answer_basis`` names the strongest evidence lane, and only
-    ``decision`` is a ruling.
+    Call before a refactor or pattern divergence. A path gets the rules in
+    force first, then labelled background records. `authority: accepted`
+    means somebody signed the decision; `answer_basis` names the strongest
+    evidence lane, and only `decision` is a ruling.
 
     Args:
-        query: question, file/module path, or omit for the dashboard.
-        targets: file paths to anchor the search.
-        id: decision or ``ev_...`` evidence id from any tool.
-        reference: structured evidence reference.
-        repo: usually omitted.
-        include: ``["history"]``: a path's origin story, commits, episodes.
+        query: A question, a file or module path, or omit for the decision dashboard.
+        targets: File paths to anchor a question.
+        id: Decision or `ev_...` evidence id from any tool.
+        reference: Structured evidence reference.
+        repo: Usually omitted.
+        include: ["history"]: a path's origin story, commits, episodes.
     """
     ignored: list[dict[str, Any]] = []
     # A list, not a generator, so every unknown value is named.

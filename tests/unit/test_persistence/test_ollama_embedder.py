@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 from typing import Any, ClassVar
 
+import httpx
 import pytest
 
 from repowise.core.providers.embedding.ollama import OllamaEmbedder
@@ -39,6 +40,8 @@ class _FakeResponse:
 class _FakeAsyncClient:
     calls: ClassVar[list[dict[str, Any]]] = []
     response_data: ClassVar[dict[str, Any]] = {"embeddings": [[1.0, 0.0]]}
+    # When set, post() answers with this real httpx.Response instead.
+    error_response: ClassVar[httpx.Response | None] = None
 
     def __init__(self, *, timeout: float) -> None:
         self.timeout = timeout
@@ -49,15 +52,23 @@ class _FakeAsyncClient:
     async def __aexit__(self, *args: object) -> None:
         return None
 
-    async def post(self, url: str, *, json: dict[str, Any]) -> _FakeResponse:
+    async def post(self, url: str, *, json: dict[str, Any]) -> _FakeResponse | httpx.Response:
         self.calls.append({"url": url, "json": json, "timeout": self.timeout})
+        if self.error_response is not None:
+            return self.error_response
         return _FakeResponse(self.response_data)
+
+
+def _refusal(status: int, **body: Any) -> httpx.Response:
+    request = httpx.Request("POST", "http://localhost:11434/api/embed")
+    return httpx.Response(status, request=request, **body)
 
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client(monkeypatch: pytest.MonkeyPatch):
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0]]}
+    _FakeAsyncClient.error_response = None
     monkeypatch.setattr(
         "repowise.core.providers.embedding.ollama.httpx.AsyncClient",
         _FakeAsyncClient,
@@ -249,3 +260,62 @@ async def test_embed_width_check_not_triggered_on_empty() -> None:
     # embed([]) short-circuits and returns [] without calling the server.
     embedder = OllamaEmbedder(model="embeddinggemma")
     assert await embedder.embed([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Refused requests carry Ollama's own reason (issue #5738)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_width_larger_than_the_model_names_the_setting() -> None:
+    # A leftover REPOWISE_EMBEDDING_DIMS=3072 against a 1024-wide model: Ollama
+    # answers 400 with its reason in the body, and the bare status line said nothing.
+    _FakeAsyncClient.error_response = _refusal(
+        400, json={"error": "dimensions 3072 exceeds embedding length 1024"}
+    )
+    embedder = OllamaEmbedder(model="qwen3-embedding:0.6b", dimensions=3072)
+
+    with pytest.raises(ValueError) as exc_info:
+        await embedder.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "dimensions=3072" in msg
+    assert "OLLAMA_EMBEDDING_DIMS=1024" in msg
+    assert "REPOWISE_EMBEDDING_DIMS=1024" in msg
+    # A configuration error, not one bad input: nothing on it reads as an HTTP status.
+    assert getattr(exc_info.value, "status_code", None) is None
+    assert getattr(exc_info.value, "response", None) is None
+
+
+async def test_another_refusal_keeps_its_status_and_adds_the_reason() -> None:
+    _FakeAsyncClient.error_response = _refusal(
+        400, json={"error": "the input length exceeds the context length"}
+    )
+    embedder = OllamaEmbedder(model="qwen3-embedding:0.6b")
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await embedder.embed(["hello"])
+
+    assert exc_info.value.response.status_code == 400
+    assert "the input length exceeds the context length" in str(exc_info.value)
+
+
+async def test_a_refusal_without_json_carries_the_body_text() -> None:
+    _FakeAsyncClient.error_response = _refusal(500, text="model runner crashed")
+    embedder = OllamaEmbedder(model="qwen3-embedding:0.6b")
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await embedder.embed(["hello"])
+
+    assert exc_info.value.response.status_code == 500
+    assert "model runner crashed" in str(exc_info.value)
+
+
+async def test_a_refusal_with_an_empty_body_is_raised_as_it_was() -> None:
+    _FakeAsyncClient.error_response = _refusal(502)
+    embedder = OllamaEmbedder(model="qwen3-embedding:0.6b")
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await embedder.embed(["hello"])
+
+    assert exc_info.value.response.status_code == 502

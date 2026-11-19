@@ -1194,4 +1194,4 @@ def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
     # them as tests, and a caller holding only the path now agrees.
     assert code_origin("t/smoke/workers/dev.py") == "test"
     assert code_origin("t/smoke/tasks.py") == "test"
-    assert code_origin("t/basic.pl") == "production"
+    assert code_origin("t/basic.rb") == "production"

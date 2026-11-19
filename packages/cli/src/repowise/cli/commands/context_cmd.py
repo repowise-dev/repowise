@@ -192,7 +192,7 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
 @click.option(
     "--symptom",
     default=None,
-    help="Issue text, an error or a stack trace for --include suspects to rank against.",
+    help="Issue text, an error or a stack trace to rank suspects against; adds --include suspects.",
 )
 @_ta.target_options
 def context_command(

@@ -116,6 +116,16 @@ def test_it_fires_at_most_once_a_session(repo: Path) -> None:
     assert _fire(repo) is None
 
 
+def test_a_subagent_does_not_get_a_second_ask(repo: Path, monkeypatch) -> None:
+    """A subagent shares its parent's session id; the one ask is the session's."""
+    from repowise.cli.commands.augment_cmd import read_state
+
+    monkeypatch.setattr(read_state, "_agent_id", "")
+    assert _fire(repo) is not None
+    read_state.bind_agent({"agent_id": "agent-1"})
+    assert _fire(repo) is None
+
+
 def test_a_second_session_gets_its_own_ask(repo: Path) -> None:
     assert _fire(repo, session="s1") is not None
     assert _fire(repo, session="s2") is not None

@@ -18,6 +18,8 @@ _VARS = (
     "OPENROUTER_API_KEY",
     "EDENAI_API_KEY",
     "OLLAMA_EMBEDDING_MODEL",
+    "REPOWISE_EMBEDDING_DIMS",
+    "REPOWISE_EMBEDDING_DECLARED_DIMS",
 )
 
 
@@ -117,6 +119,33 @@ def test_kwargs_reads_pinned_embedding_model_from_repo_config(tmp_path):
         "model": "mongodb/voyage-code-4",
         "api_key": "or-key",
     }
+
+
+def test_openrouter_model_outside_the_table_builds_with_its_repo_env_width(tmp_path):
+    # #5723: the model and its width are pinned together in the repo's .env.
+    pytest.importorskip("openai", reason="openai SDK not installed")
+    from repowise.core.providers.embedding.registry import get_embedder
+
+    repo = _repo(
+        tmp_path,
+        env=(
+            "OPENROUTER_API_KEY=or-key\n"
+            "REPOWISE_EMBEDDING_MODEL=mongodb/voyage-code-4\n"
+            "REPOWISE_EMBEDDING_DIMS=2048\n"
+        ),
+    )
+    kwargs = resolve.embedder_kwargs("openrouter", repo)
+    assert kwargs["dimensions"] == 2048
+    embedder = get_embedder("openrouter", **kwargs)
+    assert embedder.dimensions == 2048
+
+
+def test_openrouter_kwargs_pass_a_declared_width_from_repo_env(tmp_path):
+    repo = _repo(
+        tmp_path,
+        env="OPENROUTER_API_KEY=or-key\nREPOWISE_EMBEDDING_DECLARED_DIMS=1024\n",
+    )
+    assert resolve.embedder_kwargs("openrouter", repo)["declared_dimensions"] == 1024
 
 
 def test_env_var_overrides_pinned_embedding_model(tmp_path, monkeypatch):

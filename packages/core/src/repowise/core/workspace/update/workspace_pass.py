@@ -30,12 +30,12 @@ from repowise.core.update_lock import (
     update_workspace_lock as _try_acquire_workspace_lock,
 )
 
+from ...analysis.health import health_analyzer_changed
 from ...docs_mode import docs_mode_state_fields
 from ...ingestion.change_detector import has_working_tree_changes
 from ...ingestion.git_indexer import (
     GIT_HISTORY_VERSION,
     GIT_HISTORY_VERSION_KEY,
-    git_history_stale,
 )
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from ..config import RepoEntry, WorkspaceConfig
@@ -259,11 +259,6 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     # the work the watcher woke up for.
     if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
         is_stale = True
-
-    # Rows written under older git history rules: one full walk refreshes
-    # them, as the single-repo update does, even with HEAD unmoved.
-    if not is_stale and git_history_stale(state) and await _has_persisted_repo_index(abs_path):
-        is_stale = True
     return is_stale, current_head
 
 
@@ -326,6 +321,9 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
                     commit_depth=update_pass.commit_depth,
                     exclude_patterns=update_pass.exclude_patterns,
                     include_working_tree=update_pass.include_working_tree,
+                    # Rows an older analyzer scored are re-scored whole, as
+                    # the single-repo update does, even with no file changed.
+                    rescore_health=health_analyzer_changed(read_repo_state(path)),
                 )
                 if result.updated and result.phase_timings is None:
                     result.phase_timings = {"run": time.monotonic() - update_started}
@@ -421,6 +419,10 @@ def _write_repo_state(
         state["phase_timings"] = result.phase_timings
     if result.git_history_refreshed:
         state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    if result.health_rescored:
+        from ...analysis.health import HEALTH_ANALYZER_VERSION
+
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
     if result.graph_update is not None:
         from ...pipeline.incremental.feature import stamp_graph_update
 

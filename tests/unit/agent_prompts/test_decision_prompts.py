@@ -11,9 +11,12 @@ import re
 import pytest
 
 from repowise.core.agent_prompts.decisions import (
+    CLI_COMMANDS,
     DISCOVERY_LIMIT,
     KEEP_TEST,
     RECORD_PROMPT_KINDS,
+    SIGN,
+    DecisionCommands,
     decision_prompt,
     decision_record_prompt,
     render_add,
@@ -149,3 +152,71 @@ def test_record_prompts_are_short_plain_signed_and_name_one_record():
         assert decision_record_prompt(kind, _REC).ids == ("d1abc",)
     with pytest.raises(ValueError):
         decision_record_prompt("discover", _REC)
+
+
+# ---------------------------------------------------------------------------
+# A host words the steps that act for its own agents
+# ---------------------------------------------------------------------------
+
+_TOOL_COMMANDS = DecisionCommands(
+    show="`read_decision(id={id})`",
+    confirm="`confirm(id={id})`",
+    confirm_cited="`confirm(id={id})`",
+    dismiss="`dismiss(id={id})`",
+    add="`record(...)`.",
+    pin="ask me to pin {id} on the decisions page",
+    unpin="ask me to unpin {id} on the decisions page",
+    retire='`dismiss(id={id}, reason="replaced: {reason}")`',
+    scope_hint="",
+    sign="",
+)
+
+
+def _host_texts() -> dict[str, str]:
+    texts = {
+        k: decision_record_prompt(k, _REC, commands=_TOOL_COMMANDS).text
+        for k in RECORD_PROMPT_KINDS
+    }
+    texts["discover"] = decision_prompt("discover", _RECORDS, commands=_TOOL_COMMANDS).text
+    texts["add"] = decision_prompt("add", [], commands=_TOOL_COMMANDS).text
+    texts["agreements"] = decision_prompt(
+        "agreements",
+        [{"id": "g7", "title": "Never commit", "decision": "branch"}],
+        commands=_TOOL_COMMANDS,
+    ).text
+    return texts
+
+
+def test_host_commands_replace_every_cli_command_and_the_sign_line():
+    for kind, text in _host_texts().items():
+        assert "repowise decision" not in text, kind
+        assert "--agent <slug>" not in text and SIGN not in text, kind
+        assert "--scope" not in text, kind
+        assert "\n\n\n" not in text, kind
+
+
+def test_host_commands_keep_the_rest_of_the_prompt():
+    texts = _host_texts()
+    assert KEEP_TEST in texts["discover"] and "`confirm(id=<id>)`" in texts["discover"]
+    assert "- `a1b2c3d4e5` Use **SWR** for fetching" in texts["discover"]
+    assert "`confirm(id=d1abc)`" in texts["review"] and "`dismiss(id=d1abc)`" in texts["review"]
+    assert "To pin it: ask me to pin d1abc on the decisions page." in texts["pin"]
+    assert '`dismiss(id=d1abc, reason="replaced: <one line: why>")`' in texts["veto"]
+    assert "`confirm(id=<new id>)`" in texts["edit"]
+    assert "`read_decision(id=<id>)`" in texts["agreements"]
+
+
+def test_the_default_commands_word_each_record_step():
+    texts = {k: decision_record_prompt(k, _REC).text for k in RECORD_PROMPT_KINDS}
+    assert decision_record_prompt("pin", _REC, commands=CLI_COMMANDS).text == texts["pin"]
+    assert "1. Read it: `repowise decision show d1abc`, and its source" in texts["review"]
+    assert "To pin it: `repowise decision pin d1abc --agent <slug> --reason" in texts["pin"]
+    assert "To unpin it: `repowise decision unpin d1abc --agent <slug>`." in texts["unpin"]
+    assert '--context "<a verbatim quote' in texts["edit"]
+    assert "(`repowise decision pin <new id> --agent <slug> --reason" in texts["edit"]
+
+
+def test_a_host_writes_literal_braces_doubled():
+    commands = DecisionCommands(confirm='`confirm({{"id": "{id}"}})`')
+    text = decision_record_prompt("review", _REC, commands=commands).text
+    assert '`confirm({"id": "d1abc"})`' in text

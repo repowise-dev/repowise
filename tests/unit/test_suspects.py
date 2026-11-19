@@ -17,6 +17,7 @@ from repowise.core.suspects import (
     suspect_signals,
 )
 from repowise.core.suspects.git_text import hunk_symbols
+from repowise.core.suspects.index import NOTE
 from repowise.core.suspects.signals import path_mentions, path_terms
 
 NOW = datetime(2026, 1, 10, tzinfo=UTC)
@@ -256,6 +257,9 @@ async def test_candidates_capped_when_the_window_holds_commit_limit_changes(
     assert len(out["suspects"]) == 1
     assert out["suspects"][0]["id"] == "change-0"
     assert out["suspects"][0]["rank"] == 1
+    assert out["note"].startswith(NOTE)
+    assert f"at least `commit_limit` ({int(commit_limit)}) changes" in out["note"]
+    assert "`repowise init --commit-limit`" in out["note"]
 
 
 async def test_candidates_not_capped_below_the_limit(suspects_index):
@@ -268,6 +272,21 @@ async def test_candidates_not_capped_below_the_limit(suspects_index):
     assert out["candidates"] == 2  # The stored third change is outside the window.
     assert out["candidates_capped"] is False
     assert [s["id"] for s in out["suspects"]] == ["change-0", "change-1"]
+    # Recency alone is no evidence: the note says how to read further back.
+    since = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
+    assert f"none merged before {since} was read" in out["note"]
+    # Chat and REST take `since` themselves; the CLI command works from every surface.
+    assert "Read an earlier window with `since`" in out["note"]
+    assert "`repowise suspects --since <an earlier date>`" in out["note"]
+
+
+def test_a_capped_window_says_so_even_when_a_row_has_evidence():
+    from repowise.core.suspects.index import _note
+
+    rows = [{"signals": {"text": {}, "recency": {}}}]
+    # The window itself is incomplete: evidence on a listed row does not read the unindexed changes.
+    assert "`repowise init --commit-limit` above 50" in _note(NOW, rows, True, 50)
+    assert _note(NOW, rows, False, 50) == NOTE
 
 
 async def test_empty_suspects_window_is_not_capped(suspects_index):
@@ -280,6 +299,7 @@ async def test_empty_suspects_window_is_not_capped(suspects_index):
     assert out["candidates"] == 0
     assert out["candidates_capped"] is False
     assert out["suspects"] == []
+    assert "`repowise suspects --since <an earlier date>`" in out["note"]
 
 
 @pytest.mark.parametrize("config", [{}, {"commit_limit": 0}, {"commit_limit": "0"}, {"commit_limit": None}])
@@ -304,3 +324,186 @@ def test_path_target_text_drops_extension_and_layout_segments():
 def test_path_target_text_keeps_the_symbol_and_a_filler_stem_left_alone():
     assert path_terms("src/billing/invoice.ts::totalDue") == "billing invoice totalDue"
     assert path_terms("src/index.ts") == "index"
+
+
+# -- trace frames resolved to symbols ------------------------------------------
+
+from repowise.core.suspects.rank import prepare, resolve_trace  # noqa: E402
+from repowise.core.workspace.repo_index import IndexedSymbol  # noqa: E402
+
+AS_SQL = IndexedSymbol(
+    f"{COMPILER}::SQLCompiler::as_sql", "as_sql", "django.db.models.sql.compiler.SQLCompiler.as_sql",
+    "method", "", COMPILER, 5, 20, "public",
+)
+
+
+def _resolved(**kw):
+    symptom = Symptom(text=TRACE, at=NOW)
+    prepared = prepare(symptom, _ctx())
+    kw.setdefault("symbols_by_file", {COMPILER: [AS_SQL]})
+    return symptom, resolve_trace(prepared, root="/srv/app", **kw)
+
+
+def test_a_resolved_frame_names_its_symbol_in_one_evidence_row():
+    symptom, prepared = _resolved()
+    assert [s.symbol_id for s in prepared.frame_symbols] == [AS_SQL.symbol_id]
+    out = rank_suspects(symptom, _candidates(), _ctx(), signals=["trace"], prepared=prepared)
+    assert out[0].change_id == "c"
+    assert out[0].signals["trace"].evidence == (f"frame {AS_SQL.symbol_id}",)
+
+
+def test_a_resolved_frame_does_not_match_the_same_name_in_another_file():
+    symptom, prepared = _resolved()
+    other = [Candidate("d", "Touch query", NOW - timedelta(days=1), (QUERY,), symbols=("as_sql",))]
+    out = rank_suspects(symptom, other, _ctx(), signals=["trace"], prepared=prepared)
+    assert "trace" not in out[0].signals
+
+
+def test_a_frame_in_a_dirty_file_keeps_the_name_match():
+    symptom, prepared = _resolved(dirty_paths={COMPILER})
+    assert prepared.frame_symbols == () and prepared.resolved_frames == frozenset()
+    out = rank_suspects(symptom, _candidates(), _ctx(), signals=["trace"], prepared=prepared)
+    assert out[0].signals["trace"].evidence == (f"frame file {COMPILER}", "frame function as_sql")
+
+
+def test_a_frame_under_another_root_is_not_resolved():
+    symptom = Symptom(text=TRACE, at=NOW)
+    prepared = resolve_trace(
+        prepare(symptom, _ctx()), root="/srv/other", symbols_by_file={COMPILER: [AS_SQL]}
+    )
+    assert prepared.frame_symbols == ()
+
+
+def test_go_and_javascript_frames_are_left_to_the_name_match():
+    trace = "Error: boom\n    at handler (/srv/app/lib/app.js:10:5)\n"
+    symptom = Symptom(text=trace, at=NOW)
+    ctx = SuspectContext(repo_files=frozenset({"lib/app.js"}))
+    prepared = prepare(symptom, ctx)
+    assert resolve_trace(prepared, root="/srv/app", symbols_by_file={"lib/app.js": []}) is prepared
+
+
+@pytest.fixture
+async def traced_repo(tmp_path, monkeypatch):
+    """A git checkout with one indexed method and one change that touched it."""
+    import subprocess
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.models import Change, WikiSymbol
+    from repowise.core.suspects import index
+
+    src = tmp_path / "app" / "compiler.py"
+    src.parent.mkdir()
+    src.write_text("class SQLCompiler:\n    def as_sql(self):\n        return 1 / 0\n", encoding="utf-8")
+    git = ["git", "-C", str(tmp_path), "-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    monkeypatch.setattr(
+        index, "read_change_texts", lambda *args: {"h" * 40: ("", ("as_sql",)), "g" * 40: ("", ("as_sql",))}
+    )
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await upsert_repository(session, name="repo", local_path=str(tmp_path))
+            repo.head_commit = head
+            session.add_all([
+                WikiSymbol(
+                    repository_id=repo.id, file_path="app/compiler.py",
+                    symbol_id="app/compiler.py::SQLCompiler::as_sql", name="as_sql",
+                    qualified_name="app.compiler.SQLCompiler.as_sql", kind="method",
+                    start_line=2, end_line=3,
+                ),
+                Change(
+                    repository_id=repo.id, change_id="touched", identity_kind="commit", identity_value="h" * 40,
+                    shape="commit", title="Rework the compiler", merged_at=NOW - timedelta(days=1),
+                    head_sha="h" * 40, files_json='[{"path": "app/compiler.py"}]', files_changed=1,
+                ),
+                Change(
+                    repository_id=repo.id, change_id="elsewhere", identity_kind="commit", identity_value="g" * 40,
+                    shape="commit", title="Rework another as_sql", merged_at=NOW - timedelta(days=2),
+                    head_sha="g" * 40, files_json='[{"path": "app/other.py"}]', files_changed=1,
+                ),
+            ])
+            await session.flush()
+            trace = (
+                "Traceback (most recent call last):\n"
+                f'  File "{src}", line 3, in as_sql\n'
+                "ZeroDivisionError: division by zero\n"
+            )
+            yield session, repo.id, tmp_path, trace
+    finally:
+        await engine.dispose()
+
+
+async def test_find_suspects_names_the_function_a_trace_frame_ran_in(traced_repo):
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, trace = traced_repo
+    out = await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+    rows = {r["id"]: r for r in out["suspects"]}
+    assert rows["touched"]["signals"]["trace"]["evidence"] == [
+        "frame app/compiler.py::SQLCompiler::as_sql"
+    ]
+    # The bare name no longer matches a change that never touched the frame's file.
+    assert "trace" not in rows["elsewhere"]["signals"]
+
+
+async def test_find_suspects_keeps_file_matching_when_the_file_changed_since_indexing(traced_repo):
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, trace = traced_repo
+    (path / "app" / "compiler.py").write_text("# edited\n", encoding="utf-8")
+    out = await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+    rows = {r["id"]: r for r in out["suspects"]}
+    assert rows["touched"]["signals"]["trace"]["evidence"] == [
+        "frame file app/compiler.py",
+        "frame function as_sql",
+    ]
+
+
+async def test_find_suspects_skips_resolution_when_the_indexed_commit_is_unknown(traced_repo):
+    from repowise.core.persistence.models import Repository
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, trace = traced_repo
+    repo = await session.get(Repository, repo_id)
+    repo.head_commit = "0" * 40  # not in this checkout: git cannot diff against it
+    out = await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+    rows = {r["id"]: r for r in out["suspects"]}
+    assert rows["touched"]["signals"]["trace"]["evidence"] == [
+        "frame file app/compiler.py",
+        "frame function as_sql",
+    ]
+
+
+async def test_find_suspects_does_no_resolution_work_for_a_trace_without_python_frames(
+    traced_repo, monkeypatch
+):
+    from repowise.core.suspects import index
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, _trace = traced_repo
+
+    async def boom(*_args):
+        raise AssertionError("resolution ran")
+
+    monkeypatch.setattr(index, "_resolve_trace", boom)
+    trace = f"Error: x\n    at as_sql ({path}/app/compiler.js:3:5)\n"
+    await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+
+
+def test_two_frames_in_one_symbol_give_one_evidence_row():
+    trace = TRACE + '  File "/srv/app/django/db/models/sql/compiler.py", line 12, in as_sql\n'
+    symptom = Symptom(text=trace, at=NOW)
+    prepared = resolve_trace(
+        prepare(symptom, _ctx()), root="/srv/app", symbols_by_file={COMPILER: [AS_SQL]}
+    )
+    assert len(prepared.frame_symbols) == 1

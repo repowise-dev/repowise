@@ -20,7 +20,7 @@ _VIEW_KEYS = {
     "key", "type", "default", "description", "area", "scope", "file", "choices", "minimum",
     "maximum", "exclusive_minimum", "env", "internal", "reload",
     "value", "source", "problem", "locked", "changed", "schema_version", "default_note",
-    "out_of_range",
+    "out_of_range", "cost_note",
 }  # fmt: skip
 
 
@@ -277,6 +277,24 @@ def test_set_then_its_undo_returns_the_file_to_its_bytes(repo, start, key, value
         assert _config(repo) == start
     else:
         assert path.read_bytes() == original
+
+
+def test_undo_of_a_value_starting_with_a_dash_runs(repo):
+    _write_config(repo, {"mcp": {"tools": ["-get_why"]}})
+    out = _json(repo, "set", "mcp.tools", "core")
+    path = shlex.quote(str(repo))
+    assert out["undo"] == [f"repowise config set mcp.tools --path {path} -- -get_why"]
+    # Run as written: the value after "--" is not read as an option.
+    result = CliRunner().invoke(cli, shlex.split(out["undo"][0])[1:])
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["mcp"]["tools"] == ["-get_why"]
+
+
+def test_a_quoted_value_starting_with_a_dash_still_goes_after_the_separator():
+    from repowise.core.settings.views import set_command
+
+    assert set_command("k", "-a b") == "repowise config set k -- '-a b'"
+    assert set_command("k", "a b") == "repowise config set k 'a b'"
 
 
 def test_set_then_reset_on_a_file_without_the_key_restores_its_bytes(repo):

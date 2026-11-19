@@ -12,16 +12,15 @@ rename carried it to, is not a move.
 
 from __future__ import annotations
 
-import hashlib
-from bisect import bisect_left, bisect_right
 from collections import Counter
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from types import MappingProxyType
 
 from ...ingestion.models import Symbol
 from ..health.duplication.tokenizer import TokenRow, tokenize_file_rows
+from ..symbol_body import body_digest, body_parts, rows_between
 from .analyzer import language_of
 
 #: ``(path, symbol name)``.
@@ -38,9 +37,6 @@ _MAX_EDITED_GROWTH = 3
 
 #: An edited move keeps at least this share of its adjacent token pairs.
 _MIN_EDITED_OVERLAP = 0.5
-
-_NAME_MARK = b"\x00"
-_SEPARATOR = b"\x1f"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,13 +113,17 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
     starts = [row[1] for row in rows]
     out: list[SymbolBody] = []
     for symbol in symbols:
-        if not symbol.name or symbol.is_declaration or symbol.kind in _SKIPPED_KINDS:
+        if not is_body_symbol(symbol):
             continue
-        # Line-bounded: code sharing a line with the symbol joins its body.
-        span = rows[bisect_left(starts, symbol.start_line) : bisect_right(starts, symbol.end_line)]
+        span = rows_between(rows, starts, symbol.start_line, symbol.end_line)
         if span:
             out.append(_body(symbol, path, raw, span))
     return out
+
+
+def is_body_symbol(symbol: Symbol) -> bool:
+    """A named symbol with a body of its own: not a module, impl block or declaration."""
+    return bool(symbol.name) and not symbol.is_declaration and symbol.kind not in _SKIPPED_KINDS
 
 
 def bodies_for(
@@ -143,8 +143,16 @@ def build_move_map(
     head: Iterable[SymbolBody],
     *,
     rename_map: Mapping[str, str] | None = None,
+    within_file: bool = False,
+    similar: Callable[[SymbolBody, SymbolBody], bool] | None = None,
 ) -> MoveMap:
-    """Pair the base symbols that left their place with the head symbols that appeared."""
+    """Pair the base symbols that left their place with the head symbols that appeared.
+
+    *within_file* lets the first two passes pair inside one file too (a rename
+    in place); the edited pass stays cross-file. *similar* replaces the edited
+    pass's test, for bodies whose token pairs are read only when asked.
+    """
+    cross_file = not within_file
     renamed = dict(rename_map or {})
     based = [(b, replace(b, path=renamed.get(b.path, b.path))) for b in sorted(base, key=_order)]
     head_rows = sorted(head, key=_order)
@@ -155,15 +163,16 @@ def build_move_map(
     removed = [p for p in based if p[1].key not in head_keys and base_keys[p[1].key] == 1]
     added = [h for h in head_rows if h.key not in base_keys and head_keys[h.key] == 1]
 
-    verbatim = _pair_unique(removed, added, lambda b: (b.name, b.digest))
+    verbatim = _pair_unique(removed, added, lambda b: (b.name, b.digest), cross_file=cross_file)
     removed, added = _rest(removed, added, verbatim)
     sized = [h for h in added if h.tokens >= MIN_RENAMED_TOKENS]
-    verbatim += _pair_unique(removed, sized, lambda b: b.digest)
+    verbatim += _pair_unique(removed, sized, lambda b: b.digest, cross_file=cross_file)
     removed, added = _rest(removed, added, verbatim)
+    kept = similar or similar_bodies
     edited = [
         (old, new)
-        for old, new in _pair_unique(removed, added, lambda b: b.name)
-        if _similar(old, new)
+        for old, new in _pair_unique(removed, added, lambda b: b.name, cross_file=True)
+        if kept(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
     return MoveMap(
@@ -178,15 +187,22 @@ def _pair_unique(
     removed: list[tuple[SymbolBody, SymbolBody]],
     added: list[SymbolBody],
     key: Callable[[SymbolBody], Hashable],
+    *,
+    cross_file: bool,
 ) -> list[tuple[SymbolBody, SymbolBody]]:
-    """``(old, new)`` pairs whose *key* occurs once on each side, across files."""
+    """``(old, new)`` pairs whose *key* occurs once on each side; across files only
+    when *cross_file*."""
     removed_counts = Counter(key(on_head) for _, on_head in removed)
     added_counts = Counter(key(h) for h in added)
     added_by_key = {key(h): h for h in added}
     pairs = []
     for old, on_head in removed:
         k = key(on_head)
-        if removed_counts[k] == 1 and added_counts[k] == 1 and on_head.path != added_by_key[k].path:
+        if (
+            removed_counts[k] == 1
+            and added_counts[k] == 1
+            and (not cross_file or on_head.path != added_by_key[k].path)
+        ):
             pairs.append((old, added_by_key[k]))
     return pairs
 
@@ -205,10 +221,15 @@ def _rest(
     )
 
 
-def _similar(old: SymbolBody, new: SymbolBody) -> bool:
-    """An edited move keeps most of its body; a same-named stranger does not."""
+def sized_alike(old: SymbolBody, new: SymbolBody) -> bool:
+    """Both bodies long enough to compare and within the edited move's growth bound."""
     small, large = sorted((old.tokens, new.tokens))
-    if small < MIN_RENAMED_TOKENS or large > small * _MAX_EDITED_GROWTH:
+    return small >= MIN_RENAMED_TOKENS and large <= small * _MAX_EDITED_GROWTH
+
+
+def similar_bodies(old: SymbolBody, new: SymbolBody) -> bool:
+    """An edited move keeps most of its body; a same-named stranger does not."""
+    if not sized_alike(old, new):
         return False
     shared = len(old.pairs & new.pairs)
     return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)
@@ -222,10 +243,11 @@ def _length(span: tuple[int, int]) -> int:
     return span[1] - span[0]
 
 
-def _body(symbol: Symbol, path: str, raw: bytes, rows: list[TokenRow]) -> SymbolBody:
+def _body(symbol: Symbol, path: str, raw: bytes, rows: Sequence[TokenRow]) -> SymbolBody:
     name = symbol.name
-    parts = [_NAME_MARK if row[5] == name else raw[row[3] : row[4]] for row in rows]
-    digest = hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
+    parts = body_parts(rows, raw, name)
+    digest = body_digest(parts)
+    # In-process only: ``hash`` is salted per process, so pairs are never stored.
     pairs = frozenset(hash(pair) for pair in pairwise(parts))
     span = (symbol.start_line, symbol.end_line)
     return SymbolBody(path, name, digest, len(parts), pairs, span)

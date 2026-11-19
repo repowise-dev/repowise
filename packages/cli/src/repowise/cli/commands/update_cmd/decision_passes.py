@@ -56,6 +56,7 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
 
     run.timings.start("decisions.rescan")
     _rescan_inline_markers(opts, run, docs, policy, provider)
+    _rescan_adrs(opts, run, docs, policy, provider)
     run.timings.stop("decisions.rescan")
 
     run.timings.start("decisions.sessions")
@@ -307,6 +308,35 @@ def _rescan_inline_markers(
                 )
     except Exception as exc:
         _skipped(opts, run, "Decision re-scan", "Decision re-scan skipped", exc)
+
+
+def _rescan_adrs(
+    opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any, provider: Any
+) -> None:
+    """Re-read the ADRs this update added or changed; init is the only other ADR pass.
+
+    Ceiling: a deleted ADR leaves its record in place.
+    """
+    try:
+        from repowise.core.analysis.decision_extractor import DecisionExtractor
+
+        changed_paths = [fd.path for fd in run.file_diffs if fd.status in ("added", "modified")]
+        if not changed_paths or not policy.source_enabled("adr"):
+            return
+        extractor = DecisionExtractor(
+            repo_path=run.repo_path,
+            provider=provider,
+            graph=run.graph_builder.graph(),
+            git_meta_map=run.git_meta_map,
+            policy=policy,
+        )
+        with docs.cost_tracker.record_as("decision_extraction"):
+            found = run_async(extractor.rescan_adrs(changed_paths))
+        docs.new_decision_markers.extend(found)
+        if found and opts.verbose:
+            console.print(f"ADR decisions re-read: [green]{len(found)}[/green]")
+    except Exception as exc:
+        _skipped(opts, run, "ADR re-scan", "ADR re-scan skipped", exc)
 
 
 def _skipped(opts: UpdateOptions, run: UpdateRun, label: str, verbose_label: str, exc) -> None:

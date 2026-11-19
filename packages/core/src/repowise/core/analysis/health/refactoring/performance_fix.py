@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from repowise.core.analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from ..perf.actionability import BOUNDARY_NOUN, PerformanceFix
 from ..perf.opportunities import PerformanceOpportunity

@@ -15,13 +15,13 @@ from sqlalchemy import select
 from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import accept_decision
 from repowise.core.persistence.models import DecisionRecord
-from repowise.server.mcp_server import _why_pointer
-from repowise.server.mcp_server._server import (
-    _CHECK_CLAUSES,
-    _TOOL_LINES,
-    _WORKSPACE_TOOL_LINES,
-    _instructions,
+from repowise.core.registry.instructions import (
+    CHECK_CLAUSES,
+    TOOL_LINES,
+    WORKSPACE_TOOL_LINES,
+    server_instructions,
 )
+from repowise.server.mcp_server import _why_pointer
 from repowise.server.mcp_server._why_pointer import (
     _MAX_LINE_CHARS,
     decisions_line,
@@ -150,7 +150,8 @@ async def test_long_area_names_keep_the_line_bounded(session, factory, repo_id):
 
 def test_instructions_with_the_longest_repo_line_fit_the_cap():
     longest = "x" * _MAX_LINE_CHARS
-    text = _instructions([*_TOOL_LINES, *_CHECK_CLAUSES, *_WORKSPACE_TOOL_LINES], longest)
+    served = [*TOOL_LINES, *CHECK_CLAUSES, *WORKSPACE_TOOL_LINES]
+    text = server_instructions(served, repo_line=longest, workspace=True)
     assert longest in text
     assert len(text) < _MAX_INSTRUCTIONS_CHARS
 

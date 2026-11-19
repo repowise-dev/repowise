@@ -59,6 +59,7 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_layer_for_file,
     _find_tour_step_for_file,
 )
+from repowise.server.mcp_server.tool_context.measured import mark_measured_target
 from repowise.server.mcp_server.tool_context.resolution import ResolvedTarget, TargetQuery
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
@@ -222,10 +223,17 @@ async def _triage_section(card: CardState) -> None:
       omitted on files with no counted fixes.
     * ``decision_records``: titles only, pointing to ``get_why``; inlining
       rationale would bloat every cached response.
+    * ``measured``: one line when a stored profile run measured the symbol
+      or a function in the file (``measured.attach_measured``).
     """
     if card.dir_path is not None:
         await _directory_triage(card)
         return
+    resolved = card.resolved
+    # Read after the gather, for every card at once: attach_measured.
+    mark_measured_target(
+        card.data, resolved.target_type, resolved.file_path, resolved.symbol_node_id
+    )
     triage_path = card.git_path
     if not triage_path:
         return

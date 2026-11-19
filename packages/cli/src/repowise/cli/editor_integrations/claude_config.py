@@ -251,14 +251,9 @@ def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
 
 def _is_our_entry(entry: dict) -> bool:
     """``repowise mcp ...`` under a bare or pinned ``repowise`` command: the shape init writes."""
-    import re
+    from repowise.cli.agent_targets.formats.server_entry import launches_repowise
 
-    command = entry.get("command")
-    args = entry.get("args")
-    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
-        return False
-    name = re.split(r"[\\/]", command)[-1].lower()
-    return name in ("repowise", "repowise.exe")
+    return isinstance(entry.get("command"), str) and launches_repowise(entry)
 
 
 def migrate_claude_code_mcp_entry() -> None:

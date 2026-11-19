@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ._common import LogFn, _noop_log
 
 
@@ -128,7 +130,7 @@ async def load_stored_performance_callers(
             except (TypeError, ValueError, AttributeError):
                 continue
             if any(
-                isinstance(node, str) and node.split("::", 1)[0] in changed_paths for node in path
+                isinstance(node, str) and file_of_symbol(node) in changed_paths for node in path
             ):
                 callers.add(file_path)
         return callers
@@ -187,9 +189,9 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
         # functions collapse to one row and this percentile is taken over a
         # population missing those samples. Closer than the changed-files
         # subset, still not the number a full index computes.
-        from repowise.core.analysis.health.engine import _percentile_p80
+        from repowise.core.stats import percentile
 
-        return _percentile_p80(counts)
+        return percentile(counts, 0.8)
     except Exception as exc:
         log(f"[yellow]Stored function-mod percentile unavailable: {exc}[/yellow]")
         return None
@@ -290,7 +292,11 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
     and the stored rows still load. Nothing is written before anything is
     indexed: with no indexed files every report would read as unmapped.
     """
-    from repowise.core.analysis.health.coverage import CoverageConfig, build_coverage_map
+    from repowise.core.analysis.health.coverage import (
+        CoverageConfig,
+        build_coverage_map,
+        measurement_commit,
+    )
     from repowise.core.persistence import get_session
     from repowise.core.persistence.crud import (
         get_health_metrics,
@@ -322,13 +328,18 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
                 report_prefixes=reports,
                 ignore=cfg.ignore,
             )
-            # Live HEAD, as every other writer stamps (issue #1747).
+            # Live HEAD only when the report was written since the last commit;
+            # otherwise the commit that was HEAD when the report ran (#3901, #5744).
             await save_coverage_files(
                 session,
                 repo.id,
                 resolved.files,
                 source_format=resolved.source_format or "lcov",
-                ingested_commit_sha=get_head_commit(repo_path),
+                ingested_commit_sha=measurement_commit(
+                    repo_path,
+                    resolved.measured_at,
+                    get_head_commit(repo_path),
+                ),
                 provenance=resolved.provenance,
             )
         log(f"Re-read coverage from {len(reports)} report(s): {len(resolved.files)} file(s) stored")

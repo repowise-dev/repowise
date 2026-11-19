@@ -8,10 +8,6 @@
       "start_line": 10,
       "end_line": 100,
       "signature": "class AuthService",
-      "qualified_name": "auth.service.AuthService",
-      "language": "python",
-      "score": 160.0,
-      "next": "get_symbol",
       "symbols": [
         "login:20"
       ],
