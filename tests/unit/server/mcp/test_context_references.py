@@ -840,6 +840,28 @@ async def test_block_counts_enclosing_symbols_inside_its_budget(
 
 
 @pytest.mark.asyncio
+async def test_a_failed_enclosing_read_leaves_the_block_and_session_usable(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from sqlalchemy import text
+
+    node = await _seed_js(
+        session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": "import { pick } from './a'\npick(1)\n"}
+    )
+
+    async def _broken(s, _repo_id, _paths):
+        await s.execute(text("SELECT * FROM no_such_table"))
+
+    monkeypatch.setattr(_edit_sites, "enclosing_ranges", _broken)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["web/b.ts"] == {"import": [1], "reference": [2]}
+    # The savepoint rolled back only the failed read.
+    assert (await session.execute(text("SELECT 1"))).scalar() == 1
+
+
+@pytest.mark.asyncio
 async def test_prose_mentions_are_counted_and_listed_only_when_asked(session, repo_id, tmp_path):
     node = await _seed(session, repo_id, tmp_path)
     with (tmp_path / _USER).open("a", encoding="utf-8") as fh:

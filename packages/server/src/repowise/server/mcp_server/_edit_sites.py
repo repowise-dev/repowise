@@ -1872,7 +1872,11 @@ async def edit_set_block(
     # those that fit without it: name the symbols there, then fit again.
     shown = {path: dict(kinds) for path, kinds in _fit(by_file, budget).items()}
     try:
-        _name_enclosing(shown, await enclosing_ranges(session, repo_id, shown.keys()))
+        # A savepoint: the session is shared with the other get_context
+        # sections, and on Postgres a failed statement poisons the transaction.
+        async with session.begin_nested():
+            ranges = await enclosing_ranges(session, repo_id, shown.keys())
+        _name_enclosing(shown, ranges)
     except SQLAlchemyError:
         _log.warning("references: enclosing symbols failed for %s", node.node_id, exc_info=True)
     shown = _fit(shown, budget)
