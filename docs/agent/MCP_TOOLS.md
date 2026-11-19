@@ -188,7 +188,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
 | `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `facts`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings. Accepted, not advertised |
-| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words. Accepted, not advertised |
+| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words; sent alone, it adds `suspects`. Accepted, not advertised |
 | `repo` | string | default repo | `"all"` returns an error |
 
 Target kinds:

@@ -168,6 +168,14 @@ result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commi
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
+A server that receives the same file calls
+`repowise.core.evidence.add.ingest_evidence(session, repo, data, repo_path=..., workload=..., workload_class=...)`
+with the file's bytes, an open session, the repository row and the checkout the
+index was built from, plus the other options above as keywords. It runs the
+same checks, stores the same run and returns the same result; a file or option
+it will not take raises `EvidenceRefusedError` with a `code`, the `option` at
+fault and a `hint`.
+
 ### Workload classes
 
 The class says what kind of run produced the numbers, so a reader knows how far

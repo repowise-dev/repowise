@@ -53,8 +53,8 @@ def _unit(index: ScalaProjectIndex, projects: dict[str, str], name: str) -> Buil
     )
 
 
-# A claimed build.sbt is decided, so the manifest fallback would never own the
-# root-level files of an aggregate-only root; give them the unit it would have made.
+# A claimed build.sbt is decided, so the manifest fallback never owns root-level
+# files (an aggregate-only root, or sbt's implicit root); give them the unit it would have made.
 _ROOT_FALLBACK = BuildUnit(
     id="manifest:.",
     ecosystem="manifest",
@@ -76,6 +76,6 @@ def units(ctx: ResolverContext) -> Found:
     # An aggregate-only root (no sources of its own) is not a unit
     names = [n for n, d in projects.items() if d or root_has_sources]
     claims = [(_unit(index, projects, name), ()) for name in names]
-    if claims and len(names) < len(projects):
+    if claims and not any(unit.root == "" for unit, _files in claims):
         claims.append((_ROOT_FALLBACK, ()))
     return Found(claims)

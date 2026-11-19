@@ -20,6 +20,7 @@ from repowise.core.build_units.adapters import (
     php,
     python,
     scala,
+    swift,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -41,6 +42,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("php", php.units),
     ("python", python.units),
     ("scala", scala.units),
+    ("swift", swift.units),
     ("pascal", pascal.units),
 )
 

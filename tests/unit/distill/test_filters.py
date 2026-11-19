@@ -626,3 +626,38 @@ def test_all_core_filters_registered() -> None:
 def test_git_log_zero_count_renders_only_the_header(load_fixture) -> None:
     _raw, distilled = _distill(load_fixture, "git_log_full.txt", "git_log", "git log -n 0")
     assert distilled == "40 commits (showing 0 most recent; subject and author)"
+
+
+def test_a_small_listing_keeps_every_name() -> None:
+    """A 94-entry ``ls`` sampled to four names forced a second call; small ones stay whole."""
+    from repowise.core.distill.filters.file_listing import _LOSSLESS_ENTRIES
+
+    f = filter_registry.get("file_listing")
+    assert f is not None
+    flat = [f"module_{i:03d}.py" for i in range(94)]
+    tree = [f"pkg/sub{i % 7}/file_{i:03d}.py" for i in range(_LOSSLESS_ENTRIES)]
+    for names in (flat, tree):
+        distilled = f.distill("\n".join(names) + "\n", command="ls")
+        for name in names:
+            assert name.rsplit("/", 1)[-1] in distilled
+        assert "more" not in distilled
+
+
+def test_a_flood_is_still_sampled() -> None:
+    from repowise.core.distill.filters.file_listing import _LOSSLESS_ENTRIES
+
+    f = filter_registry.get("file_listing")
+    assert f is not None
+    names = [f"pkg/file_{i:04d}.py" for i in range(_LOSSLESS_ENTRIES + 1)]
+    distilled = f.distill("\n".join(names) + "\n", command="find pkg")
+    assert "more" in distilled
+    assert names[-1].rsplit("/", 1)[-1] not in distilled
+
+
+def test_ls_long_keeps_every_entry_when_small(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "ls_la.txt", "file_listing", "ls -la")
+    entries = [ln.split()[-1] for ln in raw.splitlines() if ln[:1] in "-dl" and len(ln.split()) >= 9]
+    assert entries
+    assert "more entries" not in distilled
+    for name in entries:
+        assert name in distilled

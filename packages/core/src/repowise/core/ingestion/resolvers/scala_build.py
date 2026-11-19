@@ -11,6 +11,7 @@ declarations to build a ``{fully.qualified.Name → [path, ...]}`` map.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,7 +133,10 @@ def _parse_build_sbt(repo_path: Path) -> tuple[dict[str, str], dict[str, tuple[s
     decl_starts = [m.start() for m in _VAL_DECL_RE.finditer(text)]
     for match in _SBT_PROJECT_RE.finditer(text):
         name = match.group(1)
-        projects[name] = match.group(2).strip("./")
+        project_dir = posixpath.normpath(match.group(2).replace("\\", "/"))
+        if project_dir == ".." or project_dir.startswith(("../", "/")):
+            continue  # a project outside the repo owns nothing in it
+        projects[name] = "" if project_dir == "." else project_dir
         # The project's text ends at the next val declaration, matched or not.
         end = next((pos for pos in decl_starts if pos > match.start()), len(text))
         depends_on[name] = _project_deps(text[match.end() : end])
