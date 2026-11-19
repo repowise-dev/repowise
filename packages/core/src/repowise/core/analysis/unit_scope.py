@@ -27,7 +27,8 @@ string saying why:
   built, a tracked file lifts its enforcement (``go.work``), or a shipped
   manifest of its language fell back to a ``manifest:`` unit, whose deps, and
   so whether it depends on the owner, are unknown;
-- the chosen units own no known test.
+- the chosen units own no known test, or one of them holds test code (by
+  ``code_origin``) but no known test, so its tests cannot be listed.
 
 Ceiling: a dependency across ecosystems (a wrapper over a native library, a
 tool run in a child process) is no edge; the graph, ``tests.always_run`` and a
@@ -115,13 +116,40 @@ class _Units:
         units = self._closure(ids)
         tests = tuple(t for t in self.known if self.test_owners[t] & units)
         named = " and ".join(ids)
-        if not tests:
-            return f"its build unit {named} and the units depending on it own no known test"
+        if unknown := self._unknown_tests(units, tests):
+            return unknown
         lead = (
             f"it declares {named}" if path in self.by_manifest else "no test is known to reach it"
         )
         why = f"{lead}; the tests of {named} and of {len(units) - len(ids)} unit(s) depending on it run"
         return UnitScope(ids, tuple(sorted(units)), tests, why)
+
+    @functools.cached_property
+    def test_code_units(self) -> frozenset[str]:
+        """Units owning test code (``code_origin`` test), runnable or not."""
+        from ..code_origin import path_origin
+
+        return frozenset(
+            uid
+            for path, ids in self.index.file_owners.items()
+            if is_code_file(path) and path_origin(path) == "test"
+            for uid in ids
+        )
+
+    def _unknown_tests(self, units: frozenset[str], tests: tuple[str, ...]) -> str | None:
+        """Why *units*' tests are not all among *tests*, or ``None``.
+
+        A unit holding test code of which no file is a known test (a Reqnroll or
+        Cucumber project whose steps no test-shaped name marks) has tests the
+        selection cannot list, so leaving it out would drop them silently.
+        """
+        if not tests:
+            return "the units owning it and depending on it own no known test"
+        holding = frozenset().union(*(self.test_owners[t] for t in tests))
+        silent = sorted((units & self.test_code_units) - holding)
+        if silent:
+            return f"{silent[0]} holds test code but no known test, so its tests cannot be listed"
+        return None
 
     def _owners(self, path: str) -> tuple[BuildUnit, ...] | str | None:
         declared = self.by_manifest.get(path)

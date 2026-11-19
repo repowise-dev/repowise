@@ -214,3 +214,40 @@ def test_a_dependencies_reason_no_longer_skips_the_index_gap_trace():
     assert (
         plan_gap(["core/old.go"], TestSelectionConfig(), change=[".gitlab-ci.yml"]).candidates == ()
     )
+
+
+def test_a_dependent_holding_test_code_but_no_known_test_keeps_the_full_run():
+    # A Reqnroll project: step definitions are test code, but no file is test-shaped.
+    lib = BuildUnit(
+        "dotnet:src/Lib/Lib.csproj", "dotnet", "Lib", "src/Lib", "src/Lib/Lib.csproj", "msbuild"
+    )
+    unit = BuildUnit(
+        "dotnet:tests/Lib.UnitTests/Lib.UnitTests.csproj",
+        "dotnet",
+        "Lib.UnitTests",
+        "tests/Lib.UnitTests",
+        "tests/Lib.UnitTests/Lib.UnitTests.csproj",
+        "msbuild",
+        deps=(lib.id,),
+    )
+    accept = BuildUnit(
+        "dotnet:tests/Accept/Accept.csproj",
+        "dotnet",
+        "Accept",
+        "tests/Accept",
+        "tests/Accept/Accept.csproj",
+        "msbuild",
+        deps=(lib.id,),
+    )
+    files = [
+        "src/Lib/Lib.cs",
+        "tests/Lib.UnitTests/LibTests.cs",
+        "tests/Accept/Steps/LoginSteps.cs",
+    ]
+    index = BuildUnitIndex.from_units([lib, unit, accept], files)
+    known = ["tests/Lib.UnitTests/LibTests.cs"]
+    scope = unit_scopes(["src/Lib/Lib.cs"], index, known)["src/Lib/Lib.cs"]
+    assert scope == f"{accept.id} holds test code but no known test, so its tests cannot be listed"
+    # Without the step project, the unit tests stand for the change.
+    index = BuildUnitIndex.from_units([lib, unit], files[:2])
+    assert isinstance(unit_scopes(["src/Lib/Lib.cs"], index, known)["src/Lib/Lib.cs"], UnitScope)

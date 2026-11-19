@@ -211,8 +211,9 @@ ecosystem:
 
 The tier also declines a file the repository-root unit owns, a unit whose
 ecosystem is in `failed_ecosystems`, any unit while a shipped manifest of its
-language fell back to a `manifest:` unit (whose deps are unknown), and units
-owning no known test. The reason is added to the full-run reason.
+language fell back to a `manifest:` unit (whose deps are unknown), units
+owning no known test, and any chosen unit holding test code but no known test
+(a Reqnroll or Cucumber project whose step files no test-shaped name marks). The reason is added to the full-run reason.
 
 ### Adding a unit runner
 
