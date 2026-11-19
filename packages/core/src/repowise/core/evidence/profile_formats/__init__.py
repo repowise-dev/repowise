@@ -30,7 +30,7 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, pprof, pytest_benchmark, speedscope
+from . import collapsed, cpuprofile, hyperfine, pprof, pytest_benchmark, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -62,6 +62,7 @@ profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
 )
+profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 
