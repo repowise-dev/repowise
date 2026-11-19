@@ -151,7 +151,8 @@ stored, what was skipped by reason and whether the run reads as stale. The JSON
 result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
 `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
 `unmatched_sample`, `tests_failed`, `input_format`, `conversion` (for a converted profile:
-`total`, `unit`, `explained_share`, `skip_rate`, `skipped_share_by_reason`,
+`total`, `unit`, `repo_self_share`, `wait_share`, `library_share`,
+`explained_share`, `skip_rate`, `skipped_share_by_reason`,
 `self_unattributed`, `symbols`), and once stored `run_id`, `restamped`,
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
@@ -246,7 +247,8 @@ they are joined.
 | entry list | yes | `symbols`, `benchmarks`, `tests` or `queries`, by kind |
 | `value_kind` | profile | `cpu` or `wall` |
 | `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
-| `total`, `explained` | no | The whole run's value, and the part with a repo frame on the stack; their ratio is the explained share |
+| `total`, `explained` | no | The whole run's value, and the part with a production frame anywhere on the stack |
+| `repo_self`, `waits`, `libraries` | no | Where the run's value went: production repo code itself, blocked waiting, in dependencies (see below) |
 | `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement |
 | `dirty` | no | Uncommitted changes at measurement |
 | `tool` | no | `name` and `version`, one word each |
@@ -254,7 +256,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location; `self` and `total` in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
+| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required) |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -307,17 +309,32 @@ benchmark or test keeps its row without its function and is counted under
   symbol of their own are charged to the enclosing function when the frame's
   qualified name shows it.
 - **Module bodies.** Import-time code (Python `<module>`, Go package `init`)
-  resolves to its file and counts as explained. The index keeps no symbol for a
+  resolves to its file. The index keeps no symbol for a
   file's top level, so its self time is reported under `self_unattributed` as
   `module_body`, never dropped.
-- **Inclusive and self.** Each function gets inclusive time (every stack it is
-  on, once per stack even when it recurses) and self time (stacks where it is
-  the innermost repo frame; built-ins and dependencies below it count as its
-  own). A stack whose innermost repo frame was skipped charges no function;
-  its self time is reported under `self_unattributed` by that skip reason.
-- **Explained share.** `explained` is the weight of stacks with a resolved
-  frame in production code (`code_origin`). `add` prints it beside the skip
-  rate, the share of repo frame time that did not join, broken down by reason.
+- **Self is the cost.** A function's self time is the stacks where it is the
+  innermost repo frame somebody here maintains. Built-ins, the standard
+  library and dependencies below it (outside the checkout, or vendored and
+  generated files inside it) count as its own, so I/O, a C extension or a
+  library call stays with the code that made it. A **wait** does not: a stack
+  blocked below it in an event loop's select or turn, a thread or process join,
+  a queue get, a future's result, a subprocess wait or a sleep charges it
+  nothing. Functions are ranked by self time.
+- **Inclusive** time (every stack a function is on, once per stack even when
+  it recurses) is kept as context. It never ranks: an entry function or a
+  dispatcher is on every stack and costs nothing itself.
+- A stack whose innermost repo frame was skipped charges no function; its self
+  time is reported under `self_unattributed` by that skip reason.
+- **Where the time went.** Each stack counts once: `waits` (blocked as above),
+  `libraries` (a dependency frame runs below the innermost repo frame, or on a
+  stack with no repo frame),
+  `repo_self` (neither, and that frame is a production function by
+  `code_origin`: time in production repo code itself), or none of them (test or
+  tooling code, module bodies, unjoined frames, stacks with no repo frame that
+  run only the runtime and standard library).
+  `add` prints the three shares beside the skip rate, the share of repo frame
+  time that did not join, broken down by reason. `explained` (a production
+  frame anywhere on the stack) is still written but says nothing about cost.
 
 A profile or query-count run where more than half the entries did not map is
 refused unless `--allow-partial`; stored that way it is flagged
@@ -342,7 +359,10 @@ repowise evidence status --format json
 One line per workload (kind, name, environment), the newest run of each: its
 kind, class and environment, freshness against the indexed commit (`current`,
 `stale` or `unknown`), the commit, how many entries were stored, how much of
-the run repo code explains, and `(partial)` when flagged. The JSON form adds
+the run went to production repo code itself, to waits and to libraries, and
+`(partial)` when flagged. The JSON form carries them as `repo_self_share`,
+`wait_share` and `library_share` (`null` for a run stored before they were
+recorded: add the profile again). The JSON form adds
 `runs_stored` per kind and, per run, the tool, value kind, unit, `ingested_at`,
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
@@ -355,7 +375,7 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 
 | Stored | Never stored |
 |---|---|
-| Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value | Raw stacks or samples |
+| Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value, the repo-self, wait and library values | Raw stacks or samples |
 | Per function: symbol id, start line, self and inclusive value, sample counts, call count when a tracer gave one | Frames outside the checkout, labels, environment variables, command lines |
 | Per benchmark: its name, unit, `lower_is_better` and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
 | Per test: test id, test file, duration, outcome | |
@@ -372,7 +392,7 @@ The `evidence:` block of `.repowise/config.yaml`:
 | Key | Default | What it does |
 |---|---|---|
 | `max_file_mb` | `20` | Largest file read; a bigger one is refused before it is read |
-| `max_symbols_per_run` | `1500` | Most functions stored from one profile, costliest first; the rest are counted as truncated |
+| `max_symbols_per_run` | `1500` | Most functions stored from one profile, costliest self time first; the rest are counted as truncated |
 | `max_rows_per_run` | `30000` | Most benchmark, test or query rows stored from one run |
 | `history_runs` | `20` | Runs kept per workload and environment, per kind |
 | `max_runs` | `50` | Runs kept per kind across all workloads |

@@ -7,14 +7,20 @@ from one basis run. No row means unknown, never cold.
 
 Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
 
-- *Explained*: the share of the run's samples with a resolved production
-  frame on the stack, stored by the ingest (``evidence.status``).
+- *Split*: where the run's time went, stored by the ingest
+  (``evidence.status.time_split``): production repo code itself, waits,
+  libraries.
+- *Cost*: a function's self time as the converter charges it
+  (``evidence.profile_convert``): its own body and the built-ins and
+  libraries it called, never time blocked in a wait. Inclusive time is kept
+  as context and never ranks: a function that only calls things is on every
+  stack and costs nothing itself.
 - ``ranked``: among the run's production functions, in the top
-  ``rank_top_n`` by inclusive time, with at least ``rank_min_samples``
-  samples on the function. A run that counted no samples (a traced or an
-  evented profile) cannot be checked against the floor and ranks by its
-  order alone. Otherwise the row is ``measured``: not enough samples in repo
-  code, or outside the top.
+  ``rank_top_n`` by cost, with at least ``rank_min_samples`` self samples on
+  the function. A run that counted no samples (a traced or an evented
+  profile) cannot be checked against the floor and ranks by its order alone.
+  Otherwise the row is ``measured``: not enough samples in repo code, or
+  outside the top.
 - ``lead_candidate``: ranked in a workload class that may lead (never
   ``unit_test``), and either the function's share of all samples is at least
   ``lead_min_share`` with the interval's lower bound at least
@@ -46,7 +52,7 @@ from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.stats import wilson_interval
 
-from .status import explained_share
+from .status import run_share, time_split
 
 #: Tier values, weakest first. None is user copy: a surface words its own claim.
 TIERS = ("measured", "ranked", "lead_candidate")
@@ -97,6 +103,10 @@ class RunFacts:
     total_samples: int | None
     #: Rows outside production code counted at ingest, before the cap.
     unlisted_symbols: int | None = None
+    #: The run's split (``evidence.status.time_split``); None when not recorded.
+    repo_self_value: float | None = None
+    wait_value: float | None = None
+    library_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +120,7 @@ class CostFacts:
     self_value: float | None
     total_samples: int | None
     call_count: int | None
+    self_samples: int | None = None
 
 
 @dataclass(frozen=True)
@@ -227,8 +238,12 @@ def _run_rows(
 
 
 def _one_per_symbol(rows: list[_Row]) -> list[_Row]:
-    """Costliest first; a symbol reached twice (two old ids, one lineage) keeps its costlier row."""
-    rows = sorted(rows, key=lambda r: (-(r.cost.total_value or 0.0), r.cost.symbol_id))
+    """Costliest first (self, then inclusive); a symbol reached twice (two old
+    ids, one lineage) keeps its costlier row."""
+    rows = sorted(
+        rows,
+        key=lambda r: (-(r.cost.self_value or 0.0), -(r.cost.total_value or 0.0), r.cost.symbol_id),
+    )
     seen: set[str] = set()
     kept: list[_Row] = []
     for row in rows:
@@ -239,10 +254,16 @@ def _one_per_symbol(rows: list[_Row]) -> list[_Row]:
 
 
 def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
-    """Place, tier and interval for *rows* (costliest first); stale rows take no place."""
+    """Place, tier and interval for *rows* (costliest first).
+
+    Stale rows take no place, and neither does a row that cost nothing itself
+    (a function that only calls others): it stays measured, never ranked, even
+    in a run with fewer costly functions than the top. A tracer's rows order
+    by what the tracer gave and are exempt.
+    """
     place = 0
     for row in rows:
-        if row.freshness == "stale":
+        if not _takes_place(row):
             continue
         place += 1
         row.rank = place
@@ -255,6 +276,13 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
             row.tier = "lead_candidate"
 
 
+def _takes_place(row: _Row) -> bool:
+    """Fresh, and a cost of its own (a tracer's rows order by what it gave)."""
+    if row.freshness == "stale":
+        return False
+    return row.ordering_only or (row.cost.self_value or 0.0) > 0
+
+
 def _freshness(at_head: bool, measured_digest: str | None, current_digest: str | None) -> str:
     """Not at the indexed commit (or either commit unknown): the stored body decides."""
     if at_head:
@@ -265,11 +293,12 @@ def _freshness(at_head: bool, measured_digest: str | None, current_digest: str |
 
 
 def _samples(run: RunFacts, cost: CostFacts) -> int | None:
-    """Samples on the function: counted, or its value when the unit is samples."""
-    if cost.total_samples is not None:
-        return cost.total_samples
-    if run.unit == "samples" and cost.total_value is not None:
-        return round(cost.total_value)
+    """Self samples on the function (the cost it is ranked by): counted, or its
+    self value when the unit is samples."""
+    if cost.self_samples is not None:
+        return cost.self_samples
+    if run.unit == "samples" and cost.self_value is not None:
+        return round(cost.self_value)
     return None
 
 
@@ -328,7 +357,8 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "samples": row.samples,
         "run_samples": _run_samples(run),
         "rank": row.rank,
-        "explained_share": explained_share(run.total_value, run.explained_value),
+        "explained_share": run_share(run.total_value, run.explained_value),
+        **time_split(run),
         "run_unlisted": row.unlisted,
         "workload_name": run.workload_name,
         "workload_class": run.workload_class,

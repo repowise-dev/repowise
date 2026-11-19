@@ -222,6 +222,9 @@ async def hotness_inputs(
             explained_value=run.explained_value,
             total_samples=run.total_samples,
             unlisted_symbols=run.unlisted_symbols,
+            repo_self_value=run.repo_self_value,
+            wait_value=run.wait_value,
+            library_value=run.library_value,
         )
         for run in (
             await session.execute(
@@ -243,6 +246,7 @@ async def hotness_inputs(
                 cost.self_value,
                 cost.total_samples,
                 cost.call_count,
+                cost.self_samples,
             ).where(cost.run_id.in_(ids[i : i + _BATCH_SIZE]))
         )
         for row in result:
@@ -315,7 +319,7 @@ async def ranked_hotness(
     Ranked means tier ``ranked`` or ``lead_candidate`` from evidence that is
     not stale. *workload_classes* keeps rows whose basis run has one of those
     classes (``{"unit_test"}`` for what was measured in tests). Each row
-    carries its run's summary: workload, commit, age, explained share, sample
+    carries its run's summary: workload, commit, age, time split, sample
     counts and how many functions outside production code it counted.
     """
     query = select(SymbolHotness).where(
@@ -330,7 +334,7 @@ async def ranked_hotness(
         key=lambda r: (
             r.tier != "lead_candidate",
             r.rank if r.rank is not None else float("inf"),
-            -(r.total_share or 0.0),
+            -(r.self_share or 0.0),
             r.symbol_id,
         )
     )
