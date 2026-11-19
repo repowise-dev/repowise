@@ -86,6 +86,8 @@ def suspects_command(
     from rich.markup import escape
     from rich.table import Table
 
+    from repowise.core.persistence.crud import LISTED_ID_CHARS
+
     window = got["window"]
     console.print(
         f"{got['candidates']} change(s) merged {window['since'][:16]} to {window['until'][:16]}"
@@ -100,7 +102,7 @@ def suspects_command(
         )
         table.add_row(
             str(row["rank"]),
-            escape(row.get("ref") or row["id"][:19]),
+            escape(row.get("ref") or row["id"][:LISTED_ID_CHARS]),
             (row["merged_at"] or "")[:10],
             escape(row["title"][:70]),
             signals,

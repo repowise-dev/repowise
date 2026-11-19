@@ -111,6 +111,21 @@ def _render_measured_costs(view: dict[str, Any] | None) -> None:
                 console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
 
 
+def _render_connect_line(freshness: dict[str, Any] | None) -> None:
+    """One line pointing at ``evidence setup`` when no runtime evidence is
+    stored, so the performance figures above read as code shape. Silent when
+    the store cannot say."""
+    from repowise.core.evidence.setup import EVIDENCE_SETUP
+
+    if not freshness or freshness["runtime"]["present"]:
+        return
+    console.print(
+        "\n[dim]No runtime evidence stored, so performance here is code shape only. "
+        f"Connect a real run: [bold]{EVIDENCE_SETUP}[/bold] prints the profile and "
+        "ingest commands.[/dim]"
+    )
+
+
 def _pct(value: float | None) -> str:
     return "?" if value is None else f"{value * 100:.0f}%"
 

@@ -172,6 +172,8 @@ HEALTHY_ORDER = [
     "Hosted account",
     "Stale pages",
     "Index data",
+    "Coverage evidence",
+    "Runtime evidence",
     "SQL ↔ Vector Store",
     "SQL ↔ FTS Index",
     "Coordinator drift",
@@ -197,6 +199,8 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert got["state.json"] == (True, "last_sync: abcdef01")
     assert got["Stale pages"] == (True, "0 stale")
     assert got["Index data"] == (True, "current; graph, symbol and health tables populated")
+    assert got["Coverage evidence"] == (True, "none stored; run repowise coverage setup")
+    assert got["Runtime evidence"] == (True, "none stored; run repowise evidence setup")
     assert got["SQL ↔ Vector Store"] == (True, "in sync")
     assert got["SQL ↔ FTS Index"] == (True, "in sync")
     assert got["Coordinator drift"] == (True, "SQL=1, Vector=1, Drift=0.0%")

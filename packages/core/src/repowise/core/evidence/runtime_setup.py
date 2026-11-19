@@ -133,13 +133,36 @@ class RuntimeInputs:
     measured: frozenset[tuple[str, str]] = frozenset()
 
 
+async def _stored_benchmarks(session: Any, repository_id: str) -> set[tuple[str, str]]:
+    """``(path, function)`` of stored benchmark functions the planners profile
+    (:func:`is_benchmark_function`): Go ``Benchmark*`` and pytest-benchmark."""
+    from sqlalchemy import and_, or_, select
+
+    from ..persistence.models import WikiSymbol
+
+    query = select(WikiSymbol.file_path, WikiSymbol.name).where(
+        WikiSymbol.repository_id == repository_id,
+        or_(
+            and_(WikiSymbol.file_path.like("%_test.go"), WikiSymbol.name.like("Benchmark%")),
+            and_(
+                WikiSymbol.file_path.like("%.py"),
+                # Every benchmark path rule has "bench" in it.
+                WikiSymbol.file_path.ilike("%bench%"),
+                or_(WikiSymbol.name.like("bench%"), WikiSymbol.name.like("test%")),
+            ),
+        ),
+    )
+    rows = await session.execute(query)
+    return {(r.file_path, r.name) for r in rows if is_benchmark_function(r.file_path, r.name)}
+
+
 async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs:
     """The stored entry points, benchmark functions and test files of a repository."""
-    from sqlalchemy import and_, or_, select
+    from sqlalchemy import or_, select
 
     from ..generation.entry_points import rank_entry_point_paths
     from ..persistence.crud import list_evidence_runs
-    from ..persistence.models import GraphNode, WikiSymbol
+    from ..persistence.models import GraphNode
     from .ingest import load_origins
 
     files = await session.execute(
@@ -152,21 +175,7 @@ async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs
     rows = list(files)
     entries = [r.node_id for r in rows if r.is_entry_point]
     tests = [r.node_id for r in rows if r.is_test]
-    symbols = await session.execute(
-        select(WikiSymbol.file_path, WikiSymbol.name).where(
-            WikiSymbol.repository_id == repository_id,
-            or_(
-                and_(WikiSymbol.file_path.like("%_test.go"), WikiSymbol.name.like("Benchmark%")),
-                and_(
-                    WikiSymbol.file_path.like("%.py"),
-                    # Every benchmark path rule has "bench" in it.
-                    WikiSymbol.file_path.ilike("%bench%"),
-                    or_(WikiSymbol.name.like("bench%"), WikiSymbol.name.like("test%")),
-                ),
-            ),
-        )
-    )
-    benchmarks = {(r.file_path, r.name) for r in symbols if is_benchmark_function(r.file_path, r.name)}
+    benchmarks = await _stored_benchmarks(session, repository_id)
     origins = await load_origins(session, repository_id, [*entries, *tests, *(p for p, _ in benchmarks)])
     # A copied library's or a generator's tests and benchmarks measure code nobody here maintains.
     ours = {p for p, origin in origins.items() if origin not in _NOT_OURS}
@@ -181,6 +190,65 @@ async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs
             for run in await list_evidence_runs(session, repository_id)
         ),
     )
+
+
+async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, ...]:
+    """Workload classes ``evidence setup`` would plan a profile for, from the
+    index alone, in :data:`CLASS_ORDER`.
+
+    Held to what the planners above profile from stored inputs, with the same
+    origin rules as :func:`load_runtime_inputs`: a production Python
+    ``__main__.py``, a Python or Go test file of our own (only those stacks
+    profile a suite), and, when neither exists, a stored benchmark function
+    (:func:`_stored_benchmarks`). About 40 ms on an 8,000-file index where
+    the full load takes 200 ms. Ceiling: an entry point found only on disk
+    (a console script, a ``package.json`` bin) and a stack whose test runner
+    detection fails are not read here, so this can say less than setup
+    prints, never more about which language runs.
+    """
+    from sqlalchemy import or_, select
+
+    from ..code_origin import path_origin
+    from ..persistence.models import GraphNode, HealthFileMetric
+    from .ingest import load_origins
+
+    def files(*where: Any) -> Any:
+        return (
+            select(GraphNode.node_id, HealthFileMetric.code_origin)
+            .outerjoin(
+                HealthFileMetric,
+                (HealthFileMetric.repository_id == GraphNode.repository_id)
+                & (HealthFileMetric.file_path == GraphNode.node_id),
+            )
+            .where(GraphNode.repository_id == repository_id, GraphNode.node_type == "file", *where)
+        )
+
+    def origin(row: Any) -> str:
+        return row.code_origin or path_origin(row.node_id)
+
+    found: list[str] = []
+    mains = files(GraphNode.is_entry_point.is_(True), GraphNode.node_id.like("%/__main__.py"))
+    if any(origin(r) == "production" for r in await session.execute(mains)):
+        found.append("entry_point")
+    suite = (
+        GraphNode.is_test.is_(True),
+        or_(GraphNode.node_id.like("%.py"), GraphNode.node_id.like("%_test.go")),
+    )
+    # One test file with a stored origin of ours settles it; only an index
+    # without stored origins reads every test file's path.
+    stored = files(*suite, HealthFileMetric.code_origin.not_in(_NOT_OURS)).limit(1)
+    has_tests = (await session.execute(stored)).first() is not None or any(
+        origin(r) not in _NOT_OURS
+        for r in await session.execute(files(*suite, HealthFileMetric.code_origin.is_(None)))
+    )
+    if not found and not has_tests:
+        benches = await _stored_benchmarks(session, repository_id)
+        origins = await load_origins(session, repository_id, (p for p, _ in benches))
+        if any(o not in _NOT_OURS for o in origins.values()):
+            found.append("benchmark")
+    if has_tests:
+        found.append("unit_test")
+    return tuple(found)
 
 
 def _within(root: str, path: str) -> bool:
@@ -551,7 +619,11 @@ def _node_targets(
         rel = _owned(root, roots, path)
         if rel is None:
             continue
-        name, profile = _named(root, f"node {rel}", ".cpuprofile")
+        # A directory, not one file: ``--cpu-prof`` writes each process and
+        # worker thread its own profile there (a fixed name would let a child
+        # overwrite the parent's), and ``evidence add`` merges the directory
+        # into one run. Cleaned first, so an older run's files never join it.
+        name, profile = _named(root, f"node {rel}", "")
         if path.endswith(_TS):
             out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
                                reason="A TypeScript profile's positions are in the compiled JavaScript; "
@@ -559,12 +631,9 @@ def _node_targets(
             continue
         if not path.endswith(_JS):
             continue
-        command = (
-            f"node --cpu-prof --cpu-prof-dir={posixpath.dirname(_from(root, profile))} "
-            f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
-        )
+        command = f"node --cpu-prof --cpu-prof-dir={_from(root, profile)} {rel}"
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="cpuprofile"))
+                           input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
     return out
 
 
@@ -678,5 +747,6 @@ __all__ = [
     "evidence_ingest_line",
     "load_runtime_inputs",
     "runtime_targets",
+    "stored_target_classes",
     "timed_target",
 ]

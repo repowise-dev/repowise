@@ -850,6 +850,39 @@ def nodeid_test_file(test_id: str) -> str | None:
     return head if looks_pathy else None
 
 
+def nodeid_without_params(test_id: str) -> str:
+    """*test_id* without the parameter id of a parametrized test.
+
+    ``tests/test_x.py::TestC::test_f[1-a]`` gives ``tests/test_x.py::TestC::test_f``,
+    the test function's symbol id. Only the part after the file is cut, so a
+    path with brackets (``app/[id]/page.test.ts``) keeps them; a name holds no
+    ``[``, so whatever the parameter id holds (``::`` included) goes with it.
+    """
+    head, sep, rest = test_id.partition("::")
+    if not sep:
+        return test_id
+    return f"{head}::{rest.partition('[')[0]}"
+
+
+def dotted_module_paths(dotted: str, *, min_parts: int = 1) -> list[tuple[str, tuple[str, ...]]]:
+    """Where a dotted test name may live: ``(module path, names after it)``, longest first.
+
+    A runner that names a test by module rather than by file (coverage.py
+    dynamic contexts, JUnit XML ``classname``) writes ``tests.unit.test_x.TestC``.
+    Each split gives a module path without its extension (``tests/unit/test_x``)
+    and the names that follow it (``("TestC",)``); the caller keeps the first
+    one that names a file it knows. Splits of fewer than *min_parts* parts are
+    left out, and a name with a part that is not an identifier gives none.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if len(parts) < min_parts or not all(p.isidentifier() for p in parts):
+        return []
+    return [
+        ("/".join(parts[:k]), tuple(parts[k:]))
+        for k in range(len(parts), max(min_parts, 1) - 1, -1)
+    ]
+
+
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
 
 # JVM and .NET tests are a PascalCase class named for the class under test.

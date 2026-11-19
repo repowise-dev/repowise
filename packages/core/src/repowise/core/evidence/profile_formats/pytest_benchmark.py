@@ -24,6 +24,7 @@ from typing import Any
 
 from repowise.core.git_sha import is_full_sha
 from repowise.core.ingestion.symbol_identity import file_of_symbol, local_symbol_id
+from repowise.core.test_paths import nodeid_without_params
 
 from ..format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 
@@ -83,14 +84,14 @@ def _entry(raw: dict[str, Any]) -> dict[str, Any]:
 def _symbol_id(fullname: Any, name: Any) -> str | None:
     """The node id without its parameters: ``a.py::test_f[1]`` -> ``a.py::test_f``.
 
-    ``name`` is the node's own last part (``test_f[1]``); a function name holds
-    no ``[``, so what precedes it is the function, whatever the parameter id holds.
+    ``name`` is the node's own last part (``test_f[1]``); the node id must end
+    with it.
     """
     if not isinstance(fullname, str) or not isinstance(name, str) or not name:
         return None
     if not fullname.endswith(name) or not local_symbol_id(fullname):
         return None
-    return fullname[: len(fullname) - len(name)] + name.partition("[")[0]
+    return nodeid_without_params(fullname)
 
 
 __all__ = ["sniff", "to_v1"]

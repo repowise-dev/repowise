@@ -117,6 +117,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),
     ("hosted", "hosted_cmd:hosted_group"),
+    ("bot", "bot_cmd:bot_group"),
     ("workspace", "workspace_cmd:workspace_group"),
     ("plugins", "plugins_cmd:plugins_command"),
 )

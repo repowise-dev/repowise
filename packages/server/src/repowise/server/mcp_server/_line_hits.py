@@ -50,11 +50,14 @@ from repowise.server.mcp_server._edit_sites import (
 from repowise.server.mcp_server._enclosing import enclosing_ranges, mark_enclosing
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
+    NO_SOURCE_PREFIX,
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     is_excluded,
+    no_source_reason,
     read_repo_file_text,
+    serves_no_source,
 )
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
@@ -259,6 +262,10 @@ def _git_paths(
     root: Path, args: list[str], timeout: float, ok: tuple[int, ...]
 ) -> list[str] | None:
     """The NUL-separated paths a git command prints outside pruned dirs, or ``None`` on failure."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), *args],
@@ -940,7 +947,11 @@ async def _alternation_groups(
         cut: list[str] = []
         groups.append(_capped_per_file(part_rows, cut))
         rows += part_rows
-        reasons += [f"{part}: {r}" for r in part_reasons + cut]
+        for r in part_reasons + cut:
+            # The no-source reason holds for every part: said once, untagged.
+            tagged = r if r.startswith(NO_SOURCE_PREFIX) else f"{part}: {r}"
+            if not (tagged is r and r in reasons):
+                reasons.append(tagged)
         literal_scan = literal_scan and scan
         if not part_rows:
             unmatched.append(part)
@@ -997,8 +1008,10 @@ async def _repo_regex_rows(
 ) -> tuple[list[dict[str, Any]], list[str], bool]:
     """One repo's lines matching *pattern*, read from its live files."""
     async with get_session(ctx.session_factory) as session:
-        root = Path(served_root(await _get_repo(session), ctx.path))
-    rows, reasons = await asyncio.to_thread(_scan_listed_regex, root, pattern)
+        root = served_root(await _get_repo(session), ctx.path)
+    if serves_no_source():
+        return [], [no_source_reason()], True
+    rows, reasons = await asyncio.to_thread(_scan_listed_regex, Path(root), pattern)
     return rows, reasons, True
 
 
@@ -1049,9 +1062,12 @@ async def _repo_line_rows(
     spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        root = Path(served_root(repository, ctx.path))
         found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
         nodes = [n for n in found if not is_excluded(n.file_path, spec)]
+        if serves_no_source():
+            # Where a checkout would have lines to read, say where they are.
+            return ([], [no_source_reason()], True) if nodes or literal else None
+        root = Path(served_root(repository, ctx.path))
         # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
         sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repository.id, root, n) for n in nodes

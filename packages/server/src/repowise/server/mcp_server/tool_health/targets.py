@@ -114,7 +114,7 @@ def _miss_reason(
     if target in unscored_paths:
         return {"reason": "not_measured"}
     try:
-        on_disk = (Path(repo_root) / target).exists()
+        on_disk = repo_root is not None and (Path(repo_root) / target).exists()
     except (OSError, ValueError):
         on_disk = False
     if on_disk:
