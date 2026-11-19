@@ -1023,6 +1023,25 @@ def resolve_command_missing() -> bool:
     return resolve_repowise_command() == "repowise"
 
 
+def _unlaunchable_fix(command: str, *, in_project: bool) -> str:
+    """The edit that lets Codex launch an entry whose *command* cannot be found."""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    pinned = resolve_repowise_command()
+    # PATH does not change what a command with a directory in it launches, so
+    # that entry also needs its command reset.
+    rebare = ' and set command = "repowise" in that table' if re.search(r"[\\/]", command) else ""
+    if pinned == "repowise":
+        return f"install repowise so `repowise` is on PATH ({INSTALL_COMMAND}){rebare}"
+    if in_project:
+        # The project file may be committed: a machine's absolute path there
+        # would break every other checkout, so PATH is the fix.
+        return f"put {Path(pinned).parent} on PATH{rebare}"
+    if rebare:
+        return f'set command = "{pinned}" in that table'
+    return f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH'
+
+
 def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
     """One issue per ``required`` repowise server whose command Codex cannot find.
 
@@ -1034,7 +1053,6 @@ def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
     import shutil
 
     from repowise.cli.editor_integrations.claude_config import _is_our_entry
-    from repowise.cli.mcp_config import resolve_repowise_command
 
     paths = [user_hooks_path().parent / "config.toml"]
     if repo_path is not None:
@@ -1050,25 +1068,8 @@ def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
                 continue
             if not _is_our_entry(entry) or shutil.which(entry["command"]):
                 continue
-            pinned = resolve_repowise_command()
-            # PATH does not change what a command with a directory in it
-            # launches, so that entry also needs its command reset.
-            rebare = (
-                ' and set command = "repowise" in that table'
-                if re.search(r"[\\/]", entry["command"])
-                else ""
-            )
-            if pinned == "repowise":
-                fix = f"install repowise so `repowise` is on PATH ({INSTALL_COMMAND}){rebare}"
-            elif repo_path is not None and path == project_config_path(repo_path):
-                # The project file may be committed: a machine's absolute path
-                # there would break every other checkout, so PATH is the fix.
-                fix = f"put {Path(pinned).parent} on PATH{rebare}"
-            elif rebare:
-                fix = f'set command = "{pinned}" in that table'
-            else:
-                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH'
-
+            in_project = repo_path is not None and path == project_config_path(repo_path)
+            fix = _unlaunchable_fix(entry["command"], in_project=in_project)
             issues.append(
                 f"Codex will not start: [mcp_servers.{name}] in {path} is required and "
                 f"launches `{entry['command']}`, which cannot be found. To fix, {fix}."
