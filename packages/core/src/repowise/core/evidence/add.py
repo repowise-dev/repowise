@@ -406,9 +406,10 @@ async def ingest_evidence(
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
-    *repo* is the repository row, *repo_path* the checkout its index was
-    built from; *checkout_root* is the checkout the run used (default
-    *repo_path*), whose source places a profile's frames. The other options
+    *repo* is the repository row (None reads as ``no_index``), *repo_path*
+    the checkout its index was built from; *checkout_root* is the checkout
+    the run used (default *repo_path*), whose source places a profile's
+    frames. The other options
     are ``evidence add``'s; *max_file_mb* and *caps* default to the
     repository's ``evidence`` settings. Returns the result ``evidence add
     --format json`` prints. Raises :class:`EvidenceRefusedError` for a file or
@@ -416,6 +417,11 @@ async def ingest_evidence(
     """
     commit = commit.lower() if commit is not None else None
     check_options(workload, workload_class, environment, commit)
+    root = (checkout_root or repo_path).resolve()
+    if not root.is_dir():
+        raise _bad_option("--checkout-root", f"{root} is not a directory.")
+    if repo is None:
+        return {"stored": False, "reason": "no_index"}
     if max_file_mb is None or caps is None:
         from repowise.core.repo_config import load_repo_config
 
@@ -425,7 +431,7 @@ async def ingest_evidence(
     prepared = prepare_evidence(
         data,
         name=name,
-        checkout_root=(checkout_root or repo_path).resolve(),
+        checkout_root=root,
         commit=commit,
         dirty=dirty,
         input_format_name=input_format_name,

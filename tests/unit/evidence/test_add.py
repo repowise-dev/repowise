@@ -79,3 +79,12 @@ def test_a_refused_upload_raises_and_stores_nothing(indexed, data, options, code
 
     assert (refused.value.code, refused.value.option) == (code, option)
     assert _stored(root) == ([], [])
+
+
+def test_no_repository_row_reads_as_no_index(tmp_path: Path) -> None:
+    async def run() -> dict:
+        return await ingest_evidence(
+            None, None, b"", repo_path=tmp_path, workload="app", workload_class="entry_point"
+        )
+
+    assert asyncio.run(run()) == {"stored": False, "reason": "no_index"}
