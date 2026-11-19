@@ -83,7 +83,8 @@ The COBOL and Apex grammars download on first use; offline, set
 `REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise grammars fetch
 <dir>` stages that cache on a machine with network access; copy `<dir>` to the
 offline machine. `repowise doctor` reports whether each grammar is cached.
-COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
+COBOL is read in fixed reference format, or in free format when the source
+carries a free-format directive such as `>>SOURCE FORMAT FREE`, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
@@ -340,7 +341,7 @@ Formats, the join rules and the workload classes:
 - Razor has no import edges.
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
-- COBOL dynamic `CALL` targets and free-format source produce no edges.
+- COBOL dynamic `CALL` targets produce no edges.
 - Perl method calls are typed only from `$self`-style invocants, package names and constructor assignments (by variable name within the calling sub, so an inner `my $o` shadowing an outer one is not told apart); `use mro 'c3'` is read as the default depth-first order, and `use Foo;` as importing all of Foo's subs, since its `@EXPORT` list is not read. An imported sub is reached only by its bare name (not as `App::helper()` or as a method of the importing package), and a package's own sub wins over an import of the same name wherever the two sit in the file. Perl 5.38 `class` blocks own their methods, but a `:isa(Parent)` attribute is not read as inheritance.
 - C has no performance risk support.
 - Salesforce references are followed when the name is literal: runtime-built

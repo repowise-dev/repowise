@@ -161,9 +161,11 @@ Every id with its threshold and weight:
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance
   findings, cartesian joins included, only in performance risk (2.0).
-- Twenty-three detectors move code health. Ten are advisory: listed with zero impact,
-  out of impact-ranked lists unless you ask for the advisory dimension. Three governance
-  findings from the [decisions layer](DECISIONS.md) never deduct.
+- Of the 59 detectors, 22 move code health (8 of them also move maintainability),
+  3 SQL detectors move maintainability only, and 22 move performance risk only. The other
+  12 are advisory: listed with zero impact, out of impact-ranked lists unless you ask for
+  the advisory dimension. Three governance findings from the
+  [decisions layer](DECISIONS.md) never deduct.
 - `dry_violation` and `duplicated_assertion_block` stay off every default surface (overview, priorities, MCP, REST lists) until
   a re-measurement clears their precision; `duplicated_assertion_block` still scores, `dry_violation` in TypeScript. Assertion-block
   markers fire only in test files; house assertion helpers go in the
