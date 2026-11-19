@@ -1,8 +1,8 @@
 """``repowise evidence``: ingest what a real run showed and join it to the code.
 
 ``evidence add`` reads one ``repowise-evidence-v1`` file (a profile,
-benchmark results, test timings or query counts), or a profiler's or
-benchmark runner's own output in a format of
+benchmark results, test timings or query counts), or a profiler's,
+benchmark runner's or test runner's own output in a format of
 :data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
 to v1 first), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
@@ -58,7 +58,7 @@ def evidence_group() -> None:
 
 
 @evidence_group.command("add")
-@click.argument("file", type=click.Path(dir_okay=False, path_type=Path))
+@click.argument("file", type=click.Path(path_type=Path))
 @click.option("--workload", "workload", required=True, help="What ran, e.g. 'cli build'.")
 @click.option(
     "--class",
@@ -129,9 +129,10 @@ def evidence_add(
 ) -> None:
     """Ingest one evidence FILE for a named workload.
 
-    FILE is a repowise-evidence-v1 document, or a profile or benchmark
-    results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark JSON), detected from its content.
+    FILE is a repowise-evidence-v1 document, or a profile, benchmark
+    results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
+    collapsed stacks, pytest-benchmark JSON, JUnit XML), detected from its
+    content. A directory of JUnit XML reports (Maven, Gradle) is read as one run.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -146,6 +147,7 @@ def evidence_add(
         repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+        repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
@@ -168,15 +170,16 @@ def evidence_add(
     max_file_mb, caps, problems = evidence_caps(load_repo_config(repo_path))
     for problem in problems:
         notices.print(f"[yellow]Ignoring {escape(problem)}.[/yellow]")
+    reports = _report_files(file, input_format)
     try:
-        size = file.stat().st_size
+        size = sum(report.stat().st_size for report in reports)
     except OSError as exc:
         raise click.BadParameter(f"cannot read {file}: {exc.strerror}", param_hint="FILE") from None
     try:
         # Checked before reading, so a file too large is never loaded.
         check_file_size(size, max_file_mb, str(file))
         prepared = prepare_evidence(
-            file.read_bytes(),
+            _read_reports(reports, file),
             name=str(file),
             checkout_root=root,
             commit=commit,
@@ -202,6 +205,33 @@ def evidence_add(
         emit_json(payload)
     if not payload["stored"]:
         raise click.exceptions.Exit(1)
+
+
+def _report_files(file: Path, input_format: str | None) -> list[Path]:
+    """*file*, or for a directory of JUnit XML reports (Maven, Gradle) every ``*.xml`` in it."""
+    if not file.is_dir():
+        return [file]
+    if input_format not in (None, "junit"):
+        raise click.BadParameter(
+            f"{file} is a directory; only JUnit XML reports are read from one.", param_hint="FILE"
+        )
+    reports = sorted(p for p in file.iterdir() if p.suffix == ".xml" and p.is_file())
+    if not reports:
+        raise click.BadParameter(f"{file} holds no .xml report.", param_hint="FILE")
+    return reports
+
+
+def _read_reports(reports: list[Path], file: Path) -> bytes:
+    """One file's bytes, or a directory's JUnit reports as one document."""
+    if not file.is_dir():
+        return file.read_bytes()
+    from repowise.core.evidence.format_v1 import EvidenceFormatError
+    from repowise.core.evidence.profile_formats import junit
+
+    try:
+        return junit.combine(report.read_bytes() for report in reports)
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", f"{file}: {exc}", exc.hint) from None
 
 
 def _refuse(exc: EvidenceRefusedError, fmt: str) -> NoReturn:
@@ -441,7 +471,7 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
 
 
 def _setup_lines(unit: dict[str, Any]) -> list[str]:
-    """One unit's coverage plan, in words."""
+    """One unit's coverage plan, test timings and runtime targets, in words."""
     cov = unit["coverage"]
     tools = ", ".join(t for t in (unit["runner"], unit["package_manager"]) if t)
     head = f"[bold]{unit['stack']}[/bold]" + (f" ({escape(tools)})" if tools else "")
@@ -455,6 +485,16 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
         lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
+    timings = unit.get("test_timings")
+    if timings:
+        how = (
+            f"add [cyan]{escape(timings['flag'])}[/cyan] to the test command"
+            if timings["flag"]
+            else "written by default"
+        )
+        lines.append(f"  test timings: {how}, report {escape(timings['report'])}")
+        if timings["ingest"]:
+            lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
     for target in unit.get("runtime", ()):
         head = f"  {target['class']} [bold]{escape(target['workload'])}[/bold]"
         if not target["command"]:

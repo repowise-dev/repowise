@@ -291,6 +291,7 @@ async def store_evidence(
         join_entries,
         load_origins,
         load_symbols,
+        place_test_entries,
         run_fields,
         run_key,
         stamp_bodies,
@@ -310,6 +311,10 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
+    if any(entry.get("classname") for entry in doc.entries):
+        from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
+
+        doc = place_test_entries(doc, await health_file_paths(session, repo.id))
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(

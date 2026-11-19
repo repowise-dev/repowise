@@ -689,3 +689,40 @@ def test_a_short_entry_point_run_is_stored_with_a_warning(indexed, seconds, warn
     assert result.exit_code == 0, result.output
     assert ("profile covers 0.4 s" in result.output) is warned
     assert len(_stored(root)[0]) == 1
+
+
+def test_a_directory_of_junit_reports_is_one_run(indexed) -> None:
+    root, head = indexed
+    reports = root / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    for name in ("A", "B"):
+        (reports / f"TEST-com.acme.{name}Test.xml").write_text(
+            f'<testsuite name="com.acme.{name}Test">'
+            f'<testcase classname="com.acme.{name}Test" name="works()" time="0.5"/></testsuite>'
+        )
+    (reports / "com.acme.ATest.txt").write_text("not read")
+
+    result = _add(
+        str(reports), "--workload", "maven tests", "--class", "unit_test",
+        "--commit", head, "--format", "json",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["entries"]) == ("junit", "test_timing", 2)
+
+
+def test_a_directory_is_read_only_as_junit_reports(indexed) -> None:
+    root, head = indexed
+    (root / "empty").mkdir()
+
+    no_reports = _add(str(root / "empty"), "--workload", "w", "--class", "unit_test", "--commit", head)
+    other_format = _add(
+        str(root / "src"), "--workload", "w", "--class", "unit_test", "--commit", head,
+        "--input-format", "pprof",
+    )
+
+    assert no_reports.exit_code == 2
+    assert "holds no .xml report" in no_reports.stderr
+    assert other_format.exit_code == 2
+    assert "only JUnit XML reports" in other_format.stderr

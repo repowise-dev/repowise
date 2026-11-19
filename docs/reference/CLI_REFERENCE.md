@@ -1367,7 +1367,8 @@ Ingest runtime evidence: a profile, benchmark results, test timings or query cou
 profile in the profiler's own format ([Speedscope JSON, Go pprof or collapsed
 stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
 runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
-converted first.
+or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them)
+(a file, or a directory of them), converted first.
 
 ```bash
 repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
@@ -1376,6 +1377,7 @@ repowise evidence add stacks.txt --workload "api" --class load_test --value-kind
 repowise evidence add cpu.pprof --workload "go test ./pkg" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence status --format json   # newest run of each workload
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
@@ -1388,7 +1390,7 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word (`local`, `ci`). | `unknown` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `pytest-benchmark`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `pytest-benchmark`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
@@ -1424,7 +1426,10 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
-  `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
+  `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has
+  `test_timings`: the `flag` that makes its test command write JUnit XML (`null` for Maven and
+  Gradle, which write it by default), the `report` path and the `ingest` line. Test timings are
+  never a `next_call` step. Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`

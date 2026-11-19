@@ -101,6 +101,11 @@ class Stack:
     root: str = ""
     #: The test paths ``test`` names, relative to ``root``; empty when the runner picks.
     test_paths: tuple[str, ...] = ()
+    #: Where the runner writes JUnit XML (a file, or a directory of files), relative to
+    #: ``root``; empty when repowise does not know how this runner writes it.
+    junit_report: str = ""
+    #: What to add to the test command for that report; empty when the runner writes it by default.
+    junit_flag: str = ""
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -363,7 +368,7 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
         notes=tuple(notes), requires=requires, test_paths=tuple(args.split()), pattern=_PYTEST,
-        skip=_PYTEST_ONE_FILE, editor=editor,
+        skip=_PYTEST_ONE_FILE, editor=editor, junit_report="junit.xml", junit_flag="--junitxml=junit.xml",
     )
 
 
@@ -391,6 +396,12 @@ _VITEST_FLAGS = (
 )
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
+#: The flag that makes each runner write ``junit.xml`` beside its other output. jest needs
+#: the ``jest-junit`` package, with ``addFileAttribute`` so each test names its file.
+_NODE_JUNIT_FLAGS = {
+    "jest": "--reporters=default --reporters=jest-junit",
+    "vitest": "--reporter=default --reporter=junit --outputFile.junit=junit.xml",
+}
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
 
@@ -642,6 +653,8 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
         notes=_node_notes(test, workspace, str(scripts.get("test") or ""), base),
         # The install comes first: the runner and the coverage provider live in node_modules.
         requires=(install, *_run_lines(test.prepare)) if test else (), pattern=_NODE, editor=editor,
+        junit_report="junit.xml" if runner in _NODE_JUNIT_FLAGS else "",
+        junit_flag=_NODE_JUNIT_FLAGS.get(runner or "", ""),
     )
 
 
@@ -735,6 +748,8 @@ def _maven(root: set[str], files: dict[str, str]) -> Stack:
     return Stack(
         "java", "maven", "maven", reports, setup=(*_JAVA_SETUP, "    cache: maven"), test=test.text,
         notes=tuple(notes), pattern=_MVN, skip=_MVN_SKIP, editor=editor,
+        # Surefire writes one file per test class; a multi-module build writes one directory per module.
+        junit_report="" if "<modules>" in pom else "target/surefire-reports",
     )
 
 
@@ -796,6 +811,7 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
         prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", workstation=workstation,
         pattern=_GRADLE,
         skip=re.compile(r"-x\s+test\b"), editor=partial(_edit_gradle, jacoco=jacoco, reports=reports),
+        junit_report="" if multi else "build/test-results/test",
     )
 
 

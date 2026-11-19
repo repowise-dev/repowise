@@ -4,7 +4,8 @@
 stacks name (:mod:`repowise.core.test_runners.stacks`), the command that
 writes a report repowise reads, what that command needs first, where the
 report lands, and the exact ``repowise`` line that ingests it, then the
-runtime targets worth profiling (:mod:`.runtime_setup`). A report already on
+runtime targets worth profiling (:mod:`.runtime_setup`) and the JUnit XML
+report its tests can write for test timings. A report already on
 disk comes first. ``next_call`` is the sequence of steps an agent runs next,
 each with the directory it runs in. Nothing is written.
 """
@@ -25,6 +26,7 @@ from .runtime_setup import (
     CLASS_ORDER,
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
+    evidence_ingest_line,
     runtime_targets,
     timed_target,
 )
@@ -228,6 +230,8 @@ def evidence_setup(
     planned = [_coverage_unit(s, found[id(s)], _measures(root, found[id(s)], head)) for s in stacks]
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
+        for stack, unit in zip(stacks, planned, strict=True):
+            unit["test_timings"] = _test_timings(stack, head)
     covered = head is not None and coverage_commit == head
     done = _measured_at(runtime, head)
     next_call = _with_optional(
@@ -253,6 +257,24 @@ def evidence_setup(
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+
+
+def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
+    """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
+
+    ``flag`` is what to add to the unit's own test command (None: the runner
+    writes the report by default). Test timings are never a step of
+    ``next_call``: they rank tests, they never decide anything.
+    """
+    if not stack.junit_report:
+        return None
+    report = _joined(stack.root, stack.junit_report)
+    workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
+    return {
+        "flag": stack.junit_flag or None,
+        "report": report,
+        "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
     }
 
 
