@@ -637,6 +637,11 @@ repowise next --horizon quarter --all
 
 - Same stored actions as the web overview and MCP `get_overview` (`next_actions`).
 - Groups **Now**, **Worth planning**, **Improve what Repowise can see**; rows give impact, facts, done-when, and any command.
+- **Improve what Repowise can see** asks for evidence: a coverage report when none is stored (or a refresh once
+  the stored one is from an earlier commit and 14 days older than the latest), and runtime evidence when the index
+  holds an entry point, benchmark or test suite to profile and no run is stored (or the newest run is that stale).
+  Each row's command is the setup that prints the exact run and ingest lines: `repowise coverage setup` or
+  `repowise evidence setup`, with the `--format json` form under `commands` for an agent.
 - An index predating a store names it and suggests `repowise update`. Under five commits, history-ranked rows are dropped and JSON sets `context.history_too_short`.
 
 ---
