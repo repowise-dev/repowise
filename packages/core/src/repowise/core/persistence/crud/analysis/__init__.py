@@ -38,6 +38,7 @@ from .coverage import (
 from .coverage_map import (
     covered_source_files,
     get_test_coverage_summary,
+    measured_test_files,
     save_test_coverage,
     tests_covering,
     tests_covering_files,
@@ -229,6 +230,7 @@ __all__ = [
     "load_ingest_at_commit",
     "load_newest_ingest",
     "measured_costs",
+    "measured_test_files",
     "opportunity_details",
     "performance_area_counts",
     "performance_facet_counts",

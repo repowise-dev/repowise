@@ -375,6 +375,19 @@ async def covered_source_files(
     return out
 
 
+async def measured_test_files(session: AsyncSession, repository_id: str) -> set[str]:
+    """The test files the per-test map measured: those with a row, covering anything.
+
+    A test without a file path is named by the file part of its test id.
+    """
+    result = await session.execute(
+        select(TestCoverageTest.test_file, TestCoverageTest.test_id).where(
+            TestCoverageTest.repository_id == repository_id
+        )
+    )
+    return {test_file or test_id.split("::", 1)[0] for test_file, test_id in result.all()}
+
+
 async def get_test_coverage_summary(
     session: AsyncSession,
     repository_id: str,
