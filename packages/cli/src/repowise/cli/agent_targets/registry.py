@@ -191,7 +191,9 @@ def double_registration(
         f"turn for each extra copy. Keep `{keep}` and remove "
         f"{'; '.join(removal(name) for name in drop)}."
     )
-    return issue, next((cmd for name in drop if (cmd := command(name))), None)
+    # The fix command must clear every dropped name; otherwise a copy survives it.
+    fixes = {command(name) for name in drop}
+    return issue, fixes.pop() if len(fixes) == 1 else None
 
 
 def detect_all(repo_path: Path | None = None) -> dict[str, list[Registration]]:

@@ -135,8 +135,7 @@ def test_a_hosted_entry_beside_the_local_one_is_not_a_double(tmp_path: Path) -> 
     assert list(loaded_servers(target, repo)) == ["repowise"]
 
 
-def test_the_plugin_server_is_read_from_the_plugin_install(tmp_path: Path, monkeypatch) -> None:
-    """Named as Claude Code names it, and removed with the host's own command."""
+def _install_plugin(tmp_path: Path, monkeypatch):
     from repowise.cli.agent_targets.targets import claude_code as target_mod
 
     install = tmp_path / "cache" / "repowise"
@@ -159,6 +158,12 @@ def test_the_plugin_server_is_read_from_the_plugin_install(tmp_path: Path, monke
     monkeypatch.setattr(target_mod, "plugin_version_skew", lambda: [])
     repo = tmp_path / "repo"
     repo.mkdir()
+    return target_mod, repo
+
+
+def test_the_plugin_server_is_read_from_the_plugin_install(tmp_path: Path, monkeypatch) -> None:
+    """Named as Claude Code names it, and removed with the host's own command."""
+    target_mod, repo = _install_plugin(tmp_path, monkeypatch)
     _write(repo / ".mcp.json", "mcpServers", {"repowise": LOCAL})
 
     report = diagnose(target_mod.TARGET, repo_path=repo)
@@ -167,6 +172,18 @@ def test_the_plugin_server_is_read_from_the_plugin_install(tmp_path: Path, monke
     issue = next(i for i in report.issues if "registered twice" in i)
     assert "remove `plugin:repowise:repowise` (run `/plugin uninstall repowise@repowise`)" in issue
     assert report.fix_command == target_mod.PLUGIN_UNINSTALL_COMMAND
+
+
+def test_no_fix_command_when_it_would_leave_a_dropped_copy(tmp_path: Path, monkeypatch) -> None:
+    """Uninstalling the plugin alone leaves the hand-added name loaded."""
+    target_mod, repo = _install_plugin(tmp_path, monkeypatch)
+    _write(repo / ".mcp.json", "mcpServers", {"repowise": LOCAL, "repowise-local": LOCAL})
+
+    report = diagnose(target_mod.TARGET, repo_path=repo)
+
+    issue = next(i for i in report.issues if "registered 3 times" in i)
+    assert "Keep `repowise`" in issue
+    assert report.fix_command is None
 
 
 @pytest.mark.parametrize(
