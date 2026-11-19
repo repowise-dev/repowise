@@ -191,7 +191,7 @@ def test_cited_literals_are_numbers_quoted_values_and_code_spans() -> None:
 
 
 @pytest.mark.parametrize("failing", ["head", "base"])
-def test_a_failed_blob_read_gives_no_verdict(repo: Path, monkeypatch, failing: str) -> None:
+def test_a_failed_blob_read_reads_unread_never_holds(repo: Path, monkeypatch, failing: str) -> None:
     import repowise.core.analysis.decisions.rule_check as rule_check
 
     _later(repo, {"limits.py": _LIMITS.replace("return 1", "return 2")})
@@ -205,4 +205,5 @@ def test_a_failed_blob_read_gives_no_verdict(repo: Path, monkeypatch, failing: s
     monkeypatch.setattr(rule_check, "cat_file_batch", flaky)
     claim = RuleClaim(texts=("`size_limit`",), quotes=(), scope=("limits.py",), anchor=_RECORDED)
 
-    assert check_rules(repo, {"d": claim}) == {}
+    found = check_rules(repo, {"d": claim})["d"]
+    assert (found.verdict, found.basis, found.commit) == ("unknown", "unread", head)

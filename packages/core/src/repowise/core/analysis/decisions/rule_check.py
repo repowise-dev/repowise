@@ -586,28 +586,17 @@ def _check_base(
     return out, pending
 
 
-def check_rules(
-    repo_path: Path | str, claims: Mapping[str, RuleClaim], *, head: str = "HEAD"
-) -> dict[str, RuleCheck]:
-    """A verdict per claim id. Ids absent from the result could not be read from git.
-
-    One first-parent log, then per distinct anchor commit one ``git diff`` and
-    one blob batch over the union of its claims' files, so the cost follows the
-    number of distinct anchors, not the number of records. A claim anchored
-    before the history this checkout holds gets no verdict.
-    """
-    repo = str(repo_path)
-    head_sha = _rev_parse(repo, head) if claims else None
-    line = _first_parent_line(repo, head_sha) if head_sha else []
-    if not line:
-        return {}
+def _read_verdicts(repo: str, head_sha: str, claims: Mapping[str, RuleClaim]) -> dict[str, RuleCheck]:
+    """The verdicts git could read; a claim it could not read is absent."""
+    line = _first_parent_line(repo, head_sha)
     reader = _Reader(repo, head_sha)
     by_base: dict[str, list[str]] = {}
     for cid, claim in claims.items():
         if (base := _base_commit(line, claim.anchor)) is not None:
             by_base.setdefault(base, []).append(cid)
-
-    if not reader.load_head(p for c in claims.values() for p in (*c.scope, *(f for f, _ in c.quotes))):
+    if not by_base or not reader.load_head(
+        p for c in claims.values() for p in (*c.scope, *(f for f, _ in c.quotes))
+    ):
         return {}
     out: dict[str, RuleCheck] = {}
     pending: dict[str, set[str]] = {}
@@ -625,4 +614,26 @@ def check_rules(
         out[cid] = (
             RuleCheck(DRIFTED, f"symbol_gone:{gone[0]}") if gone else RuleCheck(UNKNOWN, "moved")
         )
-    return {cid: replace(found, commit=head_sha) for cid, found in out.items()}
+    return out
+
+
+def check_rules(
+    repo_path: Path | str, claims: Mapping[str, RuleClaim], *, head: str = "HEAD"
+) -> dict[str, RuleCheck]:
+    """A verdict per claim id, read at *head*; empty only when *head* cannot be read.
+
+    One first-parent log, then per distinct anchor commit one ``git diff`` and
+    one blob batch over the union of its claims' files, so the cost follows the
+    number of distinct anchors, not the number of records. A claim git could
+    not read (anchored before the history this checkout holds, or a diff or
+    blob read that failed) is ``unknown`` with basis ``unread``: it keeps the
+    churn reading, never reads as holding, and carries the commit so the caller
+    retries it only once its files move again.
+    """
+    repo = str(repo_path)
+    head_sha = _rev_parse(repo, head) if claims else None
+    if head_sha is None:
+        return {}
+    out = _read_verdicts(repo, head_sha, claims)
+    unread = RuleCheck(UNKNOWN, "unread")
+    return {cid: replace(out.get(cid, unread), commit=head_sha) for cid in claims}

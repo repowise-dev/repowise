@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -296,19 +296,22 @@ async def _recheck_rules(
         dec.rule_check = dec.rule_check_basis = dec.rule_checked_commit = None
     try:
         due = _due(moved, repo_path) if moved else []
+        if not due:
+            return len(settled)
         quotes = await _code_quotes(session, [d.id for d in due])
         claims = {}
         for dec in due:
             evidence = json.loads(dec.evidence_commits_json or "[]")
             landing = record_landing(evidence, landings, dec.created_at)
             anchor = _anchor(dec.created_at, landing.at if landing else None, grants.get(dec.id))
-            if anchor is not None:
-                claims[dec.id] = RuleClaim(
-                    texts=(dec.title or "", dec.decision or ""),
-                    quotes=tuple(quotes.get(dec.id, ())),
-                    scope=tuple(rule_files[dec.id]),
-                    anchor=anchor,
-                )
+            # No birth to anchor at: before any history, so the check reads it
+            # as unread and stamps it rather than leaving it due every run.
+            claims[dec.id] = RuleClaim(
+                texts=(dec.title or "", dec.decision or ""),
+                quotes=tuple(quotes.get(dec.id, ())),
+                scope=tuple(rule_files[dec.id]),
+                anchor=anchor or datetime.fromtimestamp(0, UTC),
+            )
         verdicts = check_rules(repo_path, claims)
     except Exception as exc:  # git missing, a timeout: the churn verdict stands
         logger.warning("decision_rule_check_skipped", error=str(exc))

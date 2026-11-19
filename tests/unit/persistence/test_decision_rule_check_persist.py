@@ -269,3 +269,28 @@ def test_every_surface_names_what_left_the_rule_in_words(basis: str, reason: str
     assert _rule_changed(drifted) == {"rule_changed": reason}
     # An unflagged or churn-only row carries no extra key, so its bytes do not grow.
     assert _rule_changed(SimpleNamespace(rule_check="unknown", rule_check_basis="no_anchor")) == {}
+
+
+async def test_an_undecided_record_is_not_read_again_until_its_files_move(
+    session, repo: Path, monkeypatch
+):
+    import repowise.core.analysis.decisions.rule_check as rule_check
+
+    _commit(repo, {"src/retry.py": _SRC.replace("return 1", "return 2")}, _LATER)
+    rec = await _accepted(session, decision="`retry_limit` allows three tries", files=["src/retry.py"])
+    rec.created_at = _T0 - timedelta(days=365)  # before any history: git cannot read it
+    await session.flush()
+    await recompute_decision_staleness(session, _REPO_ID, {}, repo)
+    assert (rec.rule_check, rec.rule_check_basis) == ("unknown", "unread")
+    assert rec.rule_checked_commit == _git(repo, "rev-parse", "HEAD")
+    assert await current_currency(session, rec) == "needs_review"  # the churn reading stands
+
+    calls = []
+    real = rule_check.check_rules
+    monkeypatch.setattr(
+        rule_check, "check_rules", lambda *a, **k: calls.append(a) or real(*a, **k)
+    )
+    _commit(repo, {"other.py": "x = 1\n"}, _LATER + timedelta(hours=1))
+    await recompute_decision_staleness(session, _REPO_ID, {}, repo)
+
+    assert calls == []
