@@ -13,6 +13,7 @@ from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.adapters import maven as maven_adapter
 from repowise.core.build_units.adapters import pascal as pascal_adapter
+from repowise.core.build_units.adapters import php as php_adapter
 from repowise.core.build_units.adapters import python as python_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.graph import build_stem_map
@@ -1114,5 +1115,127 @@ def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch
 
     monkeypatch.setattr(pascal_adapter, "get_pascal_index", boom)
     index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
+    assert list(index.units) == ["manifest:pkg"]
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_php_path_linked_packages(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/lib": "*", "psr/log": "^3.0"},
+            "repositories": [{"type": "path", "url": "../lib"}],
+        }),
+        "app/src/App.php": "<?php class App {}",
+        "lib/composer.json": json.dumps({"name": "acme/lib"}),
+        "lib/src/Lib.php": "<?php class Lib {}",
+    })
+    assert _deps(index) == {
+        "php:acme/app": ("php:acme/lib",),
+        "php:acme/lib": (),
+    }
+    app = index.unit("php:acme/app")
+    assert (app.name, app.root, app.manifest, app.source) == (
+        "acme/app", "app", "app/composer.json", "composer",
+    )
+    lib = index.unit("php:acme/lib")
+    assert (lib.name, lib.root, lib.manifest, lib.source) == (
+        "acme/lib", "lib", "lib/composer.json", "composer",
+    )
+    assert _owners(index, "lib/src/Lib.php") == ["php:acme/lib"]
+    assert [u.id for u in index.dependents("php:acme/lib")] == ["php:acme/app"]
+
+
+def test_php_path_dep_outside_the_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/lib": "*", "acme/gone": "*"},
+            "repositories": [
+                {"type": "path", "url": "../lib"},
+                {"type": "path", "url": "../../elsewhere"},
+            ],
+        }),
+        "lib/composer.json": json.dumps({"name": "acme/lib"}),
+        "lib/src/Lib.php": "",
+    })
+    assert _deps(index) == {"php:acme/app": ("php:acme/lib",), "php:acme/lib": ()}
+
+
+def test_php_glob_path_repository_matches_every_package_under_it(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/one": "*", "acme/two": "*"},
+            "repositories": [{"type": "path", "url": "../packages/*"}],
+        }),
+        "packages/one/composer.json": json.dumps({"name": "acme/one"}),
+        "packages/one/src/One.php": "",
+        "packages/two/composer.json": json.dumps({"name": "acme/two"}),
+        "packages/two/src/Two.php": "",
+        # Under the glob but not required: a unit, no edge.
+        "packages/three/composer.json": json.dumps({"name": "acme/three"}),
+        "packages/three/src/Three.php": "",
+        # Deeper than the glob's one level: not matched.
+        "packages/nested/deep/composer.json": json.dumps({"name": "acme/deep"}),
+        "packages/nested/deep/src/Deep.php": "",
+    })
+    assert _deps(index) == {
+        "php:acme/app": ("php:acme/one", "php:acme/two"),
+        "php:acme/deep": (),
+        "php:acme/one": (),
+        "php:acme/three": (),
+        "php:acme/two": (),
+    }
+
+
+def test_php_unparseable_composer_falls_back(tmp_path):
+    _write(tmp_path, {
+        "good/composer.json": json.dumps({"name": "acme/good"}),
+        "good/src/Good.php": "",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "composer.json").write_bytes(b'{"name": "acme/bad",')
+    (tmp_path / "bad" / "src").mkdir()
+    (tmp_path / "bad" / "src" / "Bad.php").write_text("", encoding="utf-8")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:bad", "php:acme/good"}
+
+
+def test_php_nameless_manifest_is_named_by_its_dir(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/composer.json": json.dumps({"require": {}}),
+        "lib/src/Lib.php": "",
+    })
+    assert _deps(index) == {"php:lib": ()}
+    lib = index.unit("php:lib")
+    assert (lib.name, lib.root, lib.manifest, lib.source) == (
+        "lib", "lib", "lib/composer.json", "composer",
+    )
+
+
+def test_php_duplicate_package_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/composer.json": json.dumps({"name": "acme/dup"}),
+        "a/dup/src/Dup.php": "",
+        "b/dup/composer.json": json.dumps({"name": "acme/dup"}),
+        "b/dup/src/Dup.php": "",
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/dup": "*"},
+            "repositories": [{"type": "path", "url": "../a/dup"}],
+        }),
+    })
+    assert index.unit("php:acme/dup").root == "a/dup"
+    assert index.unit("php:acme/app").deps == ("php:acme/dup",)
+    assert _owners(index, "b/dup/src/Dup.php") == ["manifest:b/dup"]
+
+
+def test_repo_without_php_never_builds_the_composer_index(tmp_path, monkeypatch):
+    def boom(_ctx):
+        raise AssertionError("index built for an absent ecosystem")
+
+    monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
+    index = _collect(tmp_path, {"pkg/Gemfile": "", "pkg/x.rb": ""})
     assert list(index.units) == ["manifest:pkg"]
     assert index.failed_ecosystems == frozenset()

@@ -14,7 +14,8 @@ class BuildUnit:
     ``cargo:<crate>``, ``npm:<package>``, ``gradle:<project path>``,
     ``go:<module path>``, ``maven:<groupId>:<artifactId>``,
     ``python:<PEP 503 name>``, ``pascal:<project name>`` (``pascal:<manifest>``
-    when several projects share the name), ``manifest:<root>`` (``manifest:.``
+    when several projects share the name), ``php:<composer name>``
+    (``php:<dir>`` when the manifest names none), ``manifest:<root>`` (``manifest:.``
     at the repo root).
     ``root`` and ``manifest`` are repo-relative POSIX paths, ``root`` is ``""``
     at the repo root. ``deps`` are the ids of the in-repo units this one
