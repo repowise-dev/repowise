@@ -1,9 +1,20 @@
 import type { SavingsJobId } from "@repowise-dev/ui/savings";
 import type { SetupResponse } from "@/lib/api/setup";
+import { setupHref } from "@/components/setup/setup-pill";
 
 /** The setup suggestions the savings page can make, in priority order. Ids
- *  match the Setup page rows they point at. */
+ *  match the Setup rows whose prompt the nudge hands over. */
 export type SavingsNudgeId = "rewrite" | "model";
+
+/** The Setup page rule each suggestion links to; the rule id is its anchor. */
+const SETUP_ANCHOR: Record<SavingsNudgeId, string> = {
+  rewrite: "distill_suggested",
+  model: "docs_model_ready",
+};
+
+export function nudgeHref(repoId: string, id: SavingsNudgeId): string {
+  return `${setupHref(repoId)}#${SETUP_ANCHOR[id]}`;
+}
 
 /** Agent activity before a suggestion is worth showing: enough calls that the
  *  savings above it are real, never a calendar date. */
@@ -16,6 +27,8 @@ export const NUDGE_MIN_CALLS = 20;
  * Distill first (it is usually the biggest source), then AI docs. A row whose
  * state is unknown or whose section could not be read never suggests anything,
  * and the savings page never writes setup state.
+ * Follow-up: switch to setup.agent_calls, setup.thresholds, setup.unlocks.distill,
+ * setup.dismissed and read_hooks once SetupResponse carries them.
  */
 export function pickSavingsNudge(
   setup: SetupResponse | undefined,

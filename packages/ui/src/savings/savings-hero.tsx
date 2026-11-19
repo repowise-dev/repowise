@@ -2,7 +2,11 @@ import * as React from "react";
 
 import { formatCost, formatDate, formatNumber, formatPercent, formatTokens } from "../lib/format";
 import { BENCHMARK_FEWER_FILES_PCT, type SavingsCopy } from "./copy";
-import type { SavingsView } from "./types";
+import { filesTrackedSince, type SavingsView } from "./types";
+
+/** Below this many, skipped file opens stay out of the lede: "skipped 2 file
+ *  opens" undersells the sentence. The proof row still shows the count. */
+const LEDE_MIN_FILES = 10;
 
 const MICRO = "font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]";
 
@@ -50,7 +54,7 @@ export function SavingsHero({ data, copy }: { data: SavingsView; copy: SavingsCo
             {copy.heroLede(
               formatNumber(data.successful_or_usable_partial_events ?? 0),
               formatTokens(data.saved_input_tokens ?? 0),
-              files > 0 ? formatNumber(files) : null,
+              files >= LEDE_MIN_FILES ? formatNumber(files) : null,
             )}
           </p>
           <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">{copy.heroBasis}</p>
@@ -101,6 +105,7 @@ export function SavingsProof({ data, copy }: { data: SavingsView; copy: SavingsC
   const outputTokens = data.output_tokens_saved_estimated ?? 0;
   const outputUsd = data.output_usd_saved_estimated ?? 0;
   const usd = data.total_usd_saved_estimated ?? data.priced_input_savings_usd ?? 0;
+  const filesSince = filesTrackedSince(data);
   return (
     <dl className="grid grid-cols-1 gap-5 lg:grid-cols-3 lg:gap-0">
       <Proof
@@ -111,6 +116,7 @@ export function SavingsProof({ data, copy }: { data: SavingsView; copy: SavingsC
       <Proof
         label={copy.filesLabel}
         value={formatNumber(data.files_not_opened ?? 0)}
+        note={filesSince ? copy.filesSinceShort(formatDate(filesSince)) : undefined}
         sub={copy.filesSub(BENCHMARK_FEWER_FILES_PCT)}
       />
       {usd > 0 ? (
@@ -126,7 +132,7 @@ export function SavingsProof({ data, copy }: { data: SavingsView; copy: SavingsC
   );
 }
 
-function Proof({ label, value, sub }: { label: string; value?: string; sub: string }) {
+function Proof({ label, value, note, sub }: { label: string; value?: string; note?: string | undefined; sub: string }) {
   return (
     <div className="min-w-0 border-t border-[var(--color-border-default)] pt-4 first:border-t-0 first:pt-0 lg:border-l lg:border-t-0 lg:px-7 lg:pt-0.5 lg:first:border-l-0 lg:first:pl-0">
       <dt className={MICRO}>{label}</dt>
@@ -134,6 +140,9 @@ function Proof({ label, value, sub }: { label: string; value?: string; sub: stri
         {value !== undefined && (
           <div className="mb-0.5 mt-1.5 text-[22px] font-medium tracking-[-0.01em] tabular-nums text-[var(--color-text-primary)]">
             {value}
+            {note && (
+              <span className="ml-2 text-xs font-normal tracking-normal text-[var(--color-text-tertiary)]">{note}</span>
+            )}
           </div>
         )}
         <p className={`max-w-[36ch] text-xs text-[var(--color-text-secondary)] ${value === undefined ? "mt-2" : ""}`}>

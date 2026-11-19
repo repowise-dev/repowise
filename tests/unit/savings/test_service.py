@@ -571,6 +571,11 @@ def test_codex_backfill_recorded_under_the_old_cap_reports_at_the_plateau(
     assert report.unique_events == 5
     # Every aggregate reads the capped rows, not only the headline.
     assert sum(row["saved_input_tokens"] for row in report.per_agent) == expected
+    for rows in (report.per_operation, report.per_day, report.per_model, report.per_surface):
+        assert sum(row["saved_input_tokens"] for row in rows) == expected
+        assert sum(row["priced_input_savings_usd"] for row in rows) == pytest.approx(
+            report.priced_input_savings_usd
+        )
     # The reduction denominator is capped with the saving, so the ratio agrees.
     assert report.baseline_input_tokens == 10_025 + 5_000 + 50_000 + 60_000
 

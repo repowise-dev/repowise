@@ -120,6 +120,28 @@ describe("SavingsPageBody, full report", () => {
   });
 });
 
+describe("files not opened", () => {
+  it("dates a count that began inside the window", () => {
+    renderBody();
+    // per_day starts 2026-11-17, file tracking 2026-11-18.
+    expect(screen.getByText(copy.filesSinceShort("Nov 18, 2026"))).toBeTruthy();
+    expect(screen.getByText(/skipped 1,284 file opens/)).toBeTruthy();
+  });
+
+  it("leaves a small count out of the lede but keeps it in the proof row", () => {
+    renderBody({ savings: savings({ files_not_opened: 2 }) });
+    expect(screen.queryByText(/file opens/)).toBeNull();
+    expect(screen.getByText("2")).toBeTruthy();
+  });
+
+  it("does not date a count when tracking covers the whole window", () => {
+    renderBody({
+      savings: savings({ files_per_day: [{ group: "2026-11-17", files_not_opened: 1284 }] }),
+    });
+    expect(screen.queryByText(/^since /)).toBeNull();
+  });
+});
+
 describe("SavingsPageBody, partial states", () => {
   it("falls back to tokens when no call had a baseline, and drops the strips", () => {
     renderBody({ savings: savings({ input_reduction_ratio: null, baseline_input_tokens: 0 }) });

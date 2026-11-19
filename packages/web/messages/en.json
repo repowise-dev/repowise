@@ -896,6 +896,7 @@
       "tokensSubOutput": "Input your agents didn't have to read, plus {output} output tokens they didn't have to write (estimated).",
       "filesLabel": "Files not opened",
       "filesSub": "Files your agent got from Repowise and never opened. In our benchmark, agents opened {pct}% fewer files with Repowise.",
+      "filesSinceShort": "since {date}",
       "billLabel": "Saved on your bill",
       "billSub": "At each session's own model rates.",
       "billSubOutput": "At each session's own model rates. Includes {usd} of output, estimated from the benchmark.",

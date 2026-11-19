@@ -30,6 +30,19 @@ export type SpendRowView = CostGroupResponse;
 /** The groupings the spend table offers; the server's `by` values. */
 export type SpendGrouping = "operation" | "model" | "day";
 
+/** The first day in the report that skipped a file open, or null. */
+export function firstFilesDay(data: SavingsView): string | null {
+  return data.files_per_day?.find((row) => row.group && (row.files_not_opened ?? 0) > 0)?.group ?? null;
+}
+
+/** When file tracking began after the first saving in this window: that day,
+ *  so a small count reads as recent rather than as the whole window's. */
+export function filesTrackedSince(data: SavingsView): string | null {
+  const first = firstFilesDay(data);
+  const firstSaving = data.per_day?.find((row) => row.group)?.group;
+  return first && firstSaving && first > firstSaving ? first : null;
+}
+
 /** True when the report holds at least one recorded event. A repository that
  *  never served an agent has no savings, which is a different claim from a
  *  measured zero. */

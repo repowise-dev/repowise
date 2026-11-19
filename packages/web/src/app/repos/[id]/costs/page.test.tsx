@@ -41,7 +41,7 @@ vi.mock("next/link", () => ({
 }));
 
 import CostsPage from "./page";
-import { jobsNotSetUp, pickSavingsNudge } from "./savings-nudge";
+import { jobsNotSetUp, nudgeHref, pickSavingsNudge } from "./savings-nudge";
 import { ACCOUNTING_METHOD_VERSION } from "@repowise-dev/ui/savings";
 
 function makeSavings(overrides: Partial<Savings> = {}): Savings {
@@ -168,7 +168,7 @@ describe("costs page", () => {
     renderPage();
     expect(await screen.findByText("Trim long command output")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open setup" }).getAttribute("href")).toBe(
-      `/repos/${mocks.repoId.current}/settings/setup#rewrite`,
+      `/repos/${mocks.repoId.current}/settings/setup#distill_suggested`,
     );
     expect(screen.getByText("Not set up")).toBeTruthy();
 
@@ -206,6 +206,11 @@ describe("pickSavingsNudge", () => {
       pickSavingsNudge(makeSetup({ model_available: false, model: { docs_mode: "deterministic" } }), 100, none),
     ).toBeNull();
     expect(pickSavingsNudge(makeSetup({ model: { docs_mode: "none" } }), 100, none)).toBeNull();
+  });
+
+  it("links each suggestion to its Setup rule", () => {
+    expect(nudgeHref("r1", "rewrite")).toBe("/repos/r1/settings/setup#distill_suggested");
+    expect(nudgeHref("r1", "model")).toBe("/repos/r1/settings/setup#docs_model_ready");
   });
 
   it("waits for real usage", () => {

@@ -25,6 +25,7 @@ export function useSavingsCopy(): SavingsCopy {
       tokensSubOutput: (output) => t("tokensSubOutput", { output }),
       filesLabel: t("filesLabel"),
       filesSub: (pct) => t("filesSub", { pct }),
+      filesSinceShort: (date) => t("filesSinceShort", { date }),
       billLabel: t("billLabel"),
       billSub: t("billSub"),
       billSubOutput: (usd) => t("billSubOutput", { usd }),

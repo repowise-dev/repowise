@@ -6,7 +6,7 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { Segmented } from "../shared/segmented";
 import { formatCost, formatDate, formatNumber, formatTokens } from "../lib/format";
 import type { SavingsCopy } from "./copy";
-import type { SavingsView } from "./types";
+import { firstFilesDay, type SavingsView } from "./types";
 
 export type SavingsLens = "usd" | "tokens" | "files";
 
@@ -57,7 +57,7 @@ export function SavingsOverTime({
   const [lens, setLens] = React.useState<SavingsLens>(priced ? "usd" : "tokens");
   const active: SavingsLens = (lens === "usd" && !priced) || (lens === "files" && !hasFiles) ? "tokens" : lens;
   const points = React.useMemo(() => series(data, active), [data, active]);
-  const filesStart = active === "files" ? points.find((p) => p.value > 0)?.day : undefined;
+  const filesStart = active === "files" ? firstFilesDay(data) : null;
 
   return (
     <section className="flex flex-col gap-4">

@@ -12,6 +12,8 @@
  */
 export {
   hasSavings,
+  firstFilesDay,
+  filesTrackedSince,
   type SavingsView,
   type SavingsBreakdownView,
   type SavingsFilesView,

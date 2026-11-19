@@ -31,6 +31,7 @@ import type { SetupRow } from "@/components/setup/setup-rows";
 import { useSavingsCopy } from "./savings-copy";
 import {
   jobsNotSetUp,
+  nudgeHref,
   pickSavingsNudge,
   readDismissed,
   rememberDismissed,
@@ -198,7 +199,7 @@ function useSavingsNudge(
       title={t(id === "rewrite" ? "nudgeRewriteTitle" : "nudgeModelTitle")}
       body={t(id === "rewrite" ? "nudgeRewriteBody" : "nudgeModelBody")}
       action={row ? <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => open(row)} /> : null}
-      href={`${setupHref(repoId)}#${id}`}
+      href={nudgeHref(repoId, id)}
       linkLabel={t("openSetup")}
       dismissLabel={t("nudgeDismiss")}
       onDismiss={() => {

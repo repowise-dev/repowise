@@ -33,6 +33,8 @@ export interface SavingsCopy {
   tokensSubOutput: (outputTokens: string) => string;
   filesLabel: string;
   filesSub: (benchmarkPct: number) => string;
+  /** Beside the count when file tracking began inside the window. */
+  filesSinceShort: (date: string) => string;
   billLabel: string;
   billSub: string;
   billSubOutput: (outputUsd: string) => string;
@@ -134,6 +136,7 @@ export const DEFAULT_SAVINGS_COPY: SavingsCopy = {
   filesLabel: "Files not opened",
   filesSub: (pct) =>
     `Files your agent got from Repowise and never opened. In our benchmark, agents opened ${pct}% fewer files with Repowise.`,
+  filesSinceShort: (date) => `since ${date}`,
   billLabel: "Saved on your bill",
   billSub: "At each session's own model rates.",
   billSubOutput: (usd) =>
