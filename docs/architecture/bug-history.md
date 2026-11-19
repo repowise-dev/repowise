@@ -139,8 +139,8 @@ are excluded from the text index; the figures below are with them excluded.
 
 The lift over shared files is +0.395 hit@5 (95% bootstrap interval +0.233 to
 +0.558). Two limits come with it: most regressions surface later than 14 days
-(window misses: django 91%, node 62%), and those issues are outside the scored
-set. Text match carries most of the ranking; dropping recency scored higher on
+(window misses: django 182 of 200 issues, node 40 of 65), and those issues are
+outside the scored set: the 43 scored are 16% of 265. Text match carries most of the ranking; dropping recency scored higher on
 these repos, but the test repos were scored once and a change to the fusion
 needs a new held-out set.
 

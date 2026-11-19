@@ -122,7 +122,7 @@ repowise suspects --symptom TEXT [--files F] [--trace FILE] [--since D] [--until
 ```
 
 - Ranks the changes merged in a window against what was seen. The window defaults to the 14 days before `--until`, and `--until` to now.
-- `--limit` defaults to 10 (1 to 200). The symptom is read up to 20,000 characters, with up to 50 `--files`. Give at least one of `--symptom`, `--files` or `--trace`.
+- `--limit` defaults to 10 (1 to 200). At most 20,000 characters of symptom and 50 `--files`. Give at least one of `--symptom`, `--files` or `--trace`.
 - Five signals rank the candidates: text match, import distance from the files the symptom names, co-change, recency and stack-trace hits. They are fused by reciprocal rank.
 - Each row lists the signals that fired and their evidence. The order says where to start reading, not what caused it.
 

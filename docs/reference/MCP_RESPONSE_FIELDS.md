@@ -282,6 +282,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 - The window is fixed at the 14 days before the call. `repowise suspects --since <date>` reads further back.
 - `candidates_capped: true` means the window holds at least `commit_limit` changes, so older changes in it may not be indexed. It is left out when false.
 - `note` says the order is where to start reading, never a cause.
+- An empty window returns `window`, `candidates`, `suspects` and `note` only.
 
 - `suspects`: at most 5 rows of `{id, ref, title, merged_at, category, head_sha, files_changed, rank, signals}`, ranked against the targets' files and path words, or the `symptom` text.
 - `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`. A `trace` row reads `frame <symbol id>` when a Python frame resolved to the indexed function it ran in (its file sits under the checkout and matches the indexed commit) and the change edited that function; other frames give `frame file <path>` and `frame function <name>`.
