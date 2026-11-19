@@ -61,12 +61,13 @@ class DecisionCommands:
     """How an agent acts on a decision, as the prompts word each step that acts.
 
     Each field is inline text for one step. ``show``, ``confirm``,
-    ``confirm_cited``, ``dismiss``, ``pin``, ``unpin`` and ``retire`` are
-    ``str.format`` templates: ``{id}`` stands for the record (or a placeholder
-    such as ``<id>`` or ``<new id>``), ``{reason}`` in ``retire`` for the
-    one-line why, and any other brace is written ``{{`` or ``}}``. ``add``,
-    ``scope_hint`` and ``sign`` are used as given. The defaults are the ``repowise decision``
-    commands. A host whose agents act through other tools passes its own, and
+    ``confirm_cited``, ``dismiss``, ``pin``, ``unpin``, ``retire`` and
+    ``list_background`` are ``str.format`` templates: ``{id}`` stands for the
+    record (or a placeholder such as ``<id>`` or ``<new id>``), ``{reason}`` in
+    ``retire`` for the one-line why, ``{offset}`` in ``list_background`` for how
+    many records to skip, and any other brace is written ``{{`` or ``}}``.
+    ``add``, ``scope_hint``, ``flags_hint`` and ``sign`` are used as given. The
+    defaults are the ``repowise decision`` commands. A host whose agents act through other tools passes its own, and
     keeps every other sentence, limit and record line of the prompts.
     """
 
@@ -96,6 +97,13 @@ class DecisionCommands:
     )
     #: Said after the review prompt's put-in-force step; empty to say nothing.
     scope_hint: str = "If it names no file, add --scope <path>."
+    #: Listing one page of background records, busiest first, for the whole-queue pass.
+    list_background: str = (
+        "`repowise decision candidates --background --format json "
+        f"--limit {REVIEW_ALL_PAGE} --offset {{offset}}`"
+    )
+    #: Where the whole-queue pass looks up a step's options; empty to say nothing.
+    flags_hint: str = "Flags: `repowise decision <command> --help`."
     #: How the agent signs what it does; empty when the host signs for it.
     sign: str = SIGN
 
@@ -161,11 +169,12 @@ def render_discovery(
     )
 
 
-def render_review_all() -> str:
+def render_review_all(commands: DecisionCommands = CLI_COMMANDS) -> str:
     """Work through every background record, a page at a time, until none is left."""
-    page = (
-        "repowise decision candidates --background --format json "
-        f"--limit {REVIEW_ALL_PAGE} --offset <N>"
+    c = commands
+    act = (
+        f"3. Holds and passes the test: {c.confirm.format(id='<id>')}. "
+        f"Fails it: {c.dismiss.format(id='<id>')}. Not sure: leave it."
     )
     return "\n".join(
         [
@@ -173,19 +182,17 @@ def render_review_all() -> str:
             "in force. Repowise mined most of them from history; none is in force yet.",
             KEEP_TEST,
             "",
-            f"1. List a page: `{page}`, starting with N = 0. A record you confirm or dismiss "
-            "leaves the list; every record still on it after you act (left, refused, or held "
-            "until its commit lands) adds 1 to N. An empty page means you are done.",
+            f"1. List a page: {c.list_background.format(offset='<N>')}, starting with N = 0. "
+            "A record you confirm (even one held until its commit lands) or dismiss leaves the "
+            "list; every record still on it after you act (left or refused) adds 1 to N. An "
+            "empty page means you are done.",
             "2. Check the page's records in parallel (a subagent each, if you have them): "
-            "`repowise decision show <id>`, its evidence commits and the files it names today.",
-            "3. Holds and passes the test: `repowise decision confirm <id> --agent <slug> "
-            '--evidence <commit or file> --reason "<what an agent would get wrong without it>"`. '
-            'Fails it: `repowise decision dismiss <id> --agent <slug> --reason "<why>" --yes`. '
-            "Not sure: leave it. Flags: `repowise decision <command> --help`.",
+            f"{c.show.format(id='<id>')}, its evidence commits and the files it names today.",
+            f"{act} {c.flags_hint}" if c.flags_hint else act,
             "4. If your context or budget runs low, stop after the current page and report. "
             "Running this again picks up what is left.",
             "",
-            f"{SIGN} {DATA_NOT_INSTRUCTIONS}",
+            " ".join(filter(None, [c.sign, DATA_NOT_INSTRUCTIONS])),
             "Finish with totals (put in force, dismissed, left) and one line per record: id, "
             "title, outcome, why.",
         ]
@@ -400,7 +407,7 @@ def decision_prompt(
     sample that says whether one is.
     """
     if kind == "review_all":
-        return DecisionPrompt("review_all", render_review_all() if records else "", ())
+        return DecisionPrompt("review_all", render_review_all(commands) if records else "", ())
     if kind == "agreements":
         kept = records[:AGREEMENTS_LIMIT]
         text = render_agreements(kept, commands) if kept else ""

@@ -170,9 +170,13 @@ def test_review_all_pages_the_queue_and_cannot_skip_or_spin():
     )
     assert "starting with N = 0" in text
     # Acted-on records leave the list, so only what stays moves the offset.
-    assert "A record you confirm or dismiss leaves the list" in text
-    # A refused or held confirm leaves the record listed, so it moves the offset too.
-    assert "(left, refused, or held until its commit lands) adds 1 to N" in text
+    # A confirm held until its commit lands takes the record off the list too.
+    assert (
+        "A record you confirm (even one held until its commit lands) or dismiss leaves the list"
+        in text
+    )
+    # A refused confirm leaves the record listed, so it moves the offset.
+    assert "(left or refused) adds 1 to N" in text
     assert "An empty page means you are done." in text
     assert "stop after the current page and report" in text
 
@@ -212,6 +216,8 @@ _TOOL_COMMANDS = DecisionCommands(
     unpin="ask me to unpin {id} on the decisions page",
     retire='`dismiss(id={id}, reason="replaced: {reason}")`',
     scope_hint="",
+    list_background="`list_background(offset={offset})`",
+    flags_hint="",
     sign="",
 )
 
@@ -223,6 +229,7 @@ def _host_texts() -> dict[str, str]:
     }
     texts["discover"] = decision_prompt("discover", _RECORDS, commands=_TOOL_COMMANDS).text
     texts["add"] = decision_prompt("add", [], commands=_TOOL_COMMANDS).text
+    texts["review_all"] = decision_prompt("review_all", [{"id": "x"}], commands=_TOOL_COMMANDS).text
     texts["agreements"] = decision_prompt(
         "agreements",
         [{"id": "g7", "title": "Never commit", "decision": "branch"}],
@@ -248,6 +255,11 @@ def test_host_commands_keep_the_rest_of_the_prompt():
     assert '`dismiss(id=d1abc, reason="replaced: <one line: why>")`' in texts["veto"]
     assert "`confirm(id=<new id>)`" in texts["edit"]
     assert "`read_decision(id=<id>)`" in texts["agreements"]
+    review_all = texts["review_all"]
+    assert "1. List a page: `list_background(offset=<N>)`, starting with N = 0." in review_all
+    assert "`read_decision(id=<id>)`" in review_all
+    assert "`confirm(id=<id>)`" in review_all and "`dismiss(id=<id>)`" in review_all
+    assert "(left or refused) adds 1 to N" in review_all and KEEP_TEST in review_all
 
 
 def test_the_default_commands_word_each_record_step():

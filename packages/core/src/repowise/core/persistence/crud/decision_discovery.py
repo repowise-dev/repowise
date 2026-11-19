@@ -42,6 +42,20 @@ def _named_files(record: DecisionRecord) -> list[str]:
     return [f for f in files if isinstance(f, str) and f] if isinstance(files, list) else []
 
 
+def _held_by_agent(meta: DecisionCandidateMeta | None) -> bool:
+    """Whether an agent confirmed the record and it waits for its commit to land.
+
+    :func:`~repowise.core.persistence.crud.authority.hold_decision` notes the
+    agent in the review row; the record keeps its source, so the row is the
+    only place that says so.
+    """
+    try:
+        grounding = json.loads(meta.grounding_json or "{}") if meta is not None else {}
+    except (TypeError, ValueError):
+        return False
+    return isinstance(grounding, dict) and bool(grounding.get("agent"))
+
+
 async def _production_heat(
     session: AsyncSession, repository_id: str, paths: list[str]
 ) -> dict[str, tuple[bool, float, float]]:
@@ -86,8 +100,8 @@ async def background_records(
     """Every background record on production code, busiest first: ``(record, meta, files)``.
 
     Background: never put in force, not retired, nobody has dismissed, merged
-    or split it, not an agreement, and not an agent's record waiting for its
-    commit to merge. A record must name a production file git has history
+    or split it, not an agreement, and not an agent's record, or one an agent
+    confirmed, waiting for its commit to merge. A record must name a production file git has history
     for; its place is its busiest such file (hotspot first, then hotspot
     score, then churn), then confidence, then id, so the order is total and
     an offset pages it. *files* are those files, busiest first.
@@ -109,7 +123,9 @@ async def background_records(
     records = [
         (rec, meta, files)
         for rec, meta in (await session.execute(q)).all()
-        if binds_to_paths(rec.scope_basis) and (files := _named_files(rec))
+        if binds_to_paths(rec.scope_basis)
+        and not _held_by_agent(meta)
+        and (files := _named_files(rec))
     ]
     heat = await _production_heat(
         session, repository_id, sorted({f for *_, files in records for f in files})

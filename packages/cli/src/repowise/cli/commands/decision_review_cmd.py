@@ -152,8 +152,8 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     "--background",
     is_flag=True,
     default=False,
-    help="Only the records the discovery pass checks (open, not an agreement, not an "
-    "agent's pending record, naming a production file), busiest first.",
+    help="Only the records the discovery pass checks (open, not an agreement, not waiting "
+    "for an agent's commit to land, naming a production file), busiest first.",
 )
 @format_option()
 def candidates_command(
