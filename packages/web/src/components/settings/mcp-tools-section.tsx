@@ -58,9 +58,11 @@ export function McpToolsSection({ repoId }: { repoId: string }) {
     let live = true;
     setLoading(true);
     setLoadError(null);
+    // Writes started for the previous repository are older than this load and never land.
+    server.current = { surface: null, seq: writeSeq.current };
     getMcpToolSurface(repoId)
       .then((s) => {
-        server.current = { surface: s, seq: 0 };
+        server.current = { surface: s, seq: writeSeq.current };
         show(s);
       })
       .catch((e) => setLoadError(toFriendlyMessage(e, "Could not load tools")))

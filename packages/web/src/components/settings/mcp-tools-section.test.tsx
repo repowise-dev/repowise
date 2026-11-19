@@ -133,6 +133,29 @@ describe("McpToolsSection", () => {
     expect(checked()).toBe("false");
   });
 
+  it("drops a tool write for the previous repository when the repository changes", async () => {
+    mocks.getMcpToolSurface.mockResolvedValue(surface);
+    settings.getSettings.mockResolvedValue(settingsWith(false));
+    let finish: (v: unknown) => void = () => {};
+    mocks.updateMcpTools.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    const { rerender } = render(<McpToolsSection repoId="r1" />);
+    const checked = () => screen.getByRole("switch", { name: "get_dead_code" }).getAttribute("aria-checked");
+
+    fireEvent.click(await screen.findByRole("switch", { name: "get_dead_code" }));
+    await waitFor(() => expect(mocks.updateMcpTools).toHaveBeenCalled());
+    rerender(<McpToolsSection repoId="r2" />);
+    await waitFor(() => expect(mocks.getMcpToolSurface).toHaveBeenCalledWith("r2"));
+    await waitFor(() => expect(checked()).toBe("false"));
+
+    await act(async () => {
+      finish({
+        ...surface,
+        tools: surface.tools.map((t) => ({ ...t, enabled: true })),
+      });
+    });
+    expect(checked()).toBe("false");
+  });
+
   it("leaves the switch out when the settings cannot be read", async () => {
     mocks.getMcpToolSurface.mockResolvedValue(surface);
     settings.getSettings.mockRejectedValue(new Error("offline"));
