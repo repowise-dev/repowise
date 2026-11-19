@@ -124,7 +124,7 @@ A value outside a closed vocabulary (a misspelled `kind`, `include` key or `mode
 
 ### Parameters accepted but not advertised
 
-A parameter marked "Accepted, not advertised" below is left out of the schema `tools/list` sends, since hosts re-send that schema on every turn, and agents rarely pass it. The server still validates and applies it when a call passes it.
+A parameter marked "Accepted, not advertised" below is left out of the schema `tools/list` sends, since hosts re-send that schema on every turn, and agents rarely pass it. The server still validates and applies it when a call passes it. The same holds for `include` values listed that way: the tool description leaves them out, and the server still serves them.
 
 ---
 
@@ -166,7 +166,7 @@ Answers a how, where or why question in one call: hybrid retrieval over the wiki
 |-----------|------|---------|---------|
 | `question` | string | required | The question, in plain language |
 | `scope` | string | none | Path prefix to restrict retrieval, e.g. `"src/auth/"` |
-| `include` | list[string] | none | `evidence` (full evidence, larger budget; a keyless reply has one shape and ignores it), `diagnostics` (adds `retrieval_quality`) |
+| `include` | list[string] | none | `evidence` (full evidence, larger budget; a keyless reply has one shape and ignores it, with `requires` naming `candidate_files`), `diagnostics` (adds `retrieval_quality`) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
@@ -186,9 +186,9 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
-| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `facts`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `suspects` (with `symptom`), `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)). Accepted, not advertised: `references+`, `skeleton+`, `metrics`, `community`, `facts`, `provenance` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings. Accepted, not advertised |
-| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words. Accepted, not advertised |
+| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
 | `repo` | string | default repo | `"all"` returns an error |
 
 Target kinds:
@@ -266,7 +266,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph`, `churn`, `owners`, `tests`, `blast`, `scales`, `changes` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)) |
+| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.
@@ -289,7 +289,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit, plus a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or comma-separated string |
 | `baseline` | int | `200` | Recent commits sampled for percentiles; `0` disables |
-| `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `evidence` (the record `repowise changes show` prints), `tests` |
+| `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `tests`. Accepted, not advertised: `evidence` (the record `repowise changes show` prints) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `per_commit` | bool | `false` | With a range, one compact row per commit (up to 30) in place of the review |
 | `repo` | string | default repo | `"all"` not supported |

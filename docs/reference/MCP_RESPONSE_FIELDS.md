@@ -112,10 +112,11 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
 | `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
-| `get_answer` | `include` | `_meta.ignored_arguments` map: `{"include": [...]}` |
+| `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
+- **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
 - **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
@@ -175,7 +176,7 @@ Notes:
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
-- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` and no recovery is offered.
+- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` with `"requires": "an LLM provider; Read candidate_files"`, and no recovery is offered.
 - **Evidence by grade** (`include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
 - **Retrieval** fuses full-text and vector search over wiki pages with the symbol index (keyed on the question's content words) by reciprocal rank. The symbol leg reaches private helpers a page's symbol table omits.
 
@@ -253,7 +254,7 @@ Never complete for:
 `recent_changes`: the newest five Change Records touching the file, each `{id, ref, title, merged_at, category, provenance}`; `recent_changes_total` when more exist.
 
 - `ref` is the forge number (`#123`, `!12`), absent for an unnamed change.
-- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label or attribution is off.
+- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label, when coverage is below 30% (where the file and overview shares are withheld too), or when attribution is off.
 - Only the newest 500 changes are read and a change stores its first 1,000 files, so a file past either limit can be missing.
 
 ### provenance

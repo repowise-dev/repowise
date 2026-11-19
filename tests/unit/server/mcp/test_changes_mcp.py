@@ -176,6 +176,27 @@ async def test_file_card_lists_recent_changes_on_request(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_change_rows_below_the_coverage_floor_carry_no_provenance(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    path = "src/auth/service.py"
+    shas = [f"{n:02d}" + "c" * 38 for n in range(4)]
+    # Known commits over all: 0 of 1, 1 of 4 (25%) and 1 of 3 (33%) against a 30% floor.
+    await _seed(
+        session,
+        [
+            _row("pr-7", 7, [path], provenance="unknown", provenance_known=0),
+            _row("pr-8", 8, [path], commit_shas_json=json.dumps(shas), provenance_known=1),
+            _row("pr-9", 9, [path], commit_shas_json=json.dumps(shas[:3]), provenance_known=1),
+        ],
+    )
+    card = (await get_context(targets=[path], include=["changes"]))["targets"][path]
+    rows = {r["id"]: r for r in card["recent_changes"]}
+    assert "provenance" not in rows["pr-7"] and "provenance" not in rows["pr-8"]
+    assert rows["pr-9"]["provenance"] == {"label": "agent", "coverage": 0.3333}
+
+
+@pytest.mark.asyncio
 async def test_recent_changes_are_capped_with_their_total(setup_mcp, session):
     from repowise.server.mcp_server import get_context
 

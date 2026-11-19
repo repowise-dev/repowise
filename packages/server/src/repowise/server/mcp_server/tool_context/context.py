@@ -163,11 +163,11 @@ async def get_context(
     Args:
         targets: Paths, "path::Symbol", "component:<name>", "change:<pr-123 or sha>",
             "package:<name>".
-        include: callers | callees | references | skeleton | skeleton+ | files
-            | symbols | decisions | full_doc | ownership | last_change | metrics
-            | community | health | doc_drift | changes | provenance | suspects | facts.
+        include: callers | callees | references | skeleton | files | symbols
+            | decisions | full_doc | ownership | last_change | health | doc_drift
+            | changes | suspects (pass symptom=).
         compact: False adds structure, imports, docstrings.
-        symptom: Issue text or stack trace to rank `suspects` on.
+        symptom: Issue text or stack trace.
         repo: Usually omitted.
     """
     if repo == "all":

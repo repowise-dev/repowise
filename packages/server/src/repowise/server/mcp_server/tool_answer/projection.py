@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._helpers import resolve_enum_argument
 from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
@@ -35,6 +36,9 @@ _COLLECTIONS = (
 # ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
 # so the agent reads one trust signal.
 _INCLUDES = frozenset({"evidence", "diagnostics"})
+#: Why a keyless reply ignores ``include=["evidence"]``: it has no expanded
+#: shape, and the files the expansion would quote are already listed.
+_KEYLESS_EVIDENCE_REQUIRES = "an LLM provider; Read candidate_files"
 
 
 def _path(row: Any) -> str | None:
@@ -795,11 +799,16 @@ def _project(
     )
     if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(asked - _INCLUDES)
+    ignored: list[dict[str, Any]] = []
+    for key in sorted(asked):
+        resolve_enum_argument(key, _INCLUDES, argument="include", ignored=ignored)
     if keyless and "evidence" in asked:
-        unknown.append("evidence")
-    if unknown:
-        payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
+        # Named with its reason and where the files are, so it is not re-asked.
+        ignored.append(
+            {"argument": "include", "values": ["evidence"], "requires": _KEYLESS_EVIDENCE_REQUIRES}
+        )
+    if ignored:
+        payload.setdefault("_meta", {})["ignored_arguments"] = ignored
     return payload, slimmed, ranked
 
 
