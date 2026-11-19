@@ -186,7 +186,7 @@ def project(payload: dict, query: str, *, multi: bool) -> dict:
     help="Search mode. auto (default) routes on the query's shape; fulltext/semantic "
     "both run the tool's fused concept search.",
 )
-@click.option("--limit", type=int, default=10, help="Max results.")
+@click.option("--limit", type=int, default=5, help="Max results (the search_codebase default).")
 @click.option(
     "--repo",
     "repo_alias",
