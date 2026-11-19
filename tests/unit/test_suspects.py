@@ -278,6 +278,15 @@ async def test_candidates_not_capped_below_the_limit(suspects_index):
     assert "`repowise suspects --since <an earlier date>`" in out["note"]
 
 
+def test_a_capped_window_says_so_even_when_a_row_has_evidence():
+    from repowise.core.suspects.index import _note
+
+    rows = [{"signals": {"text": {}, "recency": {}}}]
+    # The window itself is incomplete: evidence on a listed row does not read the unindexed changes.
+    assert "`repowise init --commit-limit` above 50" in _note(NOW, rows, True, 50)
+    assert _note(NOW, rows, False, 50) == NOTE
+
+
 async def test_empty_suspects_window_is_not_capped(suspects_index):
     from repowise.core.suspects.index import find_suspects
 
