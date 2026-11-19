@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 import structlog
 
 from repowise.cli.helpers import console, load_config, load_state
+from repowise.cli.hints import pr_bot_link_once
 from repowise.cli.ui import (
     build_contextual_next_steps,
     format_elapsed,
@@ -172,6 +173,7 @@ def show_completion(
         embed_failed=getattr(result, "embed_failed_pages", 0),
         stood_out=stood_out,
         model_upgrade=_model_upgrade(repo_path) if keyless_docs else None,
+        pr_bot_url=pr_bot_link_once(),
     )
     steps = build_contextual_next_steps(
         fast_mode=(run_mode == "fast"),

@@ -97,6 +97,8 @@ class FinishFacts:
     stood_out: StoodOut = field(default_factory=StoodOut)
     #: The "add a model" block of a run whose documentation was built from the index.
     model_upgrade: ModelUpgrade | None = None
+    #: The PR bot install link, on the one run that shows it; None on every other.
+    pr_bot_url: str | None = None
 
 
 def _n(count: int, noun: str) -> str:
@@ -353,6 +355,13 @@ def _footer(
                 "Files added: "
                 + escape(", ".join(_relative(repo_path, files_written)))
                 + " (not gitignored; [bold]--no-editor-setup[/bold] skips them)."
+            )
+        )
+    if facts.pr_bot_url:
+        lines.append(
+            dim_line(
+                "Review pull requests with this repo's context: add the Repowise PR bot at "
+                + escape(facts.pr_bot_url)
             )
         )
     return lines + autosync_lines(setup)

@@ -2,7 +2,7 @@
 
 Every `repowise` command and flag. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `changes`, `check`, `ci-summary`, `components`,
+Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `bot`, `changes`, `check`, `ci-summary`, `components`,
 `config`, `context`, `corrections`, `costs`, `coverage`, `dead-code`, `decision`, `delete`, `distill`, `doc-drift`,
 `doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `hosted`, `impacted-tests`, `init`,
 `login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `perf`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
@@ -53,7 +53,7 @@ Grouped by task; `PATH` and flags are in each command's section.
 - **Maintenance:** [`doctor`](#repowise-doctor-path), [`grammars fetch`](#repowise-grammars-fetch-dir), [`whats-new`](#repowise-whats-new),
   [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config hints`](#repowise-config-hints-onoff),
   [`login`](#repowise-login), [`logout`](#repowise-logout), [`whoami`](#repowise-whoami),
-  [`hosted`](#repowise-hosted),
+  [`hosted`](#repowise-hosted), [`bot`](#repowise-bot),
   [`publish`](#repowise-publish-path), [`delete`](#repowise-delete-repo_id), [`uninstall`](#repowise-uninstall-path),
   [`costs`](#repowise-costs), [`export`](#repowise-export-path)
 
@@ -2496,6 +2496,34 @@ failure exits 1 with an `error` code: `offline`, `unsupported` (an older server)
 cover the repo; the message links the install), `needs_plan` (a private repo below a paid plan),
 `forbidden` (usually a sign-in without write access: sign in again), `permission_needed` (the bot needs a GitHub permission
 approved), `pending` (the bot is still working; run it again).
+
+### `repowise bot`
+
+The Repowise PR bot on a GitHub repo: its state, and AI review on or off. Needs `repowise login`. Built for agents:
+run `status`; when `next.who` is `agent`, run its `action`; when it is `human`, hand the person its `action` text and
+`url`, then run `status` again.
+
+```bash
+repowise bot status --format json
+repowise bot ai on --depth deep --repo acme/api
+repowise bot ai off
+```
+
+| Command | What it does |
+|---------|--------------|
+| `status` | The bot's part of the repo's setup status (the same read as `hosted status`): `bot` (install and claim, reviews, `ai` on or off with a `code` saying why, `credit`, `last_review` with its `check_url`, `coverage_received`), `plan`, `effective_tier`, `coverage`, the bot's `steps`, and `next`: the one next step as `{code, who, action, url, optional}`, or null. `complete` is true once PR reviews are on. Reads only. |
+| `ai on\|off` | Sets the repo's review mode: AI review, or the free signal checks only. Then reports the new state (`status` in the JSON, the same object as `bot status`) and anything still in the way. |
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--repo` | `owner/name`. | the GitHub `origin` |
+| `--depth` | `ai on`: `light`, `auto` or `deep`. | as set (`auto`) |
+| `--format` | `table` or `json`. Every outcome, error or not, is one JSON object. | `table` |
+
+Exit codes: `0` nothing waits on a person; `3` a person's step is next (`signed_out`, `not_installed`, `needs_plan`,
+`forbidden`, `permission_needed`, `locked` by the organization's bot policy, or a required `next` step whose `who` is
+`human`); `1` any other error (`offline`, `unsupported`, `http_<status>`, `no_repo`, `bad_usage`). An optional person's step, such as
+merging the coverage setup PR, is named in `next` but exits 0. `ai on|off` exits `2` when the change was made but the state after it could not be read.
 
 ### `repowise publish [PATH]`
 
