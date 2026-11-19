@@ -258,12 +258,19 @@ The format is detected from the content, never the file name;
 - A runner that does not write the file (pytest's default report, Surefire,
   Gradle) names the test by its dotted `classname`; the test is placed on the
   one indexed file that name leads to (`com.acme.CartTest` to
-  `src/test/java/com/acme/CartTest.java`). A name that leads to no file, or to
-  two, keeps its timing under the runner's name, counted under `unlinked` as
-  `unplaced`. jest-junit names files only with `addFileAttribute` set.
+  `src/test/java/com/acme/CartTest.java`) among the files the health index
+  holds. A name that leads to no file, or to two, keeps its timing under the
+  runner's name, counted under `unlinked` as `unplaced`. jest-junit names files
+  only with its `addFileAttribute` option set, so `setup` prints no flag for
+  jest. A path outside the repository (an absolute `file`) is not stored; the
+  test keeps only its own name.
+- In a report directory, other XML files (`failsafe-summary.xml`) are left
+  out. A report that declares a document type is refused.
 - Timing is not exact evidence: a test's time includes its fixtures. A fixture
   shared by a class or module runs inside the first test that needs it, so the
-  first test of each `classname` is stored with `first_in_class`.
+  first test of each `classname` is stored with `first_in_class`. A test run
+  again in one report (a rerun plugin) keeps its first attempt; the rest are
+  counted as `duplicate`.
 - `--commit` is required; the report records none. Captured output,
   properties and failure messages are not read.
 
@@ -332,7 +339,8 @@ two candidates. Skip reasons: `unknown_file`, `unknown_symbol`,
 `ambiguous_symbol`, `generated`, `vendored`, `dirty_file` (the file differs
 from the commit measured, checked when that commit is HEAD) and `duplicate`. A
 benchmark or test keeps its row without its function and is counted under
-`unlinked` instead.
+`unlinked` instead; a test whose dotted name leads to no single indexed file
+is counted there as `unplaced`.
 
 **Profile frames** go through one resolver:
 

@@ -148,5 +148,5 @@ def test_a_junit_report_is_stored_as_test_timings_on_its_test_functions(indexed)
         ("nowhere.Mod::test_y", None, None, 0.2, True),
         ("tests/test_app.py::TestBuild::test_builds[x]", "tests/test_app.py",
          "tests/test_app.py::TestBuild::test_builds", 2.5, True),
-        ("tests/test_app.py::TestBuild::test_gone", "tests/test_app.py", None, 0.1, None),
+        ("tests/test_app.py::TestBuild::test_gone", "tests/test_app.py", None, 0.1, False),
     ]

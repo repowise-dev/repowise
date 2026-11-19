@@ -1399,7 +1399,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   overloads). Anything else is skipped and counted by reason: `unknown_file`, `unknown_symbol`,
   `ambiguous_symbol`, `generated` or `vendored` code, `dirty_file` (edited since the commit,
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
-  A benchmark or test is kept without its function instead, counted under `unlinked`.
+  A benchmark or test is kept without its function instead, counted under `unlinked` (a JUnit test
+  whose dotted name leads to no single indexed file as `unplaced`).
 - A converted profile joins frames only under `--checkout-root`, each checked by a second signal,
   and prints where the run's time went (production repo code itself, waits such as event-loop
   selects, joins and sleeps, and libraries) and the share of repo frame time skipped, by reason.

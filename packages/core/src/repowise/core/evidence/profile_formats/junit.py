@@ -20,7 +20,8 @@ exactly or keeps the timing without its function.
 Timing is not exact evidence: a test's time includes its fixtures. A
 fixture shared by a class or module runs once, inside the first test that
 needs it, so the first case of each ``classname`` is marked
-``first_in_class``: its time may carry the whole class's setup.
+``first_in_class`` (and every other case is not): its time may carry the
+whole class's setup.
 
 The file carries no commit; ``evidence add`` needs ``--commit``. Properties,
 captured output and failure messages are never read.
@@ -34,6 +35,7 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from repowise.core.interchange import repo_relative_path
 from repowise.core.test_paths import (
     dotted_name_file,
     files_by_stem,
@@ -45,6 +47,7 @@ from ..format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 
 # The root element, after an optional XML declaration and comments.
 _ROOT = re.compile(rb"^(?:<\?xml[^>]*\?>|<!--.*?-->|\s)*<testsuites?[\s>/]", re.S)
+_ROOT_TAGS = ("testsuites", "testsuite")
 _OUTCOME_CHILDREN = (("failure", "failed"), ("error", "error"), ("skipped", "skipped"))
 
 
@@ -56,13 +59,21 @@ def combine(reports: Iterable[bytes]) -> bytes:
     """Several JUnit XML files as one ``<testsuites>`` document.
 
     Maven Surefire and Gradle write one file per test class into a
-    directory; ingest reads one document per run. A file that is not JUnit
-    XML raises :class:`EvidenceFormatError`.
+    directory; ingest reads one document per run. Other XML beside them
+    (``failsafe-summary.xml``, ``testng-results.xml``) is left out; a file
+    that is not XML, or a directory with no JUnit report, raises
+    :class:`EvidenceFormatError`.
     """
     out = ET.Element("testsuites")
     for data in reports:
-        root = _parse(data)
-        out.extend(list(root) if root.tag == "testsuites" else [root])
+        root = _parse(data, junit_only=False)
+        if root.tag in _ROOT_TAGS:
+            out.extend(list(root) if root.tag == "testsuites" else [root])
+    if not len(out):
+        raise EvidenceFormatError(
+            "no file holds a JUnit XML report (<testsuites> or <testsuite>)",
+            "pass the directory the test run wrote its JUnit XML reports to",
+        )
     return ET.tostring(out, encoding="utf-8")
 
 
@@ -74,9 +85,8 @@ def to_v1(data: bytes) -> dict[str, Any]:
     for case, suite_file in _cases(root):
         classname = (case.get("classname") or "").strip()
         entry = _entry(case, classname, suite_file)
-        if classname not in seen_classes:
-            seen_classes.add(classname)
-            entry["first_in_class"] = True
+        entry["first_in_class"] = classname not in seen_classes
+        seen_classes.add(classname)
         tests.append(entry)
     return {
         "format": EVIDENCE_FORMAT,
@@ -86,8 +96,13 @@ def to_v1(data: bytes) -> dict[str, Any]:
     }
 
 
-def _parse(data: bytes) -> ET.Element:
-    """The root element; external entities are never fetched by ``xml.etree``."""
+def _parse(data: bytes, *, junit_only: bool = True) -> ET.Element:
+    """The root element; a document type (and so any entity) is refused, never expanded."""
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise EvidenceFormatError(
+            "the file declares a document type; a JUnit XML report has none",
+            "ingest the JUnit XML file the test run wrote",
+        )
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
@@ -95,7 +110,7 @@ def _parse(data: bytes) -> ET.Element:
             f"the file is not well-formed XML ({exc})",
             "ingest the JUnit XML file the test run wrote, after the run finished",
         ) from None
-    if root.tag not in ("testsuites", "testsuite"):
+    if junit_only and root.tag not in _ROOT_TAGS:
         raise EvidenceFormatError(
             f"the root element is <{root.tag}>, not <testsuites> or <testsuite>",
             "write the report with the runner's JUnit XML reporter",
@@ -118,9 +133,13 @@ def _entry(case: ET.Element, classname: str, suite_file: str | None) -> dict[str
     entry: dict[str, Any] = {"duration_s": _seconds(case.get("time")), "outcome": _outcome(case)}
     if not name:
         return entry
-    path = (case.get("file") or "").strip() or nodeid_test_file(classname) or suite_file
+    named = (case.get("file") or "").strip() or nodeid_test_file(classname) or suite_file
+    path, _ = repo_relative_path(named)
+    if named and path is None:
+        # An absolute path names the machine, not the repository: keep the test's own name only.
+        entry["id"] = name
+        return entry
     if path:
-        path = path.replace("\\", "/")
         test_id = f"{path}::{_qualname(classname, path, name)}"
         entry.update(id=test_id, path=path, function=nodeid_function(test_id), exact=True)
     else:

@@ -77,7 +77,7 @@ def test_pytest_cases_keep_their_classname_until_placed() -> None:
         ("tests.test_cart::test_errors", "error", 0.003),
     ]
     # Class or module fixtures run inside the first test of each classname.
-    assert [e["first_in_class"] for e in doc.entries] == [True, None, True, None]
+    assert [e["first_in_class"] for e in doc.entries] == [True, False, True, False]
 
 
 def test_a_case_that_names_its_file_gets_a_path_id() -> None:
@@ -139,14 +139,39 @@ def test_an_unplaced_test_keeps_its_timing_and_is_counted() -> None:
     )
 
 
-def test_reports_combine_into_one_run() -> None:
-    combined = junit.combine([SUREFIRE, VITEST])
+def test_reports_combine_into_one_run_and_other_xml_is_left_out() -> None:
+    combined = junit.combine([SUREFIRE, b"<failsafe-summary result='0'/>", VITEST])
 
     assert detect_profile_format(combined) == "junit"
     assert len(_doc(combined).entries) == 3
 
 
-@pytest.mark.parametrize("data", [b"<testsuite", b"<coverage/>"])
+def test_a_directory_with_no_junit_report_is_refused() -> None:
+    with pytest.raises(EvidenceFormatError):
+        junit.combine([b"<failsafe-summary result='0'/>"])
+
+
+def test_an_absolute_path_is_never_stored() -> None:
+    data = rb"""<testsuite><testcase classname="/home/u/repo/src/a.test.ts" name="adds"
+    file="/home/u/repo/src/a.test.ts" time="1"/><testcase classname="C:\w\a.test.ts" name="b"/>
+    </testsuite>"""
+
+    doc = _doc(data)
+
+    assert [(e["test_id"], e["test_file"], e["classname"]) for e in doc.entries] == [
+        ("adds", None, None),
+        ("b", None, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"<testsuite",
+        b"<coverage/>",
+        b'<!DOCTYPE t [<!ENTITY a "aaaa">]><testsuite><testcase name="&a;"/></testsuite>',
+    ],
+)
 def test_a_file_that_is_not_junit_is_refused(data: bytes) -> None:
     with pytest.raises(EvidenceFormatError):
         junit.to_v1(data)

@@ -396,10 +396,9 @@ _VITEST_FLAGS = (
 )
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
-#: The flag that makes each runner write ``junit.xml`` beside its other output. jest needs
-#: the ``jest-junit`` package, with ``addFileAttribute`` so each test names its file.
+#: The flag that makes each runner write ``junit.xml`` beside its other output, naming each
+#: test's file. jest is not here: ``jest-junit`` names files only through its own config.
 _NODE_JUNIT_FLAGS = {
-    "jest": "--reporters=default --reporters=jest-junit",
     "vitest": "--reporter=default --reporter=junit --outputFile.junit=junit.xml",
 }
 #: The test script ``npm init`` writes, which runs nothing.
