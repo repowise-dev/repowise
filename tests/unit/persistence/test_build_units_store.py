@@ -128,6 +128,8 @@ async def test_a_failed_reader_keeps_its_stored_rows_while_the_others_update(
     await async_session.commit()
 
     stored = await load_build_units(async_session, repo.id)
+    # The kept rows are marked, so a reader knows they may be stale.
+    assert stored.failed_ecosystems == {"cargo"}
     assert {uid: u for uid, u in stored.units.items() if u.ecosystem == "cargo"} == stored_cargo
     assert not [uid for uid in stored.units if uid.startswith("manifest:crates/")]
     assert stored.file_owners["crates/d/src/lib.rs"] == ("cargo:d",)
@@ -143,6 +145,7 @@ async def test_a_failed_reader_keeps_its_stored_rows_while_the_others_update(
     await persist_build_units(async_session, repo.id, healed)
     await async_session.commit()
     assert await load_build_units(async_session, repo.id) == healed.build_units
+    assert (await load_build_units(async_session, repo.id)).failed_ecosystems == frozenset()
     assert "cargo:d" not in healed.build_units.units
 
 
@@ -282,6 +285,9 @@ def test_the_migration_creates_and_drops_the_tables(tmp_path: Path, warm_start: 
         asyncio.run(warm())
 
     command.upgrade(config, "0129")
+    if not warm_start:
+        # 0135 adds ``stale``; the warm start's create_all made it already.
+        command.upgrade(config, "0135")
     with sqlite3.connect(path) as connection:
         for model in _TABLES:
             table = model.__tablename__

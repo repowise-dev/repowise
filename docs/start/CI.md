@@ -749,7 +749,8 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
   `*.yaml`, `*.json`, shell scripts.
 - `.repowise/config.yaml`, or a path `tests.full_run_on` matches.
 - A non-code file in a test tree.
-- A file with no known test, or only a filename guess.
+- A file with no known test, or only a filename guess, unless its build unit
+  can vouch (below).
 - A route through a test helper no test imports, unless every known test is
   selected anyway (the reasons say so).
 - Any Python test helper while a conftest or pytest config loads plugins by
@@ -766,6 +767,7 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
 |--------------|---------|
 | nested `package.json`, lockfile or `go.mod` | tests under its directory and those reaching code there |
 | root lockfile, manifest or runner config; Python, Ruby, PHP, Gradle or Maven dependency files (pip requirements included); `tsconfig`; jest or vitest config | its whole ecosystem |
+| Go, .NET or Maven code with no known test; a `.csproj`, or a module `pom.xml` with no module below it | tests of its build unit and every unit depending on it, transitively ([when units vouch](../architecture/build-units.md#test-selection)) |
 | production package `__init__.py` | tests reaching any module under it |
 | doc, template, query, stylesheet, image or nested data file | tests reaching code that names it (outside comments and docstrings) |
 | doc, template, stylesheet or image no code names | its package's tests; Markdown, reST or AsciiDoc in no package and a top-level directory without code needs none |
@@ -828,6 +830,7 @@ These run, but the summary counts them apart and JSON lists them:
 |-------|-------|
 | `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change |
 | `selected.broadcast` | tests a conftest adds that nothing else reaches |
+| `selected.build_unit` | tests run because their build unit, or one depending on it, owns a changed file no test is known to reach |
 | `selected.basis` | what drove each selection |
 | `selected.why` | the `--explain` answer per selected test |
 

@@ -868,7 +868,7 @@ def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, f
 
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     # A samples or fixture solution is not the one that runs the tests; the unit's own comes first.
-    solutions = [p for p in paths if p.endswith(_SOLUTIONS) and _kept(p)]
+    solutions = [p for p in paths if p.endswith(_SOLUTIONS) and is_shipped_manifest(p)]
     own = [p for p in solutions if "/" not in p]
     solutions = own if len(own) == 1 else solutions
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
@@ -1042,7 +1042,7 @@ def _under(root: str, path: str) -> str | None:
 _PLAIN_NAME = "_"
 
 
-def _kept(path: str) -> bool:
+def is_shipped_manifest(path: str) -> bool:
     """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample.
 
     The directory is judged too: a manifest's own origin is ``build``, which hides a
@@ -1070,7 +1070,7 @@ def _roots_of(manifests: Iterable[str]) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for manifest in manifests:
         stacks = _stacks_of(posixpath.basename(manifest))
-        if stacks and _kept(manifest):
+        if stacks and is_shipped_manifest(manifest):
             found.setdefault(_dir(manifest), set()).update(stacks)
     return found
 
@@ -1108,7 +1108,7 @@ def _units(paths: list[str], units: BuildUnitIndex | None) -> _Units:
     if any("/" not in p and _REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
-    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p)}
+    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and is_shipped_manifest(p)}
     has_projects = any(p.endswith(".csproj") and p.count("/") <= 2 for p in paths)
     for root in solutions or ({""} if has_projects else set()):
         roots.setdefault(root, set()).add("dotnet")
@@ -1269,4 +1269,5 @@ __all__ = [
     "detect_repo_stacks",
     "detect_stacks",
     "files_to_read",
+    "is_shipped_manifest",
 ]

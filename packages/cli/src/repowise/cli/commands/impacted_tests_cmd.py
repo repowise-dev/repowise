@@ -209,11 +209,13 @@ async def _decide(session, repo_id: str, out: dict, change, checkout, config, pl
     ``ranked`` holds the selected tests in run order, then with *prioritize*
     every other test of the suite.
     """
+    from repowise.core.analysis.test_collection import load_units
     from repowise.core.analysis.test_ranking import ordered, rank_change, suite
 
     if plan is None:
         return out
-    selection = select(change, out, config, checkout, plan)
+    units = await load_units(session, repo_id) if session is not None else None
+    selection = select(change, out, config, checkout, plan, units)
     everything = suite(checkout.tracked, checkout.roots) if prioritize else None
     out["ranked"] = await rank_change(
         session, repo_id, change, out, selection, checkout.read, everything=everything
@@ -328,6 +330,11 @@ def _args_header(selection, args: list[str], resolved: str, prioritize: bool) ->
         apart.append(
             f"{len(selection.import_closure)} only through imports, with no call path to "
             "the change"
+        )
+    if selection.build_unit:
+        apart.append(
+            f"{len(selection.build_unit)} only because their build unit owns a changed file "
+            "no test is known to reach"
         )
     if apart:
         return (

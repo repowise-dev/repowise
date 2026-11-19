@@ -542,7 +542,9 @@ def test_a_fixture_manifest_changed_after_the_index_is_test_data(path) -> None:
 
 
 def test_nothing_is_traced_when_the_change_runs_everything_anyway() -> None:
-    assert plan_gap(["src/b.py"], _NONE, ["uv.lock", "src/a.py"]).candidates == ()
+    assert plan_gap(["src/b.py"], _NONE, [".tool-versions", "src/a.py"]).candidates == ()
+    # A manifest may still be answered by a scope or its build units, so it does not.
+    assert plan_gap(["src/b.py"], _NONE, ["uv.lock", "src/a.py"]).candidates == ("src/b.py",)
     assert plan_gap(["src/b.py"], _NONE, ["src/a.py"]).candidates == ("src/b.py",)
 
 

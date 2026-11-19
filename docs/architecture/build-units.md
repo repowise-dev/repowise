@@ -155,7 +155,7 @@ local stores:
 
 | Table | Key | Holds |
 |---|---|---|
-| `build_units` | `(repository_id, unit_id)` | `ecosystem`, `name`, `root`, `manifest`, `source` |
+| `build_units` | `(repository_id, unit_id)` | `ecosystem`, `name`, `root`, `manifest`, `source`, `stale` |
 | `build_unit_deps` | `(repository_id, unit_id, dep_unit_id)` | One row per in-repo dependency |
 | `build_unit_files` | `(repository_id, path, unit_id)`, indexed on `(repository_id, unit_id)` | One row per file and owning unit |
 
@@ -172,7 +172,11 @@ local stores:
 - **A failed reader keeps its rows.** For each ecosystem in
   `failed_ecosystems`, the stored units of that ecosystem are read back and
   merged in place of whatever the fallback produced at their roots. Kept file
-  rows survive only for paths the fresh index still owns.
+  rows survive only for paths the fresh index still owns. Kept units are
+  written `stale` (migration `0135_build_units_stale`), and
+  `load_build_units` names their ecosystems in `failed_ecosystems`, so a reader
+  of the store knows they may not match the manifests. The next clean read
+  clears the flag.
 - **Reading back.** `load_build_units(session, repo_id)` returns the same
   `BuildUnitIndex` the build collected, or an empty index when no rows are
   stored. `pipeline/upgrade.py` passes it to
@@ -180,6 +184,48 @@ local stores:
   from SQL carries its units without re-reading a manifest. It passes `None`
   for an empty index, so a store with no rows reads as "unknown", not as "no
   units".
+
+## Test selection
+
+`repowise impacted-tests` and the agent tools fall back on units, as their
+last step before a full run (`analysis/unit_scope.py`). A changed code file
+no coverage, graph route or paired name links to a test runs the tests its
+units own plus those of every unit depending on them, transitively. A unit's
+own manifest (a `.csproj`, a module `pom.xml`) does the same when no other
+unit sits below its directory. Those tests are counted apart as
+`selected.build_unit`.
+
+This is safe only where the build refuses an in-repo dependency the manifest
+does not declare. `test_runners/unit_runs.py` (`UNIT_RUNS`) records that per
+ecosystem:
+
+| Ecosystem | Trusted | Why |
+|---|---|---|
+| Go | yes, unless a `go.work` is tracked | `go build` needs a `require` for every module it imports |
+| .NET | yes | a project compiles against its `ProjectReference` closure only |
+| Maven | yes | a module's classpath holds its declared dependencies only |
+| npm, yarn, pnpm | no | hoisting lets a package load a sibling it does not declare |
+| Gradle | no | dependencies from type-safe accessors and convention plugins are not read |
+| Python | no | one environment imports any installed package |
+| Cargo, Pascal, `manifest:` | not listed | Cargo waits for a runner that runs tests in source files |
+
+The tier also declines a file the repository-root unit owns, a unit whose
+ecosystem is in `failed_ecosystems`, any unit while a shipped manifest of its
+language fell back to a `manifest:` unit (whose deps are unknown), and units
+owning no known test. The reason is added to the full-run reason.
+
+### Adding a unit runner
+
+1. The ecosystem needs an adapter first (below).
+2. Add one `UNIT_RUNS` entry keyed by `BuildUnit.ecosystem`: `deps_enforced`
+   only when the build fails on an undeclared in-repo dependency (cite the
+   tool's behaviour in a comment), `why` as a selection reason reads,
+   `languages` (registry tags whose manifests the ecosystem reads), and
+   `voided_by` for files that lift the check repo-wide.
+3. Add cases to `tests/unit/analysis/test_unit_scope.py`: a dependent selected,
+   a root unit refused, a `manifest:` unit of the same language declining.
+4. Update the ecosystem's row here and in
+   [CI.md](../start/CI.md#what-a-changed-file-selects).
 
 ## How precision is measured
 

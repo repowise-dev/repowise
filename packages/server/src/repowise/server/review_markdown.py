@@ -194,7 +194,8 @@ def _tests_plan(r: ChangeBlastRadiusResponse) -> tuple[bool, int]:
     if t.run_all or t.status not in _SELECTED:
         return True, 0
     # Counted apart from ``total`` by the selection, but they still run.
-    return False, t.total + (t.broadcast_total or 0) + (t.import_closure_total or 0)
+    apart = (t.broadcast_total or 0) + (t.import_closure_total or 0) + (t.build_unit_total or 0)
+    return False, t.total + apart
 
 
 def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[str, str, str]:

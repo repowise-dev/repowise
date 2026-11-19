@@ -331,9 +331,11 @@ class ChangeTestsBlock(BaseModel):
     truncated: bool
     always_run_total: int | None = None
     #: Tests that still run but are counted apart from ``total``: kept by a
-    #: conftest on a route, or reaching the change only through imports.
+    #: conftest on a route, reaching the change only through imports, or run
+    #: for a changed file's build unit.
     broadcast_total: int | None = None
     import_closure_total: int | None = None
+    build_unit_total: int | None = None
     summary: str
     #: Per listed test file, what put it in.
     why: dict[str, str] | None = None

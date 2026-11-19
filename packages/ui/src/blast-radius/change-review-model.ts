@@ -67,7 +67,7 @@ export function testsPlan(review: ChangeReview): TestsPlan {
   if (t.run_all || !SELECTED.has(t.status))
     return { kind: "run_all", reasons: t.reasons.filter(Boolean), startWith: t.tests_to_run };
   // Counted apart from `total` by the selection, but they still run.
-  const apart = (t.broadcast_total ?? 0) + (t.import_closure_total ?? 0);
+  const apart = (t.broadcast_total ?? 0) + (t.import_closure_total ?? 0) + (t.build_unit_total ?? 0);
   if (t.tests_to_run.length === 0 && apart === 0) return { kind: "none", summary: t.summary };
   return {
     kind: "list",
