@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.core.evidence.setup import COVERAGE_SETUP, EVIDENCE_SETUP, SETUP_COMMAND
 
 from ..context import RepoContext
 from ..facts import RepoFacts
@@ -25,8 +26,6 @@ COVERAGE_STALE_AFTER = timedelta(days=14)
 #: The step every rule here hands over: setup prints the exact commands for
 #: this repository's stacks (run, then ingest), and runs nothing itself. A
 #: person runs the plain line; an agent reads the JSON and its ``next_call``.
-COVERAGE_SETUP = "repowise coverage setup"
-EVIDENCE_SETUP = "repowise evidence setup"
 _COVERAGE_COMMANDS = (
     ActionCommand(
         "The test command with coverage for each build unit and the exact ingest line",
@@ -37,7 +36,7 @@ _RUNTIME_COMMANDS = (
     ActionCommand(
         "The profiler command for the best target (entry point, benchmark, then tests) "
         "and the exact ingest line",
-        cli=f"{EVIDENCE_SETUP} --format json",
+        cli=SETUP_COMMAND,
     ),
 )
 
