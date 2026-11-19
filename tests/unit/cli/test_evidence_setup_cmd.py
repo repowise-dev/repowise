@@ -92,7 +92,9 @@ def test_coverage_setup_prints_the_coverage_part_of_the_plan(repo: Path) -> None
     assert alias.exit_code == 0, (alias.output, alias.exception)
     full = json.loads(_setup("--format", "json").stdout)
     for unit in full["units"]:
+        # Runtime targets and test timings are evidence, not coverage.
         assert unit.pop("runtime") == []
+        assert unit.pop("test_timings")["report"] == "junit.xml"
     assert json.loads(alias.stdout) == full
 
 

@@ -405,5 +405,18 @@ def test_workload_hotness_migration_matches_the_model_and_downgrades(tmp_path: P
     created = tmp_path / "created.db"
     _init_db(created)
     assert _columns(migrated, "workload_hotness") == _columns(created, "workload_hotness")
-    command.downgrade(config, "-1")
+    command.downgrade(config, "0134")
     assert _columns(migrated, "workload_hotness") == {}
+
+
+def test_test_timings_first_in_class_migration_matches_the_model_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    migrated = tmp_path / "migrated.db"
+    config = _alembic_config(migrated)
+    command.upgrade(config, "head")
+    created = tmp_path / "created.db"
+    _init_db(created)
+    assert _columns(migrated, "evidence_test_timings") == _columns(created, "evidence_test_timings")
+    command.downgrade(config, "0135")
+    assert "first_in_class" not in _columns(migrated, "evidence_test_timings")

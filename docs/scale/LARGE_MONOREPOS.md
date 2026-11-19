@@ -14,22 +14,26 @@ workers:
 |---|---:|---:|---:|---:|---:|
 | elastic/elasticsearch | 34,315 | 4.0M | 52 min | 7.8 GiB | 4.2 GiB |
 | dotnet/runtime | 58,924 | 15.0M | 120 min | 11.7 GiB | 7.7 GiB |
-| ClickHouse/ClickHouse | 93,604 | 4.29M | 98 min | 25.0 GiB | 2.6 GiB |
+| ClickHouse/ClickHouse | 93,604 | 4.29M | 70 min | 10.6 GiB | 3.4 GiB |
 
-ClickHouse ran on a full clone with all 321,097 commits: 62,167 files indexed
-(C++, C, Python, SQL, shell), 249,188 symbols, a 742,968-edge graph. About
-15 GiB of its peak is a one-time `git commit-graph write` over that history,
-running beside the graph build. With PostgreSQL as the store the first index
-takes 94 min, with a 1.9 GiB database. MCP answers on the finished index,
-p50: `get_context` 0.24 s, `get_symbol` 0.29 s, `search_codebase` 2.3 s,
+ClickHouse ran on repowise 0.61 with PostgreSQL as the store, on a full clone
+with all 321,097 commits and `--commit-limit 22000`: 62,167 files indexed
+(C++, C, Python, SQL, shell), 249,188 symbols, a 756,434-edge graph.
+Peak memory is the whole indexer process tree, git included; git's own
+processes peak at 3.6 GiB, during the history pass. PostgreSQL, on the same
+machine, peaks at 5.1 GiB with a 2.0 GiB database (the index on disk is that
+database plus 1.3 GiB under `.repowise/`). With SQLite as the store the first
+index takes 95 min at 11.1 GiB. MCP answers on the finished index, p50:
+`get_context` 0.24 s, `get_symbol` 0.29 s, `search_codebase` 2.3 s,
 `get_answer` 6.3 s (PostgreSQL: 0.16, 0.09, 1.2 and 5.9 s).
 
 More rows and the method: [BENCHMARKS.md](../BENCHMARKS.md#scale).
 
 A machine with 8 vCPUs, 32 GB of RAM and 50 GB of free disk indexes a 4M-line
-repository with its full history; give it 64 GB of RAM when PostgreSQL runs on
-the same machine. The first index is a one-time cost; after it,
-`repowise update` re-analyses only what each commit changed.
+repository with its full history, with PostgreSQL on the same machine: the
+indexer and PostgreSQL together peak under 16 GiB. The first index is a
+one-time cost; after it, `repowise update` re-analyses only what each commit
+changed.
 
 ## 1. Prepare the checkout
 

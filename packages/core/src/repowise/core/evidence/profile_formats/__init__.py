@@ -1,14 +1,14 @@
 """Input format registry: the tool outputs ``repowise evidence add`` converts.
 
 :data:`profile_formats` is the one list of input formats, profiles and
-benchmark results alike: detection, the CLI ``--input-format`` choice and
+benchmark results and test reports alike: detection, the CLI ``--input-format`` choice and
 user-facing format lists all read it, the way the coverage ``PARSERS`` list
 works for coverage reports. A format is a :class:`ProfileFormat`: a
 ``sniff`` over the file's first bytes and one reader. A profile's ``read``
 turns the whole file into a :class:`ProfileRun` (frames and weighted
 stacks, nothing joined); joining frames to code and writing the
 ``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
-other kind (benchmark results) has ``to_v1`` instead, which writes the v1
+other kind (benchmark results, test reports) has ``to_v1`` instead, which writes the v1
 document directly: its entries name their functions, and ingest joins
 them. A format whose tool names a package rather than a file (Go) sets
 ``needs_checkout`` and gets the checkout the run used as a second argument;
@@ -33,7 +33,7 @@ from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, go_bench, hyperfine, pprof, pytest_benchmark, speedscope
+from . import collapsed, cpuprofile, go_bench, hyperfine, junit, pprof, pytest_benchmark, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -72,6 +72,7 @@ profile_formats.register(
     "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
 )
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
+profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 
