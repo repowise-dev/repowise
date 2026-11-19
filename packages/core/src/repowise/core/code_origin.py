@@ -40,6 +40,8 @@ __all__ = [
     "CodeOrigin",
     "code_origin",
     "declares_test",
+    "is_benchmark_function",
+    "is_benchmark_path",
     "is_build_file",
     "is_generated_header",
     "is_migration_path",
@@ -983,6 +985,51 @@ def _is_benchmark_file(name: str) -> bool:
     return lowered.endswith(_code_suffixes()) and PurePosixPath(lowered).stem.endswith(
         _TOOLING_STEM_SUFFIXES
     )
+
+
+# Benchmark directories at any depth, for :func:`is_benchmark_path` (the tooling
+# rule above keeps a bare ``benchmark/`` to the root; a benchmark is a benchmark
+# wherever it sits).
+_BENCHMARK_DIRS = frozenset({"bench", "benches", "benchmark", "benchmarks"})
+# ``bench_*.py`` (pytest-benchmark, asv), ``*.bench.ts`` (Vitest bench, mitata).
+_BENCHMARK_NAME_RE = re.compile(r"^(?:bench_\w+\.py|[\w.-]+\.bench\.[cm]?[jt]sx?)$")
+# Go's testing package runs ``BenchmarkX``: the name goes on with anything but a
+# lower-case letter (``Benchmarking`` is a plain function).
+_GO_BENCHMARK_RE = re.compile(r"^Benchmark(?![a-z])\w*$")
+_PY_BENCHMARK_FUNC_RE = re.compile(r"^(?:bench|test)_\w*$")
+
+
+def is_benchmark_path(path: str) -> bool:
+    """Whether the code file at repo-relative *path* holds benchmarks by its path.
+
+    A benchmarks directory at any depth (``benches/`` is Cargo's), a
+    ``*_benchmark`` stem, ``bench_*.py`` or ``*.bench.ts``. Go benchmarks sit
+    in ordinary ``_test.go`` files: :func:`is_benchmark_function` finds those.
+    """
+    lowered = path.lower().replace("\\", "/")
+    *dirs, name = lowered.split("/")
+    if not name.endswith(_code_suffixes()):
+        return False
+    return (
+        not _BENCHMARK_DIRS.isdisjoint(dirs)
+        or _is_benchmark_file(name)
+        or bool(_BENCHMARK_NAME_RE.match(name))
+    )
+
+
+def is_benchmark_function(path: str, name: str) -> bool:
+    """Whether function *name* in *path* is a benchmark a runner collects.
+
+    Go: ``BenchmarkX`` in a ``_test.go`` file. Python: ``bench_*`` or
+    ``test_*`` in a benchmark file (:func:`is_benchmark_path`), as
+    pytest-benchmark collects them. Ceiling: other languages mark benchmarks
+    by file only.
+    """
+    if path.endswith("_test.go"):
+        return bool(_GO_BENCHMARK_RE.match(name))
+    if path.endswith(".py"):
+        return is_benchmark_path(path) and bool(_PY_BENCHMARK_FUNC_RE.match(name))
+    return False
 
 
 def code_origin(

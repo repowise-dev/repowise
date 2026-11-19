@@ -52,6 +52,46 @@ def test_resolution_is_exact_and_refuses_to_guess() -> None:
     assert resolve_location(_loc("src/other.py", "f"), _SYMBOLS) == (None, "unknown_file")
 
 
+def test_a_function_named_by_its_id_after_the_file_resolves_exactly() -> None:
+    # How a test runner names a test: Python qualified names are module-dotted.
+    symbols = {
+        "benchmarks/test_io.py": symbol_lookup(
+            [
+                IndexedSymbol(
+                    "benchmarks/test_io.py::TestCache::test_get", "benchmarks.test_io.TestCache.test_get",
+                    "test_get", 5,
+                ),
+                IndexedSymbol(
+                    "benchmarks/test_io.py::test_get", "benchmarks.test_io.test_get", "test_get", 20
+                ),
+            ]
+        )
+    }
+    assert resolve_location(_loc("benchmarks/test_io.py", "TestCache::test_get"), symbols)[0] == (
+        "benchmarks/test_io.py::TestCache::test_get"
+    )
+    # The id after the file wins over a method that shares the bare name.
+    assert resolve_location(_loc("benchmarks/test_io.py", "test_get"), symbols)[0] == (
+        "benchmarks/test_io.py::test_get"
+    )
+    assert resolve_location(_loc("benchmarks/test_io.py", "Other::test_get"), symbols) == (
+        None, "unknown_symbol",
+    )
+    # An exact location never falls back to a bare name: with the module
+    # function not indexed, the method that shares its name is not it.
+    method_only = {
+        "benchmarks/test_io.py": symbol_lookup(
+            [IndexedSymbol("benchmarks/test_io.py::TestCache::test_get", "x.TestCache.test_get",
+                           "test_get", 5)]
+        )
+    }
+    exact = {**_loc("benchmarks/test_io.py", "test_get"), "exact": True}
+    assert resolve_location(exact, method_only) == (None, "unknown_symbol")
+    assert resolve_location(_loc("benchmarks/test_io.py", "test_get"), method_only)[0] == (
+        "benchmarks/test_io.py::TestCache::test_get"
+    )
+
+
 def _profile(symbols: list[dict]) -> str:
     return json.dumps(
         {"format": "repowise-evidence-v1", "kind": "profile", "value_kind": "wall",
@@ -156,3 +196,13 @@ def test_the_run_key_covers_the_provenance() -> None:
     ):
         assert run_key("{}", other, "profile") != key
     assert run_key("{ }", base, "profile") != key
+
+
+def test_a_failed_test_count_is_part_of_the_run_and_its_key() -> None:
+    base = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False)
+    red = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=2)
+    redder = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=3)
+    zero = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=0)
+    # Every count is its own run, and a run that reports none differs from one that reports 0.
+    keys = {run_key("{}", p, "profile") for p in (base, red, redder, zero)}
+    assert len(keys) == 4

@@ -15,6 +15,7 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
+from repowise.core.workspace.extractors.http.dialect import build_consumer_contract
 from repowise.core.workspace.extractors.http.paths import (
     absolute_host,
     extract_path_from_url,
@@ -336,6 +337,37 @@ class TestConsumerContracts:
 
 
 class TestConsumerUrlShapes:
+    @pytest.mark.parametrize(("url", "host"), [
+        ("http://[::1]:8080/", "::1"),
+        ("http://[::1]/api", "::1"),
+        ("//[2001:DB8::1]:8080/api", "2001:db8::1"),
+        ("${proto}://[2001:DB8::1]/api", "2001:db8::1"),
+        ("http://[2001:DB8::1]/api/${id}", "2001:db8::1"),
+        ("https://BACKEND:8000/api", "backend"),
+        ("http://127.0.0.1:8080/", "127.0.0.1"),
+        ("//cdn.example.com/x", "cdn.example.com"),
+        ("${API_BASE}/users", None),
+        ("http://${HOST}:8080/api", None),
+        ("http://[::1]:${PORT}/api", None),
+        ("http://[::1/api", None),
+    ])
+    def test_absolute_host(self, url, host):
+        assert absolute_host(url) == host
+
+    @pytest.mark.parametrize("url", ["http://[::1]:8080/", "//[::1]/"])
+    def test_ipv6_loopback_root_names_no_service(self, url):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        assert build_consumer_contract(ctx, method="GET", url=url, client="fetch") is None
+
+    def test_nonlocal_ipv6_root_keeps_its_host(self):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        contract = build_consumer_contract(
+            ctx, method="GET", url="http://[2001:DB8::1]:8080/", client="fetch"
+        )
+        assert contract is not None
+        assert contract.contract_id == "http::GET::/"
+        assert contract.meta["host"] == "2001:db8::1"
+
     def test_nested_braces_in_an_interpolation_stay_one_segment(self):
         assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
         assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"

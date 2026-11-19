@@ -8,7 +8,7 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 
 | Job | Pull request | Push to `main` and nightly |
 |-----|--------------|----------------------------|
-| Python 3.12 tests (shard 1/2, shard 2/2) | when Python-relevant files change | yes |
+| Python 3.12 tests (shard 1/3, shard 2/3, shard 3/3) | when Python-relevant files change | yes |
 | Python 3.11 tests, Python 3.13 tests | no | yes |
 | Python tests (summary) | always | always |
 | tree-sitter floor, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
@@ -35,24 +35,26 @@ version.
 
 ## Shards
 
-On a pull request, the Python 3.12 unit tests run in two shards with coverage.
+On a pull request, the Python 3.12 unit tests run in three shards with coverage.
 `--shard K/N` (defined in `tests/conftest.py`) keeps whole test files together,
 so `--dist loadfile` still holds. Files listed in `tests/shard_weights.json` are
-packed by their recorded seconds, heaviest first, into the lighter shard; any
+packed by their recorded seconds, heaviest first, into the lightest shard; any
 other file goes by a hash of its path. Every run of the same files splits the
 same way. `tests/providers/` runs in the first shard. Reproduce a shard locally
 with:
 
 ```bash
-uv run pytest tests/unit/ --shard 1/2 -n auto --dist loadfile
+uv run pytest tests/unit/ --shard 1/3 -n auto --dist loadfile
 ```
 
-When one shard runs much longer than the other, refresh the weights from the
-JUnit reports the shards upload (`junit-*` artifacts) and commit the result:
+When one shard runs much longer than the others, refresh the weights from the
+JUnit reports the shards upload (`junit-*` artifacts) of several green runs and
+commit the result. Each file's weight is its median across the runs, so one
+slow runner does not skew it:
 
 ```bash
-gh run download <run id> -p 'junit-*' -D junit
-python scripts/shard_weights.py junit/*/junit.xml
+gh run download <run id> -p 'junit-*' -D junit/<run id>   # once per run
+python scripts/shard_weights.py junit/*/*/junit.xml
 ```
 
 ## Path filters
@@ -81,7 +83,15 @@ skipping any.
 
 - `Repowise index (main)` builds the Repowise index on each push to `main`
   (`repowise update --index-only` on the previous one) and caches the three
-  newest.
+  newest. It builds beside the tests, then waits for the three Python 3.12
+  shards (not 3.11 or 3.13), combines their `.coverage` data and adds the
+  per-test coverage map with `repowise coverage add` before saving. When a
+  shard did not pass it saves the index with the map it restored, since a
+  map missing a shard's tests would leave them out of every selection.
+- On pushes to `main` the shards record which test ran which lines
+  (`--cov-context=test`, on the C tracer, since sysmon drops contexts). Pull
+  requests and the nightly run keep sysmon without contexts, so their wall
+  time does not change.
 - `Test selection (recorded only)` restores that index and runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
 - `Test selection compared (recorded only)` reads the shards' JUnit reports

@@ -13,8 +13,10 @@ class BuildUnit:
     ``id`` is ecosystem-prefixed and stable across runs: ``dotnet:<manifest>``,
     ``cargo:<crate>``, ``npm:<package>``, ``gradle:<project path>``,
     ``go:<module path>``, ``maven:<groupId>:<artifactId>``,
-    ``python:<PEP 503 name>``, ``dart:<package name>``, ``manifest:<root>``
-    (``manifest:.`` at the repo root).
+    ``python:<PEP 503 name>``, ``dart:<package name>``, ``php:<composer name>`` /
+    ``php:<dir>`` when unnamed, ``pascal:<project name>`` (``pascal:<manifest>``
+    when several projects share the name), ``manifest:<root>`` (``manifest:.`` at
+    the repo root).
     ``root`` and ``manifest`` are repo-relative POSIX paths, ``root`` is ``""``
     at the repo root. ``deps`` are the ids of the in-repo units this one
     depends on, sorted; third-party dependencies are not units. ``source``

@@ -282,7 +282,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
     # and the one layer read behind the scope hint. Both are cached per repo per
     # index commit, so the second call pays neither. The seeded caller is a
     # two-line forwarder, so the wrapper hop adds its fixed three reads.
-    assert relation_statements <= 25 and used_by_statements <= 20
+    # The relation call also pays the measured line's one keyed hotness read,
+    # constant per call.
+    assert relation_statements <= 26 and used_by_statements <= 20
 
 
 @pytest.mark.asyncio
@@ -592,17 +594,21 @@ async def _seed_why_decisions(session: Any, rid: str, count: int) -> None:
                 created_at=_NOW,
                 updated_at=_NOW,
                 ),
-                DecisionEdge(
-                    id=f"sealed-lineage-{index}",
-                    repository_id=rid,
-                    src_decision_id=f"sealed-why-{index}",
-                    dst_decision_id=f"sealed-why-ancestor-{index}",
-                    kind="supersedes",
-                    confidence=1.0,
-                    created_at=_NOW,
-                ),
             ]
         )
+    await session.flush()  # the lineage edges reference both records
+    session.add_all(
+        DecisionEdge(
+            id=f"sealed-lineage-{index}",
+            repository_id=rid,
+            src_decision_id=f"sealed-why-{index}",
+            dst_decision_id=f"sealed-why-ancestor-{index}",
+            kind="supersedes",
+            confidence=1.0,
+            created_at=_NOW,
+        )
+        for index in range(count)
+    )
     await session.flush()
 
 

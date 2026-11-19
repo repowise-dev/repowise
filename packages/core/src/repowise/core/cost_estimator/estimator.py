@@ -48,7 +48,7 @@ def estimate_cost(
     """Estimate token counts and USD cost from a generation plan.
 
     When ``repo_path`` points to a repo with prior generation telemetry
-    in ``.repowise/db.sqlite``, the estimate is calibrated against the
+    in ``.repowise/wiki.db``, the estimate is calibrated against the
     actual averages from that repo. Otherwise the static heuristics in
     :mod:`heuristics` are used and a wider variance bracket is reported.
 

@@ -317,23 +317,28 @@ async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeyp
 
 async def test_a_finding_item_verifies_with_measured_tests_of_its_lines(async_session) -> None:
     """A finding with no plan takes its tests from coverage of its own lines."""
-    from repowise.core.persistence.models import TestCoverageEntry
+    from repowise.core.analysis.health.coverage import TestCoverage
+    from repowise.core.persistence.crud import save_test_coverage
 
     rid = await seed_fix_first(async_session)
-    for test_id, lines in (
-        ("tests/test_plain.py::test_walk", [6, 7, 8]),
-        ("tests/test_plain.py::test_elsewhere", [50, 51]),
-    ):
-        async_session.add(
-            TestCoverageEntry(
-                repository_id=rid,
+    await save_test_coverage(
+        async_session,
+        rid,
+        [
+            TestCoverage(
                 test_id=test_id,
-                test_file="tests/test_plain.py",
-                source_file="src/plain.py",
-                covered_lines_json=json.dumps(lines),
+                file_path="src/plain.py",
+                covered_lines=lines,
                 source_format="coverage_json",
+                test_file="tests/test_plain.py",
             )
-        )
+            for test_id, lines in (
+                ("tests/test_plain.py::test_walk", [6, 7, 8]),
+                ("tests/test_plain.py::test_elsewhere", [50, 51]),
+            )
+        ],
+        source_format="coverage_json",
+    )
     await async_session.flush()
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")

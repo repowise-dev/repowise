@@ -299,9 +299,9 @@ runs and what a failure does. Start from the
 
 [docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
 it checks, when it runs and the command that reproduces it locally. A pull
-request runs the Python 3.12 tests in two shards, plus only the suites its
+request runs the Python 3.12 tests in three shards, plus only the suites its
 changed paths need; `Python tests` is the one Python check that must pass.
-Run one shard locally with `uv run pytest tests/unit/ --shard 1/2`. The
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/3`. The
 "Test selection compared" job summary shows which tests `repowise impacted-tests`
 would have picked for your change; it is recorded only and never blocks.
 
@@ -353,6 +353,10 @@ and commit the budget diff.
 - Write a clear description of what and why
 - Reference any related issues
 - Ensure CI passes before requesting review
+- The [Repowise bot](https://repowise.dev/bot) reviews every PR; its verdict is the `Repowise review` check. If
+  one of its inline points is fixed or wrong, reply in that thread (for example
+  "Fixed in <sha>") and it rechecks and resolves it. A 👍 or 👎 on a point tells it
+  whether the point was useful.
 - Once you have a merged PR here, comment `/rerun` on any open PR to re-run its
   failed checks, for example a flaky test.
 - All PRs require at least one code owner approval

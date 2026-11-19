@@ -1,17 +1,21 @@
 """Speedscope JSON (``speedscope.app/file-format-schema.json``): sampled and evented profiles.
 
-pyinstrument (``-r speedscope``) writes one evented profile whose frames
-carry the function's first line; py-spy (``--format speedscope``) writes
+pyinstrument (``-r speedscope``) writes one evented profile, and the recipe
+``evidence setup`` prints writes one sampled profile from pyinstrument's own
+samples; both carry the function's first line; py-spy (``--format speedscope``) writes
 one sampled profile per thread whose frames carry the executing line. Every
 profile in the file is merged into one run. Frame names are what the tool
 wrote (a Python ``co_qualname`` or ``co_name``), and ``col``, when present,
-is the 1-based column of a JavaScript function's start.
+is the 1-based column of a JavaScript function's start. ``testsFailed``,
+a key outside the schema that repowise's own test-suite recipe writes, is
+how many tests failed in the profiled run.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 from repowise.core.frame_resolver import ProfileFrame
@@ -29,11 +33,18 @@ _UNITS = {
 }
 #: Exporters known to time wall-clock: pyinstrument samples the wall clock.
 _WALL_CLOCK_TOOLS = frozenset({"pyinstrument"})
+#: The ``$schema`` key every speedscope file carries.
+_SCHEMA_RE = re.compile(
+    rb'"\$schema"\s*:\s*"https?://(?:www\.)?speedscope\.app/file-format-schema\.json"'
+)
 
 
 def sniff(head: bytes) -> bool:
+    # Anchored on the schema key, so another JSON format that only mentions
+    # speedscope (a test id, a commit message) is not claimed, and the order
+    # JSON formats are sniffed in does not decide between them.
     text = head.lstrip(b"\xef\xbb\xbf").lstrip()
-    return text.startswith(b"{") and b"speedscope" in text
+    return text.startswith(b"{") and _SCHEMA_RE.search(text) is not None
 
 
 def read(data: bytes) -> ProfileRun:
@@ -65,6 +76,7 @@ def read(data: bytes) -> ProfileRun:
         tool_name=tool,
         tool_version=version,
         skipped=skipped,
+        tests_failed=_count(doc.get("testsFailed")),
     )
 
 
@@ -101,6 +113,11 @@ def _frame(raw: Any) -> ProfileFrame:
 
 def _whole(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _count(value: Any) -> int | None:
+    """A whole count of zero or more, else None."""
+    return value if _whole(value) and value >= 0 else None
 
 
 def _weight(value: Any) -> float | None:
