@@ -103,6 +103,13 @@ export interface Savings {
   missed_window_days: number;
   reread_events: number;
   reread_tokens_est: number;
+
+  /** Parts of the totals above, never added to them. `backfilled_*` prices
+   *  unpriced tokens at report time from the session's or agent's rate. */
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
   /** Output tokens agents did not write, estimated from the paired benchmark
    *  per question asked in each session with an MCP call. Null when no calibration could be loaded. */
   output_tokens_saved_estimated?: number | null;

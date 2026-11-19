@@ -63,6 +63,10 @@ export default defineConfig({
         __dirname,
         "../types/src/refactoring.ts",
       ),
+      "@repowise-dev/types/runtime-evidence": path.resolve(
+        __dirname,
+        "../types/src/runtime-evidence.ts",
+      ),
       "@repowise-dev/types/coupling": path.resolve(__dirname, "../types/src/coupling.ts"),
       "@repowise-dev/types/stats": path.resolve(__dirname, "../types/src/stats.ts"),
       "@repowise-dev/types/episodes": path.resolve(__dirname, "../types/src/episodes.ts"),

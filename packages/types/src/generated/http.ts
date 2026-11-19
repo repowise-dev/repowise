@@ -2116,6 +2116,55 @@ export interface EvidencePreview {
   evidence_line?: number | null;
 }
 
+/** One stored run: its workload, commit, freshness and where its time went. */
+export interface EvidenceRunSummary {
+  run_id: string;
+  kind: string;
+  workload: string;
+  class: string;
+  environment: string;
+  value_kind: string | null;
+  unit: string | null;
+  tool: string | null;
+  tool_version: string | null;
+  commit_sha: string | null;
+  freshness: "current" | "stale" | "unknown";
+  dirty: boolean | null;
+  ingested_at: string | null;
+  units: EvidenceUnits;
+  skipped: Record<string, number> | null;
+  total_value: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  mapping_partial: boolean;
+  tests_failed: number | null;
+}
+
+/** Every stored run, newest first (bounded by the store's prune caps). */
+export interface EvidenceRunsResponse {
+  reference_commit: string | null;
+  runs: EvidenceRunSummary[];
+}
+
+/** The newest run of every workload, and whether anything is ranked. */
+export interface EvidenceStatusResponse {
+  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  reference_commit: string | null;
+  runs_stored: Record<string, number>;
+  workloads: EvidenceRunSummary[];
+}
+
+/** How the run's own entries mapped at ingest; null when the writer did not know. */
+export interface EvidenceUnits {
+  total: number | null;
+  matched: number | null;
+  skipped: number | null;
+  outside_repo: number | null;
+  truncated: number | null;
+}
+
 export interface ExecutionFlowEntry {
   entry_point: string;
   entry_point_name: string;
@@ -3068,6 +3117,95 @@ export interface McpToolSurfaceResponse {
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
   command?: string;
+}
+
+/** What runtime evidence says about one function, from its basis run. */
+export interface MeasuredFunction {
+  symbol_id: string;
+  file_path: string;
+  tier: "measured" | "ranked";
+  rank: number | null;
+  self_share: number | null;
+  total_share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  samples: number | null;
+  run_samples: number | null;
+  run_id: string | null;
+  run_count: number | null;
+  workload_name: string | null;
+  workload_class: string | null;
+  value_kind: string | null;
+  ordering_only: boolean | null;
+  freshness: "current" | "body_unchanged" | "stale" | null;
+  evidence_commit_sha: string | null;
+  measured_at: string | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  run_unlisted: number | null;
+}
+
+/** Measured functions of the asked symbol or file; empty means unknown. */
+export interface MeasuredFunctionsResponse {
+  functions: MeasuredFunction[];
+}
+
+export interface MeasuredGroup {
+  runs: MeasuredRun[];
+  rows: MeasuredRow[];
+  total: number;
+}
+
+export interface MeasuredOwner {
+  name: string;
+  commit_pct: number | null;
+}
+
+/** What each workload's newest run ranks, grouped by workload class. */
+export interface MeasuredResponse {
+  basis: "measured" | "unknown";
+  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  measured: MeasuredGroup | null;
+  measured_in_tests: MeasuredGroup | null;
+}
+
+/** One ranked production function of one run. */
+export interface MeasuredRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness: "current" | "body_unchanged" | "stale";
+  callers_total: number | null;
+  callers: string[];
+  owner: MeasuredOwner | null;
+  tests: string[] | null;
+  on_static_findings?: string[];
+}
+
+/** A run's basis: workload, commit, age, samples and where its time went. */
+export interface MeasuredRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  samples: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  outside_production: number | null;
+  value_kind: string | null;
+  ordering_only: boolean;
 }
 
 export interface ModuleEdgeResponse {
@@ -4282,6 +4420,14 @@ export interface SavingsBreakdownRow {
   saved_input_tokens?: number;
 }
 
+/** Files not opened and tool calls answered in one day, agent or surface. */
+export interface SavingsFilesRow {
+  group?: string | null;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+}
+
 /** One kind of observed opportunity. Never part of achieved savings. */
 export interface SavingsOpportunityRow {
   kind: string;
@@ -4376,6 +4522,16 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+  files_per_day?: SavingsFilesRow[];
+  files_per_agent?: SavingsFilesRow[];
+  files_per_surface?: SavingsFilesRow[];
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
   output_tokens_saved_estimated?: number | null;
   output_usd_saved_estimated?: number | null;
   total_usd_saved_estimated?: number | null;

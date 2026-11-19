@@ -160,6 +160,10 @@ def saved_command(
                     "priced_saved_input_tokens": report.priced_saved_input_tokens,
                     "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
                     "estimated_usd": report.priced_input_savings_usd,
+                    "backfilled_saved_input_tokens": report.backfilled_saved_input_tokens,
+                    "backfilled_usd": report.backfilled_input_savings_usd,
+                    "subagent_events": report.subagent_events,
+                    "subagent_saved_input_tokens": report.subagent_saved_input_tokens,
                     "mcp_queries_answered": report.mcp_queries_answered,
                     "dead_ends": report.dead_ends,
                     "baseline_events": report.baseline_events,
@@ -170,6 +174,9 @@ def saved_command(
                     "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
+                    "files_not_opened": report.files_not_opened,
+                    "files_not_opened_tokens": report.files_not_opened_tokens,
+                    "tool_calls_answered": report.tool_calls_answered,
                     **_output_estimate_summary(report),
                 },
                 "rows": rows,
@@ -298,6 +305,12 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         f"  Measured: [bold]{report.measured_saved_input_tokens:,}[/bold]  "
         f"Inferred: [bold]{report.inferred_saved_input_tokens:,}[/bold]"
     )
+    if report.tool_calls_answered:
+        console.print(
+            f"  Files not opened: [bold]{report.files_not_opened:,}[/bold] "
+            f"[dim](~{report.files_not_opened_tokens:,} tokens of Reads, once per "
+            f"session); tool calls answered: {report.tool_calls_answered:,}[/dim]"
+        )
     # Out of how much, not just how much. Both the aggregate and the peak,
     # because either alone misreads in whichever direction flatters.
     if report.input_reduction_ratio is not None and report.input_reduction_ratio_p90 is not None:
@@ -317,6 +330,17 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         console.print(
             f"  [dim]{report.unpriced_saved_input_tokens:,} tokens carry no recorded "
             f"rate and are not priced.[/dim]"
+        )
+    if report.backfilled_saved_input_tokens:
+        console.print(
+            f"  [dim]Of those, {report.backfilled_saved_input_tokens:,} priced at report time "
+            f"from their session or agent rate: ${report.backfilled_input_savings_usd:.4f} "
+            f"(backfilled, not in the estimate above).[/dim]"
+        )
+    if report.subagent_events:
+        console.print(
+            f"  [dim]In subagents: {report.subagent_saved_input_tokens:,} tokens over "
+            f"{report.subagent_events:,} events.[/dim]"
         )
 
 

@@ -155,9 +155,18 @@ def _finish_ambiguous(
         )
 
     from repowise.server.mcp_server._savings import declare_replaced
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
-    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
+    # Only a file with a rendered body was not opened; a fetch_with reference
+    # still sends the agent to the file.
+    rendered = {c["file"] for c in response.get("candidates", ()) if "source" in c}
+    full_tokens = 0
+    for path, text in text_cache.items():
+        if text:
+            tokens = read_tokens(text)
+            if path in rendered:
+                note_served(path, tokens)
+            full_tokens += tokens
     if full_tokens:
         declare_replaced(response, full_tokens)
 

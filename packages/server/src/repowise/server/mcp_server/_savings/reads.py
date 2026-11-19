@@ -47,4 +47,20 @@ def file_read_tokens(root: Any, path: str) -> int | None:
         return None
     if "\x00" in text:
         return None
-    return read_tokens(text)
+    tokens = read_tokens(text)
+    note_served(path, tokens)
+    return tokens
+
+
+def note_served(path: str, tokens: int) -> None:
+    """Note on the live call that it served *path* in place of a Read. Never raises.
+
+    Every caller is a counterfactual that already sized the Read, so this adds
+    no file access. The event write turns the notes into "files not opened".
+    """
+    try:
+        live = interaction.current()
+        if live is not None and isinstance(path, str) and path:
+            live.note_avoided_file(path.replace("\\", "/"), tokens)
+    except Exception:
+        return

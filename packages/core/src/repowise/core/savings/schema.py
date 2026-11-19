@@ -6,7 +6,10 @@ import sqlite3
 
 #: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
 #: the per-event ``schema_version`` column, which versions an event payload and
-#: is still 1: v2 changed only how the store validates an agent id.
+#: is still 1: v2 changed only how the store validates an agent id. The
+#: files-not-opened tables were added without a bump: they are additive, a v2
+#: store missing them is repaired by the required-tables check, and a bump would
+#: make every older build refuse the sidecar and drop its events.
 SAVINGS_SCHEMA_VERSION = 2
 
 _PRESERVED_TABLES = (
@@ -147,6 +150,30 @@ _SCHEMA_TABLES = (
     )
     """,
     _OPPORTUNITIES_TABLE,
+    # Files an event served in place of a Read: paths and one Read's tokens,
+    # never contents. ``session_key`` is the cross-surface host session.
+    """
+    CREATE TABLE IF NOT EXISTS savings_event_files (
+        event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        read_tokens INTEGER,
+        session_key TEXT,
+        PRIMARY KEY(event_id, path),
+        CHECK(read_tokens IS NULL OR read_tokens >= 0),
+        CHECK(session_key IS NULL OR length(session_key) = 71)
+    )
+    """,
+    # The latest Read the agent made of a credited path, per session: a Read
+    # after the crediting event cancels that file's credit.
+    """
+    CREATE TABLE IF NOT EXISTS savings_file_reads (
+        session_key TEXT NOT NULL,
+        path TEXT NOT NULL,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY(session_key, path),
+        CHECK(length(session_key) = 71)
+    )
+    """,
 )
 
 _SCHEMA_INDEXES = tuple(
@@ -160,6 +187,7 @@ _SCHEMA_INDEXES = tuple(
         ("idx_savings_correlations_hash", "savings_event_correlations(kind, value_hash)"),
         ("idx_savings_opportunities_repo_time", "savings_opportunities(repository_id, occurred_at)"),
         ("idx_savings_created", "savings(created_at)"),
+        ("idx_savings_event_files_session", "savings_event_files(session_key, path)"),
     )
 )
 
@@ -172,6 +200,8 @@ _REQUIRED_TABLES = frozenset(
         "savings_event_omissions",
         "savings_event_correlations",
         "savings_opportunities",
+        "savings_event_files",
+        "savings_file_reads",
     }
 )
 
