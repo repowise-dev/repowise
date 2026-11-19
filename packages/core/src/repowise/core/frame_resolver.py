@@ -78,6 +78,7 @@ class ProfileFrame:
     function: str = ""
     column: int | None = None
     start_line: int | None = None
+    calls: int | None = None
 
 
 @dataclass(frozen=True)

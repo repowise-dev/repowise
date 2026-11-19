@@ -190,14 +190,14 @@ One file holds one run of one kind.
 
 | Kind | Entries | Input formats read |
 |---|---|---|
-| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
+| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, Python pstats / cProfile, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | A v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
+`pprof`, `pstats`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -206,8 +206,9 @@ The format is detected from the content, never the file name;
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
+| `pstats` | `python -m cProfile -o app.prof`, or any `pstats.Stats.dump_stats()` marshal file | function, file, line, and exact call count. Deterministic tracer: provides an ordering of functions only, never a share of the run (tracer overhead scales with call count). |
 
-- **Clock.** A profile needs `cpu` or `wall`. pyinstrument output is wall clock
+- **Clock.** A profile needs `cpu` or `wall`. pyinstrument and cProfile output is wall clock
   and pprof says its own sample type; for py-spy, collapsed stacks and other
   Speedscope exporters pass `--value-kind`.
 - **TypeScript.** A profile whose frames name TypeScript files of the checkout

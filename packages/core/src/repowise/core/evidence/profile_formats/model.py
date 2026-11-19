@@ -43,6 +43,7 @@ class ProfileRun:
     skipped: dict[str, int] = field(default_factory=dict)
     #: Tests that failed in a profiled test suite, when the profile says.
     tests_failed: int | None = None
+    ordering_only: bool = False
 
 
 class StackTally:

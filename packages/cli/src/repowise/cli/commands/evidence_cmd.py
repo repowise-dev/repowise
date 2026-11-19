@@ -76,8 +76,7 @@ def evidence_group() -> None:
 @click.option(
     "--commit",
     default=None,
-    help="The full SHA measured. Defaults to the file's commit_sha; required for a "
-    "converted file.",
+    help="The full SHA measured. Defaults to the file's commit_sha; required for a converted file.",
 )
 @click.option(
     "--checkout-root",
@@ -116,7 +115,9 @@ def evidence_group() -> None:
     default=False,
     help="Store the run even when more than half its entries did not map (flagged partial).",
 )
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
@@ -138,7 +139,7 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
     results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark JSON), detected from its content.
+    Python cProfile/pstats, pytest-benchmark JSON), detected from its content.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -253,11 +254,12 @@ def _read_evidence(
         if name == EVIDENCE_FORMAT:
             text = data.decode("utf-8", errors="replace")
             return _Input(name, text=text, doc=parse_evidence(text))
-        input_format = profile_formats.get(name)
-        if input_format.to_v1 is not None:
-            text = json.dumps(input_format.to_v1(data), sort_keys=True)
+        fmt_impl = profile_formats.get(name)
+        if fmt_impl.to_v1 is not None:
+            text = json.dumps(fmt_impl.to_v1(data), sort_keys=True)
             return _Input(name, text=text, doc=parse_evidence(text))
-        run = input_format.read(data)
+        assert fmt_impl.read is not None
+        run = fmt_impl.read(data)
         refuse_typescript(run, str(root))
         return _Input(name, run=run)
     except EvidenceFormatError as exc:
@@ -519,9 +521,29 @@ async def _convert(
     )
 
 
+def _ordering_skipped_summary(conversion: Any) -> str:
+    """Format skipped repo frames summary for an ordering-only conversion."""
+    skipped_counts = {
+        r: c for r, c in conversion.document.get("skipped", {}).items() if r != "outside_repo"
+    }
+    if not skipped_counts:
+        return "all repo frames resolved" if conversion.document.get("symbols") else "no repo frames"
+    reasons = ", ".join(
+        f"{r} ({c})" if c > 1 else r for r, c in sorted(skipped_counts.items())
+    )
+    total_skipped = sum(skipped_counts.values())
+    suffix = "s" if total_skipped != 1 else ""
+    return f"{total_skipped} repo frame{suffix} skipped ({reasons})"
+
+
 def _report_conversion(notices: Any, name: str, conversion: Any) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
+
+    if conversion.total is None:
+        skipped = _ordering_skipped_summary(conversion)
+        notices.print(f"Converted {escape(name)}: ordering of functions only; {skipped}.")
+        return
 
     summary = conversion.summary()
     rate = summary["skip_rate"]
@@ -552,7 +574,7 @@ def _warn_short_run(notices: Any, workload_class: str, value_kind: str | None, c
     per = _SECONDS.get(conversion.unit)
     if workload_class != "entry_point" or value_kind != "wall" or per is None:
         return
-    if conversion.total * per >= _SHORT_RUN_S:
+    if conversion.total is None or conversion.total * per >= _SHORT_RUN_S:
         return
     notices.print(
         f"[yellow]This entry point's profile covers {conversion.total * per:.1f} s: a run "
@@ -672,7 +694,9 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
 
 
 @evidence_group.command("setup")
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @format_option()
 def evidence_setup_command(repo: str | None, fmt: str) -> None:
     """Print how to collect evidence here; run nothing, write nothing.
@@ -822,7 +846,9 @@ async def _index_read_error(repo_path: Path) -> str | None:
 
 
 @evidence_group.command("status")
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @format_option()
 def evidence_status_command(repo: str | None, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
@@ -877,8 +903,10 @@ def _status_line(run: dict[str, Any]) -> str:
     )
 
 
-def _total(value: float) -> str:
+def _total(value: float | None) -> str:
     """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    if value is None:
+        return "unknown"
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
