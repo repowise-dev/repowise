@@ -267,13 +267,15 @@ def _render_pages(
             max_file_pages=resolve_max_file_pages(config=cfg),
         )
 
-        # Only build a store when there is a real embedder to build it with.
-        # The mock is the index-only default, and writing its 8-wide vectors
-        # into a store some earlier run filled at 1536 makes LanceDB drop the
-        # table, taking every page and decision embedding with it. Skipping
+        # Build a store whenever none was handed in, mock embedder included:
+        # with the mock, `update --index-only` otherwise never maintains page
+        # vectors and `doctor` reports permanent SQL/vector-store drift. The
+        # 1536-wide store a real embedder built stays safe: writing the
+        # mock's 8-wide vectors into it would make LanceDB drop the table,
+        # so `build_vector_store` refuses that case itself, via
+        # `_mock_would_clobber`, and returns None instead. Skipping there
         # leaves that store untouched; full-text search is unaffected either
-        # way. It also keeps the lancedb import off the post-commit hook's
-        # path, which is the one place in this command that avoids it.
+        # way.
         resolved_vector_store = vector_store
         try:
             embedder_name = deterministic_embedder_name(cfg, repo_path=repo_path)
@@ -281,7 +283,7 @@ def _render_pages(
             embedder_name = deterministic_embedder_name(cfg)
         if not embed_during_generation:
             resolved_vector_store = None
-        elif resolved_vector_store is None and embedder_name != "mock":
+        elif resolved_vector_store is None:
             from repowise.cli.providers import build_embedder, build_vector_store
 
             try:

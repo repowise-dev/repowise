@@ -115,6 +115,90 @@ def test_exact_structural_refresh_uses_full_context_without_model(
     assert captured["only_page_ids"] == {"scc_page:scc-current"}
 
 
+def test_mock_embedder_still_builds_vector_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the mock embedder, an index-only refresh still builds the store.
+
+    Before the fix, the `!= "mock"` gate in `_render_pages` skipped the
+    store entirely, so page vectors were never maintained and `doctor`
+    reported permanent SQL/vector-store drift (#5420).
+    """
+    calls: dict[str, object] = {}
+    embedder = object()
+
+    def _fake_build_embedder(name, _repo_path):
+        calls["embedder"] = name
+        return embedder
+
+    def _fake_build_store(repo_path, embedder):
+        calls["store"] = (repo_path, embedder)
+        return object()
+
+    import repowise.cli.providers as providers
+    import repowise.core.generation as generation
+
+    class _Config:
+        language = "en"
+
+        @classmethod
+        def from_repo_config(cls, _cfg, **kwargs):
+            return cls()
+
+    class _Generator:
+        def __init__(self, provider, _assembler, _config, **_kwargs):
+            pass
+
+        async def generate_all(self, parsed, source, *_args, only_page_ids=None, **_kwargs):
+            return ["scc"]
+
+    monkeypatch.setattr(generation, "GenerationConfig", _Config)
+    monkeypatch.setattr(generation, "ContextAssembler", lambda *_a, **_k: object())
+    monkeypatch.setattr(generation, "PageGenerator", _Generator)
+    monkeypatch.setattr(providers, "build_embedder", _fake_build_embedder)
+    monkeypatch.setattr(providers, "build_vector_store", _fake_build_store)
+    monkeypatch.setattr(deterministic, "deterministic_embedder_name", lambda _cfg: "mock")
+
+    result = regenerate_deterministic_page_ids(
+        repo_path=tmp_path,
+        parsed_files=[object()],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        page_ids={"scc_page:scc-current"},
+        cfg={},
+        concurrency=2,
+        degraded=[],
+    )
+
+    assert result == ["scc"]
+    assert calls["embedder"] == "mock"
+    assert calls["store"] == (tmp_path, embedder)
+
+
+def test_mock_would_clobber_only_refuses_real_width_store(tmp_path) -> None:
+    """The guard the fix relies on: a mock write is refused only when the
+    existing store holds a real embedder's width."""
+    from repowise.cli.providers.vector_store import _mock_would_clobber
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    lance_dir = tmp_path / ".repowise" / "lancedb"
+    lance_dir.mkdir(parents=True)
+    (lance_dir / "wiki_pages.lance").mkdir()
+    record = lance_dir / "wiki_pages.vector_dim"
+
+    record.write_text("1536", encoding="ascii")
+    assert _mock_would_clobber(lance_dir, MockEmbedder()) is True
+
+    record.write_text("8", encoding="ascii")
+    assert _mock_would_clobber(lance_dir, MockEmbedder()) is False
+
+    record.unlink()
+    assert _mock_would_clobber(lance_dir, MockEmbedder()) is False
+
+    record.write_text("1536", encoding="ascii")
+    assert _mock_would_clobber(lance_dir, object()) is False
+
+
 @pytest.mark.parametrize("choice, expected", [(None, 4500), (0, 4501), (25, 25)])
 def test_deterministic_refresh_preserves_saved_file_page_choice(
     tmp_path, monkeypatch: pytest.MonkeyPatch, choice: int | None, expected: int
