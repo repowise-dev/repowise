@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from functools import cache
 from pathlib import PurePath
 from typing import Literal, NamedTuple
 
@@ -13,6 +12,7 @@ from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import (
     SiblingNames,
+    js_family_extensions,
     names_test_for,
     paired_test_names,
     qualified_name_leads,
@@ -191,25 +191,13 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
-@cache
-def _js_family_suffixes() -> frozenset[str]:
-    """The extensions the language registry gives JavaScript and TypeScript.
-
-    Resolved on first use: the registry lives under ``ingestion/``, which imports
-    :mod:`repowise.core.test_paths` as it loads.
-    """
-    from repowise.core.ingestion.languages.registry import REGISTRY
-
-    return REGISTRY.extensions_for(("javascript", "typescript"))
-
-
 def _language_compatible(target: str, test: str) -> bool:
     """Whether *test* uses a test tail for *target*'s own language.
 
     A JS/TS test file (``x.test.ts``) is no evidence for a ``.py`` or ``.go`` file
     of the same stem; it counts only for a JS/TS target.
     """
-    js_family = _js_family_suffixes()
+    js_family = js_family_extensions()
     if PurePath(test).suffix.lower() in js_family:
         return PurePath(target).suffix.lower() in js_family
     return True
@@ -225,6 +213,36 @@ def _directory_overlap(target: str, test: str) -> int:
             break
         overlap += 1
     return overlap
+
+
+def _names_target(
+    target: str,
+    test: str,
+    siblings: SiblingNames,
+    owned_by: Mapping[str, set[str]],
+) -> bool:
+    """Whether *test* is named for *target*, and no other file beside it owns the name."""
+    target_stem = PurePath(target).stem.lower()
+    test_stem = PurePath(test).stem.lower()
+    if target_stem not in test_stem and target_stem.removeprefix("u") not in test_stem:
+        return False
+    if not _language_compatible(target, test) or not names_test_for(test, target, siblings):
+        return False
+    return test not in owned_by or target in owned_by[test]
+
+
+def _mirrored_by_rival(target: str, test: str, rivals: Iterable[str]) -> bool:
+    """Whether a same-named file in *rivals* mirrors *test* more deeply than *target* does.
+
+    ``tests/unit/core/config/test_settings.py`` belongs to ``src/core/config/settings.py``
+    rather than ``src/cli/config/settings.py``: both share ``config`` with it, but
+    only the first also shares ``core``.
+    """
+    own = _directory_overlap(target, test)
+    return any(
+        _directory_overlap(rival, test) > own and _language_compatible(rival, test)
+        for rival in rivals
+    )
 
 
 def tests_matching_by_name(
@@ -245,6 +263,9 @@ def tests_matching_by_name(
     ``pkg/dead_code/analyzer.py``.  A qualified name that
     :func:`~repowise.core.test_paths.names_test_for` accepts is also eligible,
     and a test tail for another language (a ``.test.ts`` for a ``.py``) is not.
+    A test is also left out when a same-named source file mirrors it more deeply
+    than the target does: ``tests/unit/core/config/test_settings.py`` is for
+    ``src/core/config/settings.py``, not ``src/cli/config/settings.py``.
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
     files_by_dir: dict[str, list[str]] = {}
@@ -274,12 +295,16 @@ def tests_matching_by_name(
                 if source != test:
                     owned_by.setdefault(test, set()).add(source)
 
+    test_set = set(test_files)
+    sources_by_name: dict[str, list[str]] = {}
+    for path in all_files - test_set:
+        sources_by_name.setdefault(path.rpartition("/")[2], []).append(path)
+
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        target_stem = PurePath(target).stem.lower()
-        stem_without_unit_prefix = target_stem[1:] if target_stem.startswith("u") else target_stem
         # Same-directory files; the target itself never claims a name from itself.
         siblings = siblings_by_dir[target.rpartition("/")[0]]
+        rivals = [f for f in sources_by_name.get(target.rpartition("/")[2], ()) if f != target]
 
         positions: set[int] = set()
         for name in paired_test_names(target):
@@ -287,19 +312,12 @@ def tests_matching_by_name(
         for lead in qualified_name_leads(target):
             positions.update(positions_by_prefix.get(lead, ()))
 
-        found: list[str] = []
-        for position in sorted(positions):
-            test = test_list[position]
-            test_stem = PurePath(test).stem.lower()
-            if target_stem not in test_stem and stem_without_unit_prefix not in test_stem:
-                continue
-            if not _language_compatible(target, test):
-                continue
-            if not names_test_for(test, target, siblings):
-                continue
-            if test in owned_by and target not in owned_by[test]:
-                continue
-            found.append(test)
+        found = [
+            test
+            for test in (test_list[position] for position in sorted(positions))
+            if _names_target(target, test, siblings, owned_by)
+            and not _mirrored_by_rival(target, test, rivals)
+        ]
 
         if not found:
             continue

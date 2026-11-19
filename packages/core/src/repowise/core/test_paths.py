@@ -313,6 +313,15 @@ def _conventions() -> _Conventions:
     )
 
 
+def js_family_extensions() -> frozenset[str]:
+    """The extensions the language registry gives JavaScript and TypeScript.
+
+    ``.vue``, ``.svelte`` and ``.astro`` are in it: their components are tested
+    from ``.ts`` and ``.js`` files.
+    """
+    return _conventions().js_family_exts
+
+
 def _parts(path: str) -> tuple[list[str], list[str]]:
     """Original-case and lowercased path segments, filename last.
 

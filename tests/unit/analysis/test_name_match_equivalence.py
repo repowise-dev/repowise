@@ -14,14 +14,38 @@ from pathlib import PurePath
 
 import pytest
 
-from repowise.core.analysis.test_reach import model
 from repowise.core.analysis.test_reach.model import ReachedBy, capped
 from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
 from repowise.core.analysis.test_reachability import tests_matching_by_name as name_match
-from repowise.core.test_paths import names_test_for, paired_test_names
+from repowise.core.test_paths import js_family_extensions, names_test_for, paired_test_names
 
 _JS_TEST_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".mts", ".cts"})
-_JS_SOURCE_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"})
+_JS_SOURCE_SUFFIXES = frozenset(
+    {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".astro"}
+)
+
+
+def _overlap(source: str, test: str) -> int:
+    count = 0
+    for a, b in zip(reversed(source.split("/")[:-1]), reversed(test.split("/")[:-1]), strict=False):
+        if a != b:
+            break
+        count += 1
+    return count
+
+
+def _mirrored_by_rival(target, test, all_files, test_files) -> bool:
+    """A same-named source file mirrors *test* more deeply than *target* does."""
+    name = target.rpartition("/")[2]
+    for rival in all_files:
+        if rival == target or rival in test_files or rival.rpartition("/")[2] != name:
+            continue
+        in_family = PurePath(rival).suffix.lower() in _JS_SOURCE_SUFFIXES
+        if PurePath(test).suffix.lower() in _JS_SOURCE_SUFFIXES and not in_family:
+            continue
+        if _overlap(rival, test) > _overlap(target, test):
+            return True
+    return False
 
 
 def _oracle(targets, test_files, indexed_files=()) -> dict[str, ReachedBy]:
@@ -53,6 +77,8 @@ def _oracle(targets, test_files, indexed_files=()) -> dict[str, ReachedBy]:
             if not names_test_for(test, target, siblings):
                 continue
             if test in owned_by and target not in owned_by[test]:
+                continue
+            if _mirrored_by_rival(target, test, all_files, test_files):
                 continue
             found.append(test)
         if not found:
@@ -150,4 +176,4 @@ def test_the_random_trees_exercise_matches_mirroring_and_the_cap() -> None:
 
 
 def test_the_js_family_comes_from_the_language_registry() -> None:
-    assert model._js_family_suffixes() == _JS_SOURCE_SUFFIXES
+    assert js_family_extensions() == _JS_SOURCE_SUFFIXES

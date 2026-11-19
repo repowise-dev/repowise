@@ -257,6 +257,40 @@ def test_a_directory_mirroring_test_wins_over_another_packages_same_name() -> No
     assert "pkg/core/constants.py" not in found
 
 
+@pytest.mark.parametrize("component", ["Widget.vue", "Widget.svelte", "Widget.astro"])
+def test_a_component_keeps_its_ts_test(component) -> None:
+    target = f"src/components/{component}"
+    test = "tests/components/Widget.test.ts"
+    found = name_match([target], {test}, {target, test})
+
+    assert found[target].tests == [test]
+
+
+def test_a_component_is_no_evidence_for_a_python_file_of_the_same_name() -> None:
+    found = name_match(["src/widget.py"], {"tests/widget.test.ts"}, set())
+
+    assert found == {}
+
+
+def test_a_test_mirroring_another_same_named_file_more_deeply_is_not_the_targets() -> None:
+    test = "tests/unit/core/config/test_settings.py"
+    cli, core = "src/cli/config/settings.py", "src/core/config/settings.py"
+
+    assert name_match([cli], {test}, {core}) == {}
+    assert name_match([core], {test}, {cli})[core].tests == [test]
+    found = name_match([cli, core], {test}, set())
+    assert list(found) == [core]
+
+
+def test_a_test_mirroring_the_target_as_deeply_stays_with_both() -> None:
+    test = "tests/config/test_settings.py"
+    cli, core = "src/cli/config/settings.py", "src/core/config/settings.py"
+    found = name_match([cli, core], {test}, set())
+
+    assert found[cli].tests == [test]
+    assert found[core].tests == [test]
+
+
 @pytest.mark.parametrize("size", [16, 32, 64])
 @pytest.mark.parametrize("layout", ["flat", "separate"])
 def test_name_matching_generates_convention_names_linearly(monkeypatch, size, layout) -> None:
