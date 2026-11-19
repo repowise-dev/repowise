@@ -206,6 +206,31 @@ class SavingsOpportunityRow(BaseModel):
     estimated_potential_input_tokens: int = 0
 
 
+class SavingsOutputModelRow(BaseModel):
+    """The output estimate for sessions on one model and output rate."""
+
+    model: str | None = None
+    #: ``measured`` (this model's benchmark row), ``anthropic_fallback`` (a
+    #: Claude model with no row) or ``other_fallback`` (any other model).
+    basis: str
+    sessions: int = 0
+    reduction: float = 0.0
+    output_tokens_per_session: int = 0
+    output_tokens_saved: int = 0
+    output_rate_usd_per_million: float | None = None
+    output_usd_saved: float | None = None
+
+
+class SavingsOutputCalibration(BaseModel):
+    """Where the output estimate comes from, so the figure is reproducible."""
+
+    source: str
+    version: str
+    sessions: int = 0
+    unpriced_output_tokens_saved: int = 0
+    per_model: list[SavingsOutputModelRow] = []
+
+
 class SavingsResponse(BaseModel):
     """What agents avoided in one repository over one window.
 
@@ -277,3 +302,13 @@ class SavingsResponse(BaseModel):
     missed_window_days: float = 0.0
     reread_events: int = 0
     reread_tokens_est: int = 0
+
+    #: Output tokens agents did not write, *estimated* from the paired
+    #: benchmark per agent session with an MCP call, priced
+    #: at each session's captured output rate. Separate from the recorded
+    #: ``saved_output_tokens``. The total adds this to the priced input saving.
+    #: All null when no calibration could be loaded.
+    output_tokens_saved_estimated: int | None = None
+    output_usd_saved_estimated: float | None = None
+    total_usd_saved_estimated: float | None = None
+    calibration: SavingsOutputCalibration | None = None

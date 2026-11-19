@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from repowise.server.schemas import (
     SavingsAgentRow,
     SavingsBreakdownRow,
     SavingsOpportunityRow,
+    SavingsOutputCalibration,
+    SavingsOutputModelRow,
     SavingsResponse,
 )
 
@@ -213,7 +216,27 @@ async def get_savings(
         missed_window_days=missed["window_days"],
         reread_events=reread["events"],
         reread_tokens_est=reread["est_saved_tokens"],
+        **_output_estimate_fields(report),
     )
+
+
+def _output_estimate_fields(report: Any) -> dict[str, Any]:
+    """The benchmark-estimated output fields; empty (all null) without a calibration."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {}
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": SavingsOutputCalibration(
+            source=estimate.source,
+            version=estimate.version,
+            sessions=estimate.sessions,
+            unpriced_output_tokens_saved=estimate.unpriced_output_tokens_saved,
+            per_model=[SavingsOutputModelRow(**asdict(row)) for row in estimate.per_model],
+        ),
+    }
 
 
 def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreakdownRow]:

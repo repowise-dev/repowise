@@ -19,6 +19,7 @@ captures everything after it as the command to run (``ignore_unknown_options``)
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -170,6 +171,7 @@ def saved_command(
                     "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
+                    **_output_estimate_summary(report),
                 },
                 "rows": rows,
                 "opportunities": {
@@ -225,6 +227,7 @@ def saved_command(
     console.print()
     console.print(table)
     _print_evidence_and_pricing(report)
+    _print_output_estimate(report)
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
@@ -315,6 +318,59 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         console.print(
             f"  [dim]{report.unpriced_saved_input_tokens:,} tokens carry no recorded "
             f"rate and are not priced.[/dim]"
+        )
+
+
+def _output_estimate_summary(report: SavingsReport) -> dict:
+    """The benchmark-estimated output fields, named as on the savings endpoint."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {
+            "output_tokens_saved_estimated": None,
+            "output_usd_saved_estimated": None,
+            "total_usd_saved_estimated": None,
+            "output_calibration": None,
+        }
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "output_calibration": {
+            "source": estimate.source,
+            "version": estimate.version,
+            "sessions": estimate.sessions,
+            "unpriced_output_tokens_saved": estimate.unpriced_output_tokens_saved,
+            "per_model": [asdict(row) for row in estimate.per_model],
+        },
+    }
+
+
+def _print_output_estimate(report: SavingsReport) -> None:
+    """Output tokens agents did not write, labelled as a benchmark estimate.
+
+    Kept on its own lines rather than folded into the recorded figures above:
+    no session measures the output it did not write, so this is the paired
+    benchmark's per-model difference applied once per session that used
+    Repowise, and the label says so.
+    """
+    estimate = report.output_estimate
+    if estimate is None or not estimate.sessions:
+        return
+    console.print(
+        f"  Output saved (estimated from benchmark): "
+        f"[bold]{estimate.output_tokens_saved:,}[/bold] tokens, "
+        f"[bold green]${estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim]over {estimate.sessions:,} sessions; calibration {estimate.version}[/dim]"
+    )
+    console.print(
+        f"  Estimated total: [bold green]"
+        f"${report.priced_input_savings_usd + estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim](input priced + output estimated)[/dim]"
+    )
+    if estimate.unpriced_output_tokens_saved:
+        console.print(
+            f"  [dim]{estimate.unpriced_output_tokens_saved:,} estimated output tokens come "
+            f"from sessions with no recorded model and are not priced.[/dim]"
         )
 
 
