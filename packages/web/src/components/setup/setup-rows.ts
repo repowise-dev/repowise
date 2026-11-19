@@ -664,12 +664,16 @@ export function deriveSetup(s: SetupResponse, o: DeriveOptions): SetupView {
     s.sync.installed === true,
   ].filter(Boolean).length;
 
+  // Distill joins "Suggested from your usage" once usage suggests it, as on
+  // Agents & editors; until then it is a quiet optional row.
+  const rewrite = rewriteRow(s, o);
+  const suggested = rewrite.tone === "found";
   return {
     attention,
     checksUnreadable: !s.checks_available,
     essentials,
-    optional: [modelRow(s, o), coverageRow(s, o), evidenceRow(s, o), rewriteRow(s, o)],
-    depth: depthRows(s, o),
+    optional: [modelRow(s, o), coverageRow(s, o), evidenceRow(s, o), ...(suggested ? [] : [rewrite])],
+    depth: [...depthRows(s, o), ...(suggested ? [rewrite] : [])],
     doneCount: done,
     allDone: done === ESSENTIALS_TOTAL,
   };

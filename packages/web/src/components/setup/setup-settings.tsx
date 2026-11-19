@@ -103,7 +103,7 @@ export function RepoSetupRows({
   const { data } = useSetupData(repoId);
   const view = useSetupView(repoId, repoName, data);
   const rows = useMemo(() => {
-    const all = view ? [...view.attention, ...view.essentials, ...view.optional] : [];
+    const all = view ? [...view.attention, ...view.essentials, ...view.optional, ...view.depth] : [];
     return ids.flatMap((id) => all.filter((r) => r.id === id));
   }, [view, ids]);
   return <SetupRowsBlock repoId={repoId} rows={rows} />;
@@ -118,11 +118,7 @@ export function RepoDepthRows({ repoId, repoName }: { repoId: string; repoName: 
   const t = useTranslations("setup.depthBlock");
   const { data } = useSetupData(repoId);
   const view = useSetupView(repoId, repoName, data);
-  const rows = useMemo(() => {
-    if (!view) return [];
-    const rewrite = view.optional.find((r) => r.id === "rewrite" && r.tone === "found");
-    return [...view.depth, ...(rewrite ? [rewrite] : [])];
-  }, [view]);
+  const rows = useMemo(() => view?.depth ?? [], [view]);
   if (rows.length === 0) return null;
   const calls = data?.setup?.claude_code_calls ?? 0;
   return (

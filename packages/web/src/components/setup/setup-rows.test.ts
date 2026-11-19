@@ -324,6 +324,15 @@ describe("setup steps on the rows", () => {
     expect(unlocked.status).toEqual({ key: "rewrite.statusSuggested" });
   });
 
+  it("moves a suggested distill row from Optional to Suggested from your usage", () => {
+    const quiet = deriveSetup(setupFixture(), OPTS);
+    expect(quiet.optional.map((r) => r.id)).toContain("rewrite");
+    expect(quiet.depth.map((r) => r.id)).not.toContain("rewrite");
+    const suggested = deriveSetup(withSteps([["distill_suggested"]]), OPTS);
+    expect(suggested.optional.map((r) => r.id)).not.toContain("rewrite");
+    expect(suggested.depth.map((r) => r.id)).toContain("rewrite");
+  });
+
   it("reads evidence as found, on, or none", () => {
     const found = row(deriveSetup(withSteps([["evidence_found", { details: [{ path: "prof.pprof", line: null, symbol: null, marker: null, severity: null, reason: "pprof", ref: null }] }]]), OPTS), "evidence");
     expect(found.tone).toBe("found");
