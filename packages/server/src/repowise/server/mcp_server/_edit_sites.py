@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import keyword
 import os
 import re
 import tokenize
@@ -59,7 +60,8 @@ MAX_IMPORTERS = 5000
 _BLOCK_SHARE = 0.6
 # The order a file lists its kinds in.
 _BLOCK_KINDS = (
-    "definition", "import", "call", "alias", "reference", "reexport", "prose", "same_name", "doc"
+    "definition", "import", "call", "alias", "reference", "string", "reexport", "prose", "same_name",
+    "doc",
 )
 _MAX_FILE_BYTES = 2_000_000
 _MIN_CALL_CONFIDENCE = 0.7
@@ -67,7 +69,8 @@ _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field"})
 # Languages where using a symbol from another file takes an import naming that
 # file or the symbol, so importers are every file that can use it. Elsewhere
 # (same-package or namespace visibility) sites are listed but never complete,
-# except in the directory-package languages below.
+# except in the directory-package languages below and in Rust, whose other
+# uses are paths ending in the name.
 _IMPORT_SCOPED_LANGUAGES = frozenset({"python", "typescript", "javascript"})
 # Languages whose same-package files are found and scanned too, so the set
 # can be complete: Go's package is its directory, a JVM package is every file
@@ -419,7 +422,8 @@ class _ProseLines:
 
     Prose is a comment, a docstring or a sentence in a string: a rename does
     not have to touch it. A string holding nothing but the name, or a path or
-    dotted name ending in it (``__all__``, a mock target), is a reference.
+    dotted name ending in it (``__all__``, a mock target), is a site of its own
+    kind, ``string``.
     Python is read by its own tokenizer; other syntaxes by the comment and
     string masks. Either is read once, on the first line that needs it. A
     file that does not tokenize, or whose syntax has no mask, never reads as
@@ -433,13 +437,38 @@ class _ProseLines:
         # Lines that name it in code or as a whole string, or the two masks.
         self._read_once: tuple[Any, Any] | None = None
 
-    def _python(self, text: str) -> tuple[set[int], set[int], set[tuple[int, int]]] | None:
+    def _python(
+        self, text: str
+    ) -> tuple[set[int], set[int], set[tuple[int, int]], set[tuple[int, int, int]]] | None:
         word = _word(self._name)
         code: set[int] = set()
         strings: set[int] = set()
         at: set[tuple[int, int]] = set()
+        # ``(line, start, end)`` of one-line, non-f strings that spell the name as code.
+        named: set[tuple[int, int, int]] = set()
+        # The two tokens before the current one, past line continuations and comments.
+        before: tuple[str, str] = ("", "")
+        # Open brackets, innermost last; ``s[`` opens a subscript, ``[`` a list.
+        opened: list[str] = []
+        # The bracket depth of each open ``lambda`` header.
+        lambdas: list[int] = []
+        # Whether the token before is the ``:`` that ends a ``lambda`` header.
+        lambda_colon = False
         try:
             for t in tokenize.generate_tokens(io.StringIO(text).readline):
+                if t.type in (tokenize.NL, tokenize.COMMENT):
+                    continue
+                prev, before = before, (before[1], t.string)
+                after_lambda, lambda_colon = lambda_colon, False
+                if t.type == tokenize.OP and t.string in "([{":
+                    opened.append("s[" if t.string == "[" and _subscripts(prev[1]) else t.string)
+                elif t.type == tokenize.OP and t.string in ")]}" and opened:
+                    opened.pop()
+                elif t.type == tokenize.NAME and t.string == "lambda":
+                    lambdas.append(len(opened))
+                elif t.string == ":" and lambdas and lambdas[-1] == len(opened):
+                    lambdas.pop()
+                    lambda_colon = True
                 if t.type == tokenize.NAME and t.string == self._name:
                     code.add(t.start[0])
                     at.add(t.start)
@@ -447,13 +476,21 @@ class _ProseLines:
                     t.type == tokenize.STRING
                     and (m := _PY_STRING.match(t.string))
                     and word.search(m.group(3))
-                    # Before 3.12 an f-string is one token: its fields may be code.
-                    and ("f" in m.group(1).lower() or _code_string(m.group(3)))
                 ):
-                    strings.add(t.start[0])
+                    fstring = "f" in m.group(1).lower()
+                    # Before 3.12 an f-string is one token: its fields may be code.
+                    if fstring or _code_string(m.group(3)):
+                        strings.add(t.start[0])
+                    if (
+                        not fstring
+                        and _NAMED_BODY.fullmatch(m.group(3))
+                        and t.start[0] == t.end[0]
+                        and not _annotation_slot(prev, opened[-1] if opened else "", after_lambda)
+                    ):
+                        named.add((t.start[0], t.start[1], t.end[1]))
         except (tokenize.TokenError, SyntaxError):
             return None
-        return code, strings, at
+        return code, strings, at, named
 
     def _read(self) -> tuple[Any, Any]:
         text = "\n".join(self._lines)
@@ -488,7 +525,7 @@ class _ProseLines:
         if read is None:  # nothing can be told
             return False
         if how == "tokens":
-            code, strings, _at = read
+            code, strings, _at, _named = read
             return n not in code and n not in strings
         full, comments = read[0][n - 1], read[1][n - 1]
         text = self._lines[n - 1]
@@ -506,12 +543,82 @@ class _ProseLines:
                 return False
         return True
 
+    def in_string(self, n: int, hits: list[re.Match[str]]) -> bool:
+        """Whether every hit on line *n* spells the name inside a string, as a
+        mock target, ``getattr`` name or ``__all__`` entry does, and none in code.
+
+        A string subscript (``obj["name"]``) is a member access, so it is code.
+        """
+        how, read = self._once()
+        if read is None or not hits:
+            return False
+        text = self._lines[n - 1]
+        if how == "tokens":
+            spans = [(a, b) for line, a, b in read[3] if line == n]
+            return all(
+                (n, m.start()) not in read[2]
+                and any(a < m.start() < b and not _subscript(text, a, b) for a, b in spans)
+                for m in hits
+            )
+        full, comments = read[0][n - 1], read[1][n - 1]
+        return all(_masked_string_hit(text, full, comments, m) for m in hits)
+
+
+def _annotation_slot(prev: tuple[str, str], bracket: str, after_lambda: bool) -> bool:
+    """Whether a string after tokens *prev*, inside open *bracket*, is a type
+    written as a string, a forward reference (``u: "User"``, ``-> "User"``,
+    ``Union["User", None]``, ``bound="User"``, ``cast("User", x)``), which uses
+    the type in code. A subscript key (``obj["name"]``) is code too.
+
+    A dict value (``{"k": "User"}``), a list item or a ``lambda`` body is no annotation.
+    """
+    if bracket == "s[":
+        return True
+    if prev[1] == ":":
+        return bracket in ("", "(") and not after_lambda
+    return prev[1] == "->" or prev in (("bound", "="), ("cast", "("))
+
+
+def _subscripts(token: str) -> bool:
+    """Whether a ``[`` after *token* subscripts it, rather than opening a list."""
+    return token in (")", "]") or (token.isidentifier() and not keyword.iskeyword(token))
+
+
+def _masked_string_hit(text: str, full: str, comments: str, m: re.Match[str]) -> bool:
+    """Whether hit *m* sits in a string that spells the name, by the masks of its line."""
+    at = m.start()
+    if full[at] != " " or comments[at] == " " or _TAG_BEFORE.search(text, 0, at):
+        return False
+    head = _NAMED_STRING.match(text[:at][::-1])
+    tail = _NAMED_TAIL.match(text, m.end())
+    return bool(head and tail) and not _subscript(text, at - head.end(), tail.end())
+
+
+def _subscript(text: str, start: int, end: int) -> bool:
+    """Whether the string at ``text[start:end]`` is a subscript key: ``obj["name"]``,
+    not a one-item list (``__all__ = ["name"]``)."""
+    before = text[:start].rstrip()
+    return (
+        before.endswith("[")
+        # Touching the bracket, so ``return ["name"]`` stays a list.
+        and bool(_SUBSCRIPTED.search(before[:-1]))
+        and text[end:].lstrip().startswith("]")
+    )
+
+
+# The end of an expression a ``[`` subscripts: a name, a call, another subscript
+# or an optional chain (``obj?.["name"]``).
+_SUBSCRIPTED = re.compile(r"(?:[\w$)\]]|\?\.)$")
+
 
 _TAG_BEFORE = re.compile(r"</?$")
 # Reversed text before a hit: optional path or dotted-name characters, then a
 # quote; after it, an optional dotted tail, then a quote (``"pkg.Name.attr"``).
 _NAMED_STRING = re.compile(r"[\w./@:$-]*[\"'`]")
 _NAMED_TAIL = re.compile(r"[\w.$]*[\"'`]")
+# The whole body of such a string: a name, path or dotted name, not a type
+# expression (``"Optional[Name]"`` is a type use and stays a reference).
+_NAMED_BODY = re.compile(r"[\w./@:$-]+")
 # A Python string token: prefix, opening quotes, body.
 _PY_STRING = re.compile(r"(?s)([rRbBuUfF]*)(\"\"\"|'''|\"|')(.*)\2")
 # A string that reads as code, not a sentence: a dotted or path target
@@ -786,6 +893,9 @@ def _file_sites(
         kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
         if kind == "import" and prose(n, hits):
             kind = "reference"  # ``import`` opening a docstring sentence
+        elif kind == "reference" and prose.in_string(n, hits):
+            # ``patch("pkg.mod.name")``: a rename edits it, but it uses nothing.
+            kind = "string"
         site = _site(rel, n, kind, lines)
         _flag(site, word, text, prose(n, hits) if kind == "reference" else False)
         sites.append(site)
@@ -861,14 +971,14 @@ _TRAILING_KINDS = {"same_name": 1, "doc": 2}
 
 
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*sites* with plain references past the per-file cap dropped; other kinds
-    always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
+    """*sites* with plain references and strings past the per-file cap dropped;
+    other kinds always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
     if len(sites) <= SMALL_SET_LINES:
         return sites
     seen: Counter[tuple[str | None, str]] = Counter()
     kept: list[dict[str, Any]] = []
     for site in sites:
-        if site["kind"] == "reference":
+        if site["kind"] in ("reference", "string"):
             # A workspace search's rows name their repo: one path in two repos is two files.
             key = (site.get("repo"), site["path"])
             seen[key] += 1
@@ -928,6 +1038,9 @@ def _package_scope(
     import, its file's package, and why the edit set cannot be complete."""
     if language in _IMPORT_SCOPED_LANGUAGES:
         return [], None, []
+    if language == "rust":
+        files, reasons = _rust_path_files(root, node)
+        return files, None, reasons
     if language not in _DIRECTORY_PACKAGE_LANGUAGES:
         return [], None, [f"{language or 'unknown language'}: same-package use is not scanned"]
     def_file = node.file_path
@@ -947,6 +1060,25 @@ def _package_scope(
         return [(parent / n).as_posix() for n in names if PurePosixPath(n).suffix in exts], package, []
     files, reasons = _jvm_package_files(root, node, def_lines, package, language)
     return files, package, reasons
+
+
+def _rust_path_files(root: Path, node: GraphNode) -> tuple[list[str], list[str]]:
+    """``(files, reasons)``: Rust files that may name *node* through a path.
+
+    Another file reaches a Rust item through a ``use`` (an importer, already
+    scanned) or a path ending in ``::name`` (``crate::m::name``,
+    ``super::name``, ``m::Type::name``), which needs no ``use``; the module
+    itself is one file. Ceiling: a path split across lines before the name
+    is missed.
+    """
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    needle = f"::{_bare_name(node)}"
+    held = _files_holding(root, needle)
+    if held is None:
+        return [], [f"rust: could not search for {needle}"]
+    exts = REGISTRY.extensions_for(("rust",))
+    return sorted(f for f in held if PurePosixPath(f).suffix in exts), []
 
 
 def _jvm_package_files(
@@ -1538,7 +1670,8 @@ async def reference_edit_set(
 
     Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
     plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference, and with *wider* also reexport |
+    definition | import | call | reference | string (the name spelled inside a
+    string, such as a mock patch target), and with *wider* also reexport |
     same_name | doc (see :mod:`._edit_sites_wider`). search_codebase serves
     these rows; get_context serves :func:`edit_set_block`.
     """
@@ -1585,7 +1718,7 @@ async def edit_set_block(
     """get_context's ``references`` block: the edit set, one entry per file.
 
     ``files`` maps each path to its line numbers by kind: definition |
-    import | call | alias (a use through an import alias) | reference |
+    import | call | alias (a use through an import alias) | reference | string |
     reexport | same_name (another symbol of that name) | doc, and with
     *prose* also prose (a comment, docstring or sentence naming it; counted
     in ``prose_lines`` otherwise). ``sites_total`` counts every listed line.

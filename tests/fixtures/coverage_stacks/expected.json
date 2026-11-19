@@ -74,7 +74,7 @@
     "runner": "vitest",
     "package_manager": "pnpm",
     "reports": "coverage/lcov.info",
-    "test": "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+    "test": "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
   },
   "php": {
     "language": "php",

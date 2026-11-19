@@ -86,7 +86,8 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
 # NOT ``coverage``/``target`` (that is where the reports live). Applied at
 # traversal time via the shared pruned walk, and post-hoc as a safety net
 # for the non-recursive glob paths. A pruned name spelled literally in a
-# pattern (``build/reports/...``) is an explicit opt-in and is not pruned.
+# pattern (``build/reports/...``, ``**/build/reports/...``) is an explicit
+# opt-in and is not pruned for that pattern.
 _PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 
 # Hard cap on discovered artifacts — a sane upper bound that still covers
@@ -629,65 +630,54 @@ def _expand_pattern(
     literal pattern is a direct file check; single-level wildcards are a
     bounded plain glob; ``**`` is served from a pruned walk of *root*
     (*snapshots* caches one per root), so it never enters dependency, cache
-    or build trees, nested repositories, or symlinks. A pruned name spelled
-    literally before the first wildcard is an explicit opt-in.
+    or build trees, nested repositories, or symlinks. A pruned name the
+    pattern spells literally as a directory, before or after a wildcard
+    (``build/reports/**``, ``**/build/reports/**``), is an explicit opt-in to
+    that name only; every other pruned name stays pruned.
     """
     if not _has_magic(pattern):
         direct = root / pattern
         if direct.is_file():
             yield direct
         return
+    prune = _PRUNE_DIRS - {seg for seg in pattern.split("/")[:-1] if not _has_magic(seg)}
     if "**" in pattern:
-        matches = _recursive_matches(root, pattern, snapshots)
+        matches = _recursive_matches(root, pattern, snapshots, prune)
     else:
         # Single-level wildcards cannot recurse; a plain glob is bounded.
         matches = root.glob(pattern)
-    literal = _literal_depth(pattern)
     for match in matches:
         # Safety net for the plain-glob paths, which do not prune.
-        if match.is_file() and not _under_pruned(match, root, literal):
+        if match.is_file() and not _under_pruned(match, root, prune):
             yield match
 
 
 def _recursive_matches(
-    root: Path, pattern: str, snapshots: dict[Path, WalkSnapshot]
+    root: Path, pattern: str, snapshots: dict[Path, WalkSnapshot], prune: frozenset[str]
 ) -> Iterable[Path]:
     """A ``**`` pattern split at its first ``**``: a fixed (or shallow-globbed)
     root, and a tail served from the shared snapshot."""
     prefix, _, tail = pattern.partition("**")
     prefix = prefix.rstrip("/")
     tail = tail.lstrip("/") or "*"
-    if _has_magic(prefix):
-        roots = [d for d in root.glob(prefix) if d.is_dir()]
-    elif any(part in _PRUNE_DIRS for part in Path(prefix).parts):
-        # The snapshot never enters a pruned dir, so a root spelled under
-        # one is walked live (still pruning below it).
-        return iter_glob(root / prefix, tail, prune_dirs=_PRUNE_DIRS)
-    else:
-        roots = [root / prefix]
+    roots = [d for d in root.glob(prefix) if d.is_dir()] if _has_magic(prefix) else [root / prefix]
+    if prune != _PRUNE_DIRS:
+        # The snapshot never enters a pruned dir, so a pattern that opts into
+        # one is walked live, entering only the names it spells.
+        return chain.from_iterable(iter_glob(r, tail, prune_dirs=prune) for r in roots)
     if root not in snapshots:
         snapshots[root] = WalkSnapshot(root, prune_dirs=_PRUNE_DIRS)
     snap = snapshots[root]
     return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
 
 
-def _literal_depth(pattern: str) -> int:
-    """How many leading directory segments of *pattern* are spelled literally."""
-    depth = 0
-    for seg in pattern.split("/")[:-1]:
-        if _has_magic(seg):
-            break
-        depth += 1
-    return depth
-
-
-def _under_pruned(match: Path, root: Path, literal: int) -> bool:
-    """Whether *match* sits in a pruned dir below its pattern's literal part."""
+def _under_pruned(match: Path, root: Path, prune: frozenset[str]) -> bool:
+    """Whether *match* sits in a dir its pattern leaves pruned."""
     try:
         rel_parts = match.relative_to(root).parts
     except ValueError:
         rel_parts = match.parts
-    return any(part in _PRUNE_DIRS for part in rel_parts[literal:-1])
+    return any(part in prune for part in rel_parts[:-1])
 
 
 def normalize_report_path(

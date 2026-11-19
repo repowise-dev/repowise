@@ -177,7 +177,8 @@ def _runtime_call(
     best = min(targets, key=lambda t: CLASS_ORDER.index(t["class"]))
     cwd = {"cwd": best["cwd"]}
     return {
-        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile.",
+        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile."
+        + (f" {best['note']}" if best.get("note") else ""),
         "steps": [
             *({**cwd, "run": p} for p in best["prerequisites"]),
             {**cwd, "run": best["command"]},

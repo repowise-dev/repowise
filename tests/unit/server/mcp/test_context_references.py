@@ -113,7 +113,7 @@ async def test_definition_import_call_and_same_file_call(session, repo_id, tmp_p
         (_DEF, 5, "definition"),
         (_USER, 3, "import"),  # continuation line of a multi-line import
         (_USER, 9, "call"),
-        (_USER, 10, "reference"),  # a string naming it
+        (_USER, 10, "string"),  # a string naming it
         (_DEF, 2, "call"),  # same-file call
     ]
     assert out["complete"] is True
@@ -270,6 +270,37 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
         "may be called through a module object outside an import: app/lazy.py"
     ]
     assert "app/lazy.py" not in out["files"]
+
+
+_ANOTHER_HIDDEN_USE = "\n\ndef later():\n    d = _catalog()\n    return d.backend_of(2)\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tail", "complete"),
+    [("", True), (_ANOTHER_HIDDEN_USE, False)],
+)
+async def test_a_module_object_call_the_graph_resolved_is_listed(
+    session, repo_id, tmp_path, tail, complete
+):
+    """Once the graph resolves ``c.backend_of`` through the returned module, the
+    line is a call site; only a use it left unresolved keeps the set incomplete."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[
+            ("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'}),
+            ("app/lazy.py::run", _SYM, "calls", {"call_lines_json": "[10]"}),
+        ],
+    )
+    (tmp_path / "app" / "lazy.py").write_text(_MODULE_OBJECT_USER + tail, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is complete
+    assert ("app/lazy.py" in out["files"]) is True
+    assert ("reasons" in out) is not complete
 
 
 @pytest.mark.asyncio
@@ -633,7 +664,7 @@ async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tm
     assert refs["sites_total"] == 5
     assert refs["files"] == {
         _DEF: {"definition": [5], "call": [2]},
-        _USER: {"import": [3], "call": [9], "reference": [10]},
+        _USER: {"import": [3], "call": [9], "string": [10]},
     }
 
 
@@ -708,8 +739,11 @@ async def test_prose_mentions_are_counted_and_listed_only_when_asked(session, re
     wide = await edit_set_block(session, repo_id, tmp_path, node, prose=True)
 
     assert out["prose_lines"] == 3
-    # Strings that read as code (a type, a dotted target) are references.
-    assert out["files"][_USER] == {"import": [3], "call": [9], "reference": [10, 17, 18, 19]}
+    # A type written as a string is a reference; a name or dotted target in a
+    # string is its own kind.
+    assert out["files"][_USER] == {
+        "import": [3], "call": [9], "reference": [18], "string": [10, 17, 19]
+    }
     assert out["complete"] is True
     assert wide["files"][_USER]["prose"] == [13, 15, 16]
     assert "prose_lines" not in wide
@@ -735,8 +769,85 @@ async def test_typescript_comments_are_prose_and_jsx_tags_are_code(session, repo
 
     out = await edit_set_block(session, repo_id, tmp_path, node)
 
-    assert out["files"]["web/v.tsx"] == {"import": [1], "reference": [6, 7]}
+    assert out["files"]["web/v.tsx"] == {"import": [1], "reference": [6], "string": [7]}
     assert out["prose_lines"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mock_patch_targets_are_strings_not_references(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            '@mock.patch("pkg.catalog.backend_of")\n'
+            "def t1(m): ...\n"
+            "with patch.object(catalog, 'backend_of', return_value=1): ...\n"
+            'monkeypatch.setattr("pkg.catalog.backend_of", lambda n: n)\n'
+            'mocker.patch("pkg.catalog.backend_of", backend_of)\n'
+            'fn = f"{backend_of}"\n'
+            'fn = vars(catalog)["backend_of"]\n'
+            'names = ["backend_of"]\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    files = out["files"][_USER]
+    assert files["string"] == [10, 11, 13, 14, 18]
+    # A line that also names it in code stays a reference.
+    assert files["reference"] == [15, 16, 17]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_forward_reference_annotations_stay_references(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            'def t2(u: "backend_of") -> None: ...\n'
+            'def t3() -> "backend_of": ...\n'
+            'T = TypeVar("T", bound="backend_of")\n'
+            'v = cast("backend_of", w)\n'
+            'getattr(catalog, "backend_of")\n'
+            'z = {"target": "pkg.catalog.backend_of"}\n'
+            'w = lambda: "backend_of"\n'
+            'x: Union["backend_of", None] = None\n'
+            'y = sorted(xs, key=lambda n: "backend_of")\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    # A type written as a string uses it in code; a getattr name, a dict value
+    # or a lambda body does not.
+    files = out["files"][_USER]
+    assert files["reference"] == [11, 12, 13, 14, 18]
+    assert files["string"] == [10, 15, 16, 17, 19]
+
+
+@pytest.mark.asyncio
+async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/a.test.ts": (
+                "import * as mod from './a'\n"
+                "import { pick } from './a'\n"
+                "vi.spyOn(mod, 'pick')\n"
+                'jest.spyOn(mod, "pick").mockReturnValue(1)\n'
+                "expect(pick).toBe(1)\n"
+                "mod['pick'](2)\n"
+                "mod?.['pick'](3)\n"
+            ),
+        },
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    # A string subscript is a member access, not a string target.
+    assert out["files"]["web/a.test.ts"] == {
+        "import": [2], "reference": [5, 6, 7], "string": [3, 4]
+    }
 
 
 @pytest.mark.asyncio
@@ -827,7 +938,7 @@ async def test_get_context_lists_a_flood_of_references_whole(setup_mcp, session,
     resp = await get_context([_SYM], include=["references"])
     refs = resp["targets"][_SYM]["references"]
 
-    assert refs["files"][_USER]["reference"] == [10, *range(12, 52)]
+    assert refs["files"][_USER]["reference"] == list(range(12, 52))
     assert refs["complete"] is True
 
 
@@ -879,7 +990,7 @@ async def _seed_package(
         node_type="symbol",
         name=name,
         file_path=path,
-        kind="function" if language == "go" else "class",
+        kind="function" if language in ("go", "rust") else "class",
         language=language,
         start_line=start,
         end_line=end,
@@ -1024,6 +1135,75 @@ async def test_kotlin_same_package_in_another_directory_is_listed(session, repo_
     assert ("src/com/ex/Main.kt", 3, "reference") in _sites(out)
     assert ("app/misc/Extra.kt", 3, "reference") in _sites(out)
     assert out["complete"] is True, out.get("reasons")
+
+
+_OPEN_RO = "pub(crate) fn open_ro(path: &str) -> u8 {\n    0\n}\n"
+
+
+@pytest.mark.asyncio
+async def test_rust_path_qualified_uses_are_listed_and_complete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": _OPEN_RO,
+            # No ``use``: the path names the function.
+            "src/source.rs": "fn read(p: &str) -> u8 {\n    crate::index::open_ro(p)\n}\n",
+            "src/memory/mod.rs": "fn up(p: &str) -> u8 {\n    super::index::open_ro(p)\n}\n",
+            # Names it only as a longer word: not a site.
+            "src/other.rs": "fn open_ro_all() {}\nfn f() { crate::other::open_ro_all() }\n",
+        },
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    sites = _sites(out)
+    assert ("src/source.rs", 2, "reference") in sites
+    assert ("src/memory/mod.rs", 2, "reference") in sites
+    assert not any(p == "src/other.rs" for p, _n, _k in sites)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_rust_method_called_on_a_value_stays_incomplete(session, repo_id, tmp_path):
+    """``value.open()`` names no path: the member scan still says what it cannot see."""
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": "pub struct Store;\n\nimpl Store {\n    pub fn open(&self) {}\n}\n",
+            "src/app.rs": "fn go() {\n    crate::make().open();\n}\n",
+        },
+        "rust",
+        ("src/index.rs", "Store::open", 4, 4),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: src/app.rs" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_rust_without_git_to_search_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"src/index.rs": _OPEN_RO},
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "rust: could not search for ::open_ro" in out["reasons"]
 
 
 _FIND = (

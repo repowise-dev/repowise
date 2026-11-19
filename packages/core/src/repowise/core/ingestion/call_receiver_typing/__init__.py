@@ -311,6 +311,8 @@ class ReceiverTypingMixin(
         # {file: {class_id: {field: container spelling}}}
         self._container_fields: dict[str, dict[str, dict[str, str | None]]] = {}
         self._module_types: dict[str, dict[str, str | None]] = {}
+        # {python function id: module file every return of it hands on, or None}
+        self._returned_modules: dict[str, str | None] = {}
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}

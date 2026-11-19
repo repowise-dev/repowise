@@ -78,6 +78,7 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "total_value": run.total_value,
         **time_split(run),
         "mapping_partial": bool(run.mapping_partial),
+        "tests_failed": run.tests_failed,
     }
 
 
