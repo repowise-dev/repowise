@@ -131,7 +131,7 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
     results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark JSON), detected from its content.
+    pytest-benchmark or hyperfine JSON), detected from its content.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
