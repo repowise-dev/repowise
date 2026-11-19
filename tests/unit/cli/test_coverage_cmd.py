@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -753,3 +755,90 @@ def test_coverage_export_reads_a_per_test_report_without_an_index(tmp_path, monk
     assert absent.exit_code == 2
     assert "does not exist" in absent.output
     assert "No per-test map" not in absent.output
+
+
+def _status_index(tmp_path) -> str:
+    """An index whose report names three of four production files (#5873)."""
+    import asyncio
+
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.health.coverage.discovery import (
+        CoverageProvenance,
+        CoverageScope,
+    )
+    from repowise.core.persistence import create_session_factory, get_session
+    from repowise.core.persistence.crud import save_coverage_files
+    from repowise.core.persistence.database import create_engine, init_db
+    from repowise.core.persistence.models import HealthFileMetric, Repository
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
+
+    async def build() -> None:
+        engine = create_engine(url)
+        try:
+            await init_db(engine)
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(Repository(
+                    id="r1",
+                    name="calc",
+                    local_path=str(tmp_path),
+                    url="",
+                    settings_json=json.dumps({"exclude_patterns": ["src/calc/vendor/"]}),
+                ))
+                await session.flush()
+                for path, origin, nloc in [
+                    ("src/calc/a.py", "production", 4),
+                    ("src/calc/b.py", "production", 4),
+                    ("src/calc/c.py", "production", 4),
+                    ("src/calc/d.py", "production", 4),
+                    ("src/calc/[slug].py", "production", 4),
+                    ("src/calc/gen/parser.py", "production", 40),
+                    ("src/calc/vendor/lib.py", "production", 40),
+                    ("src/calc/__init__.py", "production", 0),
+                    ("tests/test_calc.py", "test", 6),
+                    ("web/app.ts", "production", 5),
+                ]:
+                    session.add(HealthFileMetric(
+                        repository_id="r1", file_path=path, code_origin=origin, nloc=nloc
+                    ))
+                files = [file_coverage(f"src/calc/{n}.py", [1, 2], [1, 2]) for n in "abc"]
+                # Ingested with ``coverage.ignore: ["src/calc/gen/"]``.
+                scope = CoverageScope(report_formats=("lcov",), ignore=("src/calc/gen/",))
+                await save_coverage_files(
+                    session,
+                    "r1",
+                    files,
+                    source_format="lcov",
+                    provenance=CoverageProvenance(source_formats=("lcov",), scope=scope),
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(build())
+    return url
+
+
+def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = _status_index(tmp_path)
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+
+    text = CliRunner().invoke(cli, ["coverage", "status"])
+    assert text.exit_code == 0, text.output
+    assert "Files:  3" in text.output
+    # The empty module has nothing to cover, the test file is not production, a
+    # .ts file is not a type this Python report measured, coverage.ignore left out
+    # src/calc/gen/, and the repository's exclude_patterns keep out src/calc/vendor/.
+    # Brackets in a path survive the console's markup.
+    assert (
+        "Not in the report: 2 indexed production file(s) (src/calc/[slug].py, src/calc/d.py)"
+        in text.output
+    )
+
+    as_json = CliRunner().invoke(cli, ["coverage", "status", "--format", "json"])
+    coverage = json.loads(as_json.output)["coverage"]
+    assert coverage["unreported_file_count"] == 2
+    assert coverage["unreported_files"] == ["src/calc/[slug].py", "src/calc/d.py"]
+    assert coverage["file_count"] == 3

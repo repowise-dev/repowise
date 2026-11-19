@@ -1189,7 +1189,7 @@ Ingest coverage reports and gate a change on patch coverage in CI.
 ```bash
 repowise coverage setup                 # how to write a report here (`evidence setup`, coverage part)
 repowise coverage add [PATHS...]        # ingest (+ per-test map when contexts exist)
-repowise coverage status                # ingested coverage + "Test-to-code map" counts
+repowise coverage status                # ingested coverage, production files it leaves out, "Test-to-code map" counts
 repowise coverage export [REPORT] [-o FILE]  # the per-test map as gzipped JSON, for upload from CI
 repowise coverage check [REVSPEC]       # gate a change on patch coverage (CI)
 repowise coverage suggest-gates

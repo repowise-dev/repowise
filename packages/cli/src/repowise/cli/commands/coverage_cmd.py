@@ -523,6 +523,14 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     console.print(
                         f"  Report paths matched: {paths['matched']} of {paths['total']}"
                     )
+                unreported = summary.get("unreported_file_count") or 0
+                if unreported:
+                    named = summary.get("unreported_files") or []
+                    more = f" and {unreported - len(named)} more" if unreported > len(named) else ""
+                    console.print(
+                        f"  Not in the report: {unreported} indexed production file(s) "
+                        f"({escape(', '.join(named))}{more})"
+                    )
                 if (summary.get("freshness") or {}).get("status") == "stale":
                     console.print(
                         f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
