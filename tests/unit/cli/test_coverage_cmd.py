@@ -793,6 +793,7 @@ def _status_index(tmp_path) -> str:
                     ("src/calc/d.py", "production", 4),
                     ("src/calc/[slug].py", "production", 4),
                     ("src/calc/gen/parser.py", "production", 40),
+                    ("src/calc/gen/keep.py", "production", 4),
                     ("src/calc/vendor/lib.py", "production", 40),
                     ("src/calc/__init__.py", "production", 0),
                     ("tests/test_calc.py", "test", 6),
@@ -802,8 +803,10 @@ def _status_index(tmp_path) -> str:
                         repository_id="r1", file_path=path, code_origin=origin, nloc=nloc
                     ))
                 files = [file_coverage(f"src/calc/{n}.py", [1, 2], [1, 2]) for n in "abc"]
-                # Ingested with ``coverage.ignore: ["src/calc/gen/"]``.
-                scope = CoverageScope(report_formats=("lcov",), ignore=("src/calc/gen/",))
+                # Ingested with ``coverage.ignore: ["src/calc/gen/", "!src/calc/gen/keep.py"]``.
+                scope = CoverageScope(
+                    report_formats=("lcov",), ignore=("src/calc/gen/", "!src/calc/gen/keep.py")
+                )
                 await save_coverage_files(
                     session,
                     "r1",
@@ -830,15 +833,20 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
     assert "Files:  3" in text.output
     # The empty module has nothing to cover, the test file is not production, a
     # .ts file is not a type this Python report measured, coverage.ignore left out
-    # src/calc/gen/, and the repository's exclude_patterns keep out src/calc/vendor/.
+    # src/calc/gen/ except keep.py, and the repository's exclude_patterns keep out
+    # src/calc/vendor/.
     # Brackets in a path survive the console's markup.
     assert (
-        "Not in the report: 2 indexed production file(s) (src/calc/[slug].py, src/calc/d.py)"
-        in text.output
+        "Not in the report: 3 indexed production file(s) "
+        "(src/calc/[slug].py, src/calc/d.py, src/calc/gen/keep.py)" in text.output
     )
 
     as_json = CliRunner().invoke(cli, ["coverage", "status", "--format", "json"])
     coverage = json.loads(as_json.output)["coverage"]
-    assert coverage["unreported_file_count"] == 2
-    assert coverage["unreported_files"] == ["src/calc/[slug].py", "src/calc/d.py"]
+    assert coverage["unreported_file_count"] == 3
+    assert coverage["unreported_files"] == [
+        "src/calc/[slug].py",
+        "src/calc/d.py",
+        "src/calc/gen/keep.py",
+    ]
     assert coverage["file_count"] == 3
