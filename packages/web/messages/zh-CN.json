@@ -2266,7 +2266,7 @@
     },
     "next": {
       "title": "下一步",
-      "titleCount": "下一步 · {count, number}",
+      "titleCount": "下一步 · {count, number}{setup, plural, =0 {} other { · # 个设置步骤}}",
       "timeFrame": "时间范围",
       "week": "本周",
       "weekHint": "最近 7 天的提交带来了哪些变化",

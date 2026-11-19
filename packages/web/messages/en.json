@@ -2374,7 +2374,7 @@
     },
     "next": {
       "title": "Do next",
-      "titleCount": "Do next · {count, number}",
+      "titleCount": "Do next · {count, number}{setup, plural, =0 {} one { · # setup step} other { · # setup steps}}",
       "timeFrame": "Time frame",
       "week": "This week",
       "weekHint": "What the last 7 days of commits changed",
