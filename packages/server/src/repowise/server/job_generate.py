@@ -48,13 +48,27 @@ def _build_generate_intent(config: dict) -> Any:
     if kind == "page_ids":
         return PageSelectionIntent(page_ids=tuple(sel.get("page_ids") or ()))
     if kind == "path_prefix":
-        prefix = sel.get("path_prefix")
-        return PageSelectionIntent(path_globs=(prefix,) if prefix else ())
+        anchored = _root_anchored_prefix(sel.get("path_prefix") or "")
+        return PageSelectionIntent(path_globs=(anchored,) if anchored else ())
     if kind == "ranked":
         # The seed comes from build_ranked_seed and short-circuits resolve_scope,
         # so the intent is unused; return an empty one rather than picking a kind.
         return PageSelectionIntent()
     return PageSelectionIntent(unwritten=True)
+
+
+def _root_anchored_prefix(prefix: str) -> str:
+    """A server path prefix as a root-anchored glob for the shared engine.
+
+    ``path_globs`` go through the gitignore engine (#5779), where a bare name
+    such as ``src`` matches at any depth. A server prefix has always meant the
+    directory under the repository root, so it is anchored with a leading
+    ``/``: ``src`` selects ``src`` and everything under it, never
+    ``vendor/src`` or ``lib/src`` (each extra page is an LLM call). Empty or
+    slash-only prefixes select nothing, as before.
+    """
+    trimmed = prefix.replace("\\", "/").strip("/")
+    return f"/{trimmed}" if trimmed else ""
 
 
 def _effective_cascade(config: dict) -> str:
