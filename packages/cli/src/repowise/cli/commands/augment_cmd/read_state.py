@@ -62,17 +62,28 @@ _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 #: Per-session state lives in its own file, and that is not a detail.
 #:
 #: It used to be a single ``.augment-session.json`` per repo, keyed on
-#: ``session_id``, which **reset the whole file whenever the id changed**. A
-#: subagent sidechain runs under a different session id from its parent, and
-#: PostToolUse fires in sidechains, so a parent Read and a subagent Read
-#: alternating through one repo wiped each other's state on every event. No
-#: Read surface could hold a once-per-file gate long enough to fire, which
-#: looked like sidechains not being reachable and was really this file name.
+#: ``session_id``, which **reset the whole file whenever the id changed**, so
+#: two sessions alternating through one repo wiped each other's state on every
+#: event and no once-per-file gate could hold long enough to fire.
 #:
-#: Partitioning is also the semantically right answer, not merely the fix: a
-#: subagent never received the parent's bytes, so it must not inherit the
-#: parent's "you already have this".
+#: The partition is one context window, not one session id. A subagent's hook
+#: payload carries its parent's ``session_id`` and adds an ``agent_id``
+#: (Claude Code and Codex both; absent on the main thread), so the file is
+#: keyed on both (:func:`bind_agent`). A subagent never received the parent's
+#: bytes, so it must not inherit the parent's "you already have this", and the
+#: parent must not inherit the subagent's.
 _STATE_DIR = "hook-sessions"
+
+#: The ``agent_id`` of the hook event this process is handling, "" on a main
+#: thread. One hook event per process, so it is bound once at dispatch.
+_agent_id = ""
+
+
+def bind_agent(payload: dict) -> None:
+    """Key this process's session state on the payload's subagent, when it names one."""
+    global _agent_id
+    agent = payload.get("agent_id")
+    _agent_id = agent if isinstance(agent, str) else ""
 
 #: Session files older than this are swept, once, when a session first writes.
 #: A session lasts hours at the outside and the files are a few KB, so this is
@@ -82,10 +93,11 @@ _STATE_TTL_SECONDS = 7 * 24 * 3600
 
 
 def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
-    """This session's state file. One per session id — see :data:`_STATE_DIR`."""
+    """This context window's state file: one per session id and subagent (:data:`_STATE_DIR`)."""
     import hashlib
 
-    digest = hashlib.sha1(session_id.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
+    key = f"{session_id}/{_agent_id}" if _agent_id else session_id
+    digest = hashlib.sha1(key.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return Path(repo_path) / ".repowise" / _STATE_DIR / f"{digest}.json"
 
 
@@ -125,6 +137,7 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
     """
     fresh = {
         "session_id": session_id,
+        "agent_id": _agent_id,
         "seq": 0,
         "reads": {},
         "edits": {},
@@ -165,6 +178,8 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
     except (OSError, json.JSONDecodeError):
         return fresh
     if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return fresh
+    if state.get("agent_id", "") != _agent_id:
         return fresh
     for key, default in fresh.items():
         if not isinstance(state.get(key), type(default)):

@@ -77,9 +77,12 @@ class TestTheCollapse:
         assert "Unchanged since you read it: a.py" in served
         assert "the whole file" in served, "the notice must name the range served before"
 
-    def test_the_notice_names_the_earlier_tool_call(self, repo: Path) -> None:
+    def test_the_notice_names_no_tool_call_number(self, repo: Path) -> None:
+        """The state counts only the reads and edits it tracks, not the agent's calls."""
         _read(repo)
-        assert "tool call 1" in _served(_read(repo))
+        served = _served(_read(repo))
+        assert "earlier in this session" in served
+        assert "tool call" not in served
 
     def test_the_replacement_is_read_shaped_not_a_bare_string(self, repo: Path) -> None:
         """Read validates ``updatedToolOutput`` against its own schema; a bare
@@ -335,3 +338,79 @@ class TestLedger:
         assert meta["off"] is None and meta["lim"] is None
         assert meta["seq"] == 1
         assert len(meta["h"]) == 12
+
+
+class TestSubagentsKeepTheirOwnState:
+    """A subagent's payload carries its parent's session id plus an ``agent_id``.
+
+    It never received the parent's bytes, so a parent Read must not collapse
+    the subagent's first Read of the same file, nor the other way round.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _main_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from repowise.cli.commands.augment_cmd import read_state
+
+        monkeypatch.setattr(read_state, "_agent_id", "")
+
+    @staticmethod
+    def _as(agent: str | None) -> None:
+        from repowise.cli.commands.augment_cmd.read_state import bind_agent
+
+        bind_agent({} if agent is None else {"agent_id": agent})
+
+    def test_a_parent_read_does_not_collapse_the_subagents_first_read(self, repo: Path) -> None:
+        self._as(None)
+        _read(repo)
+        self._as("agent-1")
+        assert _read(repo).replacement is None
+
+    def test_a_subagent_read_does_not_collapse_the_parents_first_read(self, repo: Path) -> None:
+        self._as("agent-1")
+        _read(repo)
+        self._as(None)
+        assert _read(repo).replacement is None
+
+    def test_two_subagents_do_not_share_state(self, repo: Path) -> None:
+        self._as("agent-1")
+        _read(repo)
+        self._as("agent-2")
+        assert _read(repo).replacement is None
+
+    def test_a_subagent_still_collapses_its_own_re_read(self, repo: Path) -> None:
+        self._as("agent-1")
+        _read(repo)
+        assert _served(_read(repo)) is not None
+
+
+@pytest.mark.parametrize(
+    ("client", "payload"),
+    [
+        # Claude Code: agent_id only inside a subagent, absent on the main thread.
+        (None, {"hook_event_name": "PostToolUse", "tool_name": "Read", "agent_id": "a1"}),
+        # Codex: the same optional field on its PostToolUse input.
+        (
+            "codex",
+            {"hook_event_name": "PostToolUse", "tool_name": "Bash", "agent_id": "a1", "turn_id": "t"},
+        ),
+        (None, {"hook_event_name": "PostToolUse", "tool_name": "Read"}),
+    ],
+)
+def test_the_hook_binds_the_payloads_agent(
+    client: str | None, payload: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+
+    from repowise.cli.commands.augment_cmd import command, read_state
+
+    monkeypatch.setattr(read_state, "_agent_id", "stale")
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({**payload, "session_id": SESSION, "cwd": str(tmp_path)})),
+    )
+    command._run_augment(client=client)
+    assert read_state._agent_id == payload.get("agent_id", "")
+    path = read_state._session_state_path(tmp_path, SESSION)
+    read_state._agent_id = ""
+    main_path = read_state._session_state_path(tmp_path, SESSION)
+    assert (path == main_path) is ("agent_id" not in payload)
