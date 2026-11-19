@@ -461,7 +461,6 @@ async def store_evidence(
         join_entries,
         load_origins,
         load_symbols,
-        place_test_entries,
         run_fields,
         run_key,
         stamp_bodies,
@@ -481,10 +480,7 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
-    if any(entry.get("classname") for entry in doc.entries):
-        from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
-
-        doc = place_test_entries(doc, await health_file_paths(session, repo.id))
+    doc = await _placed_tests(session, repo.id, doc)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(
@@ -587,6 +583,20 @@ def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[s
             "to one `repowise evidence add` (several files, or the directory holding them)."
         ),
     }
+
+
+async def _placed_tests(session: Any, repo_id: str, doc: EvidenceDocument) -> EvidenceDocument:
+    """*doc* with each test named only by its classname placed on an indexed file.
+
+    See :func:`~.ingest.place_test_entries`; the file list is read only when a test needs it.
+    """
+    if not any(entry.get("classname") for entry in doc.entries):
+        return doc
+    from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
+
+    from .ingest import place_test_entries
+
+    return place_test_entries(doc, await health_file_paths(session, repo_id))
 
 
 async def ingest_evidence(
