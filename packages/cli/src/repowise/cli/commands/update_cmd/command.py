@@ -963,7 +963,9 @@ def _check_config_and_renderer(run: UpdateRun) -> None:
     repo_path = run.repo_path
     # The tolerant loader: a malformed file warns and falls back to defaults.
     run.cfg = load_config(repo_path)
-    run.config = classify_config_changes(repo_path, run.state, run.cfg)
+    run.config = classify_config_changes(
+        repo_path, run.state, run.cfg, defer_generation=run.defer_docs
+    )
 
     # A renderer upgrade retires the "up to date" shortcut for one run so stale
     # structural pages re-render.
@@ -2077,7 +2079,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         reconcile_full_scope=config.traversal_changed,
         full_generation_page_ids=_full_generation_page_ids(run, pages, template_wiki),
         stamp_renderer=pages.renderer_render_ok,
-        dependency_fingerprints=config.curr_dependency_fps,
+        dependency_fingerprints=_deferred_dependency_fingerprints(run, pages),
         vector_store=config_vector_store,
         require_config_rebuild_success=config.rebuild_required,
         deferred_page_scope=(
@@ -2090,9 +2092,24 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # The broad fingerprint advances after the index rebuild. Keep only an
+        # explicitly changed generation bucket pending when docs were deferred;
+        # its residual mismatch is ignored by later deferred runs.
+        stamp_config=True,
         timings=run.timings,
     )
+
+
+def _deferred_dependency_fingerprints(run: UpdateRun, pages: _TemplatePages) -> dict[str, str]:
+    """Stamp completed config buckets while retaining deferred generation work."""
+    config = run.config
+    assert config is not None
+    fingerprints = dict(config.curr_dependency_fps)
+    if pages.docs_deferred and "generation" in config.changed_dependencies:
+        previous = run.state.get("config_dependency_fingerprints") or {}
+        if "generation" in previous:
+            fingerprints["generation"] = previous["generation"]
+    return fingerprints
 
 
 def _config_vector_store(run: UpdateRun, pages: _TemplatePages, template_wiki: bool):

@@ -22,6 +22,39 @@ def build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) 
     return [p for p in paths if not spec.match_file(p)]
 
 
+def build_filtered_patch_paths(
+    file_diffs: list, exclude_patterns: list[str]
+) -> tuple[set[str], set[str]]:
+    """Return changed and presence-changed paths that the graph actually indexes.
+
+    Excluded paths must not reach the incremental patch refusal gate: their
+    presence in a commit says nothing about whether the persisted graph is
+    complete for the configured traversal.
+    """
+    import pathspec
+
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
+
+    def included(path: str | None) -> bool:
+        return bool(path) and not spec.match_file(path)
+
+    changed = {
+        path
+        for fd in file_diffs
+        for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
+        if included(path)
+    }
+    presence_changed = {
+        path
+        for fd in file_diffs
+        if getattr(fd, "status", None) != "modified"
+        or getattr(fd, "old_path", None) not in (None, getattr(fd, "path", None))
+        for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
+        if included(path)
+    }
+    return changed, presence_changed
+
+
 def _record_structural_episodes(repo_path: Any, traverser: Any) -> None:
     """Best-effort structural episodes from the walk, without the formatter check."""
     try:
@@ -1108,6 +1141,9 @@ async def rebuild_graph_and_git(
     )
 
     # Full re-ingest for graph (needed for cascade analysis)
+    patch_changed_paths, patch_presence_changed = build_filtered_patch_paths(
+        file_diffs, exclude_patterns
+    )
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
         repo_path,
         exclude_patterns,
@@ -1119,21 +1155,9 @@ async def rebuild_graph_and_git(
         seed_edges=seed_edges,
         patch_requested=patch_graph,
         cache_resolutions=patch_graph,
-        changed_paths={
-            path
-            for fd in file_diffs
-            for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
-        },
+        changed_paths=patch_changed_paths,
         # Only a plain in-place edit proves the file existed before and after.
-        presence_changed={
-            path
-            for fd in file_diffs
-            if getattr(fd, "status", None) != "modified"
-            or getattr(fd, "old_path", None) not in (None, getattr(fd, "path", None))
-            for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
-        },
+        presence_changed=patch_presence_changed,
     )
     if previous_seed_edges is not None:
         graph_builder.previous_seed_edges = previous_seed_edges

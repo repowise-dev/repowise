@@ -138,6 +138,7 @@ def test_deferred_update_keeps_pages_and_vectors(indexed_repo: Path, monkeypatch
         state["config_dependency_fingerprints"] = config_dependency_fingerprints(
             repo, config=load_config(repo)
         )
+        old_generation_fp = state["config_dependency_fingerprints"]["generation"]
         save_state(repo, state)
         (repo / ".repowise" / "config.yaml").write_text("language: zh\n")
 
@@ -162,6 +163,11 @@ def test_deferred_update_keeps_pages_and_vectors(indexed_repo: Path, monkeypatch
     assert current["renderer_fingerprint"] == renderer
     assert current["last_docs_commit"] == old_docs
     assert current["last_sync_commit"] == _git(repo, "rev-parse", "HEAD")
+    if change == "generation":
+        from repowise.cli.helpers import config_fingerprint
+
+        assert current["config_fingerprint"] == config_fingerprint(repo)
+        assert current["config_dependency_fingerprints"]["generation"] == old_generation_fp
     done = json.loads(result.stdout.splitlines()[-1])
     assert done["pages_generated"] == 0
     assert done["docs_deferred"] is True
@@ -185,6 +191,68 @@ def test_stale_docs_do_not_rebuild_a_current_index(indexed_repo: Path, monkeypat
         assert done["outcome"] == "noop"
         assert done["stale_pages"] == 3
     assert load_state(repo)["renderer_fingerprint"] == "previous-renderer"
+
+
+def test_deferred_traversal_config_stamps_index_fingerprints(indexed_repo: Path, monkeypatch):
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    repo = indexed_repo
+    state = load_state(repo)
+    state["config_fingerprint"] = config_fingerprint(repo)
+    state["config_dependency_fingerprints"] = config_dependency_fingerprints(
+        repo, config=load_config(repo)
+    )
+    save_state(repo, state)
+    config_path = repo / ".repowise" / "config.yaml"
+    config_path.write_text('exclude_patterns:\n  - "*.sha384"\n')
+
+    first = _defer(repo)
+    assert first.exit_code == 0, first.output + first.stderr + repr(first.exception)
+    current = load_state(repo)
+    assert current["config_fingerprint"] == config_fingerprint(repo)
+    assert current["config_dependency_fingerprints"] == config_dependency_fingerprints(
+        repo, config=load_config(repo)
+    )
+
+    def _unwanted(*args, **kwargs):
+        raise AssertionError("A completed deferred traversal rebuild ran again")
+
+    monkeypatch.setattr(command, "_rebuild_index", _unwanted)
+    second = _defer(repo)
+    assert second.exit_code == 0, second.output + second.stderr + repr(second.exception)
+    assert json.loads(second.stdout.splitlines()[-1])["outcome"] == "noop"
+
+
+def test_deferred_generation_bucket_does_not_rebuild_on_later_deferred_run(
+    indexed_repo: Path, monkeypatch
+):
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    repo = indexed_repo
+    state = load_state(repo)
+    state["config_fingerprint"] = config_fingerprint(repo)
+    state["config_dependency_fingerprints"] = config_dependency_fingerprints(
+        repo, config=load_config(repo)
+    )
+    old_generation_fp = state["config_dependency_fingerprints"]["generation"]
+    save_state(repo, state)
+    (repo / ".repowise" / "config.yaml").write_text("language: zh\n")
+
+    first = _defer(repo)
+    assert first.exit_code == 0, first.output + first.stderr + repr(first.exception)
+    current = load_state(repo)
+    assert current["config_fingerprint"] == config_fingerprint(repo)
+    assert current["config_dependency_fingerprints"]["generation"] == old_generation_fp
+
+    def _unwanted(*args, **kwargs):
+        raise AssertionError("The deferred generation bucket triggered another graph rebuild")
+
+    monkeypatch.setattr(command, "_rebuild_index", _unwanted)
+    second = _defer(repo)
+    assert second.exit_code == 0, second.output + second.stderr + repr(second.exception)
+    assert json.loads(second.stdout.splitlines()[-1])["outcome"] == "noop"
 
 
 def test_status_reports_the_persisted_stale_count(indexed_repo: Path):

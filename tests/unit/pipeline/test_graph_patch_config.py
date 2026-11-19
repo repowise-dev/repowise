@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from repowise.core.pipeline.incremental import build_repo_graph
+from repowise.core.pipeline.incremental.graph import build_filtered_patch_paths
 from repowise.core.pipeline.incremental.config_inputs import (
     _digest,
     _unread_unindexed,
@@ -78,6 +80,20 @@ _TREE = {
     ".github/actions/setup/action.yml": "runs:\n  using: composite\n  steps:\n    - run: ./scripts/test.sh\n      shell: bash\n",
     "scripts/test.sh": "#!/bin/sh\nyarn jest src/fmt.ts\n",
 }
+
+
+def test_excluded_file_diffs_do_not_reach_patch_refusal_gate() -> None:
+    diffs = [
+        SimpleNamespace(path="src/app.py", old_path=None, status="added"),
+        SimpleNamespace(path=".sqlx/query.json", old_path=None, status="added"),
+        SimpleNamespace(path="query.sha384", old_path=None, status="added"),
+        SimpleNamespace(path="renamed.py", old_path=".sqlx/old.json", status="renamed"),
+    ]
+
+    changed, presence_changed = build_filtered_patch_paths(diffs, [".sqlx/**", "*.sha384"])
+
+    assert changed == {"src/app.py", "renamed.py"}
+    assert presence_changed == {"src/app.py", "renamed.py"}
 
 
 def _write(root: Path, files: dict[str, str | None]) -> None:
