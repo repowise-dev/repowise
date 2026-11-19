@@ -359,9 +359,10 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
 
     ``no_runtime_data``: no profile run is stored. ``stale``: every function
     the stored runs mapped is stale (measured at another commit, body changed
-    since). ``needs_update``: a workload's newest run ranks functions in the
-    per-function view but the per-workload view holds nothing (a store from
-    before it existed, until the next update or ingest rebuilds both); a
+    since). ``needs_update``: a workload's newest run is the basis of ranked
+    functions in the per-function view but the per-workload view holds
+    nothing (a store from before it existed, until the next update or ingest
+    rebuilds both); a
     newest run that ranks nothing beside an older one that did is
     ``not_ranked``, never this. ``not_ranked``: current evidence that ranks
     nothing (too few samples in production code, or no production frame).
@@ -388,6 +389,17 @@ async def _workload_view_missing(session: AsyncSession, repository_id: str) -> b
 
     Built, that run's ranked functions would be rows there, so an empty view
     beside ranked older runs only (a thin newest run) is not this.
+
+    Sound, not complete: a function keeps one basis run across all runs, so
+    a newest run whose every ranked function another run ranks better (a
+    lead class, a better place) is the basis of nothing, and a never built
+    view then reads as ``not_ranked``. Nothing stored says whether a run
+    ranked a function it is not the basis of: that takes the run's place
+    and floor, which only the derivation knows. Counting any function a
+    newest run measured instead would answer ``needs_update`` after every
+    update for a thin newest run, so the miss is kept: it lasts only until
+    the next update or ingest rebuilds both views. A stored marker that the
+    view was built would make this exact.
     """
     from types import SimpleNamespace
 
