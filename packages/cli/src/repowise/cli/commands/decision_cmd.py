@@ -47,6 +47,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     NO_RATIONALE_BLOCKER,
     NO_SCOPE_BLOCKER,
     RULE_DRIFTED,
+    rule_drift_reason,
 )
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
@@ -1592,7 +1593,7 @@ def _print_health_summary(summary: dict) -> None:
 def _stale_reason(d) -> str:
     """Why a decision reads stale: what left its rule, else how much of its code moved."""
     if getattr(d, "rule_check", None) == RULE_DRIFTED:
-        return f"rule changed: {d.rule_check_basis}"
+        return f"rule changed: {rule_drift_reason(d.rule_check_basis)}"
     return f"staleness: {d.staleness_score:.2f}"
 
 

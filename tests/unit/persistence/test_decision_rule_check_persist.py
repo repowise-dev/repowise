@@ -248,3 +248,24 @@ async def test_a_verdict_on_a_record_whose_files_no_longer_moved_is_cleared(sess
     assert rec.staleness_score == 0.0
     assert rec.rule_check is None
     assert await current_currency(session, rec) == "active"
+
+
+@pytest.mark.parametrize(
+    ("basis", "reason"),
+    [
+        ("quote_gone", "the comment it came from was removed"),
+        ("symbol_gone:retry_limit", "`retry_limit` no longer exists"),
+        ("literal_gone:500_000", "`500_000` was removed from the code it names"),
+    ],
+)
+def test_every_surface_names_what_left_the_rule_in_words(basis: str, reason: str) -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.decisions.lifecycle import rule_drift_reason
+    from repowise.server.mcp_server.tool_why.dashboard import _rule_changed
+
+    assert rule_drift_reason(basis) == reason
+    drifted = SimpleNamespace(rule_check="drifted", rule_check_basis=basis)
+    assert _rule_changed(drifted) == {"rule_changed": reason}
+    # An unflagged or churn-only row carries no extra key, so its bytes do not grow.
+    assert _rule_changed(SimpleNamespace(rule_check="unknown", rule_check_basis="no_anchor")) == {}

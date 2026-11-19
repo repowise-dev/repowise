@@ -60,6 +60,7 @@ __all__ = [
     "record_evidence",
     "record_scope",
     "requirement",
+    "rule_drift_reason",
     "status_rank",
 ]
 
@@ -269,6 +270,18 @@ NEEDS_REVIEW_STALENESS: float = 0.5
 RULE_HOLDS = "holds"
 RULE_DRIFTED = "drifted"
 RULE_UNKNOWN = "unknown"
+
+
+def rule_drift_reason(basis: str | None) -> str:
+    """What went away from a ``drifted`` record's rule, in words, from its stored basis."""
+    kind, _, what = (basis or "").partition(":")
+    if kind == "quote_gone":
+        return "the comment it came from was removed"
+    if kind == "symbol_gone":
+        return f"`{what}` no longer exists"
+    if kind == "literal_gone":
+        return f"`{what}` was removed from the code it names"
+    return basis or "its rule changed"
 
 #: Currencies that still bind future work. ``needs_review`` deliberately does:
 #: a decision whose code moved is a decision to re-read, not one to ignore.
