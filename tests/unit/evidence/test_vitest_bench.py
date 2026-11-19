@@ -69,3 +69,33 @@ def test_an_invalid_report_is_refused_with_a_remedy(data: bytes, tmp_path: Path)
         )
     assert error.value.code == "invalid_evidence"
     assert "vitest bench --outputJson=PATH" in error.value.hint
+
+
+def test_a_repeated_name_keeps_each_series(tmp_path: Path) -> None:
+    data = json.loads(FIXTURE.read_bytes())
+    file = data["files"][0]
+    group = file["groups"][0]
+    original = group["benchmarks"][0]
+    group["benchmarks"].append({**original, "mean": 2.5})
+    data["files"].append({
+        "filepath": "/other/sorting.bench.mjs",
+        "groups": [{
+            "fullName": group["fullName"],
+            "benchmarks": [{**original, "name": "numeric (2)"}, {**original, "mean": 3.5}],
+        }],
+    })
+
+    prepared = prepare_evidence(
+        json.dumps(data).encode(), name="run.json", checkout_root=tmp_path, commit=COMMIT,
+    )
+    doc = prepared.doc
+    assert doc is not None
+    assert doc.skipped == {}
+    assert [(entry["name"], entry["mean"]) for entry in doc.entries] == [
+        ("sorting.bench.mjs > sorting > numeric", original["mean"]),
+        ("sorting.bench.mjs > sorting > numeric (3)", 2.5),
+        ("sorting.bench.mjs > sorting > nested > default",
+         file["groups"][1]["benchmarks"][0]["mean"]),
+        ("sorting.bench.mjs > sorting > numeric (2)", original["mean"]),
+        ("sorting.bench.mjs > sorting > numeric (4)", 3.5),
+    ]

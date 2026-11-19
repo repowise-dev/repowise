@@ -240,13 +240,13 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 | Kind | Entries | Input formats read |
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
-| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, hyperfine JSON, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, hyperfine JSON, Vitest benchmark JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | A v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `vitest-bench`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -277,6 +277,7 @@ The format is detected from the content, never the file name;
 |---|---|---|
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
 | `hyperfine` | `hyperfine --export-json PATH` | one series per result, named `command 1`, `command 2`, ... (the command line is never stored); `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds` (the number of timed runs) |
+| `vitest-bench` | `vitest bench --outputJson=PATH` | `fullName > name` names the series, with a numeric suffix on repeated names; `min`, `max`, `mean`, `median` in milliseconds, lower is better, and `rounds` from `sampleCount` |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to
@@ -290,6 +291,7 @@ The format is detected from the content, never the file name;
   flag is kept unless `--dirty` or `--clean` says otherwise.
 - Machine details, parameters and `extra_info` are not read.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
+- Vitest's labels include nested suites. Each result stays a standalone series.
 
 ## The `repowise-evidence-v1` document
 

@@ -134,10 +134,10 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile or benchmark
     results as the tool wrote them (Speedscope JSON, Go pprof, V8 .cpuprofile,
-    collapsed stacks, pytest-benchmark or hyperfine JSON), detected from its
-    content. Several profiles (a parent process and its workers, or a directory
-    holding one file per process) merge into one run; they must share a format,
-    unit, tool and clock.
+    collapsed stacks, pytest-benchmark, hyperfine or Vitest benchmark JSON),
+    detected from its content. Several profiles (a parent process and its
+    workers, or a directory holding one file per process) merge into one run;
+    they must share a format, unit, tool and clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it.
     A profile's frames join to the indexed functions only under the checkout
