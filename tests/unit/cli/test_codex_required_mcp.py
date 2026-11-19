@@ -137,12 +137,22 @@ def _doctor_with(
     return codex_target.TARGET.doctor(repo_path=tmp_path)
 
 
-def test_the_install_owns_the_fix_slot_when_there_is_nothing_to_point_at(
+def test_the_install_owns_the_fix_slot_when_the_server_is_the_only_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(tmp_path, monkeypatch, pinned="repowise")
+
+    assert report.fix_command == "pip install repowise"
+
+
+def test_stale_prompts_keep_their_fix_when_the_install_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report = _doctor_with(tmp_path, monkeypatch, pinned="repowise", stale=("a.md",))
 
-    assert report.fix_command == "pip install repowise"
+    assert report.fix_command == "repowise agents add --target=codex"
+    # The install is still named, in the server's own issue.
+    assert "pip install repowise" in report.issues[0]
 
 
 def test_an_unlaunchable_server_alone_leaves_the_fix_in_its_issue(

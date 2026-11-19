@@ -1383,17 +1383,17 @@ class CodexTarget:
 
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
-        # No repowise command changes what an entry launches, so an unlaunchable
-        # server takes the fix slot only when the fix is the install itself; any
-        # other edit is spelled out in its issue, and the slot stays with the
-        # command that repairs the remaining issues, if there are any.
+        # An unlaunchable server's fix is spelled out in its own issue (no
+        # repowise command changes what an entry launches), so the slot goes to
+        # the command that repairs the other issues. Only when the server is the
+        # sole issue and the fix is the install itself does the install take it.
         fix_command: str | None = None
-        if unlaunchable and resolve_command_missing():
-            fix_command = INSTALL_COMMAND
-        elif stale:
+        if stale:
             fix_command = "repowise agents add --target=codex"
         elif len(issues) > len(unlaunchable):
             fix_command = "repowise hook rewrite install"
+        elif resolve_command_missing():
+            fix_command = INSTALL_COMMAND
         # Stale prompts win the fix slot: `agents add` rewrites them *and* the
         # hook, where `hook rewrite install` only does the hook. It is also the
         # honest command for the case `refresh` cannot reach: a machine with
