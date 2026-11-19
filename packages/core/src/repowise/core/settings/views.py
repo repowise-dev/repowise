@@ -26,6 +26,7 @@ __all__ = [
     "path_flag",
     "requirement",
     "resolve_many",
+    "set_command",
     "state",
     "undo_command",
     "view",
@@ -146,6 +147,19 @@ def cli_value(value: Any) -> str:
     return shlex.quote(str(value))
 
 
+def set_command(key: str, value: Any, path: str | None = None) -> str:
+    """``repowise config set`` for *value*, ready to paste.
+
+    A value that starts with ``-`` (``-get_why,+get_health``) goes after ``--``
+    so the command line does not read it as an option.
+    """
+    text = cli_value(value)
+    # Judge the word the shell hands over, not its quoted spelling: "'-a b'" is still "-a b".
+    if shlex.split(text)[0].startswith("-"):
+        return f"repowise config set {key}{path_flag(path)} -- {text}"
+    return f"repowise config set {key} {text}{path_flag(path)}"
+
+
 def undo_command(m: Any, path: str | None = None, *, main: bool = True) -> str | None:
     """The command that puts the file back where it was, or ``None`` when none is needed.
 
@@ -158,7 +172,7 @@ def undo_command(m: Any, path: str | None = None, *, main: bool = True) -> str |
 
     key = m.setting.key
     if m.written_before is not MISSING:
-        return f"repowise config set {key} {cli_value(m.written_before)}{path_flag(path)}"
+        return set_command(key, m.written_before, path)
     if main or m.written_after is not MISSING:
         return f"repowise config reset {key}{path_flag(path)}"
     return None
