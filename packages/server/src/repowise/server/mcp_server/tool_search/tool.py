@@ -222,9 +222,9 @@ async def search_codebase(
     matches, resolve an identifier to a symbol_id, or find files for
     get_context. Identifier, literal, `a|b|c` or regex queries return
     `lines` (path, line, kind, text; definitions first, one group per
-    alternative) read from live files; when `complete` is true they are
-    every match, so no grep is needed. `candidates` lists
-    distinct files to Read, best first.
+    alternative; `in` names the enclosing symbol until it changes) read
+    from live files; when `complete` is true they are every match, so no
+    grep is needed. `candidates` lists distinct files to Read, best first.
 
     Args:
         query: Identifier, `a|b` alternation, regex, path, or natural language.

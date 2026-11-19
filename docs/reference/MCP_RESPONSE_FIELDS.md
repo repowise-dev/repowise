@@ -239,6 +239,8 @@ Every live line naming a symbol target, as `{path, line, kind, text}` with kind 
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
 - `doc`: the first line of each document naming the symbol, with `mentions` counting them when there are more; release notes are skipped
 
+In get_context each file maps kinds to line numbers, plus, in production files, `in`: the indexed symbol (`Owner.member`) holding each listed line other than a `definition`, `same_name` or `doc` line. Module-level lines are in no symbol and not listed there. Names come from the index, lines from live files.
+
 Never complete for:
 
 - languages other than Python, TypeScript and JavaScript (same-package use needs no import)
@@ -389,6 +391,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
+- `in` names the indexed symbol (`Owner.member`) a non-definition row in a production file sits in, on the first row of each run in one file and one symbol; the rows after it in the same file without `in` are in the same symbol. A module-level row after such a run says `<module>`. The names come from the index, the lines from live files.
 - When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
