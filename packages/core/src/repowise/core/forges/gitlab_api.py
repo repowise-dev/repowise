@@ -6,11 +6,17 @@ API root, which GitLab CI exposes as ``CI_API_V4_URL``. The token goes in a
 A CI job token does not: GitLab does not let it write merge-request notes.
 
 Errors raise :class:`GitLabError` with a message that says what to check.
+A busy or briefly failing GitLab (429, a 5xx, a dropped connection) is
+retried with backoff first; see :meth:`GitLabClient._send`.
 """
 
 from __future__ import annotations
 
+import ssl
+import time
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -18,6 +24,18 @@ import httpx
 
 #: Largest page GitLab serves.
 PER_PAGE = 100
+
+#: Answers worth one more try: a busy or briefly failing GitLab.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+#: Methods safe to send twice. A POST that timed out or met a 5xx may have
+#: landed, and sending it again would post a second note.
+_IDEMPOTENT = frozenset({"GET", "HEAD", "PUT", "DELETE"})
+#: Seconds before each retry; a ``Retry-After`` wins, clamped to the cap.
+_BACKOFF = (1.0, 4.0)
+_RETRY_AFTER_CAP = 30.0
+#: Failures that clear up on their own: a timeout, a dropped or broken answer.
+#: A proxy or URL scheme error would only repeat.
+_TRANSIENT = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 
 _STATUS_HINTS = {
     401: "GitLab rejected the token (401): it is missing, expired or revoked.",
@@ -104,18 +122,71 @@ class GitLabClient:
         params: Mapping[str, Any] | None,
         json: Any,
     ) -> httpx.Response:
-        try:
-            response = self._http.request(method, url, params=params, json=json)
-        except httpx.HTTPError as exc:
-            raise GitLabError(f"Could not reach GitLab at {self.api_url}: {exc}") from exc
+        """One request, retried after a busy answer or a dropped connection.
+
+        429 and a connection that never opened are retried for every method:
+        GitLab did nothing. A 5xx, a timeout or a broken answer is retried only
+        for idempotent methods: a POST may have landed.
+        """
+        idempotent = method.upper() in _IDEMPOTENT
+        for wait in (*_BACKOFF, None):
+            try:
+                response = self._http.request(method, url, params=params, json=json)
+            except httpx.HTTPError as exc:
+                if wait is None or not _worth_retrying(idempotent, exc=exc):
+                    raise GitLabError(f"Could not reach GitLab at {self.api_url}: {exc}") from exc
+                time.sleep(wait)
+                continue
+            if wait is None or not _worth_retrying(idempotent, status=response.status_code):
+                break
+            time.sleep(_retry_wait(response, wait))
         if response.is_success:
             return response
-        status = response.status_code
-        if status in _STATUS_HINTS:
-            message = _STATUS_HINTS[status].format(path=path)
-        else:
-            message = f"GitLab answered {status} to {method} {path}: {_reason(response)}"
-        raise GitLabError(message, status)
+        raise _error(response, method, path)
+
+
+def _worth_retrying(idempotent: bool, *, status: int = 0, exc: Exception | None = None) -> bool:
+    if exc is not None:
+        if _is_tls_failure(exc):
+            return False  # a bad certificate or handshake fails the same way every time
+        never_sent = isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
+        return never_sent or (idempotent and isinstance(exc, _TRANSIENT))
+    return status == 429 or (idempotent and status in _RETRY_STATUSES)
+
+
+def _is_tls_failure(exc: BaseException) -> bool:
+    """httpx raises a TLS handshake or certificate failure as ConnectError; the
+    ssl error sits in the exception chain."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, ssl.SSLError):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
+def _retry_wait(response: httpx.Response, backoff: float) -> float:
+    """GitLab's ``Retry-After`` in seconds, clamped to the cap, else *backoff*.
+
+    Parsed here, not with the LLM providers' ``parse_retry_after``: that one
+    drops a value over 600 s, and a long ask should wait the cap, not 1 s.
+    """
+    header = response.headers.get("Retry-After", "")
+    try:
+        asked = float(header)
+    except ValueError:
+        try:  # the HTTP-date form
+            asked = (parsedate_to_datetime(header) - datetime.now(UTC)).total_seconds()
+        except (TypeError, ValueError):
+            return backoff
+    return min(asked, _RETRY_AFTER_CAP) if asked > 0 else backoff
+
+
+def _error(response: httpx.Response, method: str, path: str) -> GitLabError:
+    status = response.status_code
+    if status in _STATUS_HINTS:
+        return GitLabError(_STATUS_HINTS[status].format(path=path), status)
+    return GitLabError(f"GitLab answered {status} to {method} {path}: {_reason(response)}", status)
 
 
 def _decode(response: httpx.Response, path: str) -> Any:
