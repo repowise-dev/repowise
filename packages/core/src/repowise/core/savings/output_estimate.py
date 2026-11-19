@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -78,6 +79,10 @@ FORMULA = (
     "per session: output_tokens_per_question x clamp(session MCP calls / "
     "mcp_calls_per_question, 1, questions_per_session_cap)"
 )
+
+#: A trailing ``-YYYYMMDD`` release date. Calibration rows are keyed by the
+#: undated id, so a dated session id is looked up without it.
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 #: Calls per session are counted up to this, far past the point where every
 #: measured divisor already reaches the question cap. It bounds the number of
@@ -201,6 +206,8 @@ def _per_question(
 
     rows = calibration.rows
     model = normalize_model_id(model) if model else model
+    if model and model not in rows:
+        model = _DATE_SUFFIX.sub("", model)
     if model in rows:
         bare, repowise, calls = rows[model]
         return MEASURED, _reduction(bare, repowise), max(0, round(bare - repowise)), calls

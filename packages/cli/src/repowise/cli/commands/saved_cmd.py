@@ -364,7 +364,7 @@ def _print_output_estimate(report: SavingsReport) -> None:
     if estimate.unpriced_output_tokens_saved:
         console.print(
             f"  [dim]{estimate.unpriced_output_tokens_saved:,} estimated output tokens come "
-            f"from sessions with no recorded model and are not priced.[/dim]"
+            f"from sessions with no recorded model or output rate and are not priced.[/dim]"
         )
 
 

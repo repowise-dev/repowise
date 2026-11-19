@@ -289,6 +289,15 @@ def test_saved_labels_the_output_estimate_as_from_the_benchmark(repo_cwd: Path) 
     )
 
 
+def test_saved_names_both_causes_of_unpriced_output_estimate(repo_cwd: Path) -> None:
+    _store(repo_cwd).close()
+    _canonical(repo_cwd, surface="mcp", baseline=1_000_000, delivered=0, session_id="s")
+    result = CliRunner().invoke(saved_command, [])
+    assert result.exit_code == 0
+    flat = " ".join(result.output.split())
+    assert "from sessions with no recorded model or output rate and are not priced" in flat
+
+
 def test_saved_without_a_calibration_prints_the_same_report(repo_cwd: Path, monkeypatch) -> None:
     from repowise.core.savings import output_estimate
 

@@ -265,3 +265,9 @@ def test_a_context_window_tag_still_finds_the_model_s_own_row(fixed_calibration)
     estimate = estimate_output([("claude-sonnet-4-6[1m]", 15.0, 1, 1)])
     row = estimate.per_model[0]
     assert (row.basis, row.output_tokens_per_question) == (MEASURED, 1_000)
+
+
+def test_a_dated_model_id_still_finds_the_model_s_own_row(fixed_calibration) -> None:
+    estimate = estimate_output([("claude-sonnet-4-6-20260101", 15.0, 1, 1)])
+    row = estimate.per_model[0]
+    assert (row.basis, row.output_tokens_per_question) == (MEASURED, 1_000)
