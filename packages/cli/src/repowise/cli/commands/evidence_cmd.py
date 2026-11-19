@@ -465,6 +465,21 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
                       f"{escape(optional['purpose'])}")
 
 
+def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
+    """How a unit's tests write JUnit XML, and the line that ingests it."""
+    if not timings:
+        return []
+    how = (
+        f"add [cyan]{escape(timings['flag'])}[/cyan] to the test command"
+        if timings["flag"]
+        else "written by default"
+    )
+    lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
+    if timings["ingest"]:
+        lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
+    return lines
+
+
 def _setup_lines(unit: dict[str, Any]) -> list[str]:
     """One unit's coverage plan, test timings and runtime targets, in words."""
     cov = unit["coverage"]
@@ -480,16 +495,7 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
         lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
-    timings = unit.get("test_timings")
-    if timings:
-        how = (
-            f"add [cyan]{escape(timings['flag'])}[/cyan] to the test command"
-            if timings["flag"]
-            else "written by default"
-        )
-        lines.append(f"  test timings: {how}, report {escape(timings['report'])}")
-        if timings["ingest"]:
-            lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
+    lines += _timings_lines(unit.get("test_timings"))
     for target in unit.get("runtime", ()):
         head = f"  {target['class']} [bold]{escape(target['workload'])}[/bold]"
         if not target["command"]:
