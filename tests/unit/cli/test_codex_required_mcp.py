@@ -253,3 +253,17 @@ def test_a_missing_hook_keeps_its_install_command_beside_an_unlaunchable_server(
     assert report.issues[-1] == "The distill rewrite hook is not installed for Codex."
     assert report.fix_command == "repowise hook rewrite install"
     assert report.repairable is False
+
+
+def test_a_damaged_hooks_file_still_reports_an_unlaunchable_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks = codex_target.user_hooks_path()
+    hooks.parent.mkdir(parents=True, exist_ok=True)
+    hooks.write_text("{not json", encoding="utf-8")
+
+    report = _doctor_with(tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise")
+
+    assert report.status.value == "broken"
+    assert report.issues[0].startswith("Codex will not start:")
+    assert "is not valid JSON" in report.issues[1]

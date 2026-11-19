@@ -1324,12 +1324,19 @@ class CodexTarget:
 
         from ..formats.json_merge import is_damaged
 
+        # A required server that cannot launch stops Codex itself, so it is
+        # reported first, even beside a damaged hooks file or no hook at all.
+        unlaunchable = unlaunchable_required_servers(repo_path)
+
         hooks = user_hooks_path()
         if is_damaged(hooks):
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.BROKEN,
-                issues=(f"{hooks} is not valid JSON, so Codex loads none of its hooks.",),
+                issues=(
+                    *unlaunchable,
+                    f"{hooks} is not valid JSON, so Codex loads none of its hooks.",
+                ),
                 fix_command="repowise hook rewrite install",
                 # Not the refresh pass's job: detection cannot see a registration
                 # inside a file it could not parse, so `--repair` would skip this
@@ -1341,10 +1348,6 @@ class CodexTarget:
         # on a machine whose rewrite hook was never installed. The two surfaces
         # are wired by different commands and go stale independently.
         stale = stale_prompts()
-
-        # A required server that cannot launch stops Codex itself, so it is
-        # reported first, and even on a machine with no hook installed.
-        unlaunchable = unlaunchable_required_servers(repo_path)
 
         matcher = codex_rewrite_hook_matcher()
         if matcher is None and not stale and not unlaunchable:
