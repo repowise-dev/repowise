@@ -291,7 +291,7 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
     )
     mains = go_main_packages(BuildFacts(tmp_path))
 
-    main, bench, tests = _targets_go(tmp_path, inputs, mains)
+    main, bench, results, tests = _targets_go(tmp_path, inputs, mains)
 
     assert mains == ["cmd/fx"]
     assert (main["class"], main["command"], main["ingest"]) == ("entry_point", None, None)
@@ -303,6 +303,14 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
         "go test -count=1 -o .repowise/go-test-work.test -cpuprofile .repowise/go-test-work.pprof ./work"
     )
     assert '--workload "go bench ./work" --class benchmark' in bench["ingest"]
+    # The same benchmarks' printed results, allocations per op included, as a series.
+    assert results["command"] == (
+        "go test '-run=^$' -bench . -benchmem -count=1 ./work > .repowise/go-bench-results-work.txt"
+    )
+    assert results["ingest"] == (
+        'repowise evidence add .repowise/go-bench-results-work.txt '
+        f'--workload "go bench results ./work" --class benchmark --commit {SHA}'
+    )
     # An older profile goes first, so a build that fails leaves nothing to ingest.
     assert bench["prerequisites"] == ["git clean -fqx -- .repowise/go-bench-work.pprof"]
     assert tests["prerequisites"] == ["git clean -fqx -- .repowise/go-test-work.pprof"]
@@ -334,11 +342,11 @@ def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest
 
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs)
 
-    profiled = [t for t in plan["units"][0]["runtime"] if t["command"]]
+    profiled = [t for t in plan["units"][0]["runtime"] if (t["profile"] or "").endswith(".pprof")]
     assert profiled and all(t["ingest"] is None for t in profiled)
     assert all(t["reason"] == "This build of repowise does not read pprof files yet." for t in profiled)
-    # Nothing it could read leads the loop: the coverage run does.
-    assert plan["next_call"]["purpose"].startswith("Run the go tests")
+    # The benchmark results it can read lead the loop instead.
+    assert "go-bench-results-work.txt" in json.dumps(plan["next_call"])
 
 
 def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
@@ -355,7 +363,7 @@ def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
 
     by_root = {u["root"]: [t["workload"] for t in u["runtime"]] for u in plan["units"]}
     assert by_root[""] == ["go run ./cmd/fx"]
-    assert by_root["tools"] == ["tools: go bench .", "tools: go test ."]
+    assert by_root["tools"] == ["tools: go bench .", "tools: go bench results .", "tools: go test ."]
 
 
 def test_units_never_share_a_workload_or_a_profile(tmp_path: Path) -> None:

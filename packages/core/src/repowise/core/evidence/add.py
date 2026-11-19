@@ -190,7 +190,7 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                text = json.dumps(reader.to_v1(data, checkout_root), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)

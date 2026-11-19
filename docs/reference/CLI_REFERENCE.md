@@ -1366,7 +1366,7 @@ Ingest runtime evidence: a profile, benchmark results, test timings or query cou
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
 profile in the profiler's own format ([Speedscope JSON, Go pprof or collapsed
 stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+runner's ([pytest-benchmark JSON or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
 converted first.
 
 ```bash
@@ -1388,7 +1388,7 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word (`local`, `ci`). | `unknown` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `pytest-benchmark`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `pytest-benchmark`, `go-bench`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
@@ -1421,7 +1421,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
   `ingest` line (run from the repository root). Then its `runtime` targets: entry points
   (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
-  (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
+  (Go `Benchmark*`, profiled and, as `go bench results`, their printed results with allocations
+  per op; pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below

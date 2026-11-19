@@ -102,8 +102,9 @@ run --with pyinstrument python -c ...` and no install step.
 On a module with a benchmark in `work/work_test.go` and a `package main` in
 `cmd/fx`, `setup` lists `go run ./cmd/fx` (`entry_point`, with the reason "go run
 takes no profiler flag; profile this program through a benchmark or test."),
-`go bench ./work` (`benchmark`) and `go test ./work` (`unit_test`). Its
-`next_call` profiles the benchmark through `go test -cpuprofile`:
+`go bench ./work` and `go bench results ./work` (both `benchmark`) and
+`go test ./work` (`unit_test`). Its `next_call` profiles the benchmark through
+`go test -cpuprofile`:
 
 ```json
 "next_call": {
@@ -114,6 +115,15 @@ takes no profiler flag; profile this program through a benchmark or test."),
     { "cwd": "/work/fx", "run": "repowise evidence status" }
   ]
 }
+```
+
+`go bench results ./work` runs the same benchmarks without the profiler and
+saves what `go test` prints, so allocations per operation are stored as a
+series:
+
+```text
+go test '-run=^$' -bench . -benchmem -count=1 ./work > .repowise/go-bench-results-work.txt
+repowise evidence add .repowise/go-bench-results-work.txt --workload "go bench results ./work" --class benchmark --commit <sha>
 ```
 
 ### Hand it to an agent
@@ -199,13 +209,13 @@ One file holds one run of one kind.
 | Kind | Entries | Input formats read |
 |---|---|---|
 | `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
-| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, `go test -bench` output, or a v1 document |
 | `test_timing` | Per test: duration and outcome | A v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
+`pprof`, `pytest-benchmark`, `go-bench`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -231,6 +241,7 @@ The format is detected from the content, never the file name;
 | Format | Written by | What a benchmark carries |
 |---|---|---|
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
+| `go-bench` | `go test -bench . -benchmem` saved to a file, as text or `-json` | the package import path and benchmark name (`example.com/m/strs.BenchmarkJoin/n=5`) name the series; time per op in `ns`, `allocs_per_op`, `bytes_per_op`, `iterations`; `-count=N` repeats fold into one value with `rounds` |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to
@@ -243,6 +254,18 @@ The format is detected from the content, never the file name;
   cross-check only: a file that recorded another commit is refused. Its `dirty`
   flag is kept unless `--dirty` or `--clean` says otherwise.
 - Machine details, parameters and `extra_info` are not read.
+- **Go.** The package's directory comes from the `go.mod` files under
+  `--checkout-root`, and the benchmark links to the `BenchmarkX` function in
+  that directory's `_test.go` file. The `-P` GOMAXPROCS suffix is dropped
+  when every result of the package ends in the same one; otherwise (`-cpu
+  1,4`, or GOMAXPROCS 1, where Go prints none) names stay whole. Over repeats the
+  fewest allocations and bytes are kept: a stray allocation only ever adds.
+  Allocations and bytes per operation are exact; time per operation is not.
+  A failed benchmark is counted under `skipped` as `failed`; output with no
+  result line is refused. Text that PowerShell 5 redirected (UTF-16) reads
+  the same. Custom metrics (`MB/s`, `b.ReportMetric`) are not read. A
+  benchmark that logs while it runs splits its result line in the text
+  output; `-json` output keeps it whole.
 
 ## The `repowise-evidence-v1` document
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from repowise.core.git_sha import is_full_sha
@@ -36,8 +37,11 @@ def sniff(head: bytes) -> bool:
     return _FIRST_KEY.match(head.lstrip(b"\xef\xbb\xbf").lstrip()) is not None
 
 
-def to_v1(data: bytes) -> dict[str, Any]:
-    """The whole file as a v1 ``benchmark`` document; entries are checked by the v1 parser."""
+def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
+    """The whole file as a v1 ``benchmark`` document; entries are checked by the v1 parser.
+
+    *root* is not read: a node id names its file already.
+    """
     try:
         doc = json.loads(data.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError):
