@@ -515,7 +515,7 @@ repowise context src/api/routes.py::login --include callers --include metrics
 |------|--------------|---------|
 | `--include` | Opt-in block, repeatable; values below. | |
 | `--no-compact` | Add structure, imports, docstrings. | off |
-| `--symptom` | Issue text, error or stack trace for `--include suspects`. | |
+| `--symptom` | Issue text, error or stack trace to rank suspects against; adds `--include suspects`. | |
 
 Plus the [shared options](#shared-options-ask-context-symbol-why).
 
@@ -1392,8 +1392,10 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
   A benchmark or test is kept without its function instead, counted under `unlinked`.
 - A converted profile joins frames only under `--checkout-root`, each checked by a second signal,
-  and prints how much of the run repo code explains and the share of repo frame time skipped, by
-  reason. The JSON payload carries the same under `conversion`.
+  and prints where the run's time went (production repo code itself, waits such as event-loop
+  selects, joins and sleeps, and libraries) and the share of repo frame time skipped, by reason.
+  Functions are stored and ranked by self time, waits excluded. The JSON payload carries the same
+  under `conversion`.
 - Evidence from another commit than HEAD is stored with its commit and reads as stale; it is never
   re-mapped. The same file added again with the same flags against the same index restamps the
   stored run; after `repowise update` it is joined afresh.
@@ -1404,9 +1406,9 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   one document either way.
 - `status` lists the newest run of each workload (kind, name, environment) and how many runs each
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
-  `unknown` when either commit is missing), how much of the run repo code explains
-  (`explained_share`, unknown when the run gave no total or explained value, or a total of 0),
-  and its counts.
+  `unknown` when either commit is missing), where its time went (`repo_self_share`,
+  `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
+  total), and its counts.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact

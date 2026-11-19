@@ -152,7 +152,8 @@ def _resolve_name(
     return None
 
 
-def _is_delta(tokens: list[str]) -> bool:
+def is_delta(tokens: list[str]) -> bool:
+    """Whether every token adjusts a default (``+name``/``-name``) rather than naming a tool."""
     return all(t[0] in "+-" for t in tokens)
 
 
@@ -254,7 +255,7 @@ def resolve_enabled_tools(
     default_surface = {name for name in usable if catalog[name].default}
 
     profile, rest = split_profile(normalize_override(override))
-    if profile is None and rest and not _is_delta(rest):
+    if profile is None and rest and not is_delta(rest):
         return _allowlist(rest, catalog, usable, is_workspace=is_workspace)
     base = _profile_names(
         profile or default_profile(client), default_surface, usable, is_workspace=is_workspace
@@ -300,6 +301,7 @@ __all__ = [
     "AvailabilityFacts",
     "default_profile",
     "is_available",
+    "is_delta",
     "listed_default_tools",
     "normalize_override",
     "resolve_enabled_tools",

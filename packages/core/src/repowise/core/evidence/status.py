@@ -1,20 +1,45 @@
-"""What runtime evidence is stored, how much of each run repo code explains, and how fresh it is."""
+"""What runtime evidence is stored, where each run's time went, and how fresh it is."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 
 
-def explained_share(total: float | None, explained: float | None) -> float | None:
-    """The share of a run's value with a repo frame on the stack; ``None`` when unknown."""
-    if total is None or explained is None or total <= 0:
+def run_share(total: float | None, value: float | None) -> float | None:
+    """*value*'s share of a run's *total*, rounded; ``None`` when either is unknown."""
+    if total is None or value is None or total <= 0:
         return None
-    return round(min(explained / total, 1.0), 4)
+    return round(min(value / total, 1.0), 4)
+
+
+def time_split(run: Any) -> dict[str, float | None]:
+    """Where a stored profile run's time went: production repo code itself (waits
+    and libraries excluded), waits, and libraries. ``None`` for a run stored
+    before the split was recorded, or one whose file did not carry it."""
+    total = run.total_value
+    return {
+        "repo_self_share": run_share(total, run.repo_self_value),
+        "wait_share": run_share(total, run.wait_value),
+        "library_share": run_share(total, run.library_value),
+    }
+
+
+def split_words(shares: Mapping[str, float | None]) -> str | None:
+    """The split in words, repo code first: ``repo code itself 47%, waits 30%,
+    libraries 12%``. ``None`` when the run did not record it."""
+    repo = shares.get("repo_self_share")
+    if repo is None:
+        return None
+    parts = [f"repo code itself {repo:.0%}"]
+    for key, word in (("wait_share", "waits"), ("library_share", "libraries")):
+        if shares.get(key) is not None:
+            parts.append(f"{word} {shares[key]:.0%}")
+    return ", ".join(parts)
 
 
 def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
@@ -51,7 +76,7 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         },
         "skipped": json.loads(run.skipped_json) if run.skipped_json else None,
         "total_value": run.total_value,
-        "explained_share": explained_share(run.total_value, run.explained_value),
+        **time_split(run),
         "mapping_partial": bool(run.mapping_partial),
         "tests_failed": run.tests_failed,
     }
@@ -72,4 +97,4 @@ def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[s
     }
 
 
-__all__ = ["evidence_status", "explained_share", "run_status"]
+__all__ = ["evidence_status", "run_share", "run_status", "split_words", "time_split"]

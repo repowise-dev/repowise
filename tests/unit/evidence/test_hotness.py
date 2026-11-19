@@ -23,20 +23,25 @@ RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.05, lead_min_low
 
 def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float = 1000,
          samples: int | None = None, unit: str = "samples", explained: float | None = 400,
-         day: int = 1) -> RunFacts:
+         day: int = 1, split: tuple[float, float, float] | None = None) -> RunFacts:
+    repo_self, waits, libraries = split or (None, None, None)
     return RunFacts(
         id=run_id, workload_name=f"w-{run_id}", workload_class=cls, value_kind="wall", unit=unit,
         commit_sha=commit, measured_at=datetime(2026, 11, day, tzinfo=UTC), total_value=total,
-        explained_value=explained, total_samples=samples,
+        explained_value=explained, total_samples=samples, repo_self_value=repo_self,
+        wait_value=waits, library_value=libraries,
     )
 
 
-def _cost(name: str, total: float, *, path: str = "src/m.py", digest: str | None = "d",
-          lineage: str | None = None, samples: int | None = None,
+def _cost(name: str, cost: float, *, total: float | None = None, path: str = "src/m.py",
+          digest: str | None = "d", lineage: str | None = None, samples: int | None = None,
           calls: int | None = None) -> CostFacts:
+    """A row whose self time (the cost) is *cost*; inclusive is twice that unless given."""
     return CostFacts(
-        symbol_id=f"{path}::{name}", lineage_id=lineage, body_digest=digest, total_value=total,
-        self_value=total / 2, total_samples=samples, call_count=calls,
+        symbol_id=f"{path}::{name}", lineage_id=lineage, body_digest=digest,
+        total_value=total if total is not None else cost * 2, self_value=cost,
+        total_samples=None if samples is None else samples * 2, call_count=calls,
+        self_samples=samples,
     )
 
 
@@ -55,7 +60,7 @@ def _derive(runs, costs, current=None, origins=None, head=HEAD, rules=RULES):
     ids = {c.symbol_id for rows in costs.values() for c in rows}
     current = current if current is not None else _current(*ids)
     origins = origins if origins is not None else _origins(*{i.split("::")[0] for i in ids})
-    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules)
+    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules).symbols
     return {r["symbol_id"]: r for r in rows}
 
 
@@ -84,10 +89,12 @@ def test_top_functions_with_enough_samples_are_ranked_else_measured() -> None:
 
 
 def test_the_row_carries_the_run_summary_and_an_interval() -> None:
-    row = _derive([_run()], {"r1": [_cost("f", 100)]})["src/m.py::f"]
-    assert row["explained_share"] == 0.4
+    run = _run(split=(470, 300, 120))
+    row = _derive([run], {"r1": [_cost("f", 100)]})["src/m.py::f"]
+    assert (row["repo_self_share"], row["wait_share"], row["library_share"]) == (0.47, 0.3, 0.12)
+    # Samples and the interval are the cost's: self, not inclusive.
     assert (row["samples"], row["run_samples"]) == (100, 1000)
-    assert row["total_share"] == 0.1
+    assert (row["self_share"], row["total_share"]) == (0.1, 0.2)
     assert row["share_low"] < 0.1 < row["share_high"]
     assert (row["workload_name"], row["workload_class"], row["run_id"]) == ("w-r1", "entry_point",
                                                                            "r1")
@@ -101,6 +108,27 @@ def test_a_time_unit_run_uses_its_counted_samples() -> None:
     row = _derive([run], {"r1": [_cost("f", 1000.0, samples=100)]})["src/m.py::f"]
     assert (row["samples"], row["run_samples"]) == (100, 500)
     assert row["share_low"] is not None
+
+
+def test_a_function_that_only_calls_things_ranks_below_the_one_doing_the_work() -> None:
+    # The entry function is on every stack (inclusive 95%) and costs nothing itself.
+    costs = [_cost("main", 1, total=950), _cost("dispatch", 2, total=900), _cost("scan", 120)]
+    rows = _derive([_run(unit="s", total=1000.0)], {"r1": costs})
+    assert [rows[f"src/m.py::{n}"]["rank"] for n in ("scan", "dispatch", "main")] == [1, 2, 3]
+    assert rows["src/m.py::main"]["total_share"] == 0.95
+
+
+def test_a_function_that_costs_nothing_itself_is_never_ranked() -> None:
+    # Fewer costly functions than the top: the pure callers still take no place.
+    costs = [_cost("leaf", 50, total=60), _cost("main", 0, total=100)]
+    rows = _derive([_run(unit="s", total=100.0)], {"r1": costs})
+    assert (rows["src/m.py::leaf"]["rank"], rows["src/m.py::leaf"]["tier"]) == (1, "ranked")
+    assert (rows["src/m.py::main"]["rank"], rows["src/m.py::main"]["tier"]) == (None, "measured")
+
+
+def test_a_stored_run_without_a_split_says_unknown() -> None:
+    row = _derive([_run()], {"r1": [_cost("f", 100)]})["src/m.py::f"]
+    assert row["repo_self_share"] is row["wait_share"] is row["library_share"] is None
 
 
 def test_an_uncounted_run_ranks_by_order_without_an_interval() -> None:
@@ -190,7 +218,7 @@ def test_only_production_code_is_listed_and_the_rest_is_counted() -> None:
 
 
 def test_no_runs_no_rows() -> None:
-    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES) == []
+    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES).symbols == []
 
 
 def test_an_unknown_indexed_commit_lets_only_the_stored_body_decide() -> None:
@@ -204,3 +232,47 @@ def test_the_unlisted_count_from_ingest_wins_over_the_rows_kept() -> None:
     run = RunFacts(**{**_run().__dict__, "unlisted_symbols": 7})
     row = _derive([run], {"r1": [_cost("f", 300)]})["src/m.py::f"]
     assert row["run_unlisted"] == 7
+
+
+def _workloads(runs, costs):
+    ids = {c.symbol_id for rows in costs.values() for c in rows}
+    hotness = derive_hotness(runs, costs, _current(*ids), _origins("src/m.py"), head_commit=HEAD,
+                             rules=RULES)
+    return hotness.workloads
+
+
+def test_each_workload_lists_its_own_ranked_functions_from_its_newest_run() -> None:
+    # Two workloads rank the same function; one workload has a superseded run.
+    runs = [_run("init"), _run("update-old", day=1), _run("update", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "update"}) if r.id.startswith("update")
+            else r for r in runs]
+    costs = {
+        "init": [_cost("parse", 200), _cost("walk", 100)],
+        "update-old": [_cost("parse", 300)],
+        "update": [_cost("parse", 50), _cost("scan", 400)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [
+        ("init", 1, "parse"), ("init", 2, "walk"), ("update", 1, "scan"), ("update", 2, "parse"),
+    ]
+    # The symbol view still keeps one basis row per function.
+    hotness = derive_hotness(runs, costs, _current(*{c.symbol_id for r in costs.values() for c in r}),
+                             _origins("src/m.py"), head_commit=HEAD, rules=RULES)
+    assert sorted(r["symbol_id"] for r in hotness.symbols) == [
+        "src/m.py::parse", "src/m.py::scan", "src/m.py::walk",
+    ]
+
+
+def test_a_workload_row_carries_its_cost_and_never_a_measured_row() -> None:
+    costs = {"r1": [_cost("f", 100, samples=100), _cost("thin", 5, samples=5),
+                    _cost("edited", 300, digest="old")]}
+    (row,) = _workloads([_run(commit=OLD)], {"r1": [costs["r1"][0]]})
+    assert row["freshness"] == "body_unchanged"
+    rows = {w["symbol_id"]: w for w in _workloads([_run()], costs)}
+    # Under the sample floor: measured, not listed.
+    assert "src/m.py::thin" not in rows
+    f = rows["src/m.py::f"]
+    assert (f["self_share"], f["total_share"], f["samples"], f["ordering_only"]) == (
+        0.1, 0.2, 100, False,
+    )
+    assert f["share_low"] < 0.1 < f["share_high"]

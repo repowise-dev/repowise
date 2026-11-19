@@ -94,11 +94,12 @@ def indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]
 def _write(root: Path, **fields) -> Path:
     doc = {
         "format": "repowise-evidence-v1", "kind": "profile", "value_kind": "wall",
-        "unit": "samples", "total": 100, "explained": 60,
+        "unit": "samples", "total": 100, "explained": 60, "repo_self": 45, "waits": 30,
+        "libraries": 10,
         "tool": {"name": "pyinstrument", "version": "4.6.2"},
         "skipped": {"outside_repo": 5},
         "symbols": [
-            {"path": "src/app.py", "function": "build", "line": 1, "self": 10, "total": 60},
+            {"path": "src/app.py", "function": "build", "line": 1, "self": 40, "total": 60},
             {"path": "src/app.py", "function": "missing", "total": 3},
         ],
         **fields,
@@ -145,7 +146,8 @@ def test_add_stores_the_run_with_its_provenance(indexed) -> None:
     )
     assert json.loads(run.skipped_json) == {"outside_repo": 5, "unknown_symbol": 1}
     assert (run.total_value, run.explained_value, run.source) == (100, 60, "cli")
-    assert (cost.symbol_id, cost.total_value, cost.self_value) == ("src/app.py::build", 60, 10)
+    assert (run.repo_self_value, run.wait_value, run.library_value) == (45, 30, 10)
+    assert (cost.symbol_id, cost.total_value, cost.self_value) == ("src/app.py::build", 60, 40)
 
     again = _add(
         str(_write(root)), "--workload", "cli build", "--class", "entry_point",
@@ -190,7 +192,9 @@ def test_a_profile_stamps_lineage_and_body_and_rebuilds_hotness(indexed) -> None
     assert (hot.symbol_id, hot.freshness, hot.rank, hot.tier) == (
         "src/app.py::build", "current", 1, "lead_candidate",
     )
-    assert (hot.samples, hot.run_samples, hot.explained_share) == (60, 100, 0.6)
+    # Ranked by its cost (self samples), with the run's split beside it.
+    assert (hot.samples, hot.run_samples, hot.repo_self_share) == (40, 100, 0.45)
+    assert (hot.wait_share, hot.library_share) == (0.3, 0.1)
 
 
 def test_code_outside_production_is_counted_before_the_cap(indexed) -> None:
@@ -347,7 +351,9 @@ def test_a_file_over_the_size_cap_is_refused_before_it_is_read(indexed) -> None:
     result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
                   "--commit", head, "--format", "json")
     assert result.exit_code == 1
-    assert _json(result)["error"] == "file_too_large"
+    refusal = _json(result)
+    assert refusal["error"] == "file_too_large"
+    assert "repowise config set evidence.max_file_mb 1" in refusal["remedy"]
 
 
 def _status(*args: str):
@@ -360,7 +366,8 @@ def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
     assert (empty["indexed"], empty["workloads"]) == (True, [])
 
     for workload in ("cli build", "cli build", "cli test"):
-        _add(str(_write(root, total=200 if workload == "cli test" else 100)),
+        fields = {"total": 200, "repo_self": 90} if workload == "cli test" else {}
+        _add(str(_write(root, **fields)),
              "--workload", workload, "--class", "entry_point", "--commit", head)
     payload = _json(_status("--format", "json"))
     assert payload["runs_stored"] == {"profile": 2}
@@ -368,14 +375,14 @@ def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
     newest = payload["workloads"][0]
     # The fixture's index row names no commit, so freshness is unknown, never current.
     assert newest["freshness"] == "unknown"
-    assert newest["explained_share"] == 0.3
+    assert (newest["repo_self_share"], newest["wait_share"]) == (0.45, 0.15)
     assert newest["units"] == {
         "total": 7, "matched": 1, "skipped": 1, "outside_repo": 5, "truncated": 0,
     }
 
     table = _status()
     assert table.exit_code == 0
-    assert "repo code explains 30% of 200 samples" in table.stdout
+    assert "repo code itself 45%, waits 15%, libraries 5% of 200 samples" in table.stdout
 
 
 def test_status_json_keeps_its_keys_without_an_index(tmp_path, monkeypatch) -> None:
@@ -433,12 +440,15 @@ def test_a_collapsed_profile_is_converted_and_stored(indexed, tmp_path_factory) 
     conversion = payload["conversion"]
     assert (conversion["total"], conversion["unit"]) == (10.0, "samples")
     assert conversion["explained_share"] == 0.6
+    # runpy only sits above the repo frame: all of build's time is repo code itself.
+    assert (conversion["repo_self_share"], conversion["wait_share"]) == (0.6, 0.0)
     assert conversion["skip_rate"] == round(1 / 7, 4)
 
     (run,), (cost,) = _stored(root)
     assert (run.value_kind, run.unit, run.total_value, run.explained_value) == (
         "cpu", "samples", 10.0, 6.0,
     )
+    assert (run.repo_self_value, run.wait_value, run.library_value) == (6.0, 0.0, 0.0)
     assert (cost.symbol_id, cost.total_value, cost.self_value, cost.total_samples) == (
         "src/app.py::build", 6.0, 6.0, 6,
     )
@@ -655,3 +665,27 @@ def test_a_red_suites_profile_is_stored_with_its_failed_count(indexed) -> None:
     (run,), _ = _stored(root)
     assert run.tests_failed == 2
     assert "2 tests failed" in _status().stdout
+
+
+def _speedscope(root: Path, seconds: float) -> Path:
+    path = root / "app.speedscope.json"
+    path.write_text(json.dumps({
+        "$schema": "https://www.speedscope.app/file-format-schema.json",
+        "exporter": "pyinstrument@5.1.3",
+        "shared": {"frames": [{"name": "build", "file": str(root / "src" / "app.py"), "line": 1}]},
+        "profiles": [{"type": "sampled", "unit": "seconds", "samples": [[0], [0]],
+                      "weights": [seconds / 2, seconds / 2]}],
+    }))
+    return path
+
+
+@pytest.mark.parametrize(("seconds", "warned"), [(0.4, True), (12.0, False)])
+def test_a_short_entry_point_run_is_stored_with_a_warning(indexed, seconds, warned) -> None:
+    root, head = indexed
+
+    result = _add(str(_speedscope(root, seconds)), "--workload", "app update", "--class",
+                  "entry_point", "--commit", head)
+
+    assert result.exit_code == 0, result.output
+    assert ("profile covers 0.4 s" in result.output) is warned
+    assert len(_stored(root)[0]) == 1

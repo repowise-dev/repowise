@@ -1173,3 +1173,62 @@ def test_perl_tests_are_collected_and_their_helpers_are_code() -> None:
     assert is_code_file("t/lib/Helper.pm") and is_code_file("bin/run.pl")
     assert is_test_helper("t/lib/Helper.pm")
     assert not is_runnable_test("t/lib/Helper.pm")
+
+
+# -- changes inside function bodies ----------------------------------------------
+
+
+def _function_tiers(**extra):
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        **extra,
+    )
+    tiers["function_covered"] = ["src/a.py"]
+    tiers["measured_test_files"] = ["tests/test_a.py", "tests/test_wide.py"]
+    return tiers
+
+
+def test_a_change_inside_covered_functions_runs_their_test_files_whole() -> None:
+    """A fixture set up once per file runs the change for tests coverage did not credit."""
+    tiers = _function_tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_wide.py", "import-graph"),
+            _inferred("src/a.py", "tests/conftest.py", "import-graph"),
+        ]
+    )
+    selection = _select(["src/a.py"], tiers, known_tests=["tests/test_a.py", "tests/test_wide.py"])
+    assert not selection.run_all
+    assert selection.test_files == ("tests/test_a.py",)
+    assert selection.tests == ("tests/test_a.py",)
+    assert "it covers the changed function lines" in selection.why["tests/test_a.py"]
+    assert any(
+        r.startswith("src/a.py: 1 test file(s) cover the changed function lines")
+        for r in selection.reasons
+    )
+    assert selection.broadcast == {}
+
+
+def test_a_test_the_map_never_ran_keeps_the_graphs_word() -> None:
+    tiers = _function_tiers(inferred=[_inferred("src/a.py", "tests/test_new.py", "import-graph")])
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_new.py"}
+    assert any("1 test file(s) the map never ran still run for it" in r for r in selection.reasons)
+
+
+def test_a_module_level_change_keeps_the_graph_tests_beside_coverage() -> None:
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        inferred=[_inferred("src/a.py", "tests/test_wide.py", "import-graph")],
+    )
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_wide.py"}
+    assert selection.tests == ("tests/test_a.py::t", "tests/test_wide.py")
+
+
+def test_function_coverage_still_runs_the_tests_every_subset_runs() -> None:
+    selection = _select(["src/a.py"], _function_tiers(), unplaced_tests=["tests/test_z.py"])
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_z.py"}
