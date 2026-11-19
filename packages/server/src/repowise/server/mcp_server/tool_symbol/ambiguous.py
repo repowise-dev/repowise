@@ -60,7 +60,9 @@ async def _render_ambiguous(
 
     for i, row in enumerate(rows):
         if row.file_path not in text_cache:
-            text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
+            text_cache[row.file_path] = (
+                None if no_source else _read_file_text(repo_root, row.file_path)
+            )
         text = text_cache[row.file_path]
 
         entry: dict[str, Any] = {
@@ -116,8 +118,13 @@ async def _render_ambiguous(
         "candidates": candidates,
         "note": (
             f"{len(rows)} symbols match this id (overloads, re-exports, or "
-            "conditional definitions). All candidate bodies are included — "
-            "none was silently chosen; pick by signature and line range."
+            "conditional definitions). "
+            + (
+                "Candidate bodies are not included here; "
+                if no_source
+                else "All candidate bodies are included — none was silently chosen; "
+            )
+            + "pick by signature and line range."
         ),
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,

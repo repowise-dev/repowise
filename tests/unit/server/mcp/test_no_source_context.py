@@ -221,7 +221,36 @@ def test_a_context_built_with_a_path_reads_its_checkout(tmp_path) -> None:
     ctx = RepoContext("a", tmp_path, None, None, None, None)
     assert isinstance(ctx.source, DiskSource) and ctx.source.root == tmp_path
     assert ctx.git is True
-    assert RepoContext("b", None, None, None, None, None).source is None
+    pathless = RepoContext("b", None, None, None, None, None)
+    assert pathless.source is None
+    assert pathless.git is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_path", [False, True])
+async def test_ambiguous_candidates_with_no_source_do_not_claim_bodies(
+    setup_mcp, session, tmp_path, with_path
+) -> None:
+    from repowise.server.mcp_server import _state, get_symbol
+    from tests.unit.server.mcp.test_symbol_ambiguity_and_format import (
+        DUP_SOURCE,
+        _add_dup_rows,
+    )
+
+    await _add_dup_rows(session)
+    await session.commit()
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "dup.py").write_text(DUP_SOURCE, encoding="utf-8")
+    ctx = _context(path=tmp_path) if with_path else _context()
+    with _state.serving(ctx):
+        reply = await get_symbol("pkg/dup.py::dup")
+
+    assert reply["ambiguous"] is True
+    assert reply["complete"] is False and len(reply["reasons"]) == 1
+    assert [(c["start_line"], c["end_line"]) for c in reply["candidates"]] == [(2, 3), (5, 6)]
+    assert all("source" not in c for c in reply["candidates"])
+    assert "not included" in reply["note"]
+    assert "All candidate bodies are included" not in reply["note"]
 
 
 def test_capability_gaps_name_real_arguments_and_include_values(tmp_path) -> None:

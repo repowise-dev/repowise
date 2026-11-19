@@ -59,6 +59,9 @@ class RepoContext:
     def __post_init__(self) -> None:
         if self.source is _DISK:
             self.source = DiskSource(self.path) if self.path is not None else None
+        if self.path is None:
+            # No checkout to run git in: git would read the process's own directory.
+            self.git = False
 
 
 #: ``Session.info`` key a shared-store context sets to the repository it
