@@ -1064,8 +1064,10 @@ def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
                 # The project file may be committed: a machine's absolute path
                 # there would break every other checkout, so PATH is the fix.
                 fix = f"put {Path(pinned).parent} on PATH{rebare}"
+            elif rebare:
+                fix = f'set command = "{pinned}" in that table'
             else:
-                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH{rebare}'
+                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH'
 
             issues.append(
                 f"Codex will not start: [mcp_servers.{name}] in {path} is required and "

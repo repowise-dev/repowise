@@ -217,3 +217,29 @@ def test_a_string_required_or_a_url_entry_is_not_checked(
         encoding="utf-8",
     )
     assert codex_target.unlaunchable_required_servers(tmp_path) == []
+
+
+def test_a_project_entry_with_a_missing_absolute_command_goes_back_to_the_bare_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(
+        tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise", command=r"C:\old\repowise.exe"
+    )
+
+    issue = report.issues[0].replace("\\", "/")
+    assert "put /opt/rw/bin on PATH" in issue
+    assert 'set command = "repowise" in that table' in issue
+
+
+def test_a_missing_hook_keeps_its_install_command_beside_an_unlaunchable_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.editor_integrations import codex_config
+
+    _doctor_with(tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise")
+    monkeypatch.setattr(codex_config, "codex_rewrite_hook_matcher", lambda: None)
+    report = codex_target.TARGET.doctor(repo_path=tmp_path)
+
+    assert report.issues[-1] == "The distill rewrite hook is not installed for Codex."
+    assert report.fix_command == "repowise hook rewrite install"
+    assert report.repairable is False
