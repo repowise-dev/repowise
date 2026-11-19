@@ -137,6 +137,7 @@ def _stale_governance_findings(health_summary: dict[str, Any]) -> list[HealthFin
     """
     import json
 
+    from repowise.core.analysis.decisions.lifecycle import RULE_DRIFTED
     from repowise.core.analysis.decisions.scope import binds_to_paths
 
     # file_path → best (staleness_score, decision) seen so far
@@ -176,7 +177,11 @@ def _stale_governance_findings(health_summary: dict[str, Any]) -> list[HealthFin
                 health_impact=_IMPACT_NONE,
                 reason=(
                     f"Governing decision '{decision.title}' is stale "
-                    f"(staleness_score={staleness:.2f})."
+                    + (
+                        f"(rule changed: {decision.rule_check_basis})."
+                        if getattr(decision, "rule_check", None) == RULE_DRIFTED
+                        else f"(staleness_score={staleness:.2f})."
+                    )
                 ),
             )
         )

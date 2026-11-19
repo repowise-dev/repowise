@@ -1395,6 +1395,13 @@ class DecisionRecord(Base):
     staleness_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Every file and path the record names is absent at HEAD, renames followed.
     artifacts_gone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # Whether the rule itself still holds once the files moved, from
+    # ``analysis.decisions.rule_check``: holds | drifted | unknown, NULL until
+    # checked. ``holds`` clears a churn-only ``needs_review``; ``drifted`` sets it.
+    rule_check: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rule_check_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HEAD the verdict was read at; a later change to the scope rechecks it.
+    rule_checked_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     superseded_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
