@@ -1029,7 +1029,8 @@ def cross_repo_finding(root: Path) -> str | None:
         if pairs:
             (first, second), times = pairs.most_common(1)[0]
             # Edges are capped per repo pair, so the sum is a floor: never "exactly".
-            return f"{first} and {second} changed together {times:,} times"
+            noun = "time" if times == 1 else "times"
+            return f"{first} and {second} changed together {times:,} {noun}"
         store = load_contract_store(root)
         links = len(store.contract_links) if store is not None else 0
     except Exception:
