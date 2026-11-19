@@ -224,9 +224,15 @@ def test_a_sample_on_an_unknown_node_is_counted_and_a_file_without_deltas_refuse
         read(b'{"nodes": 1}')
 
 
-def test_a_real_profile_is_ingested_against_an_index(tmp_path: Path) -> None:
+def _ingest_checkout(
+    root: Path,
+    files: dict[str, str],
+    data: bytes,
+    symbols: dict[str, list[IndexedSymbol]],
+    origins: dict[str, str] | None = None,
+) -> dict:
+    """*files* committed at *root*, indexed with *symbols*, and *data* ingested against it."""
     import asyncio
-    import shutil
 
     import git as gitpython
 
@@ -235,33 +241,31 @@ def test_a_real_profile_is_ingested_against_an_index(tmp_path: Path) -> None:
     from repowise.core.persistence.database import create_engine, init_db
     from repowise.core.persistence.models import HealthFileMetric, Repository, WikiSymbol
 
-    files = ["app.js", "lib/text.js", "lib/matrix.js", "vendor/tinydep/index.js"]
-    for rel in files:
-        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(FIXTURE / rel, tmp_path / rel)
-    repo = gitpython.Repo.init(tmp_path)
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    repo = gitpython.Repo.init(root)
     with repo.config_writer() as cw:
         cw.set_value("user", "name", "Alice")
         cw.set_value("user", "email", "alice@example.com")
-    repo.index.add(files)
+    repo.index.add(list(files))
     head = repo.index.commit("init").hexsha
     repo.close()
-    # The profile as if node had run in this checkout.
-    data = (FIXTURE / "app.cpuprofile").read_bytes().replace(
-        URL.encode(), (tmp_path.as_uri() + "/").encode()
-    )
 
     async def run() -> dict:
-        (tmp_path / ".repowise").mkdir()
-        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / '.repowise' / 'wiki.db'}")
+        (root / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
         try:
             await init_db(engine)
             async with get_session(create_session_factory(engine)) as session:
-                session.add(Repository(id="r1", name="t", local_path=str(tmp_path), url=""))
+                session.add(Repository(id="r1", name="t", local_path=str(root), url=""))
                 await session.flush()
-                for path, symbols in _symbols().items():
-                    session.add(HealthFileMetric(repository_id="r1", file_path=path))
-                    for s in symbols:
+                for path in files:
+                    session.add(HealthFileMetric(
+                        repository_id="r1", file_path=path,
+                        code_origin=(origins or {}).get(path),
+                    ))
+                    for s in symbols.get(path, ()):
                         session.add(WikiSymbol(
                             repository_id="r1", file_path=path, symbol_id=s.symbol_id,
                             name=s.name, qualified_name=s.qualified_name, kind=s.kind,
@@ -270,13 +274,60 @@ def test_a_real_profile_is_ingested_against_an_index(tmp_path: Path) -> None:
             async with get_session(create_session_factory(engine)) as session:
                 row = await session.get(Repository, "r1")
                 return await ingest_evidence(
-                    session, row, data, repo_path=tmp_path, workload="node app.js",
+                    session, row, data, repo_path=root, workload="node app.js",
                     workload_class="entry_point", commit=head,
                 )
         finally:
             await engine.dispose()
 
-    payload = asyncio.run(run())
+    return asyncio.run(run())
+
+
+def test_a_real_profile_is_ingested_against_an_index(tmp_path: Path) -> None:
+    files = ["app.js", "lib/text.js", "lib/matrix.js", "vendor/tinydep/index.js"]
+    # The profile as if node had run in this checkout.
+    data = (FIXTURE / "app.cpuprofile").read_bytes().replace(
+        URL.encode(), (tmp_path.as_uri() + "/").encode()
+    )
+    payload = _ingest_checkout(
+        tmp_path, {rel: (FIXTURE / rel).read_text(encoding="utf-8") for rel in files},
+        data, _symbols(),
+    )
     assert payload["stored"] is True
     assert (payload["input_format"], payload["matched"]) == ("cpuprofile", 9)
     assert payload["conversion"]["skipped_share_by_reason"] == {"vendored": 0.0162}
+
+
+@pytest.mark.parametrize(("origin", "refused"), [(None, True), ("generated", False)])
+def test_bundled_code_is_judged_by_its_stored_origin_on_ingest(
+    tmp_path: Path, origin: str | None, refused: bool
+) -> None:
+    from repowise.core.evidence.add import EvidenceRefusedError
+    from tests.unit.cli.test_evidence_cmd import _stored
+
+    url = tmp_path.as_uri() + "/"
+    files = {
+        "app.js": "function main() {\n  return run();\n}\n",
+        # By path a production file; the index may know it is generated.
+        "lib/run.js": "function run() {}\n//# sourceMappingURL=run.js.map\n",
+    }
+    data = _profile(
+        [
+            (1, "(root)", "", -1, -1, [2]),
+            (2, "main", f"{url}app.js", 0, 13, [3]),
+            (3, "run", f"{url}lib/run.js", 0, 12, []),
+        ],
+        [3, 3],
+    )
+    symbols = {"app.js": [_sym("app.js", "app.main", 1, 3, "function")]}
+    origins = {"lib/run.js": origin} if origin else None
+    if refused:
+        with pytest.raises(EvidenceRefusedError) as exc:
+            _ingest_checkout(tmp_path, files, data, symbols, origins)
+        assert exc.value.code == "invalid_evidence" and "source map" in str(exc.value)
+        assert _stored(tmp_path) == ([], [])
+    else:
+        payload = _ingest_checkout(tmp_path, files, data, symbols, origins)
+        assert payload["stored"] is True
+        # The generated file is a library frame: its time goes to main.
+        assert payload["conversion"]["library_share"] == 1.0

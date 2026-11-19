@@ -285,6 +285,28 @@ def test_invalid_files_are_refused_as_json(indexed) -> None:
     assert _json(result)["error"] == "invalid_evidence"
 
 
+def test_a_profile_of_bundled_code_is_refused_against_the_index(indexed) -> None:
+    root, head = indexed
+    (root / "src" / "bundle.js").write_text("function a() {}\n//# sourceMappingURL=bundle.js.map\n")
+    url = (root / "src" / "bundle.js").as_uri()
+    profile = root / "app.cpuprofile"
+    profile.write_text(json.dumps({
+        "nodes": [
+            {"id": 1, "callFrame": {"functionName": "(root)", "url": "", "lineNumber": -1,
+                                    "columnNumber": -1}, "children": [2]},
+            {"id": 2, "callFrame": {"functionName": "a", "url": url, "lineNumber": 0,
+                                    "columnNumber": 10}},
+        ],
+        "startTime": 0, "endTime": 2000, "samples": [2], "timeDeltas": [1000],
+    }))
+    result = _add(str(profile), "--workload", "w", "--class", "entry_point", "--commit", head,
+                  "--format", "json")
+    assert result.exit_code == 1
+    out = _json(result)
+    assert out["error"] == "invalid_evidence" and "source map" in out["message"]
+    assert _stored(root) == ([], [])
+
+
 @pytest.mark.parametrize("given", [(), ("--input-format", "pprof")])
 def test_an_empty_profile_is_named_as_such(indexed, given) -> None:
     # A test binary that panicked leaves a zero-byte profile behind.

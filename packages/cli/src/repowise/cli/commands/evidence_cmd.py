@@ -186,18 +186,21 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
-    payload = run_async(
-        _ingest(
-            repo_path=repo_path,
-            prepared=prepared,
-            workload=workload.strip(),
-            workload_class=workload_class,
-            environment=environment,
-            allow_partial=allow_partial,
-            caps=caps,
-            notices=notices,
+    try:
+        payload = run_async(
+            _ingest(
+                repo_path=repo_path,
+                prepared=prepared,
+                workload=workload.strip(),
+                workload_class=workload_class,
+                environment=environment,
+                allow_partial=allow_partial,
+                caps=caps,
+                notices=notices,
+            )
         )
-    )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     if fmt == "json":
         emit_json(payload)
     if not payload["stored"]:

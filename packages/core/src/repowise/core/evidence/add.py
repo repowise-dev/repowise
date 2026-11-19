@@ -8,8 +8,10 @@ option it will not take raises :class:`EvidenceRefusedError`; a run that reads b
 does not map returns ``stored: false`` with a ``reason``, like the command.
 
 The command runs the same steps in two parts (:func:`prepare_evidence` before
-it opens the index, :func:`store_evidence` inside it) so a refused file never
-opens a store.
+it opens the index, :func:`store_evidence` inside it) so a file refused on its
+content never opens a store. A profile refused against the index (a checkout
+file that is bundled output by its stored ``code_origin``) is refused by
+:func:`store_evidence` before anything is written.
 """
 
 from __future__ import annotations
@@ -168,8 +170,6 @@ def prepare_evidence(
     *name* names the file in messages. *max_file_mb*, when given, refuses a
     larger file. Raises :class:`EvidenceRefusedError`.
     """
-    from repowise.core.frame_resolver import checkout_reader
-
     from .profile_convert import refuse_compiled_positions
     from .profile_formats import profile_formats
 
@@ -196,7 +196,9 @@ def prepare_evidence(
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
-                refuse_compiled_positions(run, str(checkout_root), checkout_reader(checkout_root))
+                # TypeScript only: what is bundled output needs the stored
+                # code_origin, so convert_profile checks it against the index.
+                refuse_compiled_positions(run, str(checkout_root))
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
     _check_value_kind(fmt, doc, run, value_kind)
@@ -280,7 +282,9 @@ async def store_evidence(
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
-    stale, and its settings rank the refreshed read model.
+    stale, and its settings rank the refreshed read model. Raises
+    :class:`EvidenceRefusedError`, before anything is written, for a profile
+    that ran bundled or compiled code of the checkout.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
@@ -474,15 +478,18 @@ async def _convert(
         frame_paths(run.frames, root=str(root)),
         fold_case=sys.platform == "win32",
     )
-    return convert_profile(
-        run,
-        root=str(root),
-        symbols_by_file=symbols,
-        dirty_paths=changed or (),
-        origins=origins,
-        read_lines=checkout_reader(root),
-        value_kind=value_kind,
-    )
+    try:
+        return convert_profile(
+            run,
+            root=str(root),
+            symbols_by_file=symbols,
+            dirty_paths=changed or (),
+            origins=origins,
+            read_lines=checkout_reader(root),
+            value_kind=value_kind,
+        )
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
 def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool | None]:
