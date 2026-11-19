@@ -129,9 +129,7 @@ passed); every class used scored at least 95%, and django's `Fixes #N` class
 Symptom: the closed issue's text as filed; candidates: the 14 days before it;
 index facts from a monthly snapshot before the issue. Trailers that name people
 (`Signed-off-by`, `Co-authored-by`, `Reviewed-By`, any trailer with an email)
-are excluded from the text index; the figures below are from the rerun with
-them excluded, on the same items and snapshots (before: node MRR 0.354, pooled
-MRR 0.450, interval +0.256 to +0.535; every hit@5 unchanged).
+are excluded from the text index; the figures below are with them excluded.
 
 | Arm (hit@5 / MRR) | django (18) | node (25) | pooled (43) |
 |---|---|---|---|

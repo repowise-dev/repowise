@@ -41,7 +41,9 @@ Optional ``include`` parameter widens the response:
                             complexity, resolved callers) and direct test links
   - include=["changes"]   → recent Change Records touching a file target
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
-                            targets as a symptom, each with the signals that fired
+                            targets' files and the typed ``symptom`` text (the
+                            targets' path words without one), each with the
+                            signals that fired
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
   - include=["files"]     → on a directory, every file under it (capped, with
