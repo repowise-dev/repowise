@@ -154,7 +154,8 @@ def set_command(key: str, value: Any, path: str | None = None) -> str:
     so the command line does not read it as an option.
     """
     text = cli_value(value)
-    if text.startswith("-"):
+    # Judge the word the shell hands over, not its quoted spelling: "'-a b'" is still "-a b".
+    if shlex.split(text)[0].startswith("-"):
         return f"repowise config set {key}{path_flag(path)} -- {text}"
     return f"repowise config set {key} {text}{path_flag(path)}"
 

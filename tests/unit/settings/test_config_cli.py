@@ -290,6 +290,13 @@ def test_undo_of_a_value_starting_with_a_dash_runs(repo):
     assert _config(repo)["mcp"]["tools"] == ["-get_why"]
 
 
+def test_a_quoted_value_starting_with_a_dash_still_goes_after_the_separator():
+    from repowise.core.settings.views import set_command
+
+    assert set_command("k", "-a b") == "repowise config set k -- '-a b'"
+    assert set_command("k", "a b") == "repowise config set k 'a b'"
+
+
 def test_set_then_reset_on_a_file_without_the_key_restores_its_bytes(repo):
     from repowise.core.repo_config import save_repo_config
 

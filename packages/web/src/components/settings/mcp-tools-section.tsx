@@ -66,8 +66,10 @@ export function McpToolsSection({ repoId }: { repoId: string }) {
       .catch((e) => setLoadError(toFriendlyMessage(e, "Could not load tools")))
       .finally(() => setLoading(false));
     // Without it the page still edits the tool list; the switch is left out.
+    // A write still in flight for the previous repository no longer counts as newest.
     setAlwaysLoad(null);
     alwaysServer.current = null;
+    alwaysSeq.current++;
     getSettings(repoId)
       .then((r) => {
         if (!live) return;

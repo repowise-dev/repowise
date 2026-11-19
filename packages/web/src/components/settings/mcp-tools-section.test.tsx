@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ getMcpToolSurface: vi.fn(), updateMcpTools: vi.fn() }));
@@ -109,6 +109,28 @@ describe("McpToolsSection", () => {
     expect(
       screen.getByRole("switch", { name: "Load the read tools up front" }).getAttribute("aria-checked"),
     ).toBe("false");
+  });
+
+  it("drops a write for the previous repository when the repository changes", async () => {
+    mocks.getMcpToolSurface.mockResolvedValue(surface);
+    settings.getSettings.mockResolvedValue(settingsWith(false));
+    let finish: (v: unknown) => void = () => {};
+    settings.setSetting.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    const { rerender } = render(<McpToolsSection repoId="r1" />);
+    const checked = () =>
+      screen.getByRole("switch", { name: "Load the read tools up front" }).getAttribute("aria-checked");
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Load the read tools up front" }));
+    await waitFor(() => expect(settings.setSetting).toHaveBeenCalledWith("r1", "mcp.always_load", true));
+    rerender(<McpToolsSection repoId="r2" />);
+    await waitFor(() => expect(settings.getSettings).toHaveBeenCalledWith("r2"));
+    await waitFor(() => expect(checked()).toBe("false"));
+
+    // r1's write lands late; r2's switch keeps r2's value.
+    await act(async () => {
+      finish({ key: "mcp.always_load", after: { value: true, source: "repo_file", changed: true } });
+    });
+    expect(checked()).toBe("false");
   });
 
   it("leaves the switch out when the settings cannot be read", async () => {
