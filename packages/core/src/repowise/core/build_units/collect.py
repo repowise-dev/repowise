@@ -17,6 +17,7 @@ from repowise.core.build_units.adapters import (
     maven,
     npm,
     python,
+    ruby,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -36,6 +37,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("go", go.units),
     ("maven", maven.units),
     ("python", python.units),
+    ("ruby", ruby.units),
 )
 
 
