@@ -52,7 +52,7 @@ const FACTS: WorkspaceWelcomeFacts = {
   repoCount: 3,
   fileCount: 2911,
   contractLinks: 18,
-  topCoChange: { a: "web-checkout", b: "payments-api", commits: 41 },
+  topCoChange: { a: "web-checkout", b: "payments-api", sessions: 41 },
   lowest: { name: "ledger-worker", score: 5.2 },
   notIndexed: ["notifications-svc"],
   members: ["payments-api", "web-checkout", "ledger-worker"],
@@ -105,6 +105,7 @@ describe("WorkspaceWelcomeDialog", () => {
     wrap(<WorkspaceWelcomeDialog open onOpenChange={vi.fn()} facts={FACTS} />);
     expect(screen.getByText("Contracts")).toBeTruthy();
     expect(screen.getByText(/changed together/).textContent).toBe("web-checkout and payments-api changed together.");
+    expect(screen.getByText("work sessions")).toBeTruthy();
     expect(screen.getByText(/the lowest of 3 indexed/)).toBeTruthy();
     expect(screen.getByText(/Contracts that touch it are not seen yet/)).toBeTruthy();
 

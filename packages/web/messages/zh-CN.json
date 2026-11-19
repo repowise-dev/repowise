@@ -1871,7 +1871,7 @@
       },
       "coChanges": {
         "label": "共同变更",
-        "unit": "个提交",
+        "unit": "个工作会话",
         "caption": "<mono>{a}</mono> 和 <mono>{b}</mono> 一起变更。",
         "open": "打开共同变更"
       },

@@ -51,7 +51,8 @@ export interface WorkspaceWelcomeFacts {
   /** Contract links between members; null when not read. */
   contractLinks: number | null;
   /** The pair that changed together most. */
-  topCoChange: { a: string; b: string; commits: number } | null;
+  /** `sessions`: the work sessions the busiest cross-repo file pair shared. */
+  topCoChange: { a: string; b: string; sessions: number } | null;
   /** The least healthy member, 0-10. */
   lowest: { name: string; score: number } | null;
   /** Members with no index yet. */
@@ -245,8 +246,8 @@ function WorkspaceCards({ facts, onNavigate }: { facts: WorkspaceWelcomeFacts; o
       key: "coChanges",
       series: 3,
       label: t("coChanges.label"),
-      value: format.number(facts.topCoChange.commits),
-      unit: t("coChanges.unit", { count: facts.topCoChange.commits }),
+      value: format.number(facts.topCoChange.sessions),
+      unit: t("coChanges.unit", { count: facts.topCoChange.sessions }),
       caption: t.rich("coChanges.caption", { a: facts.topCoChange.a, b: facts.topCoChange.b, mono }),
       href: "/workspace/co-changes",
       open: t("coChanges.open"),

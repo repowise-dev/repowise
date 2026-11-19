@@ -1979,7 +1979,7 @@
       },
       "coChanges": {
         "label": "Co-changes",
-        "unit": "{count, plural, one {commit} other {commits}}",
+        "unit": "{count, plural, one {work session} other {work sessions}}",
         "caption": "<mono>{a}</mono> and <mono>{b}</mono> changed together.",
         "open": "Open co-changes"
       },

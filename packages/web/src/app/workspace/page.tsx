@@ -121,7 +121,13 @@ export default async function WorkspaceDashboardPage() {
 
   const rows = repos.slice().sort(byAttention).map(toRow);
   const lowest = lowestRepoHealth(rows);
-  const topPair = coChanges?.co_changes[0] ?? null;
+  // The file pair that shared the most work sessions: its count is a floor on
+  // how often the two repositories changed together (summing pairs would count
+  // one session once per file pair). init's cross-repo finding reads the same.
+  const pairs = coChanges?.co_changes ?? [];
+  const topPair = pairs.length
+    ? pairs.reduce((best, c) => (c.frequency > best.frequency ? c : best))
+    : null;
   const indexed = repos.filter((r) => statusOf(r) === "indexed");
   const welcome: WorkspaceWelcomeFacts = {
     name: workspace?.workspace_name ?? null,
@@ -129,7 +135,7 @@ export default async function WorkspaceDashboardPage() {
     fileCount: totals.files,
     contractLinks: contracts?.total_links ?? null,
     topCoChange: topPair
-      ? { a: topPair.source_repo, b: topPair.target_repo, commits: topPair.frequency }
+      ? { a: topPair.source_repo, b: topPair.target_repo, sessions: topPair.frequency }
       : null,
     lowest: lowest ? { name: lowest.name, score: lowest.score } : null,
     notIndexed: repos.filter((r) => statusOf(r) === "needs_index").map((r) => r.alias),
