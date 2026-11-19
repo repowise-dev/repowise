@@ -233,9 +233,12 @@ PER_TEST_MAP_FORMAT = "repowise-test-map-v1"
 _GZIP_MAGIC = b"\x1f\x8b"
 # A source's tests_json as the engine writes it: compact, non-empty,
 # ``[[test_no,"1-4,9"],...]``.
-_RANGES = r"\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*"
+# Line numbers stop at seven digits: no source file has ten million lines.
+_LINE = r"\d{1,7}"
+_RANGES = rf"{_LINE}(?:-{_LINE})?(?:,{_LINE}(?:-{_LINE})?)*"
 _ENTRIES_RE = re.compile(rf'\[\[\d+,"{_RANGES}"\](?:,\[\d+,"{_RANGES}"\])*\]')
 _TEST_NO_RE = re.compile(r'\[(\d+),"')
+_SPAN_RE = re.compile(r"(\d+)-(\d+)")
 _JSON_COMPACT = (",", ":")
 
 
@@ -347,6 +350,22 @@ def cap_per_test_map(
     return _renumbered(tmap, kept, decoded), tuple(dropped)
 
 
+def _union_ranges(texts: list[str]) -> str:
+    """The union of range *texts*, merged span by span, never expanded to lines.
+
+    Spans are what an untrusted map holds, so a wide one costs no memory here;
+    reversed spans cover nothing and drop out.
+    """
+    spans = sorted(s for text in texts for s in _spans(text) if s[0] <= s[1])
+    out: list[list[int]] = []
+    for lo, hi in spans:
+        if out and lo <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], hi)
+        else:
+            out.append([lo, hi])
+    return ",".join(str(lo) if lo == hi else f"{lo}-{hi}" for lo, hi in out)
+
+
 def remap_per_test_map(
     tmap: PerTestMap, source_paths: dict[str, str], test_paths: dict[str, str]
 ) -> PerTestMap:
@@ -357,16 +376,16 @@ def remap_per_test_map(
     file missing from *test_paths* becomes ``None``. Tests left covering
     nothing are dropped.
     """
-    merged: dict[str, dict[int, set[int]]] = {}
+    merged: dict[str, dict[int, list[str]]] = {}
     for source, (_, text) in tmap.sources.items():
         target = source_paths.get(source)
         if target is None:
             continue
         into = merged.setdefault(target, {})
         for no, ranges in _decode_tests(text):
-            into.setdefault(no, set()).update(_decode_lines(ranges))
+            into.setdefault(no, []).append(ranges)
     sources = {
-        target: [(no, _encode_lines(lines)) for no, lines in by_no.items()]
+        target: [(no, u) for no, texts in by_no.items() if (u := _union_ranges(texts))]
         for target, by_no in merged.items()
     }
     used = sorted({no for entries in sources.values() for no, _ in entries})
@@ -464,6 +483,8 @@ def _checked_sources(sources: Any, n_tests: int) -> tuple[dict[str, tuple[int, s
         seen = set(numbers)
         if len(seen) < len(numbers) or max(numbers) >= n_tests:
             raise PerTestMapError(f"tests of {source[:200]} repeat or name unknown tests")
+        if any(int(lo) > int(hi) for lo, hi in _SPAN_RE.findall(text)):
+            raise PerTestMapError(f"tests of {source[:200]} hold a reversed line range")
         used |= seen
         checked[source] = (len(numbers), text)
     return checked, used

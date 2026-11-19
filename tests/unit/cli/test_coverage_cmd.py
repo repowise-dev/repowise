@@ -749,3 +749,7 @@ def test_coverage_export_reads_a_per_test_report_without_an_index(tmp_path, monk
     plain = tmp_path / "plain.lcov"
     plain.write_text("SF:src/a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
     assert CliRunner().invoke(cli, ["coverage", "export", str(plain)]).exit_code == 1
+    absent = CliRunner().invoke(cli, ["coverage", "export", "nowhere.coverage"])
+    assert absent.exit_code == 2
+    assert "does not exist" in absent.output
+    assert "No per-test map" not in absent.output

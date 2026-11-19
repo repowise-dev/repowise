@@ -556,7 +556,9 @@ def coverage_status(repo: str | None, fmt: str) -> None:
 
 
 @coverage_group.command("export")
-@click.argument("report", required=False)
+@click.argument(
+    "report", required=False, type=click.Path(exists=True, dir_okay=False, readable=True)
+)
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )

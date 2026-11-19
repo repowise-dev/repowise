@@ -12,6 +12,7 @@ import pytest
 from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.persistence.crud import save_test_coverage
 from repowise.core.persistence.crud.analysis.coverage_map import (
+    PerTestMap,
     PerTestMapError,
     cap_per_test_map,
     cap_test_map,
@@ -116,6 +117,23 @@ def test_remapping_drops_unknown_sources_and_merges_collisions() -> None:
     assert remapped.sources == {"src/foo.py": (2, '[[0,"9"],[1,"1-3"]]')}
 
 
+def test_remapping_merges_spans_without_expanding_them() -> None:
+    """A wide span merges as a span, and a test whose spans cover nothing drops out."""
+    tmap = PerTestMap(
+        source_format="coverage.py",
+        tests=(("t1", None), ("t2", None)),
+        sources={
+            "a/x.py": (2, '[[0,"1-5000000"],[1,"5-2"]]'),
+            "b/x.py": (1, '[[0,"3,5000001-9999999"]]'),
+        },
+    )
+    remapped = remap_per_test_map(tmap, {"a/x.py": "x.py", "b/x.py": "x.py"}, {})
+
+    assert remapped.tests == (("t1", None),)
+    assert remapped.sources == {"x.py": (1, '[[0,"1-9999999"]]')}
+    assert load_per_test_map(dump_per_test_map(remapped), max_bytes=_LIMIT) == remapped
+
+
 def _raw(doc: dict) -> bytes:
     return gzip.compress(json.dumps(doc).encode())
 
@@ -139,6 +157,8 @@ _GOOD = {
         {"sources": {"src/a.py": '[[0,"1;drop"]]'}},
         {"sources": {"src/a.py": "[]"}},
         {"sources": {"src/a.py": [[0, "1"]]}},
+        {"sources": {"src/a.py": '[[0,"9-2"]]'}},
+        {"sources": {"src/a.py": '[[0,"1-99999999999"]]'}},
     ],
 )
 def test_malformed_maps_are_refused(change: dict) -> None:
