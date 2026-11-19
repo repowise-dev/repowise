@@ -198,12 +198,55 @@ class SavingsAgentRow(BaseModel):
     saved_input_tokens: int = 0
 
 
+class SavingsFilesRow(BaseModel):
+    """Files not opened and tool calls answered in one day, agent or surface."""
+
+    group: str | None = None
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    tool_calls_answered: int = 0
+
+
 class SavingsOpportunityRow(BaseModel):
     """One kind of observed opportunity. Never part of achieved savings."""
 
     kind: str
     observations: int = 0
     estimated_potential_input_tokens: int = 0
+
+
+class SavingsOutputModelRow(BaseModel):
+    """The output estimate for sessions on one model and output rate."""
+
+    model: str | None = None
+    #: ``measured`` (this model's benchmark row), ``anthropic_fallback`` (a
+    #: Claude model with no row) or ``other_fallback`` (any other model).
+    basis: str
+    sessions: int = 0
+    #: Questions credited across these sessions: each session's MCP calls over
+    #: ``mcp_calls_per_question``, at least 1 and at most the cap.
+    questions: float = 0.0
+    mcp_calls_per_question: float = 0.0
+    reduction: float = 0.0
+    output_tokens_per_question: int = 0
+    output_tokens_saved: int = 0
+    output_rate_usd_per_million: float | None = None
+    output_usd_saved: float | None = None
+
+
+class SavingsOutputCalibration(BaseModel):
+    """Where the output estimate comes from, so the figure is reproducible."""
+
+    source: str
+    version: str
+    #: True: credited per question asked, not once per session.
+    per_question: bool = True
+    questions_per_session_cap: int = 0
+    formula: str = ""
+    sessions: int = 0
+    questions: float = 0.0
+    unpriced_output_tokens_saved: int = 0
+    per_model: list[SavingsOutputModelRow] = []
 
 
 class SavingsResponse(BaseModel):
@@ -277,3 +320,33 @@ class SavingsResponse(BaseModel):
     missed_window_days: float = 0.0
     reread_events: int = 0
     reread_tokens_est: int = 0
+
+    #: Files not opened: distinct (session, path) pairs a usable event served
+    #: in place of a Read, once per session, dropped when the agent Read the
+    #: path later in that session. Tokens are one Read of each. Tool calls
+    #: answered counts usable MCP, VS Code tool and hook events.
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    tool_calls_answered: int = 0
+    files_per_day: list[SavingsFilesRow] = []
+    files_per_agent: list[SavingsFilesRow] = []
+    files_per_surface: list[SavingsFilesRow] = []
+    #: Attribution and report-time pricing. Each is part of a total above,
+    #: never added to it. ``backfilled_*`` prices unpriced tokens at the rate
+    #: another event of the same session captured, else at the cached rate for
+    #: the event's agent, so ``priced_input_savings_usd`` keeps meaning "rate
+    #: captured when it happened".
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0
+    #: Output tokens agents did not write, *estimated* from the paired
+    #: benchmark per question asked in each agent session with an MCP call
+    #: (``calibration.formula``), priced at that session's captured output rate. Each model is credited the benchmark's point
+    #: estimate. Separate from the recorded ``saved_output_tokens``. The total
+    #: adds this to the priced input saving. All null when no calibration
+    #: could be loaded.
+    output_tokens_saved_estimated: int | None = None
+    output_usd_saved_estimated: float | None = None
+    total_usd_saved_estimated: float | None = None
+    calibration: SavingsOutputCalibration | None = None

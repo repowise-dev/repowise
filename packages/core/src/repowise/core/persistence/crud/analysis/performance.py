@@ -996,8 +996,12 @@ async def measured_costs(
     *,
     limit: int = 10,
     now: datetime | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """What each workload's newest stored run measured, ranked by what it costs.
+
+    *run_id* keeps that one run (a workload's newest); any other id ranks
+    nothing here and gives ``None``.
 
     Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence
@@ -1027,6 +1031,8 @@ async def measured_costs(
     from .evidence import ranked_by_workload
 
     ranked = await ranked_by_workload(session, repository_id)
+    if run_id is not None:
+        ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
     if not ranked:
         return None
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}

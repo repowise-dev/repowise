@@ -19,7 +19,9 @@ from repowise.server.schemas import (
     CostSummaryResponse,
     SavingsAgentRow,
     SavingsBreakdownRow,
+    SavingsFilesRow,
     SavingsOpportunityRow,
+    SavingsOutputCalibration,
     SavingsResponse,
 )
 
@@ -213,7 +215,49 @@ async def get_savings(
         missed_window_days=missed["window_days"],
         reread_events=reread["events"],
         reread_tokens_est=reread["est_saved_tokens"],
+        files_not_opened=report.files_not_opened,
+        files_not_opened_tokens=report.files_not_opened_tokens,
+        tool_calls_answered=report.tool_calls_answered,
+        files_per_day=_files_rows(report.files_per_day, "day"),
+        files_per_agent=_files_rows(report.files_per_agent, "agent"),
+        files_per_surface=_files_rows(report.files_per_surface, "surface"),
+        subagent_events=report.subagent_events,
+        subagent_saved_input_tokens=report.subagent_saved_input_tokens,
+        backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
+        backfilled_input_savings_usd=report.backfilled_input_savings_usd,
+        **_output_estimate_fields(report),
     )
+
+
+def _files_rows(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsFilesRow]:
+    """Files-not-opened rows on the wire, the group column renamed like :func:`_breakdown`."""
+    return [
+        SavingsFilesRow(group=None if row[key] is None else str(row[key]), **{
+            name: row[name]
+            for name in ("files_not_opened", "files_not_opened_tokens", "tool_calls_answered")
+        })
+        for row in rows
+    ]
+
+
+def _output_estimate_fields(report: Any) -> dict[str, Any]:
+    """The benchmark-estimated output fields; empty (all null) without a calibration."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {}
+    try:
+        return _output_estimate_payload(report, estimate)
+    except Exception:  # an estimate is never worth a failed response
+        return {}
+
+
+def _output_estimate_payload(report: Any, estimate: Any) -> dict[str, Any]:
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": SavingsOutputCalibration(**estimate.calibration()),
+    }
 
 
 def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreakdownRow]:

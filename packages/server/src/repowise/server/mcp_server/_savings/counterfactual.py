@@ -30,6 +30,12 @@ from typing import Any
 #: re-reading disk. Deliberately low — the goal is never to overstate.
 SEARCH_FLOOR_PER_HIT = 400
 
+#: One capped grep: the output an agent's own search returns, measured at
+#: 1,584 tokens on this repository (5,443 uncapped). ``search_codebase``
+#: serving ``lines`` replaced exactly that call, so it is credited once per
+#: reply that served any; the per-file hits above are credited on top.
+SEARCH_GREP_TOKENS = 1_584
+
 
 #: A ``get_context`` *module* card lists the module's child files (each with a
 #: one-line summary); the agent would otherwise glob the directory and open
@@ -48,10 +54,10 @@ CONTEXT_MODULE_MAX = 20_000
 
 #: A ``get_context`` *symbol* card carries the signature, docstring and usage
 #: sites for one symbol — standing in for the agent locating and reading that
-#: definition plus scanning who calls it. Finding it at all is a capped grep,
-#: measured at 1,584 tokens of output on this repository (5,443 uncapped);
-#: reading enough of the definition and its callers to answer the same question
-#: is more again. Floored at well under half that measured grep alone.
+#: definition plus scanning who calls it. Finding it at all is a capped grep
+#: (:data:`SEARCH_GREP_TOKENS`); reading enough of the definition and its
+#: callers to answer the same question is more again. Floored under that
+#: measured grep alone.
 CONTEXT_SYMBOL_FLOOR = 1_200
 
 #: A ``get_context`` *file* card stands in for the agent Reading that file.
@@ -103,29 +109,49 @@ def _context_target_tokens(
     return None, 0
 
 
+def _referencing_files(target: dict[str, Any]) -> set[str]:
+    """The files a ``complete`` references block names, else none.
+
+    A complete edit set is every file the agent would otherwise have found by
+    searching for the symbol, so each one earns what a search hit does. An
+    incomplete one names only some of them and earns nothing extra.
+    """
+    references = target.get("references")
+    if not isinstance(references, dict) or references.get("complete") is not True:
+        return set()
+    files = references.get("files")
+    if not isinstance(files, dict):
+        return set()
+    return {path for path in files if isinstance(path, str)}
+
+
 def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = None) -> int:
     """Raw exploration a ``get_context`` reply replaced, summed over every target.
 
     A file card, with or without a skeleton, replaces one Read of that file.
     Module and symbol cards earn the floors above for the directory globbing
-    and symbol lookup they replace.
+    and symbol lookup they replace, and a complete references block earns a
+    search hit per referencing file.
     """
     targets = result.get("targets")
     if not isinstance(targets, dict):
         return 0
     total = 0
     read: set[Any] = set()
+    # Two symbols referenced from one file are one search hit on it.
+    referencing: set[str] = set()
     for key, target in targets.items():
         if not isinstance(target, dict) or target.get("error"):
             continue
         path, tokens = _context_target_tokens(key, target, read_cost)
+        referencing |= _referencing_files(target)
         if path is not None:
             # Two cards over one file replace one Read of it.
             if path in read:
                 continue
             read.add(path)
         total += tokens
-    return total
+    return total + len(referencing) * SEARCH_FLOOR_PER_HIT
 
 
 def _estimate_get_context(result: dict[str, Any]) -> int:
@@ -133,15 +159,18 @@ def _estimate_get_context(result: dict[str, Any]) -> int:
 
 
 def _estimate_search_codebase(result: dict[str, Any]) -> int:
-    """``len(distinct cited files) x SEARCH_FLOOR_PER_HIT`` — a conservative floor.
+    """``len(distinct cited files) x SEARCH_FLOOR_PER_HIT``, plus a grep for ``lines``.
 
     Each result points the agent at a file it would otherwise have had to find
     and open by hand. We undersell to a per-hit floor because the result dict
-    carries only the path (and a snippet), never the file's size.
+    carries only the path (and a snippet), never the file's size. Served
+    ``lines`` are the grep the agent would otherwise have run.
     """
+    lines = result.get("lines")
+    grep = SEARCH_GREP_TOKENS if isinstance(lines, list) and lines else 0
     results = result.get("results")
     if not isinstance(results, list):
-        return 0
+        return grep
     # ``path`` is on every row that names a file, symbol rows included, which
     # the old ``target_path`` read missed. Fallback for pre-``path`` payloads.
     paths = {
@@ -149,7 +178,7 @@ def _estimate_search_codebase(result: dict[str, Any]) -> int:
         for r in results
         if isinstance(r, dict) and (r.get("path") or r.get("target_path"))
     }
-    return len(paths) * SEARCH_FLOOR_PER_HIT
+    return grep + len(paths) * SEARCH_FLOOR_PER_HIT
 
 
 #: get_answer subsumes a search_codebase call plus opening the cited files.

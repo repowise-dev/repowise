@@ -1,0 +1,46 @@
+{
+  "version": "2026-11-19.2",
+  "source": "Paired benchmark: Claude Code headless sessions, 24 questions over 3 repositories created after each model's training cutoff, one fresh session per question and run, without and with Repowise. Means per question of output tokens and of Repowise MCP calls in the Repowise arm.",
+  "models": {
+    "claude-opus-5-5": {
+      "bare_output_tokens": 1616.8,
+      "repowise_output_tokens": 1388.2,
+      "repowise_mcp_calls_per_question": 3.667,
+      "pairs": 48,
+      "questions": 24,
+      "change_pct_ci95": [-22.7, -7.0]
+    },
+    "claude-sonnet-5-5": {
+      "bare_output_tokens": 1387.5,
+      "repowise_output_tokens": 1254.4,
+      "repowise_mcp_calls_per_question": 1.958,
+      "pairs": 48,
+      "questions": 24,
+      "change_pct_ci95": [-15.5, -3.5]
+    },
+    "claude-opus-4-8": {
+      "bare_output_tokens": 1676.0,
+      "repowise_output_tokens": 1432.4,
+      "repowise_mcp_calls_per_question": 4.208,
+      "pairs": 48,
+      "questions": 24,
+      "change_pct_ci95": [-42.3, 5.7]
+    },
+    "claude-sonnet-4-6": {
+      "bare_output_tokens": 2298.1,
+      "repowise_output_tokens": 1120.3,
+      "repowise_mcp_calls_per_question": 4.667,
+      "pairs": 72,
+      "questions": 24,
+      "change_pct_ci95": [-74.2, -29.3]
+    },
+    "claude-haiku-4-5": {
+      "bare_output_tokens": 2907.3,
+      "repowise_output_tokens": 2754.0,
+      "repowise_mcp_calls_per_question": 8.944,
+      "pairs": 72,
+      "questions": 24,
+      "change_pct_ci95": [-15.9, 4.9]
+    }
+  }
+}
