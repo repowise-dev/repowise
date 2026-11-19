@@ -134,10 +134,14 @@ def _save_shared_state(repo_path: Path, state: dict) -> bool:
     edits = state["edits"]
     if len(edits) > 500:
         state["edits"] = {k: edits[k] for k in sorted(edits, key=edits.get, reverse=True)[:400]}
+    from repowise.core.fsutils import atomic_write_text
+
     path = _shared_state_path(repo_path, state["session_id"])
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state), encoding="utf-8")
+        # Several windows write this file, so a reader must never see half of it:
+        # a torn read loads as fresh and the next save would drop the session's ask.
+        atomic_write_text(path, json.dumps(state))
     except (OSError, TypeError, ValueError):
         return False
     return True
