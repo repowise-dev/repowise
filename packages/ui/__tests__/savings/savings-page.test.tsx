@@ -271,6 +271,16 @@ describe("job grouping", () => {
     expect(jobForOperation(null)).toBe("answers");
   });
 
+  it("ranks by dollars when priced, by tokens otherwise, with a stable tiebreak", () => {
+    const rows = [
+      { group: "get_answer", events: 1, saved_input_tokens: 9000, priced_input_savings_usd: 1 },
+      { group: "git_diff", events: 1, saved_input_tokens: 1000, priced_input_savings_usd: 3 },
+      { group: "get_why", events: 1, saved_input_tokens: 1000, priced_input_savings_usd: 3 },
+    ];
+    expect(groupByJob(rows, "usd").map((j) => j.id).slice(0, 3)).toEqual(["trim", "checks", "answers"]);
+    expect(groupByJob(rows, "tokens").map((j) => j.id).slice(0, 3)).toEqual(["answers", "trim", "checks"]);
+  });
+
   it("returns every job, empty ones last", () => {
     const jobs = groupByJob([{ group: "get_why", events: 1, saved_input_tokens: 5 }]);
     expect(jobs.map((j) => j.id)).toEqual(["checks", "trim", "search", "answers", "rereads"]);

@@ -2,11 +2,12 @@ import * as React from "react";
 
 import { formatCost, formatTokens } from "../lib/format";
 import type { SavingsCopy } from "./copy";
-import { groupByJob, type SavingsJobId } from "./jobs";
+import { groupByJob, jobValue, type SavingsJobId } from "./jobs";
 import type { SavingsView } from "./types";
 
 /**
- * Where the savings came from, as five plain jobs ranked by tokens. A job the
+ * Where the savings came from, as five plain jobs ranked by what each row leads
+ * with (dollars when the window has priced savings, else tokens). A job the
  * host says is not set up, and that recorded nothing, reads "Not set up" in
  * muted text with no button: the one nudge above the proof row is where an
  * action lives. A job with no priced event shows tokens, never $0.00.
@@ -20,8 +21,12 @@ export function SavingsJobs({
   copy: SavingsCopy;
   notSetUp?: readonly SavingsJobId[];
 }) {
-  const jobs = groupByJob(data.per_operation ?? []);
-  const top = Math.max(...jobs.map((j) => j.savedInputTokens), 1);
+  // Ranked and sized by what each row leads with: dollars when anything in the
+  // window was priced, tokens otherwise (subscription runs, or a host that
+  // records no rates).
+  const by = (data.priced_input_savings_usd ?? 0) > 0 ? "usd" : "tokens";
+  const jobs = groupByJob(data.per_operation ?? [], by);
+  const top = Math.max(...jobs.map((j) => jobValue(j, by)), Number.MIN_VALUE);
 
   return (
     <ul className="m-0 list-none p-0">
@@ -64,7 +69,7 @@ export function SavingsJobs({
               <div className="col-span-2 h-[3px] overflow-hidden rounded-sm bg-[var(--color-border-subtle)]">
                 <i
                   className="block h-full bg-[var(--color-text-tertiary)] opacity-60"
-                  style={{ width: `${(100 * job.savedInputTokens) / top}%` }}
+                  style={{ width: `${(100 * jobValue(job, by)) / top}%` }}
                 />
               </div>
             )}

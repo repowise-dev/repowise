@@ -75,10 +75,22 @@ export interface SavingsJobTotal {
   pricedInputUsd: number;
 }
 
-/** Fold the report's per-operation rows into one total per job, largest first.
- *  Every job is returned, empty ones last, so a host can say which are not
- *  set up rather than silently dropping them. */
-export function groupByJob(rows: readonly SavingsBreakdownView[]): SavingsJobTotal[] {
+/** What a job row leads with, and so what it is ranked and sized by. */
+export type SavingsJobMeasure = "usd" | "tokens";
+
+/** A job's figure under one measure. */
+export function jobValue(job: SavingsJobTotal, by: SavingsJobMeasure): number {
+  return by === "usd" ? job.pricedInputUsd : job.savedInputTokens;
+}
+
+/** Fold the report's per-operation rows into one total per job, largest first
+ *  by *by*, then by the other measure, events and a fixed job order. Every job
+ *  is returned, empty ones last, so a host can say which are not set up rather
+ *  than silently dropping them. */
+export function groupByJob(
+  rows: readonly SavingsBreakdownView[],
+  by: SavingsJobMeasure = "tokens",
+): SavingsJobTotal[] {
   const totals = new Map<SavingsJobId, SavingsJobTotal>(
     SAVINGS_JOB_IDS.map((id) => [id, { id, events: 0, savedInputTokens: 0, pricedInputUsd: 0 }]),
   );
@@ -90,7 +102,8 @@ export function groupByJob(rows: readonly SavingsBreakdownView[]): SavingsJobTot
   }
   return [...totals.values()].sort(
     (a, b) =>
-      b.savedInputTokens - a.savedInputTokens ||
+      jobValue(b, by) - jobValue(a, by) ||
+      jobValue(b, by === "usd" ? "tokens" : "usd") - jobValue(a, by === "usd" ? "tokens" : "usd") ||
       b.events - a.events ||
       SAVINGS_JOB_IDS.indexOf(a.id) - SAVINGS_JOB_IDS.indexOf(b.id),
   );

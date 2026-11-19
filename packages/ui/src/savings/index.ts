@@ -31,8 +31,10 @@ export {
   SAVINGS_JOB_IDS,
   jobForOperation,
   groupByJob,
+  jobValue,
   type SavingsJobId,
   type SavingsJobTotal,
+  type SavingsJobMeasure,
 } from "./jobs";
 export {
   SavingsPageBody,
