@@ -246,7 +246,7 @@ several files (see [Several profiles of one run](#several-profiles-of-one-run)).
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `criterion`, `junit`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -277,6 +277,7 @@ The format is detected from the content, never the file name;
 |---|---|---|
 | `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
 | `hyperfine` | `hyperfine --export-json PATH` | one series per result, named `command 1`, `command 2`, ... (the command line is never stored); `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds` (the number of timed runs) |
+| `criterion` | Cargo Criterion, `target/criterion/<group>/<id>/new/estimates.json` | one series, named by the sibling `benchmark.json`'s `full_id` (the fixed `criterion` when that file is missing); `mean`, `median`, `stddev` from the point estimates, in nanoseconds |
 
 - The node id without its parameters is the benchmark function's symbol id, so
   `benchmarks/test_io.py::TestCache::test_get[small]` links to
@@ -290,6 +291,7 @@ The format is detected from the content, never the file name;
   flag is kept unless `--dirty` or `--clean` says otherwise.
 - Machine details, parameters and `extra_info` are not read.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
+- A Criterion estimate links to no function either: the confidence intervals and a null `slope` are not read, and the entry's name falls back when the sibling `benchmark.json` is missing.
 
 ### Test reports as the runner wrote them
 
