@@ -10,6 +10,7 @@ from pathlib import Path
 from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
 from repowise.core.precedent.currency import decision_commits_since
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
     cap_collection,
@@ -171,8 +172,9 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                 label=f"health {key} beyond cap={cap}",
             )
         # After the cap, so the git cost is bounded by the rows actually served.
-        await _add_stale_row_currency(
-            session, repository.id, Path(ctx.path), result_data["stale_decisions"], stale
-        )
+        if ctx.path is not None and _state.git_available():
+            await _add_stale_row_currency(
+                session, repository.id, Path(ctx.path), result_data["stale_decisions"], stale
+            )
         collector.attach(result_data)
         return result_data

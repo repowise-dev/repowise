@@ -284,6 +284,37 @@ def selected_tool_names(*, is_workspace: bool) -> set[str]:
     return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
 
 
+#: What each tool cannot serve on a server with no source (the repository's
+#: files) and with no git history. ``"unavailable": True`` is a tool that has
+#: nothing to answer with; it replies with the reason instead.
+_NEEDS_SOURCE: dict[str, dict[str, Any]] = {
+    "get_context": {"includes": ["references", "references+", "skeleton", "skeleton+"]},
+    "get_symbol": {"arguments": ["context_lines", "depth"]},
+}
+_NEEDS_GIT: dict[str, dict[str, Any]] = {
+    "get_change_risk": {"unavailable": True},
+    "get_why": {"includes": ["history"]},
+}
+
+
+def capability_gaps(ctx: Any) -> dict[str, dict[str, Any]]:
+    """``{tool: {"arguments", "includes"}}`` that *ctx* (a ``RepoContext``) cannot serve.
+
+    Empty for a context with a checkout and git. A server that embeds the
+    tools over a store alone reads its gaps here instead of keeping its own.
+    """
+    gaps: dict[str, dict[str, Any]] = {}
+    tables = ([_NEEDS_SOURCE] if ctx.source is None else []) + ([] if ctx.git else [_NEEDS_GIT])
+    for table in tables:
+        for tool, gap in table.items():
+            row = gaps.setdefault(tool, {"arguments": [], "includes": []})
+            row["arguments"] = sorted({*row["arguments"], *gap.get("arguments", ())})
+            row["includes"] = sorted({*row["includes"], *gap.get("includes", ())})
+            if gap.get("unavailable"):
+                row["unavailable"] = True
+    return gaps
+
+
 def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
     """Return the configured MCP entries available to one repository.
 
