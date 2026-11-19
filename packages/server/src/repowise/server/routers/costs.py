@@ -214,6 +214,10 @@ async def get_savings(
         missed_window_days=missed["window_days"],
         reread_events=reread["events"],
         reread_tokens_est=reread["est_saved_tokens"],
+        subagent_events=report.subagent_events,
+        subagent_saved_input_tokens=report.subagent_saved_input_tokens,
+        backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
+        backfilled_input_savings_usd=report.backfilled_input_savings_usd,
         **_output_estimate_fields(report),
     )
 

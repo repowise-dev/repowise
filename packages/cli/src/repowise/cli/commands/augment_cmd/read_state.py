@@ -82,13 +82,22 @@ _STATE_DIR = "hook-sessions"
 #: The ``agent_id`` of the hook event this process is handling, "" on a main
 #: thread. One hook event per process, so it is bound once at dispatch.
 _agent_id = ""
+#: The ``session_id`` of the same hook event, "" when the payload names none.
+_session_id = ""
 
 
 def bind_agent(payload: dict) -> None:
     """Key this process's session state on the payload's subagent, when it names one."""
-    global _agent_id
+    global _agent_id, _session_id
     agent = payload.get("agent_id")
     _agent_id = agent if isinstance(agent, str) else ""
+    session = payload.get("session_id")
+    _session_id = session if isinstance(session, str) else ""
+
+
+def bound_ids() -> tuple[str, str]:
+    """``(session_id, agent_id)`` of the hook event this process handles, "" when absent."""
+    return _session_id, _agent_id
 
 #: Session files older than this are swept, once, when a session first writes.
 #: A session lasts hours at the outside and the files are a few KB, so this is

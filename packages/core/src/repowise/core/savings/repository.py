@@ -20,7 +20,9 @@ from repowise.core.savings.formulas import (
 )
 from repowise.core.savings.reporting import (
     DAY_LIMIT,
+    FallbackRate,
     agent_breakdown_rows,
+    backfill_usd,
     breakdown_rows,
 )
 
@@ -29,6 +31,10 @@ if TYPE_CHECKING:
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
+
+#: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
+#: ledger with more than this leaves the smallest of them unpriced.
+_BACKFILL_GROUP_LIMIT = 10_000
 
 _EVENT_COLUMNS = (
     "event_id",
@@ -261,6 +267,7 @@ class SavingsRepository:
         as_of: datetime,
         days: int | None = None,
         max_breakdowns: int = 100,
+        fallback_rate: FallbackRate | None = None,
     ) -> SavingsReport:
         """Read totals and breakdowns with bounded aggregate queries, no writes.
 
@@ -314,6 +321,9 @@ class SavingsRepository:
                 COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
                     THEN {den} ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN saved_input_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN subagent_id IS NOT NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN subagent_id IS NOT NULL
                     THEN saved_input_tokens ELSE 0 END), 0)
             FROM savings_events WHERE {where}
             """,
@@ -353,6 +363,13 @@ class SavingsRepository:
         priced_input = int(row[8])
         saved_output = int(row[11])
         priced_output = int(row[12])
+        try:
+            backfilled_tokens, backfilled_usd = backfill_usd(
+                self._unpriced_groups(where, params, repository_id), fallback_rate
+            )
+        except Exception:
+            # A backfill is a refinement; it must never cost the report.
+            backfilled_tokens, backfilled_usd = 0, 0.0
         output_estimate = self._output_estimate(where, params)
         return SavingsReport(
             unique_events=int(row[0]),
@@ -393,8 +410,53 @@ class SavingsRepository:
             ),
             first_event_at=row[14],
             last_event_at=row[15],
+            subagent_events=int(row[20]),
+            subagent_saved_input_tokens=int(row[21]),
+            backfilled_saved_input_tokens=backfilled_tokens,
+            backfilled_input_savings_usd=backfilled_usd,
             output_estimate=output_estimate,
         )
+
+    def _unpriced_groups(
+        self, where: str, params: list[Any], repository_id: str
+    ) -> list[tuple[str, float | None, int]]:
+        """``(agent, session rate, tokens)`` over the window's unpriced savings.
+
+        The session rate is the newest one any event of that session captured,
+        in or out of the window, looked up only for the sessions the window's
+        unpriced groups name. Grouped scans joined here rather than one
+        windowed join in SQL, which measured twice as slow on a real ledger.
+        The groups are capped at :data:`_BACKFILL_GROUP_LIMIT`, largest first;
+        past the cap the rest of the saving simply stays unpriced.
+        """
+        groups = self._conn.execute(
+            "SELECT agent, session_id, SUM(saved_input_tokens) FROM savings_events "
+            f"WHERE {where} AND input_rate_usd_per_million IS NULL "
+            "AND saved_input_tokens > 0 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
+            [*params, _BACKFILL_GROUP_LIMIT],
+        ).fetchall()
+        sessions = sorted({str(session) for _agent, session, _tokens in groups if session})
+        session_rates: dict[str, float] = {}
+        for start in range(0, len(sessions), _REF_QUERY_BATCH):
+            batch = sessions[start : start + _REF_QUERY_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            # SQLite fills a bare column from the row that holds the MAX, so
+            # this is each session's newest rate. Two rows at the very same
+            # microsecond resolve to either one.
+            session_rates.update(
+                (str(session), float(rate))
+                for session, _latest, rate in self._conn.execute(
+                    "SELECT session_id, MAX(occurred_at), input_rate_usd_per_million "
+                    "FROM savings_events WHERE repository_id = ? "
+                    f"AND session_id IN ({placeholders}) "
+                    "AND input_rate_usd_per_million IS NOT NULL GROUP BY session_id LIMIT ?",
+                    [repository_id, *batch, len(batch)],
+                )
+            )
+        return [
+            (str(agent), session_rates.get(str(session)) if session else None, int(tokens))
+            for agent, session, tokens in groups
+        ]
 
     def _output_estimate(self, where: str, params: list[Any]) -> OutputEstimate | None:
         """The benchmark-calibrated output estimate; ``None`` rather than a failed report.

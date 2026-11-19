@@ -4514,6 +4514,10 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
   output_tokens_saved_estimated?: number | null;
   output_usd_saved_estimated?: number | null;
   total_usd_saved_estimated?: number | null;
