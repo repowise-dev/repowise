@@ -29,8 +29,8 @@ from repowise.core.savings.reporting import (
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
 
-#: Sessions the report-time price backfill reads per query. A ledger with more
-#: unpriced sessions than this leaves the smallest of them unpriced.
+#: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
+#: ledger with more than this leaves the smallest of them unpriced.
 _BACKFILL_GROUP_LIMIT = 10_000
 
 _EVENT_COLUMNS = (
@@ -419,30 +419,37 @@ class SavingsRepository:
         """``(agent, session rate, tokens)`` over the window's unpriced savings.
 
         The session rate is the newest one any event of that session captured,
-        in or out of the window. Two grouped scans joined here rather than one
+        in or out of the window, looked up only for the sessions the window's
+        unpriced groups name. Grouped scans joined here rather than one
         windowed join in SQL, which measured twice as slow on a real ledger.
-        Both are capped at :data:`_BACKFILL_GROUP_LIMIT` sessions; past the
-        cap the rest of the saving simply stays unpriced.
+        The groups are capped at :data:`_BACKFILL_GROUP_LIMIT`, largest first;
+        past the cap the rest of the saving simply stays unpriced.
         """
-        # SQLite fills a bare column from the row that holds the MAX, so this
-        # is each session's newest rate. Two rows at the very same microsecond
-        # resolve to either one.
-        session_rates = {
-            str(session): float(rate)
-            for session, _latest, rate in self._conn.execute(
-                "SELECT session_id, MAX(occurred_at), input_rate_usd_per_million "
-                "FROM savings_events WHERE repository_id = ? AND session_id IS NOT NULL "
-                "AND input_rate_usd_per_million IS NOT NULL "
-                "GROUP BY session_id ORDER BY 2 DESC LIMIT ?",
-                [repository_id, _BACKFILL_GROUP_LIMIT],
+        groups = self._conn.execute(
+            "SELECT agent, session_id, SUM(saved_input_tokens) FROM savings_events "
+            f"WHERE {where} AND input_rate_usd_per_million IS NULL "
+            "AND saved_input_tokens > 0 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
+            [*params, _BACKFILL_GROUP_LIMIT],
+        ).fetchall()
+        sessions = sorted({str(session) for _agent, session, _tokens in groups if session})
+        session_rates: dict[str, float] = {}
+        for start in range(0, len(sessions), _REF_QUERY_BATCH):
+            batch = sessions[start : start + _REF_QUERY_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            # SQLite fills a bare column from the row that holds the MAX, so
+            # this is each session's newest rate. Two rows at the very same
+            # microsecond resolve to either one.
+            session_rates.update(
+                (str(session), float(rate))
+                for session, _latest, rate in self._conn.execute(
+                    "SELECT session_id, MAX(occurred_at), input_rate_usd_per_million "
+                    "FROM savings_events WHERE repository_id = ? "
+                    f"AND session_id IN ({placeholders}) "
+                    "AND input_rate_usd_per_million IS NOT NULL GROUP BY session_id LIMIT ?",
+                    [repository_id, *batch, len(batch)],
+                )
             )
-        }
         return [
-            (str(agent), session_rates.get(session) if session else None, int(tokens))
-            for agent, session, tokens in self._conn.execute(
-                "SELECT agent, session_id, SUM(saved_input_tokens) FROM savings_events "
-                f"WHERE {where} AND input_rate_usd_per_million IS NULL "
-                "AND saved_input_tokens > 0 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
-                [*params, _BACKFILL_GROUP_LIMIT],
-            )
+            (str(agent), session_rates.get(str(session)) if session else None, int(tokens))
+            for agent, session, tokens in groups
         ]

@@ -509,3 +509,16 @@ def test_a_complete_references_block_credits_a_search_hit_per_file() -> None:
     )
     # An incomplete list names only some of the files: no extra credit.
     assert cf.context_replaced_tokens(card(False)) == cf.CONTEXT_SYMBOL_FLOOR
+
+
+def test_a_file_referencing_two_targets_is_one_search_hit() -> None:
+    def symbol(files: list[str]) -> dict:
+        return {
+            "type": "symbol",
+            "references": {"complete": True, "files": {f: {"call": [1]} for f in files}},
+        }
+
+    result = {"targets": {"a.py::f": symbol(["a.py", "b.py"]), "a.py::g": symbol(["b.py"])}}
+    assert cf.context_replaced_tokens(result) == (
+        2 * cf.CONTEXT_SYMBOL_FLOOR + 2 * cf.SEARCH_FLOOR_PER_HIT
+    )

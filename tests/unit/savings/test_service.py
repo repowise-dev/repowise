@@ -467,3 +467,36 @@ def test_agent_calls_give_each_agent_its_first_and_last_mcp_call(tmp_path: Path)
     assert set(calls) == {"codex", "claude_code"}
     assert calls["codex"][0].startswith("2026-10-01")
     assert calls["codex"][1].startswith("2026-10-03")
+
+
+@pytest.mark.parametrize(
+    ("source", "backfilled"),
+    [("session_model:claude_code", 1_000), ("session_model:unknown", 0)],
+)
+def test_the_report_backfills_from_the_cached_rate_but_never_the_default(
+    tmp_path: Path, source: str, backfilled: int
+) -> None:
+    """A sighted model is evidence; the default used when nothing was sighted is not."""
+    from repowise.core.savings import pricing
+
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000, agent="claude_code")
+    snapshot = pricing.PricingSnapshot(
+        model="claude-sonnet-4-6",
+        pricing_source=source,
+        pricing_version="pricing:test",
+        input_rate_usd_per_million=3.0,
+        output_rate_usd_per_million=15.0,
+    )
+    pricing.clear_pricing_cache()
+    try:
+        pricing._write_cache(
+            pricing._cache_path(tmp_path), pricing._Snapshots(newest=snapshot, agents={})
+        )
+        report = load_report(tmp_path)
+    finally:
+        pricing.clear_pricing_cache()
+    assert report is not None
+    assert report.unpriced_saved_input_tokens == 1_000
+    assert report.backfilled_saved_input_tokens == backfilled
+    assert report.backfilled_input_savings_usd == pytest.approx(backfilled * 3.0 / 1_000_000)

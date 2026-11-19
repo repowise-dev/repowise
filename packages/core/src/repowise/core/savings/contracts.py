@@ -385,7 +385,8 @@ class SavingsReport:
     subagent_events: int = 0
     subagent_saved_input_tokens: int = 0
     #: Unpriced tokens priced at report time, never written back to an event.
-    #: The rate is the newest one an event of the same session captured, else
+    #: The rate is the newest one an event of the same session (and surface,
+    #: since session ids are hashed per surface) captured, else
     #: the cached rate for the event's agent. A subset of
     #: ``unpriced_saved_input_tokens``, which keeps its meaning (no rate was
     #: captured when the event happened), and reported apart from

@@ -243,7 +243,10 @@ say which is which.
 
 The report then prices what it can of the unpriced tokens, without writing
 anything back: at the rate another event of the same session captured, else at
-the cached rate for the event's agent (cache only, never a scan). The result is
+the cached rate for the event's agent (cache only, never a scan). Session ids
+are hashed per surface, so the session match only joins events of one surface.
+The default rate a scan falls back to when it sighted no model is never used.
+The result is
 reported as `backfilled_saved_input_tokens` and `backfilled_input_savings_usd`,
 a subset of the unpriced tokens and apart from `priced_input_savings_usd`, which
 keeps meaning "rate captured when it happened".

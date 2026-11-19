@@ -109,8 +109,8 @@ def _context_target_tokens(
     return None, 0
 
 
-def _references_tokens(target: dict[str, Any]) -> int:
-    """One search hit per referencing file, for a ``complete`` references block.
+def _referencing_files(target: dict[str, Any]) -> set[str]:
+    """The files a ``complete`` references block names, else none.
 
     A complete edit set is every file the agent would otherwise have found by
     searching for the symbol, so each one earns what a search hit does. An
@@ -118,9 +118,11 @@ def _references_tokens(target: dict[str, Any]) -> int:
     """
     references = target.get("references")
     if not isinstance(references, dict) or references.get("complete") is not True:
-        return 0
+        return set()
     files = references.get("files")
-    return len(files) * SEARCH_FLOOR_PER_HIT if isinstance(files, dict) else 0
+    if not isinstance(files, dict):
+        return set()
+    return {path for path in files if isinstance(path, str)}
 
 
 def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = None) -> int:
@@ -136,18 +138,20 @@ def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None =
         return 0
     total = 0
     read: set[Any] = set()
+    # Two symbols referenced from one file are one search hit on it.
+    referencing: set[str] = set()
     for key, target in targets.items():
         if not isinstance(target, dict) or target.get("error"):
             continue
         path, tokens = _context_target_tokens(key, target, read_cost)
-        total += _references_tokens(target)
+        referencing |= _referencing_files(target)
         if path is not None:
             # Two cards over one file replace one Read of it.
             if path in read:
                 continue
             read.add(path)
         total += tokens
-    return total
+    return total + len(referencing) * SEARCH_FLOOR_PER_HIT
 
 
 def _estimate_get_context(result: dict[str, Any]) -> int:
