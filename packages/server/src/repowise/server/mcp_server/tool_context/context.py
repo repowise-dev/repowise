@@ -183,10 +183,9 @@ async def get_context(
     collector = OmissionCollector("get_context", repo_root=ctx.path)
     ignored: list[dict[str, Any]] = []
     include_set = _include_set(include, ignored)
-    if symptom and "suspects" not in include_set:
-        ignored.append(
-            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
-        )
+    # A symptom has one reading: rank suspects on it.
+    if symptom and symptom.strip():
+        include_set.add("suspects")
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time

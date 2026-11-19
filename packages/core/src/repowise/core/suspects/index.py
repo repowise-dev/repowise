@@ -42,6 +42,29 @@ NOTE = (
 )
 
 
+def _note(since: datetime, rows: list[dict[str, Any]], capped: bool, commit_limit: int) -> str:
+    """:data:`NOTE`, plus how to read further back when this window is not enough.
+
+    A window that may start before the oldest stored change needs a deeper index;
+    one where no listed row has evidence beyond its merge time (``recency`` fires
+    on every candidate) needs an earlier ``--since``. Neither is settable over
+    MCP, so the step is always the CLI's.
+    """
+    if capped:
+        return (
+            f"{NOTE} This window holds at least `commit_limit` ({commit_limit}) changes, "
+            "so older changes in it may not be indexed: re-index with "
+            f"`repowise init --commit-limit` above {commit_limit} to read them."
+        )
+    if any(set(r["signals"]) - {"recency"} for r in rows):
+        return NOTE
+    return (
+        f"{NOTE} No change listed has evidence beyond its merge time, and none merged "
+        f"before {since:%Y-%m-%d} was read: the cause may be older. Run `repowise suspects "
+        f"--since <an earlier date>` with the same --symptom, --files or --trace."
+    )
+
+
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
@@ -159,7 +182,7 @@ async def find_suspects(
     if not rows:
         return {
             "window": window, "candidates": 0, "candidates_capped": False,
-            "suspects": [], "note": NOTE,
+            "suspects": [], "note": _note(since, [], False, 0),
         }
 
     commit_limit = int(load_repo_config(repo_path).get("commit_limit") or 0) or _DEFAULT_COMMIT_LIMIT
@@ -200,15 +223,16 @@ async def find_suspects(
             name: {"rank": sig.rank, "evidence": list(sig.evidence)} for name, sig in s.signals.items()
         }
         out.append(row)
+    capped = len(rows) >= commit_limit
     return {
         "window": window,
         "candidates": len(candidates),
-        "candidates_capped": len(rows) >= commit_limit,
+        "candidates_capped": capped,
         # Changes git could not read: ranked on their title and files alone.
         "texts_missing": sum(1 for r in rows if r.head_sha not in texts),
         "symptom_files": list(named),
         "suspects": out,
-        "note": NOTE,
+        "note": _note(since, out, capped, commit_limit),
     }
 
 
