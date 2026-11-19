@@ -1966,6 +1966,7 @@
       "title": "Now <em>ask it</em> something",
       "lede": "Paste one into {agent}. Each one is about this repo, so the answer is about your code.",
       "ledeAny": "Paste one into your agent. Each one is about your code, so the answer is too.",
+      "ledeWorkspace": "Paste it into your agent. It asks across these repos, so the answer shows how they fit together.",
       "later": "Change any of it later in Setup."
     },
     "nextAsk": "Next: ask it",

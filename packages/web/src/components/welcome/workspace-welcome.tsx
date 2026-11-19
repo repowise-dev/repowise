@@ -7,7 +7,7 @@ import useSWR from "swr";
 import { useFormatter, useTranslations } from "next-intl";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@repowise-dev/ui/ui/dialog";
 import { seriesColor } from "@repowise-dev/ui/shared/series";
-import { firstPrompts } from "@repowise-dev/ui/onboarding/first-prompts";
+import { workspacePrompt } from "@repowise-dev/ui/onboarding/first-prompts";
 import { getOnboardingState, updateOnboardingState } from "@/lib/api/setup";
 import { getWorkspaceSetup, type WorkspaceSetupResponse } from "@/lib/api/workspace";
 import { getMetaVersion } from "@/lib/api/meta";
@@ -37,9 +37,6 @@ type Step = (typeof STEPS)[number];
 
 /** The per-machine mark the workspace welcome stamps, beside the repo ids. */
 export const WORKSPACE_WELCOME_KEY = "workspace";
-
-/** Members named in step 3's questions; the rest are left to the workspace view. */
-const ASK_MEMBERS = 3;
 
 /** Cross-repo figures the workspace landing already read on the server. */
 export interface WorkspaceWelcomeFacts {
@@ -238,7 +235,7 @@ function WorkspaceStepText({
       >
         {step === "repos" && t("workspace.lede", { files: facts.fileCount })}
         {step === "agent" && t("workspace.agentLede")}
-        {step === "ask" && t("ask.ledeAny")}
+        {step === "ask" && t("ask.ledeWorkspace")}
       </DialogDescription>
     </>
   );
@@ -388,11 +385,9 @@ function WorkspaceAgent({
   );
 }
 
-/** Step 3: a first question per member, from the shared first prompts.
- *  Ceiling: the cross-repo question (lane A's `workspace` template) replaces
- *  these once it is on this branch's base. */
+/** Step 3: the cross-repo question from the shared first prompts. */
 function WorkspaceAsk({ members }: { members: string[] }) {
-  const questions = members.slice(0, ASK_MEMBERS).map((m) => firstPrompts(m)[0]!);
+  const questions = members.length > 0 ? [workspacePrompt(members)] : [];
   if (questions.length === 0) return null;
   return (
     <ul className={`${MOMENT_CARD} divide-y divide-[var(--color-border-default)]`}>

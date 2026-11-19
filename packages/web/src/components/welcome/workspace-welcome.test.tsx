@@ -101,7 +101,7 @@ describe("WorkspaceWelcomeMoment", () => {
 });
 
 describe("WorkspaceWelcomeDialog", () => {
-  it("shows cross-repo cards, then the members waiting, then a question per member", async () => {
+  it("shows cross-repo cards, then the members waiting, then the cross-repo question", async () => {
     wrap(<WorkspaceWelcomeDialog open onOpenChange={vi.fn()} facts={FACTS} />);
     expect(screen.getByText("Contracts")).toBeTruthy();
     expect(screen.getByText(/changed together/).textContent).toBe("web-checkout and payments-api changed together.");
@@ -115,8 +115,10 @@ describe("WorkspaceWelcomeDialog", () => {
     expect(screen.getByText("Waiting for its first call")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
-    expect(screen.getByText(/give me a tour of payments-api/)).toBeTruthy();
-    expect(screen.getByText(/give me a tour of ledger-worker/)).toBeTruthy();
+    expect(screen.getByText(/It asks across these repos/)).toBeTruthy();
+    expect(
+      screen.getByText(/show me how payments-api, web-checkout and ledger-worker depend on each other/),
+    ).toBeTruthy();
     expect(screen.getByRole("link", { name: "Finish in Setup" }).getAttribute("href")).toBe("/workspace/setup");
   });
 
