@@ -59,6 +59,8 @@ def persist_index(run: InitRun) -> None:
             from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
 
             invalidate_seed_edge_cache(run.repo_path)
+        if run.opts.commit_limit is not None:
+            save_config_partial(run.repo_path, commit_limit=run.resolved_commit_limit)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
         # Seed the incremental graph update from a sealed sequential cache.
