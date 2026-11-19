@@ -102,6 +102,7 @@ def run_summary(run: InitRun, gaps: list[str]) -> dict[str, Any]:
         files_written=_relative(run.repo_path, run.files_written),
         next_commands=_next_commands(run),
         findings=run.stood_out.as_summary() if run.stood_out is not None else None,
+        mcp_tools=list(getattr(run.setup_outcome, "tool_surfaces", ())),
     )
 
 

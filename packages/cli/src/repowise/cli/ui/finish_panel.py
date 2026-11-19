@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from repowise.cli.agent_targets.tool_surface import surface_lines
 from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, INFO, MODEL, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
@@ -245,6 +246,7 @@ def connected_lines(setup: Any) -> list[RenderableType]:
             lines.append(
                 dim_line("Claude Code stays connected; restart it only if the tools are not showing.")
             )
+    lines += [dim_line(escape(text)) for text in surface_lines(getattr(setup, "tool_surfaces", ()))]
     lines.append(
         dim_line("Cursor or Codex: run [bold]repowise mcp .[/bold] (config in .repowise/mcp.json).")
     )

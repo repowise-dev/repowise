@@ -151,6 +151,23 @@ def test_semantic_search_line_only_when_off():
 
 
 
+def test_panel_states_what_each_wired_agent_lists():
+    surface = {
+        "id": "vscode",
+        "name": "VS Code",
+        "profile": "core",
+        "adjustments": [],
+        "tool_count": 5,
+        "tools": [],
+        "change_command": "repowise config set mcp.tools <core|lean|standard|all>",
+        "always_load": None,
+    }
+    setup = EditorSetupOutcome(claude_code_connected=True, tool_surfaces=(surface,))
+    text = _render("built_from_code", setup)
+    assert "VS Code: lists 5 MCP tools (core profile)" in text
+    assert "repowise config set mcp.tools <core|lean|standard|all>" in text
+
+
 def test_bracketed_file_names_render_literally():
     setup = EditorSetupOutcome(claude_code_connected=True)
     scope = {"content_provenance": "template", "search": {"semantic": "available"}}

@@ -82,6 +82,25 @@ class EditorSetupOutcome:
     #: editor setup was turned off for this run — via --no-editor-setup or the
     #: REPOWISE_SKIP_EDITOR_SETUP env var (CI/benchmark) — so nothing was wired up.
     editor_setup_disabled: bool = False
+    #: ``{"id", "name", **surface}`` for each wired agent: the MCP tools its
+    #: local server lists (see :mod:`repowise.cli.agent_targets.tool_surface`).
+    tool_surfaces: tuple[dict[str, Any], ...] = ()
+
+
+def wired_tool_surfaces(repo_path: Path) -> tuple[dict[str, Any], ...]:
+    """The tool surface of each agent ``init`` can wire that is wired to repowise now."""
+    from repowise.cli.agent_targets.registry import describe_agents
+    from repowise.cli.agent_targets.tool_surface import agent_tool_surface
+
+    rows, _ = _installable_rows(describe_agents(repo_path))
+    out = []
+    for row in rows:
+        if not row["registrations"]:
+            continue
+        surface = agent_tool_surface(repo_path, row["id"])
+        if surface is not None:
+            out.append({"id": row["id"], "name": row["display_name"], **surface})
+    return tuple(out)
 
 
 def detect_editor_setup_outcome(
@@ -125,6 +144,11 @@ def detect_editor_setup_outcome(
     except Exception:
         pass
 
+    surfaces: tuple[dict[str, Any], ...] = ()
+    if not disabled:
+        with contextlib.suppress(Exception):
+            surfaces = wired_tool_surfaces(repo_path)
+
     return EditorSetupOutcome(
         claude_code_connected=not disabled,
         autosync_hook_installed=autosync,
@@ -132,6 +156,7 @@ def detect_editor_setup_outcome(
         interactive=interactive,
         first_index=first_index,
         editor_setup_disabled=disabled,
+        tool_surfaces=surfaces,
     )
 
 

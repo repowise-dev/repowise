@@ -32,6 +32,7 @@ _SUMMARY_KEYS = {
     "files_written",
     "next",
     "findings",
+    "mcp_tools",
 }
 
 _KEYS = (

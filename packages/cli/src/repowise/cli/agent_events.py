@@ -11,7 +11,10 @@ and ``event``:
 - ``summary``: always the last line. ``status`` is ``ready`` (exit 0),
   ``degraded`` (exit 2), ``interrupted`` (exit 130) or ``failed`` (any other
   exit, with ``error``); then ``mode``, ``restart_required``, ``spend``,
-  ``warnings``, ``files_written`` and ``next`` (commands, first one first).
+  ``warnings``, ``files_written``, ``next`` (commands, first one first) and
+  ``mcp_tools``: per wired agent, ``id``, ``name``, ``profile``,
+  ``adjustments``, ``tool_count``, ``tools``, ``change_command`` and
+  ``always_load`` (null for a client that loads every schema up front).
 
 While the stream is open, human text goes to stderr, so stdout is only these lines.
 """
@@ -54,6 +57,7 @@ def summary_fields(
     next_commands: list[str] | None = None,
     error: str | None = None,
     findings: dict[str, Any] | None = None,
+    mcp_tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Every summary key, always present, so a consumer never probes for one."""
     fields: dict[str, Any] = {
@@ -66,6 +70,8 @@ def summary_fields(
         "next": list(next_commands or []),
         # What the finish panel's "What stood out" showed; null before it rendered.
         "findings": findings,
+        # The MCP tools each wired agent is listed; empty when nothing was wired.
+        "mcp_tools": list(mcp_tools or []),
     }
     if error is not None:
         fields["error"] = error

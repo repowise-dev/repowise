@@ -616,6 +616,11 @@ map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
 
 ## The ten MCP tools
 
+Claude Code lists all ten. Clients that send every tool schema with every request
+(Codex, Cursor, VS Code and Copilot, and the rest) list the five core tools by default,
+which keeps each request small; `repowise config set mcp.tools standard` lists all ten
+there too. `repowise init` and `repowise agents add` print what each connected agent lists.
+
 Every response carries a `_meta` envelope with the indexed commit, the index age and a
 stale warning when the index has fallen behind your checkout, so your agent always
 knows how much to trust what it just read.

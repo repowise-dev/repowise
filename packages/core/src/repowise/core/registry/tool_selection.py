@@ -48,17 +48,18 @@ LEAN_TOOLS = frozenset(
 )
 LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 
-# A value of "core" enables the core profile: the four tools that answer a
-# question about the code, plus get_why for the same history-why reason as
-# lean (list_repos again joins in workspace mode). It is the default for
+# A value of "core" enables the core profile, five tools: the four read tools
+# (get_answer, get_context, get_symbol, search_codebase), plus get_why for the
+# same history-why reason as lean (list_repos again joins in workspace mode).
+# It is the default for
 # clients that load every schema up front, where the full default surface
 # costs about twice as many tokens per turn.
 CORE = "core"
 CORE_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_why"})
 
-# The tools ``mcp.always_load`` asks a schema-deferring host to load up front:
-# the core read tools an agent reaches for first. get_why stays deferred, as
-# history questions come later in a task, if at all.
+# The read tools: what ``mcp.always_load`` asks a schema-deferring host to load
+# up front, the four an agent reaches for first. That is core without get_why,
+# which stays deferred, as history questions come later in a task, if at all.
 ALWAYS_LOAD_TOOLS = CORE_TOOLS - {"get_why"}
 
 # A value of "standard" enables every ``default`` tool usable in this mode: the

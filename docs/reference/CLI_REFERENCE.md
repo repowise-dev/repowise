@@ -217,7 +217,9 @@ and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then de
 - Each line: `v` (schema, `1`), `event` (`stage`, `phase`, `warning`, last `summary`). `phase`: `state` (`start`/`done`/`failed`), `completed`, `total`, `unit`, `elapsed_s`.
 - `summary`: `status` (`ready`/`degraded`/`interrupted`/`failed` = exit `0`/`2`/`130`/other), `mode` (`key` from index
   scope, `label`, `run_mode`), `restart_required` (restart or `/mcp` to load tools), `spend` (`tokens`, `usd`),
-  `warnings`, `files_written`, `next` (commands, `repowise serve` first).
+  `warnings`, `files_written`, `next` (commands, `repowise serve` first), `mcp_tools` (per wired agent: `id`,
+  `name`, `profile`, `adjustments`, `tool_count`, `tools`, `change_command`, `always_load` with `enabled`, `tools`,
+  `cost`, `command`, or null for a client that loads every schema up front).
 
 </details>
 
@@ -2197,7 +2199,7 @@ repowise mcp --tools "+get_dependency_path,-get_dead_code"
 | `--transport` | `stdio` (editors), `streamable-http` (HTTP clients), or `sse` (legacy). | `stdio` |
 | `--port` | HTTP/SSE port. | `7338` |
 | `--host` | HTTP/SSE bind; `0.0.0.0` without `REPOWISE_API_KEY` warns that every tool is unauthenticated and network-accessible. | `REPOWISE_HOST`, else `127.0.0.1` |
-| `--tools` | A profile (`core`, `standard`, `all`) optionally followed by `+name`/`-name`; `+`/`-` alone adjust the client's default; comma list = allowlist; `lean` selects the six-tool agent-lean profile. Overrides config. | `mcp.tools`, else `standard` on Claude Code and `core` on other clients |
+| `--tools` | A profile (`core`, `lean`, `standard`, `all`) optionally followed by `+name`/`-name`; `+`/`-` alone adjust the client's default; comma list = allowlist. Overrides config. | `mcp.tools`, else `standard` on Claude Code and `core` on other clients |
 | `--all` | Every tool, including opt-in and workspace. | off |
 | `--no-workspace` | Nested repo ignores the enclosing workspace's default. | auto-detect |
 
@@ -2244,7 +2246,7 @@ repowise agents add --hosted --target=auto --yes --format json
 | `--yes` / `-y` | `add`: never prompt. | off |
 | `--hosted` | `add`: write the hosted server for this repo instead of the local one (see below). `--scope` is ignored. | off |
 | `--repo` | `add --hosted`: `owner/name` on repowise.dev. | the GitHub `origin` |
-| `--tools` | `add`: which MCP tools the local server lists, saved as this repo's `mcp.tools` (see [MCP Tools](../agent/MCP_TOOLS.md#configuring-the-tool-surface)). Each wired agent's row says which profile it gets. | `standard` on Claude Code, `core` on other clients |
+| `--tools` | `add`: which MCP tools the local server lists, saved as this repo's `mcp.tools` (see [MCP Tools](../agent/MCP_TOOLS.md#configuring-the-tool-surface)). Each wired agent's row says how many tools it lists and under which profile, and for Claude Code whether always-load is on; JSON carries the same as `tool_surface` (keys as in init's `mcp_tools`). | `standard` on Claude Code, `core` on other clients |
 | `print-config --scope` | `project` or `user` snippet. | `project` |
 | `print-config --format` | `table`: bare paste-ready snippet; `json`: with target, scope, repo, docs URL. | `table` |
 

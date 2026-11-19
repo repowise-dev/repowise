@@ -238,6 +238,24 @@ def session_tool_names(client: str) -> frozenset[str] | None:
     return frozenset(names) & _selected_surface[1]
 
 
+def client_tool_names(repo_path: str | None, client: str) -> set[str]:
+    """The tools a server started for *repo_path* lists to *client*, an agent slug.
+
+    For setup output, outside any running server: the same inputs the boot
+    selection reads (``mcp.tools``, workspace mode, facts), resolved for one
+    client, which is what :func:`session_tool_names` serves it. A per-entry
+    ``repowise mcp --tools`` pin is not seen here.
+    """
+    _ensure_registered()
+    return resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=_read_config_override(repo_path),
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+
+
 def mark_always_loaded(tools: list[Any]) -> list[Any]:
     """*tools* (``mcp.types.Tool``) with the always-load hint on those configured.
 
