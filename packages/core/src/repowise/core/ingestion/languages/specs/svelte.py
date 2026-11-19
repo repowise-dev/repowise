@@ -8,6 +8,7 @@ separately by ``sfc_source`` and only locates regions, it extracts nothing.
 """
 
 from ..spec import LanguageSpec
+from ._lockfiles import NODE_LOCK_FILES
 
 SPEC = LanguageSpec(
     tag="svelte",
@@ -26,7 +27,7 @@ SPEC = LanguageSpec(
     manifest_files=("package.json", "svelte.config.js"),
     # Framework config, not a package declaration — package.json is the root.
     build_config_manifests=("svelte.config.js",),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=NODE_LOCK_FILES,
     blocked_dirs=("node_modules", ".svelte-kit", "dist", "build"),
     # Svelte 5 runes and the template builtins. These are compiler intrinsics,
     # not user functions — they must never mint a call edge.
