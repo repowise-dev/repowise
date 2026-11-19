@@ -14,12 +14,15 @@ export const AUTO_TIME_ZONE_CHOICE = "auto";
 export interface TimeZoneFieldLabels {
   /** The Auto row's note, given the detected zone. */
   auto: (detected: string) => string;
+  /** The closed field when Auto is chosen, given the detected zone. */
+  autoValue: (detected: string) => string;
   placeholder: string;
   noMatch: string;
 }
 
 const DEFAULT_LABELS: TimeZoneFieldLabels = {
   auto: (detected) => `This browser, ${detected}`,
+  autoValue: (detected) => `Auto (${detected})`,
   placeholder: "Search time zones",
   noMatch: "No time zone matches.",
 };
@@ -65,6 +68,7 @@ export function TimeZoneField({
     <ModelCombobox
       {...field}
       value={value}
+      displayValue={value === AUTO_TIME_ZONE_CHOICE ? labels.autoValue(detected) : undefined}
       models={choices}
       onSelect={onChange}
       allowTyped={false}

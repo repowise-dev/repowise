@@ -53,6 +53,8 @@ export interface ModelComboboxProps {
   labels?: Partial<ModelComboboxLabels>;
   /** Offer the typed text as a choice of its own. Off for a closed list. */
   allowTyped?: boolean;
+  /** What the closed input shows for `value`, when the id is not for people. */
+  displayValue?: string | undefined;
   className?: string;
 }
 
@@ -210,6 +212,7 @@ export function ModelCombobox({
   autoFocus,
   labels: labelOverrides,
   allowTyped = true,
+  displayValue,
   className,
 }: ModelComboboxProps) {
   const labels = { ...DEFAULT_LABELS, ...labelOverrides };
@@ -230,8 +233,8 @@ export function ModelCombobox({
         autoComplete="off"
         spellCheck={false}
         autoFocus={autoFocus}
-        placeholder={inline ? labels.placeholder : value || labels.placeholder}
-        value={state.query ?? (inline ? "" : value)}
+        placeholder={inline ? labels.placeholder : (displayValue ?? value) || labels.placeholder}
+        value={state.query ?? (inline ? "" : (displayValue ?? value))}
         onChange={(event) => state.type(event.target.value)}
         onFocus={inline ? undefined : state.show}
         onClick={inline ? undefined : state.show}

@@ -1184,6 +1184,7 @@
       "timeZoneHint": "Every date and time shows in this zone. Auto follows this browser.",
       "timeZoneAria": "Time zone for dates and times",
       "timeZoneAuto": "This browser, {zone}",
+      "timeZoneAutoValue": "Auto ({zone})",
       "timeZoneSearch": "Search time zones",
       "timeZoneNoMatch": "No time zone matches.",
       "timeZoneSaved": "Dates now show in {zone}.",

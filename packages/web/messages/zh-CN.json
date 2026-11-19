@@ -1077,6 +1077,7 @@
       "timeZoneHint": "所有日期和时间都按这个时区显示。自动即跟随这个浏览器。",
       "timeZoneAria": "日期和时间使用的时区",
       "timeZoneAuto": "这个浏览器，{zone}",
+      "timeZoneAutoValue": "自动（{zone}）",
       "timeZoneSearch": "搜索时区",
       "timeZoneNoMatch": "没有匹配的时区。",
       "timeZoneSaved": "日期现在按 {zone} 显示。",

@@ -186,6 +186,7 @@ export function DisplaySection() {
             onChange={handleTimeZoneChange}
             labels={{
               auto: (zone) => t("display.timeZoneAuto", { zone }),
+              autoValue: (zone) => t("display.timeZoneAutoValue", { zone }),
               placeholder: t("display.timeZoneSearch"),
               noMatch: t("display.timeZoneNoMatch"),
             }}

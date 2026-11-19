@@ -40,6 +40,17 @@ describe("TimeZoneField", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("reads Auto with the detected zone when closed, and a picked zone by name", () => {
+    const { rerender } = render(
+      <TimeZoneField value="auto" detected="Asia/Kolkata" onChange={vi.fn()} ariaLabel="Time zone" />,
+    );
+    expect(screen.getByRole("combobox", { name: "Time zone" })).toHaveValue("Auto (Asia/Kolkata)");
+    rerender(
+      <TimeZoneField value="Asia/Tokyo" detected="Asia/Kolkata" onChange={vi.fn()} ariaLabel="Time zone" />,
+    );
+    expect(screen.getByRole("combobox", { name: "Time zone" })).toHaveValue("Asia/Tokyo");
+  });
+
   it("lists UTC exactly once", () => {
     expect(timeZoneChoices().filter((z) => z === "UTC")).toEqual(["UTC"]);
   });
