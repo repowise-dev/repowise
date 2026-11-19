@@ -122,6 +122,13 @@ the plain range, and a single SHA is one commit; change risk follows the same ru
   guess never passes for evidence: otherwise it says "unknown, run the full suite to be
   safe", and with no map it prompts for `coverage add` on a report with contexts
   ([every case](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
+- When every change to a Python file sits inside function bodies and the map was
+  measured at either end of the change, the test files covering those functions are
+  the answer for that file: tests that only import it are left out. Adding a
+  standard-library import, a literal constant or an undecorated function is allowed
+  beside them. Any other module-level change (an import, a constant, a decorator, a
+  class body, a default value), a function that runs at import, from a memo or from a
+  session fixture, or a function no test covers keeps the graph's answer.
 - The graph also links tests to wiring no import states
   ([details](../architecture/test-intelligence.md#test-wiring-edges)).
 - The headline counts the tests the change reaches. Two groups run but are counted

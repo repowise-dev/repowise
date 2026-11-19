@@ -1,7 +1,8 @@
 """Speedscope JSON (``speedscope.app/file-format-schema.json``): sampled and evented profiles.
 
-pyinstrument (``-r speedscope``) writes one evented profile whose frames
-carry the function's first line; py-spy (``--format speedscope``) writes
+pyinstrument (``-r speedscope``) writes one evented profile, and the recipe
+``evidence setup`` prints writes one sampled profile from pyinstrument's own
+samples; both carry the function's first line; py-spy (``--format speedscope``) writes
 one sampled profile per thread whose frames carry the executing line. Every
 profile in the file is merged into one run. Frame names are what the tool
 wrote (a Python ``co_qualname`` or ``co_name``), and ``col``, when present,

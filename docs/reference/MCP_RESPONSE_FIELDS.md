@@ -232,7 +232,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). A `call` line is one the graph binds to the symbol; for a method it is also a call of it on any receiver in code (`db.name(...)`), in languages whose comments and strings are read, outside files whose own class defines that member. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
 
 - `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
@@ -244,6 +244,7 @@ Never complete for:
 - over 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
+- a file that hands on, as a whole value, a module holding the symbol (`return mod`, `m = mod`, `const m = ns`) and uses the name on an object no import binds
 - over 50 documents naming it
 - over 3 plain `reference` or `string` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 
