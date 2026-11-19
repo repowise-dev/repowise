@@ -283,8 +283,13 @@ def record_saving(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None = None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    *avoided_file* is the repo-relative path whose Read this replacement stood
+    in for, credited once per *session_id* as a file not opened.
 
     Writes the legacy row and the canonical event. The legacy one stays until
     the costs endpoint, the overview headline and ``repowise saved`` read the
@@ -324,6 +329,8 @@ def record_saving(
                 raw_tokens=raw_tokens,
                 distilled_tokens=distilled_tokens,
                 hook_adapter=hook_adapter,
+                session_id=session_id,
+                avoided_file=avoided_file,
             )
         finally:
             con.close()
@@ -339,6 +346,8 @@ def _record_event(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Record the canonical event for one hook replacement. Never raises.
 
@@ -391,9 +400,36 @@ def _record_event(
                 "baseline_input_tokens": raw_tokens,
                 "pre_budget_input_tokens": raw_tokens,
                 "delivered_input_tokens": distilled_tokens,
+                "host_session_id": session_id or None,
+                "avoided_files": ((avoided_file, raw_tokens),) if avoided_file else (),
                 **(pricing.as_payload() if pricing else {}),
             },
         )
+    except Exception:
+        return
+
+
+def record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
+    """Note an agent Read of a path this session was credited as not opening.
+
+    Deferred like :func:`record_saving` and gated by the caller to paths the
+    session state says were credited, so an ordinary Read writes nothing.
+    Never creates the sidecar and never raises. Skips the schema check: a
+    credit to cancel exists only in a ledger already carrying the files tables.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None or not session_id:
+        return
+    try:
+        import sqlite3
+
+        from repowise.core.savings.recorder import record_file_read_on
+
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
+        try:
+            record_file_read_on(con, repo_path, session_id, rel)
+        finally:
+            con.close()
     except Exception:
         return
 

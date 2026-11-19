@@ -155,9 +155,14 @@ def _finish_ambiguous(
         )
 
     from repowise.server.mcp_server._savings import declare_replaced
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
-    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
+    full_tokens = 0
+    for path, text in text_cache.items():
+        if text:
+            tokens = read_tokens(text)
+            note_served(path, tokens)
+            full_tokens += tokens
     if full_tokens:
         declare_replaced(response, full_tokens)
 

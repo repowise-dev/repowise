@@ -12,7 +12,11 @@ from typing import Any
 from uuid import UUID
 
 from repowise.core.agents.identity import UNKNOWN_AGENT, is_agent_slug
-from repowise.core.savings.correlation import hash_correlation_evidence, new_event_id
+from repowise.core.savings.correlation import (
+    file_session_key,
+    hash_correlation_evidence,
+    new_event_id,
+)
 from repowise.core.savings.formulas import TokenAccounting, calculate_token_accounting
 from repowise.core.savings.normalization import normalize_metadata
 
@@ -21,6 +25,11 @@ SURFACES = frozenset({"distill", "hook", "mcp", "vscode_lm"})
 EVIDENCE_KINDS = frozenset({"measured", "inferred"})
 RESULT_STATES = frozenset({"success", "dead_end", "error", "partial", "unknown"})
 _HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+#: Files one event may credit as not opened. A ``get_context`` call with many
+#: file targets or a long ``get_answer`` citation list stops here; the token
+#: credit is unaffected, only the per-file list is cut. Paths, never contents.
+MAX_AVOIDED_FILES = 50
+_MAX_AVOIDED_PATH_CHARS = 512
 
 
 def _agent_slug(value: object | None, name: str) -> str:
@@ -172,6 +181,40 @@ def _omission_refs(value: Mapping[str, Any]) -> tuple[str, ...]:
     return refs
 
 
+def _avoided_files(value: Mapping[str, Any]) -> tuple[tuple[str, int | None], ...]:
+    """``(path, read_tokens)`` pairs this event served in place of a Read.
+
+    Best-effort by design: a malformed entry is skipped, never raised, because
+    the list rides on an event whose token saving must not be lost over it.
+    First entry per path wins; the list is capped at :data:`MAX_AVOIDED_FILES`.
+    """
+    raw = value.get("avoided_files") or ()
+    items = raw.items() if isinstance(raw, Mapping) else raw
+    files: dict[str, int | None] = {}
+    for item in items:
+        if len(files) >= MAX_AVOIDED_FILES:
+            break
+        try:
+            path, tokens = item
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(path, str) or not path or len(path) > _MAX_AVOIDED_PATH_CHARS:
+            continue
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            tokens = None
+        files.setdefault(path, tokens)
+    return tuple(files.items())
+
+
+def _file_session(value: Mapping[str, Any], repository_id: str) -> str | None:
+    """The cross-surface session key for this event's files, or None."""
+    raw = value.get("host_session_id")
+    if raw is None or raw == "":
+        return None
+    raw = str(raw)
+    return raw if _HASH_RE.fullmatch(raw) else file_session_key(repository_id, raw)
+
+
 @dataclass(frozen=True, slots=True)
 class SavingsEvent:
     event_id: str
@@ -209,6 +252,12 @@ class SavingsEvent:
     omission_refs: tuple[str, ...] = ()
     metadata: Mapping[str, str] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+    #: Files this event served in place of a Read, with what one Read of each
+    #: costs (None when unsized). Stored beside the event, not in its row.
+    avoided_files: tuple[tuple[str, int | None], ...] = ()
+    #: :func:`~repowise.core.savings.correlation.file_session_key` of the host
+    #: session, so a file is credited once per session across surfaces.
+    file_session_key: str | None = None
 
     @classmethod
     def from_mapping(
@@ -221,6 +270,12 @@ class SavingsEvent:
         pricing = _pricing(value)
         refs = _omission_refs(value)
         repository_id = _bounded(value["repository_id"], "repository_id", 256) or ""
+        try:
+            # Best-effort: a bad file list costs the list, never the event.
+            avoided = _avoided_files(value) if semantics.is_usable else ()
+            file_key = _file_session(value, repository_id)
+        except Exception:
+            avoided, file_key = (), None
         session_id = _correlation(
             value.get("session_id"),
             kind="session",
@@ -275,6 +330,8 @@ class SavingsEvent:
             output_rate_usd_per_million=pricing.output_rate,
             omission_refs=refs,
             metadata=normalize_metadata(value.get("metadata")),
+            avoided_files=avoided,
+            file_session_key=file_key,
         )
 
     def metadata_json(self) -> str:
@@ -380,3 +437,16 @@ class SavingsReport:
     #: they are live. Null when the window holds no events at all.
     first_event_at: str | None = None
     last_event_at: str | None = None
+    #: Distinct (session, path) pairs a usable event served in place of a Read,
+    #: each credited once per session to the first event that served it, and
+    #: cancelled when the agent Read the path later in that session. Tokens are
+    #: one Read of each, as measured when the event was recorded.
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    #: Tool calls Repowise answered: usable MCP, VS Code tool and hook events.
+    tool_calls_answered: int = 0
+    #: Rows of ``{day|agent|surface, files_not_opened, files_not_opened_tokens,
+    #: tool_calls_answered}``; a credited file counts under its owning event.
+    files_per_day: tuple[Mapping[str, Any], ...] = ()
+    files_per_agent: tuple[Mapping[str, Any], ...] = ()
+    files_per_surface: tuple[Mapping[str, Any], ...] = ()

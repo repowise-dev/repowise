@@ -19,6 +19,7 @@ from repowise.server.schemas import (
     CostSummaryResponse,
     SavingsAgentRow,
     SavingsBreakdownRow,
+    SavingsFilesRow,
     SavingsOpportunityRow,
     SavingsResponse,
 )
@@ -213,7 +214,24 @@ async def get_savings(
         missed_window_days=missed["window_days"],
         reread_events=reread["events"],
         reread_tokens_est=reread["est_saved_tokens"],
+        files_not_opened=report.files_not_opened,
+        files_not_opened_tokens=report.files_not_opened_tokens,
+        tool_calls_answered=report.tool_calls_answered,
+        files_per_day=_files_rows(report.files_per_day, "day"),
+        files_per_agent=_files_rows(report.files_per_agent, "agent"),
+        files_per_surface=_files_rows(report.files_per_surface, "surface"),
     )
+
+
+def _files_rows(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsFilesRow]:
+    """Files-not-opened rows on the wire, the group column renamed like :func:`_breakdown`."""
+    return [
+        SavingsFilesRow(group=None if row[key] is None else str(row[key]), **{
+            name: row[name]
+            for name in ("files_not_opened", "files_not_opened_tokens", "tool_calls_answered")
+        })
+        for row in rows
+    ]
 
 
 def _breakdown(rows: Iterable[Mapping[str, Any]], key: str) -> list[SavingsBreakdownRow]:

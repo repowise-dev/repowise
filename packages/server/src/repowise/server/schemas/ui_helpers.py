@@ -198,6 +198,15 @@ class SavingsAgentRow(BaseModel):
     saved_input_tokens: int = 0
 
 
+class SavingsFilesRow(BaseModel):
+    """Files not opened and tool calls answered in one day, agent or surface."""
+
+    group: str | None = None
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    tool_calls_answered: int = 0
+
+
 class SavingsOpportunityRow(BaseModel):
     """One kind of observed opportunity. Never part of achieved savings."""
 
@@ -277,3 +286,14 @@ class SavingsResponse(BaseModel):
     missed_window_days: float = 0.0
     reread_events: int = 0
     reread_tokens_est: int = 0
+
+    #: Files not opened: distinct (session, path) pairs a usable event served
+    #: in place of a Read, once per session, dropped when the agent Read the
+    #: path later in that session. Tokens are one Read of each. Tool calls
+    #: answered counts usable MCP, VS Code tool and hook events.
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    tool_calls_answered: int = 0
+    files_per_day: list[SavingsFilesRow] = []
+    files_per_agent: list[SavingsFilesRow] = []
+    files_per_surface: list[SavingsFilesRow] = []
