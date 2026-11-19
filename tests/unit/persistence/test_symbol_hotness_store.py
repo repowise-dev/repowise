@@ -7,7 +7,7 @@ from sqlalchemy import func, insert, select
 from repowise.core.evidence.hotness import hotness_rules, rebuild_symbol_hotness
 from repowise.core.persistence.crud import (
     hotness_for_symbols,
-    ranked_hotness,
+    ranked_by_workload,
     replace_symbol_hotness,
     save_evidence_run,
 )
@@ -53,7 +53,7 @@ async def test_no_evidence_means_no_rows_and_no_work(async_session) -> None:
     ) is None
     assert await _count(async_session) == 0
     assert await hotness_for_symbols(async_session, repo.id, ["src/m.py::f"]) == {}
-    assert await ranked_hotness(async_session, repo.id) == []
+    assert await ranked_by_workload(async_session, repo.id) == []
 
 
 async def test_a_rebuild_replaces_the_repositorys_rows_whole(async_session) -> None:
@@ -146,12 +146,13 @@ async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_s
     assert (big.samples, big.run_samples, big.explained_share) == (150, 1000, 0.5)
     assert big.share_low < 0.15 < big.share_high
 
-    ranked = await ranked_hotness(async_session, repo.id)
-    # Lead candidates first, then by rank within their runs.
-    assert [r.symbol_id for r in ranked] == ["src/m.py::big", "src/t.py::thin", "src/m.py::small"]
-    in_tests = await ranked_hotness(async_session, repo.id, workload_classes={"unit_test"})
-    assert [r.symbol_id for r in in_tests] == ["src/t.py::thin"]
-    assert len(await ranked_hotness(async_session, repo.id, limit=1)) == 1
+    by_workload = await ranked_by_workload(async_session, repo.id)
+    # One block per workload's newest run, its functions best rank first; the
+    # partial run is no basis.
+    assert [(run.workload_name, [r.symbol_id for r in rows]) for run, rows in by_workload] in (
+        [("w-e", ["src/m.py::big", "src/m.py::small"]), ("w-u", ["src/t.py::thin"])],
+        [("w-u", ["src/t.py::thin"]), ("w-e", ["src/m.py::big", "src/m.py::small"])],
+    )
 
 
 async def test_rows_left_without_a_profile_run_are_cleared(async_session) -> None:
