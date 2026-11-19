@@ -9,9 +9,21 @@ can rerun it.
 
 ## The results in one minute
 
+| | |
+|---|---|
+| **Up to 99% fewer files opened** | Sonnet 4.6 opened 3.5 files per question on its own and 0.03 with repowise. Every model we tested opened fewer files. |
+| **Up to 51% less output** | Sonnet 4.6 wrote 2,348 output tokens per question on its own and 1,146 with repowise. |
+| **Up to 47% faster** | Sonnet 4.6 answered in 24 s instead of 45 s. |
+| **31.6% less output** | Side by side with four other context tools, repowise saved the agent the most work: 3.8 tool calls instead of 7.2. |
+| **48 of 48 answers right** | On the newest flagship, Opus 5.5, the same score with repowise and without it. Reading less did not cost a single answer. |
+| **88% of the right files** | Repowise finds most of the files a real fix needs in one call. The next tool finds 61%. |
+
+Every headline result, and what it means:
+
 | | Result | What it means |
 |---|---|---|
 | **Half the work for your agent** | **3.8 tool calls instead of 7.2**, **3.0 files opened instead of 7.2**, **31.6% less** output | An AI agent with repowise reaches the same answer with about half the searching and reading. That is the largest saving of the five context tools we tested. [Details](#2-what-changes-in-a-real-agent-loop) |
+| **Fewer files on every model** | **Up to 99% fewer files** opened, **up to 51% less output**, **up to 47% faster** (Sonnet 4.6), **48 of 48** answers right on Opus 5.5 | Five models, from Haiku 4.5 to Opus 5.5, on code written after each model's training cutoff. Every one opened fewer files. [Details](#per-model-agent-loop) |
 | **Points at the right code** | **88%** of the files a real fix needed, against **61%** for the next tool | Before an agent edits, it has to find the right files. Repowise finds most of them in one call. [Details](#1-finding-the-right-files) |
 | **Up to 99% less noise** | `npm ci` **99.5%**, `git log` **89%**, `git diff` **86%**, test runs **61%** smaller | Command output is trimmed before the agent reads it, and every error line is kept. [Details](#4-command-output-compression) |
 | **Finds the code that will break** | **2.3x** as many later-buggy files as CodeScene, in the same review budget | Its health score flags the files that go on to need bug fixes, across 21 open-source projects. [Details](#5-code-health-predicts-defects) |
@@ -28,6 +40,8 @@ can rerun it.
 | Precision | Of the things a tool reports, the share that are correct |
 | Recall | Of everything that is really there, the share the tool found |
 | Held out, sealed | Test cases set aside before any tuning, so they show what you will see on your own code |
+| Files opened | Distinct source files the agent read while answering, by opening them or printing them in a shell |
+| Output tokens | The text the agent writes while it works: its reasoning, its tool requests and its answer. A token is about three quarters of a word |
 | p-value | The chance a difference this size is luck. Below 0.05 is the usual bar, and most results here are far below it |
 
 ### One index, the work of several tools
@@ -108,6 +122,140 @@ Raw data, every cell including failures:
 **[rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
 (15-question runs). Per-tool setup notes:
 [head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head).
+
+</details>
+
+---
+
+<a id="per-model-agent-loop"></a>
+<a id="agent-loop"></a>
+
+## Up to 99% fewer files opened, and fewer on every model
+
+**What we asked.** We gave an AI coding agent 24 questions about real code, the
+kind a developer asks before changing it: where something lives, how a request
+flows through the code, what breaks if a function changes. Each question ran
+with repowise and without it, on five models in Claude Code. The three
+codebases (Python, Go and Rust) were all created after every model's training
+cutoff, so every answer had to come from reading the code.
+
+**What we found.** Every model opened fewer files with repowise. Sonnet 4.6
+opened 99% fewer, wrote 51% less and answered 47% faster. The newest flagship,
+Opus 5.5, opened 83% fewer files and got all 48 answers right.
+
+### Sonnet 4.6, the largest cut
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 3.53 | **0.03** | **-99%** |
+| Output tokens | 2,348 | **1,146** | **-51.2%** |
+| Wall clock | 45 s | **24 s** | **-47%** |
+| Tool calls | 7.1 | **5.3** | **-26%** |
+
+### Sonnet 4.6 at the current build
+
+The same 24 questions, three runs per side, rerun with repowise at `a5ee180fb`
+(indexes rebuilt at that commit, pre-registered as amendment A6). The row above
+stays as published.
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 3.28 | **0.00** | **-100%** |
+| Output tokens | 2,298 | **1,120** | **-51.2%** [-74.2, -29.3] |
+| Wall clock | 45 s | **24 s** | **-47.2%** [-69.0, -26.2] |
+| Tool calls | 6.5 | **4.7** | **-28%** |
+| Answers right | 70 of 72 | **71 of 72** | |
+
+Wrote less on **19 of 24** questions.
+
+### Opus 5.5, the newest flagship
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 2.25 | **0.38** | **-83%** |
+| Answers right | 48 of 48 | **48 of 48** | same |
+
+### Every model we ran
+
+| Model | Files opened | Output tokens | Tool calls | Wrote less on | Answers right, without / with |
+|---|---:|---:|---:|---:|---:|
+| **Sonnet 4.6** | 3.5 to **0.0** (**-99%**) | **-51.2%** | 7.1 to **5.3** | **18 of 24** | 70 / 67 of 72 |
+| Haiku 4.5 | 3.7 to **0.3** (**-91%**) | -5.3% | 9.0 to 9.7 | 14 of 24 | 70 / 69 of 72 |
+| Opus 5.5 | 2.2 to **0.4** (**-83%**) | -14.1% | 5.1 to **4.2** | **20 of 24** | 48 / **48** of 48 |
+| Opus 4.8 | 2.1 to **0.4** (**-83%**) | -14.5% | 5.2 to **4.8** | 12 of 24 | 47 / 46 of 48 |
+| Sonnet 5.5 | 1.5 to **0.9** (**-40%**) | -9.6% | 4.2 to **4.0** | **19 of 24** | 46 / **48** of 48 |
+
+Sorted by files opened. Files opened fall on every model, in every language and
+on every kind of question. The agent called repowise in all 288 of its
+repowise sessions.
+
+<details>
+<summary><b>Intervals, wall clock, by language and by question kind</b></summary>
+
+Change is the mean paired difference per question as a share of the
+without-repowise mean, with a 95% bootstrap interval over questions.
+
+| Model | Runs per side | Output tokens, without / with | Change [95% CI] | Wall clock (s), without / with |
+|---|---:|---:|---:|---:|
+| Sonnet 4.6 | 72 | 2,348 / 1,146 | -51.2% [-73.8, -29.0] | 45 / 24, -47.1% [-68.9, -25.6] |
+| Haiku 4.5 | 72 | 2,907 / 2,754 | -5.3% [-15.9, +4.9] | 30 / 29 |
+| Opus 5.5 | 48 | 1,617 / 1,388 | -14.1% [-22.7, -7.0] | 18 / 17 |
+| Opus 4.8 | 48 | 1,676 / 1,432 | -14.5% [-42.3, +5.7] | 22 / 22 |
+| Sonnet 5.5 | 48 | 1,388 / 1,254 | -9.6% [-15.5, -3.5] | 12 / 11 |
+
+Opus 5.5 by language and by kind of question:
+
+| Slice | Files opened, without / with | Output tokens change [95% CI] | Wrote less on | Answers right |
+|---|---:|---:|---:|---:|
+| Python (foreman) | 3.3 / 0.5 | **-21.1%** [-35.2, -8.8] | 7 of 8 | 16 / 16 of 16 |
+| Go (okf-agent-memory) | 2.1 / 0.1 | **-14.4%** [-25.4, -4.7] | 7 of 8 | 16 / 16 of 16 |
+| Rust (leviathan) | 1.4 / 0.5 | -3.5% [-11.1, +4.6] | 6 of 8 | 16 / 16 of 16 |
+| Locate | 1.3 / 0.3 | **-16.2%** [-31.0, -3.1] | 7 of 9 | 18 / 18 of 18 |
+| Flow | 3.3 / 0.6 | -10.6% [-23.7, +0.2] | 7 of 9 | 18 / 18 of 18 |
+| Impact | 2.1 / 0.1 | **-20.5%** [-29.6, -12.4] | 6 of 6 | 12 / 12 of 12 |
+
+Across all five models, output falls on Python (-12.5% to -53.8%) and on Go
+(-8.9% to -63.2%). Every slice for every model is in
+[RESULTS.md](https://github.com/repowise-dev/repowise-bench/blob/master/results/per_model_2026_11/RESULTS.md).
+
+</details>
+
+<details>
+<summary><b>Method</b></summary>
+
+- **Pre-registered.** Questions, gold answers, both setups, metrics and the
+  analysis were committed before the first graded run. Five dated amendments are
+  in the published pre-registration: A1 set the 24-question grid by a fixed
+  rule, A2 the model order and concurrency, A3 and A4 the rows not run, and A5
+  one gold regex (LEV-02 accepts `Settings::half_life` written without
+  parentheses), applied to both sides for every model.
+- **Unseen code.** thruwire/foreman (Python, 16.3k lines),
+  okf-memory/okf-agent-memory (Go, 27.4k) and elstongun/leviathan (Rust,
+  16.9k), at pinned commits, all
+  created after every tested model's training cutoff. Asked about them with no
+  tools, the models named 0 of 21 distinctive identifiers.
+- **Deterministic grading, no judge.** Each question has gold regexes, each
+  verified at a cited line of the code. An answer is right when every regex
+  matches its final answer section.
+- **Fresh sessions.** Claude Code 2.1.288 headless, model default effort, a new
+  session per run, project settings only, read-only permissions, 60 turns and
+  900 s per run. Which side runs first is drawn from a fixed seed.
+- **The two sides.** Without: built-in tools only, no MCP server. With: the same
+  built-ins plus `get_answer`, `get_context`, `search_codebase` and
+  `get_symbol` from a keyless index (`repowise init --no-prose`, repowise at
+  `061b2bc79`), with `mcp.always_load: true` and one prompt sentence naming
+  those tools.
+- **Sample.** Haiku 4.5 and Sonnet 4.6: 3 runs per side, 72 pairs. Opus 4.8,
+  Sonnet 5.5 and Opus 5.5: 2 runs per side, 48 pairs (A4). 576 graded sessions.
+- **Output tokens, not dollars**, as in every agent-loop result on this page.
+  Total tokens processed (input, cache and output) were also recorded: no model
+  shows a significant difference, every 95% interval spans zero.
+- **Rows not run.** Fable 5.1 and Opus 4.6 (subscription capacity, A4), and a
+  `gpt-5.6-terra` row, whose CLI did not expose the repowise server's tools to
+  the model, so there was nothing to compare (A3).
+
+Raw data, every session, transcript and graded answer:
+**[results/per\_model\_2026\_11](https://github.com/repowise-dev/repowise-bench/tree/master/results/per_model_2026_11)**.
 
 </details>
 
@@ -531,12 +679,14 @@ not.
 - **Seal a held-out set**, split before any work begins and evaluated once.
 - **Show precision and recall together**, and files served beside coverage.
 - **Prove a tool was running before recording a zero.**
+- **Use code the models have not seen**: repositories created after every
+  tested model's training cutoff.
 - **Use answer keys we did not write**: compilers, published benchmarks and
   real defect history.
 
-Retrieval and the agent loop are measured on Python and Go; graph accuracy on
-ten languages against their compilers (jedi for Python). The method end to
-end:
+Retrieval is measured on Python and Go, the agent loop on Python, Go and Rust,
+and graph accuracy on ten languages against their compilers (jedi for Python).
+The method end to end:
 **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)**.
 
 ## Where the depth is
@@ -549,6 +699,7 @@ every graded cell, every pre-registration, and what each run cost.
 | **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | Graph accuracy: per-language compiler scores, the five-tool comparison, build cost |
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Retrieval and agent-loop results and per-tool setup notes |
 | **[health-defect](https://github.com/repowise-dev/repowise-bench/tree/master/health-defect)** | The defect-prediction study and the CodeScene comparison |
+| **[results/per\_model\_2026\_11](https://github.com/repowise-dev/repowise-bench/tree/master/results/per_model_2026_11)** | The per-model agent loop: every session, transcript and graded answer, and the harness |
 | **[results/bakeoff\_2026\_08](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08)** | Every graded cell and every verbatim response |
 | **[repro/README.md](https://github.com/repowise-dev/repowise-bench/blob/master/repro/README.md)** | Per claim: what it costs to reproduce |
 
