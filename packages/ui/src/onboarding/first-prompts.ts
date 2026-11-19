@@ -8,7 +8,7 @@
  */
 
 /** Templates by name. `{repo}` is the repository, `{path}` a file in it,
- *  `{title}` a recorded decision's title. */
+ *  `{title}` a recorded decision's title, `{repos}` a workspace's repos. */
 export const FIRST_PROMPTS = {
   tour: "Use Repowise to give me a tour of {repo}: what it does, its main modules, and where I should start reading.",
   hotspot: "Before I change {path}, use Repowise to tell me what depends on it, who knows it best, and what tends to break with it.",
@@ -16,6 +16,7 @@ export const FIRST_PROMPTS = {
   risky: "Use Repowise to find the riskiest files to change in {repo}, and tell me why.",
   decision: "Use Repowise to explain the decision \"{title}\" in {repo}: why it was made and which code follows it.",
   unused: "Use Repowise to find code in {repo} that nothing calls any more and is safe to delete.",
+  workspace: "Use Repowise to show me how {repos} depend on each other: the contracts between them and which changes ripple.",
 } as const;
 
 /** Index facts the prompts can name; each is optional. */

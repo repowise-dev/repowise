@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .action import render_action
 from .evidence import CONNECT_EVIDENCE, render_connect_evidence
-from .first_prompts import FIRST_PROMPTS, first_prompts
+from .first_prompts import FIRST_PROMPTS, first_prompt, first_prompts, workspace_prompt
 from .fix_and_verify import render_fix_and_verify
 from .fix_first import render_fix_item, render_verify_lines
 from .preamble import FLAVORS, Flavor
@@ -22,6 +22,7 @@ __all__ = [
     "FIRST_PROMPTS",
     "FLAVORS",
     "Flavor",
+    "first_prompt",
     "first_prompts",
     "render_action",
     "render_connect_evidence",
@@ -32,4 +33,5 @@ __all__ = [
     "render_opportunity",
     "render_plan",
     "render_verify_lines",
+    "workspace_prompt",
 ]
