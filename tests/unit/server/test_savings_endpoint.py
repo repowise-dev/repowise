@@ -42,6 +42,8 @@ def _event(
     evidence_kind: str = "measured",
     priced: bool = False,
     occurred_at: str | None = None,
+    avoided_files: tuple = (),
+    host_session_id: str | None = None,
     session_id: str | None = None,
 ) -> None:
     event_id = new_event_id()
@@ -61,6 +63,8 @@ def _event(
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": baseline,
         "delivered_input_tokens": delivered,
+        "avoided_files": avoided_files,
+        "host_session_id": host_session_id,
         "session_id": session_id,
     }
     if priced:
@@ -288,8 +292,39 @@ async def test_the_endpoint_and_the_core_report_agree(
         "baseline_saved_input_tokens",
         "input_reduction_ratio",
         "input_reduction_ratio_p90",
+        "files_not_opened",
+        "files_not_opened_tokens",
+        "tool_calls_answered",
     ):
         assert data[field] == pytest.approx(getattr(report, field)), field
+
+
+async def test_files_not_opened_and_tool_calls_answered(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    files = (("a.py", 700), ("b.py", 300))
+    _event(repo_dir, avoided_files=files, host_session_id="s1")
+    # Same session, same file, other surface: still one file not opened.
+    _event(repo_dir, surface="hook", avoided_files=(("a.py", 900),), host_session_id="s1")
+    _event(repo_dir, surface="distill", operation="git_log", baseline=400)
+
+    data = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    assert data["files_not_opened"] == 2
+    assert data["files_not_opened_tokens"] == 1_000
+    assert data["tool_calls_answered"] == 2
+    surfaces = {row["group"]: row for row in data["files_per_surface"]}
+    assert surfaces["mcp"] == {
+        "group": "mcp",
+        "files_not_opened": 2,
+        "files_not_opened_tokens": 1_000,
+        "tool_calls_answered": 1,
+    }
+    assert surfaces["hook"]["files_not_opened"] == 0
+    assert [row["group"] for row in data["files_per_agent"]] == ["claude_code"]
+    assert len(data["files_per_day"]) == 1
 
 
 async def test_output_saved_is_estimated_per_session_and_added_to_the_total(

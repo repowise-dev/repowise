@@ -138,6 +138,45 @@ A reply that ran and found nothing to report, such as a dead-code sweep with no
 findings or a conformance check with no violations, still answered the question
 and keeps its floor.
 
+## Files not opened and tool calls answered
+
+A usable event lists the files it served in place of a Read, as paths with the
+tokens of one Read each, in `savings_event_files` beside the event. Never file
+contents. At most 50 files per event; beyond that the list is cut and the token
+credit is unchanged.
+
+| Surface | Files listed | Size of each |
+|---|---|---|
+| MCP `get_context` | File cards, and the file a symbol skeleton renders | One Read, as the counterfactual measured it |
+| MCP `get_answer` | Cited files of an answered reply; inlined whole bodies otherwise | Same |
+| MCP `get_symbol` | The file each served body or range came from | Same |
+| Hook re-read collapse and Read skeleton | The file whose Read was replaced | The replaced Read |
+
+Search hits, module cards, references and edit sets are not listed: they point
+at files the agent still opens, and the reply never sized a Read of them.
+Sizes come from the counterfactual's own measurement, so listing adds no file
+or index access to a tool call or hook.
+
+The count is distinct (session, path). Within one host session a path is
+credited once across surfaces, owned by the first usable event that served it.
+A Read of that path later in the session, seen by the Read hook, cancels the
+credit (`savings_file_reads`). The session key is hashed without the surface
+or the repository root: the hooks key it by the host's session id, and the MCP
+server by the same id when the host exports it (`CLAUDE_CODE_SESSION_ID`),
+otherwise by its own connection id. An event with no session counts on its own.
+
+The Read hook knows which paths to note from its own per-window session state:
+paths it replaced, and paths a repowise MCP reply served in that window. So a
+cancellation needs the Read hook and the MCP PostToolUse hook installed, and a
+subagent's Read cancels only credits made in its own window. A collapsed
+re-read credits a file the agent opened earlier in the session, because the
+Read it replaced is one the agent did not have to pay for again. Each window
+(`days`) assigns ownership within itself, so a session that spans a window edge
+can credit a path in both windows.
+
+`tool_calls_answered` counts usable MCP, VS Code tool and hook events. Distill
+rows are command output, not tool calls.
+
 ## Correlation and attribution
 
 MCP JSON-RPC request IDs are client-chosen and connection-scoped, so they are not

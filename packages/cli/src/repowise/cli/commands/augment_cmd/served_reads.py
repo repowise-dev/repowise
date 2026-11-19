@@ -37,6 +37,7 @@ because this one reads low.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -147,13 +148,23 @@ def _handle_mcp_read_post(tool_output: object, cwd: str, session_id: str) -> Non
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return
-    ranges = _served_ranges(tool_output)
-    if not ranges:
+    payload = _mcp_payload(tool_output)
+    ranges = _served_ranges(payload)
+    try:
+        credited = _credited_paths(payload, ranges)
+    except Exception:
+        credited = []
+    if not ranges and not credited:
         return
 
-    from .read_state import _load_session_state, _save_session_state
+    from .read_state import _load_session_state, _save_session_state, note_credited
 
     state = _load_session_state(repo_path, session_id)
+    # Files the MCP server may have credited as not opened, so a later Read of
+    # one is noted and that credit lapses. A superset is harmless: a noted Read
+    # of a path nothing credited cancels nothing.
+    with contextlib.suppress(Exception):
+        note_credited(state, credited)
     served = state.setdefault("served", {})
     for rel, start, end in ranges:
         if rel not in served and len(served) >= _MAX_SERVED_FILES:
@@ -206,6 +217,38 @@ def _served_ranges(tool_output: object) -> list[tuple[str, int, int]]:
                 if isinstance(lines, list) and len(lines) == 2:
                     _add(entry.get("path"), lines[0], lines[1])
     return out
+
+
+#: Files read from one MCP response for the credited set (state-file hygiene).
+_MAX_CREDITED_PER_CALL = 50
+
+
+def _credited_paths(payload: object, ranges: list[tuple[str, int, int]]) -> list[str]:
+    """Files a repowise MCP response served in place of a Read.
+
+    Served source ranges, ``get_context`` file cards (and the file a symbol
+    skeleton renders), and ``get_answer`` citations. Read from the response
+    already parsed for the served ranges; no file or index access.
+    """
+    if not isinstance(payload, dict):
+        return []
+    if isinstance(payload.get("result"), dict):
+        payload = payload["result"]
+    paths = [rel for rel, _start, _end in ranges]
+    targets = payload.get("targets")
+    if isinstance(targets, dict):
+        for key, card in targets.items():
+            if not isinstance(card, dict):
+                continue
+            skeleton = card.get("skeleton")
+            of_file = skeleton.get("of_file") if isinstance(skeleton, dict) else None
+            if isinstance(of_file, str):
+                paths.append(of_file)
+            elif card.get("type") == "file" and isinstance(key, str):
+                paths.append(key)
+    paths.extend(p for p in payload.get("citations") or [] if isinstance(p, str))
+    unique = dict.fromkeys(p.replace("\\", "/") for p in paths if p)
+    return list(unique)[:_MAX_CREDITED_PER_CALL]
 
 
 def _mcp_payload(tool_output: object) -> dict | None:

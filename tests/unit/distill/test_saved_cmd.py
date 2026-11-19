@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -77,6 +78,7 @@ def _canonical(
     evidence_kind: str = "measured",
     priced: bool = False,
     occurred_at: str | None = None,
+    avoided_files: tuple = (),
     session_id: str | None = None,
 ) -> None:
     """Write one canonical savings event, which is what the command reads."""
@@ -103,6 +105,8 @@ def _canonical(
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": baseline,
         "delivered_input_tokens": delivered,
+        "avoided_files": avoided_files,
+        "host_session_id": "session-1",
         "session_id": session_id,
     }
     if priced:
@@ -238,6 +242,21 @@ def test_saved_keeps_measured_and_inferred_apart(repo_cwd: Path) -> None:
     flat = " ".join(result.output.split())
     assert "Measured: 1,000" in flat
     assert "Inferred: 400" in flat
+
+
+def test_saved_reports_files_not_opened(repo_cwd: Path) -> None:
+    _store(repo_cwd).close()
+    _canonical(repo_cwd, surface="mcp", avoided_files=(("a.py", 1_200), ("b.py", 300)))
+    _canonical(repo_cwd, surface="hook", avoided_files=(("a.py", 1_200),))
+    result = CliRunner().invoke(saved_command, [])
+    assert result.exit_code == 0
+    flat = " ".join(result.output.split())
+    assert "Files not opened: 2 (~1,500 tokens of Reads, once per session)" in flat
+    assert "tool calls answered: 2" in flat
+
+    data = json.loads(CliRunner().invoke(saved_command, ["--format", "json"]).output)
+    assert data["summary"]["files_not_opened"] == 2
+    assert data["summary"]["tool_calls_answered"] == 2
 
 
 def test_saved_by_day(repo_cwd: Path) -> None:

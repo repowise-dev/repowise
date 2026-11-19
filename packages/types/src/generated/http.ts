@@ -4420,6 +4420,14 @@ export interface SavingsBreakdownRow {
   saved_input_tokens?: number;
 }
 
+/** Files not opened and tool calls answered in one day, agent or surface. */
+export interface SavingsFilesRow {
+  group?: string | null;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+}
+
 /** One kind of observed opportunity. Never part of achieved savings. */
 export interface SavingsOpportunityRow {
   kind: string;
@@ -4514,6 +4522,12 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+  files_per_day?: SavingsFilesRow[];
+  files_per_agent?: SavingsFilesRow[];
+  files_per_surface?: SavingsFilesRow[];
   subagent_events?: number;
   subagent_saved_input_tokens?: number;
   backfilled_saved_input_tokens?: number;

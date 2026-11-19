@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -20,10 +21,12 @@ from repowise.core.savings.formulas import (
 )
 from repowise.core.savings.reporting import (
     DAY_LIMIT,
+    TOOL_CALL_SURFACES,
     FallbackRate,
     agent_breakdown_rows,
     backfill_usd,
     breakdown_rows,
+    files_not_opened,
 )
 
 if TYPE_CHECKING:
@@ -32,6 +35,11 @@ if TYPE_CHECKING:
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
 
+#: Cap on the ``(day, agent, surface)`` cells the files-not-opened queries
+#: return: a year of days across every agent and surface fits several times.
+_FILE_CELL_LIMIT = 20_000
+
+_ANSWERED_SQL = "(result_state = 'success' OR (result_state = 'partial' AND is_usable = 1))"
 #: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
 #: ledger with more than this leaves the smallest of them unpriced.
 _BACKFILL_GROUP_LIMIT = 10_000
@@ -166,6 +174,8 @@ class SavingsRepository:
                 "INSERT INTO savings_event_omissions(event_id, omission_ref) VALUES (?, ?)",
                 ((event.event_id, ref) for ref in event.omission_refs),
             )
+            if event.avoided_files:
+                self._insert_files(event)
             correlations = {
                 "session": event.session_id,
                 "request": event.request_id,
@@ -185,6 +195,70 @@ class SavingsRepository:
         except BaseException:
             self._conn.rollback()
             raise
+
+    def _insert_files(self, event: SavingsEvent) -> None:
+        """The event's avoided files, inside its transaction. Never fails the event.
+
+        A sidecar opened on a raw connection may predate the files table; the
+        failed statement rolls back alone and the event still lands.
+        """
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO savings_event_files"
+                "(event_id, path, read_tokens, session_key) VALUES (?, ?, ?, ?)",
+                (
+                    (event.event_id, path, tokens, event.file_session_key)
+                    for path, tokens in event.avoided_files
+                ),
+            )
+
+    def record_file_read(self, session_key: str, path: str, read_at: str) -> None:
+        """Note that the agent Read *path* in this session, keeping the latest time."""
+        self._conn.execute(
+            "INSERT INTO savings_file_reads(session_key, path, read_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(session_key, path) DO UPDATE SET read_at = excluded.read_at "
+            "WHERE excluded.read_at > savings_file_reads.read_at",
+            (session_key, path, read_at),
+        )
+
+    def _files_not_opened(self, where: str, params: list[Any], limit: int) -> Any:
+        """Files not opened and tool calls answered, grouped by (day, agent, surface).
+
+        Each (session, path) is owned by its first usable event in the window,
+        or by the event alone when it carries no session. A later Read of the
+        path in that session cancels it. Rides ``idx_savings_events_repo_time``
+        and the files table's primary key; each statement is capped.
+        """
+        cells = [*params, _FILE_CELL_LIMIT]
+        surfaces = ",".join(f"'{name}'" for name in TOOL_CALL_SURFACES)
+        calls = self._conn.execute(
+            "SELECT substr(occurred_at, 1, 10), agent, surface, COUNT(*) FROM savings_events "
+            f"WHERE {where} AND surface IN ({surfaces}) AND {_ANSWERED_SQL} "
+            "GROUP BY 1, 2, 3 LIMIT ?",
+            cells,
+        ).fetchall()
+        # A read-only report never migrates, so a pre-v3 ledger has no files.
+        (tables,) = self._conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('savings_event_files', 'savings_file_reads')"
+        ).fetchone()
+        credited: list[tuple[Any, ...]] = []
+        if tables == 2:
+            credited = self._conn.execute(
+                "SELECT day, agent, surface, COUNT(*), COALESCE(SUM(read_tokens), 0) FROM ("
+                " SELECT f.path AS path, f.read_tokens AS read_tokens,"
+                "  COALESCE(f.session_key, f.event_id) AS k, e.occurred_at AS at,"
+                "  substr(e.occurred_at, 1, 10) AS day, e.agent AS agent, e.surface AS surface,"
+                "  ROW_NUMBER() OVER (PARTITION BY COALESCE(f.session_key, f.event_id), f.path"
+                "   ORDER BY e.occurred_at, e.event_id) AS rn"
+                " FROM savings_events e JOIN savings_event_files f ON f.event_id = e.event_id"
+                f" WHERE {where} AND e.is_usable = 1"
+                ") c WHERE rn = 1 AND NOT EXISTS (SELECT 1 FROM savings_file_reads r"
+                " WHERE r.session_key = c.k AND r.path = c.path AND r.read_at > c.at)"
+                " GROUP BY 1, 2, 3 LIMIT ?",
+                cells,
+            ).fetchall()
+        return files_not_opened(credited, calls, limit)
 
     def adopt_rows(self, repository_id: str) -> int:
         """File every row of this sidecar under *repository_id*; return how many moved.
@@ -359,6 +433,7 @@ class SavingsRepository:
         baseline_input = int(row[18])
         baseline_saved = int(row[19])
         p90 = self._reduction_p90(where, params, reducing_events)
+        files = self._files_not_opened(where, params, limit)
         saved_input = int(row[5])
         priced_input = int(row[8])
         saved_output = int(row[11])
@@ -410,6 +485,12 @@ class SavingsRepository:
             ),
             first_event_at=row[14],
             last_event_at=row[15],
+            files_not_opened=files.files,
+            files_not_opened_tokens=files.tokens,
+            tool_calls_answered=files.tool_calls,
+            files_per_day=files.per_day,
+            files_per_agent=files.per_agent,
+            files_per_surface=files.per_surface,
             subagent_events=int(row[20]),
             subagent_saved_input_tokens=int(row[21]),
             backfilled_saved_input_tokens=backfilled_tokens,

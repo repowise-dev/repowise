@@ -174,6 +174,9 @@ def saved_command(
                     "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
+                    "files_not_opened": report.files_not_opened,
+                    "files_not_opened_tokens": report.files_not_opened_tokens,
+                    "tool_calls_answered": report.tool_calls_answered,
                     **_output_estimate_summary(report),
                 },
                 "rows": rows,
@@ -302,6 +305,12 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         f"  Measured: [bold]{report.measured_saved_input_tokens:,}[/bold]  "
         f"Inferred: [bold]{report.inferred_saved_input_tokens:,}[/bold]"
     )
+    if report.tool_calls_answered:
+        console.print(
+            f"  Files not opened: [bold]{report.files_not_opened:,}[/bold] "
+            f"[dim](~{report.files_not_opened_tokens:,} tokens of Reads, once per "
+            f"session); tool calls answered: {report.tool_calls_answered:,}[/dim]"
+        )
     # Out of how much, not just how much. Both the aggregate and the peak,
     # because either alone misreads in whichever direction flatters.
     if report.input_reduction_ratio is not None and report.input_reduction_ratio_p90 is not None:

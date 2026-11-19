@@ -378,9 +378,10 @@ async def _serve_symbol(
     if text is None:
         return _unreadable_source_response(row, symbol_id, repository, t0)
 
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
     full_tokens = read_tokens(text)
+    note_served(row.file_path, full_tokens)
 
     # Stored bounds are checked against the live file first: stale ones are
     # corrected and healed, unfindable ones served as approximate.

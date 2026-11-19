@@ -189,6 +189,32 @@ def record_event_on(
         return _drop("write_failed")
 
 
+def record_file_read_on(
+    connection: Any, repo_root: str | Path | None, session_id: str | None, path: str
+) -> bool:
+    """Note an agent Read of *path* in this host session, on a raw connection. Never raises.
+
+    The files-not-opened clawback: a Read after the event that credited *path*
+    cancels that credit at report time. Stores the hashed session key, never
+    the raw id.
+    """
+    if connection is None or not repo_root or not session_id or not path:
+        return False
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.savings.contracts import utc_text
+        from repowise.core.savings.correlation import file_session_key
+        from repowise.core.savings.repository import SavingsRepository
+
+        key = file_session_key(session_id)
+        SavingsRepository(connection).record_file_read(key, path, utc_text(datetime.now(UTC)))
+        return True
+    except Exception:
+        logger.debug("file read write failed; dropping silently", exc_info=True)
+        return False
+
+
 def _build(payload: Mapping[str, Any], repo_root: str | Path) -> Any:
     """Validate *payload* into an event, or ``None`` when it is malformed.
 
