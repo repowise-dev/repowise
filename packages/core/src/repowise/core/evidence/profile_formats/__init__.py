@@ -26,11 +26,21 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, cpuprofile, hyperfine, junit, pprof, pytest_benchmark, speedscope
+from . import (
+    collapsed,
+    cpuprofile,
+    criterion,
+    hyperfine,
+    junit,
+    pprof,
+    pytest_benchmark,
+    speedscope,
+)
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -38,7 +48,7 @@ from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 class ProfileFormat:
     """A format's sniffer and exactly one of its two readers.
 
-    Both readers raise ``EvidenceFormatError`` when the file cannot be read.
+    Readers raise ``EvidenceFormatError`` when the file cannot be read.
     """
 
     #: Whether a file starting with these bytes (BOM included) is this format.
@@ -47,10 +57,21 @@ class ProfileFormat:
     read: Callable[[bytes], ProfileRun] | None = None
     #: Any other kind: the whole file as a ``repowise-evidence-v1`` object.
     to_v1: Callable[[bytes], dict[str, Any]] | None = None
+    #: Optional v1 reader with a local path, for formats with sibling metadata.
+    to_v1_from_path: Callable[[bytes, Path], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if (self.read is None) == (self.to_v1 is None):
             raise ValueError("a format has exactly one of read and to_v1")
+        if self.to_v1_from_path is not None and self.to_v1 is None:
+            raise ValueError("a format with to_v1_from_path also needs to_v1")
+
+    def convert_to_v1(self, data: bytes, name: str | Path) -> dict[str, Any]:
+        """Convert a benchmark, using the source path only for local files."""
+        if self.to_v1_from_path is not None and isinstance(name, Path):
+            return self.to_v1_from_path(data, name)
+        assert self.to_v1 is not None
+        return self.to_v1(data)
 
 
 #: Format name -> format, in the order formats are sniffed and listed.
@@ -65,6 +86,10 @@ profile_formats.register(
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
+profile_formats.register(
+    "criterion",
+    ProfileFormat(criterion.sniff, to_v1=criterion.to_v1, to_v1_from_path=criterion.to_v1),
+)
 
 
 def detect_profile_format(head: bytes) -> str | None:

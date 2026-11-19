@@ -219,7 +219,7 @@ def input_format(given: str | None, data: bytes) -> str:
 def prepare_evidence(
     data: bytes,
     *,
-    name: str,
+    name: str | Path,
     checkout_root: Path,
     commit: str | None = None,
     dirty: bool | None = None,
@@ -229,14 +229,15 @@ def prepare_evidence(
 ) -> PreparedEvidence:
     """*data* read as v1 or a registered format, with its clock and commit checked.
 
-    *name* names the file in messages. *max_file_mb*, when given, refuses a
-    larger file. Raises :class:`EvidenceRefusedError`.
+    *name* names the file in messages. A local ``Path`` also lets a format read
+    companion metadata. *max_file_mb*, when given, refuses a larger file.
+    Raises :class:`EvidenceRefusedError`.
     """
     from .profile_convert import refuse_compiled_positions
     from .profile_formats import profile_formats
 
     if max_file_mb is not None:
-        check_file_size(len(data), max_file_mb, name)
+        check_file_size(len(data), max_file_mb, str(name))
     fmt = input_format(input_format_name, data)
     text: str | None = None
     doc: EvidenceDocument | None = None
@@ -254,7 +255,7 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                text = json.dumps(reader.convert_to_v1(data, name), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
@@ -277,7 +278,7 @@ def prepare_evidence(
 
 
 def prepare_evidence_files(
-    files: Sequence[tuple[str, bytes]],
+    files: Sequence[tuple[str | Path, bytes]],
     *,
     checkout_root: Path,
     commit: str | None = None,
@@ -286,7 +287,7 @@ def prepare_evidence_files(
     value_kind: str | None = None,
     max_file_mb: float | None = None,
 ) -> PreparedEvidence:
-    """*files* (name, bytes) read as one run.
+    """*files* (display name or local path, bytes) read as one run.
 
     One file is :func:`prepare_evidence`. Several are profiles of one run
     (a parent and its workers) and merge into one: they share the run's
@@ -356,8 +357,8 @@ def prepare_evidence_files(
 
 
 def _junit_reports_as_one(
-    files: Sequence[tuple[str, bytes]], input_format_name: str | None
-) -> Sequence[tuple[str, bytes]]:
+    files: Sequence[tuple[str | Path, bytes]], input_format_name: str | None
+) -> Sequence[tuple[str | Path, bytes]]:
     """Several files holding JUnit XML reports as one report; *files* as given otherwise.
 
     The files that are not JUnit XML (Surefire's ``.txt`` summaries,

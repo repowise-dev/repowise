@@ -615,6 +615,32 @@ def test_pytest_benchmark_output_is_stored_as_a_benchmark_series(indexed) -> Non
     )
 
 
+def test_criterion_output_is_stored_using_its_sibling_benchmark_id(indexed) -> None:
+    root, head = indexed
+    fixture = _BENCH_FIXTURE.parent / "criterion/sort/32/new"
+    path = root / "renamed-estimates.json"
+    path.write_bytes((fixture / "estimates.json").read_bytes())
+    path.with_name("benchmark.json").write_bytes((fixture / "benchmark.json").read_bytes())
+
+    result = _add(
+        str(path), "--workload", "rust bench", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["stored"], payload["input_format"], payload["kind"], payload["rows_written"]) == (
+        True, "criterion", "benchmark", 1,
+    )
+    (row,) = _benchmarks(root)
+    assert (row.benchmark_key, row.unit, row.lower_is_better, row.symbol_id) == (
+        "sort/32", "ns", True, None,
+    )
+    point_estimates = json.loads(path.read_bytes())
+    assert (row.mean, row.median, row.stddev) == tuple(
+        point_estimates[key]["point_estimate"] for key in ("mean", "median", "std_dev")
+    )
+
+
 def test_a_benchmark_function_not_indexed_keeps_its_series(indexed) -> None:
     root, head = indexed
     result = _add(
