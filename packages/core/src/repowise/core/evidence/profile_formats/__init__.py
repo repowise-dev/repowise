@@ -10,8 +10,9 @@ stacks, nothing joined); joining frames to code and writing the
 ``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
 other kind (benchmark results) has ``to_v1`` instead, which writes the v1
 document directly: its entries name their functions, and ingest joins
-them; it also gets the checkout the run used, for a tool that names a
-package rather than a file (Go). A new format is one module plus one
+them. A format whose tool names a package rather than a file (Go) sets
+``needs_checkout`` and gets the checkout the run used as a second argument;
+every other ``to_v1`` takes the bytes alone. A new format is one module plus one
 ``register`` call below. A plugin adds one the same way from its
 ``register()``::
 
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
@@ -48,9 +48,11 @@ class ProfileFormat:
     sniff: Callable[[bytes], bool]
     #: A profile: the whole file as a run, converted by :mod:`..profile_convert`.
     read: Callable[[bytes], ProfileRun] | None = None
-    #: Any other kind: the whole file, and the checkout the run used, as a
-    #: ``repowise-evidence-v1`` object.
-    to_v1: Callable[[bytes, Path], dict[str, Any]] | None = None
+    #: Any other kind: the whole file as a ``repowise-evidence-v1`` object.
+    #: Called ``to_v1(data)``, or ``to_v1(data, checkout_root)`` with *needs_checkout*.
+    to_v1: Callable[..., dict[str, Any]] | None = None
+    #: ``to_v1`` also reads the checkout the run used (Go output names packages, not files).
+    needs_checkout: bool = False
 
     def __post_init__(self) -> None:
         if (self.read is None) == (self.to_v1 is None):
@@ -65,7 +67,9 @@ profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
 )
-profile_formats.register("go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1))
+profile_formats.register(
+    "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
+)
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 

@@ -14,8 +14,13 @@ from pathlib import Path
 import pytest
 
 from repowise.core.evidence import parse_evidence
+from repowise.core.evidence.add import prepare_evidence
 from repowise.core.evidence.format_v1 import EvidenceFormatError
-from repowise.core.evidence.profile_formats import detect_profile_format, profile_formats
+from repowise.core.evidence.profile_formats import (
+    ProfileFormat,
+    detect_profile_format,
+    profile_formats,
+)
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "go_bench"
 PKG = "example.com/gobench/strs"
@@ -124,3 +129,22 @@ def test_failed_benchmarks_are_counted_and_no_results_are_refused() -> None:
         profile_formats.get("go-bench").to_v1(_lines("--- FAIL: BenchmarkBroken-8"), FIXTURE)
     with pytest.raises(EvidenceFormatError, match="no go test benchmark results"):
         profile_formats.get("go-bench").to_v1(b"goos: linux\nFAIL\n", FIXTURE)
+
+
+def test_only_a_format_that_asks_gets_the_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A one-argument ``to_v1`` (the default contract) still ingests."""
+    assert profile_formats.get("go-bench").needs_checkout
+    assert not profile_formats.get("pytest-benchmark").needs_checkout
+    doc = {"format": "repowise-evidence-v1", "kind": "benchmark",
+           "benchmarks": [{"name": "b", "median": 1.0}]}
+
+    def one_argument(data: bytes) -> dict:
+        return doc
+
+    monkeypatch.setitem(
+        profile_formats._impls, "one-arg", ProfileFormat(lambda _h: False, to_v1=one_argument)
+    )
+    prepared = prepare_evidence(
+        b"x", name="f", checkout_root=FIXTURE, commit="a" * 40, input_format_name="one-arg"
+    )
+    assert prepared.doc is not None and [e["name"] for e in prepared.doc.entries] == ["b"]
