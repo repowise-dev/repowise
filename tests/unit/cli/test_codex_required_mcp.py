@@ -110,26 +110,82 @@ def test_doctor_ignores_an_entry_that_is_not_required(
     assert codex_target.unlaunchable_required_servers(tmp_path) == []
 
 
-@pytest.mark.parametrize(("pinned", "expected_fix"), [("repowise", "pip install repowise"), ("/opt/rw/bin/repowise", None)])
-def test_the_unlaunchable_server_owns_the_fix_slot(
-    pinned: str, expected_fix: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _doctor_with(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pinned: str,
+    stale: tuple[str, ...] = (),
+    matcher: str | None = None,
+    command: str = "repowise",
+):
+    """Doctor with one unlaunchable required project entry and the rest controlled."""
     import shutil
 
     from repowise.cli import mcp_config
+    from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
+    from repowise.cli.editor_integrations import codex_config
 
     monkeypatch.setattr(shutil, "which", lambda _cmd: None)
     monkeypatch.setattr(mcp_config, "resolve_repowise_command", lambda: pinned)
-    _write_required(codex_target.project_config_path(tmp_path), "repowise")
+    monkeypatch.setattr(codex_target, "stale_prompts", lambda: list(stale))
+    monkeypatch.setattr(
+        codex_config, "codex_rewrite_hook_matcher", lambda: matcher or SHELL_TOOL_MATCHER
+    )
+    monkeypatch.setattr(codex_config, "codex_supports_rewrite", lambda: True)
+    _write_required(codex_target.project_config_path(tmp_path), command)
+    return codex_target.TARGET.doctor(repo_path=tmp_path)
 
-    report = codex_target.TARGET.doctor(repo_path=tmp_path)
 
-    assert report.fix_command == expected_fix
+def test_the_install_owns_the_fix_slot_when_there_is_nothing_to_point_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(tmp_path, monkeypatch, pinned="repowise", stale=("a.md",))
+
+    assert report.fix_command == "pip install repowise"
+
+
+def test_an_unlaunchable_server_alone_leaves_the_fix_in_its_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise")
+
+    assert len(report.issues) == 1
+    assert report.fix_command is None
     assert report.repairable is False
-    if expected_fix is None:
-        # A committed project file gets PATH advice, never a machine's absolute path.
-        assert "put /opt/rw/bin on PATH" in report.issues[0].replace("\\", "/")
-        assert 'set command = "' not in report.issues[0]
+    # A committed project file gets PATH advice, never a machine's absolute path.
+    assert "put /opt/rw/bin on PATH" in report.issues[0].replace("\\", "/")
+    assert 'set command = "' not in report.issues[0]
+
+
+def test_stale_prompts_keep_their_fix_beside_an_unlaunchable_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise", stale=("a.md",))
+
+    assert report.issues[0].startswith("Codex will not start:")
+    assert report.fix_command == "repowise agents add --target=codex"
+
+
+def test_a_stale_hook_stays_repairable_beside_an_unlaunchable_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(tmp_path, monkeypatch, pinned="/opt/rw/bin/repowise", matcher="shell")
+
+    assert report.fix_command == "repowise hook rewrite install"
+    assert report.repairable is True
+
+
+def test_a_missing_absolute_command_is_told_to_reset_its_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _doctor_with(
+        tmp_path, monkeypatch, pinned="repowise", command="/old/venv/bin/repowise"
+    )
+
+    issue = report.issues[0]
+    assert "pip install repowise" in issue
+    assert 'set command = "repowise" in that table' in issue
 
 
 def test_a_user_file_may_pin_the_absolute_command(

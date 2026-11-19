@@ -33,6 +33,7 @@ Two quirks preserved from the existing implementation, both load-bearing:
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -1050,18 +1051,25 @@ def unlaunchable_required_servers(repo_path: Path | None = None) -> list[str]:
             if not _is_our_entry(entry) or shutil.which(entry["command"]):
                 continue
             pinned = resolve_repowise_command()
+            # PATH does not change what a command with a directory in it
+            # launches, so that entry also needs its command reset.
+            rebare = (
+                ' and set command = "repowise" in that table'
+                if re.search(r"[\\/]", entry["command"])
+                else ""
+            )
             if pinned == "repowise":
-                fix = f"install repowise so `repowise` is on PATH ({INSTALL_COMMAND})"
+                fix = f"install repowise so `repowise` is on PATH ({INSTALL_COMMAND}){rebare}"
             elif repo_path is not None and path == project_config_path(repo_path):
                 # The project file may be committed: a machine's absolute path
                 # there would break every other checkout, so PATH is the fix.
-                fix = f"put {Path(pinned).parent} on PATH"
+                fix = f"put {Path(pinned).parent} on PATH{rebare}"
             else:
-                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH'
+                fix = f'set command = "{pinned}" in that table, or put {Path(pinned).parent} on PATH{rebare}'
 
             issues.append(
                 f"Codex will not start: [mcp_servers.{name}] in {path} is required and "
-                f"launches `{entry['command']}`, which is not on PATH. To fix, {fix}."
+                f"launches `{entry['command']}`, which cannot be found. To fix, {fix}."
             )
     return issues
 
@@ -1372,14 +1380,17 @@ class CodexTarget:
 
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
-        fix_command: str | None = (
-            "repowise agents add --target=codex" if stale else "repowise hook rewrite install"
-        )
-        if unlaunchable:
-            # Codex not starting outranks every other issue, and no repowise
-            # command changes what an entry launches: the install when there is
-            # nothing to point at, otherwise the edit the issue spells out.
-            fix_command = INSTALL_COMMAND if resolve_command_missing() else None
+        # No repowise command changes what an entry launches, so an unlaunchable
+        # server takes the fix slot only when the fix is the install itself; any
+        # other edit is spelled out in its issue, and the slot stays with the
+        # command that repairs the remaining issues, if there are any.
+        fix_command: str | None = None
+        if unlaunchable and resolve_command_missing():
+            fix_command = INSTALL_COMMAND
+        elif stale:
+            fix_command = "repowise agents add --target=codex"
+        elif len(issues) > len(unlaunchable):
+            fix_command = "repowise hook rewrite install"
         # Stale prompts win the fix slot: `agents add` rewrites them *and* the
         # hook, where `hook rewrite install` only does the hook. It is also the
         # honest command for the case `refresh` cannot reach: a machine with
@@ -1388,13 +1399,14 @@ class CodexTarget:
         #
         # `repairable` follows the same rule as Claude Code's: it names what the
         # refresh pass rewrites, which is the hook, and a stale prompt set must
-        # not suppress that repair the way the first cut of this let it.
+        # not suppress that repair the way the first cut of this let it. Nor
+        # does an unlaunchable server: refresh still rewrites the hook.
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.STALE,
             issues=tuple(issues),
             fix_command=fix_command,
-            repairable=matcher_stale and not unlaunchable,
+            repairable=matcher_stale,
         )
 
 
