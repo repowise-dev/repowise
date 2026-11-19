@@ -1868,14 +1868,14 @@ async def edit_set_block(
     sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
     by_file, left_out = _file_lines(sites, prose)
     budget = int(effective_char_budget() * _BLOCK_SHARE)
-    shown: dict[str, dict[str, Any]] = {}
-    used = 0
-    for path, kinds in by_file.items():
-        cost = len(json.dumps({path: kinds}, separators=(",", ":")))
-        if shown and used + cost > budget:
-            break
-        shown[path] = kinds
-        used += cost
+    # ``in`` only adds bytes, so the files that fit with it are a prefix of
+    # those that fit without it: name the symbols there, then fit again.
+    shown = {path: dict(kinds) for path, kinds in _fit(by_file, budget).items()}
+    try:
+        _name_enclosing(shown, await enclosing_ranges(session, repo_id, shown.keys()))
+    except SQLAlchemyError:
+        _log.warning("references: enclosing symbols failed for %s", node.node_id, exc_info=True)
+    shown = _fit(shown, budget)
     if len(shown) < len(by_file):
         rest = {p: k for p, k in by_file.items() if p not in shown}
         where = "the rest are under _meta.omitted" if collector is not None else "the rest are not shown"
@@ -1896,12 +1896,21 @@ async def edit_set_block(
         # the set may have missed, which a text search lists.
         if len(reasons) > (len(shown) < len(by_file)):
             out["hint"] = incomplete_hint(_bare_name(node))
-    try:
-        _name_enclosing(shown, await enclosing_ranges(session, repo_id, shown.keys()))
-    except SQLAlchemyError:
-        _log.warning("references: enclosing symbols failed for %s", node.node_id, exc_info=True)
     out["files"] = shown
     return out
+
+
+def _fit(by_file: dict[str, dict[str, Any]], budget: int) -> dict[str, dict[str, Any]]:
+    """The leading files of *by_file* whose JSON fits *budget* (at least one)."""
+    shown: dict[str, dict[str, Any]] = {}
+    used = 0
+    for path, kinds in by_file.items():
+        cost = len(json.dumps({path: kinds}, separators=(",", ":")))
+        if shown and used + cost > budget:
+            break
+        shown[path] = kinds
+        used += cost
+    return shown
 
 
 # Kinds that are a symbol's own line (or a document's), not a use inside another.
