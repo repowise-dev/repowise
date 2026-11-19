@@ -21,6 +21,7 @@ shape, but never recomputes a number from its parts.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -63,6 +64,7 @@ def load_report(
             as_of=moment,
             days=days,
             max_breakdowns=max_breakdowns,
+            fallback_rate=_cached_agent_rate(repo_root),
         )
     # OverflowError is not a ValueError: a large enough ``days`` overflows the
     # timedelta rather than failing validation, and this function promises not
@@ -90,6 +92,22 @@ def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]]
     finally:
         connection.close()
     return {str(agent): (str(first), str(last)) for agent, first, last in rows}
+
+
+def _cached_agent_rate(repo_root: str | Path) -> Callable[[str], float | None]:
+    """An agent's input rate from the pricing cache, for report-time backfill.
+
+    Cache only, never a transcript scan: the report runs inside a dashboard
+    request. A cold cache backfills nothing, and the callers that warm it
+    (the costs endpoint, ``repowise saved``) fill it for the next report.
+    """
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    def rate(agent: str) -> float | None:
+        snapshot = resolve_pricing_snapshot(repo_root, allow_scan=False, agent=agent)
+        return snapshot.input_rate_usd_per_million if snapshot is not None else None
+
+    return rate
 
 
 def _open_read_only(repo_root: str | Path | None) -> sqlite3.Connection | None:

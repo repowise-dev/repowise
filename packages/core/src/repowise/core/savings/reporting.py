@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -99,6 +99,46 @@ def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, int, float | 
     )
 
 
+#: Report-time rate for an unpriced event's agent, or None. See
+#: :func:`backfill_usd`.
+FallbackRate = Callable[[str], float | None]
+
+
+def backfill_usd(
+    groups: Iterable[tuple[str, float | None, int]], fallback_rate: FallbackRate | None
+) -> tuple[int, float]:
+    """Price ``(agent, session rate, unpriced tokens)`` groups at report time.
+
+    Shared by both report builders, so the rule has one owner: the session's
+    own captured rate first, else *fallback_rate* for the agent, else nothing.
+    Returns the tokens priced and their value.
+    """
+    tokens = 0
+    usd = 0.0
+    for agent, session_rate, saved in groups:
+        rate = session_rate if session_rate is not None else (
+            fallback_rate(agent) if fallback_rate is not None else None
+        )
+        if rate is None or saved <= 0:
+            continue
+        tokens += saved
+        usd += saved * rate / 1_000_000
+    return tokens, usd
+
+
+def _session_rates(events: Iterable[SavingsEvent]) -> dict[str, float]:
+    """Each session's newest captured input rate; ties go to the higher rate."""
+    newest: dict[str, tuple[str, float]] = {}
+    for event in events:
+        rate = event.input_rate_usd_per_million
+        if event.session_id is None or rate is None:
+            continue
+        key = (event.occurred_at, rate)
+        if event.session_id not in newest or key > newest[event.session_id]:
+            newest[event.session_id] = key
+    return {session: rate for session, (_at, rate) in newest.items()}
+
+
 def build_report(
     events: Iterable[SavingsEvent],
     opportunities: Iterable[OpportunityObservation] = (),
@@ -106,6 +146,7 @@ def build_report(
     as_of: datetime,
     days: int | None = None,
     max_breakdowns: int = 100,
+    fallback_rate: FallbackRate | None = None,
 ) -> SavingsReport:
     """Build a hand-checkable report while keeping opportunities separate."""
     if as_of.tzinfo is None:
@@ -113,6 +154,7 @@ def build_report(
     if days is not None and days < 0:
         raise ValueError("days cannot be negative")
     cutoff = as_of - timedelta(days=days) if days is not None else None
+    events = list(events)
     scoped = [event for event in events if _included(event.occurred_at, cutoff, as_of)]
     scoped_opportunities = [
         item for item in opportunities if _included(item.occurred_at, cutoff, as_of)
@@ -182,6 +224,16 @@ def build_report(
         opportunity_kinds[item.kind][0] += 1
         opportunity_kinds[item.kind][1] += item.estimated_potential_input_tokens
     occurrences = sorted(event.occurred_at for event in scoped)
+    session_rates = _session_rates(events)
+    backfilled_tokens, backfilled_usd = backfill_usd(
+        (
+            (event.agent, session_rates.get(event.session_id or ""), event.saved_input_tokens)
+            for event in scoped
+            if event.input_rate_usd_per_million is None
+        ),
+        fallback_rate,
+    )
+    in_subagent = [event for event in scoped if event.subagent_id is not None]
 
     def answered(event: SavingsEvent) -> bool:
         return event.result_state == "success" or (
@@ -235,4 +287,8 @@ def build_report(
         ),
         first_event_at=occurrences[0] if occurrences else None,
         last_event_at=occurrences[-1] if occurrences else None,
+        subagent_events=len(in_subagent),
+        subagent_saved_input_tokens=sum(event.saved_input_tokens for event in in_subagent),
+        backfilled_saved_input_tokens=backfilled_tokens,
+        backfilled_input_savings_usd=backfilled_usd,
     )

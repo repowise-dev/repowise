@@ -4349,6 +4349,10 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
 }
 
 export interface SearchResultResponse {

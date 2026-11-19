@@ -160,6 +160,10 @@ def saved_command(
                     "priced_saved_input_tokens": report.priced_saved_input_tokens,
                     "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
                     "estimated_usd": report.priced_input_savings_usd,
+                    "backfilled_saved_input_tokens": report.backfilled_saved_input_tokens,
+                    "backfilled_usd": report.backfilled_input_savings_usd,
+                    "subagent_events": report.subagent_events,
+                    "subagent_saved_input_tokens": report.subagent_saved_input_tokens,
                     "mcp_queries_answered": report.mcp_queries_answered,
                     "dead_ends": report.dead_ends,
                     "baseline_events": report.baseline_events,
@@ -315,6 +319,17 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         console.print(
             f"  [dim]{report.unpriced_saved_input_tokens:,} tokens carry no recorded "
             f"rate and are not priced.[/dim]"
+        )
+    if report.backfilled_saved_input_tokens:
+        console.print(
+            f"  [dim]Of those, {report.backfilled_saved_input_tokens:,} priced at report time "
+            f"from their session or agent rate: ${report.backfilled_input_savings_usd:.4f} "
+            f"(backfilled, not in the estimate above).[/dim]"
+        )
+    if report.subagent_events:
+        console.print(
+            f"  [dim]In subagents: {report.subagent_saved_input_tokens:,} tokens over "
+            f"{report.subagent_events:,} events.[/dim]"
         )
 
 

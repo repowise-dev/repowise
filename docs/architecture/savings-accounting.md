@@ -108,9 +108,11 @@ sides, since Claude Code numbers the replacement it is handed too.
 
 | Tool | `R` | Why that is what it replaces |
 |---|---|---|
-| `get_symbol` | one Read of each file a served body came from | the agent opens the file to find and read the symbol |
+| `get_symbol` | one Read of each file a served body came from; for a name the index lacks, served as live lines, one Read of that file | the agent opens the file to find and read the symbol |
 | `get_context` file card, with or without skeleton | one Read of the file, once per file per call | the card answers what the file holds and how it is laid out, which is why the agent would open it |
 | `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
+| `get_context` references block marked `complete` | 400 per referencing file, on top of the card | each file is one the agent would otherwise have found by searching for the symbol |
+| `search_codebase` | 400 per distinct file in `results`, plus 1,584 when it served `lines` | opening each hit; `lines` are the grep the agent would have run, and a capped grep measures 1,584 tokens on this repository (5,443 uncapped) |
 | `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
 | `get_answer`, low confidence or no provider | one Read per file whose whole verified body it inlined, plus 400 per other file it points at | a reply that says "verify" does not replace those reads; it replaces the search, as `search_codebase` credits, and any body it served, as `get_symbol` credits |
 | `get_why` | 3,000 per call that serves evidence, plus 2,000 per file whose history it serves (cap 15,000) | searching decision records and commits for the question, and `git log -p` on each file: its median is 2,054 tokens across 23 httpx files and 3,089 across 16 files of this repository |
@@ -164,6 +166,17 @@ Never infer agent or model from headers, capabilities, environment variables,
 executable parents, or transport. Session, request and tool-call IDs and model
 stay null until an adapter supplies trustworthy evidence.
 
+The hooks have that evidence. A hook that replaces a tool result is handed the
+serving agent's adapter, and its payload carries the agent's `session_id` and,
+inside a subagent, the subagent's `agent_id`; the event records all three, the
+subagent as `subagent_id`. A command the rewrite hook turned into
+`repowise distill` hears only the hook's `--source` label, which names the
+adapter (`hook-bash` and `hook-powershell` are Claude Code's, every other
+adapter writes `hook-<name>`), so its event records that agent and no session
+or subagent: passing either would need a new `repowise distill` flag, which an
+older install on PATH would run as the command. MCP has no per-subagent signal,
+so its `subagent_id` stays null.
+
 The v1 metadata allow-list is `client_info_normalized` and
 `identity_mapping_version`. Values are bounded strings; no raw prompts,
 transcripts, commands, headers, environment values, or secrets are accepted.
@@ -209,6 +222,12 @@ cached in the sidecar (`pricing-snapshot.json`, 24-hour TTL). Detecting the
 coding agent's model scans the local transcripts, which measures around six
 seconds on a repository with no Codex history, so it cannot run per event.
 
+One scan records each detected agent's newest model (Claude Code, Codex) beside
+the newest model overall. An event from a detected agent is priced at that
+agent's own model, or left unpriced when that agent was not sighted; it never
+takes another agent's model. Any other agent takes the newest model, and with
+nothing sighted every agent shares the default rate.
+
 **No agent-facing surface ever resolves it.** The MCP path, the rewrite hook
 and the augment hook all read the cache and write an unpriced event when it is
 cold. Each of them runs inside the agent's own tool call, where a six-second
@@ -221,6 +240,13 @@ So a repository that has only ever served MCP calls reports its savings as
 unpriced until someone runs either command. That is a reported state, not a
 gap: the report counts priced and unpriced tokens separately, and the surfaces
 say which is which.
+
+The report then prices what it can of the unpriced tokens, without writing
+anything back: at the rate another event of the same session captured, else at
+the cached rate for the event's agent (cache only, never a scan). The result is
+reported as `backfilled_saved_input_tokens` and `backfilled_input_savings_usd`,
+a subset of the unpriced tokens and apart from `priced_input_savings_usd`, which
+keeps meaning "rate captured when it happened".
 
 ## One report, three consumers
 

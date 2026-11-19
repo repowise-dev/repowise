@@ -20,12 +20,18 @@ from repowise.core.savings.formulas import (
 )
 from repowise.core.savings.reporting import (
     DAY_LIMIT,
+    FallbackRate,
     agent_breakdown_rows,
+    backfill_usd,
     breakdown_rows,
 )
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
+
+#: Sessions the report-time price backfill reads per query. A ledger with more
+#: unpriced sessions than this leaves the smallest of them unpriced.
+_BACKFILL_GROUP_LIMIT = 10_000
 
 _EVENT_COLUMNS = (
     "event_id",
@@ -258,6 +264,7 @@ class SavingsRepository:
         as_of: datetime,
         days: int | None = None,
         max_breakdowns: int = 100,
+        fallback_rate: FallbackRate | None = None,
     ) -> SavingsReport:
         """Read totals and breakdowns with bounded aggregate queries, no writes.
 
@@ -311,6 +318,9 @@ class SavingsRepository:
                 COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
                     THEN {den} ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN saved_input_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN subagent_id IS NOT NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN subagent_id IS NOT NULL
                     THEN saved_input_tokens ELSE 0 END), 0)
             FROM savings_events WHERE {where}
             """,
@@ -350,6 +360,13 @@ class SavingsRepository:
         priced_input = int(row[8])
         saved_output = int(row[11])
         priced_output = int(row[12])
+        try:
+            backfilled_tokens, backfilled_usd = backfill_usd(
+                self._unpriced_groups(where, params, repository_id), fallback_rate
+            )
+        except Exception:
+            # A backfill is a refinement; it must never cost the report.
+            backfilled_tokens, backfilled_usd = 0, 0.0
         return SavingsReport(
             unique_events=int(row[0]),
             successful_or_usable_partial_events=int(row[1]),
@@ -389,4 +406,43 @@ class SavingsRepository:
             ),
             first_event_at=row[14],
             last_event_at=row[15],
+            subagent_events=int(row[20]),
+            subagent_saved_input_tokens=int(row[21]),
+            backfilled_saved_input_tokens=backfilled_tokens,
+            backfilled_input_savings_usd=backfilled_usd,
         )
+
+
+    def _unpriced_groups(
+        self, where: str, params: list[Any], repository_id: str
+    ) -> list[tuple[str, float | None, int]]:
+        """``(agent, session rate, tokens)`` over the window's unpriced savings.
+
+        The session rate is the newest one any event of that session captured,
+        in or out of the window. Two grouped scans joined here rather than one
+        windowed join in SQL, which measured twice as slow on a real ledger.
+        Both are capped at :data:`_BACKFILL_GROUP_LIMIT` sessions; past the
+        cap the rest of the saving simply stays unpriced.
+        """
+        # SQLite fills a bare column from the row that holds the MAX, so this
+        # is each session's newest rate. Two rows at the very same microsecond
+        # resolve to either one.
+        session_rates = {
+            str(session): float(rate)
+            for session, _latest, rate in self._conn.execute(
+                "SELECT session_id, MAX(occurred_at), input_rate_usd_per_million "
+                "FROM savings_events WHERE repository_id = ? AND session_id IS NOT NULL "
+                "AND input_rate_usd_per_million IS NOT NULL "
+                "GROUP BY session_id ORDER BY 2 DESC LIMIT ?",
+                [repository_id, _BACKFILL_GROUP_LIMIT],
+            )
+        }
+        return [
+            (str(agent), session_rates.get(session) if session else None, int(tokens))
+            for agent, session, tokens in self._conn.execute(
+                "SELECT agent, session_id, SUM(saved_input_tokens) FROM savings_events "
+                f"WHERE {where} AND input_rate_usd_per_million IS NULL "
+                "AND saved_input_tokens > 0 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
+                [*params, _BACKFILL_GROUP_LIMIT],
+            )
+        ]

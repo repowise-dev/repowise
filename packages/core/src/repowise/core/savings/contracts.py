@@ -380,3 +380,16 @@ class SavingsReport:
     #: they are live. Null when the window holds no events at all.
     first_event_at: str | None = None
     last_event_at: str | None = None
+    #: The share of the window recorded inside a subagent (events with a
+    #: ``subagent_id``). Part of the totals above, never added to them.
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    #: Unpriced tokens priced at report time, never written back to an event.
+    #: The rate is the newest one an event of the same session captured, else
+    #: the cached rate for the event's agent. A subset of
+    #: ``unpriced_saved_input_tokens``, which keeps its meaning (no rate was
+    #: captured when the event happened), and reported apart from
+    #: ``priced_input_savings_usd`` so a reader can tell captured from
+    #: backfilled dollars.
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0

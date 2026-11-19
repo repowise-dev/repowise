@@ -277,3 +277,13 @@ class SavingsResponse(BaseModel):
     missed_window_days: float = 0.0
     reread_events: int = 0
     reread_tokens_est: int = 0
+
+    #: Attribution and report-time pricing. Each is part of a total above,
+    #: never added to it. ``backfilled_*`` prices unpriced tokens at the rate
+    #: another event of the same session captured, else at the cached rate for
+    #: the event's agent, so ``priced_input_savings_usd`` keeps meaning "rate
+    #: captured when it happened".
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0
