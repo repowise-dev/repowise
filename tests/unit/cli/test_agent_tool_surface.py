@@ -79,3 +79,18 @@ def test_the_setting_names_every_read_tool() -> None:
     for name in ALWAYS_LOAD_TOOLS:
         assert name in setting.description
     assert setting.cost_note in setting.description
+
+
+def test_deltas_alone_adjust_each_client_default(tmp_path: Path) -> None:
+    _config(tmp_path, "mcp:\n  tools: [+get_health, +nope]\n")
+    claude = agent_tool_surface(tmp_path, "claude-code")
+    codex = agent_tool_surface(tmp_path, "codex")
+    assert (claude["profile"], claude["tool_count"]) == ("standard", 10)
+    assert (codex["profile"], codex["tool_count"]) == ("core", 6)
+    # An unknown name is dropped by the server, so the line does not name it.
+    assert codex["adjustments"] == ["+get_health"]
+
+
+def test_an_unreadable_config_reports_nothing(tmp_path: Path) -> None:
+    _config(tmp_path, "mcp: [unclosed\n")
+    assert agent_tool_surface(tmp_path, "codex") is None

@@ -51,9 +51,8 @@ LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 # A value of "core" enables the core profile, five tools: the four read tools
 # (get_answer, get_context, get_symbol, search_codebase), plus get_why for the
 # same history-why reason as lean (list_repos again joins in workspace mode).
-# It is the default for
-# clients that load every schema up front, where the full default surface
-# costs about twice as many tokens per turn.
+# It is the default for clients that load every schema up front, where the
+# full default surface costs about twice as many tokens per turn.
 CORE = "core"
 CORE_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_why"})
 

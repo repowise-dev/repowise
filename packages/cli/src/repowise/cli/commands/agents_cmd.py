@@ -431,6 +431,8 @@ def agents_add(
     if fmt == "json":
         emit_json(payload)
         return
+    from rich.markup import escape
+
     from repowise.cli.agent_targets.tool_surface import always_load_text
 
     _render_writes(payload)
@@ -438,12 +440,12 @@ def agents_add(
         if agent.get("next_step"):
             console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['next_step']}")
         if agent.get("tools"):
-            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['tools']}")
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(agent['tools'])}")
         always = always_load_text(agent["tool_surface"]) if agent.get("tool_surface") else None
         if always:
-            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {always}")
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(always)}")
     if payload.get("tools_hint"):
-        console.print(f"  [dim]{payload['tools_hint']}[/dim]")
+        console.print(f"  [dim]{escape(payload['tools_hint'])}[/dim]")
 
 
 def _save_tools(repo_path: Path, value: str) -> None:

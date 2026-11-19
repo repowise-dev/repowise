@@ -302,7 +302,7 @@ def render() -> str:
     rows = agent_rows()
     counts = tool_counts()
     read_tools, always_load_cost = always_load_facts()
-    ids =", ".join(f"`{row['id']}`" for row in rows)
+    ids = ", ".join(f"`{row['id']}`" for row in rows)
     good = [row["display_name"] for row in rows if row["tier"] == "good"]
     hooked = [row["display_name"] for row in rows if row["tier"] == "good" and row["hook_adapter"]]
     basic = [row["display_name"] for row in rows if row["tier"] == "basic"]

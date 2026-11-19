@@ -7,9 +7,12 @@ explain`` and the server cannot disagree.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 def agent_tool_surface(repo_path: Path, target_id: str) -> dict[str, Any] | None:
@@ -19,36 +22,47 @@ def agent_tool_surface(repo_path: Path, target_id: str) -> dict[str, Any] | None
     list), ``adjustments`` (the ``+name``/``-name`` tokens), ``tool_count``,
     ``tools``, ``change_command`` and ``always_load``, which is ``None`` for a
     client that loads every schema up front. ``None`` when the repo's config
-    cannot be read.
+    cannot be read or the surface cannot be resolved: setup output never
+    fails the command that wrote the config.
     """
+    try:
+        return _tool_surface(repo_path, target_id)
+    except Exception:
+        _log.debug("Could not describe the MCP tool surface for %s", target_id, exc_info=True)
+        return None
+
+
+def _tool_surface(repo_path: Path, target_id: str) -> dict[str, Any]:
     from repowise.core.agents.identity import identity_for_target_id
     from repowise.core.registry.tool_selection import (
         ALWAYS_LOAD_TOOLS,
         DEFERRED_SCHEMA_CLIENTS,
         PROFILES,
         default_profile,
+        is_delta,
         normalize_override,
         split_profile,
     )
     from repowise.core.repo_config import load_repo_config
     from repowise.core.settings import registry, resolve
+    from repowise.core.settings.views import set_command
     from repowise.server.mcp_server._tool_selection import client_tool_names
 
-    try:
-        config = load_repo_config(str(repo_path))
-    except Exception:
-        return None
+    config = load_repo_config(str(repo_path))
     mcp_cfg = config.get("mcp") or {}
     tokens = normalize_override(mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None)
     profile, rest = split_profile(tokens)
     identity = identity_for_target_id(target_id)
     slug = identity.slug if identity else "unknown"
-    exact = bool(tokens) and profile is None and not all(t[0] in "+-" for t in rest)
+    exact = profile is None and bool(rest) and not is_delta(rest)
     names = client_tool_names(str(repo_path), slug)
+    # Only the deltas that took effect: the resolver drops an unknown name.
+    applied = [t for t in rest if (t.lstrip("+-") in names) != t.startswith("-")]
+    # A placeholder, not a value: the profile names are the choices to put there.
     tools_key = registry.get("mcp.tools").key
     surface: dict[str, Any] = {
         "profile": None if exact else (profile or default_profile(slug)),
-        "adjustments": [] if exact else rest,
+        "adjustments": [] if exact else applied,
         "tool_count": len(names),
         "tools": sorted(names),
         "change_command": f"repowise config set {tools_key} <{'|'.join(PROFILES)}>",
@@ -61,7 +75,7 @@ def agent_tool_surface(repo_path: Path, target_id: str) -> dict[str, Any] | None
             "enabled": enabled,
             "tools": sorted(ALWAYS_LOAD_TOOLS & names),
             "cost": setting.cost_note,
-            "command": f"repowise config set {setting.key} {'false' if enabled else 'true'}",
+            "command": set_command(setting.key, not enabled),
         }
     return surface
 
