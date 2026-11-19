@@ -41,7 +41,25 @@ __all__ = [
     "HealthFindingData",
     "HealthReport",
     "Severity",
+    "health_analyzer_changed",
 ]
+
+
+def health_analyzer_changed(state: dict[str, Any]) -> bool:
+    """Whether the stored health rows were written by a different analyzer.
+
+    *state* is the repo's ``state.json``. A legacy state file with no stamp is
+    **not** a change: the rows it wrote are no more suspect than any other
+    pre-upgrade rows, and treating absence as drift would re-score every
+    existing install once on upgrade for no stated defect. They pick the stamp
+    up on their first re-score from any other trigger.
+    """
+    stored = state.get("health_analyzer_version")
+    if stored is None:
+        return False
+    from .engine import HEALTH_ANALYZER_VERSION
+
+    return stored != HEALTH_ANALYZER_VERSION
 
 
 def __getattr__(name: str) -> Any:

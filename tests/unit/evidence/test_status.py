@@ -18,7 +18,7 @@ def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleName
         "units_matched": None, "units_skipped": None, "units_outside_repo": None,
         "units_truncated": None, "skipped_json": None, "total_value": None,
         "explained_value": None, "repo_self_value": None, "wait_value": None,
-        "library_value": None, "mapping_partial": False,
+        "library_value": None, "mapping_partial": False, "tests_failed": None,
     }
     return SimpleNamespace(**{**base, **fields})
 
@@ -68,3 +68,11 @@ def test_unknown_values_read_as_unknown_in_the_table() -> None:
     assert "time split unknown." in older
     assert "None" not in line
     assert "\\[b]x\\[/b]" in line
+
+
+def test_a_red_suites_failures_show_with_its_run() -> None:
+    run = run_status(_run("r1", "python tests", "a" * 40, workload_class="unit_test", tests_failed=3), None)
+
+    assert run["tests_failed"] == 3
+    assert "; 3 tests failed." in _status_line(run)
+    assert "tests failed" not in _status_line(run_status(_run("r2", "x", None, tests_failed=0), None))

@@ -5,8 +5,8 @@ code itself, blocked in waits and in libraries (``evidence.profile_convert``);
 on ``symbol_hotness`` the same three as shares of the basis run. Local SQLite
 stores get them from the models through the reconciler.
 
-Revision ID: 0133
-Revises: 0132
+Revision ID: 0134
+Revises: 0133
 Create Date: 2026-11-19
 """
 
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0133"
-down_revision: str | None = "0132"
+revision: str = "0134"
+down_revision: str | None = "0133"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

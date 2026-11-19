@@ -469,8 +469,8 @@ repowise search "rate limit" --all              # workspace, fan-out
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `fulltext` |
-| `--limit` | Max results. | `10` |
+| `--mode` | `fulltext`, `semantic`, `symbol`, `auto`, `concept`, `path`, `hybrid`. | `auto` |
+| `--limit` | Max results. | `5` |
 | `--all` | Every workspace repo, merged. | off |
 
 Plus `--repo`, `--no-workspace`, `--format` and `--full` as in the [shared options](#shared-options-ask-context-symbol-why).

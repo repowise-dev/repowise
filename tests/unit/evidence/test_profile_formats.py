@@ -569,3 +569,10 @@ def test_a_wait_is_a_runtime_or_standard_library_frame_only() -> None:
     assert not is_wait_frame(frame("/usr/lib/python3.12/threading.py", "Thread.start"))
     assert not is_wait_frame(frame("/venv/site-packages/pkg/queue.py", "get"))
     assert not is_wait_frame(frame("/usr/lib/python3.12/json/decoder.py", "decode"))
+
+
+@pytest.mark.parametrize(("given", "read"), [(3, 3), (0, 0), (-1, None), ("3", None), (True, None)])
+def test_a_speedscope_file_carries_the_failed_test_count_of_its_run(given, read) -> None:
+    run = profile_formats.get("speedscope").read(_bytes({**PYINSTRUMENT, "testsFailed": given}))
+    assert run.tests_failed == read
+    assert profile_formats.get("speedscope").read(_bytes(PYINSTRUMENT)).tests_failed is None

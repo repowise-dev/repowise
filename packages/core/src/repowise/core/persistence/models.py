@@ -3081,6 +3081,9 @@ class EvidenceRun(Base):
     mapping_partial: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # Tests that failed in a profiled test suite (the run is still a full
+    # workload); NULL when the profile does not say.
+    tests_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_evidence_runs_repo_ingested", "repository_id", "ingested_at"),
