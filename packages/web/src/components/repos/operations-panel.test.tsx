@@ -50,7 +50,7 @@ describe("OperationsPanel", () => {
     render(<OperationsPanel repoId="r1" repoName="demo" />);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /Sync/ })));
 
-    expect(screen.getByText("Generation failed")).toBeTruthy();
+    expect(screen.getByText("Indexing failed")).toBeTruthy();
     expect(mocks.toast.error).toHaveBeenCalledTimes(1);
 
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /Retry/ })));
@@ -58,6 +58,6 @@ describe("OperationsPanel", () => {
     // A fresh panel for the new job: its clean finish toasts once and clears.
     expect(mocks.toast.success).toHaveBeenCalledTimes(1);
     expect(mocks.toast.error).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Generation failed")).toBeNull();
+    expect(screen.queryByText("Indexing failed")).toBeNull();
   });
 });

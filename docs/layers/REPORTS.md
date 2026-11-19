@@ -22,6 +22,17 @@ In a workspace, `report assessment` and `report inventory` cover every repositor
 `report estate` covers the workspace as one system, from what `repowise update --workspace`
 stored.
 
+## The change report period
+
+```bash
+repowise report changes [--since DATE|all] [--until DATE] [--no-build] [--refresh]
+```
+
+- With no `--since`, the period is the 90 days before the newest indexed commit (or before `--until`, when earlier). In a workspace, each repo's 90 days count back from its own newest commit.
+- `--since all` covers every indexed change. `--until` is exclusive.
+- A change with no kept evidence checklist gets one built and stored first, a few seconds each. `--no-build` builds none and counts those changes as unknown. `--refresh` rebuilds every checklist in the period.
+- `--workspace` covers every workspace repo, `--repo ALIAS` one of them, and `--no-workspace` forces single-repo mode.
+
 ## How to read them
 
 Every item says how it is known: `measured`, `inferred`, `declared` or `unresolved`.

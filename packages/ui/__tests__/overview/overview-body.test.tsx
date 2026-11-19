@@ -138,7 +138,7 @@ describe("OverviewBody", () => {
         summary={{
           ...summary(),
           attention_summary: { total: 1, areas: [] },
-          attention: [{ type: "hotspot", title: "x", target: "a.py", severity: "high", score: 1 }],
+          attention: [{ id: "health-a.py", type: "hotspot", title: "x", target: "a.py", severity: "high", score: 1 }],
         } as unknown as OverviewSummaryResponse}
         routes={{ base: "/r" }}
         slots={{

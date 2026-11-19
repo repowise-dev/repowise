@@ -23,7 +23,17 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from .types import AgentTarget, InstallMethod, Registration, Scope, Tier, derive_tier
+from .types import (
+    AgentTarget,
+    DoctorReport,
+    DoctorStatus,
+    InstallMethod,
+    Registration,
+    Scope,
+    ServerMap,
+    Tier,
+    derive_tier,
+)
 
 #: Every known target, by id. Values are ``module:attribute`` so registration
 #: costs no import.
@@ -67,6 +77,123 @@ def tier_of(target_id: str) -> Tier | None:
     """The derived support tier for *target_id*."""
     target = get_target(target_id)
     return derive_tier(target) if target else None
+
+
+def diagnose(target: AgentTarget, repo_path: Path | None = None) -> DoctorReport:
+    """*target*'s own doctor report plus the check every host shares.
+
+    The shared check is a double registration: repowise loaded under two names
+    at once (a plugin beside a direct entry, or a second name launching
+    ``repowise mcp``), so the host pays for its instructions and tool schemas
+    twice. It reads each host's :meth:`~.types.AgentTarget.server_maps`, so a
+    new target is covered by implementing that, not by a branch here. A broken
+    report is returned as is: its config could not be read, so a count over it
+    means nothing.
+    """
+    report = target.doctor(repo_path=repo_path)
+    if report.status is DoctorStatus.BROKEN:
+        return report
+    double = double_registration(target, repo_path)
+    if double is None:
+        return report
+    issue, fix_command = double
+    if report.status is DoctorStatus.STALE:
+        # The target's own fix goes first: an out-of-date plugin, for one,
+        # has to be updated before anything else about it can be trusted.
+        return DoctorReport(
+            target_id=report.target_id,
+            status=DoctorStatus.STALE,
+            issues=(*report.issues, issue),
+            fix_command=report.fix_command or fix_command,
+            repairable=report.repairable,
+        )
+    notes = report.issues if report.status is DoctorStatus.OK else ()
+    # Not repairable: refresh never removes a registration, so --repair would
+    # write config for a condition it cannot touch and then report success.
+    return DoctorReport(
+        target_id=report.target_id,
+        status=DoctorStatus.STALE,
+        issues=(*notes, issue),
+        fix_command=fix_command,
+        repairable=False,
+    )
+
+
+def loaded_servers(target: AgentTarget, repo_path: Path | None = None) -> dict[str, list[ServerMap]]:
+    """Each name *target*'s host loads the local repowise server under, with its files.
+
+    Keyed by the name the host sees (a plugin's prefix included), in the order
+    :meth:`~.types.AgentTarget.server_maps` lists the files. Never raises.
+    """
+    from .formats.server_entry import local_servers
+
+    loaded: dict[str, list[ServerMap]] = {}
+    try:
+        maps = target.server_maps(repo_path)
+    except Exception:  # contracted never to raise; a doctor row must not crash on it
+        return loaded
+    for server_map in maps:
+        for name in local_servers(server_map.servers):
+            loaded.setdefault(server_map.name_prefix + name, []).append(server_map)
+    return loaded
+
+
+def double_registration(
+    target: AgentTarget, repo_path: Path | None = None
+) -> tuple[str, str | None] | None:
+    """``(issue, fix command)`` when *target*'s host loads repowise under two names.
+
+    One name in several files is one server: every host merges its server maps
+    by name. Two names are two servers. The one to keep is the entry ``init``
+    writes into the project (often committed for the team), then a plugin,
+    then a user-level ``repowise`` entry; every other name is named for removal.
+    """
+    from .formats.server_entry import LOCAL_NAME
+
+    loaded = loaded_servers(target, repo_path)
+    if len(loaded) < 2:
+        return None
+
+    def rank(name: str) -> int:
+        first = loaded[name][0]
+        if first.name_prefix:
+            return 1
+        if name != LOCAL_NAME:
+            return 3
+        return 0 if any(m.scope is Scope.PROJECT for m in loaded[name]) else 2
+
+    keep = min(loaded, key=rank)
+    drop = [name for name in loaded if name != keep]
+
+    def where(name: str) -> str:
+        return ", ".join(dict.fromkeys(str(m.config_path) for m in loaded[name]))
+
+    def command(name: str) -> str | None:
+        # A file's remove command drops the entry repowise wrote there (or the
+        # plugin); a name someone added by hand is a hand edit.
+        if not loaded[name][0].name_prefix and name != LOCAL_NAME:
+            return None
+        # Only when one command clears every file holding the name; otherwise a
+        # copy survives the fix and the row names the files instead.
+        commands = {m.remove_command for m in loaded[name]}
+        return commands.pop() if len(commands) == 1 else None
+
+    def removal(name: str) -> str:
+        if loaded[name][0].name_prefix and command(name):
+            return f"`{name}` (run `{command(name)}`)"
+        return f"`{name}` from {where(name)}"
+
+    times = "twice" if len(loaded) == 2 else f"{len(loaded)} times"
+    listing = "; ".join(f"`{name}` in {where(name)}" for name in loaded)
+    issue = (
+        f"repowise is registered {times} for {target.display_name} ({listing}), so its "
+        f"MCP instructions and tool schemas load {times}, about 0.4k tokens or more per "
+        f"turn for each extra copy. Keep `{keep}` and remove "
+        f"{'; '.join(removal(name) for name in drop)}."
+    )
+    # The fix command must clear every dropped name; otherwise a copy survives it.
+    fixes = {command(name) for name in drop}
+    return issue, fixes.pop() if len(fixes) == 1 else None
 
 
 def detect_all(repo_path: Path | None = None) -> dict[str, list[Registration]]:

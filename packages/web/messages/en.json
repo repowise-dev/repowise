@@ -680,11 +680,11 @@
       "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
       "ledeNoGovernance": "Nothing is in force yet. A decision an agent records comes into force when the commit it cites merges to the default branch.",
       "ledeCandidates": "{count, plural, one {# background record is} other {# background records are}} below, mined from pull requests, commits, comments and sessions. {count, plural, one {It is} other {They are}} not in force; agents ask about {count, plural, one {it} other {them}} through get_why for the why behind the code.",
-      "ledeAcceptedRecords": "{count, plural, one {# decision is} other {# decisions are}} in force. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeAcceptedRecords": "{count, plural, one {# decision governs} other {# decisions govern}} this repository. An agent editing a file one of them names is told about it before it changes anything.",
       "ledeAcceptedMore": "{count, plural, one {# more is a background record} other {# more are background records}} mined from history. Not in force; agents ask about them through get_why for the why.",
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
-      "reviewTitle": "Records",
+      "reviewTitle": "All decisions",
       "reviewDescription": "What is in force, with pinned decisions first; what your agents decided this week; background mined from history; and what has been retired. Hand any one to your agent to pin, veto or change it."
     },
     "contributors": {
@@ -1103,7 +1103,18 @@
       "title": "Editor config",
       "description": "Paste this into Claude Code, Cursor or Cline to let the agent query this codebase. Replace the path with the repo you want served, and index it first so there is something to answer from.",
       "serverLabel": "MCP server",
-      "serverHint": "Goes in your editor's MCP config file."
+      "serverHint": "Pick your agent: the config is in its own format, with the repository's path filled in. Index the repository first so there is something to answer from.",
+      "agent": "Agent",
+      "repo": "Repository",
+      "snippet": "{agent} MCP config",
+      "surface": "{agent} lists {count} tools, the {profile} profile.",
+      "surfaceExact": "{agent} lists {count} tools, the exact list in mcp.tools.",
+      "alwaysLoadOn": "Read tools load from the first turn (mcp.always_load is on).",
+      "alwaysLoadOff": "Read tools load through tool search (mcp.always_load is off).",
+      "docs": "{agent} MCP docs",
+      "loading": "Loading the config...",
+      "loadFailed": "Could not load the config",
+      "noRepos": "Add a repository first: the config points the agent at one."
     },
     "mcpTools": {
       "title": "Tool surface",
@@ -1121,6 +1132,8 @@
       "restart": "Applies when the MCP server next starts: restart it, or your agent.",
       "coreBadge": "core",
       "tokens": "~{n} tokens",
+      "sameAs": "Same as",
+      "alwaysLoad": "Load the read tools up front",
       "perRepoLabel": "Tools per repository",
       "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
       "chooseTools": "Choose tools",
@@ -1243,7 +1256,7 @@
     "addDialog": {
       "toastStarted": "Repository added, indexing started",
       "toastAdded": "Repository added",
-      "trigger": "Add Repository"
+      "trigger": "Add repository"
     },
     "delete": {
       "button": "Delete Repository",
@@ -1345,7 +1358,7 @@
     },
     "explorer": {
       "emptyTitle": "No documentation yet",
-      "emptyBody": "Run a generation job to create AI-powered documentation for this codebase.",
+      "emptyBody": "No pages yet. Indexing this repo builds docs from the code. To have a model write the how and why, add an API key, sign in to Claude Code, Codex or OpenCode, or run a local model.",
       "hideTree": "Hide pages tree",
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
@@ -1806,8 +1819,8 @@
     "agent": {
       "title": "Your agent can read <em>this map</em>",
       "lede": "It asks repowise first, so it reads less and guesses less.",
-      "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
-      "connected": "Connected. Restart it to load the tools.",
+      "none": "No coding agent found on this machine. Install one, then connect it here or run repowise agents add.",
+      "connected": "Connected. Restart it, then ask it one question about this repo.",
       "coreTools": "Lists the core repowise tools by default. Agents & editors in Settings turns on more.",
       "waiting": "Waiting for its first call",
       "firstCall": "First call {when}",
@@ -1821,9 +1834,15 @@
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
       "askLabel": "Ask it something",
-      "askFlow": "How does the main flow in this repo work, end to end?",
-      "askHotspot": "Why does {path} change so often?",
-      "askStart": "Where should I start reading this repo?",
+      "tips": {
+        "title": "Not seeing it?",
+        "claudeCode": "In Claude Code, run /mcp: repowise should be listed as connected. If it is not, restart Claude Code in this repo.",
+        "cursor": "Open Cursor Settings, then MCP: repowise should have a green dot. Ask in Agent mode; Ask mode does not call tools.",
+        "vscode": "Run MCP: List Servers from the Command Palette and start repowise. Ask in Copilot Chat's Agent mode.",
+        "codex": "Restart Codex so it reads ~/.codex/config.toml, then run /mcp to check repowise is listed.",
+        "generic": "Restart {name} in this repo so it loads the repowise tools.",
+        "doctor": "Still nothing? Run <mono>repowise doctor</mono> in this repo to check the connection."
+      },
       "copy": "Copy",
       "copied": "Copied",
       "copyFailed": "Couldn't copy",
@@ -1854,8 +1873,8 @@
   },
   "chat": {
     "addModel": "Add a model",
-    "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
-    "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
+    "noProvider": "Chat here needs an API key or a local model, set in <link>settings</link>. Your agent can ask the index without one.",
+    "noProviderShort": "Chat needs an API key or a local model, set in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
     "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results.",
     "emptySuggestions": {
@@ -1979,7 +1998,6 @@
   },
   "decisions": {
     "agent": {
-      "discover": "Check background records with your agent",
       "agreements": "Move working agreements to CLAUDE.md",
       "review": "Check with your agent",
       "edit": "Change with your agent",
@@ -2011,6 +2029,23 @@
       "unpinned": "Unpinned. It stays in force.",
       "pinFailed": "Couldn't pin: {message}",
       "unpinFailed": "Couldn't unpin: {message}"
+    },
+    "hero": {
+      "discoverHeading": "Check {count, plural, one {# background record} other {# background records}} on the busiest files",
+      "discoverDescription": "Your agent reads each record against the code and its commits, puts the real ones in force and dismisses the rest. You see what it did under This week.",
+      "addHeading": "Record the decisions this repository already follows",
+      "addDescription": "Your agent reads the code and history and records the rules it clearly follows, each with the quote and commit it came from. You see each one here as it lands.",
+      "copy": "Copy prompt for your agent",
+      "copied": "Copied. Paste it into your agent.",
+      "copyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "footnote": "Same text as <code>repowise decision discover</code>.",
+      "recordMissed": "Record missed decisions",
+      "addByHand": "Add one by hand",
+      "reviewAll": "Review all records"
+    },
+    "board": {
+      "movedOnly": "Showing the {count, plural, one {# decision} other {# decisions}} in force whose code changed after {count, plural, one {it was} other {they were}} accepted.",
+      "showAll": "Show everything in force"
     }
   },
   "files": {
@@ -2029,7 +2064,10 @@
   "jobs": {
     "completed": "Documentation updated{name}",
     "pagesGenerated": "{count} pages generated",
+    "indexed": "Index ready{name}",
+    "filesIndexed": "{count} files indexed",
     "failed": "Generation failed",
+    "indexFailed": "Indexing failed",
     "unknownError": "Unknown error",
     "cancelled": "Job cancelled",
     "cancelledDescription": "The pipeline was stopped before completion.",
@@ -2038,6 +2076,11 @@
     "completedWithProblems": "Finished with problems{name}",
     "pagesFailed": "{count} pages could not be written.",
     "progress": {
+      "queued": "Queued. Starting soon.",
+      "indexReady": "Index ready",
+      "docsReady": "Generation complete",
+      "indexFailed": "Indexing failed",
+      "docsFailed": "Generation failed",
       "warningTitle": "Finished with problems",
       "noPagesWritten": "No documentation pages were written.",
       "somePagesFailed": "{failed} of {total} pages could not be written. Run it again to retry them.",
@@ -2884,6 +2927,7 @@
     "progress": "{done} of 3 essentials done. Each row also shows its terminal command.",
     "doneLede": "{agent} made its first call {when}. The index updates after each commit.",
     "yourAgent": "Your agent",
+    "askOne": "Ask it:",
     "loading": "Checking this repository's setup. The first check can take about 20 seconds.",
     "loadFailedLabel": "Couldn't check",
     "loadFailed": "The setup check didn't finish. Run repowise doctor in a terminal to see why, or try again.",
@@ -2968,7 +3012,7 @@
         "statusNoCalls": "No calls yet",
         "detailCalled": "{agent} made its first call {when}.",
         "detailCalledAnon": "An agent made its first call {when}.",
-        "detailWaiting": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call.",
+        "detailWaiting": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} Restart {count, plural, one {it} other {one}}, then ask it one question about this repo. This ticks on its first call.",
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",

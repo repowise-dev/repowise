@@ -1,20 +1,45 @@
-"""What runtime evidence is stored, how much of each run repo code explains, and how fresh it is."""
+"""What runtime evidence is stored, where each run's time went, and how fresh it is."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
-from datetime import UTC
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 
 
-def explained_share(total: float | None, explained: float | None) -> float | None:
-    """The share of a run's value with a repo frame on the stack; ``None`` when unknown."""
-    if total is None or explained is None or total <= 0:
+def run_share(total: float | None, value: float | None) -> float | None:
+    """*value*'s share of a run's *total*, rounded; ``None`` when either is unknown."""
+    if total is None or value is None or total <= 0:
         return None
-    return round(min(explained / total, 1.0), 4)
+    return round(min(value / total, 1.0), 4)
+
+
+def time_split(run: Any) -> dict[str, float | None]:
+    """Where a stored profile run's time went: production repo code itself (waits
+    and libraries excluded), waits, and libraries. ``None`` for a run stored
+    before the split was recorded, or one whose file did not carry it."""
+    total = run.total_value
+    return {
+        "repo_self_share": run_share(total, run.repo_self_value),
+        "wait_share": run_share(total, run.wait_value),
+        "library_share": run_share(total, run.library_value),
+    }
+
+
+def split_words(shares: Mapping[str, float | None]) -> str | None:
+    """The split in words, repo code first: ``repo code itself 47%, waits 30%,
+    libraries 12%``. ``None`` when the run did not record it."""
+    repo = shares.get("repo_self_share")
+    if repo is None:
+        return None
+    parts = [f"repo code itself {repo:.0%}"]
+    for key, word in (("wait_share", "waits"), ("library_share", "libraries")):
+        if shares.get(key) is not None:
+            parts.append(f"{word} {shares[key]:.0%}")
+    return ", ".join(parts)
 
 
 def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
@@ -51,8 +76,9 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         },
         "skipped": json.loads(run.skipped_json) if run.skipped_json else None,
         "total_value": run.total_value,
-        "explained_share": explained_share(run.total_value, run.explained_value),
+        **time_split(run),
         "mapping_partial": bool(run.mapping_partial),
+        "tests_failed": run.tests_failed,
     }
 
 
@@ -71,4 +97,75 @@ def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[s
     }
 
 
-__all__ = ["evidence_status", "explained_share", "run_status"]
+def _utc(when: datetime | None) -> datetime | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return when.replace(tzinfo=when.tzinfo or UTC) if when else None
+
+
+def freshness_entry(
+    commit_sha: str | None,
+    ingested_at: datetime | None,
+    reference_commit: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """One stored measurement: the commit it measured, when it was ingested,
+    its age in whole days, and ``current``/``stale``/``unknown`` against
+    *reference_commit* (``coverage_freshness``)."""
+    at = _utc(ingested_at)
+    return {
+        "present": True,
+        "commit_sha": commit_sha,
+        "ingested_at": at.isoformat() if at else None,
+        "age_days": max((now - at).days, 0) if at else None,
+        "freshness": coverage_freshness(commit_sha, reference_commit),
+    }
+
+
+#: Nothing stored: no commit, no age; freshness is unknown, never current.
+ABSENT: dict[str, Any] = {
+    "present": False,
+    "commit_sha": None,
+    "ingested_at": None,
+    "age_days": None,
+    "freshness": "unknown",
+}
+
+
+async def load_evidence_freshness(
+    session: Any, repository_id: str, reference_commit: str | None, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """How fresh the stored coverage and runtime evidence are against
+    *reference_commit*: the newest coverage ingest, and the newest runtime
+    run with how many runs are stored. One keyed read per store."""
+    from ..persistence.crud.analysis.coverage import load_newest_ingest
+    from ..persistence.crud.analysis.evidence import newest_evidence_run
+
+    now = now or datetime.now(UTC)
+    ingest = await load_newest_ingest(session, repository_id)
+    coverage = (
+        freshness_entry(ingest.ingested_commit_sha, ingest.ingested_at, reference_commit, now)
+        if ingest is not None
+        else dict(ABSENT)
+    )
+    runs, newest = await newest_evidence_run(
+        session, repository_id, prefer_commit=reference_commit
+    )
+    runtime = (
+        freshness_entry(newest.commit_sha, newest.ingested_at, reference_commit, now)
+        if newest is not None
+        else dict(ABSENT)
+    )
+    runtime["runs"] = runs
+    return {"reference_commit": reference_commit, "coverage": coverage, "runtime": runtime}
+
+
+__all__ = [
+    "ABSENT",
+    "evidence_status",
+    "freshness_entry",
+    "load_evidence_freshness",
+    "run_share",
+    "run_status",
+    "split_words",
+    "time_split",
+]
