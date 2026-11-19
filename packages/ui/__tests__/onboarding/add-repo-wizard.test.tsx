@@ -148,6 +148,23 @@ describe("AddRepoWizard", () => {
     expect(adapter.startIndex).not.toHaveBeenCalled();
   });
 
+  it("stops on a failed check when the server does not say whether a provider is chosen", async () => {
+    const adapter = makeAdapter({
+      preflight: vi.fn().mockResolvedValue(
+        makePreflight({
+          provider: { ok: false, name: null, model: null, error: "bad base URL" },
+          estimate: null,
+        }),
+      ),
+    });
+    render(<AddRepoWizard adapter={adapter} open onOpenChange={vi.fn()} />);
+
+    await fillAndSubmitDetails();
+
+    expect(await screen.findByText("bad base URL")).toBeTruthy();
+    expect(adapter.startIndex).not.toHaveBeenCalled();
+  });
+
   it("says what a run without a model gives, and offers a signed-in agent CLI", async () => {
     const adapter = makeAdapter({
       getProviderStatus: vi

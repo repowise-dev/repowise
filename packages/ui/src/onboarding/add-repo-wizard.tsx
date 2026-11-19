@@ -222,10 +222,10 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
         if (run !== preflightRun.current) return;
         setPreflight(result);
         // No model configured: index without one, as the CLI does. The
-        // error step is for a configured provider that fails its check.
-        const nothingChosen = result.provider.configured === false
-          || (result.provider.configured === undefined && result.provider.name == null);
-        if (!result.provider.ok && !nothingChosen) {
+        // error step is for a configured provider that fails its check. A
+        // server that omits `configured` cannot tell the two apart, so any
+        // failed check stops on the error step there.
+        if (!result.provider.ok && result.provider.configured !== false) {
           setStep("provider-error");
           return;
         }
