@@ -170,6 +170,17 @@ def _load_measured_costs(repo_path: object) -> dict[str, Any] | None:
         return None
 
 
+def _load_evidence_freshness(repo_path: object) -> dict[str, Any] | None:
+    """The stored evidence freshness block; ``None`` when the store cannot answer.
+    Best effort, like the measured-cost view beside it."""
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+
+    try:
+        return stored_freshness(Path(str(repo_path)))
+    except Exception:
+        return None
+
+
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:
     """The health analysis the last ``init``/``update`` stored, read without writing.
 
