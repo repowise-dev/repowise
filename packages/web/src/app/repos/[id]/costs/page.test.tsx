@@ -41,7 +41,7 @@ vi.mock("next/link", () => ({
 }));
 
 import CostsPage from "./page";
-import { pickSavingsNudge } from "./savings-nudge";
+import { jobsNotSetUp, pickSavingsNudge } from "./savings-nudge";
 import { ACCOUNTING_METHOD_VERSION } from "@repowise-dev/ui/savings";
 
 function makeSavings(overrides: Partial<Savings> = {}): Savings {
@@ -156,6 +156,13 @@ describe("costs page", () => {
     expect(await screen.findByText(/Model spend below is unaffected/)).toBeTruthy();
   });
 
+  it("keeps the spend section when only savings failed", async () => {
+    mocks.getSavings.mockRejectedValue(new Error("boom"));
+    renderPage();
+    expect(await screen.findByText("What Repowise used")).toBeTruthy();
+    expect((await screen.findAllByText("$1.25")).length).toBeGreaterThan(0);
+  });
+
   it("suggests distill after real usage, links to its Setup row, and hides on dismiss", async () => {
     mocks.getRepoSetup.mockResolvedValue(makeSetup({ rewrite_hook: { state: "not_installed" } }));
     renderPage();
@@ -204,5 +211,13 @@ describe("pickSavingsNudge", () => {
   it("waits for real usage", () => {
     const s = makeSetup({ rewrite_hook: { state: "not_installed" } });
     expect(pickSavingsNudge(s, 19, none)).toBeNull();
+  });
+});
+
+describe("jobsNotSetUp", () => {
+  it("marks trimming only when distill is known to be off", () => {
+    expect(jobsNotSetUp(makeSetup({ rewrite_hook: { state: "not_installed" } }))).toEqual(["trim"]);
+    expect(jobsNotSetUp(makeSetup({ rewrite_hook: { state: "unknown" } }))).toEqual([]);
+    expect(jobsNotSetUp(undefined)).toEqual([]);
   });
 });

@@ -142,6 +142,39 @@ describe("SavingsPageBody, partial states", () => {
     expect(screen.getAllByText("9K tokens").length).toBeGreaterThan(0);
   });
 
+  it("never prints $0.00 for an unpriced job in a priced window", () => {
+    renderBody({
+      savings: savings({
+        per_operation: [
+          { group: "get_answer", events: 5, saved_input_tokens: 9000, priced_input_savings_usd: 1.5 },
+          { group: "unknown", events: 3, saved_input_tokens: 4000, priced_input_savings_usd: 0 },
+        ],
+      }),
+    });
+    const row = screen.getByText("Trimmed long command output").closest("li") as HTMLElement;
+    expect(within(row).getByText("4K tokens")).toBeTruthy();
+    expect(within(row).queryByText("$0.00")).toBeNull();
+  });
+
+  it("names mixed subscription and local runs without a zero dollar figure", () => {
+    renderBody({
+      usage: {
+        summary: { ...spend, total_cost_usd: 0, total_calls: 5, subscription_calls: 2, local_calls: 1 },
+        rows: [
+          { group: "answer_synthesis", calls: 3, input_tokens: 1, output_tokens: 1, cost_usd: 0, subscription_calls: 2, local_calls: 1 },
+          { group: "doc_generation", calls: 2, input_tokens: 1, output_tokens: 1, cost_usd: 0 },
+        ],
+        grouping: "operation",
+        onGroupingChange: () => {},
+      },
+    });
+    const answers = screen.getByText("Answering questions").closest("tr") as HTMLElement;
+    expect(within(answers).getByText(copy.noApiCharges)).toBeTruthy();
+    // A metered call that really cost nothing still says so.
+    const docs = screen.getByText("Writing docs").closest("tr") as HTMLElement;
+    expect(within(docs).getByText("$0.00")).toBeTruthy();
+  });
+
   it("marks a source that is not set up, muted, with no button", () => {
     renderBody({
       savings: savings({ per_operation: [{ group: "get_answer", events: 5, saved_input_tokens: 10 }] }),

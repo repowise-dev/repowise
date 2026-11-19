@@ -57,7 +57,6 @@ export function SavingsOverTime({
   const [lens, setLens] = React.useState<SavingsLens>(priced ? "usd" : "tokens");
   const active: SavingsLens = (lens === "usd" && !priced) || (lens === "files" && !hasFiles) ? "tokens" : lens;
   const points = React.useMemo(() => series(data, active), [data, active]);
-  const fmt = FORMAT[active];
   const filesStart = active === "files" ? points.find((p) => p.value > 0)?.day : undefined;
 
   return (
@@ -68,70 +67,82 @@ export function SavingsOverTime({
           label={copy.lensLabel}
           value={active}
           onChange={setLens}
-          options={[
-            { value: "usd", label: copy.lens.usd, disabledReason: priced ? undefined : copy.lensUsdOff },
-            { value: "tokens", label: copy.lens.tokens },
-            { value: "files", label: copy.lens.files, disabledReason: hasFiles ? undefined : copy.lensFilesOff },
-          ]}
+          options={lensOptions(copy, priced, hasFiles)}
         />
       </div>
       {points.length < 2 ? (
         <p className="text-[15px] text-[var(--color-text-secondary)]">{copy.tooFewDays}</p>
       ) : (
-        <div style={{ height: HEIGHT }} role="img" aria-label={copy.chartAria(copy.lens[active], points.length)}>
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={points} margin={{ top: 8, right: 24, bottom: 0, left: 0 }}>
-              <XAxis
-                dataKey="day"
-                tick={{ fill: "var(--color-text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
-                axisLine={false}
-                tickLine={false}
-                interval="preserveStartEnd"
-                minTickGap={32}
-                tickFormatter={shortDay}
-              />
-              <YAxis
-                width={52}
-                tick={{ fill: "var(--color-text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={(v: number) => fmt(v)}
-              />
-              <Tooltip
-                cursor={{ stroke: "var(--color-border-default)" }}
-                contentStyle={{
-                  background: "var(--color-bg-overlay)",
-                  border: "1px solid var(--color-border-default)",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  color: "var(--color-text-primary)",
-                }}
-                formatter={(value) => [fmt(Number(value)), copy.lens[active]]}
-                labelFormatter={(label) => formatDate(String(label))}
-              />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke="var(--color-text-secondary)"
-                strokeWidth={1.5}
-                fill="var(--color-text-secondary)"
-                fillOpacity={0.1}
-                isAnimationActive={false}
-                dot={(props: { cx?: number; cy?: number; index?: number }) =>
-                  props.index === points.length - 1 && props.cx != null && props.cy != null ? (
-                    <circle key="latest" cx={props.cx} cy={props.cy} r={3.5} fill="var(--color-accent-primary)" />
-                  ) : (
-                    <g key={props.index} />
-                  )
-                }
-                activeDot={{ r: 3.5, fill: "var(--color-text-primary)", stroke: "none" }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+        <LensChart points={points} lens={active} copy={copy} />
       )}
       {filesStart && <p className="text-xs text-[var(--color-text-tertiary)]">{copy.filesSince(formatDate(filesStart))}</p>}
     </section>
+  );
+}
+
+function lensOptions(copy: SavingsCopy, priced: boolean, hasFiles: boolean) {
+  return [
+    { value: "usd" as const, label: copy.lens.usd, disabledReason: priced ? undefined : copy.lensUsdOff },
+    { value: "tokens" as const, label: copy.lens.tokens },
+    { value: "files" as const, label: copy.lens.files, disabledReason: hasFiles ? undefined : copy.lensFilesOff },
+  ];
+}
+
+/** The plot: a neutral area line, the accent only on the latest point. */
+function LensChart({ points, lens, copy }: { points: Point[]; lens: SavingsLens; copy: SavingsCopy }) {
+  const fmt = FORMAT[lens];
+  return (
+    <div style={{ height: HEIGHT }} role="img" aria-label={copy.chartAria(copy.lens[lens], points.length)}>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={points} margin={{ top: 8, right: 24, bottom: 0, left: 0 }}>
+          <XAxis
+            dataKey="day"
+            tick={{ fill: "var(--color-text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+            axisLine={false}
+            tickLine={false}
+            interval="preserveStartEnd"
+            minTickGap={32}
+            tickFormatter={shortDay}
+          />
+          <YAxis
+            width={52}
+            tick={{ fill: "var(--color-text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v: number) => fmt(v)}
+          />
+          <Tooltip
+            cursor={{ stroke: "var(--color-border-default)" }}
+            contentStyle={{
+              background: "var(--color-bg-overlay)",
+              border: "1px solid var(--color-border-default)",
+              borderRadius: "6px",
+              fontSize: "12px",
+              color: "var(--color-text-primary)",
+            }}
+            formatter={(value) => [fmt(Number(value)), copy.lens[lens]]}
+            labelFormatter={(label) => formatDate(String(label))}
+          />
+          <Area
+            type="monotone"
+            dataKey="value"
+            stroke="var(--color-text-secondary)"
+            strokeWidth={1.5}
+            fill="var(--color-text-secondary)"
+            fillOpacity={0.1}
+            isAnimationActive={false}
+            dot={(props: { cx?: number; cy?: number; index?: number }) =>
+              props.index === points.length - 1 && props.cx != null && props.cy != null ? (
+                <circle key="latest" cx={props.cx} cy={props.cy} r={3.5} fill="var(--color-accent-primary)" />
+              ) : (
+                <g key={props.index} />
+              )
+            }
+            activeDot={{ r: 3.5, fill: "var(--color-text-primary)", stroke: "none" }}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

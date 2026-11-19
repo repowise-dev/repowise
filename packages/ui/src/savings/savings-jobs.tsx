@@ -9,7 +9,7 @@ import type { SavingsView } from "./types";
  * Where the savings came from, as five plain jobs ranked by tokens. A job the
  * host says is not set up, and that recorded nothing, reads "Not set up" in
  * muted text with no button: the one nudge above the proof row is where an
- * action lives.
+ * action lives. A job with no priced event shows tokens, never $0.00.
  */
 export function SavingsJobs({
   data,
@@ -22,7 +22,6 @@ export function SavingsJobs({
 }) {
   const jobs = groupByJob(data.per_operation ?? []);
   const top = Math.max(...jobs.map((j) => j.savedInputTokens), 1);
-  const priced = (data.priced_input_savings_usd ?? 0) > 0;
 
   return (
     <ul className="m-0 list-none p-0">
@@ -48,7 +47,7 @@ export function SavingsJobs({
                   <span aria-hidden className="h-1.5 w-1.5 rounded-full border border-[var(--color-text-tertiary)]" />
                   {notSetUp.includes(job.id) ? copy.jobNotSetUp : copy.jobNone}
                 </span>
-              ) : priced ? (
+              ) : job.pricedInputUsd > 0 ? (
                 <>
                   <div className="text-[15px] text-[var(--color-text-primary)]">{formatCost(job.pricedInputUsd)}</div>
                   <div className="font-mono text-xs text-[var(--color-text-tertiary)]">

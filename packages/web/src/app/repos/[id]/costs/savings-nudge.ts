@@ -1,3 +1,4 @@
+import type { SavingsJobId } from "@repowise-dev/ui/savings";
 import type { SetupResponse } from "@/lib/api/setup";
 
 /** The setup suggestions the savings page can make, in priority order. Ids
@@ -27,6 +28,11 @@ export function pickSavingsNudge(
     return "model";
   }
   return null;
+}
+
+/** Savings jobs whose source is off, shown muted as "Not set up". */
+export function jobsNotSetUp(setup: SetupResponse | undefined): SavingsJobId[] {
+  return setup?.rewrite_hook?.state === "not_installed" ? ["trim"] : [];
 }
 
 /** Per-viewer, per-repo, per-suggestion. Hides it on this page only. */

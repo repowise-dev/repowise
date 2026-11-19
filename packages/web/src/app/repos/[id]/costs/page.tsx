@@ -15,10 +15,10 @@ import { AGENT_PROMPT_LABEL, useAiPromptAction } from "@repowise-dev/ui/health/a
 import { buildSetupAiPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
 import {
   ACCOUNTING_METHOD_VERSION,
+  RepowiseUsage,
   SavingsNudge,
   SavingsPageBody,
   SavingsResetNotice,
-  type SavingsJobId,
   type SpendGrouping,
 } from "@repowise-dev/ui/savings";
 import { getCostSummary, getSavings, listCosts } from "@/lib/api/costs";
@@ -29,7 +29,13 @@ import { useSetupText } from "@/components/setup/setup-row";
 import { setupHref } from "@/components/setup/setup-pill";
 import type { SetupRow } from "@/components/setup/setup-rows";
 import { useSavingsCopy } from "./savings-copy";
-import { pickSavingsNudge, readDismissed, rememberDismissed, type SavingsNudgeId } from "./savings-nudge";
+import {
+  jobsNotSetUp,
+  pickSavingsNudge,
+  readDismissed,
+  rememberDismissed,
+  type SavingsNudgeId,
+} from "./savings-nudge";
 
 /** Where the accounting and the benchmark are written down. */
 const METHODOLOGY_HREF =
@@ -44,7 +50,9 @@ function resetNoticeKey(repoId: string): string {
 
 type Range = "7" | "30" | "all";
 const RANGE_DAYS: Record<Range, number | undefined> = { "7": 7, "30": 30, all: undefined };
-const QUIET = { revalidateOnFocus: false };
+// Previous data stays on screen while another range loads, so the body (and
+// the chart's lens) does not unmount on every range change.
+const QUIET = { revalidateOnFocus: false, keepPreviousData: true };
 
 /**
  * Usage & savings: what agents avoided, what Repowise itself used, and how it
@@ -79,14 +87,24 @@ export default function CostsPage() {
   const rows = useSWR(
     [`costs:${id}`, grouping, range],
     () => listCosts(id, since ? { by: grouping, since } : { by: grouping }),
-    QUIET,
+    // Never the previous grouping's rows under the new grouping's header.
+    { revalidateOnFocus: false },
   );
   const { data: setup } = useSetupData(id);
   const { repo } = useRepo(id);
   const view = useSetupView(id, repo?.name ?? id, setup);
   const nudge = useSavingsNudge(id, setup, savings.data?.unique_events ?? 0, view?.optional ?? []);
 
-  const notSetUp: SavingsJobId[] = setup?.rewrite_hook?.state === "not_installed" ? ["trim"] : [];
+  const usage = {
+    summary: summary.data,
+    rows: rows.data,
+    grouping,
+    onGroupingChange: setGrouping,
+    fallback:
+      summary.data === undefined || summary.error ? (
+        <SpendFallback failed={Boolean(summary.error)} retry={summary.mutate} />
+      ) : undefined,
+  };
   const agentRow = view?.essentials.find((row) => row.id === "agent");
 
   return (
@@ -109,11 +127,14 @@ export default function CostsPage() {
       <ResetNotice repoId={id} />
 
       {savings.error ? (
-        <ApiError
-          title={t("savingsErrorTitle")}
-          message={summary.error ? t("savingsErrorBody") : t("savingsErrorBodySpendUnaffected")}
-          onRetry={() => void savings.mutate()}
-        />
+        <div className="flex flex-col gap-14">
+          <ApiError
+            title={t("savingsErrorTitle")}
+            message={summary.error ? t("savingsErrorBody") : t("savingsErrorBodySpendUnaffected")}
+            onRetry={() => void savings.mutate()}
+          />
+          {!summary.error && <RepowiseUsage copy={copy} {...usage} />}
+        </div>
       ) : savings.data === undefined ? (
         <SavingsSkeleton />
       ) : (
@@ -121,10 +142,10 @@ export default function CostsPage() {
           savings={savings.data}
           copy={copy}
           nudge={nudge.element}
-          notSetUp={notSetUp}
+          notSetUp={jobsNotSetUp(setup)}
           emptyActions={
             <>
-              {agentRow && <PromptButton row={agentRow} open={nudge.open} />}
+              {agentRow && <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => nudge.open(agentRow)} />}
               <Link href={setupHref(id)} className="text-xs text-[var(--color-accent-primary)] hover:underline">
                 {t("openSetup")}
               </Link>
@@ -133,29 +154,12 @@ export default function CostsPage() {
           methodologyHref={METHODOLOGY_HREF}
           benchmarkHref={BENCHMARK_HREF}
           LinkComponent={Link}
-          usage={{
-            summary: summary.data,
-            rows: rows.data,
-            grouping,
-            onGroupingChange: setGrouping,
-            fallback: summary.error ? (
-              <ApiError title={t("spendErrorTitle")} onRetry={() => void summary.mutate()} />
-            ) : summary.data === undefined ? (
-              <SkeletonRegion label={t("loadingSpend")} className="flex flex-col gap-3">
-                <Skeleton className="h-5 w-48" />
-                <Skeleton className="h-14 w-full" />
-              </SkeletonRegion>
-            ) : undefined,
-          }}
+          usage={usage}
         />
       )}
       {nudge.modal}
     </PageShell>
   );
-}
-
-function PromptButton({ row, open }: { row: SetupRow; open: (row: SetupRow) => void }) {
-  return <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => open(row)} />;
 }
 
 /**
@@ -193,7 +197,7 @@ function useSavingsNudge(
     <SavingsNudge
       title={t(id === "rewrite" ? "nudgeRewriteTitle" : "nudgeModelTitle")}
       body={t(id === "rewrite" ? "nudgeRewriteBody" : "nudgeModelBody")}
-      action={row ? <PromptButton row={row} open={open} /> : null}
+      action={row ? <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => open(row)} /> : null}
       href={`${setupHref(repoId)}#${id}`}
       linkLabel={t("openSetup")}
       dismissLabel={t("nudgeDismiss")}
@@ -206,6 +210,18 @@ function useSavingsNudge(
   ) : null;
 
   return { element, open, modal: promptModal };
+}
+
+/** Spend while it loads, or after it failed. */
+function SpendFallback({ failed, retry }: { failed: boolean; retry: () => unknown }) {
+  const t = useTranslations("views.costs");
+  if (failed) return <ApiError title={t("spendErrorTitle")} onRetry={() => void retry()} />;
+  return (
+    <SkeletonRegion label={t("loadingSpend")} className="flex flex-col gap-3">
+      <Skeleton className="h-5 w-48" />
+      <Skeleton className="h-14 w-full" />
+    </SkeletonRegion>
+  );
 }
 
 /** Reserves the hero and proof row while the report is in flight. */

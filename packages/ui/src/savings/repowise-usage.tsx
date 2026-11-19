@@ -85,7 +85,7 @@ function UsageBody({
                 {[copy.usageGroups[grouping], copy.calls, copy.inputTokens, copy.outputTokens, copy.cost].map(
                   (h, i) => (
                     <th
-                      key={h}
+                      key={i}
                       className={`whitespace-nowrap border-b border-[var(--color-border-default)] pb-2.5 pt-3 font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-tertiary)] ${i === 0 ? "text-left" : "pl-4 text-right"}`}
                     >
                       {h}
@@ -140,23 +140,23 @@ function GroupCell({ copy, grouping, group }: { copy: SavingsCopy; grouping: Spe
   );
 }
 
-/** Zero-priced calls that all ran on a plan or a local model. */
-function unbilled(row: { calls: number; subscription_calls?: number; local_calls?: number }): "subscription" | "local" | null {
-  const sub = row.subscription_calls ?? 0;
-  const local = row.local_calls ?? 0;
-  if (row.calls === 0 || sub + local !== row.calls) return null;
-  return sub > 0 ? "subscription" : "local";
+/** Why a zero cost is zero: calls on the user's plan, on their machine, or
+ *  both. Null when nothing ran unbilled, so a real $0.00 still shows. */
+function unbilledLabel(copy: SavingsCopy, sub = 0, local = 0): string | null {
+  if (sub > 0 && local > 0) return copy.noApiCharges;
+  if (sub > 0) return copy.onSubscription;
+  if (local > 0) return copy.onMachine;
+  return null;
 }
 
 function costLabel(copy: SavingsCopy, row: SpendRowView): string {
   if (row.cost_usd > 0) return formatCost(row.cost_usd);
-  const kind = unbilled(row);
-  return kind === "subscription" ? copy.onSubscription : kind === "local" ? copy.onMachine : formatCost(0);
+  return unbilledLabel(copy, row.subscription_calls, row.local_calls) ?? formatCost(0);
 }
 
 function spentLabel(copy: SavingsCopy, summary: SpendView): string {
   if (summary.total_cost_usd > 0) return formatCost(summary.total_cost_usd);
-  return unbilled({ ...summary, calls: summary.total_calls }) ? copy.noApiCharges : formatCost(0);
+  return (summary.subscription_calls ?? 0) + (summary.local_calls ?? 0) > 0 ? copy.noApiCharges : formatCost(0);
 }
 
 function Figure({ label, value }: { label: string; value: string }) {

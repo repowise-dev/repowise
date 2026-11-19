@@ -159,3 +159,25 @@ def test_billing_kind(model, kind):
     from repowise.core.generation.cost_tracker import billing_kind
 
     assert billing_kind(model) == kind
+
+
+async def test_zero_cost_groups_keep_a_stable_order(cost_sessions):
+    async with cost_sessions() as session:
+        for operation, calls in (("b_op", 1), ("a_op", 1), ("c_op", 3)):
+            for _ in range(calls):
+                session.add(
+                    LlmCost(
+                        repository_id="repo",
+                        ts=datetime(2026, 10, 30, 9, tzinfo=UTC),
+                        model="claude_cli/sonnet",
+                        operation=operation,
+                        input_tokens=1,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    )
+                )
+        await session.commit()
+        rows = await list_costs("repo", by="operation", since=None, session=session)
+
+    assert [row.group for row in rows][-3:] == ["c_op", "a_op", "b_op"]
+

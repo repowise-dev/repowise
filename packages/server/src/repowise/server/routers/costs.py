@@ -132,7 +132,11 @@ async def list_costs(
 
     return [
         CostGroupResponse(group=group, **vars(totals))
-        for group, totals in sorted(groups.items(), key=lambda item: -item[1].cost_usd)
+        # Cost first; calls then name keep a page of $0 rows (subscription or
+        # local runs) in a stable, meaningful order.
+        for group, totals in sorted(
+            groups.items(), key=lambda item: (-item[1].cost_usd, -item[1].calls, str(item[0]))
+        )
     ]
 
 
