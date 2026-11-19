@@ -73,11 +73,12 @@ class PageSelectionIntent:
     unwritten: bool = False
     stale: bool = False
     path_globs: tuple[str, ...] = ()
+    page_ids: tuple[str, ...] = ()
     # Literal directory prefixes under the repository root (the server's
     # ``path_prefix``). Not globs: ``src`` selects ``src`` and ``src/...`` only,
     # and characters like ``[``, ``*`` or a trailing space are part of the name.
+    # Last, so positional construction of the earlier fields keeps its order.
     path_prefixes: tuple[str, ...] = ()
-    page_ids: tuple[str, ...] = ()
 
     def is_empty(self) -> bool:
         return not (

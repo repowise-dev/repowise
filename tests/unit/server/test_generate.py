@@ -508,3 +508,13 @@ async def test_sync_regen_receives_vector_store_and_prior_pages(session_factory,
     regen_mock.assert_awaited_once()
     assert "vector_store" in regen_mock.await_args.kwargs
     assert "prior_pages" in regen_mock.await_args.kwargs
+
+
+def test_page_selection_intent_keeps_positional_order() -> None:
+    """Adding ``path_prefixes`` must not shift the earlier positional fields."""
+    from repowise.core.generation.page_selection import resolve_page_selection
+
+    records = [PageRecord("module_page:src", "module_page", "src", is_template=False)]
+    intent = PageSelectionIntent(False, False, False, (), ("module_page:src",))
+    assert resolve_page_selection(records, intent).page_ids == {"module_page:src"}
+
