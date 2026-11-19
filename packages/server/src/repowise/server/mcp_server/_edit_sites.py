@@ -35,6 +35,7 @@ from repowise.core.ingestion.symbol_identity import file_of_symbol, id_segment_n
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
 from repowise.server.mcp_server._helpers import read_repo_file_text
@@ -1312,7 +1313,10 @@ async def _node_language(session: AsyncSession, repo_id: str, node: GraphNode) -
 
 
 def _holds(root: Path, rel: str, name: str) -> bool:
-    """Whether *rel*'s bytes hold *name*; an unreadable file is kept for the scan to report."""
+    """Whether *rel* holds *name*; an unreadable file is kept for the scan to report."""
+    if _state.request_context() is not None:
+        text = read_repo_file_text(root, rel, allow_extracted=False)
+        return text is None or name in text
     try:
         return name.encode() in (root / rel).read_bytes()
     except OSError:

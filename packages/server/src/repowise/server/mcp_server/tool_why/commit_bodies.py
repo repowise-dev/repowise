@@ -218,7 +218,9 @@ def _stored_bodies(target_git: dict[str, Any]) -> dict[str, tuple[str, int | Non
 
 async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, tuple[str, int | None]]:
     """Bodies of *shas* from the local clone; empty without one, or on any git failure."""
-    if not repo_root or not (Path(repo_root) / ".git").exists():
+    from repowise.server.mcp_server import _state
+
+    if not repo_root or not _state.git_available() or not (Path(repo_root) / ".git").exists():
         return {}
     try:
         return await asyncio.wait_for(

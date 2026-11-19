@@ -34,8 +34,10 @@ async def _git_archaeology_fallback(
     result["cross_references"] = unique_refs
 
     # --- Layer 3: Live git log (when local repo exists) ---
+    from repowise.server.mcp_server import _state
+
     git_log_results = []
-    if repo_root and (Path(repo_root) / ".git").exists():
+    if repo_root and _state.git_available() and (Path(repo_root) / ".git").exists():
         git_log_results = await _run_git_log(repo_root, file_path, stem)
     result["git_log"] = git_log_results
 

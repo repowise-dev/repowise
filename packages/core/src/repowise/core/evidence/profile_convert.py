@@ -41,6 +41,7 @@ function is on every stack.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -283,7 +284,7 @@ def convert_profile(
             "the profile does not say whether it timed CPU or wall-clock",
             "name the clock the profiler sampled: cpu or wall",
         )
-    refuse_typescript(run, root)
+    refuse_compiled_positions(run, root, read_lines, origins)
     resolution = resolve_frames(
         run.frames,
         root=root,
@@ -448,8 +449,23 @@ class _Tally:
         ]
 
 
-def refuse_typescript(run: ProfileRun, root: str) -> None:
-    """A TypeScript frame of this checkout carries compiled positions, so the run is refused."""
+def refuse_compiled_positions(
+    run: ProfileRun,
+    root: str,
+    read_lines: Callable[[str], Sequence[str] | None] | None = None,
+    origins: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse a run whose checkout frames carry positions in compiled code.
+
+    A TypeScript frame's line and column are in the compiled JavaScript, and
+    a JavaScript file that names a source map (``//# sourceMappingURL=``) is
+    build output: a bundle or a compiler's, whose positions belong to other
+    files. Source maps are not read, so either refuses the run. A dependency
+    (``node_modules``, a vendored or generated file by its stored
+    ``code_origin`` in *origins*, else :func:`path_origin`) is charged to its
+    caller and never checked. *read_lines* reads a repo-relative file;
+    without it only TypeScript is checked.
+    """
     typescript = [f for f in run.frames if f.language == "typescript"]
     if typescript and frame_paths(typescript, root=root):
         raise EvidenceFormatError(
@@ -458,6 +474,30 @@ def refuse_typescript(run: ProfileRun, root: str) -> None:
             "profile the compiled JavaScript under its own paths; TypeScript positions "
             "need source maps, which are not read",
         )
+    if read_lines is None:
+        return
+    javascript = [f for f in run.frames if f.language == "javascript"]
+    for rel in sorted(frame_paths(javascript, root=root)):
+        if ((origins or {}).get(rel) or path_origin(rel)) in ("vendored", "generated"):
+            continue
+        lines = read_lines(rel)
+        if lines is not None and _names_source_map(lines):
+            raise EvidenceFormatError(
+                f"the profile ran {rel}, which names a source map: it is bundled or "
+                "compiled code, and its positions belong to other files",
+                "profile the JavaScript sources themselves; positions in bundled or "
+                "compiled code need source maps, which are not read",
+            )
+
+
+#: A source map comment, which a compiler or bundler writes last in its output.
+_SOURCE_MAP_RE = re.compile(r"^\s*//[#@]\s*sourceMappingURL=")
+
+
+def _names_source_map(lines: Sequence[str]) -> bool:
+    """Whether one of the last five non-blank lines is a source map comment."""
+    tail = [ln for ln in reversed(lines) if ln.strip()][:5]
+    return any(_SOURCE_MAP_RE.match(ln) for ln in tail)
 
 
 __all__ = [
@@ -465,5 +505,5 @@ __all__ = [
     "convert_profile",
     "is_child_process_frame",
     "merge_runs",
-    "refuse_typescript",
+    "refuse_compiled_positions",
 ]

@@ -134,10 +134,10 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
-    collapsed stacks, pytest-benchmark or hyperfine JSON, JUnit XML), detected
-    from its content. Several profiles
-    (a parent process and its workers, or a directory holding one file per
-    process) merge into one run; they must share a format, unit, tool and clock.
+    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON, JUnit
+    XML), detected from its content. Several profiles (a parent process and its
+    workers, or a directory holding one file per process) merge into one run;
+    they must share a format, unit, tool and clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it. JUnit XML reports (a Maven or
     Gradle report directory) read as one run; other files beside them are left out.
@@ -205,18 +205,21 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
-    payload = run_async(
-        _ingest(
-            repo_path=repo_path,
-            prepared=prepared,
-            workload=workload.strip(),
-            workload_class=workload_class,
-            environment=environment,
-            allow_partial=allow_partial,
-            caps=caps,
-            notices=notices,
+    try:
+        payload = run_async(
+            _ingest(
+                repo_path=repo_path,
+                prepared=prepared,
+                workload=workload.strip(),
+                workload_class=workload_class,
+                environment=environment,
+                allow_partial=allow_partial,
+                caps=caps,
+                notices=notices,
+            )
         )
-    )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     if fmt == "json":
         emit_json(payload)
     if not payload["stored"]:

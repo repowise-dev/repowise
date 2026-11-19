@@ -18,6 +18,8 @@ from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
@@ -74,6 +76,15 @@ async def _resolve_range_read(
             },
         )
 
+    if serves_no_source():
+        return {
+            "symbol_id": symbol_id,
+            "file": path,
+            **no_source_field(path, start, end),
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
+            ),
+        }
     # Before the exclusion spec: it is built from the repo path.
     if not ctx.path:
         return _err("internal", "MCP server has no repo path configured")
@@ -162,7 +173,10 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
         return None
     path = path_identity(line_match.group("path"))
     line = int(line_match.group("line"))
-    if ctx.path and not _pkg.is_excluded(path, _get_exclude_spec(ctx.path)):
+    root = Path(str(ctx.path)) if ctx.path else None
+    if (ctx.path or serves_no_source()) and not _pkg.is_excluded(
+        path, _get_exclude_spec(ctx.path)
+    ):
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
             res = await session.execute(
@@ -173,13 +187,13 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
             rows = res.scalars().all()
         # Neither indexed nor on disk: a "name:12" id, not a location, so the
         # symbol lookup answers it with its not-found suggestions.
-        if not rows and not (Path(str(ctx.path)) / path).is_file():
+        if not rows and (root is None or not (root / path).is_file()):
             return None
         # A row with no recorded position never owns a line.
         owner = symbol_at((r for r in rows if r.start_line > 0), line)
         if owner is not None:
             return symbol_identity(owner.symbol_id)
-        text = _read_file_text(Path(str(ctx.path)), path)
+        text = _read_file_text(root, path) if root is not None else None
         if text is not None and line > len(text.splitlines()):
             # Past the end: the range read refuses the line itself rather than
             # serving the file's last lines in its place.
