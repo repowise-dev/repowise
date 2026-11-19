@@ -413,13 +413,8 @@ def _gunzip(raw: bytes, max_bytes: int) -> bytes:
     return bytes(out)
 
 
-def load_per_test_map(raw: bytes, *, max_bytes: int) -> PerTestMap:
-    """Read and check a portable per-test map from untrusted bytes.
-
-    Gzipped or plain JSON, at most *max_bytes* once inflated. Every source
-    entry is checked (test numbers in range, unique per file, ranges well
-    formed) one file at a time. Raises :class:`PerTestMapError`.
-    """
+def _read_doc(raw: bytes, max_bytes: int) -> dict:
+    """The JSON object in *raw* (gzipped or plain), at most *max_bytes* inflated."""
     if raw.startswith(_GZIP_MAGIC):
         raw = _gunzip(raw, max_bytes)
     elif len(raw) > max_bytes:
@@ -428,48 +423,76 @@ def load_per_test_map(raw: bytes, *, max_bytes: int) -> PerTestMap:
         doc = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise PerTestMapError("not JSON") from exc
-    del raw
     if not isinstance(doc, dict) or doc.get("format") != PER_TEST_MAP_FORMAT:
         raise PerTestMapError(f"format is not {PER_TEST_MAP_FORMAT}")
-    tests, sources = doc.get("tests"), doc.get("sources")
-    if not isinstance(tests, list) or not isinstance(sources, dict):
-        raise PerTestMapError("needs a `tests` list and a `sources` object")
-    checked_tests: list[tuple[str, str | None]] = []
-    for item in tests:
-        if not (
-            isinstance(item, list)
-            and len(item) == 2
-            and isinstance(item[0], str)
-            and item[0]
-            and (item[1] is None or isinstance(item[1], str))
-        ):
-            raise PerTestMapError("each test is [test_id, test_file or null]")
-        checked_tests.append((item[0], item[1] or None))
-    n = len(checked_tests)
+    return doc
+
+
+def _is_test_item(item: Any) -> bool:
+    return (
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and bool(item[0])
+        and (item[1] is None or isinstance(item[1], str))
+    )
+
+
+def _checked_tests(tests: Any) -> list[tuple[str, str | None]]:
+    """``tests`` as ``(test_id, test_file)`` pairs, each one checked."""
+    if not isinstance(tests, list):
+        raise PerTestMapError("needs a `tests` list")
+    if not all(_is_test_item(item) for item in tests):
+        raise PerTestMapError("each test is [test_id, test_file or null]")
+    return [(item[0], item[1] or None) for item in tests]
+
+
+def _checked_sources(sources: Any, n_tests: int) -> tuple[dict[str, tuple[int, str]], set[int]]:
+    """``(source -> (test_count, tests_json), test numbers used)``, each entry checked.
+
+    The shape is checked whole by a pattern and the numbers read from it, never
+    decoded entry by entry (a large map has a million entries).
+    """
+    if not isinstance(sources, dict):
+        raise PerTestMapError("needs a `sources` object")
     checked: dict[str, tuple[int, str]] = {}
     used: set[int] = set()
     for source, text in sources.items():
         if not source or not isinstance(text, str) or not _ENTRIES_RE.fullmatch(text):
             raise PerTestMapError(f"tests of {str(source)[:200]} are not compact tests_json")
-        # The shape is checked whole by the pattern; numbers are read from it,
-        # never decoded entry by entry (a large map has a million entries).
         numbers = [int(no) for no in _TEST_NO_RE.findall(text)]
         seen = set(numbers)
-        if len(seen) < len(numbers) or max(numbers) >= n:
+        if len(seen) < len(numbers) or max(numbers) >= n_tests:
             raise PerTestMapError(f"tests of {source[:200]} repeat or name unknown tests")
         used |= seen
         checked[source] = (len(numbers), text)
-    fmt, sha = doc.get("source_format"), doc.get("ingested_commit_sha")
+    return checked, used
+
+
+def _short_text(value: Any) -> str | None:
+    return value[:64] if isinstance(value, str) and value else None
+
+
+def load_per_test_map(raw: bytes, *, max_bytes: int) -> PerTestMap:
+    """Read and check a portable per-test map from untrusted bytes.
+
+    Gzipped or plain JSON, at most *max_bytes* once inflated. Every source
+    entry is checked (test numbers in range, unique per file, ranges well
+    formed) one file at a time. Raises :class:`PerTestMapError`.
+    """
+    doc = _read_doc(raw, max_bytes)
+    tests = _checked_tests(doc.get("tests"))
+    sources, used = _checked_sources(doc.get("sources"), len(tests))
     tmap = PerTestMap(
-        source_format=fmt[:64] if isinstance(fmt, str) and fmt else "unknown",
-        tests=tuple(checked_tests),
-        sources=checked,
-        ingested_commit_sha=sha[:64] if isinstance(sha, str) and sha else None,
+        source_format=_short_text(doc.get("source_format")) or "unknown",
+        tests=tuple(tests),
+        sources=sources,
+        ingested_commit_sha=_short_text(doc.get("ingested_commit_sha")),
     )
-    if len(used) < n:
+    if len(used) < len(tests):
         # Tests covering nothing would count as measured; renumber them away.
         tmap = _renumbered(
-            tmap, sorted(used), {s: _decode_tests(t) for s, (_, t) in checked.items()}
+            tmap, sorted(used), {s: _decode_tests(t) for s, (_, t) in sources.items()}
         )
     return tmap
 
