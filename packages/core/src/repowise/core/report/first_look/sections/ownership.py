@@ -13,10 +13,9 @@ from ..model import Collected, FirstLookSection, Item, Link, PromptRef, first_lo
 
 SECTION = "ownership"
 
-#: Off until commits from one person under several author names count as one
-#: author: until then bus factor reads low on files one person wrote under two
-#: names. Flipping this is the whole change once that lands.
-OWNERSHIP_ENABLED = False
+#: The one switch for this section. Bus factor counts one person once across
+#: author names and emails, so the figure is safe to show.
+OWNERSHIP_ENABLED = True
 
 
 async def collect(ctx: FirstLookContext) -> Collected:

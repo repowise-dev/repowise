@@ -177,7 +177,30 @@ def test_settings_default_and_read_the_config(tmp_path) -> None:
     assert (off.llm, off.model) == (False, "claude-haiku-5-5")
 
 
-def test_ownership_is_off_until_author_identity_is_fixed() -> None:
+def test_ownership_section_is_on() -> None:
     from repowise.core.report.first_look.sections import ownership
 
-    assert ownership.OWNERSHIP_ENABLED is False
+    assert ownership.OWNERSHIP_ENABLED is True
+
+
+async def test_ownership_counts_components_at_bus_factor_one(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.report.first_look.sections import ownership
+    from repowise.core.report.sections import bus_factor
+
+    async def fake_bus_factor(_ctx):
+        components = {
+            "api": {"value": 1, "basis": "measured"},
+            "web": {"value": 3, "basis": "measured"},
+            "cli": {"value": None, "basis": "unavailable"},
+        }
+        return [{"data": {"components": components}}]
+
+    monkeypatch.setattr(bus_factor, "collect", fake_bus_factor)
+    ctx = SimpleNamespace(session=None, repository_id="r1", repo_root=tmp_path)
+    got = await ownership.collect(ctx)
+    (item,) = got.items
+    assert item.title_facts == {"components": 2, "bus_factor_1": 1}
+    assert item.link.route == "ownership"
+    assert "api" not in json.dumps(item.to_json())

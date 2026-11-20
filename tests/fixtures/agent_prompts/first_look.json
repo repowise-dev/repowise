@@ -48,7 +48,7 @@
         "rule": "import_cycle",
         "title_facts": {"files": 2},
         "locations": [
-          {"path": "lib/api/coaching.ts", "line": null, "symbol": null},
+          {"path": "lib/api/client.ts", "line": null, "symbol": null},
           {"path": "lib/services/cache.ts", "line": null, "symbol": null}
         ],
         "locations_total": 2,
