@@ -45,6 +45,8 @@ from ..strings import (
 )
 from .client_calls import VERBS, is_rooted_url, join_base, method_from_options
 from .dialect import build_consumer_contract
+from .js_clients import based_url, wrapper_prefixes
+from .node_clients import FieldScope
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
     GENERIC_ARGS,
@@ -220,6 +222,8 @@ def extract_consumers(
 
     strings = FileStrings(content, PYTHON_SYNTAX if is_python else JS_SYNTAX, code or None)
     declarations = _declaration_sites(symbols)
+    fields = None if is_python else FieldScope(strings)
+    prefixes = wrapper_prefixes(content, confirmed, strings, fields) if fields else {}
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
     # (concrete literal) and unresolved. The set of wrappers proven to take a
@@ -259,7 +263,13 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, rest = _split_first_arg(content[open_idx + 1 : close_idx])
+        if fields is not None and "this." in first:
+            fields.enter(m.start())
         url = _first_arg_url(first, strings)
+        if fields is not None:
+            # The base a class field or the wrapper's own body adds; one that
+            # does not resolve leaves the call unresolved, not matched bare.
+            url = based_url(url, "" if is_sink_call else prefixes.get(name, ""), fields)
         if url is None:
             # The wrapper's own plumbing — ``fetch(path)`` inside the very
             # function that wraps it — is not a lost endpoint. Whatever flows
