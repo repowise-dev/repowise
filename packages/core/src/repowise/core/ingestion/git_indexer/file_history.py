@@ -605,7 +605,7 @@ def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
     if recent_counts:
         recent_top = recent_counts.most_common(1)[0]
         meta["recent_owner_name"] = authors.name(recent_top[0])
-        recent_total = sum(recent_counts.values())
+        recent_total = sum(authors.recent_counts.values())
         meta["recent_owner_commit_pct"] = recent_top[1] / recent_total if recent_total > 0 else 0.0
 
 
