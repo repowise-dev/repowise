@@ -21,6 +21,12 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json
 
+#: What to do next, by error code, for a person at the terminal.
+HINTS = {
+    "reason_required": "Say why with --reason.",
+    "unknown_item": "Ids are listed by `repowise report first-look --format json`.",
+}
+
 #: The statuses as typed here; ``false-positive`` reaches core as ``false_positive``.
 STATUSES = ("done", "ack", "false-positive", "snooze")
 
@@ -32,7 +38,9 @@ async def _mark(root: Path, item_id: str, status: str, reason: str | None, days:
         if opened is None:
             raise MarkError("no_index", f"No index for {root}. Run `repowise init` there first.")
         session, repo_id = opened
-        out = await mark_item(session, repo_id, item_id, status, reason=reason, days=days)
+        out = await mark_item(
+            session, repo_id, item_id, status, reason=reason, days=days, repo_root=root
+        )
         await session.commit()
         return out
 
@@ -73,7 +81,9 @@ def mark_command(
         if as_json:
             emit_json(exc.to_json())
         else:
-            err_console.print(exc.message, style="red", markup=False)
+            hint = HINTS.get(exc.code)
+            said = f"{exc.message} {hint}" if hint else exc.message
+            err_console.print(said, style="red", markup=False)
         raise SystemExit(1) from None
     if as_json:
         emit_json(out)

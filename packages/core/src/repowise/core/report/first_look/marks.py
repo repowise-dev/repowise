@@ -303,6 +303,7 @@ async def mark_item(
     *,
     reason: str | None = None,
     days: int | None = None,
+    repo_root: Any | None = None,
 ) -> dict[str, Any]:
     """Record a person's answer to one first-look item, on every row it stands for.
 
@@ -317,7 +318,7 @@ async def mark_item(
     if status in REASON_REQUIRED and reason is None:
         raise MarkError(
             "reason_required",
-            "Say why with --reason: an acknowledged item or a false positive needs one.",
+            "An acknowledged item or a false positive needs a reason.",
         )
     until = None
     if status == "snooze":
@@ -325,12 +326,11 @@ async def mark_item(
         if not 1 <= days <= MAX_SNOOZE_DAYS:
             raise MarkError("bad_status", f"Snooze for 1 to {MAX_SNOOZE_DAYS} days, not {days}.")
         until = datetime.now(UTC) + timedelta(days=days)
-    item = await find_item(session, repository_id, item_id)
+    item = await find_item(session, repository_id, item_id, repo_root)
     if item is None:
         raise MarkError(
             "unknown_item",
-            f"No first-look item {item_id!r} in this repository's report or index. "
-            "Ids are listed by `repowise report first-look --format json`.",
+            f"No first-look item {item_id!r} in this repository's report or index.",
         )
     if item.section == "security" and status == "false_positive":
         raise MarkError("security_use_ignore", SECURITY_IGNORE)
