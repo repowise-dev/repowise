@@ -418,8 +418,12 @@ async def update_refactoring_suggestion_status(
     status: str,
     *,
     reason: str = "user",
+    note: str | None = None,
 ) -> RefactoringSuggestion | None:
     """Transition one plan's lifecycle state. The single owner of that write.
+
+    *note* is a person's free-text why (``status_reason`` is the coded cause:
+    ``user`` or ``no_longer_detected``); ``None`` clears an earlier one.
 
     *suggestion_id* is the storage id or the content-derived public id, because
     the two surfaces that address a plan quote different strings. Returns
@@ -433,6 +437,7 @@ async def update_refactoring_suggestion_status(
         return None
     row.status = status
     row.status_reason = reason
+    row.status_note = note
     row.status_changed_at = _now_utc()
     await session.flush()
     return row

@@ -253,11 +253,15 @@ async def update_health_finding_status(
     session: AsyncSession,
     finding_id: str,
     status: str,
+    note: str | None = None,
 ) -> HealthFinding | None:
+    """Set *finding_id*'s triage status, with the *note* saying why (``None``
+    clears an earlier one: a note belongs to the status it was given with)."""
     f = await session.get(HealthFinding, finding_id)
     if f is None:
         return None
     f.status = status
+    f.status_note = note
     await session.flush()
     return f
 
