@@ -143,7 +143,9 @@ export function FileCoverageTab({
         title="Source"
         description={
           codeHtml
-            ? "Every coverable line, tinted by whether the last report saw it run."
+            ? coveredCount > 0
+              ? "Every coverable line, tinted by whether the last report saw it run."
+              : "The last report saw no line of this file run."
             : stale
               ? "This file changed after coverage was measured; re-run tests with coverage to refresh."
               : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
