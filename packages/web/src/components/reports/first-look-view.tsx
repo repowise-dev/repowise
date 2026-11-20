@@ -80,6 +80,7 @@ export function FirstLookView({ repoId }: { repoId: string }) {
       loadPrompt={loadPrompt}
       promptFlavor={FLAVOR}
       markdownHref={firstLookMarkdownPath(repoId)}
+      sinceCommand="repowise report first-look --since-last"
       canRewrite={data.can_rewrite}
       onRewrite={() => void onRewrite()}
       rewriteCost={data.rewrite_cost_usd ?? null}

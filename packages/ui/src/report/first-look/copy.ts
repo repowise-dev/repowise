@@ -46,6 +46,8 @@ export interface FirstLookCopy {
   fixWithAgent: string;
   fixWithAgentHint: string;
   copyItemPrompt: string;
+  /** "{n} of {total}", a section header's count out of everything found. */
+  countOf: (n: string, total: string) => string;
   /** "{n} more in the app". */
   moreInApp: (n: string) => string;
   linesCovered: string;
@@ -147,6 +149,7 @@ export const FIRST_LOOK_COPY_EN: FirstLookCopy = {
   fixWithAgent: "Fix with agent",
   fixWithAgentHint: "Copy one prompt for every open item in this section",
   copyItemPrompt: "Copy prompt for this item",
+  countOf: (n, total) => `${n} of ${total}`,
   moreInApp: (n) => `${n} more in the app`,
   linesCovered: "lines covered",
   branchesCovered: "branches covered",

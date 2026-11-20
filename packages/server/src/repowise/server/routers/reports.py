@@ -108,6 +108,8 @@ async def get_first_look_prompt(
     """One item's prompt, one section's, or the whole report's, worded for *flavor*."""
     repo = await _require_repo(session, repo_id)
     report = await _require_report(session, repo)
+    if item is not None and section is not None:
+        raise HTTPException(status_code=422, detail="Ask for an item or a section, not both")
     if item is None:
         if section is not None:
             block = report.section(section)
@@ -132,7 +134,8 @@ async def export_first_look_markdown(
     """The report as a Markdown file, the same document the CLI writes."""
     repo = await _require_repo(session, repo_id)
     report = await _require_report(session, repo)
-    name = "".join(c if c.isalnum() or c in "-_." else "-" for c in repo.name or "repo")
+    # ASCII only: a header is latin-1, and a quote or line break must never reach it.
+    name = "".join(c if c.isascii() and (c.isalnum() or c in "-_.") else "-" for c in repo.name or "repo")
     return PlainTextResponse(
         render_first_look_markdown(report.to_json()),
         media_type="text/markdown; charset=utf-8",

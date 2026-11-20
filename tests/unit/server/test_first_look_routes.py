@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import Repository
 from repowise.core.report.first_look.model import (
     FirstLookReport,
     Item,
@@ -195,3 +196,20 @@ async def test_a_section_prompt_and_the_markdown_export(
     assert md.headers["content-type"].startswith("text/markdown")
     assert 'filename="test-repo-report.md"' in md.headers["content-disposition"]
     assert "src/a.py" in md.text
+
+
+@pytest.mark.anyio
+async def test_an_item_and_a_section_together_is_refused_and_any_name_downloads(
+    reports_client: AsyncClient, session_factory
+) -> None:
+    repo = await _stored_repo(reports_client, session_factory)
+    base = f"/api/repos/{repo['id']}/reports/first-look"
+    both = await reports_client.get(f"{base}/prompt", params={"item": _ID, "section": "hygiene"})
+    assert both.status_code == 422
+
+    async with get_session(session_factory) as session:
+        row = await session.get(Repository, repo["id"])
+        row.name = 'café "x"\r\n'
+    md = await reports_client.get(f"{base}/export.md")
+    assert md.status_code == 200
+    assert md.headers["content-disposition"] == 'attachment; filename="caf---x----report.md"'

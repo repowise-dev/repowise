@@ -64,7 +64,7 @@ function MenuRow({
   onSelect: () => void;
 }) {
   return (
-    <button type="button" role="menuitem" className={MENU_ROW} onClick={onSelect}>
+    <button type="button" className={MENU_ROW} onClick={onSelect}>
       {icon ? <span className="mt-0.5 text-[var(--color-text-secondary)] [&_svg]:size-4">{icon}</span> : null}
       <span>
         {label}
@@ -106,7 +106,7 @@ export function ShareMenu({
           <ChevronDown aria-hidden className="size-4" />
         </button>
       </PopoverTrigger>
-      <PopoverContent role="menu" align="end" className="grid w-[260px] gap-0.5 rounded-xl bg-[var(--color-bg-surface)] p-1.5">
+      <PopoverContent align="end" className="grid w-[260px] gap-0.5 rounded-xl bg-[var(--color-bg-surface)] p-1.5">
         <MenuRow icon={<Link2 />} label={copy.copyLink} hint={copy.copyLinkHint} onSelect={pick("link")} />
         <MenuRow icon={<Bot />} label={copy.copyForAgent} hint={copy.copyForAgentHint} onSelect={pick("agent")} />
         <hr className="mx-0.5 my-1 border-[var(--color-border-default)]" />
@@ -128,18 +128,48 @@ export function ShareMenu({
 }
 
 /** "Fix with agent" in a section header: one prompt for the section's open items. */
-export function SectionPromptButton({ copy, onCopy }: { copy: FirstLookCopy; onCopy: () => void }) {
+export function SectionPromptButton({
+  copy,
+  label,
+  onCopy,
+}: {
+  copy: FirstLookCopy;
+  /** The section, for the accessible name. */
+  label: string;
+  onCopy: () => void;
+}) {
   return (
-    <button type="button" className={cn(GHOST, CONTROL)} title={copy.fixWithAgentHint} onClick={onCopy}>
+    <button
+      type="button"
+      className={cn(GHOST, CONTROL)}
+      title={copy.fixWithAgentHint}
+      aria-label={`${copy.fixWithAgent}: ${label}`}
+      onClick={onCopy}
+    >
       <Bot aria-hidden className="size-4" />
       {copy.fixWithAgent}
     </button>
   );
 }
 
-export function ItemPromptButton({ copy, onCopy }: { copy: FirstLookCopy; onCopy: () => void }) {
+export function ItemPromptButton({
+  copy,
+  label,
+  onCopy,
+}: {
+  copy: FirstLookCopy;
+  /** The item, for the accessible name. */
+  label: string;
+  onCopy: () => void;
+}) {
   return (
-    <button type="button" className={GHOST} aria-label={copy.copyItemPrompt} title={copy.copyItemPrompt} onClick={onCopy}>
+    <button
+      type="button"
+      className={cn(GHOST, CONTROL)}
+      aria-label={`${copy.copyItemPrompt}: ${label}`}
+      title={copy.copyItemPrompt}
+      onClick={onCopy}
+    >
       <Copy aria-hidden className="size-4" />
     </button>
   );
@@ -177,7 +207,7 @@ export function MarkMenu({
   return (
     <Popover open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
       <PopoverTrigger asChild>
-        <button type="button" className={GHOST} aria-label={`${copy.mark}: ${label}`}>
+        <button type="button" className={cn(GHOST, CONTROL)} aria-label={`${copy.mark}: ${label}`}>
           {copy.mark}
         </button>
       </PopoverTrigger>
@@ -214,7 +244,7 @@ export function MarkMenu({
             </div>
           </form>
         ) : (
-          <div role="menu" className="grid">
+          <div className="grid">
             <MenuRow label={copy.markDone} hint={copy.markDoneHint} onSelect={choose("done")} />
             <MenuRow label={copy.markAck} hint={copy.markAckHint} onSelect={choose("ack")} />
             <MenuRow

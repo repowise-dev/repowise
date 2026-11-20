@@ -198,7 +198,7 @@ describe("FirstLookReport", () => {
     expect(loadPrompt).toHaveBeenCalledWith({ section: "security" }, "generic");
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("PROMPT TEXT"));
     await act(async () =>
-      fireEvent.click(within(document.getElementById("fl_secret")!).getByRole("button", { name: "Copy prompt for this item" })),
+      fireEvent.click(within(document.getElementById("fl_secret")!).getByRole("button", { name: /^Copy prompt for this item:/ })),
     );
     expect(loadPrompt).toHaveBeenCalledWith({ item: "fl_secret" }, "generic");
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Hand to agent" })));
@@ -210,11 +210,11 @@ describe("FirstLookReport", () => {
     renderReport({ onMark });
     const row = within(document.getElementById("fl_secret")!);
     fireEvent.click(row.getByRole("button", { name: /^Mark:/ }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Done/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Done/ }));
     expect(onMark).toHaveBeenCalledWith(expect.objectContaining({ id: "fl_secret" }), "done", null);
 
     fireEvent.click(row.getByRole("button", { name: /^Mark:/ }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Not an issue/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Not an issue/ }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "test fixture" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onMark).toHaveBeenLastCalledWith(expect.objectContaining({ id: "fl_secret" }), "false_positive", "test fixture");
@@ -222,9 +222,13 @@ describe("FirstLookReport", () => {
 
   it("drops every control in the export view", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-    renderReport();
+    renderReport({ onMark: vi.fn().mockResolvedValue(undefined) });
+    // Every control carries the class the export view and print hide.
+    const controls = screen.getAllByRole("button", { name: /Fix with agent|Hand to agent|Copy prompt|^Mark|Share/ });
+    expect(controls.length).toBeGreaterThan(5);
+    for (const c of controls) expect(c.closest(".first-look-control")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Share/ }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Preview export/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Preview export/ }));
     expect(document.querySelector("[data-export]")).not.toBeNull();
     const rules = [...document.querySelectorAll("style")].map((s) => s.textContent).join("");
     expect(rules).toContain("[data-export] .first-look-control{display:none!important}");

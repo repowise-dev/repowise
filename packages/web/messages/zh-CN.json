@@ -1105,7 +1105,8 @@
         "writing": "正在撰写...",
         "about": "约 {cost}",
         "repoReport": "仓库报告",
-        "openReport": "打开报告"
+        "openReport": "打开报告",
+        "countOf": "{n} / {total}"
       },
       "markFailed": "无法保存标记"
     }

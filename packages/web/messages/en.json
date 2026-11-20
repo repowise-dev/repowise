@@ -1291,7 +1291,8 @@
         "writing": "Writing...",
         "about": "about {cost}",
         "repoReport": "Repo report",
-        "openReport": "Open report"
+        "openReport": "Open report",
+        "countOf": "{n} of {total}"
       },
       "markFailed": "Couldn't save the mark"
     }

@@ -179,11 +179,12 @@ export function ItemRow({ item, h }: { item: FirstLookLivingItem; h: SectionHand
         <span
           className={cn(
             CONTROL,
-            "col-start-2 flex gap-0.5 md:absolute md:right-0 md:top-2 md:opacity-0 md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100 motion-reduce:transition-none",
+            // Hidden until pointed at only where there is a pointer that can hover.
+            "col-start-2 flex gap-0.5 md:absolute md:right-0 md:top-2 md:transition-opacity motion-reduce:transition-none [@media(hover:hover)]:md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100",
           )}
         >
           {h.onMark ? <MarkMenu copy={h.copy} label={text} onMark={(m, r) => h.onMark?.(item, m, r)} /> : null}
-          <ItemPromptButton copy={h.copy} onCopy={() => h.onItemPrompt(item)} />
+          <ItemPromptButton copy={h.copy} label={text} onCopy={() => h.onItemPrompt(item)} />
         </span>
       ) : null}
     </li>
@@ -322,17 +323,24 @@ function Coverage({ section, copy }: { section: LivingSection; copy: FirstLookCo
   );
 }
 
+/**
+ * A section's rows, capped, then what the first look had here that is gone
+ * now. "More in the app" counts only rows the app still has.
+ */
 function SectionBody({
   section,
-  items,
+  resolved,
   intro,
   h,
 }: {
   section: LivingSection;
-  items: FirstLookLivingItem[];
+  resolved: FirstLookLivingItem[];
   intro: string | undefined;
   h: SectionHandlers;
 }) {
+  const items = section.items;
+  /** The first `cap` rows of `list`, then the gone rows of the same kind. */
+  const shown = (list: FirstLookLivingItem[], cap: number, gone = resolved) => [...list.slice(0, cap), ...gone];
   const route = SECTION_ROUTE[section.key];
   const href = route ? h.hrefFor(route, {}) : null;
   switch (sectionLayout(section.key)) {
@@ -340,34 +348,31 @@ function SectionBody({
       return (
         <>
           <Intro text={intro} />
-          {items.length ? <FunctionTable items={items.slice(0, TABLE_ROWS.functions)} h={h} /> : null}
+          {items.length + resolved.length ? (
+            <FunctionTable items={shown(items, TABLE_ROWS.functions)} h={h} />
+          ) : null}
           <MoreLink n={items.length - TABLE_ROWS.functions} href={href} h={h} />
         </>
       );
     case "dead_code": {
-      const files = items.filter((i) => i.rule === "unreachable_file");
-      const exports = items.filter((i) => i.rule !== "unreachable_file");
-      const shown = Math.min(files.length, TABLE_ROWS.dead_code) + Math.min(exports.length, TABLE_ROWS.dead_code);
+      const isFile = (i: FirstLookLivingItem) => i.rule === "unreachable_file";
+      const files = items.filter(isFile);
+      const exports = items.filter((i) => !isFile(i));
+      const cap = TABLE_ROWS.dead_code;
+      const fileRows = shown(files, cap, resolved.filter(isFile));
+      const exportRows = shown(exports, cap, resolved.filter((i) => !isFile(i)));
       return (
         <>
           <Intro text={intro} />
           <div className="grid gap-x-10 md:grid-cols-2">
-            {files.length ? (
-              <CountTable
-                items={files.slice(0, TABLE_ROWS.dead_code)}
-                h={h}
-                fact={(i) => factNumber(i, "lines")}
-              />
-            ) : null}
-            {exports.length ? (
-              <CountTable
-                items={exports.slice(0, TABLE_ROWS.dead_code)}
-                h={h}
-                fact={(i) => factNumber(i, "symbols")}
-              />
-            ) : null}
+            {fileRows.length ? <CountTable items={fileRows} h={h} fact={(i) => factNumber(i, "lines")} /> : null}
+            {exportRows.length ? <CountTable items={exportRows} h={h} fact={(i) => factNumber(i, "symbols")} /> : null}
           </div>
-          <MoreLink n={items.length - shown} href={href} h={h} />
+          <MoreLink
+            n={items.length - Math.min(files.length, cap) - Math.min(exports.length, cap)}
+            href={href}
+            h={h}
+          />
         </>
       );
     }
@@ -375,9 +380,9 @@ function SectionBody({
       return (
         <>
           <Intro text={intro} />
-          {items.length ? (
+          {items.length + resolved.length ? (
             <CountTable
-              items={items.slice(0, TABLE_ROWS.documents)}
+              items={shown(items, TABLE_ROWS.documents)}
               h={h}
               fact={(i) => factNumber(i, "references")}
               head={[h.copy.table.document, h.copy.table.broken]}
@@ -397,9 +402,9 @@ function SectionBody({
       return (
         <>
           <Intro text={intro} />
-          {items.length ? (
+          {items.length + resolved.length ? (
             <ul className="m-0 list-none p-0">
-              {items.slice(0, FIRST_LOOK_SECTION_CAP).map((item) => (
+              {shown(items, FIRST_LOOK_SECTION_CAP).map((item) => (
                 <ItemRow key={item.id} item={item} h={h} />
               ))}
             </ul>
@@ -410,11 +415,11 @@ function SectionBody({
   }
 }
 
-function headerCount(section: LivingSection, items: FirstLookLivingItem[]): string | null {
+function headerCount(section: LivingSection, copy: FirstLookCopy): string | null {
   if (section.key === "tests") return null;
   const total = section.facts.production_causes;
-  if (section.key === "performance" && typeof total === "number" && total > items.length) {
-    return `${formatNumber(items.length)} of ${formatNumber(total)}`;
+  if (section.key === "performance" && typeof total === "number" && total > section.items.length) {
+    return copy.countOf(formatNumber(section.items.length), formatNumber(total));
   }
   return stripValue(section);
 }
@@ -435,8 +440,7 @@ export function ReportSection({
   h: SectionHandlers;
 }) {
   const Icon = sectionIcon(section.key);
-  const items = [...section.items, ...resolved];
-  const count = headerCount(section, section.items);
+  const count = headerCount(section, h.copy);
   const open = section.items.some((i) => !isClosed(i));
   const heading = `fl-${section.key}`;
   return (
@@ -456,9 +460,11 @@ export function ReportSection({
           {count ? <span className="font-sans text-[13px] font-medium text-[var(--color-text-secondary)]">{count}</span> : null}
         </h2>
         <span className="flex-1" />
-        {open && section.key !== "tests" ? <SectionPromptButton copy={h.copy} onCopy={() => h.onSectionPrompt(section.key)} /> : null}
+        {open && section.key !== "tests" ? (
+          <SectionPromptButton copy={h.copy} label={title} onCopy={() => h.onSectionPrompt(section.key)} />
+        ) : null}
       </div>
-      <SectionBody section={section} items={items} intro={intro} h={h} />
+      <SectionBody section={section} resolved={resolved} intro={intro} h={h} />
     </section>
   );
 }

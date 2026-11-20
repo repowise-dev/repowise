@@ -14,7 +14,7 @@ import { renderActionTitle as inline } from "../../overview/next-actions";
 import { ContourPattern } from "./contour-pattern";
 import { BUTTON, CONTROL, ShareMenu, copyLater, type ShareAction } from "./controls";
 import { FIRST_LOOK_COPY_EN, type FirstLookCopy } from "./copy";
-import { PAIRED, progress, resolvedBySection, stripValue, type Progress } from "./living";
+import { PAIRED, isClosed, progress, resolvedBySection, stripValue, type Progress } from "./living";
 import {
   ReportSection,
   sectionIcon,
@@ -40,6 +40,8 @@ export interface FirstLookReportProps {
   onMark?: (item: FirstLookLivingItem, mark: FirstLookMark, reason: string | null) => Promise<void>;
   /** The Markdown export's URL; without it the menu leaves the entry out. */
   markdownHref?: string | null;
+  /** The command that lists what changed since, where the host has a CLI. */
+  sinceCommand?: string | null;
   canRewrite?: boolean;
   onRewrite?: () => void;
   rewriteCost?: number | null;
@@ -65,12 +67,17 @@ function useToast(): [string | null, (message: string) => void] {
   return [message, show];
 }
 
-function download(name: string, text: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type }));
+/** Saves *href* as a file; a failed download never navigates the page away. */
+function saveAs(href: string, name: string): void {
   const a = document.createElement("a");
-  a.href = url;
+  a.href = href;
   a.download = name;
   a.click();
+}
+
+function download(name: string, text: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  saveAs(url, name);
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
@@ -90,6 +97,7 @@ export function FirstLookReport({
   promptFlavor = "generic",
   onMark,
   markdownHref,
+  sinceCommand,
   canRewrite = false,
   onRewrite,
   rewriteCost,
@@ -141,7 +149,7 @@ export function FirstLookReport({
     } else if (action === "agent") {
       copyPrompt(null);
     } else if (action === "markdown") {
-      if (markdownHref) window.location.assign(markdownHref);
+      if (markdownHref) saveAs(markdownHref, `${report.repo.name ?? "repo"}-report.md`);
     } else if (action === "pdf") {
       window.print();
     } else if (action === "json") {
@@ -208,9 +216,11 @@ export function FirstLookReport({
         {paired ? <div className="grid gap-x-10 md:grid-cols-2">{PAIRED.map(renderSection)}</div> : null}
         <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-[12.5px] text-[var(--color-text-secondary)]">
           <span className="font-mono">{copy.reportAt((report.stamp.commit ?? "").slice(0, 7))}</span>
-          <span>
-            {copy.sinceThen} <code className="font-mono text-[0.86em]">repowise report first-look --since-last</code>
-          </span>
+          {sinceCommand ? (
+            <span>
+              {copy.sinceThen} <code className="font-mono text-[0.86em]">{sinceCommand}</code>
+            </span>
+          ) : null}
           <span>
             {report.stamp.generator === "template"
               ? copy.writerTemplate
@@ -298,7 +308,7 @@ function Strip({ report, copy }: { report: FirstLookLivingReport; copy: FirstLoo
     >
       {report.sections.map((s) => {
         const Icon = sectionIcon(s.key);
-        const hot = s.key === "security" && s.items.length > 0;
+        const hot = s.key === "security" && s.items.some((i) => !isClosed(i));
         return (
           <a
             key={s.key}

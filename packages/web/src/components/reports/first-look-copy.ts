@@ -47,6 +47,7 @@ export function useFirstLookCopy(): FirstLookCopy {
       fixWithAgent: s("fixWithAgent"),
       fixWithAgentHint: s("fixWithAgentHint"),
       copyItemPrompt: s("copyItemPrompt"),
+      countOf: (n, total) => t("countOf", { n, total }),
       moreInApp: (n) => t("moreInApp", { n }),
       linesCovered: s("linesCovered"),
       branchesCovered: s("branchesCovered"),

@@ -42,7 +42,8 @@ export function stripValue(section: LivingSection): string {
     if (safe + files > 0) return formatNumber(safe + files);
   }
   if (section.key === "security") {
-    return formatNumber(section.items.reduce((n, i) => n + Math.max(i.locations_total, 1), 0));
+    const open = section.items.filter((i) => !isClosed(i));
+    return formatNumber(open.reduce((n, i) => n + Math.max(i.locations_total, 1), 0));
   }
   return formatNumber(section.items.length);
 }
