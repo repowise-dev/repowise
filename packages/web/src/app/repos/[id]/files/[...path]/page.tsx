@@ -12,6 +12,7 @@ import {
 } from "@repowise-dev/ui/shared/entity";
 import {
   asFilePageTab,
+  asLineNumber,
   buildFilePanels,
   fileTabsFor,
   FilePageHeader,
@@ -35,7 +36,7 @@ export const revalidate = 30;
 
 interface Props {
   params: Promise<{ id: string; path: string[] }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; line?: string | string[] }>;
 }
 
 /**
@@ -72,6 +73,30 @@ async function renderCoverageCode(
   // Line numbers measured on another version of the file would tint the
   // wrong lines; the tab says why the source is untinted instead.
   if (detail.coverage.freshness === "stale") return undefined;
+  return highlightSource(content, detail, new Set(detail.coverage.covered_lines));
+}
+
+/** The source for a `?line=N` deep link, untinted. Undefined when the line is
+ *  past the end of the file, so an out-of-range link reads as no link. */
+async function renderLinkedSource(
+  content: string | undefined,
+  detail: FileDetailResponse,
+  line: number | undefined,
+): Promise<string | undefined> {
+  if (!content || line === undefined) return undefined;
+  // A trailing newline ends the last line rather than opening another one.
+  if (line > content.replace(/\n$/, "").split("\n").length) return undefined;
+  return highlightSource(content, detail);
+}
+
+/** Shiki HTML with `data-line` on every line and, when `covered` is given,
+ *  `data-covered` on the lines it holds. Undefined past the size cap or when
+ *  highlighting fails. */
+async function highlightSource(
+  content: string,
+  detail: FileDetailResponse,
+  covered?: Set<number>,
+): Promise<string | undefined> {
   if (content.length > MAX_HIGHLIGHTED_BYTES) return undefined;
 
   // Resolve the grammar before highlighting rather than catching a throw and
@@ -81,7 +106,6 @@ async function renderCoverageCode(
   const lang =
     declared && declared in bundledLanguages ? (declared as BundledLanguage) : "text";
 
-  const covered = new Set(detail.coverage.covered_lines);
   try {
     // Singleton: one highlighter and one grammar/theme registry for the
     // process, loaded on demand. The `codeToHtml` shortcut used to build a
@@ -100,7 +124,7 @@ async function renderCoverageCode(
       transformers: [
         {
           line(node, line) {
-            if (covered.has(line)) node.properties["data-covered"] = "y";
+            if (covered?.has(line)) node.properties["data-covered"] = "y";
             // Real file lines, so a selection here can name a real range.
             node.properties["data-line"] = String(line);
           },
@@ -114,7 +138,7 @@ async function renderCoverageCode(
 
 export default async function FileEntityPage({ params, searchParams }: Props) {
   const { id, path } = await params;
-  const { tab } = await searchParams;
+  const { tab, line } = await searchParams;
   const filePath = path.map(decodeURIComponent).join("/");
   const prefix = `/repos/${id}`;
 
@@ -124,6 +148,11 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
   // other three, and the host round-trips on the first click into a tab this
   // render could not produce a body for.
   const wantsFull = requested !== undefined && HEAVY_TABS.includes(requested);
+  const highlightLine = asLineNumber(line);
+  // A line link shows the source on Overview, where a link without `?tab=`
+  // lands; on Coverage the tab's own source carries the mark.
+  const linkedSource =
+    highlightLine !== undefined && (requested === undefined || requested === "overview");
 
   let detail: FileDetailResponse;
   let source: string | undefined;
@@ -134,7 +163,7 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     // `detail`, but the source bytes do not.
     [detail, source] = await Promise.all([
       getFileDetail(id, filePath, { fields: wantsFull ? "full" : "slim" }),
-      requested === "coverage"
+      requested === "coverage" || linkedSource
         ? getFileContent(id, filePath).catch(() => undefined)
         : Promise.resolve(undefined),
     ]);
@@ -143,7 +172,10 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     throw err;
   }
 
-  const coverageCodeHtml = await renderCoverageCode(source, detail);
+  const [coverageCodeHtml, sourceCodeHtml] = await Promise.all([
+    requested === "coverage" ? renderCoverageCode(source, detail) : undefined,
+    linkedSource ? renderLinkedSource(source, detail, highlightLine) : undefined,
+  ]);
 
   const tabs = fileTabsFor(detail);
   const initialTab = resolveFileTab(requested, tabs);
@@ -192,6 +224,8 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
       ? { docSlot: <WikiMarkdown content={detail.wiki_page.content} /> }
       : {}),
     coverageCodeHtml,
+    sourceCodeHtml,
+    highlightLine,
     healthPanel: (
       <FileHealthPanel
         repoId={id}
