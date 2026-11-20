@@ -88,6 +88,29 @@ def test_bot_only_file_has_no_owner(tmp_path: Path) -> None:
     assert meta["temporal_hotspot_score"] > 0
 
 
+def test_bot_only_file_with_blame_has_no_owner(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _commit(tmp_path, _BOT, 1)
+    _commit(tmp_path, _BOT, 2)
+    meta = index_file(
+        gitpython.Repo(tmp_path),
+        "a.py",
+        repo_path=tmp_path,
+        commit_limit=100,
+        follow_renames=False,
+        include_blame=True,
+    )
+
+    assert meta["primary_owner_name"] is None
+    assert meta["primary_owner_email"] is None
+    assert meta["primary_owner_line_pct"] is None
+    assert meta["primary_owner_commit_pct"] is None
+    assert meta["recent_owner_name"] is None
+    assert meta["contributor_count"] == 0
+    assert json.loads(meta["top_authors_json"]) == []
+    assert meta["commit_count_total"] == 2
+
+
 def test_agent_majority_file_keeps_the_agent_as_owner(tmp_path: Path) -> None:
     meta = _index(tmp_path, [_DEV, _AGENT, _AGENT, _AGENT])
 

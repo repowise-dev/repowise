@@ -652,7 +652,7 @@ def _add_blame_ownership(
         for name, email in blame_idx.authors.values():
             authors.seen_names.setdefault(authors.resolve(name, email), name)
         blame_key, blame_pct = top_blame_identity(blame_idx, blame_idx.lines)
-        if blame_key is not None:
+        if blame_key is not None and authors.resolve.kind(blame_key) != "bot":
             meta["primary_owner_name"] = authors.name(blame_key)
             meta["primary_owner_email"] = authors.resolve.email(blame_key)
             meta["primary_owner_line_pct"] = blame_pct
