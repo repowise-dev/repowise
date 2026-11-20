@@ -82,6 +82,7 @@ from repowise.core.analysis.health.models import lead_and_worth, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.author_identity import author_identity_key
 from repowise.core.test_paths import is_test_related_path
 
@@ -275,18 +276,31 @@ def with_test_reach(
 
 
 def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
+    """Each person's last commit and how many were active since *since*.
+
+    People come from the shared resolver, so one person's emails and names are
+    one author. ``author_last_commit`` is keyed on every email folded into a
+    person, so a file owner's stored email finds them under any of them.
+    """
+    rows = list(rows)
+    resolve = people_resolver(commit_rows=rows)
     last: dict[str, datetime] = {}
     active: set[str] = set()
     for r in rows:
         latest = _when(field(r, "committed_at"))
         if latest is None:
             continue
-        key = author_identity_key(field(r, "author_name"), field(r, "author_email"))
+        key = resolve(field(r, "author_name"), field(r, "author_email"))
+        if not key:
+            continue
         if key not in last or latest > last[key]:
             last[key] = latest
         if since is not None and latest >= since:
             active.add(key)
-    return {"author_last_commit": last, "active_authors_90d": len(active)}
+    by_email = {
+        email: when for key, when in last.items() for email in resolve.aliases(key)[1] or [key]
+    }
+    return {"author_last_commit": by_email, "active_authors_90d": len(active)}
 
 
 #: Markers that read a measured coverage report, so "worsened" is coverage the

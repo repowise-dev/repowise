@@ -21,15 +21,20 @@ engine can pick it up when building each ``FileContext``.
 from __future__ import annotations
 
 import time
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from repowise.core.git_sha import is_full_sha
 
 from ._constants import _MAX_BLAME_SIZE_BYTES
+
+if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +47,7 @@ __all__ = [
     "owner_in_range",
     "recent_commits_in_range",
     "recent_distinct_commits_in_range",
+    "top_blame_identity",
 ]
 
 # Files with fewer than this many total commits have no useful signal — the
@@ -80,11 +86,56 @@ class BlameIndex:
     # real signal, not an artifact.
     boundary_shas: frozenset[str] = field(default_factory=frozenset)
     is_shallow: bool = False
+    # The people resolver owners are keyed on: the repo's, set by the indexer,
+    # else built once from this file's own blame authors on first use.
+    resolve: IdentityResolver | None = field(default=None, repr=False, compare=False)
 
 
 def blame_as_of(idx: BlameIndex) -> int:
     """Reference 'now' for *idx*: its anchor, or wall clock when built without one."""
     return idx.as_of_ts if idx.as_of_ts is not None else int(time.time())
+
+
+def _resolver(idx: BlameIndex) -> IdentityResolver:
+    if idx.resolve is None:
+        from repowise.core.author_identity import build_identity_resolver
+
+        idx.resolve = build_identity_resolver(idx.authors.values())
+    return idx.resolve
+
+
+def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | None, float | None]:
+    """``(identity key, share)`` of the person who wrote most of *line_nos*.
+
+    Lines are credited to people, not display names (see :attr:`BlameIndex.resolve`),
+    so one person's two names or emails never split their share. Shallow-clone
+    boundary lines are left out; ``(None, None)`` when no line is attributable.
+    """
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
+    resolve = _resolver(idx)
+    shas: Counter[str] = Counter()
+    for ln in line_nos:
+        entry = idx.lines.get(ln)
+        if entry is not None and entry[0] not in excluded:
+            shas[entry[0]] += 1
+    counts: Counter[str] = Counter()
+    for sha, n in shas.items():
+        counts[resolve(*idx.authors.get(sha, ("unknown", "")))] += n
+    if not counts:
+        return None, None
+    key, top_count = counts.most_common(1)[0]
+    return key, top_count / sum(counts.values())
+
+
+def _blame_owner(
+    idx: BlameIndex, line_nos: Iterable[int]
+) -> tuple[str | None, str | None, float | None]:
+    key, share = top_blame_identity(idx, line_nos)
+    if key is None:
+        return None, None, None
+    resolve = _resolver(idx)
+    seen = next((n for n, e in idx.authors.values() if resolve(n, e) == key), None)
+    return resolve.display_name(key, seen), resolve.email(key), share
 
 
 def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float | None]:
@@ -97,25 +148,7 @@ def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float
     """
     if not idx.lines:
         return None, None, None
-    from collections import Counter
-
-    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
-    counts: Counter[str] = Counter()
-    for sha, _ts in idx.lines.values():
-        if sha in excluded:
-            continue
-        name = idx.authors.get(sha, ("unknown", ""))[0]
-        counts[name] += 1
-    if not counts:
-        return None, None, None
-    total = sum(counts.values())
-    top_name, top_count = counts.most_common(1)[0]
-    top_email = ""
-    for _sha, (name, email) in idx.authors.items():
-        if name == top_name and email:
-            top_email = email
-            break
-    return top_name, top_email, top_count / total if total else None
+    return _blame_owner(idx, idx.lines)
 
 
 def owner_in_range(
@@ -130,26 +163,8 @@ def owner_in_range(
     """
     if not idx.lines or start_line > end_line:
         return None, None, None
-    from collections import Counter
-
-    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
-    counts: Counter[str] = Counter()
-    for ln in range(start_line, end_line + 1):
-        entry = idx.lines.get(ln)
-        if entry is None or entry[0] in excluded:
-            continue
-        name = idx.authors.get(entry[0], ("unknown", ""))[0]
-        counts[name] += 1
-    if not counts:
-        return None, None, None
-    total = sum(counts.values())
-    top_name, top_count = counts.most_common(1)[0]
-    top_email = ""
-    for _sha, (name, email) in idx.authors.items():
-        if name == top_name and email:
-            top_email = email
-            break
-    return top_name, top_email or None, (top_count / total if total else None)
+    name, email, share = _blame_owner(idx, range(start_line, end_line + 1))
+    return name, email or None, share
 
 
 def _parse_porcelain(
