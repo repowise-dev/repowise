@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 #: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
 #: the per-event ``schema_version`` column, which versions an event payload and
@@ -252,25 +255,40 @@ def _rebuild_v1_opportunities(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE savings_opportunities_v1")
 
 
-def initialize_savings_schema(conn: sqlite3.Connection) -> None:
-    """Upgrade once under a write lock, recording version only after success."""
+def is_newer_store(conn: sqlite3.Connection) -> bool:
+    """Whether a newer Repowise stamped this store than this build supports.
+
+    Such a store is read as far as this build understands it and never written
+    to the ledger, migrated or restamped: a downgrade, or two versions side by
+    side, must not cost the user a tool reply or the newer build its file.
+    """
+    return int(conn.execute("PRAGMA user_version").fetchone()[0]) > SAVINGS_SCHEMA_VERSION
+
+
+def initialize_savings_schema(conn: sqlite3.Connection) -> bool:
+    """Upgrade once under a write lock, recording version only after success.
+
+    Returns False, having changed nothing, when a newer Repowise owns the
+    store; the ledger writers then drop their rows (``is_newer_store``).
+    """
     conn.execute("PRAGMA foreign_keys=ON")
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if version > SAVINGS_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"savings sidecar schema {version} is newer than supported "
-            f"version {SAVINGS_SCHEMA_VERSION}"
+        logger.debug(
+            "savings sidecar schema %d is newer than %d; left as is",
+            version,
+            SAVINGS_SCHEMA_VERSION,
         )
+        return False
     if version == SAVINGS_SCHEMA_VERSION and _has_current_schema(conn):
-        return
+        return True
     conn.execute("BEGIN IMMEDIATE")
     try:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version > SAVINGS_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"savings sidecar schema {version} is newer than supported "
-                f"version {SAVINGS_SCHEMA_VERSION}"
-            )
+            # A newer build stamped it while this one waited for the lock.
+            conn.rollback()
+            return False
         if version < SAVINGS_SCHEMA_VERSION or not _has_current_schema(conn):
             _apply_schema(conn, version)
             conn.execute(f"PRAGMA user_version={SAVINGS_SCHEMA_VERSION}")
@@ -278,3 +296,4 @@ def initialize_savings_schema(conn: sqlite3.Connection) -> None:
     except BaseException:
         conn.rollback()
         raise
+    return True

@@ -313,7 +313,9 @@ def record_saving(
         try:
             # One version read when current. Repairs a store another process
             # created but had not finished initializing when this one opened it.
-            initialize_savings_schema(con)
+            # A store a newer Repowise owns is left alone.
+            if not initialize_savings_schema(con):
+                return
             _record(
                 con,
                 filter_name=filter_name,
@@ -474,8 +476,12 @@ def record_forgone(
     try:
         import sqlite3
 
+        from repowise.core.savings.schema import is_newer_store
+
         con = sqlite3.connect(str(db_path), timeout=2)
         try:
+            if is_newer_store(con):
+                return
             con.execute(_FORGONE_TABLE_SQL)
             if "filter" not in {r[1] for r in con.execute("PRAGMA table_info(forgone_savings)")}:
                 con.execute(_FORGONE_MIGRATION_SQL)

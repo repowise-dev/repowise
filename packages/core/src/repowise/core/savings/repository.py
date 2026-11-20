@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -28,9 +29,12 @@ from repowise.core.savings.reporting import (
     breakdown_rows,
     files_not_opened,
 )
+from repowise.core.savings.schema import is_newer_store
 
 if TYPE_CHECKING:
     from repowise.core.savings.output_estimate import OutputEstimate
+
+logger = logging.getLogger(__name__)
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
@@ -87,6 +91,18 @@ class SavingsRepository:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
+        self._newer: bool | None = None
+
+    def _read_only(self) -> bool:
+        """Whether a newer Repowise owns this store, so every write here is dropped.
+
+        Checked once per repository: one ``PRAGMA`` read, on the writes only.
+        """
+        if self._newer is None:
+            self._newer = is_newer_store(self._conn)
+            if self._newer:
+                logger.debug("savings sidecar is newer than this build; ledger writes dropped")
+        return self._newer
 
     def _grouped(
         self,
@@ -151,6 +167,8 @@ class SavingsRepository:
 
     def record_event(self, event: SavingsEvent) -> bool:
         """Atomically insert an event and its links; return false for a retry."""
+        if self._read_only():
+            return False
         values = [getattr(event, column) for column in _EVENT_COLUMNS[:-1]]
         values[18] = int(event.is_usable)
         values.append(event.metadata_json())
@@ -216,6 +234,8 @@ class SavingsRepository:
 
     def record_file_read(self, session_key: str, path: str, read_at: str) -> None:
         """Note that the agent Read *path* in this session, keeping the latest time."""
+        if self._read_only():
+            return
         self._conn.execute(
             "INSERT INTO savings_file_reads(session_key, path, read_at) VALUES (?, ?, ?) "
             "ON CONFLICT(session_key, path) DO UPDATE SET read_at = excluded.read_at "
@@ -270,6 +290,8 @@ class SavingsRepository:
         whose retry key already exists under the new id keeps its old id.
         Takes no write lock when there is nothing to move.
         """
+        if self._read_only():
+            return 0
         tables = ("savings_events", "savings_opportunities")
         if not any(
             self._conn.execute(
@@ -295,6 +317,8 @@ class SavingsRepository:
 
     def record_opportunity(self, observation: OpportunityObservation) -> bool:
         """Insert an opportunity outside the achieved-event ledger."""
+        if self._read_only():
+            return False
         cursor = self._conn.execute(
             """
             INSERT OR IGNORE INTO savings_opportunities
