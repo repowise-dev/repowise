@@ -147,6 +147,10 @@ class RepoUpdateResult:
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
     graph_update: dict[str, Any] | None = None
+    # The state.json "pending_repair" marker this run leaves: the range a
+    # range-scoped persist step failed on, so the next update re-covers it.
+    # None clears the marker.
+    pending_repair: dict[str, Any] | None = None
 
 
 @dataclass
@@ -202,6 +206,7 @@ async def _incremental_repo_update(
     """
     from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
     from ...pipeline.incremental.feature import incremental_graph_enabled
+    from ...pipeline.incremental.repair import record_repair_marker
     from ...pipeline.phase_timing import PhaseTimings, timed
     from ...pipeline.phases.git import drop_transient_git_signals
     from ...repo_config import load_repo_config
@@ -340,6 +345,8 @@ async def _incremental_repo_update(
         )
 
     kg_state = _export_kg_state(repo_path, alias, kg)
+    marker: dict[str, Any] = {}
+    record_repair_marker(marker, state, failed_steps)
     timings.stop("run")
     return RepoUpdateResult(
         alias=alias,
@@ -354,6 +361,7 @@ async def _incremental_repo_update(
         # not land, it is not stamped, so the next run re-scores with the walk.
         health_rescored=rescored_report is not None and "Git persist" not in failed_steps,
         graph_update=getattr(graph_builder, "incremental_graph_decision", None),
+        pending_repair=marker.get("pending_repair"),
     )
 
 
@@ -625,6 +633,14 @@ async def update_single_repo_index(
     reason = _full_index_reason(repo_path, drift, base_ref, has_persisted_index)
     update_error: str | None = None
     if reason is None:
+        # Re-cover a range an earlier update failed to persist, as the
+        # single-repo update does.
+        from ...pipeline.incremental.repair import resolve_repair_base
+
+        base_ref, give_up = resolve_repair_base(repo_path, state, str(base_ref), None)
+        if give_up is not None:
+            _log.warning("workspace_update: %s dropping a pending repair: %s", alias, give_up)
+            state.pop("pending_repair", None)
         incremental_result, update_error = await _try_incremental_update(
             repo_path,
             state,
