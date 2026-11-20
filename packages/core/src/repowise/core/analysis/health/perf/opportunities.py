@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ....evidence.query_counts import strongest
 from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
@@ -177,15 +178,25 @@ class _Reading:
     sinks: tuple[str, ...]
     magnitude: str
     growth: str
+    # The leading workload whose newest run ranks a live member's loop owner.
+    measured: str | None
+    # What query counts at a live member's loop owner or call path say.
+    queries: Any
 
 
-def _read_live(members: list[Any]) -> _Reading:
+def _read_live(
+    members: list[Any], measured: Mapping[str, str], queries: Mapping[str, Any]
+) -> _Reading:
     """Read a group's facts off its live members.
 
     Inert members (:func:`_inert`) decide nothing while a live member exists.
     The loop size is read only off the members the group's role comes from:
     a request loop nobody measured never borrows a startup loop's growth, and
     a group is ``bounded`` only when every loop of its hottest role is.
+
+    *measured* maps a function a leading workload ranks to that workload. One
+    live member whose loop owner is in it makes the group measured, which
+    overrides the static guesses that it runs rarely or never.
     """
     live = [facts for facts in members if not _inert(facts)] or members
     markers = tuple(sorted({facts.marker for facts in live}))
@@ -209,10 +220,31 @@ def _read_live(members: list[Any]) -> _Reading:
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
         magnitude=loop_magnitude(marker, [f.details for f in owners]),
         growth=growth_source(marker, owners),
+        measured=_measured_workload(live, measured),
+        queries=_query_reading(live, queries),
     )
 
 
-def _facets(r: _Reading, confidence: str) -> dict[str, str]:
+def _query_reading(live: list[Any], queries: Mapping[str, Any]) -> Any:
+    """The strongest query-count reading at any live member's loop owner or on
+    its call path to the sink: the statements issue there, not always in the
+    function that loops."""
+    sites = set()
+    for f in live:
+        sites.add(f.details.get("role_owner"))
+        sites.update(f.details.get("path") or ())
+    return strongest(queries[s] for s in sites if s in queries)
+
+
+def _measured_workload(live: list[Any], measured: Mapping[str, str]) -> str | None:
+    """The first by name of the workloads that rank a live member's loop owner."""
+    names = {name for f in live if (name := measured.get(f.details.get("role_owner") or ""))}
+    return min(names) if names else None
+
+
+def _facets(
+    r: _Reading, confidence: str, cold_name: bool, confirmed: str | None
+) -> dict[str, str]:
     return {
         "actionability_confidence": confidence,
         "exposure": exposure(r.reachable),
@@ -222,11 +254,46 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
         "loop_magnitude": r.magnitude,
         "growth_source": r.growth,
         "execution_role": r.role,
+        # Only with runtime evidence, so a repo without any stores what it did.
+        **({"measured": r.measured} if r.measured else {}),
+        # The name said it runs once and a run said otherwise: kept, never led.
+        **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
+        **_query_facets(r.queries),
+        **({"confirmed": confirmed} if confirmed else {}),
     }
 
 
+def _confirmed(r: _Reading, hot: frozenset[str]) -> str | None:
+    """What confirms the cause, or ``None``: exact evidence at its call path
+    (``query_count``: statements grow with the items), else a live member's
+    loop owner a leading workload measured above the lead bar
+    (``lead_candidate``, ``measured``)."""
+    if r.queries is not None and r.queries.verdict == "grows":
+        return "query_count"
+    if any(f.details.get("role_owner") in hot for f in r.live):
+        return "measured"
+    return None
+
+
+def _query_facets(reading: Any) -> dict[str, str]:
+    """``queries`` (``grows``, ``flat`` or ``ran``) and the largest count seen,
+    only when query counts reached the group."""
+    if reading is None:
+        return {}
+    out = {"queries": reading.verdict, "query_statements": str(reading.statements)}
+    if reading.items is not None:
+        out["query_items"] = str(reading.items)
+    return out
+
+
 def _assemble(
-    key: Any, members: list[Any], cap: int, origins: Mapping[str, str | None]
+    key: Any,
+    members: list[Any],
+    cap: int,
+    origins: Mapping[str, str | None],
+    measured: Mapping[str, str],
+    queries: Mapping[str, Any],
+    hot: frozenset[str],
 ) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
@@ -240,7 +307,8 @@ def _assemble(
     """
     context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
-    r = _read_live(members)
+    # Statement counts speak only to a cause that crosses a database boundary.
+    r = _read_live(members, measured, queries if boundary == "db" else {})
     evidence_confidence = provenance_confidence(r.provenance)
     assessment = assess_fix(
         r.marker,
@@ -252,8 +320,9 @@ def _assemble(
     acted = actionability(
         assessment,
         evidence_confidence,
-        expected_reason=expected_reason(members, r.magnitude),
+        expected_reason=expected_reason(members, r.magnitude, measured=r.measured is not None),
     )
+    cold_name = r.measured is not None and expected_reason(members, r.magnitude) == "cold_path"
     inputs = {
         "multiplier_shape": r.marker,
         "boundary_kind": boundary,
@@ -272,7 +341,7 @@ def _assemble(
         provenance=r.provenance,
         magnitude=r.magnitude,
     )
-    facets = _facets(r, acted.confidence)
+    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot))
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
@@ -313,17 +382,29 @@ def build_performance_opportunities(
     *,
     evidence_limit: int = 8,
     origins: Mapping[str, str | None] | None = None,
+    measured: Mapping[str, str] | None = None,
+    queries: Mapping[str, Any] | None = None,
+    hot: frozenset[str] = frozenset(),
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
     *origins* is each file's stored ``code_origin``, which settles an
-    ``unknown`` context (:func:`.causal.settled_context`).
+    ``unknown`` context (:func:`.causal.settled_context`). *measured* maps
+    each function a leading workload's newest run ranks to that workload's
+    name; a group whose loop owner is one carries the ``measured`` facet.
+    *queries* maps a call site's symbol id to its query-count reading
+    (``evidence.query_counts``); a database cause reached by one carries the
+    ``queries`` facet. *hot* holds the functions a leading workload
+    measured in the ``lead_candidate`` tier; a cause inside one, or whose query counts grow, carries
+    the ``confirmed`` facet.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
-        opportunity = _assemble(key, members, cap, origins or {})
+        opportunity = _assemble(
+            key, members, cap, origins or {}, measured or {}, queries or {}, hot
+        )
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}
     return link_siblings(opportunities, sites, rank_sort_key)

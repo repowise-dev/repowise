@@ -32,8 +32,9 @@ _ANSWER_SWITCHES: tuple[tuple[str, bool, str], ...] = (
     ("LEAN_HIGH", False, "Drop re-read evidence from high-confidence answers."),
 )
 
-#: Measured per request: about 2.6k on current flagship models, 1.9k on smaller ones.
-_ALWAYS_LOAD_COST = "about 2k to 2.6k more tokens per turn, depending on the model"
+#: Measured per request: about 2.6k on current flagship models, 1.9k on smaller ones;
+#: one figure on every surface.
+_ALWAYS_LOAD_COST = "about 2.5k more tokens a turn"
 
 SETTINGS: tuple[Setting, ...] = (
     _s(

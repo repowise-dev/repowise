@@ -7,7 +7,9 @@
 /**
  * Why a unit is out of a default queue (`queue.eligibility.Reason`), plus the
  * stored-judgement reasons (`queue.counts.STORED_REASONS`): `not_judged` (stored
- * before units were judged), `covered_by_plan`, `not_file_lead`, `not_in_queue`.
+ * before units were judged), `covered_by_plan`, `not_file_lead`, `not_in_queue`,
+ * and `observation` (a performance cause whose marker has no fix strategy; it is
+ * stored on the row and never counted, since it is no unit of the queue).
  */
 export type QueueReason =
   | "test"
@@ -39,7 +41,8 @@ export type QueueReason =
   | "not_judged"
   | "covered_by_plan"
   | "not_file_lead"
-  | "not_in_queue";
+  | "not_in_queue"
+  | "observation";
 
 /** One noun per unit: findings (observations), causes (performance), plans (refactoring), items (Fix first). */
 export type QueueUnit = "findings" | "causes" | "plans" | "items";

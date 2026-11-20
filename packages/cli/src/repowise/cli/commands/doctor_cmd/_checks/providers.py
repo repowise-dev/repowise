@@ -99,7 +99,7 @@ def _no_provider_detail(repo_path: _DoctorPath) -> str:
     from repowise.cli.ui.subscription import upgrade_route
     from repowise.core.index_scope import load_index_scope, upgrade_line
 
-    return f"None configured: {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
+    return f"None configured. {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
 
 
 def _hosted_account_check() -> DoctorCheck:

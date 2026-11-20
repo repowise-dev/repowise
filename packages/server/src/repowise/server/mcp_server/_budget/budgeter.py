@@ -299,6 +299,8 @@ def _shed_in_rows(
         if excess <= 0:
             return
         row, label = rows[i], f"{path}[{i}].{name}"
+        if name not in row:
+            continue  # the same row listed twice, already shed at its first index
         scoped = limits if aliased else _RowLimits(
             limits.headroom,
             limits.char_budget,

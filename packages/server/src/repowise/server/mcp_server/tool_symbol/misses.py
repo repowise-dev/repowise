@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
@@ -146,15 +147,19 @@ def _member_match(lines: list[str], file_path: str, i: int, owner: str) -> dict:
     return match
 
 
-def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict]:
+def _live_grep_fallback(
+    repo_root: Path, file_path: str, name: str, text: str | None = None
+) -> list[dict]:
     """Find ``name`` in the live file when the symbol index misses.
 
     Turns a dead-end call (pure cost) into an answer: constants, imports,
     aliases, and decorators live between indexed symbols, and the line that
     defines them is usually all the agent needs. ±2 lines of context per
-    match, capped at _MAX_FALLBACK_MATCHES.
+    match, capped at _MAX_FALLBACK_MATCHES. *text* is the file's live text when
+    the caller already read it.
     """
-    text = _read_file_text(repo_root, file_path)
+    if text is None:
+        text = _read_file_text(repo_root, file_path)
     if text is None:
         return []
     bare = _bare_name(name)
@@ -188,17 +193,25 @@ def _member_note(file_part: str, name: str, matches: list[dict]) -> str:
 
 
 def _grep_matches(
-    repo_root: Path, file_part: str, name: str, owners: list[tuple[str, int, int]]
+    repo_root: Path,
+    file_part: str,
+    name: str,
+    owners: list[tuple[str, int, int]],
+    text: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Live lines for an index miss and the note that explains them."""
-    text = _read_file_text(repo_root, file_part) if owners else None
+    """Live lines for an index miss and the note that explains them.
+
+    *text* is the file's live text when the caller already read it.
+    """
+    if text is None and owners:
+        text = _read_file_text(repo_root, file_part)
     lines = text.splitlines() if text else []
     # An unqualified name the module itself defines keeps the plain grep.
     if lines and (_owner_qualifier(name) or not _defined_outside(lines, _bare_name(name), owners)):
         members = _member_lines(lines, file_part, name, owners)
         if members:
             return members, _member_note(file_part, name, members)
-    matches = _live_grep_fallback(repo_root, file_part, name)
+    matches = _live_grep_fallback(repo_root, file_part, name, text)
     likely = (
         "defined here, so likely added after the last index"
         if any(m.get("defines") for m in matches)
@@ -236,10 +249,14 @@ def _live_grep_response(
     file_part, name_part = _parse_symbol_id(symbol_id)
     if not file_part or not name_part or _pkg.is_excluded(file_part, exclude_spec):
         return None
-    matches, note = _grep_matches(Path(str(ctx.path)), file_part, name_part, owners or [])
+    root = Path(str(ctx.path))
+    text = _read_file_text(root, file_part)
+    if text is None:
+        return None
+    matches, note = _grep_matches(root, file_part, name_part, owners or [], text)
     if not matches:
         return None
-    return {
+    response = {
         "symbol_id": symbol_id,
         "file": file_part,
         "resolution": "live_grep",
@@ -252,6 +269,15 @@ def _live_grep_response(
             targets=[file_part],
         ),
     }
+    # The lines stand in for reading the file to find the name; the text is
+    # already in hand, so sizing that Read costs no second read. Accounting
+    # never costs the reply.
+    with contextlib.suppress(Exception):
+        from repowise.server.mcp_server._savings import declare_replaced
+        from repowise.server.mcp_server._savings.reads import read_credit
+
+        declare_replaced(response, read_credit(root, file_part, text))
+    return response
 
 
 def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:

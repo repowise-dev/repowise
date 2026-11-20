@@ -227,6 +227,21 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
 
 
+async def benchmark_results(
+    session: AsyncSession, run_ids: list[str]
+) -> list[EvidenceBenchmarkResult]:
+    """The benchmark rows of *run_ids*, one statement per chunk."""
+    out: list[EvidenceBenchmarkResult] = []
+    for i in range(0, len(run_ids), _BATCH_SIZE):
+        result = await session.execute(
+            select(EvidenceBenchmarkResult).where(
+                EvidenceBenchmarkResult.run_id.in_(run_ids[i : i + _BATCH_SIZE])
+            )
+        )
+        out.extend(result.scalars())
+    return out
+
+
 async def hotness_inputs(
     session: AsyncSession, repository_id: str
 ) -> tuple[list[RunFacts], dict[str, list[CostFacts]]] | None:
@@ -414,6 +429,30 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     return "not_ranked"
 
 
+async def measured_status(session: AsyncSession, repository_id: str) -> str:
+    """``measured`` when a workload's newest run ranks a function (what
+    :func:`ranked_by_workload` lists), else :func:`unranked_reason`'s token.
+    One indexed lookup when anything is ranked."""
+    ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
+    if (await session.execute(ranked.limit(1))).first() is not None:
+        return "measured"
+    return await unranked_reason(session, repository_id)
+
+
+def unranked_command(status: str) -> str | None:
+    """The command that moves an :func:`unranked_reason` token on: ``repowise
+    update`` builds a per-workload view that was never built, evidence setup
+    connects evidence when none is stored or all of it is stale. ``None`` for
+    ``not_ranked`` and ``measured``: no command ranks thin evidence."""
+    if status == "needs_update":
+        return "repowise update"
+    if status in ("no_runtime_data", "stale"):
+        from ....evidence.setup import SETUP_COMMAND
+
+        return SETUP_COMMAND
+    return None
+
+
 async def _workload_view_missing(session: AsyncSession, repository_id: str) -> bool:
     """A workload's newest run is the basis of a ranked function, yet
     ``workload_hotness`` is empty: the per-workload view was never built.
@@ -505,10 +544,12 @@ __all__ = [
     "hotness_for_symbols",
     "hotness_inputs",
     "list_evidence_runs",
+    "measured_status",
     "prune_evidence_runs",
     "ranked_by_workload",
     "replace_symbol_hotness",
     "replace_workload_hotness",
     "save_evidence_run",
+    "unranked_command",
     "unranked_reason",
 ]

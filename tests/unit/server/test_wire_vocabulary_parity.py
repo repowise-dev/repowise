@@ -182,6 +182,12 @@ def test_every_surface_counts_in_the_one_reason_vocabulary() -> None:
     assert set(FIX_EXCLUSIONS) | set(DEFAULT_QUEUE_EXCLUSIONS) == set(REASONS)
 
 
+def test_performance_evidence_states_match_python() -> None:
+    from repowise.core.analysis.health.perf.serving import EVIDENCE_STATES
+
+    assert _union_members("PerformanceEvidenceState", "health.ts") == set(EVIDENCE_STATES)
+
+
 def test_performance_cost_proofs_match_python() -> None:
     from repowise.core.analysis.health.queue.eligibility import QUEUE_PROOFS
 

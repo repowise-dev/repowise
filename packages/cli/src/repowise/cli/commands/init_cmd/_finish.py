@@ -500,7 +500,7 @@ def complete_setup(run: InitRun) -> None:
     )
     run.next_steps = completion.steps
     run.stood_out = completion.stood_out
-    run.model_upgrade = completion.model_upgrade
+    run.first_prompt = completion.first_prompt or None
 
 
 def _gaps(run: InitRun) -> list[str]:

@@ -167,6 +167,7 @@ def offer(
     tool_response: object,
     build: Callable[[], Offer | None],
     forgone_gate: Callable[[], bool] | None = None,
+    session_id: str = "",
 ) -> tuple[Offer | None, Callable[[], None] | None]:
     """``(served, on_emitted)`` for one replacement opportunity. Never raises.
 
@@ -186,6 +187,9 @@ def offer(
     the response. This one hands the agent nothing, so making it wait for a
     build and a write lock would charge every qualifying call in an opted-out
     repo for a number it will never see.
+
+    *session_id* is the host session, so a replaced Read counts its file as
+    not opened once per session.
 
     *forgone_gate* is the surface's own permission to spend that work: a
     once-per-key or per-session cap, claimed before the deferral because the
@@ -211,13 +215,17 @@ def offer(
         if payload is None:
             return None, None
         candidate.payload = payload
-        return candidate, _saving_writer(repo_path, candidate, source, adapter)
+        return candidate, _saving_writer(repo_path, candidate, source, adapter, session_id)
     except Exception:
         return None, None
 
 
+#: Savings sources whose ``Offer.key`` is a file the agent asked to Read.
+_READ_SOURCES = frozenset({"hook-read"})
+
+
 def _saving_writer(
-    repo_path: Path, served: Offer, source: str, adapter: AgentAdapter
+    repo_path: Path, served: Offer, source: str, adapter: AgentAdapter, session_id: str = ""
 ) -> Callable[[], None]:
     """The savings-ledger write for a replacement the agent received.
 
@@ -235,6 +243,8 @@ def _saving_writer(
                 raw_tokens=served.raw_tokens,
                 distilled_tokens=served.new_tokens,
                 hook_adapter=getattr(adapter, "name", None),
+                session_id=session_id,
+                avoided_file=served.key if source in _READ_SOURCES else None,
             )
         except Exception:
             return

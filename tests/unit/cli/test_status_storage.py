@@ -90,7 +90,7 @@ class TestStatusKeylessUpgradeNote:
 
     def test_template_only_scope_prints_the_note(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
-        assert "answers and docs: `repowise generate`" in out
+        assert "For answers and docs, run `repowise generate`" in out
         assert "a provider key or a local model" in out
 
     def test_template_only_scope_names_a_signed_in_plan(self, monkeypatch, tmp_path) -> None:
@@ -99,7 +99,7 @@ class TestStatusKeylessUpgradeNote:
         route = FreeRoute("claude_cli", "Claude Code", minutes=4)
         monkeypatch.setattr(status_cmd, "upgrade_route", lambda _repo: route)
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
-        assert "`repowise generate --provider claude_cli` uses your Claude Code" in out
+        assert "`repowise generate --provider claude_cli`; it uses your Claude Code" in out
         assert "about 4 minutes" in out
 
     def test_note_uses_the_scopes_own_next_command(self, monkeypatch, tmp_path) -> None:
@@ -121,7 +121,7 @@ class TestStatusKeylessUpgradeNote:
     def test_model_backed_scope_does_not_print_it(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "llm"})
         assert "Scope" in out
-        assert "answers and docs" not in out
+        assert "answers and docs" not in out.lower()
 
 
 def test_sync_state_totals_match_the_pages_table(tmp_path: Path, monkeypatch) -> None:
@@ -162,6 +162,19 @@ def test_health_line_leads_performance_with_the_causes_worth_fixing_now(monkeypa
     line = status_cmd._query_health_line(Path("."))
     assert line is not None
     assert " · 4 of 415 production perf causes worth fixing now (9.7)" in line
+
+
+def test_health_line_says_no_production_causes_instead_of_0_of_0(monkeypatch) -> None:
+    causes = {"now": 0, "production": 0, "all": 3, "per_10k_loc": 0.5}
+    monkeypatch.setattr(
+        status_cmd,
+        "_query_health",
+        lambda _path: _health(performance_average=9.9, performance_causes=causes),
+    )
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None
+    assert "0 of 0" not in line
+    assert " · no production perf causes (9.9)" in line
 
 
 def test_latency_table_prints_p50_and_p90_per_tool(tmp_path: Path) -> None:

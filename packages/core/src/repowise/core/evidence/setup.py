@@ -4,7 +4,8 @@
 stacks name (:mod:`repowise.core.test_runners.stacks`), the command that
 writes a report repowise reads, what that command needs first, where the
 report lands, and the exact ``repowise`` line that ingests it, then the
-runtime targets worth profiling (:mod:`.runtime_setup`). A report already on
+runtime targets worth profiling (:mod:`.runtime_setup`) and the JUnit XML
+report its tests can write for test timings. A report already on
 disk comes first. ``next_call`` is the sequence of steps an agent runs next,
 each with the directory it runs in. Nothing is written.
 """
@@ -20,11 +21,13 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
+from .ci_snippet import ci_snippet
 from .runtime_setup import (
     ARGS_PLACEHOLDER,
     CLASS_ORDER,
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
+    evidence_ingest_line,
     runtime_targets,
     timed_target,
 )
@@ -204,6 +207,8 @@ def evidence_setup(
     coverage_only: bool = False,
     index_error: str | None = None,
     index_fix: str = DOCTOR_COMMAND,
+    ci: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -220,6 +225,9 @@ def evidence_setup(
     *index_error* is why an index that exists could not be read: the plan
     then sends the agent to *index_fix* (``repowise doctor`` unless the
     error names another), never to a fresh ``init``.
+    With *ci* (``github`` or ``gitlab``), ``ci`` holds the CI file that runs
+    each unit's tests with coverage on pushes to *branch*
+    (:func:`~.ci_snippet.ci_snippet`); the caller writes it.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -232,6 +240,8 @@ def evidence_setup(
     planned = [_coverage_unit(s, found[id(s)], _measures(root, found[id(s)], head)) for s in stacks]
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
+        for stack, unit in zip(stacks, planned, strict=True):
+            unit["test_timings"] = _test_timings(stack, head)
     covered = head is not None and coverage_commit == head
     done = _measured_at(runtime, head)
     next_call = _with_optional(
@@ -250,13 +260,34 @@ def evidence_setup(
             "steps": [_step(root, "", index_fix)],
         }
         reason = f"The index could not be read: {index_error}"
-    return {
+    plan = {
         "repo": str(root),
         "indexed": indexed,
         "commit": head,
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+    if ci is not None:
+        plan["ci"] = ci_snippet(stacks, ci, branch)
+    return plan
+
+
+def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
+    """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
+
+    ``flag`` is what to add to the unit's own test command (None: the runner
+    writes the report by default). Test timings are never a step of
+    ``next_call``: they rank tests, they never decide anything.
+    """
+    if not stack.junit_report:
+        return None
+    report = _joined(stack.root, stack.junit_report)
+    workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
+    return {
+        "flag": stack.junit_flag or None,
+        "report": report,
+        "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
     }
 
 

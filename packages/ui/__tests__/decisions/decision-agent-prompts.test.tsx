@@ -94,6 +94,14 @@ describe("DecisionAgentHero", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/Couldn't copy/));
   });
 
+  it("leads with the host's eyebrow line, defaulting to the handoff", () => {
+    const { rerender } = render(<DecisionAgentHero prompt={discover} />);
+    expect(screen.getByText("Hand off to your agent")).toBeInTheDocument();
+    rerender(<DecisionAgentHero prompt={discover} eyebrow="Claude Code made its first call 4 minutes ago" />);
+    expect(screen.getByText("Claude Code made its first call 4 minutes ago")).toBeInTheDocument();
+    expect(screen.queryByText("Hand off to your agent")).toBeNull();
+  });
+
   it("names the add pass when the server had nothing to check", () => {
     render(<DecisionAgentHero prompt={{ kind: "add", text: "record them", count: 0 }} />);
 

@@ -6,7 +6,10 @@ import sqlite3
 
 #: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
 #: the per-event ``schema_version`` column, which versions an event payload and
-#: is still 1: v2 changed only how the store validates an agent id.
+#: is still 1: v2 changed only how the store validates an agent id. The
+#: files-not-opened tables were added without a bump: they are additive, a v2
+#: store missing them is repaired by the required-tables check, and a bump would
+#: make every older build refuse the sidecar and drop its events.
 SAVINGS_SCHEMA_VERSION = 2
 
 _PRESERVED_TABLES = (
@@ -101,6 +104,7 @@ _SCHEMA_TABLES = (
         input_rate_usd_per_million REAL,
         output_rate_usd_per_million REAL,
         metadata_json TEXT NOT NULL,
+        outcome_json TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256),
         UNIQUE(repository_id, idempotency_key),
         CHECK(schema_version = 1),
         CHECK(surface IN ('distill','hook','mcp','vscode_lm')),
@@ -147,6 +151,30 @@ _SCHEMA_TABLES = (
     )
     """,
     _OPPORTUNITIES_TABLE,
+    # Files an event served in place of a Read: paths and one Read's tokens,
+    # never contents. ``session_key`` is the cross-surface host session.
+    """
+    CREATE TABLE IF NOT EXISTS savings_event_files (
+        event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        read_tokens INTEGER,
+        session_key TEXT,
+        PRIMARY KEY(event_id, path),
+        CHECK(read_tokens IS NULL OR read_tokens >= 0),
+        CHECK(session_key IS NULL OR length(session_key) = 71)
+    )
+    """,
+    # The latest Read the agent made of a credited path, per session: a Read
+    # after the crediting event cancels that file's credit.
+    """
+    CREATE TABLE IF NOT EXISTS savings_file_reads (
+        session_key TEXT NOT NULL,
+        path TEXT NOT NULL,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY(session_key, path),
+        CHECK(length(session_key) = 71)
+    )
+    """,
 )
 
 _SCHEMA_INDEXES = tuple(
@@ -160,6 +188,7 @@ _SCHEMA_INDEXES = tuple(
         ("idx_savings_correlations_hash", "savings_event_correlations(kind, value_hash)"),
         ("idx_savings_opportunities_repo_time", "savings_opportunities(repository_id, occurred_at)"),
         ("idx_savings_created", "savings(created_at)"),
+        ("idx_savings_event_files_session", "savings_event_files(session_key, path)"),
     )
 )
 
@@ -172,13 +201,38 @@ _REQUIRED_TABLES = frozenset(
         "savings_event_omissions",
         "savings_event_correlations",
         "savings_opportunities",
+        "savings_event_files",
+        "savings_file_reads",
     }
 )
 
 
+#: Columns added to an existing table after it shipped, as ``(table, column,
+#: definition)``. Added in place by ``ALTER TABLE ... ADD COLUMN``, which keeps
+#: every row and needs no version bump: an older build names its columns on
+#: insert and never sees the new one.
+_ADDED_COLUMNS = (
+    # What a check tool returned, in a few counts (see ``contracts.normalize_outcome``).
+    (
+        "savings_events",
+        "outcome_json",
+        "TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256)",
+    ),
+)
+
+
+def _missing_columns(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    missing = []
+    for table, column, definition in _ADDED_COLUMNS:
+        names = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in names:
+            missing.append((table, column, definition))
+    return missing
+
+
 def _has_current_schema(conn: sqlite3.Connection) -> bool:
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return tables >= _REQUIRED_TABLES
+    return tables >= _REQUIRED_TABLES and not _missing_columns(conn)
 
 
 def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
@@ -194,6 +248,8 @@ def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
     conn.execute(_LEGACY_SAVINGS_TABLE)
     for statement in _SCHEMA_TABLES:
         conn.execute(statement)
+    for table, column, definition in _missing_columns(conn):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     for statement in _SCHEMA_INDEXES:
         conn.execute(statement)
 

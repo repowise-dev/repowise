@@ -8,19 +8,33 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from repowise.core.agents.identity import UNKNOWN_AGENT, is_agent_slug
-from repowise.core.savings.correlation import hash_correlation_evidence, new_event_id
+from repowise.core.savings.correlation import (
+    file_session_key,
+    hash_correlation_evidence,
+    new_event_id,
+)
 from repowise.core.savings.formulas import TokenAccounting, calculate_token_accounting
 from repowise.core.savings.normalization import normalize_metadata
+
+if TYPE_CHECKING:
+    # Type-only: the event writers import this module on the hook path, and
+    # the estimate is a report-time concern they never touch.
+    from repowise.core.savings.output_estimate import OutputEstimate
 
 SCHEMA_VERSION = 1
 SURFACES = frozenset({"distill", "hook", "mcp", "vscode_lm"})
 EVIDENCE_KINDS = frozenset({"measured", "inferred"})
 RESULT_STATES = frozenset({"success", "dead_end", "error", "partial", "unknown"})
 _HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+#: Files one event may credit as not opened. A ``get_context`` call with many
+#: file targets or a long ``get_answer`` citation list stops here; the token
+#: credit is unaffected, only the per-file list is cut. Paths, never contents.
+MAX_AVOIDED_FILES = 50
+_MAX_AVOIDED_PATH_CHARS = 512
 
 
 def _agent_slug(value: object | None, name: str) -> str:
@@ -172,6 +186,78 @@ def _omission_refs(value: Mapping[str, Any]) -> tuple[str, ...]:
     return refs
 
 
+def _avoided_files(value: Mapping[str, Any]) -> tuple[tuple[str, int | None], ...]:
+    """``(path, read_tokens)`` pairs this event served in place of a Read.
+
+    Best-effort by design: a malformed entry is skipped, never raised, because
+    the list rides on an event whose token saving must not be lost over it.
+    First entry per path wins; the list is capped at :data:`MAX_AVOIDED_FILES`.
+    """
+    raw = value.get("avoided_files") or ()
+    items = raw.items() if isinstance(raw, Mapping) else raw
+    files: dict[str, int | None] = {}
+    for item in items:
+        if len(files) >= MAX_AVOIDED_FILES:
+            break
+        try:
+            path, tokens = item
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(path, str) or not path or len(path) > _MAX_AVOIDED_PATH_CHARS:
+            continue
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            tokens = None
+        files.setdefault(path, tokens)
+    return tuple(files.items())
+
+
+#: What a check tool's reply returned, as a few counts and one or two enums.
+#: The vocabulary is closed so the column stays small and readable by the
+#: report; anything else is dropped. Each tool uses a subset (see the MCP
+#: wrapper's ``_savings/outcome.py``).
+OUTCOME_LEVELS = ("high", "medium", "low")
+OUTCOME_DECISIONS = ("accepted", "candidate", "none")
+_OUTCOME_ENUMS: dict[str, tuple[str, ...]] = {
+    "level": OUTCOME_LEVELS,
+    "decision": OUTCOME_DECISIONS,
+}
+_OUTCOME_COUNTS = frozenset(
+    {"high", "medium", "low", "findings", "files", "items", "high_confidence"}
+)
+_OUTCOME_COUNT_MAX = 1_000_000
+
+
+def normalize_outcome(value: object) -> dict[str, Any] | None:
+    """*value* reduced to the outcome vocabulary, or ``None`` when it is not a mapping.
+
+    Never raises: an outcome is an annotation, and a bad one costs only itself.
+    An empty mapping is kept as ``{}``: the check ran and returned nothing to count.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _OUTCOME_ENUMS and item in _OUTCOME_ENUMS[key]:
+            out[key] = item
+        elif (
+            key in _OUTCOME_COUNTS
+            and isinstance(item, int)
+            and not isinstance(item, bool)
+            and item >= 0
+        ):
+            out[key] = min(item, _OUTCOME_COUNT_MAX)
+    return out
+
+
+def _file_session(value: Mapping[str, Any]) -> str | None:
+    """The cross-surface session key for this event's files, or None."""
+    raw = value.get("host_session_id")
+    if raw is None or raw == "":
+        return None
+    raw = str(raw)
+    return raw if _HASH_RE.fullmatch(raw) else file_session_key(raw)
+
+
 @dataclass(frozen=True, slots=True)
 class SavingsEvent:
     event_id: str
@@ -209,6 +295,15 @@ class SavingsEvent:
     omission_refs: tuple[str, ...] = ()
     metadata: Mapping[str, str] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+    #: Files this event served in place of a Read, with what one Read of each
+    #: costs (None when unsized). Stored beside the event, not in its row.
+    avoided_files: tuple[tuple[str, int | None], ...] = ()
+    #: :func:`~repowise.core.savings.correlation.file_session_key` of the host
+    #: session, so a file is credited once per session across surfaces.
+    file_session_key: str | None = None
+    #: What a check tool returned (:func:`normalize_outcome`); ``None`` for
+    #: every other operation and for events recorded before outcomes were kept.
+    outcome: Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(
@@ -221,6 +316,12 @@ class SavingsEvent:
         pricing = _pricing(value)
         refs = _omission_refs(value)
         repository_id = _bounded(value["repository_id"], "repository_id", 256) or ""
+        try:
+            # Best-effort: a bad file list costs the list, never the event.
+            avoided = _avoided_files(value) if semantics.is_usable else ()
+            file_key = _file_session(value)
+        except Exception:
+            avoided, file_key = (), None
         session_id = _correlation(
             value.get("session_id"),
             kind="session",
@@ -275,10 +376,18 @@ class SavingsEvent:
             output_rate_usd_per_million=pricing.output_rate,
             omission_refs=refs,
             metadata=normalize_metadata(value.get("metadata")),
+            avoided_files=avoided,
+            file_session_key=file_key,
+            outcome=normalize_outcome(value.get("outcome")),
         )
 
     def metadata_json(self) -> str:
         return json.dumps(dict(self.metadata), sort_keys=True, separators=(",", ":"))
+
+    def outcome_json(self) -> str | None:
+        if self.outcome is None:
+            return None
+        return json.dumps(dict(self.outcome), sort_keys=True, separators=(",", ":"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,3 +489,39 @@ class SavingsReport:
     #: they are live. Null when the window holds no events at all.
     first_event_at: str | None = None
     last_event_at: str | None = None
+    #: Distinct (session, path) pairs a usable event served in place of a Read,
+    #: each credited once per session to the first event that served it, and
+    #: cancelled when the agent Read the path later in that session. Tokens are
+    #: one Read of each, as measured when the event was recorded.
+    files_not_opened: int = 0
+    files_not_opened_tokens: int = 0
+    #: Tool calls Repowise answered: usable MCP, VS Code tool and hook events.
+    tool_calls_answered: int = 0
+    #: Rows of ``{day|agent|surface, files_not_opened, files_not_opened_tokens,
+    #: tool_calls_answered}``; a credited file counts under its owning event.
+    files_per_day: tuple[Mapping[str, Any], ...] = ()
+    files_per_agent: tuple[Mapping[str, Any], ...] = ()
+    files_per_surface: tuple[Mapping[str, Any], ...] = ()
+    #: The share of the window recorded inside a subagent (events with a
+    #: ``subagent_id``). Part of the totals above, never added to them.
+    subagent_events: int = 0
+    subagent_saved_input_tokens: int = 0
+    #: Unpriced tokens priced at report time, never written back to an event.
+    #: The rate is the newest one an event of the same session (and surface,
+    #: since session ids are hashed per surface) captured, else
+    #: the cached rate for the event's agent. A subset of
+    #: ``unpriced_saved_input_tokens``, which keeps its meaning (no rate was
+    #: captured when the event happened), and reported apart from
+    #: ``priced_input_savings_usd`` so a reader can tell captured from
+    #: backfilled dollars.
+    backfilled_saved_input_tokens: int = 0
+    backfilled_input_savings_usd: float = 0.0
+    #: Output tokens saved, estimated per session from the paired benchmark
+    #: (see :mod:`repowise.core.savings.output_estimate`). Kept apart from the
+    #: recorded ``saved_output_tokens``, which no producer measures. Null when
+    #: no calibration could be loaded.
+    output_estimate: OutputEstimate | None = None
+    #: One row per check tool (:data:`~repowise.core.savings.reporting.CHECK_TOOLS`):
+    #: usable MCP calls and what they returned. Outcome fields are null when no
+    #: call in the window recorded one.
+    checks: tuple[Mapping[str, Any], ...] = ()

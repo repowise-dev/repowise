@@ -1395,6 +1395,13 @@ class DecisionRecord(Base):
     staleness_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Every file and path the record names is absent at HEAD, renames followed.
     artifacts_gone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # Whether the rule itself still holds once the files moved, from
+    # ``analysis.decisions.rule_check``: holds | drifted | unknown, NULL until
+    # checked. ``holds`` clears a churn-only ``needs_review``; ``drifted`` sets it.
+    rule_check: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rule_check_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HEAD the verdict was read at; a later change to the scope rechecks it.
+    rule_checked_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     superseded_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -3191,6 +3198,9 @@ class EvidenceTestTiming(Base):
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     # ``passed``, ``failed``, ``skipped``, ``error``; NULL: not reported.
     outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The first test the run reports for its class: its time may include
+    # fixtures the whole class or module shares. NULL: not said.
+    first_in_class: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 
@@ -3243,6 +3253,8 @@ class EvidenceQueryCount(Base):
     lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The line the evidence named, at the evidence commit.
     site_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How many items the scope ran over (its input size), when the run said.
+    scope_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     query_count: Mapped[int] = mapped_column(Integer, nullable=False)
     # The most identical statements from this site in the scope.
     identical_max: Mapped[int | None] = mapped_column(Integer, nullable=True)

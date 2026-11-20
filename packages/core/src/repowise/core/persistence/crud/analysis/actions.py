@@ -56,6 +56,7 @@ from repowise.core.analysis.actions.build import (
 from repowise.core.analysis.actions.facts import MOCKED_ONLY_VIA, FileFacts
 from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
+from repowise.core.analysis.actions.setup import SetupFacts
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
@@ -63,6 +64,7 @@ from repowise.core.analysis.test_reachability import (
     any_tests_reaching,
     write_test_masks_snapshot,
 )
+from repowise.core.setup_state import record_setup
 
 from ...models import (
     ActionState,
@@ -679,14 +681,22 @@ async def write_read_snapshots(
     return failed
 
 
-def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:
-    view = rank_actions(ruled, states, now=now)
+def _view(
+    ruled: dict[str, Any],
+    states: dict[str, ActionStateRecord],
+    now: datetime,
+    setup: SetupFacts | None = None,
+) -> dict:
+    view = rank_actions(ruled, states, now=now, setup=setup)
     view["unavailable"] = dict(ruled["unavailable"])
     return view
 
 
 def _stored_view(
-    ruled: dict[str, Any] | None, states: dict[str, ActionStateRecord], now: datetime
+    ruled: dict[str, Any] | None,
+    states: dict[str, ActionStateRecord],
+    now: datetime,
+    setup: SetupFacts | None = None,
 ) -> dict[str, Any] | None:
     """The view from the stored rules' output; ``None`` when there is none or
     the ranking cannot read it. Fields the ranking does not read pass through
@@ -695,7 +705,7 @@ def _stored_view(
     if ruled is None:
         return None
     try:
-        return _view(ruled, states, now)
+        return _view(ruled, states, now, setup)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         logger.info("stored actions no longer fit the model: %s", exc)
         return None
@@ -708,8 +718,17 @@ async def load_actions_view(
     now: datetime | None = None,
     lookup: CrossRepoLookup | None = None,
     alias: str | None = None,
+    setup: SetupFacts | None = None,
+    record: bool = True,
 ) -> dict[str, Any]:
     """The one entry point: the rules' output, the person's answers, and the ranked view.
+
+    With *setup* (``setup_facts.load_setup_facts``) the live setup steps join
+    the list, the view carries a ``setup`` block, and that block is stored in
+    the checkout's ``.repowise/setup.json`` for the readers that cannot afford
+    this read (``analysis.actions.setup``). ``record=False`` leaves that store
+    to the caller, for a background read that must first check its answer is
+    still current.
 
     The rules' output is the stored snapshot while it is current, else built
     from the facts here. While a finding stored deletion-ready reads not safe
@@ -724,17 +743,32 @@ async def load_actions_view(
     except Exception:
         states = {}
     when = now or datetime.now(UTC)
+    view = await _ranked_view(session, repo_id, states, when, lookup, alias, setup)
+    if record and setup is not None and "setup" in view:
+        record_setup(setup.root, view["setup"])
+    return view
+
+
+async def _ranked_view(
+    session: AsyncSession,
+    repo_id: str,
+    states: dict[str, ActionStateRecord],
+    when: datetime,
+    lookup: CrossRepoLookup | None,
+    alias: str | None,
+    setup: SetupFacts | None,
+) -> dict[str, Any]:
     stored = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
     if stored is None and lookup is None and alias is None:
         ruled = await build_and_store(
             session, repo_id, SNAPSHOT_KIND, _KEY, lambda s: _ruled(s, repo_id)
         )
-        return _view(ruled, states, when)
+        return _view(ruled, states, when, setup)
     if stored is not None and await _stored_dead_overstated(session, repo_id, lookup, alias):
         stored = None
-    view = _stored_view(stored, states, when)
+    view = _stored_view(stored, states, when, setup)
     if view is None:
-        view = _view(await _ruled(session, repo_id, lookup, alias), states, when)
+        view = _view(await _ruled(session, repo_id, lookup, alias), states, when, setup)
     return view
 
 
@@ -745,7 +779,8 @@ async def load_action(
     *,
     lookup: CrossRepoLookup | None = None,
     alias: str | None = None,
+    setup: SetupFacts | None = None,
 ) -> Action | None:
     """One action by id: the same facts the list reads, without ranking the view."""
     facts = await load_repo_facts(session, repo_id, lookup=lookup, alias=alias)
-    return find_action(facts, action_id)
+    return find_action(facts, action_id, setup)

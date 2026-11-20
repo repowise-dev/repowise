@@ -198,6 +198,18 @@ async def test_a_new_connection_credits_the_read_again(
     assert get_symbol_baselines == [full, full]
 
 
+async def test_live_lines_for_an_unindexed_name_share_the_read(
+    setup_mcp, tmp_path, connect, get_symbol, get_symbol_baselines
+) -> None:
+    (tmp_path / "a.py").write_bytes(b"LIMIT = 3\n" + b"value = 1\n" * 400)
+    full = file_read_tokens(tmp_path, "a.py")
+    first = await get_symbol("a.py::LIMIT")
+    await get_symbol("a.py::LIMIT")
+    await get_symbol("a.py:1-2")
+    assert first["resolution"] == "live_grep"
+    assert get_symbol_baselines == [full, None, None]
+
+
 async def test_ambiguous_candidates_credit_only_unread_files(tmp_path, connect) -> None:
     from repowise.core.persistence.models import WikiSymbol
     from repowise.server.mcp_server import tool_symbol

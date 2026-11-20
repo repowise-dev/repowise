@@ -81,6 +81,12 @@ Each opportunity gets one state:
 | `investigate` | No supported strategy; a person has to decide |
 | `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) or grows only by reading tables that do not grow with the repository (reason `small_table`) |
 
+An opportunity whose marker has no fix strategy at all (such as
+`hot_path_sync_io` or `list_insert_zero_in_loop`) is an **observation**: no
+proof about the code would give it one, so it is no unit of any queue. It stays
+in the Performance view in the `investigate` state, and its rows store the queue
+reason `observation`, but no queue counts it, as left out or otherwise.
+
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats and the kind of I/O that call does (database, network, file system or
 subprocess). When every site reaches one sink, the step that adds a bulk form of
@@ -137,9 +143,49 @@ Everything else is counted by reason, not hidden:
 | `expected` | The repetition is intended |
 | `gated_off` | The function is switched off by a constant flag; see [dormant functions](CODE_HEALTH.md#fix-first) |
 | `cold_path` | The function is named for a migration, startup, shutdown or crash recovery, so it runs rarely |
-| `no_strategy` | The state is `investigate`: there is no supported fix to offer |
+| `no_strategy` | The state is `investigate`: a fix strategy exists for the marker, but a fact it needs is not proven |
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
+
+Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of a
+benchmark, entry point, load test or production workload ranks a cause's loop owner
+among its costliest functions, the cause stays in the queue and its `measured` facet
+names that workload. A unit-test run never does this. Such a cause is still never
+the one Fix first, Do next or the queue's lead name.
+
+Query counts are exact, so they can confirm or contradict a database cause. The
+`queries` facet reads the newest complete `query_count` run of each workload at the
+cause's loop owner and along its call path. Sizes are compared only within one run
+and one scope kind (tests or requests):
+
+| `queries` | Meaning |
+|---|---|
+| `grows` | Two tests or requests ran over different numbers of items, and the larger one issued more statements. The cause is confirmed |
+| `flat` | They ran over at least two different numbers of items, and every one issued the same count. This is counter-evidence |
+| `ran` | Anything else. It reports "ran with `query_statements` statements at `query_items` items" and confirms nothing |
+
+Telling `grows` from `flat` needs the scope's `items` in the evidence document
+([Runtime Evidence](RUNTIME_EVIDENCE.md)). The cause stays listed in every case.
+
+A cause carries `confirmed` when runtime evidence backs it. The value is
+`query_count` when its query counts grow with the items, or `measured` when a
+benchmark, entry point, load test or production workload measured its loop owner
+above the lead bar. That bar is a share of the run that clears the
+`evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
+`evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
+
+With runtime evidence, the queue orders causes in three tiers: confirmed first,
+then causes a leading workload measured (the `measured` facet), then the rest in
+their static order. Nothing is hidden: a cause with flat query counts, and a
+cause measured against its cold name, stay among the rest in their static order.
+Each row of the Performance tab carries `runtime_evidence`, what the evidence
+says about it: `confirmed`, `measured` (with the workload), `counter_evidence`
+(flat query counts), `ran` (query counts that settle nothing), or
+`not_exercised`, with the leading workloads that ran and never reached it ("not
+exercised in `<workload>`"). A unit-test run is never one of those workloads. A
+function a run sampled too rarely to rank reads as not exercised. The marks
+reflect the evidence of the last index or update. With no runtime evidence the
+order is the static one and rows carry no mark.
 
 To see them, widen the filter (below). Each performance finding also stores the
 reason its cause is in or out of the queue. Code in a package path that only looks

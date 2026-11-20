@@ -31,7 +31,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`risk`](#repowise-risk-revspec), [`overlap`](#repowise-overlap), [`dead-code`](#repowise-dead-code-path),
   [`doc-drift`](#repowise-doc-drift-path), [`security`](#repowise-security), [`check`](#repowise-check-revspec), [`ci-summary`](#repowise-ci-summary-dir),
   [`impacted-tests`](#repowise-impacted-tests-revspec), [`coverage`](#repowise-coverage),
-  [`evidence`](#repowise-evidence), [`perf measure`](#repowise-perf-measure----command),
+  [`evidence`](#repowise-evidence), [`perf measure`](#repowise-perf-measure----command), [`perf check`](#repowise-perf-check),
   [`components`](#repowise-components), [`packages`](#repowise-packages), [`changes`](#repowise-changes),
   [`suspects`](#repowise-suspects), [`events`](#repowise-events), [`report
   assessment`](#repowise-report-assessment-path), [`report estate`](#repowise-report-estate-path)
@@ -217,7 +217,7 @@ and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then de
 - Each line: `v` (schema, `1`), `event` (`stage`, `phase`, `warning`, last `summary`). `phase`: `state` (`start`/`done`/`failed`), `completed`, `total`, `unit`, `elapsed_s`.
 - `summary`: `status` (`ready`/`degraded`/`interrupted`/`failed` = exit `0`/`2`/`130`/other), `mode` (`key` from index
   scope, `label`, `run_mode`), `restart_required` (true when any agent must restart to load the tools), `restart_hosts` (`id`, `name` of each), `spend` (`tokens`, `usd`),
-  `warnings`, `files_written`, `next` (commands, `repowise serve` first), `mcp_tools` (per wired agent: `id`,
+  `warnings`, `files_written`, `next` (commands in order, a long-running one last), `long_running` (commands in `next` that do not return: run them in the background), `first_prompt` (the first question to ask the agent once its tools load), `mcp_tools` (per wired agent: `id`,
   `name`, `profile`, `adjustments`, `tool_count`, `tools`, `change_command`, `always_load` with `enabled`, `tools`,
   `cost`, `command`, or null for a client that loads every schema up front), `connect` (installed agents init did not wire:
   `id`, `name`, `command`).
@@ -1377,9 +1377,11 @@ Ingest runtime evidence: a profile, benchmark results, test timings or query cou
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
 profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile` or collapsed
 stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+runner's ([pytest-benchmark JSON or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
 converted first. Several profiles of one run (a parent process and its workers, or a directory
-holding one file per process) merge into one run.
+holding one file per process) merge into one run, and so do JUnit XML reports (a Maven or Gradle
+report directory, other files in it left out).
 
 ```bash
 repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
@@ -1391,9 +1393,20 @@ repowise evidence add bench.json --workload "pytest bench" --class benchmark --c
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
 repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
+repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence status --format json   # newest run of each workload
+repowise evidence tests                  # slowest tests, and test time per production file
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
+
+`repowise evidence setup --write` also writes a CI file, one job per build unit that runs its tests
+with coverage and JUnit XML on pull requests and default-branch pushes and keeps the report and test <!-- repowise-drift-ignore -->
+results as artifacts: `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+(include it from `.gitlab-ci.yml`) when the repository has a `.gitlab-ci.yml` and no GitHub workflows.
+`--ci github|gitlab` picks one; GitLab skips a unit whose command needs its GitHub Actions step
+(Gradle without the JaCoCo plugin) and says so. A different file already at that path is left alone, and a repository
+with no unit repowise has a test command for gets no file; both exit `1`. Without `--write`, setup
+writes nothing.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
@@ -1403,7 +1416,7 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
@@ -1412,7 +1425,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   overloads). Anything else is skipped and counted by reason: `unknown_file`, `unknown_symbol`,
   `ambiguous_symbol`, `generated` or `vendored` code, `dirty_file` (edited since the commit,
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
-  A benchmark or test is kept without its function instead, counted under `unlinked`.
+  A benchmark or test is kept without its function instead, counted under `unlinked` (a JUnit test
+  whose dotted name leads to no single indexed file as `unplaced`).
 - A converted profile joins frames only under `--checkout-root`, each checked by a second signal,
   and prints where the run's time went (production repo code itself, waits such as event-loop
   selects, joins and sleeps, and libraries) and the share of repo frame time skipped, by reason.
@@ -1445,10 +1459,14 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
   `ingest` line (run from the repository root). Then its `runtime` targets: entry points
   (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
-  (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
+  (Go `Benchmark*`, profiled and, as `go bench results`, their printed results with allocations
+  per op; pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
-  `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
+  `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has
+  `test_timings`: the `flag` that makes its test command write JUnit XML (`null` for Maven and
+  Gradle, which write it by default), the `report` path and the `ingest` line. Test timings are
+  never a `next_call` step. Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
@@ -1505,6 +1523,39 @@ repowise perf measure --base-dir ../main-checkout -- python -m mypkg build
   gate CI on it.
 - `--base-dir` must name another checkout. An editable install can load one checkout's code for
   both sides; run each side with its own environment when that applies.
+
+### `repowise perf check`
+
+Gate a change on exact runtime evidence: allocations per operation from stored benchmark results
+(`go test -bench -benchmem` output ingested with `evidence add`). Runs nothing. Timing never gates.
+
+```bash
+repowise perf check --save base      # before the edit, after ingesting the benchmark results
+<edit, run the benchmarks again, repowise evidence add the results>
+repowise perf check --against base   # exit 1 when a benchmark allocates more per operation
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--save NAME` | Store the newest benchmark run of each workload and its allocations per operation as `.repowise/perf/exact/NAME.json`, beside a `perf measure` baseline of the same name and never in place of it. | |
+| `--against NAME` | Compare the newest benchmark run of each workload now with baseline `NAME`. | |
+| `--workload` | Only this workload's runs. With `--save`, only this workload's entry is replaced; the baseline's other workloads are kept. | every workload |
+| `--path` | Repo path. | cwd / workspace primary |
+| `--format` | `table` or `json`. | `table` |
+
+- Pass exactly one of `--save` and `--against`.
+- A benchmark regresses when it allocates more per operation than in the baseline. Time per
+  operation is stored with the results but never compared: use `perf measure` for wall time.
+- The newest run of each workload counts, whatever its environment. A workload whose newest run is
+  still the saved one, not ingested since, was not run again and is not judged (`not_rerun`); one
+  with no stored run now is `missing`. A benchmark the baseline has and the run now lacks is listed
+  under `dropped`, not judged.
+- Exits `0` when saved or when no exact value grew, `1` when a benchmark allocates more per
+  operation, `2` when nothing could be judged (no index, no exact value on both sides, no workload
+  run again, a missing or unreadable baseline) or on a usage error. With `--format json`, stdout is
+  one document: `verdict` (`passed` or `regressed`), `metrics`, `compared`, `regressed` and
+  `improved` (each `workload`, `benchmark`, `metric`, `base`, `head`), `not_rerun`, `missing`,
+  `dropped` and `baseline`; an error is `{"error", "message"}`.
 
 ---
 

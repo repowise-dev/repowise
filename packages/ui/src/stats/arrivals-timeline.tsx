@@ -1,13 +1,13 @@
 import type { StatsArrival } from "@repowise-dev/types/stats";
-import { formatDate, formatNumber, parseDate } from "../lib/format";
+import { formatDate, formatDateWith, formatNumber, parseDate } from "../lib/format";
 
 const FIRST_SHOWN = 3;
 const W = 600;
 const H = 120;
 
+/** "Mar 2026", in the viewer's zone like the arrival dates beside it. */
 function monthYear(iso: string): string {
-  // UTC: a coarse label on an absolute instant, the same for every reader.
-  return parseDate(iso).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  return formatDateWith(iso, { month: "short", year: "numeric" });
 }
 
 /** Cumulative arrivals as a step line, in a W x H box stretched to its container. */

@@ -177,3 +177,56 @@ def test_a_forgone_saving_does_not_record_the_path(repo: Path) -> None:
         store._conn.row_factory = Row
         stored = str([dict(r) for r in store._conn.execute("SELECT * FROM savings_opportunities")])
     assert "secret-project" not in stored
+
+
+@pytest.fixture
+def bound(monkeypatch: pytest.MonkeyPatch):
+    """Bind a hook payload the way dispatch does, and unbind it afterwards."""
+    from repowise.cli.commands.augment_cmd import read_state
+
+    def bind(**payload: object) -> None:
+        read_state.bind_agent(payload)
+
+    yield bind
+    read_state.bind_agent({})
+
+
+def test_a_subagents_replacement_carries_its_session_and_subagent(repo: Path, bound) -> None:
+    """A subagent's payload names its parent's session plus its own ``agent_id``."""
+    bound(session_id="sess-1", agent_id="sub-7")
+    _record(repo)
+    event = _events(repo)[0]
+    assert event["subagent_id"] == "sub-7"
+    # Hashed by the contract, like every other session id in the ledger.
+    assert event["session_id"].startswith("sha256:")
+
+
+def test_a_main_thread_replacement_has_no_subagent(repo: Path, bound) -> None:
+    bound(session_id="sess-1")
+    _record(repo)
+    event = _events(repo)[0]
+    assert event["subagent_id"] is None
+    assert event["session_id"] is not None
+
+
+def test_an_id_the_contract_would_refuse_is_left_out_not_the_event(repo: Path, bound) -> None:
+    bound(session_id="s" * 500, agent_id="a" * 500)
+    _record(repo)
+    [event] = _events(repo)
+    assert (event["session_id"], event["subagent_id"]) == (None, None)
+
+
+def test_failing_attribution_costs_the_hook_nothing(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new read raises: the hook returns normally and the legacy row lands."""
+    from repowise.cli.commands.augment_cmd import read_state
+
+    def boom() -> tuple[str, str]:
+        raise RuntimeError("attribution exploded")
+
+    monkeypatch.setattr(read_state, "bound_ids", boom)
+    _record(repo)
+    assert _events(repo) == []
+    with OmissionStore(recorder.sidecar_path(repo)) as store:
+        assert store.savings_summary()["saved_tokens"] == 3600

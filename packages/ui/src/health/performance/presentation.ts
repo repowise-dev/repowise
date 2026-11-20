@@ -380,7 +380,9 @@ function asSentence(text: string): string {
 export function causeStandingText(opportunity: PerformanceOpportunity): string {
   const plan = planPresentation(opportunity);
   return [
-    `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`,
+    opportunity.actionability_reason
+      ? `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`
+      : ACTIONABILITY_LABEL[opportunity.actionability_state],
     plan.detail.trim() ? `${plan.label}: ${plan.detail}` : plan.label,
     `The call path resolved with ${CONFIDENCE_LABEL[opportunity.confidence].toLowerCase()} confidence`,
   ]

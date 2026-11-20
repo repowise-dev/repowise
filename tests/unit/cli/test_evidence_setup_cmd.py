@@ -92,7 +92,9 @@ def test_coverage_setup_prints_the_coverage_part_of_the_plan(repo: Path) -> None
     assert alias.exit_code == 0, (alias.output, alias.exception)
     full = json.loads(_setup("--format", "json").stdout)
     for unit in full["units"]:
+        # Runtime targets and test timings are evidence, not coverage.
         assert unit.pop("runtime") == []
+        assert unit.pop("test_timings")["report"] == "junit.xml"
     assert json.loads(alias.stdout) == full
 
 
@@ -166,3 +168,46 @@ def test_an_index_from_an_older_repowise_is_told_to_update(repo: Path, monkeypat
     payload = json.loads(result.stdout)
     assert payload["next_call"]["steps"] == [{"cwd": str(repo), "run": "repowise update"}]
     assert "run `repowise update`" in payload["reason"]
+
+
+def test_setup_writes_nothing_without_write(repo: Path) -> None:
+    assert _setup().exit_code == 0
+    assert not (repo / ".github").exists()
+    assert not (repo / ".gitlab").exists()
+
+
+def test_write_adds_the_ci_file_once_and_never_overwrites_a_different_one(repo: Path) -> None:
+    first = _setup("--write", "--format", "json")
+
+    assert first.exit_code == 0, (first.output, first.exception)
+    ci = json.loads(first.stdout)["ci"]
+    assert ci["ci"] == "github" and ci["written"] is True and "content" not in ci
+    workflow = repo / ".github" / "workflows" / "repowise-evidence.yml"
+    assert "--junitxml=junit.xml" in workflow.read_text(encoding="utf-8")
+
+    again = _setup("--write")
+    assert again.exit_code == 0
+    assert "Unchanged .github/workflows/repowise-evidence.yml" in again.stdout
+
+    workflow.write_text("name: mine\n", encoding="utf-8")
+    refused = _setup("--write", "--format", "json")
+    assert refused.exit_code == 1
+    assert json.loads(refused.stdout)["error"] == "ci_file_exists"
+    assert workflow.read_text(encoding="utf-8") == "name: mine\n"
+
+
+def test_write_picks_gitlab_for_a_gitlab_repository(repo: Path) -> None:
+    (repo / ".gitlab-ci.yml").write_text("test:\n  script: [pytest]\n")
+
+    result = _setup("--write")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert (repo / ".gitlab" / "repowise-evidence.yml").is_file()
+    assert "include it from .gitlab-ci.yml" in result.stdout
+
+
+def test_ci_needs_write(repo: Path) -> None:
+    result = _setup("--ci", "gitlab")
+
+    assert result.exit_code == 2
+    assert not (repo / ".gitlab").exists()

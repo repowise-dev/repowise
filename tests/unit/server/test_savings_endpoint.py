@@ -42,6 +42,10 @@ def _event(
     evidence_kind: str = "measured",
     priced: bool = False,
     occurred_at: str | None = None,
+    avoided_files: tuple = (),
+    host_session_id: str | None = None,
+    session_id: str | None = None,
+    outcome: dict | None = None,
 ) -> None:
     event_id = new_event_id()
     payload: dict = {
@@ -60,7 +64,12 @@ def _event(
         "baseline_input_tokens": baseline,
         "pre_budget_input_tokens": baseline,
         "delivered_input_tokens": delivered,
+        "avoided_files": avoided_files,
+        "host_session_id": host_session_id,
+        "session_id": session_id,
     }
+    if outcome is not None:
+        payload["outcome"] = outcome
     if priced:
         payload.update(
             model="claude-sonnet-4-6",
@@ -126,6 +135,14 @@ async def test_priced_and_unpriced_savings_are_reported_separately(
     assert models["claude-sonnet-4-6"]["saved_input_tokens"] == 1_000
     # The unpriced bucket is a real row, not a dropped one.
     assert models[None]["saved_input_tokens"] == 500
+    # Each bucket carries its own priced dollars; the unpriced one adds nothing.
+    assert models["claude-sonnet-4-6"]["priced_input_savings_usd"] == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
+    assert models[None]["priced_input_savings_usd"] == 0.0
+    assert sum(row["priced_input_savings_usd"] for row in data["per_day"]) == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
 
 
 async def test_a_dead_end_saves_nothing_and_is_not_an_answered_query(
@@ -213,6 +230,58 @@ async def test_the_window_excludes_older_events(client: AsyncClient, tmp_path: P
     assert recent["window_days"] == 1
 
 
+async def test_check_rows_follow_the_window_and_stay_null_unrecorded(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, operation="get_change_risk", outcome={"level": "high"})
+    _event(repo_dir, operation="get_change_risk")
+    _event(repo_dir, operation="get_why", outcome={"decision": "accepted"})
+    _event(
+        repo_dir,
+        operation="get_why",
+        outcome={"decision": "none"},
+        occurred_at="2020-01-01T00:00:00.000000Z",
+    )
+    _event(repo_dir, operation="get_dead_code")
+
+    recent = (
+        await client.get(f"/api/repos/{repo['id']}/savings", params={"days": 1})
+    ).json()
+    rows = {row["tool"]: row for row in recent["checks"]}
+    assert list(rows) == [
+        "get_change_risk",
+        "get_why",
+        "get_risk",
+        "get_health",
+        "get_dead_code",
+    ]
+    assert rows["get_change_risk"] == {
+        "tool": "get_change_risk",
+        "calls": 2,
+        "outcome_calls": 1,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "decisions_accepted": None,
+        "decisions_candidate": None,
+        "decisions_none": None,
+        "findings": None,
+        "files": None,
+        "items": None,
+        "high_confidence": None,
+    }
+    assert (rows["get_why"]["calls"], rows["get_why"]["decisions_none"]) == (1, 0)
+    assert (rows["get_dead_code"]["calls"], rows["get_dead_code"]["items"]) == (1, None)
+    assert rows["get_risk"]["calls"] == 0
+
+    everything = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    why = next(row for row in everything["checks"] if row["tool"] == "get_why")
+    assert (why["calls"], why["decisions_none"]) == (2, 1)
+
+
 async def test_unknown_repo_404(client: AsyncClient) -> None:
     resp = await client.get("/api/repos/nope/savings")
     assert resp.status_code == 404
@@ -286,5 +355,103 @@ async def test_the_endpoint_and_the_core_report_agree(
         "baseline_saved_input_tokens",
         "input_reduction_ratio",
         "input_reduction_ratio_p90",
+        "files_not_opened",
+        "files_not_opened_tokens",
+        "tool_calls_answered",
     ):
         assert data[field] == pytest.approx(getattr(report, field)), field
+
+
+async def test_files_not_opened_and_tool_calls_answered(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    files = (("a.py", 700), ("b.py", 300))
+    _event(repo_dir, avoided_files=files, host_session_id="s1")
+    # Same session, same file, other surface: still one file not opened.
+    _event(repo_dir, surface="hook", avoided_files=(("a.py", 900),), host_session_id="s1")
+    _event(repo_dir, surface="distill", operation="git_log", baseline=400)
+
+    data = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+    assert data["files_not_opened"] == 2
+    assert data["files_not_opened_tokens"] == 1_000
+    assert data["tool_calls_answered"] == 2
+    surfaces = {row["group"]: row for row in data["files_per_surface"]}
+    assert surfaces["mcp"] == {
+        "group": "mcp",
+        "files_not_opened": 2,
+        "files_not_opened_tokens": 1_000,
+        "tool_calls_answered": 1,
+    }
+    assert surfaces["hook"]["files_not_opened"] == 0
+    assert [row["group"] for row in data["files_per_agent"]] == ["claude_code"]
+    assert len(data["files_per_day"]) == 1
+
+
+async def test_output_saved_is_estimated_per_session_and_added_to_the_total(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    from repowise.core.savings import output_estimate
+
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, baseline=1_000, priced=True, session_id="s1")
+    _event(repo_dir, baseline=1_000, priced=True, session_id="s1")
+
+    data = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+
+    calibration = data["calibration"]
+    assert calibration["version"] == output_estimate._load_calibration().version
+    assert calibration["per_question"] is True
+    assert calibration["formula"] == output_estimate.FORMULA
+    assert calibration["sessions"] == 1
+    row = calibration["per_model"][0]
+    assert (row["model"], row["basis"], row["sessions"]) == ("claude-sonnet-4-6", "measured", 1)
+    # Two calls is under one bench question's worth, so the floor of one applies.
+    assert row["questions"] == 1
+    assert data["output_tokens_saved_estimated"] == row["output_tokens_per_question"] > 0
+    assert data["output_usd_saved_estimated"] == pytest.approx(
+        row["output_tokens_per_question"] * 15.0 / 1_000_000
+    )
+    assert data["total_usd_saved_estimated"] == pytest.approx(
+        data["priced_input_savings_usd"] + data["output_usd_saved_estimated"]
+    )
+    # The recorded output fields keep their meaning: nothing was measured.
+    assert data["saved_output_tokens"] is None
+    assert data["priced_output_savings_usd"] == 0.0
+
+
+async def test_a_failing_output_estimate_leaves_the_rest_of_the_response_unchanged(
+    client: AsyncClient, tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.savings import output_estimate
+
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _sidecar(repo_dir)
+    _event(repo_dir, baseline=1_000, priced=True, session_id="s1")
+
+    before = (await client.get(f"/api/repos/{repo['id']}/savings")).json()
+
+    def boom():
+        raise RuntimeError("calibration unavailable")
+
+    monkeypatch.setattr(output_estimate, "_load_calibration", boom)
+    resp = await client.get(f"/api/repos/{repo['id']}/savings")
+    assert resp.status_code == 200
+    after = resp.json()
+
+    for field in (
+        "output_tokens_saved_estimated",
+        "output_usd_saved_estimated",
+        "total_usd_saved_estimated",
+        "calibration",
+    ):
+        assert after.pop(field) is None
+        before.pop(field)
+    before.pop("as_of")
+    after.pop("as_of")
+    assert after == before

@@ -15,6 +15,8 @@ from .facts import RepoFacts
 from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome, shared_priority
 from .model import NEXT_ACTIONS_HEAD as NEXT_ACTIONS_HEAD  # its old home
 from .rules import code, hygiene, signal
+from .rules.setup import SETUP_RULES, SUPERSEDES
+from .setup import SETUP_STATE_ID, SetupFacts, setup_block
 from .summary import summarize
 
 Rule = Callable[[RepoFacts, RepoContext], RuleOutcome]
@@ -132,13 +134,40 @@ def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
     return out
 
 
-def find_action(facts: RepoFacts, action_id: str) -> Action | None:
+def find_action(
+    facts: RepoFacts, action_id: str, setup: SetupFacts | None = None
+) -> Action | None:
     """One action by id, whatever its rank or the person's answer to it."""
+    if setup is not None:
+        found = next(
+            (a for rule in SETUP_RULES for a in rule(setup).actions if a.action_id == action_id),
+            None,
+        )
+        if found is not None:
+            return found
     ctx = build_context(facts)
     return next(
         (a for rule in RULES for a in rule(facts, ctx).actions if a.action_id == action_id),
         None,
     )
+
+
+def with_setup(ruled: Mapping[str, Any], setup: SetupFacts) -> dict[str, Any]:
+    """*ruled* plus the live setup steps; a stored rule a fired step replaces is dropped.
+
+    Never stored: the setup facts change without an index write.
+    """
+    outcomes = [rule(setup) for rule in SETUP_RULES]
+    fired = {a.rule for o in outcomes for a in o.actions}
+    replaced = {old for new, olds in SUPERSEDES.items() if new in fired for old in olds}
+    return {
+        **ruled,
+        "rules": [*ruled["rules"], *(o.as_dict() for o in outcomes)],
+        "actions": [
+            *((w, a) for w, a in ruled["actions"] if a["rule"] not in replaced),
+            *((a.weight, a.as_dict()) for o in outcomes for a in o.actions),
+        ],
+    }
 
 
 def rule_actions(facts: RepoFacts) -> dict[str, Any]:
@@ -168,8 +197,15 @@ def rank_actions(
     states: Mapping[str, ActionStateRecord] | None = None,
     *,
     now: datetime,
+    setup: SetupFacts | None = None,
 ) -> dict[str, Any]:
-    """The view: :func:`rule_actions`' output per horizon, answered and ranked."""
+    """The view: :func:`rule_actions`' output per horizon, answered and ranked.
+
+    With *setup*, the live setup steps join the list (:func:`with_setup`) and
+    the view carries a ``setup`` block (:func:`.setup.setup_block`).
+    """
+    if setup is not None:
+        ruled = with_setup(ruled, setup)
     actions = [Ranked(weight, action) for weight, action in ruled["actions"]]
     states = states or {}
     horizons: dict[str, Any] = {}
@@ -199,7 +235,7 @@ def rank_actions(
             "by_tier": by_tier,
         }
 
-    return {
+    view = {
         "status": "available",
         "anchor": ruled["anchor"],
         "week_start": ruled["week_start"],
@@ -209,6 +245,22 @@ def rank_actions(
         "summary": summarize(horizons, _anchor(ruled["anchor"])),
         "rules": ruled["rules"],
     }
+    if setup is not None:
+        answer = states.get(SETUP_STATE_ID)
+        # A snoozed step is still to do: it comes back, so setup is not complete.
+        snoozed = sum(
+            1
+            for r in actions
+            if "week" in r.action["horizons"]
+            and r.action["tier"] == "improve_signal"
+            and (record := states.get(r.action["id"])) is not None
+            and record.state == "snoozed"
+            and _hidden(r.action, record, now)
+        )
+        view["setup"] = setup_block(
+            horizons, setup, answer is not None and answer.state == "dismissed", snoozed=snoozed
+        )
+    return view
 
 
 def _anchor(iso: str | None) -> datetime | None:

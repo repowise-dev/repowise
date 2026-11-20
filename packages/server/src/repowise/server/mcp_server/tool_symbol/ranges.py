@@ -96,6 +96,10 @@ async def _resolve_range_read(
     if text is None:
         return _err("not_found", f"File could not be read: {path!r}")
 
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
+
+    note_served(path, read_tokens(text))
+
     if end < start:
         start, end = end, start
     total_lines = len(text.splitlines())

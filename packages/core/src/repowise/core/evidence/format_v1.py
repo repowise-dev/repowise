@@ -29,6 +29,11 @@ symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
 the function costs: its own time and the built-ins and libraries it called,
 never time spent waiting; ``total`` adds its callees in the repo.
+A test entry with no ``path`` may carry ``classname``, the dotted name a
+JUnit report gives it (``tests.unit.test_x.TestC``): ingest places it on the
+indexed file that name leads to. ``"first_in_class": true`` marks the first
+test a run reports for its class, whose time may include fixtures the whole
+class shares.
 ``"exact": true`` says ``function``
 is the symbol's own name, so it never falls back to a bare-name match (a
 benchmark named by its node id). Paths are repo-relative, and the
@@ -359,30 +364,39 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
         return None, "no_value"
     where, _ = _location(raw)
     test_file, _ = repo_relative_path(raw.get("path"))
+    classname, _ = _name(raw.get("classname")) if test_file is None else (None, None)
     return {
         "test_id": test_id,
         "test_file": test_file,
         "location": where,
         "duration_s": duration,
         "outcome": outcome,
+        "classname": classname,
+        "first_in_class": raw["first_in_class"] if isinstance(raw.get("first_in_class"), bool) else None,
     }, None
 
 
-def _query_scope(raw: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
-    """``((kind, id), None)`` for the test or request a count belongs to."""
+def _query_scope(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, str, int | None] | None, str | None]:
+    """``((kind, id, items), None)`` for the test or request a count belongs to.
+
+    ``items`` is how many items the scope ran over (the input size), when the
+    run says; it is what lets two scopes show a count growing or staying flat.
+    """
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
     scope_kind = _member(scope.get("kind"), QUERY_SCOPES)
     scope_id, reason = _name(scope.get("id"))
     if scope_kind is None or scope_id is None:
         return None, "no_scope" if reason in (None, "no_name") else reason
-    return (scope_kind, scope_id), None
+    return (scope_kind, scope_id, _count(scope.get("items"))), None
 
 
 def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     scope, reason = _query_scope(raw)
     if scope is None:
         return None, reason
-    scope_kind, scope_id = scope
+    scope_kind, scope_id, items = scope
     site, reason = _location(raw.get("site"))
     if site is None:
         return None, reason
@@ -395,6 +409,7 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
     return {
         "scope_kind": scope_kind,
         "scope_id": scope_id,
+        "scope_items": items,
         **site,
         "statement_fp": fp,
         "query_count": count,

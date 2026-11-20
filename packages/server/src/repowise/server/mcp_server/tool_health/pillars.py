@@ -8,8 +8,7 @@ from typing import Any
 from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.next_call import ActionCommand
-from repowise.core.evidence.setup import SETUP_COMMAND
-from repowise.core.persistence.crud import measured_costs, unranked_reason
+from repowise.core.persistence.crud import measured_costs, unranked_command, unranked_reason
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
@@ -117,10 +116,9 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     if view is None:
         status = await unranked_reason(session, repository_id)
         block: dict[str, Any] = {"basis": "unknown", "status": status}
-        if status == "needs_update":
-            block["command"] = "repowise update"
-        elif status != "not_ranked":
-            block["command"] = SETUP_COMMAND
+        command = unranked_command(status)
+        if command:
+            block["command"] = command
         return block
     block = {"basis": "measured", "runs": []}
     runs: dict[str, dict[str, Any]] = {}
