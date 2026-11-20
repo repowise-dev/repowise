@@ -170,6 +170,9 @@ def test_bare_report_is_the_repo_report_and_subcommands_still_resolve(
     for name in ("assessment", "inventory", "changes", "estate", "repo", "first-look"):
         shown = runner.invoke(cli, ["report", name, "--help"])
         assert shown.exit_code == 0 and f"report {name} [OPTIONS]" in shown.output
+    # A repo report option before another subcommand would be dropped: refused.
+    mixed = runner.invoke(cli, ["report", "--format", "json", "estate"])
+    assert mixed.exit_code == 2 and "Put --format after the subcommand" in mixed.output
 
 
 def test_first_look_is_an_alias_of_report_repo(indexed: Path) -> None:

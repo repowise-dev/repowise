@@ -31,6 +31,7 @@ from ...models import (
     _now_utc,
 )
 from ...sql import order_by, rule_predicate
+from ._notes import KEEP
 from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
@@ -806,7 +807,7 @@ async def update_refactoring_opportunity_status(
     status: str,
     *,
     reason: str = "user",
-    note: str | None = None,
+    note: Any = KEEP,
 ) -> tuple[RefactoringOpportunity, int] | None:
     """Transition one opportunity by transitioning the steps it is made of.
 

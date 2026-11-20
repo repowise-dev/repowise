@@ -40,6 +40,18 @@ def report_group(ctx: click.Context, **options: object) -> None:
     """
     if ctx.invoked_subcommand is None:
         ctx.invoke(_REPO, **options)
+        return
+    given = [
+        p.opts[-1]
+        for p in ctx.command.params
+        if ctx.get_parameter_source(p.name) is not click.core.ParameterSource.DEFAULT
+    ]
+    if given:
+        # They would be read and dropped: each subcommand takes its own.
+        raise click.UsageError(
+            f"Put {', '.join(given)} after the subcommand: "
+            f"repowise report {ctx.invoked_subcommand} {given[0]} ..."
+        )
 
 
 # The repo report's options, without its PATH: a group argument would read a
