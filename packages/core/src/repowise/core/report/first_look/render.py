@@ -2,13 +2,15 @@
 
 Both are renderers on the ``report-renderer`` seam (``first-look-markdown``,
 ``first-look-html``) and, like every renderer there, take only a document and
-return text. The document is the report's JSON plus what a renderer cannot
-look up itself (:func:`.write.render_document`): each listed item's agent
-prompt, the whole-report prompt and the app's address when a server is known.
+return text. The document is the report's JSON (the living report's, with each
+item's status) plus what a renderer cannot look up itself
+(:func:`.write.render_document`): the HTML page's agent prompts and the app's
+address when a server is known.
 
 They print the report's ``prose`` and nothing else in words; everything else
-is structure read off the items: location chips, basis and confidence badges,
-the do-now mark, links built from route keys, and the prompts.
+is structure read off the items: location chips, status, basis and confidence
+badges, the do-now mark and links built from route keys. The Markdown export
+carries no prompt: the HTML page and the app hold them.
 """
 
 from __future__ import annotations
@@ -90,9 +92,58 @@ def _chips(item: Mapping[str, Any]) -> tuple[list[tuple[str, int | None, list[st
     return chips[:CHIPS_SHOWN], hidden
 
 
+#: How a status reads, after the person's answer (:mod:`.marks`).
+_STATUS_LABELS = {
+    "done": "done",
+    "acknowledged": "acknowledged",
+    "false_positive": "false positive",
+    "snoozed": "snoozed",
+    "resolved": "resolved",
+}
+
+
+def status_text(item: Mapping[str, Any]) -> str | None:
+    """``acknowledged: <reason>``, ``snoozed until 2026-12-04``; ``None`` while open."""
+    status = item.get("status") or "open"
+    if status == "open":
+        return None
+    label = _STATUS_LABELS.get(status, status)
+    if status == "snoozed" and item.get("status_until"):
+        label += f" until {str(item['status_until'])[:10]}"
+    if item.get("status_reason"):
+        label += f": {_one(item['status_reason'])}"
+    return label
+
+
 def _badges(item: Mapping[str, Any]) -> list[str]:
-    out = ["do now"] if item.get("severity") == "act_now" else []
+    status = status_text(item)
+    out = [status] if status else []
+    if item.get("change") == "new":
+        out.append("new")
+    if item.get("severity") == "act_now" and status is None:
+        out.append("do now")
     return [*out, item["basis"], f"{item['confidence']} confidence"]
+
+
+def progress_text(doc: Mapping[str, Any]) -> str | None:
+    """What moved since the stored report, on one line; ``None`` when nothing did."""
+    baseline = doc.get("baseline") or {}
+    if not baseline.get("stamp"):
+        return None
+    counts: dict[str, int] = {"resolved": len(baseline.get("resolved") or ())}
+    new = 0
+    for section in doc.get("sections") or ():
+        for item in section.get("items") or ():
+            status = item.get("status") or "open"
+            if status != "open":
+                counts[status] = counts.get(status, 0) + 1
+            new += item.get("change") == "new"
+    counts["new"] = new
+    parts = [f"{n:,} {_STATUS_LABELS.get(k, k)}" for k, n in counts.items() if n]
+    if not parts:
+        return None
+    commit = (baseline["stamp"].get("commit") or "")[:8] or "an unknown commit"
+    return f"Since the first look at {commit}: {', '.join(parts)}."
 
 
 def _shown(section: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], int]:
@@ -154,13 +205,6 @@ _SINCE_LAST = "repowise report first-look --since-last"
 # ---------------------------------------------------------------------------
 
 
-def _fence(text: str) -> str:
-    """*text* in a code fence longer than any backtick run inside it."""
-    runs = [len(r) for r in re.findall(r"`+", text)]
-    fence = "`" * max(3, max(runs, default=0) + 1)
-    return f"{fence}text\n{text}\n{fence}"
-
-
 def _one(text: Any) -> str:
     """*text* on one line. Prose keeps its backtick spans: they mark paths."""
     return " ".join(str(text).split())
@@ -174,10 +218,6 @@ def _md_chip(doc: Mapping[str, Any], path: str, line: int | None, symbols: Seque
     at = f"{path}:{line}" if line else path
     chip = _md_link(_code(at), _loc_href(doc, path, line))
     return chip + (f" ({', '.join(symbols)})" if symbols else "")
-
-
-def _md_details(summary: str, body: str) -> list[str]:
-    return ["<details><summary>" + summary + "</summary>", "", _fence(body), "", "</details>"]
 
 
 def _md_item(doc: Mapping[str, Any], item: Mapping[str, Any]) -> list[str]:
@@ -194,11 +234,6 @@ def _md_item(doc: Mapping[str, Any], item: Mapping[str, Any]) -> list[str]:
         lines.append(f"  verify: {_code(verify)}")
     open_link = _item_href(doc, item)
     lines.append(f"  {badges}" + (f" · [Open in app]({open_link})" if open_link else ""))
-    prompt = (doc.get("prompts") or {}).get(item["id"])
-    if prompt:
-        # Every line indented, so the block (and its fence) stays inside the list item.
-        block = "\n".join(_md_details("Fix with your agent", prompt)).splitlines()
-        lines += ["", *("  " + x if x else "" for x in block)]
     return lines
 
 
@@ -248,6 +283,7 @@ def render_first_look_markdown(doc: dict[str, Any]) -> str:
         " · ".join(_meta(doc)),
         "",
         writer_line(stamp),
+        *(["", progress] if (progress := progress_text(doc)) else []),
         "",
         _one(prose.get("summary") or ""),
     ]
@@ -260,9 +296,22 @@ def render_first_look_markdown(doc: dict[str, Any]) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _md_resolved(doc: Mapping[str, Any]) -> list[str]:
+    """Baseline items the index no longer finds, as the report wrote them."""
+    resolved = (doc.get("baseline") or {}).get("resolved") or ()
+    if not resolved:
+        return []
+    out = ["", "## Resolved since the first look", ""]
+    for item in resolved:
+        loc = (item.get("locations") or [{}])[0]
+        at = f"{loc['path']}:{loc['line']}" if loc.get("line") else loc.get("path")
+        out.append(f"- {_one(item.get('text') or '')}" + (f" ({_code(at)})" if at else ""))
+    return out
+
+
 def _md_tail(doc: Mapping[str, Any]) -> list[str]:
     prose = _prose(doc)
-    out: list[str] = []
+    out: list[str] = _md_resolved(doc)
     steps = doc.get("setup") or ()
     if steps:
         out += ["", "## Turn on more", ""]
@@ -275,8 +324,6 @@ def _md_tail(doc: Mapping[str, Any]) -> list[str]:
         out += ["", "Not read from this index: " + ", ".join(
             f"{_title(doc, k)} ({_one(v)})" for k, v in unavailable.items()
         )]
-    if doc.get("report_prompt"):
-        out += ["", *_md_details("Work through this report with your agent", doc["report_prompt"])]
     commit = ((doc.get("stamp") or {}).get("commit") or "")[:8]
     out += ["", "---", "", f"Report at {commit or 'an unknown commit'}. Since then: {_code(_SINCE_LAST)}"]
     return out

@@ -23,6 +23,7 @@ from repowise.core.persistence.models import (
     SecurityFinding,
 )
 from repowise.core.report.first_look.collect import collect_first_look
+from repowise.core.report.first_look.model import item_id
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
 from repowise.core.report.first_look.staleness import staleness
 from repowise.core.report.first_look.store import load_report, store_report
@@ -134,9 +135,14 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
     assert report.stamp.generator == "template"
     assert report.unavailable == {}
 
-    secrets = sections["security"]
-    assert sorted(i.locations[0].path for i in secrets) == ["scripts/tool.py", "src/settings.py"]
-    assert {i.severity for i in secrets} == {"act_now"}
+    # One fix (rotate, read from the environment) covers both files: one item.
+    (secret,) = sections["security"]
+    assert [loc.path for loc in secret.locations] == ["scripts/tool.py", "src/settings.py"]
+    assert secret.id == item_id("security", "credentials", "")
+    assert secret.rules == ("hardcoded_password",)
+    assert secret.title_facts["files"] == 2
+    assert secret.severity == "act_now"
+    assert [m.store for m in secret.members] == ["action", "action"]
     assert report.item(report.top[0]).section == "security"
 
     perf = sections["performance"]
@@ -148,6 +154,10 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
     assert dead["safe_to_delete"].prompt.renderer == "first_look_item"
     assert dead["safe_to_delete"].locations[0].path == "src/dead.py"
     assert dead["unreachable_file"].locations[0].path == "src/orphan.py"
+    assert [m.ref for m in dead["safe_to_delete"].members] == [
+        f"unused_export|f{n}|src/dead.py" for n in (1, 2, 3)
+    ]
+    assert perf[0].members[0].ref == "perf1"
     assert len(sections["dead_code"]) == 2
     facts = report.section("dead_code").facts
     assert facts["batch_action_id"].startswith("act_")
@@ -187,9 +197,11 @@ async def test_no_item_or_prompt_holds_a_secret(async_session) -> None:
     report = await collect_first_look(async_session, rid, now=NOW)
     assert SECRET not in json.dumps(report.to_json())
     for item in _by_section(report)["security"]:
-        assert item.prompt.renderer == "action"
+        # A group's prompt covers every location; each member's action prompt
+        # would name one file.
+        assert item.prompt.renderer == "first_look_item"
         prompt = await render_item_prompt(async_session, rid, item, flavor="claude-code")
-        assert item.locations[0].path in prompt
+        assert all(loc.path in prompt for loc in item.locations)
         assert SECRET not in prompt
 
 
@@ -227,10 +239,15 @@ async def test_the_stored_report_round_trips_and_goes_stale(async_session) -> No
     (await async_session.get(Repository, rid)).head_commit = "d" * 40
     await async_session.commit()
     found = await staleness(async_session, rid, report)
-    fixed = [report.item(i).locations[0].path for i in found.fixed]
-    assert fixed == ["src/settings.py"]
-    assert found.changed == () and found.new == ()
+    # The credentials group keeps its id with one file fewer: changed, not fixed.
+    assert found.fixed == () and found.new == ()
+    assert found.changed == (item_id("security", "credentials", ""),)
     assert found.behind
+
+    await async_session.execute(delete(SecurityFinding))
+    await async_session.commit()
+    found = await staleness(async_session, rid, report)
+    assert found.fixed == (item_id("security", "credentials", ""),)
 
 
 async def test_deletions_below_the_batch_floor_are_not_listed(async_session) -> None:

@@ -23,7 +23,9 @@ from ..model import (
     Item,
     Link,
     Location,
+    Member,
     PromptRef,
+    dead_code_ref,
     file_link,
     first_look_sections,
     item_id,
@@ -42,11 +44,31 @@ def _priority() -> float:
     return shared_priority(None, "low", "high", "S")
 
 
-def _exports(ctx: FirstLookContext) -> list[Item]:
+#: Finding ids one kind lookup reads per query (SQLite's bound-parameter floor).
+_ID_CHUNK = 500
+
+
+async def _kinds(ctx: FirstLookContext, ids: list[str]) -> dict[str, str]:
+    """Each finding's kind, the part of its identity the facts leave out."""
+    from repowise.core.persistence.models import DeadCodeFinding
+
+    out: dict[str, str] = {}
+    for n in range(0, len(ids), _ID_CHUNK):
+        rows = await ctx.session.execute(
+            select(DeadCodeFinding.id, DeadCodeFinding.kind).where(
+                DeadCodeFinding.id.in_(ids[n : n + _ID_CHUNK])
+            )
+        )
+        out.update(dict(rows.all()))
+    return out
+
+
+async def _exports(ctx: FirstLookContext) -> list[Item]:
     by_file: dict[str, list] = defaultdict(list)
     for d in ctx.facts.dead:
         if ctx.is_production(d.file_path) and not _standalone(d.file_path):
             by_file[d.file_path].append(d)
+    kinds = await _kinds(ctx, [d.finding_id for found in by_file.values() for d in found])
     items = []
     for path, found in sorted(by_file.items()):
         found.sort(key=lambda d: (d.symbol or "", d.finding_id))
@@ -71,6 +93,10 @@ def _exports(ctx: FirstLookContext) -> list[Item]:
                 origin=ctx.origin(path),
                 priority=_priority(),
                 weight=float(lines),
+                members=tuple(
+                    Member("dead_code", dead_code_ref(kinds.get(d.finding_id, ""), d.symbol, path))
+                    for d in found
+                ),
             )
         )
     return items
@@ -120,6 +146,7 @@ async def _unreachable(ctx: FirstLookContext) -> list[Item]:
                 origin=ctx.origin(path),
                 priority=_priority(),
                 weight=float(f.lines or 0),
+                members=(Member("dead_code", dead_code_ref(f.kind, None, path)),),
             )
         )
     return sorted(items, key=lambda i: i.locations[0].path)
@@ -133,7 +160,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
         raise UnavailableError(outcome.reason)
     # Below the batch floor ``next`` lists no deletion, and neither does this.
     batch = outcome.actions[0] if outcome.actions else None
-    items = (_exports(ctx) if batch else []) + await _unreachable(ctx)
+    items = (await _exports(ctx) if batch else []) + await _unreachable(ctx)
     summary = await get_dead_code_summary(ctx.session, ctx.repository_id)
     listed = sum(i.locations_total for i in items)
     return Collected(

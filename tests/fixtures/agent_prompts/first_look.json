@@ -72,6 +72,23 @@
         "severity": "plan",
         "effort": "S"
       }
+    },
+    {
+      "name": "credentials_group",
+      "repo_name": "acme/web",
+      "item": {
+        "id": "fl_9c8b7a6d5e4f",
+        "section": "security",
+        "rule": "hardcoded_password",
+        "rules": ["hardcoded_password", "hardcoded_secret"],
+        "title_facts": {"kind": "hardcoded_password", "family": "credentials", "kinds": ["hardcoded_password", "hardcoded_secret"], "files": 2, "locations": 2},
+        "locations": [{"path": "scripts/seed_admin.py", "line": 27, "symbol": null}, {"path": "src/settings.py", "line": 4, "symbol": null}],
+        "locations_total": 2,
+        "confidence": "high",
+        "basis": "inferred",
+        "severity": "act_now",
+        "effort": "S"
+      }
     }
   ],
   "reports": [

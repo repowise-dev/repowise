@@ -114,6 +114,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("next", "next_cmd:next_command"),
+    ("mark", "mark_cmd:mark_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("grammars", "grammars_cmd:grammars_group"),
     ("watch", "watch_cmd:watch_command"),
