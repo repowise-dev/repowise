@@ -90,7 +90,24 @@ async function renderLinkedSource(
   if (!content || line === undefined) return undefined;
   // A trailing newline ends the last line rather than opening another one.
   if (line > content.replace(/\n$/, "").split("\n").length) return undefined;
+  // Past the highlight cap the link still lands: plain text, one numbered
+  // line per row, so the mark has a line to find.
+  if (content.length > MAX_HIGHLIGHTED_BYTES) return plainSource(content);
   return highlightSource(content, detail);
+}
+
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+
+/** The source as escaped plain text, with `data-line` on every line. */
+function plainSource(content: string): string {
+  const rows = content
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((text, i) => {
+      const safe = text.replace(/[&<>]/g, (c) => ESCAPES[c] ?? c);
+      return `<span class="line" data-line="${i + 1}">${safe}</span>`;
+    });
+  return `<pre><code>${rows.join("\n")}</code></pre>`;
 }
 
 /** Shiki HTML with `data-line` on every line and, when `covered` is given,

@@ -79,6 +79,13 @@ describe("file page ?line=N", () => {
     expect(args.sourceCodeHtml).toContain('data-line="2"');
   });
 
+  it("still marks the line in a file past the highlight cap, as escaped plain text", async () => {
+    mocks.getFileContent.mockResolvedValue(`a = 1\nb = "<x>"\n${"#".repeat(120_000)}\n`);
+    mocks.getFileDetail.mockResolvedValue(makeDetail());
+    const args = await renderPage(undefined, "2");
+    expect(args.sourceCodeHtml).toContain('<span class="line" data-line="2">b = "&lt;x&gt;"</span>');
+  });
+
   it("fetches no source without a line link", async () => {
     mocks.getFileContent.mockClear();
     mocks.getFileDetail.mockResolvedValue(makeDetail());
