@@ -800,3 +800,9 @@ def test_a_subdirectory_suite_is_seen_from_any_pytest_signal(files):
     paths = sorted([*files, "api/app.py"])
     stacks_found = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
     assert [(s.root, s.language) for s in stacks_found] == [("api", "python")]
+
+
+def test_a_root_note_named_like_requirements_does_not_make_a_python_unit():
+    paths = ["package.json", "package-lock.json", "Requirements for launch.txt", "src/index.test.js"]
+    files = {"package.json": json.dumps({"scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}})}
+    assert [s.language for s in detect_stacks(paths, files)] == ["node"]

@@ -1000,6 +1000,8 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | Non
 }
 #: What the registry's package-manifest glob matches, case and all.
 _REQUIREMENTS = re.compile(r"requirements[^/]*\.txt", re.IGNORECASE)
+#: pip's own spelling, which alone lets the repository root keep its pytest guess without a suite.
+_PIP_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt")
 _SOLUTIONS = (".sln", ".slnx")
 #: How many .csproj files detection reads at a .NET root.
 _DOTNET_PROJECTS = 20
@@ -1125,7 +1127,7 @@ def _units(paths: list[str], units: BuildUnitIndex | None) -> _Units:
         above = {a for root in roots for a in _ancestors(root)} - roots.keys()
         workspaces = above & listed.keys()
         roots.update({root: set(listed[root]) for root in workspaces})
-    if any("/" not in p and _REQUIREMENTS.fullmatch(p) for p in paths):
+    if any("/" not in p and _PIP_REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
     solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p)}
@@ -1227,8 +1229,10 @@ def detect_stacks(
                     names |= _governing_lock(root, present)
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
-                if stack == "python" and root and not _has_pytest_suite(names, rel, texts):
-                    continue  # the repository root keeps its guess: a root requirements file is the project's
+                # The repository root keeps its guess when pip's own spelling names its requirements.
+                pip_root = not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names)
+                if stack == "python" and not pip_root and not _has_pytest_suite(names, rel, texts):
+                    continue
                 built = _BUILDERS[stack](names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
