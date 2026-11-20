@@ -1774,9 +1774,10 @@ class CallResolver(
             if hit is not None:
                 return hit
 
-        # Tier 2: import-scoped. A name only other functions import is unbound here.
+        # Tier 2: import-scoped. A name only other functions import is unbound
+        # here, unless a module-level star import brings it.
         if not self._import_binds_at(file_path, call.line, target_name):
-            return None
+            return self._module_star_import_call(file_path, call, caller_id)
         binding = self._import_bindings.get(file_path, {}).get(target_name)
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
@@ -2038,6 +2039,21 @@ class CallResolver(
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _module_star_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """The symbol a module-level ``from m import *`` of *file_path* publishes."""
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed else ():
+            if imp.scopes is None and "*" in imp.imported_names and imp.resolved_file:
+                published = self._published(imp.resolved_file, call.target_name)
+                if published is not None:
+                    return ResolvedCall(caller_id, published, 0.85, call.line, "import_merged")
+        return None
 
     def _merged_import_call(
         self,

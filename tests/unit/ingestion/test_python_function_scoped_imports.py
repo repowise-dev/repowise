@@ -52,6 +52,20 @@ def test_function_import_does_not_bind_a_bare_name_elsewhere(tmp_path: Path) -> 
     assert _calls(tmp_path, app) == {("app.py::first", "pkg/util.py::work")}
 
 
+def test_module_star_import_still_reaches_a_name_another_function_imports(
+    tmp_path: Path,
+) -> None:
+    app = (
+        "from pkg.util import *\n\n"
+        "def first():\n    from pkg.mod import work\n    work()\n\n"
+        "def second():\n    work()\n"
+    )
+    assert _calls(tmp_path, app) == {
+        ("app.py::first", "pkg/mod.py::work"),
+        ("app.py::second", "pkg/util.py::work"),
+    }
+
+
 def test_same_import_in_two_functions_binds_in_both(tmp_path: Path) -> None:
     body = "    from pkg import util\n    util.work()\n"
     app = f"def first():\n{body}\ndef second():\n{body}\ndef third(util):\n    util.work()\n"
