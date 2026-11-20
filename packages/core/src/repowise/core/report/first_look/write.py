@@ -37,7 +37,7 @@ def with_prose(report: FirstLookReport) -> FirstLookReport:
     before any prose, or an item a model left out)."""
     template = template_prose(report)
     prose = dict(report.prose or {})
-    merged = {**template, **{k: v for k, v in prose.items() if not isinstance(v, dict)}}
+    merged = {**template, **{k: v for k, v in prose.items() if v and not isinstance(v, dict)}}
     for key, value in template.items():
         if isinstance(value, dict):
             merged[key] = {**value, **(prose.get(key) or {})}

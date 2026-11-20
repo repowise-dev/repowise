@@ -145,3 +145,19 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     assert stored.read_text(encoding="utf-8") == written
     stored.unlink()
     assert _finish._write_first_look(run, steps) is None
+
+
+def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> None:
+    import os
+
+    from repowise.cli.commands.serve_cmd._lock import live_web_url
+
+    lock = tmp_path / ".repowise" / "serve.lock.json"
+    lock.parent.mkdir()
+    assert live_web_url(tmp_path) is None
+    lock.write_text(json.dumps({"pid": os.getpid(), "host": "0.0.0.0", "ui_port": 3100}))
+    assert live_web_url(tmp_path) == "http://localhost:3100"
+    lock.write_text(json.dumps({"pid": os.getpid(), "ui_port": None}))
+    assert live_web_url(tmp_path) is None  # API only: no web page to link
+    lock.write_text("{not json")
+    assert live_web_url(tmp_path) is None

@@ -202,6 +202,43 @@ def _md_item(doc: Mapping[str, Any], item: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _top(doc: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    """The "Do these first" items with their sections, in order."""
+    by_id = _by_id(doc)
+    return [by_id[i] for i in doc.get("top") or () if i in by_id]
+
+
+def _md_top(doc: Mapping[str, Any]) -> list[str]:
+    top = _top(doc)
+    if not top:
+        return []
+    out = ["", "## Do these first", ""]
+    for n, (section, item) in enumerate(top, 1):
+        open_link = _item_href(doc, item)
+        out.append(
+            f"{n}. {_title(doc, section['key']).split(':')[0]}: {_one(_text(doc, item))}"
+            + (f" [Open]({open_link})" if open_link else "")
+        )
+    return out
+
+
+def _md_section(doc: Mapping[str, Any], n: int, section: Mapping[str, Any]) -> list[str]:
+    key = section["key"]
+    out = ["", f"## {n}. {_one(_title(doc, key))}"]
+    intro = (_prose(doc).get("sections") or {}).get(key)
+    if intro:
+        out += ["", _one(intro)]
+    shown, more = _shown(section)
+    if shown:
+        out.append("")
+    for item in shown:
+        out += _md_item(doc, item)
+    if more:
+        label = f"{more:,} more in the app"
+        out += ["", _md_link(label, _href(doc, _SECTION_ROUTES.get(key, ""))) + "."]
+    return out
+
+
 def render_first_look_markdown(doc: dict[str, Any]) -> str:
     prose = _prose(doc)
     repo, stamp = doc.get("repo") or {}, doc.get("stamp") or {}
@@ -216,30 +253,9 @@ def render_first_look_markdown(doc: dict[str, Any]) -> str:
     ]
     if prose.get("headline"):
         out += ["", f"{_one(prose['headline'])} (measured)"]
-    by_id = _by_id(doc)
-    top = [by_id[i] for i in doc.get("top") or () if i in by_id]
-    if top:
-        out += ["", "## Do these first", ""]
-        for n, (section, item) in enumerate(top, 1):
-            open_link = _item_href(doc, item)
-            out.append(
-                f"{n}. {_title(doc, section['key']).split(':')[0]}: {_one(_text(doc, item))}"
-                + (f" [Open]({open_link})" if open_link else "")
-            )
+    out += _md_top(doc)
     for n, section in enumerate(doc.get("sections") or (), 1):
-        key = section["key"]
-        out += ["", f"## {n}. {_one(_title(doc, key))}"]
-        intro = (prose.get("sections") or {}).get(key)
-        if intro:
-            out += ["", _one(intro)]
-        shown, more = _shown(section)
-        if shown:
-            out.append("")
-        for item in shown:
-            out += _md_item(doc, item)
-        if more:
-            label = f"{more:,} more in the app"
-            out += ["", _md_link(label, _href(doc, _SECTION_ROUTES.get(key, ""))) + "."]
+        out += _md_section(doc, n, section)
     out += _md_tail(doc)
     return "\n".join(out).rstrip() + "\n"
 
@@ -402,6 +418,39 @@ def _h_item(doc: Mapping[str, Any], item: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
+def _h_top(doc: Mapping[str, Any]) -> list[str]:
+    e = html.escape
+    top = _top(doc)
+    if not top:
+        return []
+    out = ['<div class="first"><h2>Do these first</h2><ol>']
+    for section, item in top:
+        out.append(
+            f'<li><span class="sec">{e(_title(doc, section["key"]).split(":")[0])}</span>'
+            f'{_inline(_text(doc, item))} <a href="#{e(item["id"])}">Go to item</a></li>'
+        )
+    return [*out, "</ol></div>"]
+
+
+def _h_section(doc: Mapping[str, Any], section: Mapping[str, Any]) -> list[str]:
+    e = html.escape
+    key = section["key"]
+    app = _href(doc, _SECTION_ROUTES.get(key, ""))
+    out = [
+        f'<section class="s" id="sec-{e(key)}"><div class="s-head"><h2>{e(_title(doc, key))}</h2>'
+        + (f'<a href="{e(app)}">open in app</a>' if app else "")
+        + "</div>"
+    ]
+    intro = (_prose(doc).get("sections") or {}).get(key)
+    if intro:
+        out.append(f'<p class="s-intro">{_inline(intro)}</p>')
+    shown, more = _shown(section)
+    out += [_h_item(doc, item) for item in shown]
+    if more:
+        out.append(f'<div class="s-more">{_h_link(e(f"{more:,} more in the app"), app)}</div>')
+    return [*out, "</section>"]
+
+
 def render_first_look_html(doc: dict[str, Any]) -> str:
     e = html.escape
     prose = _prose(doc)
@@ -421,32 +470,9 @@ def render_first_look_html(doc: dict[str, Any]) -> str:
         body.append(
             f'<div class="headline">{_inline(prose["headline"])} <span class="badge">measured</span></div>'
         )
-    by_id = _by_id(doc)
-    top = [by_id[i] for i in doc.get("top") or () if i in by_id]
-    if top:
-        body.append('<div class="first"><h2>Do these first</h2><ol>')
-        for section, item in top:
-            body.append(
-                f'<li><span class="sec">{e(_title(doc, section["key"]).split(":")[0])}</span>'
-                f'{_inline(_text(doc, item))} <a href="#{e(item["id"])}">Go to item</a></li>'
-            )
-        body.append("</ol></div>")
+    body += _h_top(doc)
     for section in doc.get("sections") or ():
-        key = section["key"]
-        app = _href(doc, _SECTION_ROUTES.get(key, ""))
-        body.append(
-            f'<section class="s" id="sec-{e(key)}"><div class="s-head"><h2>{e(_title(doc, key))}</h2>'
-            + (f'<a href="{e(app)}">open in app</a>' if app else "")
-            + "</div>"
-        )
-        intro = (prose.get("sections") or {}).get(key)
-        if intro:
-            body.append(f'<p class="s-intro">{_inline(intro)}</p>')
-        shown, more = _shown(section)
-        body += [_h_item(doc, item) for item in shown]
-        if more:
-            body.append(f'<div class="s-more">{_h_link(e(f"{more:,} more in the app"), app)}</div>')
-        body.append("</section>")
+        body += _h_section(doc, section)
     body += _h_tail(doc)
     body.append("</div>")
     return html_page(f"First look: {name}", _CSS, body)

@@ -1852,7 +1852,8 @@ none (no model, free).
 | `--out` | Output file. | stdout for `md` and `json` |
 | `--since-last` | What was fixed, changed or found new since the report was written, from the index now (text, or JSON with `--format json`). | off |
 
-- Sections, in order: Security, Performance, Code health, Tests and coverage, Dead code, Docs, Decisions, Repo hygiene.
+- Sections, in order: Security, Performance, Code health, Tests and coverage, Dead code, Docs, Decisions, Repo hygiene,
+  Ownership.
   An empty section is left out, except Security, which says "No live secrets in tracked files".
 - Only the precision tiers `repowise next` acts on are listed; a section shows 12 items, then a count of the rest.
 - A secret shows its place only, never its value. Owners are counted, never named.

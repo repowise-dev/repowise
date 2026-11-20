@@ -217,3 +217,15 @@ def test_assessment_formats_leave_the_first_look_renderers_out() -> None:
     with pytest.raises(click.BadParameter) as err:
         _renderer("first-look-html")
     assert "first-look" not in str(err.value).split("available:", 1)[1]
+
+
+def test_stored_prose_keeps_its_text_and_gaps_read_the_template() -> None:
+    item = _item("hygiene", "import_cycle", "src/a.py")
+    report = _report([item])
+    older = FirstLookReport.from_json(
+        {**report.to_json(), "prose": {"writer": "m1", "summary": "", "items": {}}}
+    )
+    prose = with_prose(older).prose
+    assert prose["writer"] == "m1"
+    assert prose["summary"] == template_prose(report)["summary"]
+    assert prose["items"][item.id] == item_text(item)

@@ -90,6 +90,5 @@ def live_web_url(repo_path: Path) -> str | None:
     ui_port = (payload or {}).get("ui_port")
     if not isinstance(ui_port, int):
         return None
-    host = str(payload.get("host") or "127.0.0.1")
-    host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-    return f"http://{host}:{ui_port}"
+    # The web UI listens on loopback whatever the API binds; the browser opener uses this too.
+    return f"http://localhost:{ui_port}"
