@@ -145,12 +145,11 @@ def files_with_paired_tests(
         if graph is None:
             return True
         imported = deps[test] if test in deps else imports_of(test)
-        # Code the repository does not own - a third-party module
-        # (``external:vitest``, ``external:node:fs``) or a framework anchor
-        # (``framework:angular``) - says nothing about which of the
-        # repository's files the test exercises, as ``placed_test_files``
-        # already reads it: only a dependency inside the repository can
-        # contradict the name.
+        # Code the repository does not own (``is_external``: a third-party
+        # module such as ``external:vitest`` or ``external:node:fs``, or a
+        # framework anchor such as ``framework:angular``) says nothing about
+        # which of the repository's files the test exercises: only a
+        # dependency inside the repository can contradict the name.
         inside = {dep for dep in imported if not is_external(dep)}
         return not inside or path in inside
 
