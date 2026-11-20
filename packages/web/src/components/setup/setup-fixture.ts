@@ -127,7 +127,7 @@ export function stepsFixture(actions: SetupStep[], overrides: Partial<SetupSteps
     claude_code_calls: 0,
     first_call_at: null,
     synced_commits: 0,
-    unlocks: { always_load: false, distill: false, suggested_settings: false, dead_code_batch: false },
+    unlocks: { always_load: false, distill: false, suggested_settings: false },
     actions,
     thresholds: { agent_calls: 20, synced_commits: 10 },
     ...overrides,
