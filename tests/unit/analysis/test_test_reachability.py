@@ -348,6 +348,14 @@ def test_a_third_party_import_does_not_contradict_a_test_name() -> None:
     assert "src/health/engine.py" not in paired
 
 
+def test_a_framework_node_does_not_contradict_a_test_name() -> None:
+    # ``framework:`` names code the repository does not own, as ``external:``
+    # does: an edge to one says nothing about which repository file is tested.
+    g = _dep_graph(("src/lib/page-check.test.ts", "framework:angular", "framework"))
+    paired = files_with_paired_tests(g, {"lib/page-check.js"}, {"src/lib/page-check.test.ts"})
+    assert "lib/page-check.js" in paired
+
+
 # ---------------------------------------------------------------------------
 # rank_reaching: the order a capped reverse list keeps
 # ---------------------------------------------------------------------------
