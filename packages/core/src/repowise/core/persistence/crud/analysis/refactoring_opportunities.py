@@ -806,6 +806,7 @@ async def update_refactoring_opportunity_status(
     status: str,
     *,
     reason: str = "user",
+    note: str | None = None,
 ) -> tuple[RefactoringOpportunity, int] | None:
     """Transition one opportunity by transitioning the steps it is made of.
 
@@ -849,7 +850,7 @@ async def update_refactoring_opportunity_status(
     updated = 0
     for plan_id in plan_ids:
         plan = await update_refactoring_suggestion_status(
-            session, repository_id, str(plan_id), status, reason=reason
+            session, repository_id, str(plan_id), status, reason=reason, note=note
         )
         # A step whose plan no longer resolves is not silently counted as
         # transitioned; it reads as open, which is what an untriaged step is.

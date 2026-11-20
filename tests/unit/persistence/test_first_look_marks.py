@@ -66,7 +66,7 @@ async def test_a_group_mark_goes_to_every_member_action(async_session) -> None:
     out = await mark_item(async_session, rid, group.id, "done")
     await async_session.commit()
 
-    assert out == {"id": group.id, "status": "done", "store": "action"}
+    assert out == {"id": group.id, "status": "done", "store": "action", "reason": None, "until": None}
     states = await get_action_states(async_session, rid)
     assert {m.ref for m in group.members} <= set(states)
     assert {states[m.ref].state for m in group.members} == {"done"}
@@ -107,6 +107,7 @@ async def test_an_unknown_id_is_refused(async_session) -> None:
     with pytest.raises(MarkError) as raised:
         await mark_item(async_session, rid, "fl_000000000000", "done")
     assert raised.value.code == "unknown_item"
+    assert "fl_ followed by 12 hex characters" in raised.value.message
 
 
 async def test_dead_code_keeps_the_reason_as_its_note(async_session) -> None:
@@ -144,7 +145,10 @@ async def test_a_performance_cause_resolves_its_health_findings(async_session) -
     out = await mark_item(async_session, rid, cause.id, "false_positive", reason="cached upstream")
     await async_session.commit()
 
-    assert out == {"id": cause.id, "status": "false_positive", "store": "performance"}
+    assert out == {
+        "id": cause.id, "status": "false_positive", "store": "performance",
+        "reason": "cached upstream", "until": None,
+    }
     statuses = (
         await async_session.execute(
             select(HealthFinding.status).where(HealthFinding.opportunity_id == "perf1")
@@ -249,7 +253,10 @@ async def test_an_item_no_store_holds_keeps_its_answer_under_its_id(async_sessio
     out = await mark_item(async_session, rid, cycle.id, "false_positive", reason="generated pair")
     await async_session.commit()
     # The next-action store has one "not now" state, so it reads back acknowledged.
-    assert out == {"id": cycle.id, "status": "acknowledged", "store": "item"}
+    assert out == {
+        "id": cycle.id, "status": "acknowledged", "store": "item",
+        "reason": "generated pair", "until": None,
+    }
     assert (await get_action_states(async_session, rid))[cycle.id].state == "dismissed"
     # A changed item (new facts) is open again.
     moved = dataclasses.replace(cycle, fingerprint="other")
@@ -325,3 +332,43 @@ async def test_a_member_that_joins_a_snoozed_group_opens_it(async_session) -> No
     assert (await _status(async_session, rid, group))[0] == "snoozed"
     grown = dataclasses.replace(group, members=(*group.members, Member("action", "act_new", "fp")))
     assert (await _status(async_session, rid, grown))[0] == "open"
+
+
+async def test_every_store_keeps_the_reason_and_reads_it_back(async_session) -> None:
+    rid, report = await _report(async_session)
+    group = _one(report, "security", "hardcoded_password")  # next actions
+    cycle = _one(report, "hygiene", "import_cycle")  # no store: the item's own answer
+    cause = _one(report, "performance", "io_in_loop")
+    finding = _stored_item("finding", Member("health_finding", "hf_pub"))
+    plan = _stored_item("refactor", Member("refactoring_plan", "plan_pub"))
+    opportunity = _stored_item("refactor_opp", Member("refactoring_opportunity", "opp1"))
+    async_session.add_all(
+        [
+            HealthFinding(repository_id=rid, file_path="src/repo.py", biomarker_type="io_in_loop",
+                          severity="high", dimension="performance", opportunity_id="perf1"),
+            HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="long_method",
+                          severity="medium", public_id="hf_pub"),
+            RefactoringSuggestion(repository_id=rid, refactoring_type="extract_method",
+                                  file_path="src/core.py", public_id="plan_pub"),
+            RefactoringSuggestion(repository_id=rid, refactoring_type="extract_method",
+                                  file_path="src/core.py", public_id="step_pub"),
+            RefactoringOpportunity(repository_id=rid, opportunity_id="opp1",
+                                   details_json=json.dumps({"steps": [{"plan_id": "step_pub"}]})),
+        ]
+    )
+    await _store_items(async_session, rid, report, finding, plan, opportunity)
+
+    items = (group, cycle, cause, finding, plan, opportunity)
+    for item in items:
+        await mark_item(async_session, rid, item.id, "ack", reason=f"why {item.rule}")
+    await async_session.commit()
+
+    read = await item_statuses(async_session, rid, items)
+    assert {i.id: (read[i.id].status, read[i.id].reason) for i in items} == {
+        i.id: ("acknowledged", f"why {i.rule}") for i in items
+    }
+    assert read[plan.id].to_json()["status_reason"] == "why refactor"
+    # A later answer without a reason drops the old one.
+    await mark_item(async_session, rid, finding.id, "done")
+    await async_session.commit()
+    assert await _status(async_session, rid, finding) == ("done", None)

@@ -579,7 +579,7 @@ async def get_action_states(session: AsyncSession, repo_id: str) -> dict[str, Ac
         .scalars()
         .all()
     )
-    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until) for r in rows}
+    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until, r.note) for r in rows}
 
 
 async def set_action_state(
@@ -590,8 +590,10 @@ async def set_action_state(
     state: str | None,
     fingerprint: str = "",
     until: datetime | None = None,
+    note: str | None = None,
 ) -> None:
-    """Record, replace, or (``state=None``) clear a person's answer to one action.
+    """Record, replace, or (``state=None``) clear a person's answer to one action,
+    with the *note* saying why (``None`` clears an earlier one).
 
     Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
     apply on every read, so writing one keeps the stored views.
@@ -615,10 +617,11 @@ async def set_action_state(
                 state=state,
                 fingerprint=fingerprint,
                 until=until,
+                note=note,
             )
         )
     else:
-        row.state, row.fingerprint, row.until = state, fingerprint, until
+        row.state, row.fingerprint, row.until, row.note = state, fingerprint, until, note
 
 
 #: The stored rules' output's ``read_snapshots.kind``.

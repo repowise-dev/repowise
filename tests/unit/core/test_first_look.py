@@ -83,6 +83,7 @@ def test_report_json_round_trips() -> None:
     assert data["schema_version"] == SCHEMA_VERSION
     assert data["sections"][0]["items"][0]["source_layer"] == "security"
     assert FirstLookReport.from_json(data).to_json() == report.to_json()
+    assert data["prose_source"] == {"writer": "template", "written_at": None, "cost_usd": None}
 
 
 def test_a_newer_schema_is_refused() -> None:
@@ -170,6 +171,22 @@ def test_the_file_store_keeps_the_report_of_another_commit(tmp_path) -> None:
     assert read_report_file(tmp_path).stamp.commit == "b" * 40
     kept = json.loads((path.parent / f"first-look.{'a' * 40}.json").read_text(encoding="utf-8"))
     assert kept["stamp"]["commit"] == "a" * 40
+
+
+def test_a_failed_final_replace_leaves_the_current_report(tmp_path, monkeypatch) -> None:
+    from repowise.core.report.first_look import store
+
+    first = _report(_item(), commit="a" * 40)
+    write_report_file(tmp_path, first)
+
+    def fail(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store.os, "replace", fail)
+    with pytest.raises(OSError):
+        write_report_file(tmp_path, _report(_item(path="b.py"), commit="b" * 40))
+    assert read_report_file(tmp_path).to_json() == first.to_json()
+    assert (report_path(tmp_path).parent / f"first-look.{'a' * 40}.json").exists()
 
 
 def test_an_unreadable_report_file_is_kept_aside(tmp_path) -> None:
