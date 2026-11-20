@@ -121,3 +121,14 @@ def test_gitlab_installs_the_ruby_bundle() -> None:
     doc = yaml.safe_load(ci_snippet(detect_stacks(*_RUBY), "gitlab", "main")["content"])
 
     assert doc["repowise-evidence"]["script"][0] == "bundle install"
+
+
+def test_units_whose_roots_slug_alike_keep_their_own_artifact() -> None:
+    package = json.dumps({"name": "w", "scripts": {"test": "vitest run"}, "devDependencies": {"vitest": "1"}})
+    paths = [f"{root}/{name}" for root in ("app/web", "app-web") for name in ("package.json", "a.ts")]
+    stacks = detect_stacks(paths, {"app/web/package.json": package, "app-web/package.json": package})
+
+    jobs = yaml.safe_load(ci_snippet(stacks, "github", "main")["content"])["jobs"].values()
+
+    names = [job["steps"][-1]["with"]["name"] for job in jobs]
+    assert len(names) == 2 and len(set(names)) == 2

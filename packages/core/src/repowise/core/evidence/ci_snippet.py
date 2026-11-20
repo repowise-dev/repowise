@@ -157,7 +157,8 @@ def _github_job(name: str, stack: Stack) -> list[str]:
         "  if: always()",
         "  uses: actions/upload-artifact@v4",
         "  with:",
-        f"    name: repowise-evidence-{_slug(stack)}",
+        # The job name, unique in the workflow: upload-artifact refuses a repeated name.
+        f"    name: repowise-{name}",
         "    if-no-files-found: warn",
         "    path: |",
         *(f"      {p}" for p in _kept(stack)),
