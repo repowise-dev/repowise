@@ -99,26 +99,27 @@ def schedule_setup_refresh(result: Any) -> None:
 async def _refresh(root: str) -> None:
     """Gather the setup facts and the actions view, and store the answer.
 
-    Settles *root* after a write or a confirmed no-op (another checkout, or a
-    dismissal that changed meanwhile). A failure, including setup facts that
-    could not be read, leaves it to a later session's attempt.
+    Settles *root* after a write from every fact, or a confirmed no-op
+    (another checkout, or a dismissal that changed meanwhile). A failure, or
+    setup facts read only in part, leaves it to a later session's attempt.
     """
     try:
-        await _read_and_record(_key(root))
+        settled = await _read_and_record(_key(root))
     except Exception:  # best-effort: the handshake keeps the last answer
         logger.debug("setup refresh failed", exc_info=True)
         return
-    _settled.add(root)
+    if settled:
+        _settled.add(root)
 
 
-async def _read_and_record(key: str) -> None:
+async def _read_and_record(key: str) -> bool:
     from repowise.core.analysis.actions.setup import SETUP_STATE_ID
     from repowise.core.persistence.crud.analysis.actions import (
         get_action_states,
         load_actions_view,
     )
     from repowise.core.persistence.database import get_session
-    from repowise.core.setup_state import record_setup
+    from repowise.core.setup_state import read_setup_state, record_setup
     from repowise.server.mcp_server._helpers import (
         _cross_repo_cut,
         _get_repo,
@@ -130,7 +131,7 @@ async def _read_and_record(key: str) -> None:
     # In a workspace the default repo may live elsewhere than the served
     # root, whose setup.json is the one the handshake reads.
     if ctx.path is None or _key(str(ctx.path)) != key:
-        return
+        return True
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
@@ -146,11 +147,19 @@ async def _read_and_record(key: str) -> None:
         raise RuntimeError("actions view carried no setup block")
     # A fresh session sees a dismissal (or its undo) committed while the view
     # was built; the "setup" action state is the source of truth for both.
+    # The CLI writes setup.json right after its commit, so a file that moves
+    # past the re-read closes the gap between that read and the write.
+    last = read_setup_state(setup.root)
     async with get_session(ctx.session_factory) as session:
         answer = (await get_action_states(session, repo_id)).get(SETUP_STATE_ID)
     if (answer is not None and answer.state == "dismissed") != bool(block.get("dismissed")):
-        return
+        return True
+    if read_setup_state(setup.root) != last:
+        return True
     record_setup(setup.root, block)
+    # A fact that could not be read still yields an answer worth storing, but
+    # a later session reads them all again.
+    return not setup.unavailable
 
 
 __all__ = ["MAX_ATTEMPTS", "schedule_setup_refresh"]

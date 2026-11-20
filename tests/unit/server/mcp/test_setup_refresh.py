@@ -245,7 +245,7 @@ async def test_unreadable_setup_facts_are_retried_too(indexed, monkeypatch) -> N
     _as_agent_call(monkeypatch, "s1")
     _setup_refresh.schedule_setup_refresh({"answer": "ok"})
     await _settle()
-    assert str(root) not in _setup_refresh._settled
+    assert not _setup_refresh._settled
     assert not (root / ".repowise" / "setup.json").exists()
 
     monkeypatch.setattr(overview_actions, "setup_facts", real)
@@ -253,6 +253,51 @@ async def test_unreadable_setup_facts_are_retried_too(indexed, monkeypatch) -> N
     _setup_refresh.schedule_setup_refresh({"answer": "ok"})
     await _settle()
     assert read_setup_state(root)["offer"] == FINISH_SETUP_OFFER
+
+
+async def test_facts_read_in_part_are_stored_but_not_settled(indexed, monkeypatch) -> None:
+    import dataclasses
+
+    from repowise.server.mcp_server.tool_overview import actions as overview_actions
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    real = overview_actions.setup_facts
+
+    async def partial(*args: Any) -> Any:
+        facts = await real(*args)
+        return dataclasses.replace(facts, unavailable={"coverage": "Could not be read."})
+
+    monkeypatch.setattr(overview_actions, "setup_facts", partial)
+    _as_agent_call(monkeypatch)
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert read_setup_state(root)["offer"] == FINISH_SETUP_OFFER
+    assert not _setup_refresh._settled
+
+
+async def test_a_cli_write_after_the_re_read_is_kept(indexed, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import actions
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    _as_agent_call(monkeypatch)
+    real = actions.get_action_states
+    reads: list[int] = []
+
+    async def then_cli_writes(*args: Any) -> Any:
+        states = await real(*args)
+        reads.append(1)
+        if len(reads) == 2:  # the refresh's re-read, before its write
+            write_setup_state(root, dismissed=True, offer=None)
+        return states
+
+    monkeypatch.setattr(actions, "get_action_states", then_cli_writes)
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert len(reads) == 2
+    state = read_setup_state(root)
+    assert state["dismissed"] is True and state["offer"] is None
 
 
 async def test_a_broken_store_is_tried_at_most_the_cap(indexed, monkeypatch) -> None:
