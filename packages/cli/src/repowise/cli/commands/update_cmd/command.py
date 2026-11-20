@@ -940,7 +940,7 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from .persistence import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import resolve_repair_base
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
     if give_up is not None:

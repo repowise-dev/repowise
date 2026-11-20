@@ -29,10 +29,7 @@ from repowise.cli.helpers import (
 from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
-from repowise.core.pipeline.incremental.repair import (  # noqa: F401 (re-export)
-    record_repair_marker,
-    resolve_repair_base,
-)
+from repowise.core.pipeline.incremental.repair import record_repair_marker
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
     RescoreCoverage,
     rescore_health_from_store,
