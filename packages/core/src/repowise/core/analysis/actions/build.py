@@ -297,8 +297,11 @@ def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
             last[key] = latest
         if since is not None and latest >= since:
             active.add(key)
+    # A name-only person is found the way ``owner_key`` spells them.
     by_email = {
-        email: when for key, when in last.items() for email in resolve.aliases(key)[1] or [key]
+        email: when
+        for key, when in last.items()
+        for email in resolve.aliases(key)[1] or [key.removeprefix("name:").strip().lower()]
     }
     return {"author_last_commit": by_email, "active_authors_90d": len(active)}
 

@@ -104,13 +104,8 @@ def _resolver(idx: BlameIndex) -> IdentityResolver:
     return idx.resolve
 
 
-def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | None, float | None]:
-    """``(identity key, share)`` of the person who wrote most of *line_nos*.
-
-    Lines are credited to people, not display names (see :attr:`BlameIndex.resolve`),
-    so one person's two names or emails never split their share. Shallow-clone
-    boundary lines are left out; ``(None, None)`` when no line is attributable.
-    """
+def _tally(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[Counter[str], dict[str, str]]:
+    """Blamed lines per identity, and the first name each identity was seen under."""
     excluded = idx.boundary_shas if idx.is_shallow else frozenset()
     resolve = _resolver(idx)
     shas: Counter[str] = Counter()
@@ -119,8 +114,23 @@ def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | 
         if entry is not None and entry[0] not in excluded:
             shas[entry[0]] += 1
     counts: Counter[str] = Counter()
+    names: dict[str, str] = {}
     for sha, n in shas.items():
-        counts[resolve(*idx.authors.get(sha, ("unknown", "")))] += n
+        name, email = idx.authors.get(sha, ("unknown", ""))
+        key = resolve(name, email)
+        counts[key] += n
+        names.setdefault(key, name)
+    return counts, names
+
+
+def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | None, float | None]:
+    """``(identity key, share)`` of the person who wrote most of *line_nos*.
+
+    Lines are credited to people, not display names (see :attr:`BlameIndex.resolve`),
+    so one person's two names or emails never split their share. Shallow-clone
+    boundary lines are left out; ``(None, None)`` when no line is attributable.
+    """
+    counts, _names = _tally(idx, line_nos)
     if not counts:
         return None, None
     key, top_count = counts.most_common(1)[0]
@@ -130,12 +140,13 @@ def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | 
 def _blame_owner(
     idx: BlameIndex, line_nos: Iterable[int]
 ) -> tuple[str | None, str | None, float | None]:
-    key, share = top_blame_identity(idx, line_nos)
-    if key is None:
+    counts, names = _tally(idx, line_nos)
+    if not counts:
         return None, None, None
+    key, top_count = counts.most_common(1)[0]
     resolve = _resolver(idx)
-    seen = next((n for n, e in idx.authors.values() if resolve(n, e) == key), None)
-    return resolve.display_name(key, seen), resolve.email(key), share
+    share = top_count / sum(counts.values())
+    return resolve.display_name(key, names[key]), resolve.email(key), share
 
 
 def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float | None]:

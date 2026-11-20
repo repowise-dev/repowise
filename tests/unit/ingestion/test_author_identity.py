@@ -638,3 +638,15 @@ def test_action_authors_fold_one_person_and_find_the_owner_by_any_email() -> Non
     assert out["active_authors_90d"] == 2
     # The owner's stored real email finds her recent noreply commit.
     assert out["author_last_commit"]["swati@gmail.com"] == new
+
+
+def test_action_authors_find_a_name_only_owner() -> None:
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.actions.build import build_authors
+
+    when = datetime(2026, 6, 1, tzinfo=UTC)
+    out = build_authors(
+        [{"author_name": "Jane Doe", "author_email": "", "committed_at": when}], since=None
+    )
+    assert out["author_last_commit"][author_identity_key("Jane Doe", "")] == when
