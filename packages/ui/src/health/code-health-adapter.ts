@@ -22,6 +22,7 @@ import type {
   EvidenceRunsResponse,
   MeasuredFunctionsResponse,
   MeasuredResponse,
+  SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 import type { AreaDetail, AreaTree } from "@repowise-dev/types/areas";
 import type { AreaLinks } from "./area-rail/area-card";
@@ -99,6 +100,8 @@ export interface CodeHealthAdapter {
   getMeasured?(opts?: { runId?: string; limit?: number }): Promise<MeasuredResponse>;
   listEvidenceRuns?(): Promise<EvidenceRunsResponse>;
   getMeasuredFunctions?(target: { symbolId: string }): Promise<MeasuredFunctionsResponse>;
+  /** The slowest timed tests, from stored test timings. */
+  getEvidenceTests?(opts?: { limit?: number }): Promise<SuiteCostResponse>;
   /** Fetch one exact canonical plan for the performance drawer. */
   getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
   /** One plan's agent prompt as core renders it (`/refactoring/{id}/prompt`). */

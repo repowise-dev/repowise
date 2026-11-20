@@ -76,13 +76,16 @@ def _with_junit(command: str, stack: Stack) -> tuple[str, str | None]:
     """*command* writing JUnit XML too, and the comment to show when the flag cannot be added.
 
     The flag goes at the end, which a command chaining a second step with
-    ``&&`` (a c8 report) would hand to that step instead.
+    ``&&`` (a c8 report) would hand to that step instead. The runner's
+    environment for the report goes first; CI runs the line in sh or bash.
     """
     if not stack.junit_flag:
         return command, None
+    env = stack.junit_vars()
     if "&&" in command:
-        return command, f"# add {stack.junit_flag} to the test command for test timings"
-    return f"{command} {stack.junit_flag}", None
+        with_env = f" with {env} in its environment" if env else ""
+        return command, f"# add {stack.junit_flag} to the test command{with_env} for test timings"
+    return f"{env + ' ' if env else ''}{command} {stack.junit_flag}", None
 
 
 def _junit_path(stack: Stack) -> str | None:

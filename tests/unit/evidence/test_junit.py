@@ -53,6 +53,18 @@ JEST = b"""<testsuites name="jest tests"><testsuite name="cart">
 """
 
 
+# jest-junit as ``evidence setup`` runs it: the classname is the file, repo-relative
+# through the unit's path prefix.
+JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="3"><testsuite name="cart" tests="2">
+<testcase classname="web/src/cart.test.ts" name="cart adds an item" time="0.5" />
+<testcase classname="web/src/cart.test.ts" name="cart removes an item" time="0.1" />
+</testsuite><testsuite name="pay" tests="1">
+<testcase classname="web/src/pay.test.ts" name="pay charges" time="0.2" />
+</testsuite></testsuites>
+"""
+
+
 def _doc(data: bytes):
     return parse_evidence(json.dumps(junit.to_v1(data)))
 
@@ -96,6 +108,19 @@ def test_a_path_classname_is_the_file() -> None:
 
     assert entry["test_id"] == "src/cart.test.ts::cart > adds an item"
     assert entry["test_file"] == "src/cart.test.ts"
+
+
+def test_jest_junit_as_setup_runs_it_names_each_file() -> None:
+    entries = _doc(JEST_SETUP).entries
+
+    assert [e["test_id"] for e in entries] == [
+        "web/src/cart.test.ts::cart adds an item",
+        "web/src/cart.test.ts::cart removes an item",
+        "web/src/pay.test.ts::pay charges",
+    ]
+    assert {e["test_file"] for e in entries} == {"web/src/cart.test.ts", "web/src/pay.test.ts"}
+    # Setup shared by a file runs in its first test.
+    assert [e["first_in_class"] for e in entries] == [True, False, True]
 
 
 def test_placing_joins_dotted_names_to_indexed_files() -> None:

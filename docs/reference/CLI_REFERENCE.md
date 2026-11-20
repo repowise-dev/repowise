@@ -559,7 +559,7 @@ Why the code is shaped this way (decisions, rationale, git archaeology); run bef
 
 ```bash
 repowise why "why the retry cap?" --target src/api/client.py
-repowise why src/api/auth.py                     # governing decisions (--full adds the origin story)
+repowise why src/api/auth.py                     # governing decisions, else its history and rationale comments
 repowise why                                     # decision health dashboard
 ```
 
@@ -1465,7 +1465,9 @@ writes nothing.
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has
   `test_timings`: the `flag` that makes its test command write JUnit XML (`null` for Maven and
-  Gradle, which write it by default), the `report` path and the `ingest` line. Test timings are
+  Gradle, which write it by default), the `env` that command needs (`null` unless the runner reads
+  its report options from the environment, as jest-junit does; a Jest unit's `prerequisites` then
+  install `jest-junit` when the package lacks it), the `report` path and the `ingest` line. Test timings are
   never a `next_call` step. Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the

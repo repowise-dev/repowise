@@ -255,7 +255,7 @@ def test_npm_workspace_members_get_their_own_stacks():
     root, member = detect_stacks(*_load("node_monorepo"))
     assert (root.root, member.root) == ("", "packages/a")
     # The member has no lockfile of its own: the workspace root's picks npm and its install.
-    assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
+    assert (member.package_manager, member.requires) == ("npm", ("npm ci", "npm install --no-save jest-junit@16"))
 
 
 MONOREPO = {
@@ -737,3 +737,138 @@ def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, insta
     monkeypatch.setattr(stacks, "_gradle_init", lambda: ())
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
+
+
+_MONOREPO = {
+    "backend/requirements.txt": "fastapi\n",
+    "backend/requirements-dev.txt": "pytest\npytest-cov\n",
+    "backend/pytest.ini": "[pytest]\nmarkers =\n    e2e: end to end\n",
+    "backend/app.py": "",
+    "backend/tests/test_app.py": "",
+    # A deploy's dependencies, no tests: not a unit to run.
+    "backend/deploy/requirements.txt": "modal\n",
+    "backend/deploy/app.py": "",
+    # A script folder whose requirements name pytest has a suite.
+    "scripts/avatar/requirements.txt": "pytest>=8\n",
+    "scripts/avatar/run.py": "",
+    "scripts/avatar/test_run.py": "",
+}
+
+
+def _monorepo_stacks(units: BuildUnitIndex | None = None) -> dict[str, str]:
+    paths = sorted(_MONOREPO)
+    files = {p: _MONOREPO[p] for p in files_to_read(paths, units)}
+    return {s.root: s.test for s in detect_stacks(paths, files, units) if s.language == "python"}
+
+
+def test_a_pip_application_in_a_subdirectory_runs_its_tests():
+    stacks_by_root = _monorepo_stacks()
+    assert set(stacks_by_root) == {"backend", "scripts/avatar"}
+    (backend,) = [s for s in detect_stacks(sorted(_MONOREPO), _MONOREPO) if s.root == "backend"]
+    assert backend.requires[-1] == "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"
+    assert backend.test.startswith("pytest --cov=")
+
+
+def test_the_build_unit_index_names_the_same_pip_applications():
+    roots = ("backend", "backend/deploy", "scripts/avatar")
+    index = BuildUnitIndex.from_units(
+        [
+            BuildUnit(f"manifest:{r}", "manifest", r.rsplit("/", 1)[-1], r, f"{r}/requirements.txt", "manifest-root")
+            for r in roots
+        ],
+        sorted(_MONOREPO),
+    )
+    assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
+
+
+def test_a_root_requirements_file_keeps_its_pytest_guess():
+    """The repository root's requirements file is the project's; only units below it need a suite."""
+    paths = ["requirements.txt", "main.py", "test_main.py"]
+    (stack,) = detect_stacks(paths, {"requirements.txt": "flask\n"})
+    assert (stack.root, stack.language, stack.runner) == ("", "python", "pytest")
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"api/requirements.txt": "pytest_mock\n"},  # packaging spells _ and - alike
+        {"api/requirements.txt": "flask\n", "api/pytest.ini": "[pytest\naddopts = -q\n"},  # does not parse
+        {"api/Requirements (1).TXT": "pytest\n"},  # any name the registry glob takes
+    ],
+)
+def test_a_subdirectory_suite_is_seen_from_any_pytest_signal(files):
+    paths = sorted([*files, "api/app.py"])
+    stacks_found = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert [(s.root, s.language) for s in stacks_found] == [("api", "python")]
+
+
+def test_a_root_note_named_like_requirements_does_not_make_a_python_unit():
+    paths = ["package.json", "package-lock.json", "Requirements for launch.txt", "src/index.test.js"]
+    files = {"package.json": json.dumps({"scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}})}
+    assert [s.language for s in detect_stacks(paths, files)] == ["node"]
+
+
+def test_jest_writes_junit_through_jest_junit_with_repo_relative_files():
+    files = {"web/package.json": _package({"test": "jest --ci"}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["web/package.json", "web/package-lock.json", "web/a.test.ts"], files)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    # The classname names the test file; the prefix makes it repo-relative from the unit.
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/"
+    # The reporter is installed for the run, and said why.
+    assert stack.requires == ("npm ci", "npm install --no-save jest-junit@16")
+    assert stack.prepare == ("- run: npm install --no-save jest-junit@16",)
+    assert "jest-junit" in stack.notes[-1]
+
+
+def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "yarn.lock", "a.test.ts"], files)
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath}"
+    assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
+
+
+def test_other_runners_need_no_junit_environment():
+    files = {"package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1", "@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.junit_vars() == "" and stack.junit_flag.startswith("--reporter=default")
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest", "npx jest --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest --ci --runInBand", "npx jest --coverage --coverageReporters=lcov --ci --runInBand"),
+        ("yarn.lock", "jest", "yarn jest --coverage --coverageReporters=lcov"),
+        ("pnpm-lock.yaml", "vitest run", f"pnpm exec vitest run {_VITEST}"),
+        # Not the runner alone: the script stays, hooks and all.
+        ("package-lock.json", "cross-env CI=1 jest", "npm test -- --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
+        # A shell comment would swallow the flags appended after it.
+        ("package-lock.json", "jest # unit tests", "npm test -- --coverage --coverageReporters=lcov"),
+        # A bare -- would turn the flags appended after it into test patterns.
+        ("package-lock.json", "jest --", "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command):
+    scripts = {"pretest": "node scripts/check-tokens.js", "test": script}
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", lock], {"package.json": _package(scripts, devDependencies=deps)})
+    assert stack.test == command
+    direct = not command.startswith("npm test")
+    assert any("would also run the `pretest` script" in n for n in stack.notes) is direct
+
+
+def test_a_test_script_without_hooks_stays_the_script():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.test == "npm test -- --coverage --coverageReporters=lcov" and stack.notes == ()
+
+
+def test_the_hooks_note_names_both_hooks_and_runs_the_first():
+    scripts = {"pretest": "tsc", "test": "jest", "posttest": "node report.js"}
+    files = {"package.json": _package(scripts, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.notes == (
+        "This runs the test runner directly: `npm test` would also run the `pretest` and `posttest` "
+        "scripts. Run `npm run pretest` first when the tests need it.",
+    )
