@@ -22,7 +22,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -204,7 +204,9 @@ async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, 
     the full load takes 200 ms. Ceiling: an entry point found only on disk
     (a console script, a ``package.json`` bin) and a stack whose test runner
     detection fails are not read here, so this can say less than setup
-    prints, never more about which language runs.
+    prints; a test file in a unit setup finds no stack for can say more.
+    Read only without the checkout: with one, the actions loader reads what
+    setup offers (:func:`~.setup.load_runtime_offer`).
     """
     from sqlalchemy import or_, select
 
@@ -334,7 +336,8 @@ def _target(
     """One runtime target, JSON-ready.
 
     *timed* is the same workload without the profiler, for ``perf measure``;
-    it rides under ``timed`` until :func:`runtime_targets` drops it.
+    it rides under ``timed`` until :func:`runtime_targets` drops it, as
+    *input_format* rides under ``format`` for :func:`offered_targets`.
 
     ``ingest`` is None when the run cannot be read yet: no commit, or
     *input_format* (what the recipe writes) is not a registered profile
@@ -360,6 +363,7 @@ def _target(
         "ingest": ingest,
         "reason": reason,
         **({"timed": timed} if command and timed else {}),
+        **({"format": input_format} if ingest and input_format else {}),
         **({"note": note} if command and note else {}),
     }
 
@@ -651,7 +655,40 @@ def runtime_targets(
     unit's. A unit whose root a shell could misread gets none.
     """
     found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
-    return [_awaiting_args({k: v for k, v in t.items() if k != "timed"}) for t in found]
+    return [_awaiting_args({k: v for k, v in t.items() if k not in _INTERNAL}) for t in found]
+
+
+#: Target keys for the callers in this package, never printed.
+_INTERNAL = frozenset({"timed", "format"})
+
+
+def offered_targets(
+    stacks: Sequence[Stack],
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    go_mains: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Every unit's runtime targets ``evidence setup`` prints an ingest line for.
+
+    The one answer to whether this repository has anything runtime to run:
+    the plan lists these targets, ``next`` asks for runtime evidence only
+    while there is one, and ``perf check`` names a benchmark target only when
+    one is here. Each keeps ``format``, what its command writes. An entry
+    point waiting for its arguments counts: the plan names it under
+    ``optional``.
+    """
+    roots = {s.root for s in stacks}
+    return [
+        t for stack in stacks
+        for t in _unit_targets(stack, repo_root, inputs, commit, go_mains, roots)
+        if is_offered(t)
+    ]
+
+
+def is_offered(target: Mapping[str, Any]) -> bool:
+    """Whether the plan offers *target*: it prints an ingest line for its run."""
+    return bool(target["ingest"])
 
 
 def _unit_targets(
@@ -745,7 +782,9 @@ __all__ = [
     "PROFILE_DIR",
     "RuntimeInputs",
     "evidence_ingest_line",
+    "is_offered",
     "load_runtime_inputs",
+    "offered_targets",
     "runtime_targets",
     "stored_target_classes",
     "timed_target",

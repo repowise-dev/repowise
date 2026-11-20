@@ -505,11 +505,24 @@ async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) ->
     runs, newest = await newest_evidence_run(session, repo_id, prefer_commit=head_sha)
     if newest is None:
         from repowise.core.evidence.runtime_setup import stored_target_classes
+        from repowise.core.evidence.setup import load_runtime_offer, offered_classes
 
-        # Only a repository with nothing stored is asked what it could run.
-        return build_runtime(
-            {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
+        from .refactoring_recommendations import repository_checkout
+
+        # Only a repository with nothing stored is asked what it could run:
+        # what ``evidence setup`` offers for its checkout, else the index's guess.
+        checkout = await repository_checkout(session, repo_id)
+        try:
+            offer = await load_runtime_offer(session, repo_id, checkout, head_sha)
+        except Exception as exc:  # a checkout that cannot be read costs only the precision
+            logger.warning("actions: runtime offer unavailable: %s", exc)
+            offer = None
+        targets = (
+            offered_classes(offer)
+            if offer is not None
+            else await stored_target_classes(session, repo_id)
         )
+        return build_runtime({"runs": 0, "targets": targets}, head_sha)
     return build_runtime(
         {"runs": runs, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
         head_sha,
