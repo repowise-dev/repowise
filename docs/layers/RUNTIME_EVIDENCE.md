@@ -69,7 +69,7 @@ read, a program with no profiler flag).
 - `repowise coverage setup` prints the same plan with the coverage part only.
 - `repowise evidence setup --write` also writes a CI file with one job per unit:
   its tests with coverage and JUnit XML, on pull requests and pushes to the
-  default branch, the report and test results kept as artifacts.
+  default branch, the report and test results kept as artifacts. <!-- repowise-drift-ignore -->
   `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
   (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one.
   A different file already at that path is left alone and the command exits `1`.

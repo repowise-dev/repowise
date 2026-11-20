@@ -1399,7 +1399,7 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 ```
 
 `repowise evidence setup --write` also writes a CI file, one job per build unit that runs its tests
-with coverage and JUnit XML on pull requests and default-branch pushes and keeps the report and test
+with coverage and JUnit XML on pull requests and default-branch pushes and keeps the report and test <!-- repowise-drift-ignore -->
 results as artifacts: `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
 (include it from `.gitlab-ci.yml`) when the repository has a `.gitlab-ci.yml` and no GitHub workflows.
 `--ci github|gitlab` picks one; GitLab skips a unit whose command needs its GitHub Actions step
