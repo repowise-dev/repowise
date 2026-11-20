@@ -328,6 +328,18 @@ class TestFindWorkspaceRoot:
         assert find_workspace_root(ws / "clones" / "other") is None
         assert find_workspace_root(ws / "clones" / "other" / "src") is None
         assert find_workspace_root(ws / "clones" / "linked") is None
+        # Commands that manage the workspace still find it from a non-member.
+        assert find_workspace_root(ws / "clones" / "other", any_repo=True) == ws
+
+    def test_a_monorepo_whose_folders_are_members_stays_in_the_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        ws = tmp_path.resolve()
+        members = [RepoEntry(path="mono/pkg-a", alias="a"), RepoEntry(path="mono/pkg-b", alias="b")]
+        WorkspaceConfig(repos=members).save(ws)
+        (ws / "mono" / ".git").mkdir(parents=True)
+        (ws / "mono" / "pkg-a" / "src").mkdir(parents=True)
+        assert find_workspace_root(ws / "mono" / "pkg-a" / "src") == ws
 
     def test_unreadable_config_still_found_from_a_nested_repo(self, tmp_path: Path) -> None:
         (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text("repos: [", encoding="utf-8")
