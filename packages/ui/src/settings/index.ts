@@ -10,3 +10,4 @@ export * from "./settings-registry-page";
 export * from "./settings-registry-labels";
 export * from "./settings-registry-types";
 export * from "./setting-prompt";
+export * from "./time-zone-field";

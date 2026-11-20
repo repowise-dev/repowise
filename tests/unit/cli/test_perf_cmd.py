@@ -1,4 +1,4 @@
-"""``repowise perf measure``: modes, exit codes and the JSON document."""
+"""``repowise perf measure`` and ``perf check``: modes, exit codes and the JSON document."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import perf_cmd
 from repowise.core.command_runner import CommandRun
+from tests.unit.cli import test_evidence_cmd
+from tests.unit.cli.test_evidence_cmd import _GO_BENCH, _go_bench_repo
+from tests.unit.cli.test_evidence_cmd import _add as _evidence_add
 
 _JITTER = [1.00, 1.01, 0.99, 1.02, 0.98]
 
@@ -184,3 +187,98 @@ def test_a_command_that_cannot_start_exits_two_with_a_document(repo: Path, monke
     result = _invoke("--save", "base", "--format", "json", "--", "make")
     assert result.exit_code == 2
     assert json.loads(result.stdout)["error"] == "io_error"
+
+
+# --- perf check -------------------------------------------------------------
+
+#: The evidence tests' small indexed git repo, shared.
+indexed = test_evidence_cmd.indexed
+
+
+def _check(root: Path, *args: str):
+    return CliRunner(mix_stderr=False).invoke(
+        perf_cmd.perf_group, ["check", "--path", str(root), *args]
+    )
+
+
+def _ingest(root: Path, head: str, text: str, name: str) -> None:
+    path = root / name
+    path.write_text(text)
+    result = _evidence_add(
+        str(path), "--workload", "go bench results ./strs", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_check_gates_on_allocations_per_op_never_on_time(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    _ingest(root, head, text, "before.txt")
+
+    saved = _check(root, "--save", "base", "--format", "json")
+    assert saved.exit_code == 0, saved.output
+    assert json.loads(saved.stdout)["benchmarks"] == {"go bench results ./strs": 3}
+    assert (root / ".repowise" / "perf" / "exact" / "base.json").is_file()
+
+    # Nothing ran since the baseline: nothing to judge.
+    same = _check(root, "--against", "base", "--format", "json")
+    assert same.exit_code == 2
+    assert json.loads(same.stdout)["error"] == "cannot_judge"
+
+    # Ten times slower, allocating the same: passes.
+    _ingest(root, head, text.replace("112.0 ns/op", "1120 ns/op"), "slower.txt")
+    slower = _check(root, "--against", "base")
+    assert slower.exit_code == 0, slower.output
+    assert slower.stdout.startswith("Passed: 0 of 3 benchmarks")
+
+    _ingest(root, head, text.replace("40 B/op\t       4 allocs/op", "48 B/op\t       6 allocs/op"),
+            "more.txt")
+    more = _check(root, "--against", "base", "--format", "json")
+    assert more.exit_code == 1, more.output
+    payload = json.loads(more.stdout)
+    assert (payload["verdict"], payload["baseline"], payload["metrics"]) == (
+        "regressed", "base", ["allocs_per_op"],
+    )
+    assert [(c["benchmark"], c["base"], c["head"]) for c in payload["regressed"]] == [
+        ("example.com/gobench/strs.BenchmarkConcat/n=5", 4, 6),
+    ]
+
+
+def test_check_needs_one_mode_and_stored_exact_values(indexed) -> None:
+    root, _ = indexed
+    both = _check(root, "--save", "a", "--against", "b", "--format", "json")
+    assert both.exit_code == 2 and json.loads(both.stdout)["error"] == "usage"
+    empty = _check(root, "--save", "base", "--format", "json")
+    assert empty.exit_code == 2 and json.loads(empty.stdout)["error"] == "no_exact_evidence"
+    missing = _check(root, "--against", "nope", "--format", "json")
+    assert missing.exit_code == 2 and json.loads(missing.stdout)["error"] == "baseline"
+
+
+def test_check_names_a_workload_the_baseline_lacks(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    _ingest(root, head, (_GO_BENCH / "bench.txt").read_text(), "before.txt")
+    assert _check(root, "--save", "base").exit_code == 0
+    result = _check(root, "--against", "base", "--workload", "other", "--format", "json")
+    assert result.exit_code == 2
+    assert "has no workload 'other'" in json.loads(result.stdout)["message"]
+
+
+def test_a_workload_filtered_save_keeps_the_baselines_other_workloads(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    text = (_GO_BENCH / "bench.txt").read_text()
+    _ingest(root, head, text, "before.txt")
+    path = root / "other.txt"
+    path.write_text(text.replace("BenchmarkJoin", "BenchmarkSplit"))
+    result = _evidence_add(
+        str(path), "--workload", "other", "--class", "benchmark", "--commit", head,
+    )
+    assert result.exit_code == 0, result.output
+    assert _check(root, "--save", "base").exit_code == 0
+
+    saved = _check(root, "--save", "base", "--workload", "other", "--format", "json")
+    assert saved.exit_code == 0, saved.output
+    assert json.loads(saved.stdout)["benchmarks"] == {"go bench results ./strs": 3, "other": 3}

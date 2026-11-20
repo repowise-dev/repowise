@@ -63,7 +63,7 @@ That default is what Claude Code is listed: it loads a tool's schema only when t
 
 **Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2.5k more tokens a turn. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
 
-`repowise init` and `repowise agents add` print what each connected agent lists, and the always-load state for Claude Code; `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field.
+`repowise agents add` prints what each connected agent lists, and the always-load state for Claude Code. `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field, and the dashboard's Agents page shows them.
 
 | Value | Lists |
 |-------|-------|

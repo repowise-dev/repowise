@@ -1,4 +1,4 @@
-"""Which MCP tools a wired agent is listed, as ``init`` and ``agents add`` report it.
+"""Which MCP tools a wired agent is listed, as ``agents add`` and init's JSON report it.
 
 The words come from the settings registry (``mcp.tools``, ``mcp.always_load``)
 and the tool list from the server's own selection, so this report, ``config
@@ -8,7 +8,6 @@ explain`` and the server cannot disagree.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -114,17 +113,3 @@ def change_hint(surface: dict[str, Any]) -> str:
     """The line naming the command that changes the tools, said once for every host."""
     return f"Change with '{surface['change_command']}', then restart the agent."
 
-
-def surface_lines(rows: Iterable[dict[str, Any]]) -> list[str]:
-    """Plain lines for ``{"name", **surface}`` rows: one per host, then the shared hint."""
-    lines: list[str] = []
-    last: dict[str, Any] | None = None
-    for row in rows:
-        lines.append(f"{row['name']}: {surface_text(row)}")
-        always = always_load_text(row)
-        if always:
-            lines.append(f"{row['name']}: {always}")
-        last = row
-    if last is not None:
-        lines.append(change_hint(last))
-    return lines

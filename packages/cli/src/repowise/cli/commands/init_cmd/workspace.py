@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import structlog
 from rich.markup import escape
 
 from repowise.cli._setup import setup_logging_silence
@@ -27,8 +28,10 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_project_file_overrides,
 )
 from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
     register_editor_clients,
     resolve_editor_setup_options,
+    snapshot_agent_configs,
     write_editor_project_files,
 )
 from repowise.cli.git_exclude import keep_workspace_data_out
@@ -99,6 +102,8 @@ from .persistence import (
     stamp_fresh_index,
 )
 from .reporting import show_workspace_completion
+
+logger = structlog.get_logger(__name__)
 
 
 def _run_workspace_generation(
@@ -322,6 +327,9 @@ class _WorkspaceCtx:
     save_key: bool = True
     #: Asked-for work a repo did not get; any entry makes init exit degraded.
     gaps: list[str] = field(default_factory=list)
+    #: The primary's agent config bytes before any repo's editor files were
+    #: written, to name every host to restart, not only Claude Code.
+    agent_configs_before: dict[str, Any] | None = None
 
 
 @dataclass
@@ -930,11 +938,16 @@ def _workspace_init(
         run_mode=run_mode,
         first_index=first_index,
     )
+    if not dry_run and not is_editor_setup_disabled(not editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            ctx.agent_configs_before = snapshot_agent_configs(primary_repo.path)
     totals = _index_workspace_repos(selected, ctx)
 
     # A dry run writes nothing for any repo, so nothing at the workspace level.
+    repointed = False
     if not dry_run:
-        _save_workspace(
+        repointed = _save_workspace(
             ws_config,
             root,
             selected,
@@ -954,8 +967,9 @@ def _workspace_init(
             editor_setup=editor_setup,
         )
 
-    # Last, so Connected and Auto-sync read what the hook offers left behind.
-    show_workspace_completion(
+    # Last, so Connected reads what the hook offers left behind.
+    setup = _workspace_setup(primary_repo.path, ctx, repointed=repointed)
+    completion = show_workspace_completion(
         selected=selected,
         errors=totals.errors,
         total_files=totals.total_files,
@@ -966,13 +980,24 @@ def _workspace_init(
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
         dry_run=dry_run,
-        setup=_workspace_setup(primary_repo.path, ctx),
+        setup=setup,
+        cross_repo=None if dry_run else cross_repo_finding(root),
     )
     console.print()
-    exit_on_gaps(_workspace_gaps(ctx, totals))
+    gaps = _workspace_gaps(ctx, totals)
+    from repowise.cli.agent_events import active
+
+    events = active()
+    if events is not None:
+        from ._agent_summary import workspace_summary
+
+        events.summary(
+            workspace_summary(setup, completion.steps, completion.first_prompt, gaps)
+        )
+    exit_on_gaps(gaps)
 
 
-def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
+def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx, *, repointed: bool) -> Any:
     """What editor setup left for the primary repo; None on a dry run, which set nothing up."""
     if ctx.dry_run:
         return None
@@ -983,7 +1008,59 @@ def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
         interactive=sys.stdin.isatty() and not ctx.yes,
         first_index=ctx.first_index,
         no_editor_setup=not ctx.editor_setup,
+        configs_before=ctx.agent_configs_before,
+        claude_repointed=repointed,
     )
+
+
+def cross_repo_finding(root: Path) -> str | None:
+    """The workspace's one cross-repo finding, worded; None when none was measured.
+
+    The repo pair whose files changed together in the most work sessions, else
+    the count of contracts matched across repos. Reads what cross-repo
+    analysis just wrote.
+    """
+    try:
+        pair = _busiest_repo_pair(root)
+        links = 0 if pair else _contract_links(root)
+    except Exception:
+        # Analysis wrote these moments ago; an unreadable one costs the panel
+        # a line, never the run. Logged so a bug here is still visible.
+        logger.warning("workspace_cross_repo_finding_failed", root=str(root), exc_info=True)
+        return None
+    if pair:
+        (first, second), sessions = pair
+        noun = "work session" if sessions == 1 else "work sessions"
+        return f"{first} and {second} changed together in {sessions:,} {noun}"
+    if links:
+        noun = "contract link" if links == 1 else "contract links"
+        return f"{links:,} {noun} between repos"
+    return None
+
+
+def _busiest_repo_pair(root: Path) -> tuple[tuple[str, str], int] | None:
+    """The repo pair of the file pair that changed together in the most work sessions.
+
+    An edge's ``frequency`` counts the sessions one file pair shared. Summing
+    edges would count a session once per file pair it touched, so the largest
+    single edge is the honest count: both repos changed in at least that many
+    sessions. The dashboard's workspace welcome reads the same edge.
+    """
+    from repowise.core.workspace.cross_repo import load_overlay
+
+    overlay = load_overlay(root)
+    edges = overlay.co_changes if overlay is not None else []
+    if not edges:
+        return None
+    top = max(edges, key=lambda e: e.frequency)
+    return tuple(sorted((top.source_repo, top.target_repo))), top.frequency
+
+
+def _contract_links(root: Path) -> int:
+    from repowise.core.workspace.contracts import load_contract_store
+
+    store = load_contract_store(root)
+    return len(store.contract_links) if store is not None else 0
 
 
 def _settle_repos(
@@ -1046,23 +1123,25 @@ def _save_workspace(
     editor_setup: bool,
     yes: bool,
     global_consent: bool | None = None,
-) -> None:
+) -> bool:
     """Save the indexed timestamps, run cross-repo analysis, register the primary.
 
     *global_consent* is the plan screen's answer for the global MCP entry;
-    ``None`` when the screen did not ask.
+    ``None`` when the screen did not ask. True when registering wrote a new or
+    moved global entry, which Claude Code loads only on a restart.
     """
     ws_config.save(root)
     _run_cross_repo_analysis(ws_config, root, selected, errors)
     primary_entry = ws_config.get_primary()
     if not primary_entry:
-        return
+        return False
     from repowise.cli.editor_integrations.global_mcp import (
         REGISTER_LATER_COMMAND,
         confirm_global_mcp,
     )
 
     primary_path = (root / primary_entry.path).resolve()
+    repointed = False
     if global_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this workspace only). Run "
@@ -1075,6 +1154,9 @@ def _save_workspace(
         yes=yes or global_consent is True,
         no_editor_setup=not editor_setup,
     ):
+        from ._finish import _mcp_entry_moves
+
+        repointed = _mcp_entry_moves(primary_path)
         register_editor_clients(console, primary_path)
         # The repos' .mcp.json files were written before the user-scope entry
         # existed; drop each one that entry now serves, as single-repo init does.
@@ -1084,6 +1166,7 @@ def _save_workspace(
             # Best effort: a malformed .mcp.json was already reported when written.
             with contextlib.suppress(Exception):
                 sync_project_mcp_config(Path(repo.path))
+    return repointed
 
 
 def _resolve_workspace_provider(
