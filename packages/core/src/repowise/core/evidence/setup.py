@@ -28,6 +28,8 @@ from .runtime_setup import (
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
     evidence_ingest_line,
+    is_offered,
+    offered_targets,
     runtime_targets,
     timed_target,
 )
@@ -250,6 +252,11 @@ def evidence_setup(
     )
     if next_call is not None:
         reason = None
+    elif indexed and covered and not coverage_only and not _offers_runtime(planned):
+        reason = (
+            "Coverage at this commit is ingested. No unit has an entry point, benchmark "
+            "or test suite repowise can profile, so there is nothing left to run."
+        )
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
@@ -291,6 +298,49 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
         "report": report,
         "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
     }
+
+
+def _offers_runtime(planned: Sequence[dict[str, Any]]) -> bool:
+    """Whether any unit lists a runtime target with an ingest line (:func:`offered_targets`)."""
+    return any(is_offered(t) for u in planned for t in u.get("runtime", ()))
+
+
+def runtime_offer(
+    repo_root: str | Path,
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+    head: str | None,
+) -> list[dict[str, Any]]:
+    """:func:`~.runtime_setup.offered_targets` for the checkout at *repo_root*:
+    the runtime targets its plan prints an ingest line for. Blocking reads."""
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    return offered_targets(stacks, root, runtime, head, _go_mains(root, stacks))
+
+
+async def load_runtime_offer(
+    session: Any, repository_id: str, repo_root: str | Path | None, head: str | None
+) -> list[dict[str, Any]] | None:
+    """:func:`runtime_offer` from the stored build units and runtime inputs;
+    None when *repo_root* is not a checkout on this machine."""
+    import asyncio
+
+    from ..persistence.crud.build_units import load_build_units
+    from .runtime_setup import load_runtime_inputs
+
+    root = Path(repo_root) if repo_root else None
+    if root is None or not root.is_dir():
+        return None
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(runtime_offer, root, units=units, runtime=runtime, head=head)
+
+
+def offered_classes(offer: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """The workload classes in *offer*, in :data:`~.runtime_setup.CLASS_ORDER`."""
+    found = {t["class"] for t in offer}
+    return tuple(c for c in CLASS_ORDER if c in found)
 
 
 def _with_optional(
@@ -424,5 +474,8 @@ __all__ = [
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "load_runtime_offer",
+    "offered_classes",
+    "runtime_offer",
     "timed_targets",
 ]

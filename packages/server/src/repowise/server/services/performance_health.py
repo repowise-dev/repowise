@@ -39,6 +39,7 @@ from repowise.core.analysis.health.perf.serving import (
     unresolved_detail,
 )
 from repowise.core.analysis.health.refactoring.serving import evidence_block
+from repowise.core.analysis.health.rows import json_field
 from repowise.core.persistence.crud import (
     gated_performance_counts,
     get_performance_opportunity,
@@ -139,6 +140,9 @@ class PerformanceHealthService:
         )
         links = await self._plan_links(rows)
         evidence = await self._evidence_for(rows, evidence_per_item)
+        # A person's list carries what runtime evidence says per row; the agent
+        # surface does not.
+        workloads = await self._evidence_workloads() if row_decisions else None
         items = [
             {
                 **serialize(
@@ -146,6 +150,7 @@ class PerformanceHealthService:
                     links[row.opportunity_id],
                     summary=query.view == "summary",
                     decisions=row_decisions,
+                    workloads=workloads,
                 ),
                 "rank_position": served_position(query, index, row.rank_position),
                 **(
@@ -269,6 +274,14 @@ class PerformanceHealthService:
             include_unverified=self._include_unverified,
         )
         return fold_facets(grouped, query)
+
+    async def _evidence_workloads(self) -> list[str]:
+        """The leading workloads the stored causes were judged against, read
+        off the stored rollup by primary key; empty with no runtime evidence."""
+        row = await get_performance_summary(self._session, self._repository_id)
+        payload = json_field(row, "summary_json", {}) if row is not None else {}
+        workloads = payload.get("evidence_workloads") if isinstance(payload, dict) else None
+        return list(workloads) if isinstance(workloads, list) else []
 
     # -- headline ----------------------------------------------------------
 

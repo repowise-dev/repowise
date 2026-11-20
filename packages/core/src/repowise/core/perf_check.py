@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 #: Benchmark columns that are exact where the tool reports them.
 EXACT_METRICS = ("allocs_per_op",)
+#: Evidence formats whose results carry them: ``go test -bench -benchmem`` output.
+EXACT_FORMATS = frozenset({"go-bench"})
 SNAPSHOT_VERSION = 1
 
 Verdict = Literal["passed", "regressed", "cannot_judge"]
@@ -203,6 +205,7 @@ def _well_formed(raw: Any) -> bool:
 
 
 __all__ = [
+    "EXACT_FORMATS",
     "EXACT_METRICS",
     "compare",
     "load_snapshot",

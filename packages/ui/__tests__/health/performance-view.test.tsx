@@ -1352,3 +1352,14 @@ describe("performance drawer preview", () => {
     expect(await within(panel).findByRole("button", { name: `Preview: ${note}` })).toBeTruthy();
   });
 });
+
+describe("PerformanceView summary rows", () => {
+  it("renders a queue row the summary view sends without its actionability reason", async () => {
+    const summaryRows = page();
+    summaryRows.items = summaryRows.items.map(({ actionability_reason: _reason, ...row }) => row);
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => summaryRows })} />);
+    expect((await rows()).length).toBe(summaryRows.items.length);
+    await openFirstRow();
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+  });
+});

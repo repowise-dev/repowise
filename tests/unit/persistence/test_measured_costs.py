@@ -377,3 +377,91 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     assert "confirmed" not in unmeasured
     assert not by_owner["load_settings"].queue_eligible
     assert "measured" not in json.loads(by_owner["seed_defaults"].details_json)["facets"]
+
+
+async def _two_startup_causes(
+    session, repo_id: str, *, evidence: bool, unit_tests_only: bool = False
+) -> None:
+    """Two production causes; with evidence, a leading workload measured the
+    one the static order puts second."""
+    rows = []
+    # The static order puts ``aaa_first`` ahead: its loop is shown to grow.
+    for line, owner, size in ((5, "aaa_first", "grows_with_data"), (25, "zzz_measured", "unknown")):
+        row = _finding(repo_id, line, None)
+        row.file_path = "src/svc.py"
+        row.function_name = owner
+        row.details_json = json.dumps(
+            {"boundary_kind": "db", "loop_magnitude": size,
+             "role_owner": f"src/svc.py::{owner}", "execution_role": "request"}
+        )
+        rows.append(row)
+    session.add_all(rows)
+    if evidence:
+        session.add_all([_run(repo_id, "r1"), _run(repo_id, "r3", cls="unit_test")])
+    await session.flush()
+    if evidence:
+        lead = "r3" if unit_tests_only else "r1"
+        await replace_workload_hotness(
+            session,
+            repo_id,
+            [
+                {**_hot("x", run=lead), "symbol_id": "src/svc.py::zzz_measured",
+                 "tier": "lead_candidate"},
+                # A unit-test run is no workload a cause was "not exercised in".
+                {**_hot("y", run="r3"), "symbol_id": "src/svc.py::other"},
+            ],
+        )
+
+
+async def _queue_and_rows(session, repo_id: str) -> tuple[list[str], list[dict], dict]:
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.perf.serving import parse_query
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.models import PerformanceSummary
+    from repowise.server.services.performance_health import PerformanceHealthService
+
+    await finalize_performance_opportunities(session, repo_id)
+    stored = (
+        await session.execute(
+            select(PerformanceOpportunity).order_by(PerformanceOpportunity.rank_position)
+        )
+    ).scalars().all()
+    order = [r.intervention_symbol.rpartition(":")[2] for r in stored]
+    query, _ = parse_query(context="all", actionability="all", proof="all", lift_defaults=True)
+    service = PerformanceHealthService(session, repo_id, "repo")
+    rest = (await service.page(query, row_decisions=True, evidence_per_item=8)).items
+    agent = (await service.page(query)).items
+    assert all("runtime_evidence" not in item for item in agent)
+    summary = json.loads((await session.get(PerformanceSummary, repo_id)).summary_json)
+    return order, rest, summary
+
+
+async def test_evidence_puts_a_measured_cause_first_and_labels_the_rest(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(async_session, repo.id, evidence=True)
+    order, rest, summary = await _queue_and_rows(async_session, repo.id)
+    assert order == ["zzz_measured", "aaa_first"]
+    assert summary["evidence_workloads"] == ["w-r1"]
+    marks = {i["intervention_symbol"].rpartition(":")[2]: i["runtime_evidence"] for i in rest}
+    assert marks["zzz_measured"] == {"state": "confirmed", "basis": "measured"}
+    # Never hidden: the unmeasured cause is listed, in its static place among the rest.
+    assert marks["aaa_first"] == {"state": "not_exercised", "workloads": ["w-r1"]}
+
+
+async def test_without_evidence_the_order_and_rows_are_the_static_ones(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(async_session, repo.id, evidence=False)
+    order, rest, summary = await _queue_and_rows(async_session, repo.id)
+    assert order == ["aaa_first", "zzz_measured"]
+    assert "evidence_workloads" not in summary
+    assert all("runtime_evidence" not in item for item in rest)
+
+
+async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(async_session, repo.id, evidence=True, unit_tests_only=True)
+    order, rest, summary = await _queue_and_rows(async_session, repo.id)
+    assert order == ["aaa_first", "zzz_measured"]
+    assert "evidence_workloads" not in summary
+    assert all("runtime_evidence" not in item for item in rest)

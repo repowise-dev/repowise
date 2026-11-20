@@ -174,6 +174,19 @@ above the lead bar. That bar is a share of the run that clears the
 `evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
 `evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
 
+With runtime evidence, the queue orders causes in three tiers: confirmed first,
+then causes a leading workload measured (the `measured` facet), then the rest in
+their static order. Nothing is hidden: a cause with flat query counts, and a
+cause measured against its cold name, stay among the rest in their static order.
+Each row of the Performance tab carries `runtime_evidence`, what the evidence
+says about it: `confirmed`, `measured` (with the workload), `counter_evidence`
+(flat query counts), `ran` (query counts that settle nothing), or
+`not_exercised`, with the leading workloads that ran and never reached it ("not
+exercised in `<workload>`"). A unit-test run is never one of those workloads. A
+function a run sampled too rarely to rank reads as not exercised. The marks
+reflect the evidence of the last index or update. With no runtime evidence the
+order is the static one and rows carry no mark.
+
 To see them, widen the filter (below). Each performance finding also stores the
 reason its cause is in or out of the queue. Code in a package path that only looks
 like an example tree (`com/example/...`) is judged as production when the index
