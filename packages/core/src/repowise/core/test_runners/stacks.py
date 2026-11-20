@@ -271,7 +271,7 @@ _TEST_SETS = ("test", "tests", "testing")
 #: (``requirements-dev.txt``, ``test-requirements.txt``, ``requirements/test.txt``).
 _TEST_REQUIREMENTS = re.compile(r"requirements\.txt"
                                 r"|(?=[\w.-]*(?:dev|test))[\w.-]*requirements[\w.-]*\.txt"
-                                r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt")
+                                r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt", re.IGNORECASE)
 
 
 def _first(names: Iterable[str], wanted: Iterable[str]) -> str | None:
@@ -360,8 +360,35 @@ def _python_tool(
     return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
 
 
+def _has_pytest_suite(root: set[str], paths: list[str], files: dict[str, str]) -> bool:
+    """Whether a unit below the repository root has a pytest suite, or declares a distribution.
+
+    A directory whose only manifests are requirements files often holds a deploy's
+    or a script's dependencies; a ``conftest.py``, pytest in its requirements, a
+    pytest config or a ``tests/`` directory says it has a suite.
+    """
+    spec = REGISTRY.get("python")
+    # A pytest.ini is pytest's own file even when it does not parse.
+    marked = root & {*(spec.manifest_files if spec else ()), "conftest.py", "pytest.ini"}
+    return bool(marked) or _requires_pytest(root, files) or _configures_pytest(files) or any(
+        p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths
+    )
+
+
+def _requires_pytest(root: set[str], files: dict[str, str]) -> bool:
+    """Whether the unit's requirements files name pytest or a pytest plugin."""
+    requirements = "\n".join(files.get(p, "") for p in root if _REQUIREMENTS.fullmatch(p))
+    # Packaging spells ``pytest_mock`` and ``pytest-mock`` alike.
+    return re.search(r"(?im)^\s*pytest(?:[-_.]|\b)", requirements) is not None
+
+
+def _configures_pytest(files: dict[str, str]) -> bool:
+    """Whether a pytest config with a pytest section governs the unit's directory."""
+    return "" in read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES).by_dir
+
+
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
-    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
+    reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
@@ -1069,7 +1096,10 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | Non
     "php": lambda names, paths, files: _php(files),
     "node": lambda names, paths, files: _node(names, files),
 }
-_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt")
+#: What the registry's package-manifest glob matches, case and all.
+_REQUIREMENTS = re.compile(r"requirements[^/]*\.txt", re.IGNORECASE)
+#: pip's own spelling, which alone lets the repository root keep its pytest guess without a suite.
+_PIP_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt")
 _SOLUTIONS = (".sln", ".slnx")
 #: How many .csproj files detection reads at a .NET root.
 _DOTNET_PROJECTS = 20
@@ -1195,7 +1225,7 @@ def _units(paths: list[str], units: BuildUnitIndex | None) -> _Units:
         above = {a for root in roots for a in _ancestors(root)} - roots.keys()
         workspaces = above & listed.keys()
         roots.update({root: set(listed[root]) for root in workspaces})
-    if any("/" not in p and _REQUIREMENTS.fullmatch(p) for p in paths):
+    if any("/" not in p and _PIP_REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
     solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p)}
@@ -1297,6 +1327,10 @@ def detect_stacks(
                     names |= _governing_lock(root, present)
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
+                # The repository root keeps its guess when pip's own spelling names its requirements.
+                pip_root = not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names)
+                if stack == "python" and not pip_root and not _has_pytest_suite(names, rel, texts):
+                    continue
                 built = _BUILDERS[stack](names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
@@ -1312,7 +1346,13 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
     roots = _units(paths, units).roots
     names = sorted(_read_names())
     wanted = [path for root in sorted(roots) for n in names if (path := _join(root, n)) in present]
-    wanted += [p for p in paths if "/" not in p and _REQUIREMENTS.fullmatch(p)]
+    wanted += [
+        path
+        for root, stacks in sorted(roots.items())
+        if "python" in stacks
+        for path in paths
+        if (rel := _under(root, path)) is not None and _REQUIREMENTS.fullmatch(rel)
+    ]
     for root, stacks in sorted(roots.items()):
         if "dotnet" in stacks:
             rel = _listing_at(root, "dotnet", paths, roots)

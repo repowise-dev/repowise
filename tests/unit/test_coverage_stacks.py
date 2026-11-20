@@ -739,6 +739,75 @@ def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, insta
     assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
 
 
+_MONOREPO = {
+    "backend/requirements.txt": "fastapi\n",
+    "backend/requirements-dev.txt": "pytest\npytest-cov\n",
+    "backend/pytest.ini": "[pytest]\nmarkers =\n    e2e: end to end\n",
+    "backend/app.py": "",
+    "backend/tests/test_app.py": "",
+    # A deploy's dependencies, no tests: not a unit to run.
+    "backend/deploy/requirements.txt": "modal\n",
+    "backend/deploy/app.py": "",
+    # A script folder whose requirements name pytest has a suite.
+    "scripts/avatar/requirements.txt": "pytest>=8\n",
+    "scripts/avatar/run.py": "",
+    "scripts/avatar/test_run.py": "",
+}
+
+
+def _monorepo_stacks(units: BuildUnitIndex | None = None) -> dict[str, str]:
+    paths = sorted(_MONOREPO)
+    files = {p: _MONOREPO[p] for p in files_to_read(paths, units)}
+    return {s.root: s.test for s in detect_stacks(paths, files, units) if s.language == "python"}
+
+
+def test_a_pip_application_in_a_subdirectory_runs_its_tests():
+    stacks_by_root = _monorepo_stacks()
+    assert set(stacks_by_root) == {"backend", "scripts/avatar"}
+    (backend,) = [s for s in detect_stacks(sorted(_MONOREPO), _MONOREPO) if s.root == "backend"]
+    assert backend.requires[-1] == "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"
+    assert backend.test.startswith("pytest --cov=")
+
+
+def test_the_build_unit_index_names_the_same_pip_applications():
+    roots = ("backend", "backend/deploy", "scripts/avatar")
+    index = BuildUnitIndex.from_units(
+        [
+            BuildUnit(f"manifest:{r}", "manifest", r.rsplit("/", 1)[-1], r, f"{r}/requirements.txt", "manifest-root")
+            for r in roots
+        ],
+        sorted(_MONOREPO),
+    )
+    assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
+
+
+def test_a_root_requirements_file_keeps_its_pytest_guess():
+    """The repository root's requirements file is the project's; only units below it need a suite."""
+    paths = ["requirements.txt", "main.py", "test_main.py"]
+    (stack,) = detect_stacks(paths, {"requirements.txt": "flask\n"})
+    assert (stack.root, stack.language, stack.runner) == ("", "python", "pytest")
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"api/requirements.txt": "pytest_mock\n"},  # packaging spells _ and - alike
+        {"api/requirements.txt": "flask\n", "api/pytest.ini": "[pytest\naddopts = -q\n"},  # does not parse
+        {"api/Requirements (1).TXT": "pytest\n"},  # any name the registry glob takes
+    ],
+)
+def test_a_subdirectory_suite_is_seen_from_any_pytest_signal(files):
+    paths = sorted([*files, "api/app.py"])
+    stacks_found = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert [(s.root, s.language) for s in stacks_found] == [("api", "python")]
+
+
+def test_a_root_note_named_like_requirements_does_not_make_a_python_unit():
+    paths = ["package.json", "package-lock.json", "Requirements for launch.txt", "src/index.test.js"]
+    files = {"package.json": json.dumps({"scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}})}
+    assert [s.language for s in detect_stacks(paths, files)] == ["node"]
+
+
 def test_jest_writes_junit_through_jest_junit_with_repo_relative_files():
     files = {"web/package.json": _package({"test": "jest --ci"}, devDependencies={"jest": "29"})}
     (stack,) = detect_stacks(["web/package.json", "web/package-lock.json", "web/a.test.ts"], files)
