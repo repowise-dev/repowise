@@ -217,7 +217,7 @@ and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then de
 - Each line: `v` (schema, `1`), `event` (`stage`, `phase`, `warning`, last `summary`). `phase`: `state` (`start`/`done`/`failed`), `completed`, `total`, `unit`, `elapsed_s`.
 - `summary`: `status` (`ready`/`degraded`/`interrupted`/`failed` = exit `0`/`2`/`130`/other), `mode` (`key` from index
   scope, `label`, `run_mode`), `restart_required` (true when any agent must restart to load the tools), `restart_hosts` (`id`, `name` of each), `spend` (`tokens`, `usd`),
-  `warnings`, `files_written`, `next` (commands, `repowise serve` first), `mcp_tools` (per wired agent: `id`,
+  `warnings`, `files_written`, `next` (commands in order, a long-running one last), `long_running` (commands in `next` that do not return: run them in the background), `first_prompt` (the first question to ask the agent once its tools load), `mcp_tools` (per wired agent: `id`,
   `name`, `profile`, `adjustments`, `tool_count`, `tools`, `change_command`, `always_load` with `enabled`, `tools`,
   `cost`, `command`, or null for a client that loads every schema up front), `connect` (installed agents init did not wire:
   `id`, `name`, `command`).
