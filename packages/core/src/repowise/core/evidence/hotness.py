@@ -24,12 +24,14 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   outside the top.
 - *Share*: the function's self time over the run's time, with an interval
   around that same number (:func:`_share_interval`).
-- ``lead_candidate``: ranked in a workload class that may lead (never
-  ``unit_test``), and either the function's self share of the run's time is
-  at least ``lead_min_share`` with the interval's lower bound at least
-  ``lead_min_lower_bound``, or it is ranked in ``lead_min_runs`` or more
-  runs. Internal only until the thresholds are calibrated: no surface may
-  word it as a claim, which is why the tier is not named for one.
+- ``lead_candidate``: ranked, and either the function's self share of the
+  run's time is at least ``lead_min_share`` with the interval's lower bound
+  at least ``lead_min_lower_bound``, or, in a workload class that may lead,
+  it is ranked in ``lead_min_runs`` or more such runs. A ``unit_test`` run
+  clears the share rule like any other, and its readers keep it apart as
+  measured in tests. No surface words the tier as a claim, which is why it is
+  not named for one; the performance queue reads it as a measured cost
+  (``analysis.health.worth.lead_reason``).
 - A deterministic tracer (a run whose rows carry call counts) orders
   functions within the run only: rank, never a share, never a lead.
 - *Freshness*: ``current`` at the indexed commit; ``body_unchanged`` from an
@@ -350,7 +352,7 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
         row.rank = place
         if place <= rules.top_n:
             row.tier = "ranked"
-        if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
+        if row.tier == "ranked" and _measures_cost(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
 
 
@@ -420,6 +422,11 @@ def run_samples(run: RunFacts) -> int | None:
     return None
 
 
+def _measures_cost(row: _Row) -> bool:
+    """A sampled share at the current body: what the share rule can read, in any class."""
+    return not row.ordering_only and row.freshness != "stale"
+
+
 def _may_lead(row: _Row) -> bool:
     return row.run.workload_class in LEAD_CLASSES and not row.ordering_only and row.freshness != "stale"
 
@@ -437,11 +444,19 @@ def _clears_share_rule(row: _Row, rules: HotnessRules) -> bool:
 
 
 def _basis_order(row: _Row) -> tuple[Any, ...]:
-    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest."""
+    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest.
+
+    A run in a class that may not lead counts as ``ranked`` at best here, so a
+    unit-test run never becomes the basis over a leading run that ranks the
+    function.
+    """
     newest = row.run.measured_at.timestamp() if row.run.measured_at else 0.0
+    tier = TIERS.index(row.tier)
+    if row.run.workload_class not in LEAD_CLASSES:
+        tier = min(tier, TIERS.index("ranked"))
     return (
         row.freshness == "stale",
-        -TIERS.index(row.tier),
+        -tier,
         row.run.workload_class not in LEAD_CLASSES,
         row.rank if row.rank is not None else float("inf"),
         -newest,

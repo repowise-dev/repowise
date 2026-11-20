@@ -17,7 +17,7 @@ from repowise.core.evidence.hotness import (
 
 HEAD = "a" * 40
 OLD = "b" * 40
-RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.05, lead_min_lower_bound=0.02,
+RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.025, lead_min_lower_bound=0.02,
                      lead_min_runs=2)
 
 
@@ -167,28 +167,37 @@ def test_an_uncounted_run_ranks_by_order_without_an_interval() -> None:
 
 
 def test_a_big_share_in_a_class_that_may_lead_is_a_lead_candidate() -> None:
-    rows = _derive([_run()], {"r1": [_cost("big", 200), _cost("small", 40)]})
+    rows = _derive([_run(total=4000)], {"r1": [_cost("big", 200), _cost("small", 40)]})
     assert rows["src/m.py::big"]["tier"] == "lead_candidate"
-    # 4% of samples: ranked, not a lead.
+    # 1% of the run: ranked, not a lead.
     assert rows["src/m.py::small"]["tier"] == "ranked"
 
 
-def test_unit_test_evidence_is_never_a_lead_candidate() -> None:
-    runs = [_run("r1", cls="unit_test"), _run("r2", cls="unit_test")]
-    costs = {"r1": [_cost("big", 500)], "r2": [_cost("big", 500)]}
-    row = _derive(runs, costs)["src/m.py::big"]
-    assert row["tier"] == "ranked"
-    assert row["workload_class"] == "unit_test"
+def test_unit_test_evidence_clears_the_share_rule_but_never_the_runs_rule() -> None:
+    # Above the share bar: a measured cost, which readers keep apart as in tests.
+    big = _derive([_run("r1", cls="unit_test")], {"r1": [_cost("big", 500)]})["src/m.py::big"]
+    assert (big["tier"], big["workload_class"]) == ("lead_candidate", "unit_test")
+    # Under it, ranked in two test runs is not enough.
+    runs = [_run("r1", cls="unit_test", total=10000), _run("r2", cls="unit_test", total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 100)]}
+    assert _derive(runs, costs)["src/m.py::f"]["tier"] == "ranked"
+
+
+def test_a_leading_run_stays_the_basis_over_a_stronger_test_run() -> None:
+    runs = [_run("r1", day=1, total=10000), _run("r2", cls="unit_test", day=2, total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 5000)]}
+    row = _derive(runs, costs)["src/m.py::f"]
+    assert (row["run_id"], row["tier"]) == ("r1", "ranked")
 
 
 def test_ranked_in_two_runs_makes_a_lead_candidate() -> None:
-    runs = [_run("r1"), _run("r2", day=2)]
+    runs = [_run("r1", total=4000), _run("r2", day=2, total=4000)]
     costs = {"r1": [_cost("f", 40)], "r2": [_cost("f", 40)]}
     row = _derive(runs, costs)["src/m.py::f"]
     assert (row["tier"], row["run_count"]) == ("lead_candidate", 2)
     # The newest of the equal runs is the basis.
     assert row["run_id"] == "r2"
-    one = _derive([_run("r1")], {"r1": [_cost("f", 40)]})["src/m.py::f"]
+    one = _derive([_run("r1", total=4000)], {"r1": [_cost("f", 40)]})["src/m.py::f"]
     assert one["tier"] == "ranked"
 
 

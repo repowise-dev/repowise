@@ -309,15 +309,15 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
 def evidence_state(facets: Mapping[str, Any]) -> str | None:
     """What runtime evidence says about a cause, in one precedence: exact
     evidence first. ``confirmed``; ``counter_evidence`` (query counts stayed
-    flat as the items grew); ``measured`` (a leading workload ranks its loop
-    owner); ``ran`` (query counts that settle nothing); ``None`` with no
-    evidence facet."""
+    flat as the items grew); ``measured`` (a leading workload, or a unit-test
+    run, ranks its loop owner); ``ran`` (query counts that settle nothing);
+    ``None`` with no evidence facet."""
     if facets.get("confirmed"):
         return "confirmed"
     queries = facets.get("queries")
     if queries == "flat":
         return "counter_evidence"
-    if facets.get("measured"):
+    if facets.get("measured") or facets.get("measured_in_tests"):
         return "measured"
     return "ran" if queries else None
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import insert
 
 from repowise.core.analysis.function_test_map import MappedTest, encode_tests
@@ -352,7 +353,7 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
         repo.id,
         [
             {**_hot("x"), "symbol_id": "src/startup.py::warm_cache", "tier": "lead_candidate"},
-            # A unit-test run says nothing about production.
+            # A unit-test run marks apart, and never lifts a cold role.
             {
                 **_hot("x", run="r3"),
                 "symbol_id": "src/startup.py::load_settings",
@@ -372,9 +373,9 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     # Above the lead bar in a leading workload: the cause inside it is confirmed.
     assert measured["confirmed"] == "measured"
     assert by_owner["warm_cache"].queue_eligible
-    unmeasured = json.loads(by_owner["load_settings"].details_json)["facets"]
-    assert "measured" not in unmeasured
-    assert "confirmed" not in unmeasured
+    in_tests = json.loads(by_owner["load_settings"].details_json)["facets"]
+    assert "measured" not in in_tests
+    assert (in_tests["measured_in_tests"], in_tests["confirmed"]) == ("w-r3", "measured_in_tests")
     assert not by_owner["load_settings"].queue_eligible
     assert "measured" not in json.loads(by_owner["seed_defaults"].details_json)["facets"]
 
@@ -458,10 +459,37 @@ async def test_without_evidence_the_order_and_rows_are_the_static_ones(async_ses
     assert all("runtime_evidence" not in item for item in rest)
 
 
-async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
+async def test_unit_test_evidence_alone_orders_and_marks_apart(async_session) -> None:
     repo = await insert_repo(async_session)
     await _two_startup_causes(async_session, repo.id, evidence=True, unit_tests_only=True)
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
-    assert order == ["aaa_first", "zzz_measured"]
+    assert order == ["zzz_measured", "aaa_first"]
+    # A test run is no workload a cause was "not exercised in".
     assert "evidence_workloads" not in summary
-    assert all("runtime_evidence" not in item for item in rest)
+    marks = {i["intervention_symbol"].rpartition(":")[2]: i.get("runtime_evidence") for i in rest}
+    assert marks == {
+        "zzz_measured": {"state": "confirmed", "basis": "measured_in_tests"},
+        "aaa_first": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("evidence", "unit_tests_only", "admitted"),
+    [(False, False, False), (True, False, True), (True, True, True)],
+)
+async def test_a_cost_measured_above_the_bar_admits_an_unsized_loop(
+    async_session, evidence, unit_tests_only, admitted
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(
+        async_session, repo.id, evidence=evidence, unit_tests_only=unit_tests_only
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    eligible = {r.intervention_symbol.rpartition(":")[2]: r.queue_eligible for r in rows}
+    # Its loop size is unknown: only a measured cost above the bar admits it.
+    assert eligible == {"aaa_first": True, "zzz_measured": admitted}
