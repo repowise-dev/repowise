@@ -937,7 +937,7 @@ never as zero. How evidence is collected and joined:
 | `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
 | `rank_top_n` | `10` | >= 1 | A measured function is ranked when it is among this many production functions with the most self time in its run (built-ins and libraries it calls included, waits excluded). |
 | `rank_min_samples` | `30` | >= 1 | Fewest self samples on a function for it to be ranked; below this the run has not enough samples in repo code. Runs that count no samples rank by their order alone. |
-| `lead_min_share` | `0.05` | 0-1 | Share of the run's time a ranked function needs as self time, in a workload class that may lead, to become a lead candidate from one run. |
+| `lead_min_share` | `0.025` | 0-1 | Self share of the run's time a ranked function needs to count as a measured cost from one run. |
 | `lead_min_lower_bound` | `0.02` | 0-1 | Lower bound of the 95% interval on that share a lead candidate needs from one run. |
 | `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
 <!-- END GENERATED settings:evidence -->
