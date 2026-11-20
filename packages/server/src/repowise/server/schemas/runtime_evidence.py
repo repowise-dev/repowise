@@ -260,7 +260,7 @@ class SuiteCostResponse(_Strict):
     status: Literal["measured", "no_test_timings"]
     #: What writes test timings; null when some are stored.
     command: str | None
-    #: The basis runs: each test-timing workload's newest complete run.
+    #: The basis runs: each test-timing workload's newest run, as `evidence status` picks it.
     runs: list[EvidenceRunSummary]
     slow_tests: list[SlowTest]
     tests_total: int

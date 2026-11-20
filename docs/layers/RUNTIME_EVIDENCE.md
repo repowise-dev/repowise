@@ -499,15 +499,17 @@ repowise evidence tests --limit 50 --format json
 ```
 
 The slowest tests and the test time spent on each production file, from the
-JUnit XML timings `evidence add` stored: the newest complete run of each test
-workload (the newest environment when a workload ran in several), each test at
+JUnit XML timings `evidence add` stored: the newest run of each test workload
+as `evidence status` picks it (the newest environment when a workload ran in
+several), each test at
 its longest duration across them. A test flagged `first_in_class` may carry
 fixture time its whole class or module shares.
 
 Test time per file is the summed duration of the timed tests that run it, with
-how many of its tests were timed. Its `basis` is `measured` when a per-test
-coverage map is stored (`repowise coverage add` with per-test contexts), and
-`inferred` from each function's nearest tests on the call graph without one.
+how many of its tests were timed. Its `basis` is `measured` when a stored per-test
+coverage map (`repowise coverage add` with per-test contexts) names the timed
+tests, and `inferred` from each function's nearest tests on the call graph
+otherwise.
 Only production files are listed; files of other origins run by timed tests are
 counted under `not_production`. With nothing stored, `status` is
 `no_test_timings` and `command` is `repowise evidence setup`, which prints how

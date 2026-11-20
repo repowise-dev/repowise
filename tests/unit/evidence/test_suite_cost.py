@@ -127,3 +127,25 @@ async def test_file_cost_is_inferred_from_nearest_tests_without_the_map(session)
     assert costs["basis"] == "inferred"
     assert costs["files"] == [{"file_path": "src/app.py", "test_seconds": 3.5, "timed_tests": 2, "tests": 2}]
     assert costs["not_production"] == 1
+
+
+async def test_a_partly_mapped_run_stands_in_for_a_workload_with_no_other(session) -> None:
+    repo = await insert_repo(session)
+    await _timings(session, repo.id, [_t(SLOW, 2.0)], partial=True)
+
+    out = await suite_costs(session, repo.id, HEAD)
+
+    assert out["status"] == "measured"
+    assert out["runs"][0]["mapping_partial"] is True
+
+
+async def test_a_map_naming_no_timed_test_falls_back_to_inferred(session) -> None:
+    repo = await insert_repo(session)
+    await _timings(session, repo.id, [_t(SLOW, 3.0)])
+    await save_test_coverage(
+        session, repo.id, [TestCoverage("lcov-suite", "src/app.py", [1])], source_format="lcov"
+    )
+
+    costs = (await suite_costs(session, repo.id, HEAD))["file_costs"]
+
+    assert costs["basis"] == "inferred"

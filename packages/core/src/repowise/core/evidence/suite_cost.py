@@ -1,13 +1,13 @@
 """What the test suite spends its time on: the slowest tests, and test time per covered file.
 
-Reads stored JUnit timings (``evidence_test_timings``): the newest complete
-run of each test-timing workload (:func:`.hotness.newest_runs`), the newest
-environment when a workload ran in several. A test is charged once, at its
+Reads stored JUnit timings (``evidence_test_timings``): the newest run of
+each test-timing workload as ``evidence status`` picks it (a complete run
+first), the newest environment when a workload ran in several. A test is charged once, at its
 longest duration across those runs.
 
 Test time per file is the summed duration of the timed tests that run it.
-``measured`` when the per-test coverage map says which tests ran which file
-(``test_coverage_sources``); ``inferred`` from each function's nearest tests
+``measured`` when the per-test coverage map says which timed tests ran which
+file (``test_coverage_sources``); ``inferred`` from each function's nearest tests
 on the call graph (``function_facts.tests_json``) without it. Only production
 files (:mod:`repowise.core.code_origin`) are listed; others are counted.
 Timing orders tests and files, it never gates anything.
@@ -31,21 +31,27 @@ SETUP_COMMAND = "repowise evidence setup"
 
 
 def _basis_runs(runs: Sequence[Any]) -> list[Any]:
-    """Each test-timing workload's newest complete run, newest environment first.
+    """Each test-timing workload's newest run, as ``evidence status`` picks it, then
+    the newest of its environments.
 
-    *runs* are newest ingest first (``list_evidence_runs``).
+    A complete run wins; a partly mapped one stands in for a workload with no
+    other. *runs* are newest ingest first (``list_evidence_runs``).
     """
-    from .hotness import newest_runs
+    from .hotness import _age_key, newest_runs
 
-    timed = [r for r in runs if r.kind == "test_timing" and not r.mapping_partial]
-    newest = newest_runs(timed)
-    seen: set[str] = set()
-    out = []
+    timed = [r for r in runs if r.kind == "test_timing"]
+    complete = [r for r in timed if not r.mapping_partial]
+    covered = {(r.workload_name, r.environment) for r in complete}
+    newest = newest_runs(complete) | newest_runs(
+        r for r in timed if (r.workload_name, r.environment) not in covered
+    )
+    best: dict[str, Any] = {}
     for run in timed:
-        if run.id in newest and run.workload_name not in seen:
-            seen.add(run.workload_name)
-            out.append(run)
-    return out
+        if run.id in newest and (
+            run.workload_name not in best or _age_key(run) > _age_key(best[run.workload_name])
+        ):
+            best[run.workload_name] = run
+    return sorted(best.values(), key=_age_key, reverse=True)
 
 
 async def _timings(session: AsyncSession, run_ids: list[str]) -> dict[str, Any]:
@@ -83,7 +89,8 @@ def _slow_test(row: Any, workloads: dict[str, str]) -> dict[str, Any]:
 async def _measured_costs(
     session: AsyncSession, repository_id: str, timings: dict[str, Any]
 ) -> dict[str, tuple[float, int, int]] | None:
-    """``{file: (seconds, timed tests, tests)}`` from the per-test map; None without one."""
+    """``{file: (seconds, timed tests, tests)}`` from the per-test map; None without one,
+    or when none of its test ids is a timed test's (an lcov ``TN:`` name, say)."""
     from ..persistence.crud.analysis.coverage_map import get_per_test_map, source_test_numbers
 
     tmap = await get_per_test_map(session, repository_id)
@@ -94,6 +101,8 @@ async def _measured_costs(
         for no, (test_id, _) in enumerate(tmap.tests)
         if test_id in timings
     }
+    if not seconds:
+        return None
     out = {}
     for source, numbers in source_test_numbers(tmap).items():
         timed = [seconds[n] for n in numbers if n in seconds]
