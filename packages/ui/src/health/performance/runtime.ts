@@ -7,6 +7,8 @@ import type {
   EvidenceRunsResponse,
   MeasuredResponse,
   MeasuredRun,
+  SlowTest,
+  SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 
 import type { PerformanceViewAdapter } from "./adapter";
@@ -57,6 +59,19 @@ export function useEvidenceRuns(adapter: PerformanceViewAdapter, enabled: boolea
   );
 }
 
+/** Slow tests listed before the list folds. */
+export const SLOW_TESTS = 10;
+
+/** The slowest timed tests; read once the measured view has answered. */
+export function useEvidenceTests(adapter: PerformanceViewAdapter, enabled: boolean) {
+  const load = adapter.getEvidenceTests;
+  return useSWR<SuiteCostResponse>(
+    load && enabled ? `evidence-tests:${adapter.cacheKey}` : null,
+    () => load!({ limit: SLOW_TESTS }),
+    QUIET,
+  );
+}
+
 export interface RuntimeEvidenceView {
   overview: MeasuredResponse | undefined;
   /** Runs in a workload class that may lead, newest first. */
@@ -70,6 +85,8 @@ export interface RuntimeEvidenceView {
   testsTotal: number;
   /** Every stored run, once read. */
   runs: EvidenceRunSummary[] | undefined;
+  /** The slowest timed tests, longest first, and how many tests were timed. */
+  slowTests: { tests: SlowTest[]; total: number } | null;
 }
 
 /**
@@ -93,6 +110,7 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     adapter,
     overview != null && overview.status !== "no_runtime_data",
   );
+  const { data: suite } = useEvidenceTests(adapter, overview != null);
   return {
     overview,
     leads,
@@ -101,5 +119,9 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     testRun: tests?.runs[0] ?? null,
     testsTotal: tests && tests.runs.length === 1 ? tests.total : 0,
     runs: runs?.runs,
+    slowTests:
+      suite?.status === "measured" && suite.slow_tests.length > 0
+        ? { tests: suite.slow_tests, total: suite.tests_total }
+        : null,
   };
 }
