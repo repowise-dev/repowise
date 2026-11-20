@@ -161,6 +161,18 @@ def test_a_measured_cold_role_is_queued_but_never_confident() -> None:
     assert perf_queue_verdict(_cause(facets=cli)).reason == "cold_role"
 
 
+def test_a_measured_cold_name_is_never_confident_whatever_its_shape() -> None:
+    # A shape that grows by itself skips the loop-growth check; the override must not.
+    facets = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
+    static = _cause(biomarker_type="sql_cartesian_join", facets=facets)
+    assert perf_confident_verdict(static).eligible
+    overridden = _cause(
+        biomarker_type="sql_cartesian_join",
+        facets={**facets, "measured": "boot", "measured_overrides": "cold_path"},
+    )
+    assert perf_confident_verdict(overridden).reason == "unconfirmed_cost"
+
+
 class _Shaped(_Facts):
     def __init__(self, shape, *, dead=False, cloned=False):
         self._shape, self._dead, self._cloned = shape, dead, cloned

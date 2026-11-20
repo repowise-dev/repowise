@@ -176,6 +176,7 @@ def test_a_measured_migration_loop_stays_queued_with_its_workload() -> None:
     assert perf_queue_verdict(opportunity).eligible
     # The static growth reading is unchanged, so it never becomes the lead.
     assert opportunity.facets["growth_source"] == "cold_path"
+    assert opportunity.facets["measured_overrides"] == "cold_path"
 
 
 def test_a_function_nobody_measured_keeps_the_static_reading() -> None:

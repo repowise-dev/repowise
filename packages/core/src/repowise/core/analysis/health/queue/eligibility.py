@@ -511,9 +511,10 @@ def _unconfirmed(item: Any) -> bool:
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
     with no known role, an entry point must reach it. Only a ``plan_ready``
-    cause qualifies, and never one whose role is cold: a measurement keeps
-    such a cause in the queue (:func:`_role_reason`), it does not make it
-    the work to lead with.
+    cause qualifies, and never one whose role or name is cold: a measurement
+    keeps such a cause in the queue (:func:`_role_reason`,
+    ``actionability.expected_reason``), it does not make it the work to lead
+    with.
     """
     # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
     # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
@@ -525,7 +526,7 @@ def _unconfirmed(item: Any) -> bool:
         return True
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
         return True
-    if execution_role(item) in COLD_ROLES:
+    if execution_role(item) in COLD_ROLES or facets.get("measured_overrides"):
         return True
     return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
 

@@ -225,7 +225,7 @@ def _measured_workload(live: list[Any], measured: Mapping[str, str]) -> str | No
     return min(names) if names else None
 
 
-def _facets(r: _Reading, confidence: str) -> dict[str, str]:
+def _facets(r: _Reading, confidence: str, cold_name: bool) -> dict[str, str]:
     return {
         "actionability_confidence": confidence,
         "exposure": exposure(r.reachable),
@@ -237,6 +237,8 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
         "execution_role": r.role,
         # Only with runtime evidence, so a repo without any stores what it did.
         **({"measured": r.measured} if r.measured else {}),
+        # The name said it runs once and a run said otherwise: kept, never led.
+        **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
     }
 
 
@@ -273,6 +275,7 @@ def _assemble(
         evidence_confidence,
         expected_reason=expected_reason(members, r.magnitude, measured=r.measured is not None),
     )
+    cold_name = r.measured is not None and expected_reason(members, r.magnitude) == "cold_path"
     inputs = {
         "multiplier_shape": r.marker,
         "boundary_kind": boundary,
@@ -291,7 +294,7 @@ def _assemble(
         provenance=r.provenance,
         magnitude=r.magnitude,
     )
-    facets = _facets(r, acted.confidence)
+    facets = _facets(r, acted.confidence, cold_name)
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
