@@ -404,6 +404,27 @@ async def test_with_a_checkout_runtime_targets_are_what_setup_offers(async_sessi
     assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ("unit_test",)
 
 
+async def test_a_checkout_that_cannot_be_read_falls_back_to_the_index(
+    async_session, tmp_path, monkeypatch
+) -> None:
+    from repowise.core.evidence import setup
+    from repowise.core.persistence.crud.analysis.actions import _runtime
+    from repowise.core.persistence.models import GraphNode, Repository
+
+    rid = await _seed(async_session)
+    (await async_session.get(Repository, rid)).local_path = str(tmp_path)
+    async_session.add(
+        GraphNode(repository_id=rid, node_id="tests/test_cli.py", node_type="file", is_test=True)
+    )
+    await async_session.flush()
+
+    def broken(*_a, **_k):
+        raise RuntimeError("walk failed")
+
+    monkeypatch.setattr(setup, "runtime_offer", broken)
+    assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ("unit_test",)
+
+
 async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
     from repowise.core.evidence.runtime_setup import stored_target_classes
     from repowise.core.persistence.models import GraphNode

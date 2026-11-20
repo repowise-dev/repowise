@@ -512,7 +512,11 @@ async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) ->
         # Only a repository with nothing stored is asked what it could run:
         # what ``evidence setup`` offers for its checkout, else the index's guess.
         checkout = await repository_checkout(session, repo_id)
-        offer = await load_runtime_offer(session, repo_id, checkout, head_sha)
+        try:
+            offer = await load_runtime_offer(session, repo_id, checkout, head_sha)
+        except Exception as exc:  # a checkout that cannot be read costs only the precision
+            logger.warning("actions: runtime offer unavailable: %s", exc)
+            offer = None
         targets = (
             offered_classes(offer)
             if offer is not None

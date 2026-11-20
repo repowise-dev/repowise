@@ -461,13 +461,15 @@ _NOTHING_TO_GATE = (
 
 def _no_exact(repo_path: Path) -> str:
     """Why there is nothing to save: name setup's Go benchmark results target only when it prints one."""
-    offer = run_async(_runtime_offer(repo_path))
+    head = read_head_commit(repo_path)
+    # Without a commit setup offers nothing to ingest, which says nothing about the benchmarks.
+    offer = run_async(_runtime_offer(repo_path, head)) if head else None
     if offer is None or any(t.get("format") in perf_check.EXACT_FORMATS for t in offer):
         return _NO_EXACT
     return _NOTHING_TO_GATE
 
 
-async def _runtime_offer(repo_path: Path) -> list[dict] | None:
+async def _runtime_offer(repo_path: Path, head: str) -> list[dict] | None:
     from repowise.cli.helpers import repo_index_session
     from repowise.core.evidence.setup import load_runtime_offer
 
@@ -475,7 +477,7 @@ async def _runtime_offer(repo_path: Path) -> list[dict] | None:
         if opened is None:
             return None
         session, repo_id = opened
-        return await load_runtime_offer(session, repo_id, repo_path, read_head_commit(repo_path))
+        return await load_runtime_offer(session, repo_id, repo_path, head)
 
 
 def _current_snapshot(repo_path: Path, workload: str | None, fmt: str) -> dict:
