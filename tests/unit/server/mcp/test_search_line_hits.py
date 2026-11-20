@@ -1028,6 +1028,11 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
         ("def run(x): return helper()", r"\brun\(", "definition"),
         # A Go receiver names a type the method does not declare.
         ("func (s *Store) Save() error {", r"Store\b", "match"),
+        ("func (g *Getter) GetX() {", r"Get\w*", "definition"),
+        ("function* gen() {", r"gen\(", "definition"),
+        # A keyword glued to a parenthesis is a call.
+        ("kind = type(self.load(cfg))", r"load\(", "match"),
+        ("type(self.load(cfg))", r"load\(", "match"),
         # Lines that declare nothing.
         ("x = make(1)", r"make\(", "match"),
         ("x := make(1)", r"make\(", "match"),

@@ -354,23 +354,28 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
 # names a type it does not declare. ``let c = open_ro(p)`` heads at ``let c``.
 _DECLARATION_HEAD = re.compile(
     rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
-    rf"(?:(?:{_DECL_WORDS})\b\*?\s*)+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
+    rf"(?:(?:{_DECL_WORDS})\b(?:\s*\*\s*|\s+))+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
     r"(?:(?:[\w$:]+\s*)?\{[^}]*\}|[\[(][^\])]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
 
 
 def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
-    """Whether a line declares what a regex query matched: the first match
-    starts inside the declaration's head, outside a Go receiver, so a call on
-    a declaring line (``const x = f(1)``) is a match, not a definition of ``f``."""
+    """Whether a line declares what a regex query matched: a match starts
+    inside the declaration's head, outside a Go receiver, so a call on a
+    declaring line (``const x = f(1)``) is a match, not a definition of ``f``.
+    A keyword glued to a parenthesis (``type(obj)``) declares nothing."""
 
     def check(line: str) -> bool:
         head = _DECLARATION_HEAD.match(line)
-        m = pattern.search(line) if head else None
-        if m is None or head is None or m.start() >= head.end():
+        if head is None:
             return False
         start, end = head.span("receiver")
-        return not start <= m.start() < end
+        for m in pattern.finditer(line):
+            if m.start() >= head.end():
+                return False
+            if not start <= m.start() < end:
+                return True
+        return False
 
     return check
 
