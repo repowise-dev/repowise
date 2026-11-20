@@ -4,6 +4,7 @@ Re-renders the stored report (``.repowise/reports/first-look.json``), or
 builds it from the index when there is none (no model, no network, free),
 and opens the HTML. ``--format json`` is the agent-readable form, with each
 listed item's prompt; ``--since-last`` compares the report with the index now.
+``--llm`` writes a new report whose prose one model call writes, after the estimate.
 """
 
 from __future__ import annotations
@@ -28,6 +29,73 @@ def _web_url(root: Path) -> str | None:
     from repowise.cli.commands.serve_cmd._lock import live_web_url
 
     return live_web_url(root)
+
+
+def first_look_estimate(provider: Any, model: str | None = None) -> str:
+    """``about $0.003 with <model>``: what the report's one model call costs."""
+    from repowise.core.cost_estimator import estimate_first_look_cost
+    from repowise.core.report.first_look.llm import first_look_model
+
+    chosen = first_look_model(provider, model)
+    est = estimate_first_look_cost(provider.provider_name, chosen)
+    return f"about ${est.estimated_cost_usd:.3f} with {chosen}"
+
+
+def first_look_plan_line(repo_path: Path, provider: Any) -> str | None:
+    """Init's cost-plan line for the report's model call; ``None`` when init will
+    not make it (the setting is off, or a stamped report is kept)."""
+    from repowise.core.report.first_look.config import first_look_settings
+    from repowise.core.report.first_look.store import report_path
+
+    try:
+        settings = first_look_settings(repo_path)
+    except Exception:  # a broken config line must not stop the plan
+        return None
+    if not (settings.enabled and settings.llm) or report_path(repo_path).exists():
+        return None
+    return f"First-look report {first_look_estimate(provider, settings.model)} (one model call)."
+
+
+def _rewrite_with_model(root: Path, yes: bool) -> bool:
+    """Write a new report whose prose one model call writes, after the estimate;
+    ``False`` when the person declines."""
+    import dataclasses
+
+    from repowise.cli.helpers import resolve_provider
+    from repowise.cli.providers import build_cost_tracker, flush_cost_tracker
+    from repowise.core.report.first_look.config import first_look_settings
+    from repowise.core.report.first_look.write import write_first_look
+
+    provider = resolve_provider(None, None, repo_path=root)
+    # Asking for it is the opt-in: the settings only stop the automatic call.
+    settings = dataclasses.replace(first_look_settings(root), enabled=True, llm=True)
+    err_console.print(f"First-look report {first_look_estimate(provider, settings.model)}.")
+    if not yes and not click.confirm("Write it with the model?", default=True, err=True):
+        err_console.print("Not written; the stored report is unchanged.")
+        return False
+    tracker = build_cost_tracker(root, root.name)
+    provider._cost_tracker = tracker
+
+    async def write() -> Any:
+        async with repo_index_session(root) as opened:
+            if opened is None:
+                raise click.ClickException(f"No index for {root}. Run `repowise init` there first.")
+            session, repo_id = opened
+            return await write_first_look(
+                session, repo_id, root, provider=provider, settings=settings, app_url=_web_url(root)
+            )
+
+    try:
+        report = run_async(write())
+    finally:
+        flush_cost_tracker(tracker)
+    stamp = report.stamp
+    cost = f", ${stamp.cost:.3f}" if stamp.cost is not None else ""
+    if stamp.generator == "template":
+        err_console.print(f"The model's reply was unusable; kept the template text{cost}.")
+    else:
+        err_console.print(f"Written by {stamp.generator}{cost}.")
+    return True
 
 
 async def _report(session: Any, repo_id: str, root: Path, web: str | None) -> Any:
@@ -61,10 +129,13 @@ def _since_last_text(report: Any, found: Any) -> str:
         where = f" ({loc.path}{f':{loc.line}' if loc.line else ''})" if loc else ""
         return f"- {title(item.section).split(':')[0]}: {text}{where}"
 
-    for label, ids in (("Fixed", found.fixed), ("Changed", found.changed)):
-        if ids:
-            lines += ["", f"{label}:"]
-            lines += [row(report.item(i), texts.get(i, "")) for i in ids if report.item(i)]
+    if found.fixed:
+        lines += ["", "Fixed:"]
+        lines += [row(report.item(i), texts.get(i, "")) for i in found.fixed if report.item(i)]
+    # A changed item reads as it is now, not as the report wrote it.
+    if found.changed_items:
+        lines += ["", "Changed:"]
+        lines += [row(i, item_text(i)) for i in found.changed_items]
     if found.new:
         lines += ["", "New since the report:"]
         lines += [row(i, item_text(i)) for i in found.new]
@@ -112,12 +183,22 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
     is_flag=True,
     help="List what was fixed, changed or found new since the report was written.",
 )
-def first_look_command(path: str | None, fmt: str, out_path: str | None, since_last: bool) -> None:
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Rewrite the report at HEAD with one call to the configured model. Prints the cost first.",
+)
+@click.option("--yes", "-y", is_flag=True, help="With --llm, skip the cost confirmation.")
+def first_look_command(
+    path: str | None, fmt: str, out_path: str | None, since_last: bool, llm: bool, yes: bool
+) -> None:
     """The first-look report: what Repowise found at the first index, most urgent
-    first, with a path, a link and an agent prompt per item. Free: no model."""
+    first, with a path, a link and an agent prompt per item. Free unless --llm."""
     from repowise.core.report.first_look.write import rendered_path
 
     root = Path(path or ".").resolve()
+    if llm and not _rewrite_with_model(root, yes):
+        return
     to_stdout = not out_path and (fmt != "html" or since_last)
     if to_stdout:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report

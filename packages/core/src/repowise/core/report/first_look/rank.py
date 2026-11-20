@@ -59,7 +59,7 @@ def top_items(sections: Sequence[SectionBlock], limit: int = TOP_ITEMS) -> tuple
                 used.add(item.section)
 
     everything = [i for s in sections for i in s.items]
-    take(i for i in everything if i.severity == "act_now")
+    take(sorted((i for i in everything if i.severity == "act_now"), key=item_key))
     for basis in BASES:
         take(
             sorted(

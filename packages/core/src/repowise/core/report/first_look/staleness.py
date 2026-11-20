@@ -24,6 +24,9 @@ class Staleness:
     fixed: tuple[str, ...] = ()
     changed: tuple[str, ...] = ()
     new: tuple[Item, ...] = ()
+    #: The current form of each ``changed`` item, in the same order: its path,
+    #: line and facts as the index has them now.
+    changed_items: tuple[Item, ...] = ()
     #: Sections that could not be read now, with the reason.
     unknown: Mapping[str, str] = field(default_factory=dict)
 
@@ -40,6 +43,7 @@ class Staleness:
             "fixed": list(self.fixed),
             "changed": list(self.changed),
             "new": [i.to_json() for i in self.new],
+            "changed_items": [i.to_json() for i in self.changed_items],
             "unknown": dict(self.unknown),
         }
 
@@ -56,13 +60,15 @@ def compare(
     unknown = {**report.unavailable, **(unknown or {})}
     now = {i.id: i for i in current}
     was = {i.id: i for i in report.items() if i.section not in unknown}
+    changed = tuple(i for i, item in was.items() if i in now and now[i].fingerprint != item.fingerprint)
     return Staleness(
         report_commit=report.stamp.commit,
         current_commit=current_commit,
         fixed=tuple(i for i in was if i not in now),
-        changed=tuple(i for i, item in was.items() if i in now and now[i].fingerprint != item.fingerprint),
+        changed=changed,
         new=tuple(item for i, item in now.items() if i not in was and item.section not in unknown),
         unknown=unknown,
+        changed_items=tuple(now[i] for i in changed),
     )
 
 

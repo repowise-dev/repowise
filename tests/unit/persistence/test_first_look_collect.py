@@ -163,6 +163,25 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
     assert "decisions" not in sections
 
 
+async def test_history_only_leaves_out_a_secret_still_in_the_working_tree(async_session) -> None:
+    rid = await _seed(async_session)
+    async_session.add_all(
+        [
+            # The working-tree secret in src/settings.py, introduced at an
+            # earlier line: already an item, not history-only.
+            SecurityFinding(repository_id=rid, file_path="src/settings.py", kind="hardcoded_password",
+                            severity="high", snippet=f'PASSWORD = "{SECRET}"', line_number=2,
+                            commit_sha="a" * 40),
+            SecurityFinding(repository_id=rid, file_path="src/gone.py", kind="hardcoded_password",
+                            severity="high", snippet=f'PASSWORD = "{SECRET}z"', line_number=1,
+                            commit_sha="b" * 40),
+        ]
+    )
+    await async_session.commit()
+    report = await collect_first_look(async_session, rid, now=NOW)
+    assert report.section("security").facts["history_only"] == 1
+
+
 async def test_no_item_or_prompt_holds_a_secret(async_session) -> None:
     rid = await _seed(async_session)
     report = await collect_first_look(async_session, rid, now=NOW)

@@ -410,8 +410,13 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
             "First look  http://127.0.0.1:3000/repos/r1/first-look  "
             "(written by claude-haiku-5-5, $0.003)",
         ),
+        (
+            FirstLook(".repowise/reports/first-look.html", "template", 0.002),
+            "First look  .repowise/reports/first-look.html  "
+            "(template: the model's reply was unusable, $0.002)",
+        ),
     ],
-    ids=["keyless", "model"],
+    ids=["keyless", "model", "unusable-reply"],
 )
 def test_one_footer_line_names_the_first_look_report(first_look, line):
     import io

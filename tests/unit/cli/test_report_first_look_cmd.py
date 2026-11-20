@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from tests.unit.persistence.test_first_look_collect import SECRET
 from tests.unit.persistence.test_first_look_collect import _seed as _seed_rows
@@ -47,6 +47,23 @@ async def _fix_the_secret(root: Path) -> None:
             )
             repo = (await session.execute(Repository.__table__.select())).first()
             (await session.get(Repository, repo.id)).head_commit = "d" * 40
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _move_the_secret(root: Path) -> None:
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import SecurityFinding
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await session.execute(
+                update(SecurityFinding)
+                .where(SecurityFinding.file_path == "src/settings.py")
+                .values(line_number=7, snippet=f'PASSWORD = "{SECRET}2"')
+            )
             await session.commit()
     finally:
         await engine.dispose()
@@ -115,6 +132,22 @@ def test_since_last_lists_what_was_fixed(indexed: Path) -> None:
     assert data["behind"] is True and len(data["fixed"]) == 1
 
 
+def test_since_last_shows_a_changed_item_as_it_is_now(indexed: Path) -> None:
+    from repowise.cli.helpers import run_async
+
+    assert _run(str(indexed), "--format", "json").exit_code == 0  # writes the report
+    run_async(_move_the_secret(indexed))
+
+    text = _run(str(indexed), "--since-last")
+    assert text.exit_code == 0, text.output
+    assert "0 fixed, 1 changed, 0 new." in text.stdout
+    changed = text.stdout.split("Changed:", 1)[1]
+    assert "src/settings.py:7" in changed and "src/settings.py:4" not in changed
+
+    data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
+    assert data["changed_items"][0]["locations"][0]["line"] == 7
+
+
 def test_without_an_index_it_says_so(tmp_path: Path) -> None:
     result = _run(str(tmp_path))
     assert result.exit_code != 0
@@ -129,7 +162,14 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     from repowise.core.report.first_look import write
 
     steps = SimpleNamespace(step=lambda name: contextlib.nullcontext())
-    run = SimpleNamespace(repo_path=indexed, effective_index_only=True, provider=None)
+    run = SimpleNamespace(
+        repo_path=indexed,
+        effective_index_only=True,
+        provider=None,
+        no_provider=True,
+        cost_tracker=None,
+        opts=SimpleNamespace(dry_run=False, index_only=False),
+    )
     first_look = _finish._write_first_look(run, steps)
     assert first_look.line() == "First look  .repowise/reports/first-look.html  (template, free)"
     stored = indexed / ".repowise" / "reports" / "first-look.json"
@@ -145,6 +185,74 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     assert stored.read_text(encoding="utf-8") == written
     stored.unlink()
     assert _finish._write_first_look(run, steps) is None
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "index_only", "no_provider", "effective_index_only", "passed"),
+    [
+        (False, False, False, False, True),
+        (False, True, False, True, False),  # --no-prose
+        (False, False, True, True, False),  # keyless, whatever the environment holds
+        (False, False, False, True, False),  # the cost was declined
+        (True, False, False, False, False),
+    ],
+    ids=["model-run", "no-prose", "keyless", "declined", "dry-run"],
+)
+def test_init_passes_a_provider_only_on_a_model_run(
+    dry_run, index_only, no_provider, effective_index_only, passed
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd._finish import first_look_provider
+
+    provider = object()
+    run = SimpleNamespace(
+        provider=provider,
+        no_provider=no_provider,
+        effective_index_only=effective_index_only,
+        opts=SimpleNamespace(dry_run=dry_run, index_only=index_only),
+    )
+    assert (first_look_provider(run) is provider) is passed
+
+
+def test_init_plan_line_only_when_the_call_will_run(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.report_first_look_cmd import first_look_plan_line
+
+    provider = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-5-5")
+    line = first_look_plan_line(tmp_path, provider)
+    assert line == "First-look report about $0.003 with claude-haiku-5-5 (one model call)."
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("report:\n  first_look:\n    llm: false\n", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) is None
+    config.write_text("", encoding="utf-8")
+    (tmp_path / ".repowise" / "reports").mkdir()
+    (tmp_path / ".repowise" / "reports" / "first-look.json").write_text("{}", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) is None  # a stamped report is kept
+
+
+def test_llm_flag_prints_the_cost_and_writes_with_the_model(indexed: Path, monkeypatch) -> None:
+    from repowise.cli import helpers
+    from tests.unit.persistence.test_first_look_write import EchoProvider
+
+    provider = EchoProvider()
+    monkeypatch.setattr(helpers, "resolve_provider", lambda *a, **k: provider)
+    from repowise.cli.main import cli
+
+    declined = CliRunner().invoke(
+        cli, ["report", "first-look", str(indexed), "--llm", "--format", "json"], input="n\n"
+    )
+    assert declined.exit_code == 0, declined.output
+    assert "about $" in declined.output and provider.calls == 0
+
+    result = _run(str(indexed), "--llm", "--yes", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert provider.calls == 1
+    stored = json.loads((indexed / ".repowise" / "reports" / "first-look.json").read_text())
+    assert stored["stamp"]["generator"] == "claude-haiku-5-5"
+    assert stored["prose"]["writer"] == "claude-haiku-5-5"
 
 
 def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> None:

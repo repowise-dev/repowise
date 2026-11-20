@@ -121,6 +121,19 @@ def test_do_these_first_takes_act_now_then_one_per_section() -> None:
     assert sections == ["security", "performance", "health"]
 
 
+def test_do_these_first_ranks_act_now_items_across_sections() -> None:
+    # Four sections each with an act_now item: the ranking, not the section
+    # order, decides which three lead.
+    inferred = [
+        _item(section, "r", f"{section}.py", severity="act_now", priority=1.0)
+        for section in ("security", "performance", "health")
+    ]
+    measured = _item("dead_code", "r", "d.py", basis="measured", severity="act_now")
+    report = _report(*inferred, measured)
+    assert report.item(report.top[0]).section == "dead_code"
+    assert len(report.top) == 3
+
+
 def test_staleness_names_fixed_changed_and_new() -> None:
     kept, gone, moved = _item(path="k.py"), _item(path="g.py"), _item(path="m.py")
     report = _report(kept, gone, moved)
@@ -128,6 +141,7 @@ def test_staleness_names_fixed_changed_and_new() -> None:
     found = compare(report, now, current_commit="c2")
     assert found.fixed == (gone.id,)
     assert found.changed == (moved.id,)
+    assert [i.fingerprint for i in found.changed_items] == ["f2"]
     assert [i.id for i in found.new] == [_item(path="n.py").id]
     assert found.behind
 
