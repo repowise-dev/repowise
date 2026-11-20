@@ -149,6 +149,7 @@ def _row_kwargs(
         **row,
         "facets": opportunity.facets,
         "actionability_reason": opportunity.actionability_reason,
+        "prerequisites": opportunity.prerequisites,
     }
     return {**row, **perf_judgement(judged, opportunity.facets, plan or {}).columns()}
 

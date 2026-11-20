@@ -81,6 +81,12 @@ Each opportunity gets one state:
 | `investigate` | No supported strategy; a person has to decide |
 | `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) or grows only by reading tables that do not grow with the repository (reason `small_table`) |
 
+An opportunity whose marker has no fix strategy at all (such as
+`hot_path_sync_io` or `list_insert_zero_in_loop`) is an **observation**: no
+proof about the code would give it one, so it is no unit of any queue. It stays
+in the Performance view in the `investigate` state, and its rows store the queue
+reason `observation`, but no queue counts it, as left out or otherwise.
+
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats and the kind of I/O that call does (database, network, file system or
 subprocess). When every site reaches one sink, the step that adds a bulk form of
@@ -137,7 +143,7 @@ Everything else is counted by reason, not hidden:
 | `expected` | The repetition is intended |
 | `gated_off` | The function is switched off by a constant flag; see [dormant functions](CODE_HEALTH.md#fix-first) |
 | `cold_path` | The function is named for a migration, startup, shutdown or crash recovery, so it runs rarely |
-| `no_strategy` | The state is `investigate`: there is no supported fix to offer |
+| `no_strategy` | The state is `investigate`: a fix strategy exists for the marker, but a fact it needs is not proven |
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
