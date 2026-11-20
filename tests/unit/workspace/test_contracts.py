@@ -233,6 +233,122 @@ class TestHttpExtractor:
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/api/items/{param}" in ids
 
+    def test_fastapi_mount_prefix_stays_on_the_mounted_module(self, tmp_path: Path) -> None:
+        # Both modules name their router `router`; only study_plan's mount has a
+        # prefix, so only its routes carry it.
+        self._write_file(tmp_path, "backend/app.py", """
+from fastapi import FastAPI
+from routers import roadmap
+app = FastAPI()
+app.include_router(roadmap.router)
+try:
+    from routers import study_plan
+    app.include_router(study_plan.router, prefix="/api/v1/study-plan")
+except ImportError:
+    pass
+""")
+        self._write_file(tmp_path, "backend/routers/__init__.py", "")
+        self._write_file(tmp_path, "backend/routers/study_plan.py", """
+router = APIRouter()
+
+@router.get("/plans")
+async def plans(): ...
+""")
+        self._write_file(tmp_path, "backend/routers/roadmap.py", """
+router = APIRouter(prefix="/api/roadmap")
+
+@router.post("/purchase")
+async def purchase(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/v1/study-plan/plans" in ids
+        assert "http::POST::/api/roadmap/purchase" in ids
+        assert "http::POST::/api/v1/study-plan/api/roadmap/purchase" not in ids
+
+    def test_fastapi_nested_router_prefixes_compose(self, tmp_path: Path) -> None:
+        # main mounts api_router at /api/v1; api_router (own prefix /x) mounts
+        # users.router at /users through a relative import.
+        self._write_file(tmp_path, "app/main.py", """
+from fastapi import FastAPI
+from app.api.api import api_router
+app = FastAPI()
+app.include_router(api_router, prefix="/api/v1")
+""")
+        self._write_file(tmp_path, "app/api/api.py", """
+from fastapi import APIRouter
+from .endpoints import users
+api_router = APIRouter(prefix="/x")
+api_router.include_router(users.router, prefix="/users")
+""")
+        self._write_file(tmp_path, "app/api/endpoints/users.py", """
+router = APIRouter()
+
+@router.get("/{user_id}")
+async def get_user(user_id: int): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/v1/x/users/{param}" in ids
+
+    def test_fastapi_mount_follows_a_package_reexport(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "app/main.py", """
+from fastapi import FastAPI
+from app.users import router as users_router
+app = FastAPI()
+app.include_router(users_router, prefix="/users")
+""")
+        self._write_file(tmp_path, "app/users/__init__.py", "from .routes import router\n")
+        self._write_file(tmp_path, "app/users/routes.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
+    def test_fastapi_router_mounted_at_two_prefixes_keeps_its_path(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+import items
+app = FastAPI()
+app.include_router(items.router, prefix="/v1")
+app.include_router(items.router, prefix="/v2")
+""")
+        self._write_file(tmp_path, "items.py", """
+router = APIRouter()
+
+@router.get("/items")
+async def items(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/items" in ids
+
+    def test_fastapi_a_nested_import_does_not_override_the_module_one(self, tmp_path: Path) -> None:
+        # The helper's local `users` is another module; the mount at module
+        # level is still users.py's router.
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+try:
+    import users
+except ImportError:
+    from legacy import users
+app = FastAPI()
+app.include_router(users.router, prefix="/users")
+
+def legacy():
+    from legacy import users
+    return users
+""")
+        self._write_file(tmp_path, "users.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        self._write_file(tmp_path, "legacy/users.py", "router = APIRouter()\\n")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
     def test_express_cross_file_app_use_prefix(self, tmp_path: Path) -> None:
         # app.use('/api/users', userRouter) mounts a uniquely-named router.
         self._write_file(tmp_path, "src/app.js", """
