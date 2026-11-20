@@ -66,6 +66,16 @@ class StoodOut:
         }
 
 
+#: The footer line for an agent: relay the summary, and leave the choice to the person.
+AGENT_LINE = (
+    "Repo report: tell the user what it found (repowise report --format md); "
+    "they decide what to fix next."
+)
+#: How an agent reads the report, as init's JSON summary names it.
+SUMMARY_COMMAND = "repowise report --format md"
+JSON_COMMAND = "repowise report --format json"
+
+
 @dataclass(frozen=True)
 class FirstLook:
     """Where the repo report is and who wrote it: one footer line."""
@@ -75,8 +85,14 @@ class FirstLook:
     #: ``template``, or the model id that wrote the prose (the report's stamp).
     generator: str = "template"
     cost: float | None = None
+    #: An agent or a run nobody is watching: the line tells the agent what to do.
+    agent: bool = False
+    #: Items no one has answered yet.
+    open_items: int = 0
 
     def line(self) -> str:
+        if self.agent:
+            return AGENT_LINE
         if self.generator == "template" and self.cost:
             how = f"template: the model's reply was unusable, ${self.cost:.3f}"
         elif self.generator == "template":
@@ -86,6 +102,14 @@ class FirstLook:
                 f", ${self.cost:.3f}" if self.cost is not None else ""
             )
         return f"Repo report  {self.where}  ({how})"
+
+    def summary(self) -> dict[str, Any]:
+        """The ``report`` object of init's JSON summary."""
+        return {
+            "open_items": self.open_items,
+            "summary_command": SUMMARY_COMMAND,
+            "json_command": JSON_COMMAND,
+        }
 
 
 @dataclass(frozen=True)

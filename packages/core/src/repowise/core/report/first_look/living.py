@@ -33,6 +33,10 @@ class LivingReport:
     statuses: Mapping[str, ItemStatus]
     #: Ids the baseline did not have.
     new: frozenset[str] = frozenset()
+    #: Ids the baseline had with other facts (a moved fingerprint).
+    changed: frozenset[str] = frozenset()
+    #: Ids the index no longer finds that stay listed for a person's answer.
+    carried: frozenset[str] = frozenset()
     #: The stored report this one is compared with; ``None`` when there is none.
     baseline: FirstLookReport | None = None
     #: Baseline items the index no longer finds and nobody answered.
@@ -43,12 +47,23 @@ class LivingReport:
     def status(self, item_id: str) -> ItemStatus:
         return self.statuses.get(item_id) or ItemStatus()
 
+    def change(self, item_id: str) -> str | None:
+        """``new``, ``changed`` or ``resolved`` against the baseline; ``None`` when the same."""
+        if item_id in self.new:
+            return "new"
+        if item_id in self.carried:
+            return "resolved"
+        return "changed" if item_id in self.changed else None
+
     def to_json(self) -> dict[str, Any]:
         data = self.report.to_json()
         for section in data["sections"]:
             for item in section["items"]:
                 item.update(self.status(item["id"]).to_json())
-                item["change"] = "new" if item["id"] in self.new else None
+                item["change"] = self.change(item["id"])
+        if _model_written(self.baseline):
+            # The model's wording dates from the baseline, not from this read.
+            data["prose_source"]["written_at"] = self.baseline.stamp.created_at
         texts = _texts(self.baseline) if self.baseline is not None else {}
         data["baseline"] = {
             "stamp": self.baseline.stamp.to_json() if self.baseline is not None else None,
@@ -56,7 +71,7 @@ class LivingReport:
                 {
                     **i.to_json(),
                     **ItemStatus("resolved").to_json(),
-                    "change": None,
+                    "change": "resolved",
                     "text": texts.get(i.id) or item_text(i),
                 }
                 for i in self.resolved
@@ -208,6 +223,8 @@ async def build_living(
         report=_finish(current, baseline, carried, statuses),
         statuses=statuses,
         new=frozenset(i.id for i in found.new),
+        changed=frozenset(found.changed),
+        carried=frozenset(i.id for i in carried),
         baseline=baseline,
         resolved=tuple(i for i in dropped if statuses[i.id].status == "resolved"),
         wrote_baseline=wrote,

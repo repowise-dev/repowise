@@ -68,10 +68,13 @@ async def test_statuses_new_and_resolved_against_the_stored_report(async_session
         "acknowledged",
         "plugin API",
     )
+    # The index no longer finds it; it stays listed for the answer.
+    assert items[exports["id"]]["change"] == "resolved"
     new = [i for i in items.values() if i["change"] == "new"]
     assert [i["locations"][0]["path"] for i in new] == ["docs/other.md"]
     (resolved,) = data["baseline"]["resolved"]
     assert resolved["id"] == perf["id"] and resolved["status"] == "resolved"
+    assert resolved["change"] == "resolved"
     assert resolved["text"] == first["prose"]["items"][perf["id"]]
     assert perf["id"] not in items
     # "Do these first" and the whole-report prompt take open items only.
@@ -118,3 +121,8 @@ async def test_a_models_text_is_kept_where_its_facts_still_hold(async_session, t
     assert texts[docs.id] != "Model text for broken_doc_refs."  # its facts changed
     assert living.report.prose["summary"] != "Model summary."  # the report changed
     assert living.report.stamp.generator == "model-x"
+    data = living.to_json()
+    assert _items(data)[docs.id]["change"] == "changed"
+    assert data["prose_source"] == {
+        "writer": "model-x", "written_at": report.stamp.created_at, "cost_usd": 0.003,
+    }

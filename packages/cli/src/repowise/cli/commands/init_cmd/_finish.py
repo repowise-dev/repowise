@@ -466,10 +466,18 @@ def _write_first_look(run: InitRun, steps: Any) -> Any:
         return None
 
 
+def _for_an_agent() -> bool:
+    """The ``--progress json`` stream is open, or nobody can answer at the terminal."""
+    from repowise.cli.agent_events import active
+
+    return active() is not None or not sys.stdin.isatty()
+
+
 async def _first_look(run: InitRun, settings: Any) -> Any:
     from repowise.cli.commands.serve_cmd._lock import live_web_url
     from repowise.cli.helpers import repo_index_session
     from repowise.cli.ui.finish_panel import FirstLook
+    from repowise.core.report.first_look.marks import item_statuses
     from repowise.core.report.first_look.store import read_report_file
     from repowise.core.report.first_look.write import rendered_path, write_files, write_first_look
 
@@ -488,6 +496,7 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
         report = report or await write_first_look(
             session, repo_id, root, provider=provider, settings=settings, app_url=web
         )
+        statuses = await item_statuses(session, repo_id, report.items())
     if provider is not None and run.cost_tracker is not None:
         await run.cost_tracker.flush()
     where = (
@@ -495,7 +504,13 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
         if web
         else rendered_path(root, ".html").relative_to(root).as_posix()
     )
-    return FirstLook(where, report.stamp.generator, report.stamp.cost)
+    return FirstLook(
+        where,
+        report.stamp.generator,
+        report.stamp.cost,
+        agent=_for_an_agent(),
+        open_items=sum(s.status == "open" for s in statuses.values()),
+    )
 
 
 def _keep_out_of_git(run: InitRun) -> None:
@@ -568,6 +583,7 @@ def complete_setup(run: InitRun) -> None:
     run.next_steps = completion.steps
     run.stood_out = completion.stood_out
     run.first_prompt = completion.first_prompt or None
+    run.first_look = first_look
 
 
 def _gaps(run: InitRun) -> list[str]:

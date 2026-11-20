@@ -17,7 +17,7 @@ opens offline.
 repowise report assessment --format html --out assessment.html
 repowise report changes --since 2026-07-01 --format markdown --out q3-changes.md
 repowise report inventory --format csv --out inventory.csv
-repowise report repo --since-last
+repowise report --since-last
 ```
 
 In a workspace, `report assessment` and `report inventory` cover every repository.
@@ -28,10 +28,11 @@ stored.
 
 `init` writes it once, after the first index, to `.repowise/reports/`: the first look (the
 baseline, `first-look.json`) and its exports `repo-report.md` and `repo-report.html`, and names it on
-one line of the finish panel. `repowise report repo` (alias `report first-look`) opens it as a
-living report: the first look as the index has it now, each item with its status, what is
-new since and what was resolved since the first look. `--format json` hands it to an agent; `--since-last` lists what
-was fixed since. Its sentences come from one template table over the stored findings (no model,
+one line of the finish panel (for an agent or a run nobody watches, that line says to relay
+`repowise report --format md` to the person, and `--progress json` carries a `report` object). `repowise
+report` (also `report repo`, alias `report first-look`) opens it as a living report: the first look as the index has it now, each item with its status, what is
+new since and what was resolved since the first look. `--format json` hands its items to an agent, `--prompt`
+prints the whole-report agent prompt, and `--since-last` lists what was fixed since. Its sentences come from one template table over the stored findings (no model,
 no cost); links, paths and prompts come from finding ids. Items one fix covers (a hard-coded
 password and a hard-coded secret) are one item with every location. Sections are providers on
 `SeamRegistry("first-look-section")` and its renderers sit on `report-renderer` as
@@ -39,10 +40,10 @@ password and a hard-coded secret) are one item with every location. Sections are
 
 `repowise mark ID done|ack|false-positive|snooze` records an answer to one item, on every row
 it stands for, in the stores the web app and `repowise next` read (next actions, dead-code,
-health and refactoring statuses). `ack` and `false-positive` need `--reason`. A security finding
+health and refactoring statuses). `ack` and `false-positive` need `--reason`, kept in each of those stores. A security finding
 is never marked a false positive there: a `repowise-security-ignore` comment on its line, or the
-security baseline, says so. The report's "Work through this report" prompt lists the open items
-with their ids and asks the agent to mark each one.
+security baseline, says so. The report's "Work through this report" prompt (`repowise report
+--prompt`) lists the open items with their ids and asks the agent to mark each one.
 
 ## The change report period
 

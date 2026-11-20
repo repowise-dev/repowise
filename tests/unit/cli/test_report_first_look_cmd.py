@@ -102,12 +102,17 @@ def test_json_for_agents_and_markdown_to_stdout(indexed: Path, tmp_path: Path) -
     # The runner mixes in stderr's one "writing it from the index" line.
     doc = json.loads(result.stdout[result.stdout.index("{") :])
     assert doc["prose"]["writer"] == "template"
-    # Each item with its id and status, and no per-item prompt.
-    assert "prompts" not in doc
+    # Each item with the fields an agent acts on, and no prompt anywhere.
+    assert not {"prompts", "report_prompt"} & set(doc)
     items = [i for s in doc["sections"] for i in s["items"]]
+    for item in items:
+        assert {"id", "section", "rule", "status", "status_reason", "change", "locations",
+                "effort", "confidence"} <= set(item)
+        assert "prompt" not in item
+        assert all(set(loc) == {"path", "line", "symbol"} for loc in item["locations"])
     assert {i["status"] for i in items} == {"open"} and {i["change"] for i in items} == {None}
     assert doc["baseline"]["stamp"]["commit"] == "c" * 40
-    assert all(i["id"] in doc["report_prompt"] for i in items[:3])
+    assert doc["prose_source"] == {"writer": "template", "written_at": None, "cost_usd": None}
     assert SECRET not in result.stdout
 
     out = tmp_path / "fl.md"
@@ -115,6 +120,10 @@ def test_json_for_agents_and_markdown_to_stdout(indexed: Path, tmp_path: Path) -
     assert md.exit_code == 0, md.output
     text = out.read_text(encoding="utf-8")
     assert text.startswith("# Repo report: shop")
+    # The top reads on its own: the headline, the counts, and where to start, with places.
+    top = text.split("\n## 1. ", 1)[0]
+    assert "Health is" in top and "Found: 2 live secrets" in top
+    assert "## Do these first" in top and "(`scripts/tool.py:9` and 1 more)" in top
     assert SECRET not in text
 
 
@@ -133,6 +142,34 @@ def test_since_last_lists_what_was_fixed(indexed: Path) -> None:
 
     data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
     assert data["behind"] is True and len(data["fixed"]) == 1
+
+
+def test_prompt_prints_the_whole_report_prompt_for_the_open_items(indexed: Path) -> None:
+    first = _run(str(indexed), "--format", "json").stdout  # writes the report first
+    doc = json.loads(first[first.index("{") :])
+    prompt = _run(str(indexed), "--prompt")
+    assert prompt.exit_code == 0, prompt.output
+    assert "repowise mark <id> done" in prompt.stdout
+    open_ids = [i["id"] for s in doc["sections"] for i in s["items"] if i["status"] == "open"]
+    assert open_ids and all(i in prompt.stdout for i in open_ids)
+    assert SECRET not in prompt.stdout
+
+
+def test_bare_report_is_the_repo_report_and_subcommands_still_resolve(
+    indexed: Path, monkeypatch
+) -> None:
+    from repowise.cli.main import cli
+
+    runner = CliRunner()
+    monkeypatch.chdir(indexed)
+    bare = runner.invoke(cli, ["report", "--format", "md"])
+    assert bare.exit_code == 0, bare.output
+    repo = runner.invoke(cli, ["report", "repo", "--format", "md"])
+    # The first run also says on stderr that it is writing the report.
+    assert bare.stdout[bare.stdout.index("# Repo report: shop") :] == repo.stdout
+    for name in ("assessment", "inventory", "changes", "estate", "repo", "first-look"):
+        shown = runner.invoke(cli, ["report", name, "--help"])
+        assert shown.exit_code == 0 and f"report {name} [OPTIONS]" in shown.output
 
 
 def test_first_look_is_an_alias_of_report_repo(indexed: Path) -> None:
@@ -185,8 +222,18 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
         cost_tracker=None,
         opts=SimpleNamespace(dry_run=False, index_only=False),
     )
+    # A person at a terminal gets the path; an agent the one instruction.
+    monkeypatch.setattr(_finish.sys.stdin, "isatty", lambda: True)
     first_look = _finish._write_first_look(run, steps)
     assert first_look.line() == "Repo report  .repowise/reports/repo-report.html  (template, free)"
+    assert not first_look.agent and first_look.open_items > 0
+    monkeypatch.setattr(_finish.sys.stdin, "isatty", lambda: False)
+    piped = _finish._write_first_look(run, steps)
+    assert piped.line() == (
+        "Repo report: tell the user what it found (repowise report --format md); "
+        "they decide what to fix next."
+    )
+    assert piped.summary()["open_items"] == first_look.open_items
     stored = indexed / ".repowise" / "reports" / "first-look.json"
     written = stored.read_text(encoding="utf-8")
     assert (indexed / ".repowise" / "reports" / "repo-report.html").exists()
@@ -196,7 +243,7 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
 
     monkeypatch.setattr(write, "write_first_look", broken)
     # A later init keeps the stamped report and still names it.
-    assert _finish._write_first_look(run, steps).line() == first_look.line()
+    assert _finish._write_first_look(run, steps).line() == piped.line()
     assert stored.read_text(encoding="utf-8") == written
     stored.unlink()
     assert _finish._write_first_look(run, steps) is None

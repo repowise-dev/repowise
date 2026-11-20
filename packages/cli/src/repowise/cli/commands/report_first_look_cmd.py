@@ -152,9 +152,22 @@ def _since_last_text(report: Any, found: Any) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def _run(root: Path, fmt: str, since_last: bool) -> str:
+def agent_json(doc: dict[str, Any]) -> dict[str, Any]:
+    """The report document as ``--format json`` prints it: every item with its
+    id, section, rule, ``status``, ``change`` (``new``, ``changed``,
+    ``resolved`` or null), locations, effort and confidence, and no prompt
+    (``--prompt`` prints the whole-report one)."""
+    out = {k: v for k, v in doc.items() if k not in ("prompts", "report_prompt")}
+    items = [i for s in out.get("sections") or () for i in s.get("items") or ()]
+    for item in (*items, *((out.get("baseline") or {}).get("resolved") or ())):
+        item.pop("prompt", None)
+    return out
+
+
+async def _run(root: Path, fmt: str, since_last: bool, prompt: bool = False) -> str:
     """The text to emit."""
     from repowise.core.report.first_look.living import build_living, load_baseline
+    from repowise.core.report.first_look.prompts import render_report_prompt
     from repowise.core.report.first_look.staleness import staleness
     from repowise.core.report.first_look.write import RENDERED, render_document
     from repowise.core.report.render import render_json, report_renderers
@@ -173,10 +186,14 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
         if await load_baseline(session, repo_id, root) is None:
             err_console.print(_WRITING)
         living = await build_living(session, repo_id, root, store_missing=True, app_url=web)
+        if prompt:
+            # The prompt the web page's "Hand to agent" copies: open items only.
+            statuses = {i: s.status for i, s in living.statuses.items()}
+            return render_report_prompt(living.report, statuses=statuses) + "\n"
         # The HTML page holds each item's prompt; the Markdown and JSON exports none.
         doc = await render_document(session, repo_id, living, app_url=web, prompts=fmt == "html")
     if fmt == "json":
-        return render_json(doc)
+        return render_json(agent_json(doc))
     return report_renderers.get(RENDERED[f".{fmt}"])(doc)
 
 
@@ -197,25 +214,43 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
     help="List what was fixed, changed or found new since the report was written.",
 )
 @click.option(
+    "--prompt",
+    is_flag=True,
+    help="Print the whole-report agent prompt: the open items with their ids and how to mark each.",
+)
+@click.option(
     "--llm",
     is_flag=True,
     help="Rewrite the report at HEAD with one call to the configured model. Prints the cost first.",
 )
 @click.option("--yes", "-y", is_flag=True, help="With --llm, skip the cost confirmation.")
 def first_look_command(
-    path: str | None, fmt: str, out_path: str | None, since_last: bool, llm: bool, yes: bool
+    path: str | None,
+    fmt: str,
+    out_path: str | None,
+    since_last: bool,
+    prompt: bool,
+    llm: bool,
+    yes: bool,
 ) -> None:
     """The repo report: what Repowise found, most urgent first, as the index has
-    it now, with each item's status. Free unless --llm."""
+    it now, with each item's status. Free unless --llm.
+
+    \b
+    For an agent: read the items, fix one, then record it by its id
+      repowise report --format json && repowise mark fl_3a91c0d2e4f1 done --json
+    """
     from repowise.core.report.first_look.write import rendered_path
 
+    if prompt and since_last:
+        raise click.UsageError("--prompt and --since-last are separate views; pick one.")
     root = Path(path or ".").resolve()
     if llm and not _rewrite_with_model(root, yes):
         return
-    to_stdout = not out_path and (fmt != "html" or since_last)
+    to_stdout = not out_path and (fmt != "html" or since_last or prompt)
     if to_stdout:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report
-    text = run_async(_run(root, fmt, since_last))
+    text = run_async(_run(root, fmt, since_last, prompt))
     if to_stdout:
         click.echo(text, nl=False)
         return
