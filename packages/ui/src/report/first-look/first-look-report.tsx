@@ -83,6 +83,164 @@ function download(name: string, text: string, type: string): void {
 
 type Text = (item: FirstLookLivingItem) => string;
 
+/** An item's sentence: the report's prose, a resolved item's own, else its rule. */
+function itemSentence(item: FirstLookLivingItem, items: Record<string, string> | undefined): string {
+  return items?.[item.id] ?? (item as { text?: string | null }).text ?? item.rule;
+}
+
+function sectionTitle(key: string, titles: Record<string, string> | undefined, copy: FirstLookCopy): string {
+  return titles?.[key] ?? copy.stripTitle[key] ?? key;
+}
+
+type MarkHandler = NonNullable<FirstLookReportProps["onMark"]>;
+
+/** Runs the host's mark, and says why when it is refused. */
+function reportMarkErrors(onMark: MarkHandler, show: (m: string) => void, fallback: string) {
+  return (item: FirstLookLivingItem, mark: FirstLookMark, reason: string | null) => {
+    onMark(item, mark, reason).catch((err: unknown) =>
+      show(err instanceof Error && err.message ? err.message : fallback),
+    );
+  };
+}
+
+/** What each Share entry does. */
+function shareActions({
+  report,
+  markdownHref,
+  copyLink,
+  copyReportPrompt,
+  preview,
+}: {
+  report: FirstLookLivingReport;
+  markdownHref: string | null | undefined;
+  copyLink: () => void;
+  copyReportPrompt: () => void;
+  preview: () => void;
+}): Partial<Record<ShareAction, (() => void) | undefined>> {
+  return {
+    link: copyLink,
+    agent: copyReportPrompt,
+    markdown: markdownHref ? () => saveAs(markdownHref, "repo-report.md") : undefined,
+    pdf: () => window.print(),
+    json: () => download("repo-report.json", `${JSON.stringify(report, null, 2)}\n`, "application/json"),
+    preview,
+  };
+}
+
+function ExportNote({ copy, onExit }: { copy: FirstLookCopy; onExit: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2.5 bg-[var(--color-accent-muted)] p-2 text-[12.5px] print:hidden">
+      {copy.exportNote}
+      <button type="button" className={BUTTON} onClick={onExit}>
+        {copy.exitExport}
+      </button>
+    </div>
+  );
+}
+
+function TopBar({
+  copy,
+  Link,
+  overviewHref,
+  onHandToAgent,
+  onShare,
+  hasMarkdown,
+}: {
+  copy: FirstLookCopy;
+  Link: LinkLike;
+  overviewHref: string;
+  onHandToAgent: () => void;
+  onShare: (action: ShareAction) => void;
+  hasMarkdown: boolean;
+}) {
+  return (
+    <div className={cn(CONTROL, "sticky top-0 z-[5] bg-[color-mix(in_srgb,var(--color-bg-root)_88%,transparent)] backdrop-blur-sm")}>
+      <div className="mx-auto flex max-w-[900px] items-center gap-3 px-4 py-3">
+        <Link
+          href={overviewHref}
+          className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+        >
+          <ChevronLeft aria-hidden className="size-4" />
+          {copy.back}
+        </Link>
+        <span className="flex-1" />
+        <button type="button" className={BUTTON} aria-label={copy.handToAgent} onClick={onHandToAgent}>
+          <Bot aria-hidden className="size-4" />
+          <span className="hidden sm:inline">{copy.handToAgent}</span>
+        </button>
+        <ShareMenu copy={copy} onAction={onShare} hasMarkdown={hasMarkdown} />
+      </div>
+    </div>
+  );
+}
+
+function Footer({
+  report,
+  copy,
+  sinceCommand,
+  rewrite,
+}: {
+  report: FirstLookLivingReport;
+  copy: FirstLookCopy;
+  sinceCommand: string | null | undefined;
+  rewrite: { onRewrite: () => void; cost: number | null; running: boolean } | null;
+}) {
+  const { stamp } = report;
+  const writer =
+    stamp.generator === "template"
+      ? copy.writerTemplate
+      : copy.writerModel(stamp.generator, stamp.cost != null ? formatCost(stamp.cost) : null);
+  return (
+    <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-[12.5px] text-[var(--color-text-secondary)]">
+      <span className="font-mono">{copy.reportAt((stamp.commit ?? "").slice(0, 7))}</span>
+      {sinceCommand ? (
+        <span>
+          {copy.sinceThen} <code className="font-mono text-[0.86em]">{sinceCommand}</code>
+        </span>
+      ) : null}
+      <span>{writer}</span>
+      {rewrite ? <RewriteButton copy={copy} {...rewrite} /> : null}
+    </footer>
+  );
+}
+
+function RewriteButton({
+  copy,
+  onRewrite,
+  cost,
+  running,
+}: {
+  copy: FirstLookCopy;
+  onRewrite: () => void;
+  cost: number | null;
+  running: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onRewrite}
+      disabled={running}
+      className={cn(CONTROL, "inline-flex items-center gap-1 text-[var(--color-accent-primary)] hover:underline disabled:opacity-60")}
+    >
+      {running ? copy.writing : copy.writeWithAi}
+      {cost != null && !running ? `, ${copy.about(formatCost(cost))}` : null}
+      <ArrowUpRight aria-hidden className="size-3.5" />
+    </button>
+  );
+}
+
+function Toast({ message }: { message: string | null }) {
+  return (
+    <div role="status" aria-live="polite">
+      {message ? (
+        <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom,0px))] left-1/2 z-20 max-w-[calc(100%-32px)] -translate-x-1/2 rounded-lg bg-[var(--color-action-primary)] px-3.5 py-2 text-[13px] text-[var(--color-text-on-action)] print:hidden">
+          {message}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * The repo report: what the index finds now, measured against the first look.
  * Every sentence about the repository is `report.prose`, written in core; the
@@ -108,7 +266,7 @@ export function FirstLookReport({
   const Link: LinkLike = LinkComponent ?? "a";
   const [toast, showToast] = useToast();
   const [exporting, setExporting] = useState(false);
-  const prose = report.prose ?? {};
+  const prose = report.prose;
 
   const copyPrompt = useCallback(
     (target: FirstLookPromptTarget) => {
@@ -120,10 +278,7 @@ export function FirstLookReport({
   );
 
   const itemText = prose.items;
-  const text: Text = useCallback(
-    (item) => itemText?.[item.id] ?? (item as { text?: string | null }).text ?? item.rule,
-    [itemText],
-  );
+  const text: Text = useCallback((item) => itemSentence(item, itemText), [itemText]);
 
   const handlers: SectionHandlers = {
     copy,
@@ -132,37 +287,25 @@ export function FirstLookReport({
     text,
     onItemPrompt: (item) => copyPrompt({ item: item.id }),
     onSectionPrompt: (section) => copyPrompt({ section }),
-    onMark: onMark
-      ? (item, mark, reason) => {
-          onMark(item, mark, reason).catch((err: unknown) =>
-            showToast(err instanceof Error && err.message ? err.message : copy.copyFailed),
-          );
-        }
-      : undefined,
+    onMark: onMark ? reportMarkErrors(onMark, showToast, copy.copyFailed) : undefined,
   };
 
-  const onShare = (action: ShareAction) => {
-    if (action === "link") {
+  const share = shareActions({
+    report,
+    markdownHref,
+    copyLink: () =>
       void copyLater(Promise.resolve(window.location.href)).then((ok) =>
         showToast(ok ? copy.copied : copy.copyFailed),
-      );
-    } else if (action === "agent") {
-      copyPrompt(null);
-    } else if (action === "markdown") {
-      if (markdownHref) saveAs(markdownHref, `${report.repo.name ?? "repo"}-report.md`);
-    } else if (action === "pdf") {
-      window.print();
-    } else if (action === "json") {
-      download(`${report.repo.name ?? "repo"}-report.json`, `${JSON.stringify(report, null, 2)}\n`, "application/json");
-    } else {
+      ),
+    copyReportPrompt: () => copyPrompt(null),
+    preview: () => {
       setExporting(true);
       window.scrollTo(0, 0);
-    }
-  };
+    },
+  });
 
   const resolved = resolvedBySection(report);
-  const titles = prose.titles ?? {};
-  const title = (key: string) => titles[key] ?? copy.stripTitle[key] ?? key;
+  const title = (key: string) => sectionTitle(key, prose.titles, copy);
   const has = (key: string) => report.sections.some((s) => s.key === key);
   const renderSection = (key: string) => {
     const s = report.sections.find((x) => x.key === key);
@@ -182,31 +325,15 @@ export function FirstLookReport({
   return (
     <div data-export={exporting || undefined} className="text-[14.5px] leading-[1.55] text-[var(--color-text-primary)]">
       <style>{"[data-export] .first-look-control{display:none!important}[data-export] [data-decoration]{display:none}"}</style>
-      {exporting ? (
-        <div className="flex flex-wrap items-center justify-center gap-2.5 bg-[var(--color-accent-muted)] p-2 text-[12.5px] print:hidden">
-          {copy.exportNote}
-          <button type="button" className={BUTTON} onClick={() => setExporting(false)}>
-            {copy.exitExport}
-          </button>
-        </div>
-      ) : null}
-      <div className={cn(CONTROL, "sticky top-0 z-[5] bg-[color-mix(in_srgb,var(--color-bg-root)_88%,transparent)] backdrop-blur-sm")}>
-        <div className="mx-auto flex max-w-[900px] items-center gap-3 px-4 py-3">
-          <Link
-            href={overviewHref}
-            className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          >
-            <ChevronLeft aria-hidden className="size-4" />
-            {copy.back}
-          </Link>
-          <span className="flex-1" />
-          <button type="button" className={BUTTON} aria-label={copy.handToAgent} onClick={() => copyPrompt(null)}>
-            <Bot aria-hidden className="size-4" />
-            <span className="hidden sm:inline">{copy.handToAgent}</span>
-          </button>
-          <ShareMenu copy={copy} onAction={onShare} hasMarkdown={Boolean(markdownHref)} />
-        </div>
-      </div>
+      {exporting ? <ExportNote copy={copy} onExit={() => setExporting(false)} /> : null}
+      <TopBar
+        copy={copy}
+        Link={Link}
+        overviewHref={overviewHref}
+        onHandToAgent={() => copyPrompt(null)}
+        onShare={(action) => share[action]?.()}
+        hasMarkdown={Boolean(markdownHref)}
+      />
       <main className="mx-auto max-w-[900px] px-4 pb-16">
         <Header report={report} copy={copy} />
         <Strip report={report} copy={copy} />
@@ -214,39 +341,14 @@ export function FirstLookReport({
         <StartHere report={report} copy={copy} text={text} />
         {report.sections.map((s) => (paired && PAIRED.includes(s.key) ? null : renderSection(s.key)))}
         {paired ? <div className="grid gap-x-10 md:grid-cols-2">{PAIRED.map(renderSection)}</div> : null}
-        <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-[12.5px] text-[var(--color-text-secondary)]">
-          <span className="font-mono">{copy.reportAt((report.stamp.commit ?? "").slice(0, 7))}</span>
-          {sinceCommand ? (
-            <span>
-              {copy.sinceThen} <code className="font-mono text-[0.86em]">{sinceCommand}</code>
-            </span>
-          ) : null}
-          <span>
-            {report.stamp.generator === "template"
-              ? copy.writerTemplate
-              : copy.writerModel(report.stamp.generator, report.stamp.cost != null ? formatCost(report.stamp.cost) : null)}
-          </span>
-          {canRewrite && onRewrite ? (
-            <button
-              type="button"
-              onClick={onRewrite}
-              disabled={rewriting}
-              className={cn(CONTROL, "inline-flex items-center gap-1 text-[var(--color-accent-primary)] hover:underline disabled:opacity-60")}
-            >
-              {rewriting ? copy.writing : copy.writeWithAi}
-              {rewriteCost != null && !rewriting ? `, ${copy.about(formatCost(rewriteCost))}` : null}
-              <ArrowUpRight aria-hidden className="size-3.5" />
-            </button>
-          ) : null}
-        </footer>
+        <Footer
+          report={report}
+          copy={copy}
+          sinceCommand={sinceCommand}
+          rewrite={canRewrite && onRewrite ? { onRewrite, cost: rewriteCost ?? null, running: rewriting } : null}
+        />
       </main>
-      <div role="status" aria-live="polite">
-        {toast ? (
-          <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom,0px))] left-1/2 z-20 max-w-[calc(100%-32px)] -translate-x-1/2 rounded-lg bg-[var(--color-action-primary)] px-3.5 py-2 text-[13px] text-[var(--color-text-on-action)] print:hidden">
-            {toast}
-          </div>
-        ) : null}
-      </div>
+      <Toast message={toast} />
     </div>
   );
 }
