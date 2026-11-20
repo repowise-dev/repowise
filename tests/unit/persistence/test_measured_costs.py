@@ -353,7 +353,11 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
         [
             {**_hot("x"), "symbol_id": "src/startup.py::warm_cache", "tier": "lead_candidate"},
             # A unit-test run says nothing about production.
-            {**_hot("x", run="r3"), "symbol_id": "src/startup.py::load_settings"},
+            {
+                **_hot("x", run="r3"),
+                "symbol_id": "src/startup.py::load_settings",
+                "tier": "lead_candidate",
+            },
             # A tracer's order is not a measured cost.
             {**_hot("y", rank=2, ordering_only=True), "symbol_id": "src/startup.py::seed_defaults"},
         ],
@@ -365,7 +369,7 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     by_owner = {r.intervention_symbol.rpartition(":")[2]: r for r in rows}
     measured = json.loads(by_owner["warm_cache"].details_json)["facets"]
     assert measured["measured"] == "w-r1"
-    # Measured hot in a leading workload: the cause inside it is confirmed.
+    # Above the lead bar in a leading workload: the cause inside it is confirmed.
     assert measured["confirmed"] == "measured"
     assert by_owner["warm_cache"].queue_eligible
     unmeasured = json.loads(by_owner["load_settings"].details_json)["facets"]

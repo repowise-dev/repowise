@@ -162,11 +162,11 @@ Telling `grows` from `flat` needs the scope's `items` in the evidence document
 ([Runtime Evidence](RUNTIME_EVIDENCE.md)). The cause stays listed in every case.
 
 A cause carries `confirmed` when runtime evidence backs it. The value is
-`query_count` when its query counts grow with the items, or `measured` when its
-loop owner is measured hot in a benchmark, entry point, load test or production
-workload. Measured hot means the function's share of the run clears the
-`evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or it ranks
-in `evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
+`query_count` when its query counts grow with the items, or `measured` when a
+benchmark, entry point, load test or production workload measured its loop owner
+above the lead bar. That bar is a share of the run that clears the
+`evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
+`evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
 
 To see them, widen the filter (below). Each performance finding also stores the
 reason its cause is in or out of the queue. Code in a package path that only looks

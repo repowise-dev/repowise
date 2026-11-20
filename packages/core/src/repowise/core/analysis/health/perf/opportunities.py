@@ -266,7 +266,8 @@ def _facets(
 def _confirmed(r: _Reading, hot: frozenset[str]) -> str | None:
     """What confirms the cause, or ``None``: exact evidence at its call path
     (``query_count``: statements grow with the items), else a live member's
-    loop owner a leading workload measured hot (``measured``)."""
+    loop owner a leading workload measured above the lead bar
+    (``lead_candidate``, ``measured``)."""
     if r.queries is not None and r.queries.verdict == "grows":
         return "query_count"
     if any(f.details.get("role_owner") in hot for f in r.live):
@@ -394,7 +395,7 @@ def build_performance_opportunities(
     *queries* maps a call site's symbol id to its query-count reading
     (``evidence.query_counts``); a database cause reached by one carries the
     ``queries`` facet. *hot* holds the functions a leading workload
-    measured hot; a cause inside one, or whose query counts grow, carries
+    measured in the ``lead_candidate`` tier; a cause inside one, or whose query counts grow, carries
     the ``confirmed`` facet.
     """
     cap = max(0, evidence_limit)

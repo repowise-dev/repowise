@@ -300,14 +300,14 @@ async def _restamp_roles(
 class _Measured(NamedTuple):
     #: Function -> the leading workload that ranks it best.
     measured: dict[str, str]
-    #: Functions a leading workload measured hot (``lead_candidate``).
+    #: Functions a leading workload measured in the ``lead_candidate`` tier.
     hot: frozenset[str]
 
 
 async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
     """Each function a leading workload's newest run ranks, with that workload's
-    name, and the ones any such run measured hot (``evidence.hotness``'s
-    ``lead_candidate`` tier: the share and interval rule, or ranked in
+    name, and the ones any such run puts in ``evidence.hotness``'s
+    ``lead_candidate`` tier (the share and interval rule, or ranked in
     several runs).
 
     Read off ``workload_hotness``, which the health writers rebuild before
