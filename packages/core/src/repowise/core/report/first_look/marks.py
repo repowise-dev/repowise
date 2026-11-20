@@ -481,23 +481,11 @@ def _member_status(
     return _rows_status(rows, missing), None, None
 
 
-def _status_of(item: Item, stored: _Stored, gone: bool, now: datetime) -> ItemStatus:
-    from repowise.core.analysis.actions.engine import answer_holds
+def _rolled_up(found: list[tuple[str, str | None, datetime | None]]) -> ItemStatus:
+    """The members' statuses as one: open while any is open, snoozed while any
+    is, resolved when the analysis dropped them all, else the roll-up."""
     from repowise.core.analysis.health.refactoring.opportunity import roll_up_status
 
-    own = stored.actions.get(item.id)
-    if own is not None and own.state == "snoozed" and answer_holds(own, item.fingerprint, now):
-        return ItemStatus("snoozed", until=own.until)
-    if not item.members:
-        if own is not None and own.state != "snoozed" and (
-            gone or answer_holds(own, item.fingerprint, now)
-        ):
-            return ItemStatus(_ITEM[_ACTION_AS_FINDING.get(own.state, "open")])
-        return ItemStatus("resolved" if gone else "open")
-    # An open member is open, whatever the item was answered as; a member the
-    # index no longer has is open while the item is listed, gone after.
-    missing = _GONE if gone else "open"
-    found = [_member_status(m, stored, missing, gone, now) for m in item.members]
     statuses = [status for status, _, _ in found]
     # A member that joined after the answer is still to do: the item is open.
     if "open" in statuses:
@@ -507,10 +495,27 @@ def _status_of(item: Item, stored: _Stored, gone: bool, now: datetime) -> ItemSt
         return ItemStatus("snoozed", until=max((u for u in snoozed if u), default=None))
     if all(s == _GONE for s in statuses):
         return ItemStatus("resolved")
-    rolled = roll_up_status("resolved" if s == _GONE else s for s in statuses)
-    status = _ITEM.get(rolled, "open")
+    status = _ITEM.get(roll_up_status("resolved" if s == _GONE else s for s in statuses), "open")
     reason = next((why for s, why, _ in found if why and s != "open"), None)
     return ItemStatus(status, reason if status != "open" else None)
+
+
+def _status_of(item: Item, stored: _Stored, gone: bool, now: datetime) -> ItemStatus:
+    from repowise.core.analysis.actions.engine import answer_holds
+
+    own = stored.actions.get(item.id)
+    holds = own is not None and (answer_holds(own, item.fingerprint, now) or (
+        gone and own.state != "snoozed"
+    ))
+    if holds and own.state == "snoozed":
+        return ItemStatus("snoozed", until=own.until)
+    if not item.members:
+        if holds:
+            return ItemStatus(_ITEM[_ACTION_AS_FINDING.get(own.state, "open")])
+        return ItemStatus("resolved" if gone else "open")
+    # A member the index no longer has is open while the item is listed, gone after.
+    missing = _GONE if gone else "open"
+    return _rolled_up([_member_status(m, stored, missing, gone, now) for m in item.members])
 
 
 async def item_statuses(
