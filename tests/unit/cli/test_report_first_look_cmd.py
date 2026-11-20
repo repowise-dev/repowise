@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from tests.unit.persistence.test_first_look_collect import SECRET
 from tests.unit.persistence.test_first_look_collect import _seed as _seed_rows
@@ -47,6 +47,23 @@ async def _fix_the_secret(root: Path) -> None:
             )
             repo = (await session.execute(Repository.__table__.select())).first()
             (await session.get(Repository, repo.id)).head_commit = "d" * 40
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _move_the_secret(root: Path) -> None:
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import SecurityFinding
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await session.execute(
+                update(SecurityFinding)
+                .where(SecurityFinding.file_path == "src/settings.py")
+                .values(line_number=7, snippet=f'PASSWORD = "{SECRET}2"')
+            )
             await session.commit()
     finally:
         await engine.dispose()
@@ -113,6 +130,22 @@ def test_since_last_lists_what_was_fixed(indexed: Path) -> None:
 
     data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
     assert data["behind"] is True and len(data["fixed"]) == 1
+
+
+def test_since_last_shows_a_changed_item_as_it_is_now(indexed: Path) -> None:
+    from repowise.cli.helpers import run_async
+
+    assert _run(str(indexed), "--format", "json").exit_code == 0  # writes the report
+    run_async(_move_the_secret(indexed))
+
+    text = _run(str(indexed), "--since-last")
+    assert text.exit_code == 0, text.output
+    assert "0 fixed, 1 changed, 0 new." in text.stdout
+    changed = text.stdout.split("Changed:", 1)[1]
+    assert "src/settings.py:7" in changed and "src/settings.py:4" not in changed
+
+    data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
+    assert data["changed_items"][0]["locations"][0]["line"] == 7
 
 
 def test_without_an_index_it_says_so(tmp_path: Path) -> None:

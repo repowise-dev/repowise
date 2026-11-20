@@ -61,10 +61,13 @@ def _since_last_text(report: Any, found: Any) -> str:
         where = f" ({loc.path}{f':{loc.line}' if loc.line else ''})" if loc else ""
         return f"- {title(item.section).split(':')[0]}: {text}{where}"
 
-    for label, ids in (("Fixed", found.fixed), ("Changed", found.changed)):
-        if ids:
-            lines += ["", f"{label}:"]
-            lines += [row(report.item(i), texts.get(i, "")) for i in ids if report.item(i)]
+    if found.fixed:
+        lines += ["", "Fixed:"]
+        lines += [row(report.item(i), texts.get(i, "")) for i in found.fixed if report.item(i)]
+    # A changed item reads as it is now, not as the report wrote it.
+    if found.changed_items:
+        lines += ["", "Changed:"]
+        lines += [row(i, item_text(i)) for i in found.changed_items]
     if found.new:
         lines += ["", "New since the report:"]
         lines += [row(i, item_text(i)) for i in found.new]
