@@ -25,8 +25,8 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
 - *Share*: the function's self time over the run's time, with an interval
   around that same number (:func:`_share_interval`).
 - ``lead_candidate``: ranked in a workload class that may lead (never
-  ``unit_test``), and either the function's share of all samples is at least
-  ``lead_min_share`` with the interval's lower bound at least
+  ``unit_test``), and either the function's self share of the run's time is
+  at least ``lead_min_share`` with the interval's lower bound at least
   ``lead_min_lower_bound``, or it is ranked in ``lead_min_runs`` or more
   runs. Internal only until the thresholds are calibrated: no surface may
   word it as a claim, which is why the tier is not named for one.
@@ -425,9 +425,12 @@ def _may_lead(row: _Row) -> bool:
 
 
 def _clears_share_rule(row: _Row, rules: HotnessRules) -> bool:
+    """The share rule, on the self share of the run's time: a run with no time
+    total has no share to show, so it never clears it."""
     share = row.share
     return (
         share is not None
+        and _share(row.cost.self_value, row.run.total_value) is not None
         and share.estimate >= rules.lead_min_share
         and share.low >= rules.lead_min_lower_bound
     )

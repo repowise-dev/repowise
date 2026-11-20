@@ -21,7 +21,7 @@ RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.05, lead_min_low
                      lead_min_runs=2)
 
 
-def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float = 1000,
+def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float | None = 1000,
          samples: int | None = None, unit: str = "samples", explained: float | None = 400,
          day: int = 1, split: tuple[float, float, float] | None = None) -> RunFacts:
     repo_self, waits, libraries = split or (None, None, None)
@@ -119,6 +119,12 @@ def test_the_interval_brackets_the_time_share_when_samples_weigh_unequally() -> 
     # The counts' relative width is kept.
     assert row["share_low"] > 0.0356 * 0.9
     assert row["share_high"] < 0.0356 * 1.1
+
+
+def test_a_run_without_a_time_total_never_clears_the_share_rule() -> None:
+    run = _run(unit="ms", total=None, samples=1000)
+    row = _derive([run], {"r1": [_cost("f", 400.0, samples=400)]})["src/m.py::f"]
+    assert (row["tier"], row["self_share"]) == ("ranked", None)
 
 
 def test_a_function_under_the_sample_floor_takes_no_place() -> None:
