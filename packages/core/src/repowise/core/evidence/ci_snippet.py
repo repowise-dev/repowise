@@ -53,6 +53,8 @@ _GITLAB_TOOLS = {
     "poetry": "pip install poetry",
     "pdm": "pip install pdm",
     "hatch": "pip install hatch",
+    # setup-ruby installs the bundle on GitHub; the image does not.
+    "bundler": "bundle install",
     "pnpm": "corepack enable",
     "yarn": "corepack enable",
 }
@@ -188,8 +190,8 @@ def _setup_runs(stack: Stack) -> list[str]:
     return [r for r in runs if not r.startswith("pipx ")]
 
 
-def _gitlab_job(name: str, stack: Stack, command: str) -> list[str]:
-    command, missing = _with_junit(command, stack)
+def _gitlab_job(name: str, stack: Stack) -> list[str]:
+    command, missing = _with_junit(stack.test, stack)
     image = _GITLAB_IMAGES.get(stack.package_manager or "") or _GITLAB_IMAGES.get(stack.language, "alpine")
     tool = _GITLAB_TOOLS.get(stack.package_manager or "")
     script = list(dict.fromkeys([
@@ -219,7 +221,7 @@ def _gitlab_job(name: str, stack: Stack, command: str) -> list[str]:
     return lines
 
 
-def _gitlab(stacks: Sequence[Stack], commands: Sequence[str]) -> str:
+def _gitlab(stacks: Sequence[Stack]) -> str:
     lines = [
         "# Written by `repowise evidence setup --write`. Include it from .gitlab-ci.yml:",
         "#   include:",
@@ -227,8 +229,8 @@ def _gitlab(stacks: Sequence[Stack], commands: Sequence[str]) -> str:
         "# Each job runs one unit's tests with coverage and keeps the report and test results",
         "# as artifacts; `repowise evidence setup` prints the lines that ingest them.",
     ]
-    for name, stack, command in zip(_job_names(stacks, "repowise-evidence"), stacks, commands, strict=True):
-        lines += ["", *_gitlab_job(name, stack, command)]
+    for name, stack in zip(_job_names(stacks, "repowise-evidence"), stacks, strict=True):
+        lines += ["", *_gitlab_job(name, stack)]
     return "\n".join(lines) + "\n"
 
 
@@ -237,28 +239,28 @@ def ci_snippet(stacks: Sequence[Stack], ci: str, branch: str | None) -> dict[str
     command), the unit roots it runs, and ``skipped`` units with why.
 
     *branch* is the default branch pushes run on (``main`` when git cannot name one).
-    GitHub runs the CI form of a unit's command; GitLab, having no Actions step,
-    the form a workstation runs.
+    GitLab has no Actions step, so a unit whose command needs one
+    (:attr:`Stack.shell`) is skipped there.
     """
     if ci not in CI_KINDS:
         raise ValueError(f"unknown CI {ci!r}; one of {', '.join(CI_KINDS)}")
     kept: list[Stack] = []
-    commands: list[str] = []
     skipped: list[dict[str, str | None]] = []
     for stack in stacks:
-        command = stack.test if ci == "github" else stack.to_dict()["command"]
-        if command:
-            kept.append(stack)
-            commands.append(command)
+        if not stack.test:
+            reason = stack.to_dict()["reason"] or "Repowise could not tell how this unit runs its tests."
+        elif ci == "gitlab" and stack.shell:
+            reason = f"Its test command runs only inside the {stack.shell} step it ships with."
         else:
-            skipped.append({"root": stack.root, "stack": stack.language, "reason": stack.to_dict()["reason"]
-                            or "Repowise could not tell how this unit runs its tests."})
+            kept.append(stack)
+            continue
+        skipped.append({"root": stack.root, "stack": stack.language, "reason": reason})
     if not kept:
         content = None
     elif ci == "github":
         content = _github(kept, branch or "main")
     else:
-        content = _gitlab(kept, commands)
+        content = _gitlab(kept)
     return {
         "ci": ci,
         "path": CI_PATHS[ci],

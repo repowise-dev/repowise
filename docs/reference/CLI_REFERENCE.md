@@ -1402,7 +1402,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 with coverage and JUnit XML on pull requests and default-branch pushes and keeps the report and test
 results as artifacts: `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
 (include it from `.gitlab-ci.yml`) when the repository has a `.gitlab-ci.yml` and no GitHub workflows.
-`--ci github|gitlab` picks one. A different file already at that path is left alone, and a repository
+`--ci github|gitlab` picks one; GitLab skips a unit whose command needs its GitHub Actions step
+(Gradle without the JaCoCo plugin) and says so. A different file already at that path is left alone, and a repository
 with no unit repowise has a test command for gets no file; both exit `1`. Without `--write`, setup
 writes nothing.
 

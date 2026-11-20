@@ -91,3 +91,33 @@ def test_detect_ci_picks_gitlab_only_without_github_workflows(tmp_path: Path) ->
     assert detect_ci(tmp_path) == "gitlab"
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     assert detect_ci(tmp_path) == "github"
+
+
+_GRADLE = (["build.gradle", "src/main/java/A.java", "src/test/java/ATest.java"],
+           {"build.gradle": "plugins { id 'java' }\n"})
+_RUBY = (["Gemfile", "lib/a.rb", "spec/a_spec.rb"], {"Gemfile": "gem 'rspec'\n"})
+
+
+@pytest.mark.parametrize("ci", ["github", "gitlab"])
+@pytest.mark.parametrize("tree", [(_PATHS, _FILES), _GRADLE, _RUBY])
+def test_every_snippet_is_valid_yaml(tree, ci: str) -> None:
+    content = ci_snippet(detect_stacks(*tree), ci, "main")["content"]
+
+    assert content is None or isinstance(yaml.safe_load(content), dict)
+
+
+def test_gitlab_skips_a_unit_whose_command_needs_its_actions_step() -> None:
+    (stack,) = detect_stacks(*_GRADLE)
+    assert stack.shell == "github-actions"
+
+    gitlab = ci_snippet([stack], "gitlab", "main")
+
+    assert gitlab["content"] is None
+    assert "github-actions step" in gitlab["skipped"][0]["reason"]
+    assert ci_snippet([stack], "github", "main")["content"] is not None
+
+
+def test_gitlab_installs_the_ruby_bundle() -> None:
+    doc = yaml.safe_load(ci_snippet(detect_stacks(*_RUBY), "gitlab", "main")["content"])
+
+    assert doc["repowise-evidence"]["script"][0] == "bundle install"
