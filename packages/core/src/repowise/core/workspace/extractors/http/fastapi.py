@@ -152,27 +152,50 @@ def mount_prefix(ctx: ScanContext, var: str) -> str:
 def _python_imports(content: str) -> dict[str, tuple[str, str | None]]:
     """``{local name: (module, imported name or None)}`` for the file's imports.
 
-    A relative module keeps its leading dots. Imports inside ``try`` and ``if``
-    blocks count. A file Python cannot parse yields no imports. The text is
-    dedented first so an indented snippet reads as the module it would be.
+    A relative module keeps its leading dots. Module-level imports win,
+    including those inside ``try`` and ``if`` blocks; an import inside a
+    function or class binds a name only when the module does not. A file
+    Python cannot parse yields no imports. The text is dedented first so an
+    indented snippet reads as the module it would be.
+
+    Ceiling: one table per file, not per scope, so a function that rebinds a
+    module-level name to another module reads as the module-level one.
     """
     try:
         tree = ast.parse(textwrap.dedent(content))
     except (SyntaxError, ValueError):
         return {}
+    nested: list[ast.AST] = []
     out: dict[str, tuple[str, str | None]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                # `import a.b` binds `a`; `import a.b as c` binds `c` to `a.b`.
-                name = a.asname or a.name.split(".", 1)[0]
-                out[name] = (a.name if a.asname else name, None)
-        elif isinstance(node, ast.ImportFrom):
-            module = "." * node.level + (node.module or "")
-            for a in node.names:
-                if a.name != "*":
-                    out[a.asname or a.name] = (module, a.name)
+    # Depth first in source order, so a later module-level import rebinds an
+    # earlier one as it does at run time.
+    pending: list[ast.AST] = list(reversed(tree.body))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            nested.append(node)
+            continue
+        _bind_import(node, out, overwrite=True)
+        pending.extend(reversed(list(ast.iter_child_nodes(node))))
+    for scope in nested:
+        for node in ast.walk(scope):
+            _bind_import(node, out, overwrite=False)
     return out
+
+
+def _bind_import(node: ast.AST, out: dict[str, tuple[str, str | None]], *, overwrite: bool) -> None:
+    bound: list[tuple[str, tuple[str, str | None]]] = []
+    if isinstance(node, ast.Import):
+        for a in node.names:
+            # `import a.b` binds `a`; `import a.b as c` binds `c` to `a.b`.
+            name = a.asname or a.name.split(".", 1)[0]
+            bound.append((name, (a.name if a.asname else name, None)))
+    elif isinstance(node, ast.ImportFrom):
+        module = "." * node.level + (node.module or "")
+        bound.extend((a.asname or a.name, (module, a.name)) for a in node.names if a.name != "*")
+    for name, value in bound:
+        if overwrite or name not in out:
+            out[name] = value
 
 
 def _router_identity(

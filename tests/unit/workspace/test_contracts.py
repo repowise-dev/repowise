@@ -323,6 +323,29 @@ async def items(): ...
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/items" in ids
 
+    def test_fastapi_a_nested_import_does_not_override_the_module_one(self, tmp_path: Path) -> None:
+        # The helper's local `users` is another module; the mount at module
+        # level is still users.py's router.
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+import users
+app = FastAPI()
+app.include_router(users.router, prefix="/users")
+
+def legacy():
+    from legacy import users
+    return users
+""")
+        self._write_file(tmp_path, "users.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        self._write_file(tmp_path, "legacy/users.py", "router = APIRouter()\\n")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
     def test_express_cross_file_app_use_prefix(self, tmp_path: Path) -> None:
         # app.use('/api/users', userRouter) mounts a uniquely-named router.
         self._write_file(tmp_path, "src/app.js", """
