@@ -621,9 +621,10 @@ def _fit_target(
 ) -> None:
     """Degrade one target toward *share* chars.
 
-    Symbols trim to their entitled floor, then optional blocks go largest
-    first, then symbols trim to one. A target that still exceeds its share
-    after that is only its identity card, and stage 3 decides.
+    Symbols trim to their entitled floor, then files trim to theirs, then
+    optional blocks go largest first, then symbols trim to one. A target
+    that still exceeds its share after that is only its identity card, and
+    stage 3 decides.
     """
     docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
     symbols = docs.get("symbols") if docs is not None else None
@@ -634,6 +635,15 @@ def _fit_target(
         # The floor is the whole list's, so a later pass cannot erode it.
         floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
         _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+    files = docs.get("files") if docs is not None else None
+    if isinstance(files, list) and files:
+        # The floor is the list the budgeter holds, not the pre-cap
+        # population: files arrive capped at _SYMBOL_CAP rows, so a floor
+        # from files_total would exceed the rows present and the trim could
+        # never shed one.
+        _trim_files(
+            result, name, tgt, files, share, entitled_floor(len(files)), collector, record_counts
+        )
     _drop_blocks(result, name, tgt, docs, share, collector, record_counts)
     if has_symbols and _compact_size(tgt) > share:
         _trim_to_one_symbol(result, name, tgt, share, collector, record_counts)
@@ -759,6 +769,68 @@ def _trim_symbols(
         )
 
 
+def _trim_files(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    rows: list[dict[str, Any]],
+    share: int,
+    floor: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Keep the highest-ranked file rows that fit *share*, never fewer than *floor*.
+
+    The rows arrive ranked (PageRank, then path) from the card builder, so
+    the tail is the cheapest loss, as with symbols. Compact JSON is additive,
+    so the target's size with a file list ``F`` is its size with no files
+    plus each kept row's cost plus the commas.
+    """
+    docs = tgt["docs"]
+    costs = [len(json.dumps(row, separators=(",", ":"), default=str)) for row in rows]
+    docs["files"] = []
+    base = len(json.dumps(tgt, separators=(",", ":"), default=str))
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for row, row_cost in zip(rows, costs, strict=True):
+        if len(kept) < floor or base + used + row_cost + len(kept) <= share:
+            kept.append(row)
+            used += row_cost
+    docs["files"] = kept
+    if len(kept) == len(rows):
+        return
+    if record_counts:
+        _write_files_counts(docs, rows, kept)
+    # The counts land after the fit, so the target can end up over its share
+    # by their size; shed more rows, never below the floor, until it truly
+    # fits. Without this the next step drops the whole list it just trimmed.
+    while len(kept) > floor and _compact_size(tgt) > share:
+        kept.pop()
+        docs["files"] = kept
+        if record_counts:
+            _write_files_counts(docs, rows, kept)
+    kept_ids = {id(row) for row in kept}
+    dropped = [row for row in rows if id(row) not in kept_ids]
+    result["truncated"] = True
+    if collector is not None:
+        collector.add(
+            f"{name} :: files dropped from response",
+            "\n".join(json.dumps(row, separators=(",", ":"), default=str) for row in dropped),
+        )
+
+
+def _write_files_counts(
+    docs: dict[str, Any], rows: list[dict[str, Any]], kept: list[dict[str, Any]]
+) -> None:
+    """Keep the file list's total/emitted/omitted family honest after a trim."""
+    total = max(len(rows), int(docs.get("files_total") or 0))
+    docs["files_total"] = total
+    docs["files_emitted"] = len(kept)
+    docs["files_reduced_reason"] = _with_budget_reason(docs.get("files_reduced_reason"))
+    docs["files_truncated"] = True
+    docs["files_omitted"] = total - len(kept)
+
+
 def truncate_to_budget(
     result: dict[str, Any],
     char_budget: int | None = None,
@@ -784,8 +856,8 @@ def truncate_to_budget(
     2.   **Fair share per target.** Each target gets an equal share of the
          room the envelope leaves, with a small target's slack passed on. A
          target over its share degrades in place (see :func:`_fit_target`):
-         symbols to their entitled floor, optional blocks largest first, then
-         symbols to one. Every target the caller named stays visible.
+         symbols and files to their entitled floors, optional blocks largest
+         first, then symbols to one. Every target the caller named stays visible.
          When the identity cards alone cannot fit (many targets on a narrow
          budget), whole targets are evicted first, so the survivors keep
          their detail.
