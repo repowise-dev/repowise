@@ -110,6 +110,27 @@ def test_a_time_unit_run_uses_its_counted_samples() -> None:
     assert row["share_low"] is not None
 
 
+def test_the_interval_brackets_the_time_share_when_samples_weigh_unequally() -> None:
+    # A sampler's samples carry unequal time: 3.6% of the time on 4% of the samples.
+    run = _run(unit="ms", total=10000.0, samples=50000)
+    row = _derive([run], {"r1": [_cost("f", 356.0, samples=2000)]})["src/m.py::f"]
+    assert row["self_share"] == 0.0356
+    assert row["share_low"] < row["self_share"] < row["share_high"]
+    # The counts' relative width is kept.
+    assert row["share_low"] > 0.0356 * 0.9
+    assert row["share_high"] < 0.0356 * 1.1
+
+
+def test_a_function_under_the_sample_floor_takes_no_place() -> None:
+    # Costlier in time than "next" but too few samples: the places run 1, 2.
+    run = _run(unit="ms", total=10000.0, samples=10000)
+    costs = [_cost("top", 900.0, samples=900), _cost("thin", 500.0, samples=10),
+             _cost("next", 400.0, samples=400)]
+    rows = _derive([run], {"r1": costs})
+    assert [rows[f"src/m.py::{n}"]["rank"] for n in ("top", "thin", "next")] == [1, None, 2]
+    assert rows["src/m.py::thin"]["tier"] == "measured"
+
+
 def test_a_function_that_only_calls_things_ranks_below_the_one_doing_the_work() -> None:
     # The entry function is on every stack (inclusive 95%) and costs nothing itself.
     costs = [_cost("main", 1, total=950), _cost("dispatch", 2, total=900), _cost("scan", 120)]

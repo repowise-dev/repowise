@@ -75,8 +75,8 @@ SETTINGS = (
         "evidence.lead_min_share",
         "float",
         0.05,
-        "Share of all samples a ranked function needs, in a workload class that may lead, to "
-        "become a lead candidate from one run.",
+        "Share of the run's time a ranked function needs as self time, in a workload class that may "
+        "lead, to become a lead candidate from one run.",
         minimum=0,
         maximum=1,
     ),
