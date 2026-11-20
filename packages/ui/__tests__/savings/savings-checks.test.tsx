@@ -184,3 +184,16 @@ describe("SavingsPageBody", () => {
     expect(screen.queryByText("Checks your agents ran")).toBeNull();
   });
 });
+
+describe("summary tiles", () => {
+  it("shows a tile only when its own tools recorded outcomes", () => {
+    const rows = [
+      row("get_why", 83, { outcome_calls: 83, decisions_accepted: 31, decisions_candidate: 0, decisions_none: 52 }),
+      ...["get_change_risk", "get_risk", "get_health", "get_dead_code"].map((t) => row(t, 0)),
+    ];
+    render(<SavingsChecks rows={rows} copy={copy} />);
+    expect(screen.getByText("Decisions surfaced")).toBeTruthy();
+    expect(screen.queryByText("Risky changes caught")).toBeNull();
+    expect(screen.queryByText("Problems pointed out")).toBeNull();
+  });
+});

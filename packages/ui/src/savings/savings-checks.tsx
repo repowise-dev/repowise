@@ -225,19 +225,21 @@ function CheckRow({
   const avail = agents ? toolAvailability(tool, agents) : null;
   const missingEverywhere = calls === 0 && avail !== null && avail.with.length === 0;
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-7 gap-y-2 border-b border-[var(--color-border-subtle)] py-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.2fr)_auto]">
-      <div className="min-w-0">
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-7 gap-y-2 border-b border-[var(--color-border-subtle)] py-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.2fr)_6rem]">
+      <div className="col-start-1 row-start-1 min-w-0">
         <b className="block text-[15px] font-medium text-[var(--color-text-primary)]">{words.name}</b>
         <code className="mt-0.5 block font-mono text-[11px] text-[var(--color-text-tertiary)]">{tool}</code>
       </div>
-      <div className="col-span-2 row-start-2 min-w-0 text-[15px] text-[var(--color-text-primary)] md:col-span-1 md:row-start-auto">
+      <div className="col-span-2 col-start-1 row-start-2 min-w-0 text-[15px] text-[var(--color-text-primary)] md:col-span-1 md:col-start-2 md:row-start-1">
         {calls > 0 ? (
           <>
             <Outcome row={row} copy={copy} />
             {(row.outcome_calls ?? 0) > 0 && link && copy.links[tool] && (
-              <A href={link} className={`mt-1.5 inline-block ${LINK}`}>
-                {copy.links[tool]}
-              </A>
+              <div className="mt-1.5">
+                <A href={link} className={LINK}>
+                  {copy.links[tool]}
+                </A>
+              </div>
             )}
           </>
         ) : missingEverywhere ? (
@@ -257,7 +259,7 @@ function CheckRow({
           />
         )}
       </div>
-      <div className="col-start-2 row-start-1 whitespace-nowrap text-right text-xs tabular-nums text-[var(--color-text-tertiary)] md:col-start-auto">
+      <div className="col-start-2 row-start-1 whitespace-nowrap text-right text-xs tabular-nums text-[var(--color-text-tertiary)] md:col-start-3">
         <b
           className={`block text-[15px] font-normal ${calls > 0 ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]"}`}
         >
@@ -290,15 +292,21 @@ function ChecksSummary({ rows, copy }: { rows: readonly SavingsCheckView[]; copy
   const get = (tool: CheckToolId) => rows.find((row) => row.tool === tool);
   const change = get("get_change_risk");
   const problems = (get("get_health")?.findings ?? 0) + (get("get_risk")?.high ?? 0);
+  const recorded = (...tools: CheckToolId[]) => tools.some((tool) => (get(tool)?.outcome_calls ?? 0) > 0);
+  // A tile shows only when its own tools recorded outcomes, never as "0 of 0".
   const tiles = [
-    {
+    recorded("get_change_risk") && {
       label: copy.riskyLabel,
       value: change?.high ?? 0,
       sub: copy.riskySub(formatNumber((change?.high ?? 0) + (change?.medium ?? 0) + (change?.low ?? 0))),
     },
-    { label: copy.decisionsLabel, value: get("get_why")?.decisions_accepted ?? 0, sub: copy.decisionsSub },
-    { label: copy.problemsLabel, value: problems, sub: copy.problemsSub },
-  ];
+    recorded("get_why") && {
+      label: copy.decisionsLabel,
+      value: get("get_why")?.decisions_accepted ?? 0,
+      sub: copy.decisionsSub,
+    },
+    recorded("get_health", "get_risk") && { label: copy.problemsLabel, value: problems, sub: copy.problemsSub },
+  ].filter((tile): tile is { label: string; value: number; sub: string } => Boolean(tile));
   return (
     <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-0">
       {tiles.map((tile, i) => (
