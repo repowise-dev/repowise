@@ -335,6 +335,8 @@ def resolve_command_target(
     cwd_state = get_repowise_dir(base_path) / STATE_FILENAME
     if cwd_state.exists():
         upstream = find_workspace_root(base_path)
+        if upstream == base_path:
+            upstream = None  # a workspace root whose config 4a could not load
         return CommandTarget(
             mode="single",
             repo_path=base_path,
