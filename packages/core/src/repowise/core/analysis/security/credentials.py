@@ -301,6 +301,17 @@ def masked_snippet(line: str, spans: Iterable[tuple[int, int]] = ()) -> str:
     return _snippet(line, spans)
 
 
+def holds_secret(text: str) -> bool:
+    """Whether any line of *text* holds a value :func:`masked_snippet` would mask.
+
+    For text written outside the scan (a model's prose) that must never carry one.
+    """
+    return any(
+        _PEM_BODY_LINE.search(line) or (_SECRET_PREFILTER.search(line) and _secret_spans(line))
+        for line in text.splitlines()
+    )
+
+
 def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 
