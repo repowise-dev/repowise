@@ -18,8 +18,8 @@ def sibling_repo_count(repo_path: Path) -> int:
     parent = repo_path.parent
     if parent == repo_path or parent in (Path.home().resolve(), Path(parent.anchor)):
         return 0
-    if find_workspace_root(repo_path) is not None:
-        return 0  # already a workspace member; init handles that case itself
+    if find_workspace_root(repo_path, any_repo=True) is not None:
+        return 0  # a workspace already covers this folder; no new one to suggest
     try:
         repos = scan_for_repos(parent, max_depth=1).repos
     except OSError:
