@@ -1241,5 +1241,8 @@ def test_a_data_folder_mostly_of_code_stays_production(tmp_path) -> None:
 
 def test_a_test_under_a_data_folder_stays_a_test(tmp_path) -> None:
     _bank(tmp_path)
+    for n in range(10):  # keep the folder a bank with the test file in it
+        (tmp_path / "backend" / "data" / f"extra{n}.json").write_text("{}")
     (tmp_path / "backend" / "data" / "test_bank.py").write_text("")
+    assert code_origin("backend/data/problems/p0/solutions/go.go", repo_root=tmp_path) == "data"
     assert code_origin("backend/data/test_bank.py", repo_root=tmp_path) == "test"
