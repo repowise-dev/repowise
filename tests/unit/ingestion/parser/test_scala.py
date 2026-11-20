@@ -97,15 +97,31 @@ object Ext {
             ("shout", "Ext")
         ]
 
-    def test_annotated_abstract_members_keep_their_annotations(self, parser: ASTParser) -> None:
+    def test_annotated_defs_keep_every_annotation_and_their_parameters(
+        self, parser: ASTParser
+    ) -> None:
         source = b"""\
 trait T {
   @deprecated def all: List[Int]
   @deprecated def get(i: Int): Int
+  @deprecated @inline def both: Int
   def plain: Int
+}
+class C {
+  @tailrec def loop(n: Int): Int = n
+  @deprecated @inline def stacked(a: Int): Int = a
 }
 """
         fi = _make_file_info("scala_pkg/T.scala", "scala")
         result = parser.parse_file(fi, source)
-        methods = {s.name: s.decorators for s in result.symbols if s.kind == "method"}
-        assert methods == {"all": ["@deprecated"], "get": ["@deprecated"], "plain": []}
+        methods = {
+            s.name: (s.decorators, s.signature) for s in result.symbols if s.kind == "method"
+        }
+        assert methods == {
+            "all": (["@deprecated"], "function all -> List[Int]"),
+            "get": (["@deprecated"], "function get(i: Int) -> Int"),
+            "both": (["@deprecated", "@inline"], "function both -> Int"),
+            "plain": ([], "function plain -> Int"),
+            "loop": (["@tailrec"], "def loop(n: Int) -> Int"),
+            "stacked": (["@deprecated", "@inline"], "def stacked(a: Int) -> Int"),
+        }

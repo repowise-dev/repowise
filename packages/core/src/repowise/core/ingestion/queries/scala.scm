@@ -19,14 +19,16 @@
 
 ; Annotated function (Q11): @tailrec def bar
 (function_definition
-  (annotation) @symbol.modifiers
+  (annotation)+ @symbol.modifiers
   name: (identifier) @symbol.name
+  (parameters)? @symbol.params
 ) @symbol.def
 
 ; Annotated abstract member: @deprecated def all: List[Int]
 (function_declaration
-  (annotation) @symbol.modifiers
+  (annotation)+ @symbol.modifiers
   name: (identifier) @symbol.name
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (trait_definition
