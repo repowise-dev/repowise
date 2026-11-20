@@ -1,4 +1,4 @@
-"""The first-look report: what Repowise found after the first index, in order.
+"""The repo report: what Repowise found after the first index, in order.
 
 Built from structured findings only (:mod:`.collect`), as one versioned JSON
 document (:mod:`.model`) stored in the checkout and the index (:mod:`.store`),

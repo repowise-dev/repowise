@@ -438,7 +438,7 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
 
 
 def first_look_provider(run: InitRun) -> Any:
-    """The provider the first-look report is written with; ``None`` on a run meant
+    """The provider the repo report is written with; ``None`` on a run meant
     to cost nothing (keyless, ``--no-prose``, a declined cost) or a dry run, even
     when a key sits in the environment."""
     opts = run.opts
@@ -448,7 +448,7 @@ def first_look_provider(run: InitRun) -> Any:
 
 
 def _write_first_look(run: InitRun, steps: Any) -> Any:
-    """Write the first-look report from the finished index; ``None`` when off or failed.
+    """Write the repo report from the finished index; ``None`` when off or failed.
 
     Written once: a later init keeps the stamped report (``--since-last`` shows
     progress against it). A failure is logged and never fails init.
@@ -466,10 +466,18 @@ def _write_first_look(run: InitRun, steps: Any) -> Any:
         return None
 
 
+def _for_an_agent() -> bool:
+    """The ``--progress json`` stream is open, or nobody can answer at the terminal."""
+    from repowise.cli.agent_events import active
+
+    return active() is not None or not sys.stdin.isatty()
+
+
 async def _first_look(run: InitRun, settings: Any) -> Any:
     from repowise.cli.commands.serve_cmd._lock import live_web_url
     from repowise.cli.helpers import repo_index_session
     from repowise.cli.ui.finish_panel import FirstLook
+    from repowise.core.report.first_look.marks import item_statuses
     from repowise.core.report.first_look.store import read_report_file
     from repowise.core.report.first_look.write import rendered_path, write_files, write_first_look
 
@@ -488,14 +496,21 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
         report = report or await write_first_look(
             session, repo_id, root, provider=provider, settings=settings, app_url=web
         )
+        statuses = await item_statuses(session, repo_id, report.items())
     if provider is not None and run.cost_tracker is not None:
         await run.cost_tracker.flush()
     where = (
-        f"{web}/repos/{repo_id}/first-look"
+        f"{web}/repos/{repo_id}/report"
         if web
         else rendered_path(root, ".html").relative_to(root).as_posix()
     )
-    return FirstLook(where, report.stamp.generator, report.stamp.cost)
+    return FirstLook(
+        where,
+        report.stamp.generator,
+        report.stamp.cost,
+        agent=_for_an_agent(),
+        open_items=sum(s.status == "open" for s in statuses.values()),
+    )
 
 
 def _keep_out_of_git(run: InitRun) -> None:
@@ -568,6 +583,7 @@ def complete_setup(run: InitRun) -> None:
     run.next_steps = completion.steps
     run.stood_out = completion.stood_out
     run.first_prompt = completion.first_prompt or None
+    run.first_look = first_look
 
 
 def _gaps(run: InitRun) -> list[str]:

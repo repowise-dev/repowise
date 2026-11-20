@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +46,8 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
     """Write *report*; one stamped at another commit is kept as ``first-look.<commit>.json``."""
     path = report_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The new report is on disk before the old one moves, so a failed write
-    # leaves the checkout's current report in place.
+    # The old report is archived as a copy and *path* is only ever replaced in
+    # one step, so a failure at any point leaves a readable report there.
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(_dump(report), encoding="utf-8", newline="\n")
     old = read_report_file(repo_root)
@@ -55,11 +56,11 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
         and is_sha_prefix(old.stamp.commit)
         and old.stamp.commit != report.stamp.commit
     ):
-        os.replace(path, path.with_name(f"first-look.{old.stamp.commit}.json"))
+        shutil.copy2(path, path.with_name(f"first-look.{old.stamp.commit}.json"))
     elif old is None and path.exists():
         # Unreadable here (damaged, or a newer Repowise's schema): the latest
         # unreadable copy is kept beside it; an earlier one there is replaced.
-        os.replace(path, path.with_name("first-look.previous.json"))
+        shutil.copy2(path, path.with_name("first-look.previous.json"))
     os.replace(tmp, path)
     return path
 

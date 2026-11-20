@@ -19,4 +19,4 @@ for _module in pkgutil.iter_modules(__path__):
     try:  # one broken section must not take the others down, as with plugins
         importlib.import_module(f"{__name__}.{_module.name}")
     except Exception as exc:
-        _log.warning("first-look section module %s failed to load: %s", _module.name, exc)
+        _log.warning("repo report section module %s failed to load: %s", _module.name, exc)

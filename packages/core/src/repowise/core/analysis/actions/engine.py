@@ -51,6 +51,8 @@ class ActionStateRecord:
     state: str
     fingerprint: str
     until: datetime | None = None
+    #: Why the person answered so; ``None`` when they gave no reason.
+    note: str | None = None
 
 
 class Ranked(NamedTuple):

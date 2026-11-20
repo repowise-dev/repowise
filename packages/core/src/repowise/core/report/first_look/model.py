@@ -434,10 +434,24 @@ class FirstLookReport:
     def section(self, key: str) -> SectionBlock | None:
         return next((s for s in self.sections if s.key == key), None)
 
+    def prose_source(self) -> dict[str, Any]:
+        """Who wrote the wording, when and what the model call cost: ``writer``
+        is ``template`` or the model id; ``written_at`` is ``None`` for the
+        template, which is written fresh on every read; ``cost_usd`` is ``None``
+        when no model was called (a template that kept a failed call's spend
+        carries it)."""
+        model = self.stamp.generator != "template"
+        return {
+            "writer": self.stamp.generator,
+            "written_at": self.stamp.created_at if model else None,
+            "cost_usd": self.stamp.cost,
+        }
+
     def to_json(self) -> dict[str, Any]:
         return {
             "schema_version": self.stamp.schema_version,
             "stamp": self.stamp.to_json(),
+            "prose_source": self.prose_source(),
             "repo": dict(self.repo),
             "top": list(self.top),
             "sections": [s.to_json() for s in self.sections],
@@ -451,7 +465,7 @@ class FirstLookReport:
         version = int(data.get("schema_version") or 0)
         if version > SCHEMA_VERSION:
             raise ValueError(
-                f"first-look report schema {version} is newer than this Repowise reads "
+                f"Repo report schema {version} is newer than this Repowise reads "
                 f"({SCHEMA_VERSION}); upgrade Repowise or rebuild the report"
             )
         return cls(

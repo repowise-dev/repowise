@@ -8,12 +8,12 @@ with (``roll_up_status``), so a group answers as one item.
 
 | Member store | Writer | done | ack | false_positive | snooze |
 |---|---|---|---|---|---|
-| ``action`` | ``set_action_state`` | done | dismissed | dismissed | snoozed, with an end |
+| ``action`` | ``set_action_state`` (reason as its note) | done | dismissed | dismissed | snoozed, with an end |
 | ``dead_code`` | ``update_dead_code_status`` (reason as its note) | resolved | acknowledged | false_positive | the item's own snooze |
-| ``health_finding``, ``performance`` | ``update_health_finding_status`` | resolved | acknowledged | false_positive | the item's own snooze |
-| ``refactoring_opportunity`` | ``update_refactoring_opportunity_status`` | resolved | acknowledged | false_positive | the item's own snooze |
-| ``refactoring_plan`` | ``update_refactoring_suggestion_status`` | resolved | acknowledged | false_positive | the item's own snooze |
-| none (an item only the report holds) | ``set_action_state`` under the item id | done | dismissed | dismissed | snoozed, with an end |
+| ``health_finding``, ``performance`` | ``update_health_finding_status`` (reason as its status note) | resolved | acknowledged | false_positive | the item's own snooze |
+| ``refactoring_opportunity`` | ``update_refactoring_opportunity_status`` (reason on its member plans) | resolved | acknowledged | false_positive | the item's own snooze |
+| ``refactoring_plan`` | ``update_refactoring_suggestion_status`` (reason as its status note) | resolved | acknowledged | false_positive | the item's own snooze |
+| none (an item only the report holds) | ``set_action_state`` under the item id (reason as its note) | done | dismissed | dismissed | snoozed, with an end |
 
 The analysis writers keep what a person recorded: a dismissed dead-code
 finding is never re-inserted, a triaged health finding keeps its status (a
@@ -153,7 +153,7 @@ async def _finding_rows(session: Any, *where: Any) -> list[str]:
     return list((await session.execute(select(HealthFinding.id).where(*where))).scalars())
 
 
-async def _write_health(session: Any, repo_id: str, ref: str, status: str, _reason: Any) -> int:
+async def _write_health(session: Any, repo_id: str, ref: str, status: str, reason: Any) -> int:
     from repowise.core.persistence.crud.analysis.health.findings import (
         update_health_finding_status,
     )
@@ -163,12 +163,12 @@ async def _write_health(session: Any, repo_id: str, ref: str, status: str, _reas
         session, HealthFinding.repository_id == repo_id, HealthFinding.public_id == ref
     )
     for row_id in ids:
-        await update_health_finding_status(session, row_id, status)
+        await update_health_finding_status(session, row_id, status, note=reason)
     return len(ids)
 
 
 async def _write_performance(
-    session: Any, repo_id: str, ref: str, status: str, _reason: Any
+    session: Any, repo_id: str, ref: str, status: str, reason: Any
 ) -> int:
     from repowise.core.persistence.crud.analysis.health.findings import (
         update_health_finding_status,
@@ -182,7 +182,7 @@ async def _write_performance(
         HealthFinding.opportunity_id == ref,
     )
     for row_id in ids:
-        await update_health_finding_status(session, row_id, status)
+        await update_health_finding_status(session, row_id, status, note=reason)
     return len(ids)
 
 
@@ -217,22 +217,23 @@ async def _write_dead_code(session: Any, repo_id: str, ref: str, status: str, re
 
 
 async def _write_opportunity(
-    session: Any, repo_id: str, ref: str, status: str, _reason: Any
+    session: Any, repo_id: str, ref: str, status: str, reason: Any
 ) -> int:
     from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
         update_refactoring_opportunity_status,
     )
 
-    found = await update_refactoring_opportunity_status(session, repo_id, ref, status)
+    found = await update_refactoring_opportunity_status(session, repo_id, ref, status, note=reason)
     return found[1] if found is not None else 0
 
 
-async def _write_plan(session: Any, repo_id: str, ref: str, status: str, _reason: Any) -> int:
+async def _write_plan(session: Any, repo_id: str, ref: str, status: str, reason: Any) -> int:
     from repowise.core.persistence.crud.analysis.refactoring import (
         update_refactoring_suggestion_status,
     )
 
-    return int(await update_refactoring_suggestion_status(session, repo_id, ref, status) is not None)
+    written = await update_refactoring_suggestion_status(session, repo_id, ref, status, note=reason)
+    return int(written is not None)
 
 
 _WRITERS = {
@@ -260,7 +261,8 @@ async def _write(
     stores: list[str] = []
     for m in actions:
         await set_action_state(
-            session, repo_id, m.ref, state=_ACTION[status], fingerprint=m.fingerprint, until=until
+            session, repo_id, m.ref, state=_ACTION[status], fingerprint=m.fingerprint,
+            until=until, note=reason,
         )
     if actions:
         stores.append("action")
@@ -269,7 +271,8 @@ async def _write(
     own = not item.members or (findings and status == "snooze")
     if own:
         await set_action_state(
-            session, repo_id, item.id, state=_ACTION[status], fingerprint=item.fingerprint, until=until
+            session, repo_id, item.id, state=_ACTION[status], fingerprint=item.fingerprint,
+            until=until, note=reason,
         )
         stores.append(ITEM_STORE)
     elif findings:
@@ -309,8 +312,9 @@ async def mark_item(
 
     *status* is ``done``, ``ack``, ``false_positive`` (or ``false-positive``) or
     ``snooze``; ``ack`` and ``false_positive`` need a *reason*; ``snooze`` lasts
-    *days* (default :data:`DEFAULT_SNOOZE_DAYS`). Returns ``{id, status, store}``
-    plus ``until`` for a snooze, ``status`` being what the item now reads as.
+    *days* (default :data:`DEFAULT_SNOOZE_DAYS`). Returns ``{id, store, status, reason, until}``,
+    ``status`` being what the item now reads as; ``reason`` and ``until`` are
+    ``None`` when absent.
     Raises :class:`MarkError`. Flushes; the caller commits.
     """
     status = _status(status)
@@ -330,16 +334,20 @@ async def mark_item(
     if item is None:
         raise MarkError(
             "unknown_item",
-            f"No first-look item {item_id!r} in this repository's report or index.",
+            f"No repo report item {item_id!r} in this repository's report or index. "
+            "Item ids are fl_ followed by 12 hex characters (fl_3a91c0d2e4f1).",
         )
     if item.section == "security" and status == "false_positive":
         raise MarkError("security_use_ignore", SECURITY_IGNORE)
     store = await _write(session, repository_id, item, status, reason, until)
     await session.flush()
-    out: dict[str, Any] = {"id": item.id, "status": _reads_as(item, status), "store": store}
-    if until is not None:
-        out["until"] = _iso(until)
-    return out
+    return {
+        "id": item.id,
+        "store": store,
+        "status": _reads_as(item, status),
+        "reason": reason,
+        "until": _iso(until),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -353,15 +361,69 @@ def _chunks(values: Iterable[str]) -> Iterable[list[str]]:
         yield values[n : n + _CHUNK]
 
 
-async def _grouped(session: Any, column: Any, key: Any, refs: set[str], *where: Any) -> dict:
-    """``{ref: [status, ...]}`` for the rows whose *key* is in *refs*."""
+async def _grouped(
+    session: Any, column: Any, note: Any, key: Any, refs: set[str], *where: Any
+) -> dict:
+    """``{ref: [(status, note), ...]}`` for the rows whose *key* is in *refs*."""
     from sqlalchemy import select
 
-    out: dict[str, list[str]] = {}
+    out: dict[str, list[tuple[str, str | None]]] = {}
     for chunk in _chunks(refs):
-        rows = await session.execute(select(key, column).where(key.in_(chunk), *where))
-        for ref, status in rows.all():
-            out.setdefault(ref, []).append(status)
+        rows = await session.execute(select(key, column, note).where(key.in_(chunk), *where))
+        for ref, status, why in rows.all():
+            out.setdefault(ref, []).append((status, why))
+    return out
+
+
+def _plan_ids(details_json: Any) -> list[str]:
+    """The member plan ids an opportunity's ``details_json`` lists."""
+    import json
+
+    try:
+        details = json.loads(details_json) if isinstance(details_json, str) else details_json
+    except ValueError:
+        return []
+    steps = details.get("steps") if isinstance(details, dict) else None
+    return [
+        str(step["plan_id"])
+        for step in steps or ()
+        if isinstance(step, dict) and step.get("plan_id")
+    ]
+
+
+async def _opportunities(session: Any, repo_id: str, refs: set[str]) -> dict:
+    """``{opportunity id: [(status, note), ...]}``: the rolled-up status, with
+    the note a person gave a member plan in that same status (an opportunity
+    has no note of its own)."""
+    from sqlalchemy import or_, select
+
+    from repowise.core.persistence.models import RefactoringOpportunity as O
+    from repowise.core.persistence.models import RefactoringSuggestion as S
+
+    rows: list[tuple[str, str, list[str]]] = []
+    for chunk in _chunks(refs):
+        found = await session.execute(
+            select(O.opportunity_id, O.status, O.details_json).where(
+                O.repository_id == repo_id, O.opportunity_id.in_(chunk)
+            )
+        )
+        rows += [(ref, status, _plan_ids(raw)) for ref, status, raw in found.all()]
+    plan_ids = {p for *_, ids in rows for p in ids}
+    notes: dict[str, tuple[str, str]] = {}
+    for chunk in _chunks(plan_ids):
+        found = await session.execute(
+            select(S.id, S.public_id, S.status, S.status_note).where(
+                S.repository_id == repo_id,
+                S.status_note.is_not(None),
+                or_(S.id.in_(chunk), S.public_id.in_(chunk)),
+            )
+        )
+        for row_id, public_id, status, note in found.all():
+            notes[row_id] = notes[public_id or row_id] = (status, note)
+    out: dict[str, list[tuple[str, str | None]]] = {}
+    for ref, status, ids in rows:
+        note = next((notes[p][1] for p in ids if notes.get(p, ("",))[0] == status), None)
+        out.setdefault(ref, []).append((status, note))
     return out
 
 
@@ -371,10 +433,12 @@ class _Stored:
 
     actions: Mapping[str, Any]
     dead_code: Mapping[tuple, tuple[str, str | None]]
-    health: Mapping[str, list[str]]
-    performance: Mapping[str, list[str]]
-    opportunities: Mapping[str, list[str]]
-    plans: Mapping[str, tuple[str, str | None]]
+    #: ``{ref: [(status, note), ...]}`` per finding store.
+    health: Mapping[str, list[tuple[str, str | None]]]
+    performance: Mapping[str, list[tuple[str, str | None]]]
+    opportunities: Mapping[str, list[tuple[str, str | None]]]
+    #: ``{ref: (status, status_reason, note)}``.
+    plans: Mapping[str, tuple[str, str | None, str | None]]
 
 
 async def _read(session: Any, repo_id: str, items: list[Item]) -> _Stored:
@@ -384,7 +448,6 @@ async def _read(session: Any, repo_id: str, items: list[Item]) -> _Stored:
     from repowise.core.persistence.models import (
         DeadCodeFinding,
         HealthFinding,
-        RefactoringOpportunity,
         RefactoringSuggestion,
     )
 
@@ -403,43 +466,46 @@ async def _read(session: Any, repo_id: str, items: list[Item]) -> _Stored:
         )
         for kind, symbol, path, status, note in rows.all():
             dead[(kind, symbol or "", path)] = (status, note)
-    plans: dict[str, tuple[str, str | None]] = {}
+    plans: dict[str, tuple[str, str | None, str | None]] = {}
     for chunk in _chunks(refs.get("refactoring_plan", ())):
         s = RefactoringSuggestion
         rows = await session.execute(
-            select(s.id, s.public_id, s.status, s.status_reason).where(
+            select(s.id, s.public_id, s.status, s.status_reason, s.status_note).where(
                 s.repository_id == repo_id, or_(s.public_id.in_(chunk), s.id.in_(chunk))
             )
         )
-        for row_id, public_id, status, reason in rows.all():
-            plans[public_id if public_id in chunk else row_id] = (status, reason)
+        for row_id, public_id, status, reason, note in rows.all():
+            plans[public_id if public_id in chunk else row_id] = (status, reason, note)
     hf = HealthFinding
     return _Stored(
         actions=await get_action_states(session, repo_id),
         dead_code=dead,
         health=await _grouped(
-            session, hf.status, hf.public_id, refs.get("health_finding", set()),
+            session, hf.status, hf.status_note, hf.public_id, refs.get("health_finding", set()),
             hf.repository_id == repo_id,
         ),
         performance=await _grouped(
-            session, hf.status, hf.opportunity_id, refs.get("performance", set()),
+            session, hf.status, hf.status_note, hf.opportunity_id,
+            refs.get("performance", set()),
             hf.repository_id == repo_id, hf.dimension == "performance",
         ),
-        opportunities=await _grouped(
-            session, RefactoringOpportunity.status, RefactoringOpportunity.opportunity_id,
-            refs.get("refactoring_opportunity", set()),
-            RefactoringOpportunity.repository_id == repo_id,
+        opportunities=await _opportunities(
+            session, repo_id, refs.get("refactoring_opportunity", set())
         ),
         plans=plans,
     )
 
 
-def _rows_status(statuses: list[str] | None, missing: str) -> str:
+def _rows_status(
+    rows: list[tuple[str, str | None]] | None, missing: str
+) -> tuple[str, str | None]:
+    """The rows' rolled-up status, and the note one of them gave for it."""
     from repowise.core.analysis.health.refactoring.opportunity import roll_up_status
 
-    if not statuses:
-        return missing
-    return roll_up_status(statuses)
+    if not rows:
+        return missing, None
+    status = roll_up_status(s for s, _ in rows)
+    return status, next((why for s, why in rows if why and s == status), None)
 
 
 def _member_status(
@@ -455,11 +521,11 @@ def _member_status(
             return missing, None, None
         if record.state == "snoozed":
             if answer_holds(record, m.fingerprint, now):
-                return "snoozed", None, record.until
+                return "snoozed", record.note, record.until
             return missing, None, None
         # A next action no longer firing keeps the answer a person gave it.
         if gone or answer_holds(record, m.fingerprint, now):
-            return _ACTION_AS_FINDING.get(record.state, "open"), None, None
+            return _ACTION_AS_FINDING.get(record.state, "open"), record.note, None
         return missing, None, None
     if m.store == "dead_code":
         kind, symbol, path = parse_dead_code_ref(m.ref)
@@ -471,14 +537,14 @@ def _member_status(
         found = stored.plans.get(m.ref)
         if found is None:
             return missing, None, None
-        status, why = found
-        return (_GONE if status == "resolved" and why == _GONE else status), None, None
+        status, why, note = found
+        return (_GONE if status == "resolved" and why == _GONE else status), note, None
     rows = {
         "health_finding": stored.health,
         "performance": stored.performance,
         "refactoring_opportunity": stored.opportunities,
     }[m.store].get(m.ref)
-    return _rows_status(rows, missing), None, None
+    return (*_rows_status(rows, missing), None)
 
 
 def _rolled_up(found: list[tuple[str, str | None, datetime | None]]) -> ItemStatus:
@@ -508,10 +574,11 @@ def _status_of(item: Item, stored: _Stored, gone: bool, now: datetime) -> ItemSt
         gone and own.state != "snoozed"
     ))
     if holds and own.state == "snoozed":
-        return ItemStatus("snoozed", until=own.until)
+        return ItemStatus("snoozed", own.note, own.until)
     if not item.members:
         if holds:
-            return ItemStatus(_ITEM[_ACTION_AS_FINDING.get(own.state, "open")])
+            status = _ITEM[_ACTION_AS_FINDING.get(own.state, "open")]
+            return ItemStatus(status, own.note if status != "open" else None)
         return ItemStatus("resolved" if gone else "open")
     # A member the index no longer has is open while the item is listed, gone after.
     missing = _GONE if gone else "open"

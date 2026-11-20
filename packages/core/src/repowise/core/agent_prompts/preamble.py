@@ -67,16 +67,16 @@ OPENINGS: dict[str, dict[str, str]] = {
         "cursor": "found the performance cause below in its stored analysis and planned the steps to remove it. Open the function with @file, confirm the cause, then make the change.",
     },
     "first_look_item": {
-        "generic": "listed the item below in the first-look report it wrote after indexing the repository. Its facts come from stored analysis; treat them as leads to confirm against the code, not as ground truth.",
-        "claude-code": "listed the item below in its first-look report. Confirm each fact by reading and searching the code before editing, and keep a step list.",
-        "claude-code-mcp": "Repowise listed the item below in its first-look report. Use its MCP tools to look closer before reading files by hand, then confirm each fact against the code.",
-        "cursor": "listed the item below in its first-look report. Open each file with @file, confirm the fact, then act.",
+        "generic": "listed the item below in the repo report it wrote after indexing the repository. Its facts come from stored analysis; treat them as leads to confirm against the code, not as ground truth.",
+        "claude-code": "listed the item below in its repo report. Confirm each fact by reading and searching the code before editing, and keep a step list.",
+        "claude-code-mcp": "Repowise listed the item below in its repo report. Use its MCP tools to look closer before reading files by hand, then confirm each fact against the code.",
+        "cursor": "listed the item below in its repo report. Open each file with @file, confirm the fact, then act.",
     },
     "first_look_report": {
-        "generic": "wrote the first-look report below after indexing the repository: what to fix, in order. Its facts come from stored analysis; treat each item as a lead to confirm against the code.",
-        "claude-code": "wrote the first-look report below after indexing the repository: what to fix, in order. Keep a step list with one step per item, and confirm each item against the code before editing.",
-        "claude-code-mcp": "Repowise wrote the first-look report below after indexing the repository: what to fix, in order. Look each item up with its MCP tools before reading files by hand, and confirm it against the code.",
-        "cursor": "wrote the first-look report below after indexing the repository: what to fix, in order. Open each file with @file and confirm the item before editing.",
+        "generic": "wrote the repo report below after indexing the repository: what to fix, in order. Its facts come from stored analysis; treat each item as a lead to confirm against the code.",
+        "claude-code": "wrote the repo report below after indexing the repository: what to fix, in order. Keep a step list with one step per item, and confirm each item against the code before editing.",
+        "claude-code-mcp": "Repowise wrote the repo report below after indexing the repository: what to fix, in order. Look each item up with its MCP tools before reading files by hand, and confirm it against the code.",
+        "cursor": "wrote the repo report below after indexing the repository: what to fix, in order. Open each file with @file and confirm the item before editing.",
     },
 }
 

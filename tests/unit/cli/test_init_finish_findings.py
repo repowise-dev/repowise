@@ -217,6 +217,22 @@ def test_summary_carries_the_findings_restart_and_first_prompt(tmp_path):
     assert summary["next"] == ["repowise update --full", "repowise serve"]
     assert summary["long_running"] == ["repowise serve"]
     assert summary["first_prompt"] == run.first_prompt
+    assert summary["report"] is None  # init wrote no repo report
+
+
+def test_summary_names_the_repo_report_for_an_agent(tmp_path):
+    from repowise.cli.ui.finish_panel import FirstLook
+
+    run = SimpleNamespace(
+        repo_path=tmp_path, setup_outcome=None, mcp_repointed=False, result=_result(),
+        run_warnings=[], files_written=[], next_steps=[], stood_out=None, first_prompt=None,
+        first_look=FirstLook(".repowise/reports/repo-report.html", agent=True, open_items=7),
+    )
+    assert run_summary(run, [])["report"] == {
+        "open_items": 7,
+        "summary_command": "repowise report --format md",
+        "json_command": "repowise report --format json",
+    }
 
 
 def test_no_host_to_restart_means_no_restart(tmp_path):

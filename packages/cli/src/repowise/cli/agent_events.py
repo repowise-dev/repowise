@@ -19,7 +19,9 @@ and ``event``:
   (per wired agent: ``id``, ``name``, ``profile``, ``adjustments``,
   ``tool_count``, ``tools``, ``change_command`` and ``always_load``, null for
   a client that loads every schema up front) and ``connect`` (installed
-  agents not wired: ``id``, ``name``, ``command``).
+  agents not wired: ``id``, ``name``, ``command``) and ``report`` (the repo
+  report init wrote: ``open_items``, ``summary_command`` to relay what it found
+  to the person, ``json_command`` for its items; null when none was written).
 
 While the stream is open, human text goes to stderr, so stdout is only these lines.
 """
@@ -67,6 +69,7 @@ def summary_fields(
     connect: list[dict[str, str]] | None = None,
     long_running: list[str] | None = None,
     first_prompt: str | None = None,
+    report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Every summary key, always present, so a consumer never probes for one."""
     fields: dict[str, Any] = {
@@ -89,6 +92,8 @@ def summary_fields(
         "mcp_tools": list(mcp_tools or []),
         # Installed agents init did not wire, each with the command that wires it.
         "connect": list(connect or []),
+        # The repo report init wrote: open items and the commands that read it.
+        "report": report,
     }
     if error is not None:
         fields["error"] = error
