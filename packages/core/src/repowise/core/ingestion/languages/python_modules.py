@@ -229,4 +229,5 @@ def build_python_module_index(paths: Iterable[str]) -> dict[str, str]:
         current = index.get(dotted)
         if current is None or _index_priority(p) < _index_priority(current):
             index[dotted] = p
-    return {**_namespace_names(path_set), **index}
+    namespace = {k: v for k, v in _namespace_names(path_set).items() if k not in index}
+    return {**namespace, **index}

@@ -287,27 +287,10 @@ def _namespace_members(imp: Import, importer_path: str, ctx: ResolverContext) ->
     directory becomes a target, and its binding points at that file.
     """
     names = [n for n in imp.imported_names or [] if n and n != "*" and "." not in n]
-    if not names:
-        return ()
-    module_path = imp.module_path
-    if module_path.startswith("."):
-        if not module_path.lstrip("."):
-            return ()
-        dirs = [_relative_stem(module_path, importer_path)]
-    else:
-        dotted = module_path.replace(".", "/")
-        importer_dir = Path(importer_path).parent.as_posix()
-        roots = [importer_dir] if not _is_package_dir(importer_dir, ctx.path_set) else []
-        roots += _enclosing_roots(module_path, importer_path, ctx)
-        dirs = [_under(root, dotted) for root in dict.fromkeys(roots)]
-    index = _module_index(ctx)
+    dirs = _namespace_dirs(imp.module_path, importer_path, ctx) if names else []
     targets: list[str] = []
     for name in names:
-        hit = next(
-            (h for d in dirs if (h := _module_file(f"{d}/{name}", ctx.path_set))), None
-        )
-        if hit is None and not module_path.startswith("."):
-            hit = index.get(f"{module_path}.{name}")
+        hit = _namespace_member(imp.module_path, name, dirs, ctx)
         if hit is None or hit == importer_path:
             continue
         targets.append(hit)
@@ -316,3 +299,27 @@ def _namespace_members(imp: Import, importer_path: str, ctx: ResolverContext) ->
                 binding.source_file = hit
                 break
     return tuple(dict.fromkeys(targets))
+
+
+def _namespace_dirs(module_path: str, importer_path: str, ctx: ResolverContext) -> list[str]:
+    """The directories a namespace package *module_path* may be, nearest first."""
+    if module_path.startswith("."):
+        return [_relative_stem(module_path, importer_path)] if module_path.lstrip(".") else []
+    importer_dir = Path(importer_path).parent.as_posix()
+    roots = [] if _is_package_dir(importer_dir, ctx.path_set) else [importer_dir]
+    roots += _enclosing_roots(module_path, importer_path, ctx)
+    dotted = module_path.replace(".", "/")
+    return [_under(root, dotted) for root in dict.fromkeys(roots)]
+
+
+def _namespace_member(
+    module_path: str, name: str, dirs: list[str], ctx: ResolverContext
+) -> str | None:
+    """The module file *name* is in the namespace package, or None."""
+    for d in dirs:
+        hit = _module_file(f"{d}/{name}", ctx.path_set)
+        if hit:
+            return hit
+    if module_path.startswith("."):
+        return None
+    return _module_index(ctx).get(f"{module_path}.{name}")
