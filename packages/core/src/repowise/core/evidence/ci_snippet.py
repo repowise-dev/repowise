@@ -81,9 +81,10 @@ def _with_junit(command: str, stack: Stack) -> tuple[str, str | None]:
     """
     if not stack.junit_flag:
         return command, None
-    if "&&" in command:
-        return command, f"# add {stack.junit_flag} to the test command for test timings"
     env = stack.junit_vars()
+    if "&&" in command:
+        with_env = f" with {env} in its environment" if env else ""
+        return command, f"# add {stack.junit_flag} to the test command{with_env} for test timings"
     return f"{env + ' ' if env else ''}{command} {stack.junit_flag}", None
 
 

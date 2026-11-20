@@ -255,7 +255,7 @@ def test_npm_workspace_members_get_their_own_stacks():
     root, member = detect_stacks(*_load("node_monorepo"))
     assert (root.root, member.root) == ("", "packages/a")
     # The member has no lockfile of its own: the workspace root's picks npm and its install.
-    assert member.package_manager == "npm" and member.requires[0] == "npm ci"
+    assert (member.package_manager, member.requires) == ("npm", ("npm ci", "npm install --no-save jest-junit@16"))
 
 
 MONOREPO = {
@@ -746,8 +746,8 @@ def test_jest_writes_junit_through_jest_junit_with_repo_relative_files():
     # The classname names the test file; the prefix makes it repo-relative from the unit.
     assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/"
     # The reporter is installed for the run, and said why.
-    assert stack.requires == ("npm ci", "npm install --no-save jest-junit")
-    assert stack.prepare == ("- run: npm install --no-save jest-junit",)
+    assert stack.requires == ("npm ci", "npm install --no-save jest-junit@16")
+    assert stack.prepare == ("- run: npm install --no-save jest-junit@16",)
     assert "jest-junit" in stack.notes[-1]
 
 

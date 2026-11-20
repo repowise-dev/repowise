@@ -227,7 +227,7 @@ def test_a_jest_unit_says_how_jest_junit_writes_its_timings(tmp_path: Path) -> N
         "ingest": 'repowise evidence add web/junit.xml --workload "web: jest tests" --class unit_test '
         "--commit " + "a" * 40,
     }
-    assert "npm install --no-save jest-junit" in unit["coverage"]["prerequisites"]
+    assert "npm install --no-save jest-junit@16" in unit["coverage"]["prerequisites"]
 
 
 def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:

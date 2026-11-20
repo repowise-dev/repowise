@@ -416,6 +416,8 @@ _NODE_JUNIT_FLAGS = {
 #: file's path (as Vitest's is), relative to where Jest runs. The report lands at ``junit.xml``.
 _JEST_JUNIT_ENV = "JEST_JUNIT_CLASSNAME={filepath}"
 _JEST_JUNIT_PREFIX = "JEST_JUNIT_FILE_PATH_PREFIX"
+# ceiling: the jest-junit major whose options those are; bump when a release renames them.
+_JEST_JUNIT_MAJOR = 16
 #: What each package manager runs a package's own binary with.
 _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 #: A script that is Jest or Vitest and plain arguments alone, so the package manager's exec
@@ -669,7 +671,8 @@ def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, dep
     """The step that installs jest-junit for test timings, when Jest runs and the package lacks it."""
     if test is None or runner != "jest" or "jest-junit" in deps:
         return ()
-    return _dev_install(pm, "jest-junit", workspace)
+    # The major is pinned: the environment variables setup prints are its options.
+    return _dev_install(pm, f"jest-junit@{_JEST_JUNIT_MAJOR}", workspace)
 
 
 def _node_junit(runner: str | None) -> dict[str, str]:

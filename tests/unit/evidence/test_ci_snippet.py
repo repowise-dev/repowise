@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,7 @@ def test_a_jest_unit_installs_jest_junit_and_keeps_repo_relative_results() -> No
     runs = [s["run"] for s in job["steps"] if "run" in s]
     assert runs == [
         "npm ci",
-        "npm install --no-save jest-junit",
+        "npm install --no-save jest-junit@16",
         "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/ npm test -- --coverage "
         "--coverageReporters=lcov --reporters=default --reporters=jest-junit",
     ]
@@ -61,6 +62,17 @@ def test_a_jest_unit_installs_jest_junit_and_keeps_repo_relative_results() -> No
     (gitlab,) = yaml.safe_load(ci_snippet(stacks, "gitlab", None)["content"]).values()
     assert gitlab["script"][-1] == runs[-1]
     assert gitlab["artifacts"]["reports"]["junit"] == "web/junit.xml"
+
+
+def test_a_chained_jest_command_is_told_the_flag_and_its_environment() -> None:
+    files = {"web/package.json": json.dumps({"scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}})}
+    (stack,) = detect_stacks(["web/package.json", "web/package-lock.json"], files)
+    chained = replace(stack, test=f"{stack.test} && echo done")
+
+    content = ci_snippet([chained], "github", "main")["content"]
+
+    assert ("# add --reporters=default --reporters=jest-junit to the test command with "
+            "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/ in its environment") in content
 
 
 def test_gitlab_jobs_cd_into_the_unit_and_report_junit() -> None:
