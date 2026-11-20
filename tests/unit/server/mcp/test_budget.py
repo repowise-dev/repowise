@@ -35,6 +35,7 @@ from repowise.server.mcp_server._budget import (
     over_budget,
     truncate_to_budget,
 )
+from repowise.server.mcp_server._budget.budgeter import entitled_floor
 
 
 @pytest.fixture
@@ -263,6 +264,114 @@ def test_budgeter_decisions_unchanged_by_collector(repo_root: Path):
     assert json.dumps(collected, sort_keys=True, default=str) == json.dumps(
         plain, sort_keys=True, default=str
     )
+
+
+def _module_target(name: str, n_files: int, *, summary_len: int = 500, n_symbols: int = 10) -> dict:
+    """A module target whose file rows arrive ranked, highest first."""
+    rows = [
+        {
+            "path": f"packages/core/src/repowise/core/ingestion/mod_{i:03d}.py",
+            "description": f"Module part {i}",
+            "confidence_score": 0.9,
+        }
+        for i in range(n_files)
+    ]
+    return {
+        "target": name,
+        "type": "module",
+        "docs": {
+            "title": "Ingestion",
+            "summary": "s" * summary_len,
+            "symbols": [
+                {"name": f"Sym{j}", "kind": "function", "signature": "def sym(...)"}
+                for j in range(n_symbols)
+            ],
+            "files": rows,
+            "files_total": n_files,
+            "files_emitted": n_files,
+        },
+    }
+
+
+def test_truncate_keeps_ranked_file_prefix_within_share(repo_root: Path):
+    """A 240-row module over budget keeps a ranked prefix, not an empty list."""
+    name = "packages/core/src/repowise/core/ingestion"
+    collector = OmissionCollector("get_context", repo_root=repo_root)
+    out = truncate_to_budget(
+        {"targets": {name: _module_target(name, 240)}},
+        char_budget=9000,
+        collector=collector,
+        record_counts=True,
+    )
+
+    docs = out["targets"][name]["docs"]
+    files = docs["files"]
+    assert len(files) >= entitled_floor(240)
+    assert len(files) < 240
+    assert files[0]["path"].endswith("mod_000.py")
+    assert [f["path"] for f in files] == sorted(f["path"] for f in files)
+    assert docs["files_total"] == 240
+    assert docs["files_emitted"] == len(files)
+    assert docs["files_omitted"] == 240 - len(files)
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert "docs.files" not in out.get("dropped_blocks", {}).get(name, [])
+    # The collector's marker lands after the fit, so the fitted payload is
+    # the targets mapping, not the whole attached response.
+    assert len(json.dumps(out["targets"], separators=(",", ":"), default=str)) <= 9000
+
+    # The shed tail stays recoverable through the collector.
+    stored = _joined(repo_root, out["_meta"]["omitted"]["refs"])
+    assert "mod_239.py" in stored
+
+
+def test_truncate_trims_capped_file_list_instead_of_dropping_it():
+    """A construction-capped list (15 of 275 rows) trims toward its floor."""
+    name = "packages/core/src/repowise/core/ingestion"
+    target = _module_target(name, 15)
+    target["docs"]["files_total"] = 275
+    target["docs"]["files_emitted"] = 15
+    target["docs"]["files_reduced_reason"] = "construction_cap"
+    target["docs"]["files_truncated"] = True
+    target["docs"]["files_omitted"] = 260
+    out = truncate_to_budget({"targets": {name: target}}, char_budget=2000, record_counts=True)
+
+    docs = out["targets"][name]["docs"]
+    files = docs["files"]
+    assert len(files) >= entitled_floor(15)
+    assert len(files) < 15
+    assert docs["files_total"] == 275
+    assert docs["files_emitted"] == len(files)
+    assert docs["files_omitted"] == 275 - len(files)
+    assert docs["files_reduced_reason"] == "construction_cap_and_response_budget"
+    assert "docs.files" not in out.get("dropped_blocks", {}).get(name, [])
+
+
+def test_truncate_leaves_small_module_files_untouched():
+    """A small module under budget keeps every file row and no truncation flag."""
+    name = "packages/core/src/repowise/core/ingestion"
+    target = _module_target(name, 5, summary_len=100, n_symbols=2)
+    out = truncate_to_budget({"targets": {name: copy.deepcopy(before)}}, char_budget=9000)
+
+    assert "truncated" not in out
+    assert out["targets"][name]["docs"]["files"] == before["docs"]["files"]
+
+
+def test_truncate_drops_files_whole_only_when_the_floor_cannot_fit():
+    """Last resort: a floor that busts the share still drops the block whole."""
+    name = "packages/core/src/repowise/core/ingestion"
+    out = truncate_to_budget(
+        {"targets": {name: _module_target(name, 15)}},
+        char_budget=1000,
+        record_counts=True,
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert "files" not in docs
+    assert docs["files_total"] == 15
+    assert docs["files_emitted"] == 0
+    assert docs["files_omitted"] == 15
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert "docs.files" in out.get("dropped_blocks", {}).get(name, [])
 
 
 # ---------------------------------------------------------------------------
