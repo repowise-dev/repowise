@@ -216,7 +216,28 @@ function PathCell({ item, h, label }: { item: FirstLookLivingItem; h: SectionHan
   );
 }
 
-function FunctionTable({ items, h }: { items: FirstLookLivingItem[]; h: SectionHandlers }) {
+/** The code health table's number columns, in order. */
+const FUNCTION_COLUMNS = [
+  ["ccn", "ccn"],
+  ["nloc", "lines"],
+  ["importers", "importers"],
+  ["changes_90d", "changes"],
+] as const;
+
+/** The columns at least one row has a number for; an all-empty column is left out. */
+function functionColumns(items: FirstLookLivingItem[]) {
+  return FUNCTION_COLUMNS.filter(([fact]) => items.some((i) => factNumber(i, fact) != null));
+}
+
+function FunctionTable({
+  items,
+  columns,
+  h,
+}: {
+  items: FirstLookLivingItem[];
+  columns: ReturnType<typeof functionColumns>;
+  h: SectionHandlers;
+}) {
   const t = h.copy.table;
   return (
     <div className="mt-1.5 overflow-x-auto">
@@ -224,10 +245,11 @@ function FunctionTable({ items, h }: { items: FirstLookLivingItem[]; h: SectionH
         <thead>
           <tr>
             <th className={TH}>{t.function}</th>
-            <th className={cn(TH, "text-right")}>{t.ccn}</th>
-            <th className={cn(TH, "text-right")}>{t.lines}</th>
-            <th className={cn(TH, "text-right")}>{t.importers}</th>
-            <th className={cn(TH, "text-right")}>{t.changes}</th>
+            {columns.map(([fact, label]) => (
+              <th key={fact} className={cn(TH, "text-right")}>
+                {t[label]}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -236,10 +258,11 @@ function FunctionTable({ items, h }: { items: FirstLookLivingItem[]; h: SectionH
             return (
               <tr key={item.id} id={item.id} data-status={item.status} className="scroll-mt-20">
                 <PathCell item={item} h={h} label={<code className="font-mono text-[0.92em]">{symbol ?? item.rule}</code>} />
-                <td className={cn(TD, NUM)}>{num(factNumber(item, "ccn"))}</td>
-                <td className={cn(TD, NUM)}>{num(factNumber(item, "nloc"))}</td>
-                <td className={cn(TD, NUM)}>{num(factNumber(item, "importers"))}</td>
-                <td className={cn(TD, NUM)}>{num(factNumber(item, "changes_90d"))}</td>
+                {columns.map(([fact]) => (
+                  <td key={fact} className={cn(TD, NUM)}>
+                    {num(factNumber(item, fact))}
+                  </td>
+                ))}
               </tr>
             );
           })}
@@ -344,16 +367,26 @@ function SectionBody({
   const route = SECTION_ROUTE[section.key];
   const href = route ? h.hrefFor(route, {}) : null;
   switch (sectionLayout(section.key)) {
-    case "functions":
+    case "functions": {
+      const rows = shown(items, TABLE_ROWS.functions);
+      const columns = functionColumns(rows);
       return (
         <>
           <Intro text={intro} />
-          {items.length + resolved.length ? (
-            <FunctionTable items={shown(items, TABLE_ROWS.functions)} h={h} />
-          ) : null}
+          {!rows.length ? null : columns.length ? (
+            <FunctionTable items={rows} columns={columns} h={h} />
+          ) : (
+            // No row has the numbers (an index from before they were recorded): the prose rows say it.
+            <ul className="m-0 list-none p-0">
+              {rows.map((item) => (
+                <ItemRow key={item.id} item={item} h={h} />
+              ))}
+            </ul>
+          )}
           <MoreLink n={items.length - TABLE_ROWS.functions} href={href} h={h} />
         </>
       );
+    }
     case "dead_code": {
       const isFile = (i: FirstLookLivingItem) => i.rule === "unreachable_file";
       const files = items.filter(isFile);

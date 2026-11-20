@@ -297,3 +297,27 @@ describe("FirstLookReport without a stored first look", () => {
     expect(screen.getByRole("heading", { level: 1, name: "acme-web" })).toBeInTheDocument();
   });
 });
+
+describe("Code health without recorded numbers", () => {
+  it("drops an empty column, and falls back to the prose rows when no column has a number", () => {
+    const partial = report();
+    const health = partial.sections.find((s) => s.key === "health")!;
+    health.items = health.items.map((i) => ({ ...i, title_facts: { ccn: 200 } }));
+    const { unmount } = render(
+      <FirstLookReport report={partial} hrefFor={hrefFor} overviewHref="/r/overview" loadPrompt={vi.fn()} />,
+    );
+    let section = document.querySelector('[data-section="health"]') as HTMLElement;
+    expect(within(section).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["File", "Max CCN"]);
+    unmount();
+
+    const bare = report();
+    const h2 = bare.sections.find((s) => s.key === "health")!;
+    h2.items = h2.items.map((i) => ({ ...i, title_facts: {} }));
+    bare.prose.items = { ...bare.prose.items, fl_fn0: "Split Board0 into 7 helpers. CCN 248, 605 lines." };
+    render(<FirstLookReport report={bare} hrefFor={hrefFor} overviewHref="/r/overview" loadPrompt={vi.fn()} />);
+    section = document.querySelector('[data-section="health"]') as HTMLElement;
+    expect(within(section).queryByRole("table")).toBeNull();
+    expect(within(section).getByText("Split Board0 into 7 helpers. CCN 248, 605 lines.")).toBeInTheDocument();
+    expect(within(section).queryByText("—")).toBeNull();
+  });
+});
