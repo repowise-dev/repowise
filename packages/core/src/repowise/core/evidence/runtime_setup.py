@@ -526,6 +526,23 @@ def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, s
     return workload, " ".join(p for p in parts if p), profile, " ".join(p for p in timed if p)
 
 
+def _go_bench_results(root: str, rel_dir: str, cwd: str, commit: str | None) -> dict[str, Any]:
+    """The package's benchmark results as ``go test`` prints them: time, bytes and allocations per op.
+
+    ``go test`` has no flag that writes them to a file, so the line redirects
+    its output; ``>`` reads the same in sh and PowerShell, and the converter
+    reads the UTF-16 PowerShell 5 writes. A failed build prints no result
+    lines, which ingest refuses.
+    """
+    name, results = _named(root, f"go bench results {_go_package_arg(rel_dir)}", ".txt")
+    command = (
+        f"go test '-run=^$' -bench . -benchmem -count=1 {_go_package_arg(rel_dir)} "
+        f"> {_from(root, results)}"
+    )
+    return _target("benchmark", name, cwd=cwd, command=command, profile=results, commit=commit,
+                   input_format="go-bench")
+
+
 def _go_targets(
     stack: Stack,
     repo_root: Path,
@@ -561,6 +578,7 @@ def _go_targets(
         )
         out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
                            input_format="pprof", prerequisites=[_fresh(_from(root, profile))], timed=timed))
+        out.append(_go_bench_results(root, rel_dir, cwd, commit))
     # The package with the most test files runs the most code; depth breaks ties.
     test_counts = Counter(
         posixpath.dirname(rel) for p in inputs.test_files

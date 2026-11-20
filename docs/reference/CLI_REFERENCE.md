@@ -1377,7 +1377,7 @@ Ingest runtime evidence: a profile, benchmark results, test timings or query cou
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
 profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile` or collapsed
 stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+runner's ([pytest-benchmark JSON or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
 or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
 converted first. Several profiles of one run (a parent process and its workers, or a directory
 holding one file per process) merge into one run, and so do JUnit XML reports (a Maven or Gradle
@@ -1406,7 +1406,7 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
@@ -1449,7 +1449,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
   `ingest` line (run from the repository root). Then its `runtime` targets: entry points
   (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
-  (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
+  (Go `Benchmark*`, profiled and, as `go bench results`, their printed results with allocations
+  per op; pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has

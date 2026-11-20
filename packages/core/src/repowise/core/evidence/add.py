@@ -254,7 +254,8 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                args = (data, checkout_root) if reader.needs_checkout else (data,)
+                text = json.dumps(reader.to_v1(*args), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
