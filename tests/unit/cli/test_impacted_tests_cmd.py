@@ -666,3 +666,17 @@ def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"], data
+
+
+@pytest.mark.parametrize("fmt", ["table", "json", "list", "args"])
+def test_outside_a_git_repository_reports_not_a_git_repository(tmp_path, fmt: str) -> None:
+    result = _run(tmp_path, "--format", fmt)
+    assert result.exit_code == 2, result.output
+    combined = result.output + result.stderr
+    assert "Not a git repository (or git is not installed)." in combined
+    assert "--output" not in combined
+    assert "shallow CI clone" not in combined
+    if fmt == "json":
+        data = json.loads(result.stdout)
+        assert data["error"] == "not_a_git_repository"
+        assert "Not a git repository" in data["message"]

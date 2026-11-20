@@ -152,9 +152,10 @@ def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain
     from repowise.core.ci.base import in_ci
 
     config = _selection_config(repo_path) if explain or fmt in ("json", "args", "list") else None
+    root = str(repo_root(str(repo_path)))
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
-        revspec = ci_revspec(str(repo_root(str(repo_path))), None)
+        revspec = ci_revspec(root, None)
     return change_set(str(repo_path), revspec, staged=staged), config
 
 
