@@ -1,7 +1,10 @@
 """Check tools record what they returned, read off the reply in hand.
 
 Driven through the real ``tool_middleware`` so the outcome is read where the
-event is written, on the reply the agent received.
+event is written, on the reply the agent received. ``tool_why`` is loaded up
+front, as it is whenever get_why is served, so its post-shed hook re-derives
+``answer_basis`` from the rows in every run, not only after another test
+happened to load it.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import pytest
 
 from repowise.core.distill.store import OmissionStore
 from repowise.server.mcp_server import _state, tool_middleware
+from repowise.server.mcp_server import tool_why as _tool_why  # noqa: F401
 from repowise.server.mcp_server._savings import outcome as outcome_mod
 
 
@@ -63,7 +67,17 @@ CASES = [
         },
         {"high": 1, "medium": 2, "low": 1},
     ),
-    ("get_why", {"mode": "path", "answer_basis": "decision"}, {"decision": "accepted"}),
+    (
+        "get_why",
+        {
+            "mode": "path",
+            "answer_basis": "decision",
+            "target_context": {
+                "a.py": {"governing_decisions": [{"id": "1" * 32, "authority": "accepted"}]}
+            },
+        },
+        {"decision": "accepted"},
+    ),
     (
         "get_why",
         {
