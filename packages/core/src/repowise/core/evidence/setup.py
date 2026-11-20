@@ -21,6 +21,7 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
+from .ci_snippet import ci_snippet
 from .runtime_setup import (
     ARGS_PLACEHOLDER,
     CLASS_ORDER,
@@ -206,6 +207,8 @@ def evidence_setup(
     coverage_only: bool = False,
     index_error: str | None = None,
     index_fix: str = DOCTOR_COMMAND,
+    ci: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -222,6 +225,9 @@ def evidence_setup(
     *index_error* is why an index that exists could not be read: the plan
     then sends the agent to *index_fix* (``repowise doctor`` unless the
     error names another), never to a fresh ``init``.
+    With *ci* (``github`` or ``gitlab``), ``ci`` holds the CI file that runs
+    each unit's tests with coverage on pushes to *branch*
+    (:func:`~.ci_snippet.ci_snippet`); the caller writes it.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -254,7 +260,7 @@ def evidence_setup(
             "steps": [_step(root, "", index_fix)],
         }
         reason = f"The index could not be read: {index_error}"
-    return {
+    plan = {
         "repo": str(root),
         "indexed": indexed,
         "commit": head,
@@ -262,6 +268,9 @@ def evidence_setup(
         "next_call": next_call,
         "reason": reason,
     }
+    if ci is not None:
+        plan["ci"] = ci_snippet(stacks, ci, branch)
+    return plan
 
 
 def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:

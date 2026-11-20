@@ -33,7 +33,7 @@ repowise evidence add <file> --workload "<name>" --class <class> --commit <sha> 
 repowise evidence status                   # 4. what is stored and how fresh it is
 ```
 
-`evidence setup` runs nothing and writes nothing. For each build unit it prints
+`evidence setup` runs nothing and writes nothing unless asked (see `--write` below). For each build unit it prints
 the stack, the coverage command and its ingest line, then the runtime targets
 (entry points first, then benchmarks, then the unit-test suite), each with a
 profiler command that needs no elevated privileges, its prerequisites, where the
@@ -67,6 +67,12 @@ read, a program with no profiler flag).
   profile even when the program throws or exits nonzero, so check the exit code
   before ingesting.
 - `repowise coverage setup` prints the same plan with the coverage part only.
+- `repowise evidence setup --write` also writes a CI file with one job per unit:
+  its tests with coverage and JUnit XML, on pull requests and pushes to the
+  default branch, the report and test results kept as artifacts.
+  `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+  (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one.
+  A different file already at that path is left alone and the command exits `1`.
 
 ### Python example
 
