@@ -53,7 +53,8 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
     ):
         os.replace(path, path.with_name(f"first-look.{old.stamp.commit}.json"))
     elif old is None and path.exists():
-        # Unreadable here (damaged, or a newer Repowise's schema): kept, not lost.
+        # Unreadable here (damaged, or a newer Repowise's schema): the latest
+        # unreadable copy is kept beside it; an earlier one there is replaced.
         os.replace(path, path.with_name("first-look.previous.json"))
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(_dump(report), encoding="utf-8", newline="\n")

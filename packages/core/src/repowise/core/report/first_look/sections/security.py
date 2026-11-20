@@ -9,7 +9,7 @@ origin, so this section keeps every origin the rule keeps.
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from repowise.core.analysis.actions.model import fingerprint
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS, live_secret
@@ -32,23 +32,25 @@ from ._common import TIER_SEVERITY
 SECTION = "security"
 
 
-async def _history_only(ctx: FirstLookContext) -> int:
-    """Credentials found only in git history: one count line, never items."""
+async def _history_only(ctx: FirstLookContext, listed: set[tuple[str, str, str]]) -> int:
+    """Credentials found only in git history: one count line, never items.
+
+    A history row for a secret still in the working tree is already an item,
+    so it is left out. Matched on path, kind and snippet, the line-independent
+    identity the security gate's fingerprint keys on (the line moves between
+    commits).
+    """
     from repowise.core.persistence.models import SecurityFinding
 
-    return int(
-        (
-            await ctx.session.execute(
-                select(func.count(SecurityFinding.id)).where(
-                    SecurityFinding.repository_id == ctx.repository_id,
-                    SecurityFinding.commit_sha != "",
-                    SecurityFinding.severity == "high",
-                    SecurityFinding.kind.in_((*SECRET_KINDS, PUBLIC_ENV_KIND)),
-                )
-            )
-        ).scalar()
-        or 0
+    rows = await ctx.session.execute(
+        select(SecurityFinding.file_path, SecurityFinding.kind, SecurityFinding.snippet).where(
+            SecurityFinding.repository_id == ctx.repository_id,
+            SecurityFinding.commit_sha != "",
+            SecurityFinding.severity == "high",
+            SecurityFinding.kind.in_((*SECRET_KINDS, PUBLIC_ENV_KIND)),
+        )
     )
+    return sum((path, kind, snippet or "") not in listed for path, kind, snippet in rows)
 
 
 async def collect(ctx: FirstLookContext) -> Collected:
@@ -84,7 +86,10 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 priority=action.effective_priority,
             )
         )
-    return Collected(tuple(items), {"history_only": await _history_only(ctx)})
+    listed = {
+        (d.path, d.marker or "", d.reason) for action in outcome.actions for d in action.details
+    }
+    return Collected(tuple(items), {"history_only": await _history_only(ctx, listed)})
 
 
 first_look_sections.register(SECTION, FirstLookSection(SECTION, collect))
