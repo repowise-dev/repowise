@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.analysis.selection_scopes import Scope
 from repowise.core.analysis.test_selection import (
     SelectionInput,
     TestSelectionConfig,
@@ -189,6 +190,25 @@ def test_a_units_own_manifest_runs_it_and_a_shared_lockfile_does_not():
     assert selection.test_files == ("a/ATests.cs",)
     locked = _select(["go.sum"])
     assert locked.run_all
+
+
+def test_a_manifest_only_change_the_tier_answers_keeps_the_always_run_tests():
+    maven = BuildUnit("maven:g:a", "maven", "a", "a", "a/pom.xml", "maven")
+    wide = Scope("a/pom.xml runs every Maven test", "ecosystem", root=".")
+    selection = select_tests(
+        SelectionInput(
+            ["a/pom.xml"],
+            (),
+            {"covered": {}, "inferred": [], "unknown": []},
+            known_tests=["a/src/test/java/ATest.java", "e2e/SmokeTest.java"],
+            units=_index(maven),
+            scopes={"a/pom.xml": wide},
+            always_run_tests={"e2e/SmokeTest.java": "starts the app in a child process"},
+        )
+    )
+    assert not selection.run_all, selection.reasons
+    assert selection.basis["a/pom.xml"] == "build-unit"
+    assert set(selection.test_files) == {"a/src/test/java/ATest.java", "e2e/SmokeTest.java"}
 
 
 def test_a_build_file_full_run_on_lists_is_never_answered():

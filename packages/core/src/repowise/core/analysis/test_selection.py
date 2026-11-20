@@ -722,7 +722,7 @@ def select_tests(inp: SelectionInput) -> Selection:
     basis.update(dict.fromkeys(tier.answered, UNIT_VIA))
 
     # The graph cannot say what these tests reach, so they always run.
-    always = _always_running(inp) if triage.code or scoped else {}
+    always = _always_running(inp) if triage.code or scoped or tier.answered else {}
     tests, test_files = _runnable(
         [
             *(t for path in triage.code for t in per_file[path][0]),
