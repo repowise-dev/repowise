@@ -786,3 +786,17 @@ def test_a_root_requirements_file_keeps_its_pytest_guess():
     paths = ["requirements.txt", "main.py", "test_main.py"]
     (stack,) = detect_stacks(paths, {"requirements.txt": "flask\n"})
     assert (stack.root, stack.language, stack.runner) == ("", "python", "pytest")
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"api/requirements.txt": "pytest_mock\n"},  # packaging spells _ and - alike
+        {"api/requirements.txt": "flask\n", "api/pytest.ini": "[pytest\naddopts = -q\n"},  # does not parse
+        {"api/Requirements (1).TXT": "pytest\n"},  # any name the registry glob takes
+    ],
+)
+def test_a_subdirectory_suite_is_seen_from_any_pytest_signal(files):
+    paths = sorted([*files, "api/app.py"])
+    stacks_found = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert [(s.root, s.language) for s in stacks_found] == [("api", "python")]

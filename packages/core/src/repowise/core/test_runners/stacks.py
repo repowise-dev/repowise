@@ -261,7 +261,7 @@ _TEST_SETS = ("test", "tests", "testing")
 #: (``requirements-dev.txt``, ``test-requirements.txt``, ``requirements/test.txt``).
 _TEST_REQUIREMENTS = re.compile(r"requirements\.txt"
                                 r"|(?=[\w.-]*(?:dev|test))[\w.-]*requirements[\w.-]*\.txt"
-                                r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt")
+                                r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt", re.IGNORECASE)
 
 
 def _first(names: Iterable[str], wanted: Iterable[str]) -> str | None:
@@ -361,10 +361,12 @@ def _has_pytest_suite(root: set[str], paths: list[str], files: dict[str, str]) -
     if root & set(spec.manifest_files if spec else ()) or "conftest.py" in root:
         return True
     requirements = "\n".join(files.get(p, "") for p in root if _REQUIREMENTS.fullmatch(p))
-    if re.search(r"(?im)^\s*pytest\b", requirements):
+    # Packaging spells ``pytest_mock`` and ``pytest-mock`` alike.
+    if re.search(r"(?im)^\s*pytest(?:[-_.]|\b)", requirements):
         return True
     configs = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
-    return "" in configs.by_dir or any(p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths)
+    # A pytest.ini is pytest's own file even when it does not parse.
+    return "pytest.ini" in root or "" in configs.by_dir or any(p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths)
 
 
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
@@ -996,8 +998,8 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | Non
     "php": lambda names, paths, files: _php(files),
     "node": lambda names, paths, files: _node(names, files),
 }
-#: Case-insensitive, as the registry's package-manifest glob is.
-_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt", re.IGNORECASE)
+#: What the registry's package-manifest glob matches, case and all.
+_REQUIREMENTS = re.compile(r"requirements[^/]*\.txt", re.IGNORECASE)
 _SOLUTIONS = (".sln", ".slnx")
 #: How many .csproj files detection reads at a .NET root.
 _DOTNET_PROJECTS = 20
