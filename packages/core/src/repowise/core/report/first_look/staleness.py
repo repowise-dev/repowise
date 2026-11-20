@@ -52,7 +52,8 @@ def compare(
     unknown: Mapping[str, str] | None = None,
 ) -> Staleness:
     """Pure: *report* against the items the collector finds now."""
-    unknown = dict(unknown or {})
+    # A section the report could not read then has no items to compare.
+    unknown = {**report.unavailable, **(unknown or {})}
     now = {i.id: i for i in current}
     was = {i.id: i for i in report.items() if i.section not in unknown}
     return Staleness(

@@ -15,7 +15,7 @@ from repowise.core.analysis.actions.model import fingerprint
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS, live_secret
 from repowise.core.analysis.security_gate import fingerprint_of
 
-from ..context import FirstLookContext, Unavailable
+from ..context import FirstLookContext, UnavailableError
 from ..model import (
     Collected,
     FirstLookSection,
@@ -54,12 +54,12 @@ async def _history_only(ctx: FirstLookContext) -> int:
 async def collect(ctx: FirstLookContext) -> Collected:
     outcome = live_secret(ctx.facts, ctx.rules)
     if outcome.status == "unavailable":
-        raise Unavailable(outcome.reason)
+        raise UnavailableError(outcome.reason)
     items = []
     for action in outcome.actions:
         path = action.target_path
-        kinds = sorted({d.marker for d in action.details if d.marker})
-        kind = next((k for k in kinds if k in SECRET_KINDS), PUBLIC_ENV_KIND)
+        kinds = {d.marker for d in action.details if d.marker}
+        kind = next((k for k in SECRET_KINDS if k in kinds), PUBLIC_ENV_KIND)
         locs, total = locations([Location(d.path, d.line) for d in action.details])
         items.append(
             Item(
@@ -84,13 +84,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 priority=action.effective_priority,
             )
         )
-    history = 0
-    try:
-        async with ctx.session.begin_nested():
-            history = await _history_only(ctx)
-    except Exception:  # an older index without history rows still has a section
-        history = 0
-    return Collected(tuple(items), {"history_only": history})
+    return Collected(tuple(items), {"history_only": await _history_only(ctx)})
 
 
 first_look_sections.register(SECTION, FirstLookSection(SECTION, collect))

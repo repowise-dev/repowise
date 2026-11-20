@@ -132,6 +132,13 @@ def test_staleness_names_fixed_changed_and_new() -> None:
     assert found.behind
 
 
+def test_staleness_does_not_call_a_section_new_when_the_report_could_not_read_it() -> None:
+    report = _report(_item(path="k.py"))
+    report = FirstLookReport.from_json({**report.to_json(), "unavailable": {"docs": "unreadable"}})
+    found = compare(report, [_item(path="k.py"), _item("docs", "broken_doc_refs", "README.md")])
+    assert found.new == ()
+
+
 def test_staleness_says_nothing_about_a_section_it_cannot_read() -> None:
     report = _report(_item(path="k.py"), _item("docs", "broken_doc_refs", "README.md"))
     found = compare(report, [_item(path="k.py")], unknown={"docs": "unreadable"})
@@ -140,15 +147,15 @@ def test_staleness_says_nothing_about_a_section_it_cannot_read() -> None:
 
 
 def test_the_file_store_keeps_the_report_of_another_commit(tmp_path) -> None:
-    first = _report(_item(), commit="c1")
+    first = _report(_item(), commit="a" * 40)
     write_report_file(tmp_path, first)
     assert read_report_file(tmp_path).to_json() == first.to_json()
-    second = _report(_item(path="b.py"), commit="c2")
+    second = _report(_item(path="b.py"), commit="b" * 40)
     path = write_report_file(tmp_path, second)
     assert path == report_path(tmp_path)
-    assert read_report_file(tmp_path).stamp.commit == "c2"
-    kept = json.loads((path.parent / "first-look.c1.json").read_text(encoding="utf-8"))
-    assert kept["stamp"]["commit"] == "c1"
+    assert read_report_file(tmp_path).stamp.commit == "b" * 40
+    kept = json.loads((path.parent / f"first-look.{'a' * 40}.json").read_text(encoding="utf-8"))
+    assert kept["stamp"]["commit"] == "a" * 40
 
 
 def test_an_unreadable_report_file_is_kept_aside(tmp_path) -> None:

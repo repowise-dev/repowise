@@ -16,7 +16,7 @@ from sqlalchemy import select
 from repowise.core.analysis.actions.model import fingerprint, shared_priority
 from repowise.core.analysis.actions.rules.hygiene import _standalone, dead_code_batch
 
-from ..context import FirstLookContext, Unavailable
+from ..context import FirstLookContext, UnavailableError
 from ..model import (
     Collected,
     FirstLookSection,
@@ -42,7 +42,7 @@ def _priority() -> float:
     return shared_priority(None, "low", "high", "S")
 
 
-def _exports(ctx: FirstLookContext, batch_id: str | None) -> list[Item]:
+def _exports(ctx: FirstLookContext) -> list[Item]:
     by_file: dict[str, list] = defaultdict(list)
     for d in ctx.facts.dead:
         if ctx.is_production(d.file_path) and not _standalone(d.file_path):
@@ -65,7 +65,8 @@ def _exports(ctx: FirstLookContext, batch_id: str | None) -> list[Item]:
                 severity="plan",
                 effort="S",
                 link=Link("dead_code"),
-                prompt=PromptRef("action", batch_id) if batch_id else PromptRef("first_look_item"),
+                # Per file: the batch's own prompt lists every file at once.
+                prompt=PromptRef("first_look_item"),
                 fingerprint=fingerprint(*sorted(d.symbol or "" for d in found)),
                 origin=ctx.origin(path),
                 priority=_priority(),
@@ -129,9 +130,10 @@ async def collect(ctx: FirstLookContext) -> Collected:
 
     outcome = dead_code_batch(ctx.facts, ctx.rules)
     if outcome.status == "unavailable":
-        raise Unavailable(outcome.reason)
-    batch_id = outcome.actions[0].action_id if outcome.actions else None
-    items = _exports(ctx, batch_id) + await _unreachable(ctx)
+        raise UnavailableError(outcome.reason)
+    # Below the batch floor ``next`` lists no deletion, and neither does this.
+    batch = outcome.actions[0] if outcome.actions else None
+    items = (_exports(ctx) if batch else []) + await _unreachable(ctx)
     summary = await get_dead_code_summary(ctx.session, ctx.repository_id)
     listed = sum(i.locations_total for i in items)
     return Collected(
@@ -141,6 +143,8 @@ async def collect(ctx: FirstLookContext) -> Collected:
             "unreachable_files": sum(1 for i in items if i.rule == "unreachable_file"),
             "open_findings": summary["total_findings"],
             "not_listed": max(summary["total_findings"] - listed, 0),
+            # ``render_action`` on this id is the whole-batch "delete them all" prompt.
+            "batch_action_id": batch.action_id if batch else None,
         },
     )
 

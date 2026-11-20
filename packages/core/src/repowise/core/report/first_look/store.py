@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from repowise.core.git_sha import is_sha_prefix
+
 from .model import FirstLookReport
 
 KIND = "first_look"
@@ -44,7 +46,11 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
     path = report_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     old = read_report_file(repo_root)
-    if old is not None and old.stamp.commit and old.stamp.commit != report.stamp.commit:
+    if (
+        old is not None
+        and is_sha_prefix(old.stamp.commit)
+        and old.stamp.commit != report.stamp.commit
+    ):
         os.replace(path, path.with_name(f"first-look.{old.stamp.commit}.json"))
     elif old is None and path.exists():
         # Unreadable here (damaged, or a newer Repowise's schema): kept, not lost.

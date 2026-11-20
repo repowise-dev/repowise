@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from repowise.core.analysis.actions.rules.hygiene import stale_decision
 
-from ..context import FirstLookContext, Unavailable
+from ..context import FirstLookContext, UnavailableError
 from ..model import (
     Collected,
     FirstLookSection,
@@ -26,7 +26,7 @@ SECTION = "decisions"
 async def collect(ctx: FirstLookContext) -> Collected:
     outcome = stale_decision(ctx.facts, ctx.rules)
     if outcome.status == "unavailable":
-        raise Unavailable(outcome.reason)
+        raise UnavailableError(outcome.reason)
     titles = {d.id: d.title for d in ctx.facts.stale_decisions}
     items = tuple(
         Item(

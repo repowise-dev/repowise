@@ -20,7 +20,7 @@ from repowise.core.code_origin import path_origin
 PRODUCTION = "production"
 
 
-class Unavailable(Exception):  # noqa: N818 - a reason, not a failure of the code
+class UnavailableError(Exception):
     """A section's store could not be read; the report names it instead."""
 
 
@@ -68,10 +68,10 @@ class FirstLookContext:
         return self._cache["rules"]
 
     def require(self, store: str) -> None:
-        """Raise :class:`Unavailable` when the facts could not read *store*."""
+        """Raise :class:`UnavailableError` when the facts could not read *store*."""
         reason = self.facts.unavailable.get(store)
         if reason:
-            raise Unavailable(reason)
+            raise UnavailableError(reason)
 
 
 async def load_context(
@@ -85,4 +85,4 @@ async def load_context(
     return FirstLookContext(session, repository_id, repo_root, facts, metrics)
 
 
-__all__ = ["PRODUCTION", "FirstLookContext", "Unavailable", "load_context"]
+__all__ = ["PRODUCTION", "FirstLookContext", "UnavailableError", "load_context"]

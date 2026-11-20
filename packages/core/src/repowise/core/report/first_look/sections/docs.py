@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from repowise.core.analysis.actions.rules.hygiene import broken_doc_refs
 
-from ..context import FirstLookContext, Unavailable
+from ..context import FirstLookContext, UnavailableError
 from ..model import (
     Collected,
     FirstLookSection,
@@ -32,7 +32,7 @@ _TARGETS_SHOWN = 10
 async def collect(ctx: FirstLookContext) -> Collected:
     outcome = broken_doc_refs(ctx.facts, ctx.rules)
     if outcome.status == "unavailable":
-        raise Unavailable(outcome.reason)
+        raise UnavailableError(outcome.reason)
     items = []
     for action in outcome.actions:
         doc = action.target_path

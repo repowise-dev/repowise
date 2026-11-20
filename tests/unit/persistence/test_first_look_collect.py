@@ -95,7 +95,7 @@ async def _seed(session) -> str:
             *(
                 DeadCodeFinding(repository_id=rid, kind="unused_export", file_path=path,
                                 symbol_name=name, lines=10, confidence=0.9, safe_to_delete=True)
-                for path, name in (("src/dead.py", "f1"), ("src/dead.py", "f2"),
+                for path, name in (("src/dead.py", "f1"), ("src/dead.py", "f2"), ("src/dead.py", "f3"),
                                    ("scripts/dead_tool.py", "g"))
             ),
             DeadCodeFinding(repository_id=rid, kind="unreachable_file", file_path="src/orphan.py",
@@ -144,10 +144,13 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
     assert perf[0].prompt.renderer == "perf_opportunity"
 
     dead = {i.rule: i for i in sections["dead_code"]}
-    assert dead["safe_to_delete"].locations_total == 2
+    assert dead["safe_to_delete"].locations_total == 3
+    assert dead["safe_to_delete"].prompt.renderer == "first_look_item"
     assert dead["safe_to_delete"].locations[0].path == "src/dead.py"
     assert dead["unreachable_file"].locations[0].path == "src/orphan.py"
     assert len(sections["dead_code"]) == 2
+    facts = report.section("dead_code").facts
+    assert facts["batch_action_id"].startswith("act_")
 
     assert [i.locations[0].path for i in sections["docs"]] == ["docs/guide.md"]
 
@@ -209,3 +212,14 @@ async def test_the_stored_report_round_trips_and_goes_stale(async_session) -> No
     assert fixed == ["src/settings.py"]
     assert found.changed == () and found.new == ()
     assert found.behind
+
+
+async def test_deletions_below_the_batch_floor_are_not_listed(async_session) -> None:
+    rid = await _seed(async_session)
+    await async_session.execute(
+        delete(DeadCodeFinding).where(DeadCodeFinding.symbol_name.in_(("f2", "f3")))
+    )
+    await async_session.commit()
+    report = await collect_first_look(async_session, rid, now=NOW)
+    rules = {i.rule for i in report.section("dead_code").items}
+    assert rules == {"unreachable_file"}

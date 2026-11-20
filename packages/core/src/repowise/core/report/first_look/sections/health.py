@@ -9,6 +9,9 @@ of the lowest-health files had a recent bug fix, against the base rate.
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from repowise.core.analysis.actions.model import fingerprint, shared_priority
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.queue.order import DUE_TIERS
@@ -28,13 +31,14 @@ from ..model import (
 from ._common import confidence, effort, short_symbol
 
 SECTION = "health"
+logger = logging.getLogger(__name__)
 #: Lowest-health production files listed beside the queue.
 LOWEST_FILES = 3
 
 
-def _fix_items(ctx: FirstLookContext, queue: object) -> list[Item]:
+def _fix_items(ctx: FirstLookContext, queue: Any) -> list[Item]:
     items = []
-    for fix in queue.items:  # type: ignore[attr-defined]
+    for fix in queue.items:
         path = fix.target.file_path
         if fix.tier not in DUE_TIERS or fix.kind == "perf_fix" or not ctx.is_production(path):
             continue
@@ -134,7 +138,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
         if accuracy is not None:
             facts["defect_accuracy"] = {**accuracy, "basis": "measured"}
     except Exception:  # the headline is optional; the items stand without it
-        pass
+        logger.warning("first look: defect accuracy unavailable", exc_info=True)
     return Collected(tuple(items), facts)
 
 

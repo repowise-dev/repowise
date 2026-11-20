@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from .context import FirstLookContext, Unavailable, load_context
+from .context import FirstLookContext, UnavailableError, load_context
 from .model import (
     Collected,
     FirstLookReport,
@@ -35,7 +36,7 @@ _UNREADABLE = "Could not be read from this index."
 
 async def collect_sections(ctx: FirstLookContext) -> tuple[dict[str, Collected], dict[str, str]]:
     """Every registered section's output by key, and why any could not run."""
-    from . import sections  # noqa: F401  (registers the built-in sections)
+    import_module(f"{__package__}.sections")  # registers the built-in sections
 
     out: dict[str, Collected] = {}
     unavailable: dict[str, str] = {}
@@ -43,10 +44,10 @@ async def collect_sections(ctx: FirstLookContext) -> tuple[dict[str, Collected],
         try:
             async with ctx.session.begin_nested():
                 out[key] = await section.collect(ctx)
-        except Unavailable as exc:
+        except UnavailableError as exc:
             unavailable[key] = str(exc) or _UNREADABLE
-        except Exception as exc:  # one section must not cost the report
-            logger.warning("first look: section %s failed: %s", key, exc)
+        except Exception:  # one section must not cost the report
+            logger.warning("first look: section %s failed", key, exc_info=True)
             unavailable[key] = _UNREADABLE
     return out, unavailable
 
