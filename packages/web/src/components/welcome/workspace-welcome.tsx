@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { useFormatter, useTranslations } from "next-intl";
@@ -148,20 +148,8 @@ export function WorkspaceWelcomeDialog({
     heading.current?.focus();
   }, [index, open]);
 
-  // Step 2 checks for the first call until one lands on any member.
-  const [polling, setPolling] = useState(false);
-  const { data: setup } = useSWR(open ? ["workspace-setup", "welcome"] : null, () => getWorkspaceSetup(), {
-    revalidateOnFocus: false,
-    shouldRetryOnError: false,
-    refreshInterval: polling ? FIRST_CALL_POLL_MS : 0,
-  });
-  const firstCall = firstWorkspaceCall(setup);
-  useEffect(() => {
-    setPolling(open && step === "agent" && Boolean(setup) && !firstCall);
-  }, [open, step, setup, firstCall]);
-
+  const { setup, firstCall } = useWorkspaceFirstCall(open, open && step === "agent");
   const close = () => onOpenChange(false);
-  const em = (chunks: ReactNode) => <span style={MOMENT_EMPHASIS}>{chunks}</span>;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -183,27 +171,13 @@ export function WorkspaceWelcomeDialog({
           <MomentBand tone="welcome">
             <p className={`${MOMENT_MICRO} pr-10`}>{t("eyebrow")}</p>
             <div key={step} className={MOMENT_ENTER}>
-              <DialogTitle ref={heading} tabIndex={-1} className={`${MOMENT_DISPLAY} mt-3 outline-none`}>
-                {step === "repos" &&
-                  (facts.name
-                    ? t.rich("workspace.title", { count: facts.repoCount, name: facts.name, em })
-                    : t.rich("workspace.titleNoName", { count: facts.repoCount, em }))}
-                {step === "agent" && t.rich("agent.title", { em })}
-                {step === "ask" && t.rich("ask.title", { em })}
-              </DialogTitle>
-              <DialogDescription
-                className={`${MOMENT_BODY} mt-3 max-w-[56ch] text-[var(--color-text-secondary)] [text-wrap:pretty]`}
-              >
-                {step === "repos" && t("workspace.lede", { files: facts.fileCount })}
-                {step === "agent" && t("workspace.agentLede")}
-                {step === "ask" && t("ask.ledeAny")}
-              </DialogDescription>
+              <WorkspaceStepText step={step} facts={facts} headingRef={heading} />
             </div>
           </MomentBand>
 
           <div key={step} className={`${MOMENT_GUTTER} py-6 ${MOMENT_ENTER}`}>
             {step === "repos" && <WorkspaceCards facts={facts} onNavigate={close} />}
-            {step === "agent" && <WorkspaceAgent setup={setup ?? null} firstCall={firstCall} />}
+            {step === "agent" && <WorkspaceAgent setup={setup} firstCall={firstCall} />}
             {step === "ask" && <WorkspaceAsk members={facts.members} />}
           </div>
         </div>
@@ -218,6 +192,55 @@ export function WorkspaceWelcomeDialog({
         />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The members' setup while the dialog is open; while `watching` (step 2),
+ *  it checks for the first call until one lands on any member. */
+function useWorkspaceFirstCall(open: boolean, watching: boolean) {
+  const [polling, setPolling] = useState(false);
+  const { data: setup } = useSWR(open ? ["workspace-setup", "welcome"] : null, () => getWorkspaceSetup(), {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+    refreshInterval: polling ? FIRST_CALL_POLL_MS : 0,
+  });
+  const firstCall = firstWorkspaceCall(setup);
+  useEffect(() => {
+    setPolling(watching && Boolean(setup) && !firstCall);
+  }, [watching, setup, firstCall]);
+  return { setup: setup ?? null, firstCall };
+}
+
+/** A step's title and lede in the band. */
+function WorkspaceStepText({
+  step,
+  facts,
+  headingRef,
+}: {
+  step: Step;
+  facts: WorkspaceWelcomeFacts;
+  headingRef: RefObject<HTMLHeadingElement | null>;
+}) {
+  const t = useTranslations("welcome");
+  const em = (chunks: ReactNode) => <span style={MOMENT_EMPHASIS}>{chunks}</span>;
+  return (
+    <>
+      <DialogTitle ref={headingRef} tabIndex={-1} className={`${MOMENT_DISPLAY} mt-3 outline-none`}>
+        {step === "repos" &&
+          (facts.name
+            ? t.rich("workspace.title", { count: facts.repoCount, name: facts.name, em })
+            : t.rich("workspace.titleNoName", { count: facts.repoCount, em }))}
+        {step === "agent" && t.rich("agent.title", { em })}
+        {step === "ask" && t.rich("ask.title", { em })}
+      </DialogTitle>
+      <DialogDescription
+        className={`${MOMENT_BODY} mt-3 max-w-[56ch] text-[var(--color-text-secondary)] [text-wrap:pretty]`}
+      >
+        {step === "repos" && t("workspace.lede", { files: facts.fileCount })}
+        {step === "agent" && t("workspace.agentLede")}
+        {step === "ask" && t("ask.ledeAny")}
+      </DialogDescription>
+    </>
   );
 }
 

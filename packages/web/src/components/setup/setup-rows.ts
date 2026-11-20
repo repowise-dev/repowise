@@ -389,11 +389,7 @@ function syncRow(s: SetupResponse, o: DeriveOptions): SetupRow {
 
 function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   const llm = s.model.docs_mode === "llm";
-  const providers = s.model.configured_providers ?? [];
-  let detail = msg("model.detailNone");
-  if (s.model.active_provider) detail = msg("model.detailActive", { provider: s.model.active_provider });
-  else if (providers.length) detail = msg("model.detailReady", { providers: providers.join(", ") });
-  if (!s.model_available) detail = msg("unreadable.detail", { command: "repowise status" });
+  const detail = modelDetail(s);
   let status = msg(llm ? "model.statusLlm" : "model.statusBuilt");
   // Provider settings unreadable: only a written-by-model state still holds.
   if (!s.model_available && !llm) status = msg("unreadable.status");
@@ -415,13 +411,30 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     prompt: {
       repoName: o.repoName,
       title: "A model for docs, chat and answers",
-      state: llm
-        ? `The docs are written by a model${s.model.active_provider ? ` (${s.model.active_provider})` : ""}.`
-        : `The docs are built from the index, without a model.${s.model_available && !s.model.active_provider ? " Until a model is set up, get_answer returns ranked evidence instead of a written answer." : ""} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`,
+      state: modelPromptState(s, llm),
       command: "repowise generate",
       verify: "status",
     },
   };
+}
+
+/** The model row's detail line: the provider in use, the ones ready, or none. */
+function modelDetail(s: SetupResponse): SetupMsg {
+  if (!s.model_available) return msg("unreadable.detail", { command: "repowise status" });
+  if (s.model.active_provider) return msg("model.detailActive", { provider: s.model.active_provider });
+  const providers = s.model.configured_providers ?? [];
+  if (providers.length) return msg("model.detailReady", { providers: providers.join(", ") });
+  return msg("model.detailNone");
+}
+
+/** What the agent prompt says about the docs' model today. */
+function modelPromptState(s: SetupResponse, llm: boolean): string {
+  if (llm) return `The docs are written by a model${s.model.active_provider ? ` (${s.model.active_provider})` : ""}.`;
+  const noModelNote =
+    s.model_available && !s.model.active_provider
+      ? " Until a model is set up, get_answer returns ranked evidence instead of a written answer."
+      : "";
+  return `The docs are built from the index, without a model.${noModelNote} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`;
 }
 
 function coverageRow(s: SetupResponse, o: DeriveOptions): SetupRow {
