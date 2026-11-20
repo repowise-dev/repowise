@@ -41,7 +41,7 @@ def _is_low_severity_path(file_path: str) -> bool:
 
 # Code that runs at build or release time, or only in docs: a sink there is not
 # a shipped one.
-_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example"})
+_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example", "data"})
 # A bundler's or generator's output, or a copied library: nobody here wrote its
 # calls, so only a secret it carries is news.
 _MACHINE_ORIGINS = frozenset({"generated", "vendored"})

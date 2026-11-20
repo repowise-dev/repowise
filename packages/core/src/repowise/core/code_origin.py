@@ -8,8 +8,8 @@ real finding that nobody should be asked to fix first.
 
 The answer is one of :data:`CODE_ORIGINS`, decided in precedence order, so a
 file has exactly one: ``generated`` beats ``vendored`` beats ``build`` beats
-``test`` beats ``docs_example`` beats ``tooling``, and everything else is
-``production``. ``build`` is decided by the file's type (a Gradle script, a
+``test`` beats ``docs_example`` beats ``tooling`` beats ``data``, and
+everything else is ``production``. ``build`` is decided by the file's type (a Gradle script, a
 ``CMakeLists.txt``, a bundler config), wherever it sits; :func:`is_build_file`
 answers it for a caller that needs only that.
 
@@ -52,7 +52,7 @@ __all__ = [
 ]
 
 CodeOrigin = Literal[
-    "production", "test", "vendored", "docs_example", "generated", "tooling", "build"
+    "production", "test", "vendored", "docs_example", "generated", "tooling", "build", "data"
 ]
 
 CODE_ORIGINS: tuple[CodeOrigin, ...] = (
@@ -63,6 +63,7 @@ CODE_ORIGINS: tuple[CodeOrigin, ...] = (
     "generated",
     "tooling",
     "build",
+    "data",
 )
 
 # --------------------------------------------------------------------------
@@ -817,6 +818,60 @@ def _is_docs_example(
     )
 
 
+# --------------------------------------------------------------------------
+# Data
+# --------------------------------------------------------------------------
+
+# A folder a repository keeps content in. Code inside one is material the
+# product reads by path (reference solutions, problem generators, inputs for a
+# sandbox), not modules it imports, when the folder is mostly data files and
+# its code spans several languages: an application does not import its own
+# modules in three languages out of one data folder, while a bank of solutions
+# per problem does. Ceiling: a bank in one language (``data/*/reference.py``
+# alone) stays production, since telling it from a data folder's own loader
+# module needs the import graph.
+_DATA_DIR_TOKENS = frozenset({"data", "datasets"})
+_DATA_MAX_CODE_SHARE = 0.2
+_DATA_MIN_LANGUAGES = 3
+
+
+def _is_content_bank_member(
+    normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
+    """Whether a data-named folder above the file is a content bank."""
+    if repo_root is None or _DATA_DIR_TOKENS.isdisjoint(dirs):
+        return False
+    parts = normalized.split("/")
+    root = os.fspath(repo_root)
+    return any(
+        d in _DATA_DIR_TOKENS and _is_content_bank(os.path.join(root, *parts[: i + 1]))
+        for i, d in enumerate(dirs)
+    )
+
+
+@lru_cache(maxsize=1024)
+def _is_content_bank(folder: str) -> bool:
+    """Whether *folder* (an absolute path) holds mostly data, and code in several languages."""
+    from .fs_walk import walk_repo
+    from .ingestion.models import EXTENSION_TO_LANGUAGE
+
+    code_suffixes = frozenset(_code_suffixes())
+    files = code = 0
+    languages: set[str] = set()
+    for _dir, _subdirs, names in walk_repo(folder):
+        for name in names:
+            files += 1
+            suffix = PurePosixPath(name).suffix.lower()
+            if suffix in code_suffixes:
+                code += 1
+                languages.add(EXTENSION_TO_LANGUAGE.get(suffix, suffix))
+    return (
+        code > 0
+        and code <= files * _DATA_MAX_CODE_SHARE
+        and len(languages) >= _DATA_MIN_LANGUAGES
+    )
+
+
 # No ``/cli/`` rule: a CLI's source ships and its findings are real work (only
 # performance treats a CLI loop as off the request path, in
 # ``perf/causal.execution_context``). Migrations join: they run once at deploy
@@ -1130,7 +1185,7 @@ def _maintained_origin(
     header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
-    examples, tooling, or production, in that precedence."""
+    examples, tooling, data, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
     if (
@@ -1143,6 +1198,8 @@ def _maintained_origin(
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
+    if _is_content_bank_member(normalized, dirs, repo_root):
+        return "data"
     return "production"
 
 
@@ -1159,8 +1216,8 @@ def path_origin(path: str) -> CodeOrigin:
 def owes_a_test(path: str, origin: str | None = None) -> bool:
     """Whether a missing test for *path* is a gap worth naming.
 
-    Only shipped code owes one. Generated, vendored, build, tooling and docs
-    example code, and a schema migration, read "no test" as noise: every
+    Only shipped code owes one. Generated, vendored, build, tooling, docs
+    example and data code, and a schema migration, read "no test" as noise: every
     surface that says a file is untested (``pr_blast.file_tests``, the health
     biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
     stored ``code_origin`` when there is one; without it the path decides.
