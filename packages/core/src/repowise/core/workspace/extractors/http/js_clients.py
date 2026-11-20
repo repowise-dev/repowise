@@ -42,9 +42,10 @@ _FETCH_RE = re.compile(
 _WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""")
 # The callee may carry TypeScript type arguments, nested up to three levels
 # (`apiGet<Paginated<Array<Commit>>>(`). Each inner level starts at a `<`, so
-# the pattern cannot backtrack across levels.
-_TYPE_ARGS = r"(?:<[^<>()]*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>[^<>()]*)*>\s*)?"
-_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)\s*" + _TYPE_ARGS + r"$")
+# the pattern cannot backtrack across levels. The `<` must follow the name
+# directly, as type arguments do and a spaced comparison (`a < b && c > (`) does not.
+_TYPE_ARGS = r"(?:<[^<>()]*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>[^<>()]*)*>)?"
+_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)" + _TYPE_ARGS + r"\s*$")
 _CALLEE_WINDOW = 200
 
 # The callee names that read as an HTTP wrapper rather than navigation/util.
