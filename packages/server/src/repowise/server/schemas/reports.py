@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from repowise.core.agent_prompts import Flavor
 
@@ -34,11 +34,17 @@ class FirstLookMarkRequest(BaseModel):
     #: How long a snooze lasts; core's default when omitted.
     days: int | None = Field(default=None, ge=1, le=365)
 
+    @model_validator(mode="after")
+    def _days_only_for_snooze(self) -> FirstLookMarkRequest:
+        if self.days is not None and self.status != "snooze":
+            raise ValueError("days applies to a snooze only")
+        return self
+
 
 class FirstLookMarkResponse(BaseModel):
     id: str
     #: What the item now reads as (a false positive on an action reads as acknowledged).
-    status: str
+    status: Literal["open", "done", "acknowledged", "false_positive", "snoozed", "resolved"]
     #: The store the answer went to.
     store: str
     until: str | None = None

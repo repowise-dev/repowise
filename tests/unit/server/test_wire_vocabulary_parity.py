@@ -343,3 +343,12 @@ def test_living_first_look_shapes_match_python() -> None:
     assert _interface_fields("FirstLookMember", "first-look.ts") == set(model.Member("action", "a").to_json())
     assert _interface_fields("FirstLookLiving", "first-look.ts") == {*ItemStatus().to_json(), "change"}
     assert _interface_fields("FirstLookBaseline", "first-look.ts") == {"stamp", "resolved"}
+
+    from typing import get_args
+
+    from repowise.server.schemas.reports import FirstLookMarkRequest, FirstLookMarkResponse
+
+    request = FirstLookMarkRequest.model_fields["status"].annotation
+    response = FirstLookMarkResponse.model_fields["status"].annotation
+    assert set(get_args(request)) == set(marks.MARK_STATUSES)
+    assert set(get_args(response)) == set(marks.ITEM_STATUSES)

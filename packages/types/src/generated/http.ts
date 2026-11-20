@@ -2404,7 +2404,7 @@ export interface FirstLookMarkRequest {
 
 export interface FirstLookMarkResponse {
   id: string;
-  status: string;
+  status: "open" | "done" | "acknowledged" | "false_positive" | "snoozed" | "resolved";
   store: string;
   until?: string | null;
 }

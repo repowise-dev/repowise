@@ -201,3 +201,30 @@ async def test_rewrite_runs_the_one_writer_with_the_repos_provider(
     resp = await reports_client.post(url)
     assert resp.status_code == 200
     assert calls == [(repo["id"], Path(repo["local_path"]), provider)]
+
+
+@pytest.mark.anyio
+async def test_a_mark_from_the_page_is_what_the_next_read_shows(
+    reports_client: AsyncClient, session_factory
+) -> None:
+    repo = await _stored_repo(reports_client, session_factory)
+    base = f"/api/repos/{repo['id']}/reports/first-look"
+    before = (await reports_client.get(base)).json()["report"]
+    assert before["baseline"]["resolved"][0]["status"] == "resolved"
+
+    done = await reports_client.put(f"{base}/items/{_ID}/mark", json={"status": "done"})
+    assert done.status_code == 200 and done.json()["status"] == "done"
+
+    # A person's answer holds the item in place instead of letting it resolve.
+    after = (await reports_client.get(base)).json()["report"]
+    (held,) = [i for s in after["sections"] for i in s["items"] if i["id"] == _ID]
+    assert held["status"] == "done"
+    assert after["baseline"]["resolved"] == []
+
+    days_wrong = await reports_client.put(f"{base}/items/{_ID}/mark", json={"status": "done", "days": 3})
+    assert days_wrong.status_code == 422
+    too_long = await reports_client.put(
+        f"{base}/items/{_ID}/mark", json={"status": "ack", "reason": "x" * 501}
+    )
+    assert too_long.status_code == 422
+    assert (await reports_client.put("/api/repos/nope/reports/first-look/items/x/mark", json={"status": "done"})).status_code == 404
