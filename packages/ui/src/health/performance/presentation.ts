@@ -242,10 +242,15 @@ export function opportunityCause(opportunity: PerformanceOpportunity): string {
  */
 export function opportunitySubject(opportunity: PerformanceOpportunity): string {
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol;
+  if (symbol) return symbolSubject(symbol);
   const first = opportunity.evidence[0]?.function_name;
   if (first) return first;
   return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
+}
+
+/** A symbol id's short name, without its path: `render_block`. */
+export function symbolSubject(symbolId: string): string {
+  return moduleScopeLabel(symbolId, true) ?? symbolId.split("::").pop() ?? symbolId;
 }
 
 /**
