@@ -66,3 +66,33 @@ class TestScalaParser:
         fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
         result = parser.parse_file(fi, SCALA_SOURCE)
         assert result.parse_errors == []
+
+    def test_finds_defs_without_a_parameter_list(self, parser: ASTParser) -> None:
+        source = b"""\
+class Repo {
+  def name: String = "r"
+  def size = 3
+  def run(): Unit = ()
+  def build(a: Int)(b: Int): Int = a + b
+  def all: List[Int]
+  @deprecated def old: Int = 1
+}
+"""
+        fi = _make_file_info("scala_pkg/Repo.scala", "scala")
+        result = parser.parse_file(fi, source)
+        methods = [(s.name, s.parent_name) for s in result.symbols if s.kind == "method"]
+        assert sorted(methods) == sorted(
+            (name, "Repo") for name in ("name", "size", "run", "build", "all", "old")
+        )
+
+    def test_finds_scala3_extension_def_without_a_parameter_list(self, parser: ASTParser) -> None:
+        source = b"""\
+object Ext {
+  extension (s: String) def shout: String = s.toUpperCase
+}
+"""
+        fi = _make_file_info("scala_pkg/Ext.scala", "scala")
+        result = parser.parse_file(fi, source)
+        assert [(s.name, s.parent_name) for s in result.symbols if s.kind == "method"] == [
+            ("shout", "Ext")
+        ]

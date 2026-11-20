@@ -33,12 +33,12 @@
 
 (function_definition
   name: (identifier) @symbol.name
-  (parameters) @symbol.params
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (function_declaration
   name: (identifier) @symbol.name
-  (parameters) @symbol.params
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (val_definition
