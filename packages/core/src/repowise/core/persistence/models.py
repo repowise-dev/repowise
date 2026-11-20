@@ -2932,6 +2932,30 @@ class ReadSnapshot(Base):
     )
 
 
+class StoredReport(Base):
+    """A report document as written, one row per kind and commit.
+
+    Unlike a read snapshot it is a record, not a cache: an index write leaves
+    it, and a rewrite at a new commit adds a row beside the old one. The
+    newest ``created_at`` per kind is the current report.
+    """
+
+    __tablename__ = "reports"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: The commit the report describes; ``""`` when the index held none.
+    commit_sha: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
 class TestCoverageTest(Base):
     """One test of the per-test coverage map, numbered within its repository.
 

@@ -965,6 +965,20 @@ Cycle / Split File plans behind `repowise health --refactoring-targets`,
 - Per-path disables use the `health-rules.json` glob mechanism markers use.
   Full reference: [REFACTORING.md](../layers/REFACTORING.md).
 
+## The `report:` block
+
+The first-look report written after the first index: what Repowise found,
+in order, with a link and an agent prompt per item. The template version is
+free; with a configured provider one model call can write its prose.
+
+<!-- BEGIN GENERATED settings:report (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `first_look.enabled` | `true` | Write the first-look report after the first index; the template version costs nothing. |
+| `first_look.llm` | `true` | Let one model call write the report's prose when a provider is configured and prose is on. |
+| `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
+<!-- END GENERATED settings:report -->
+
 ## The `assertions:` block
 
 Your own assertion helpers, for test-quality markers that divide by a test's
