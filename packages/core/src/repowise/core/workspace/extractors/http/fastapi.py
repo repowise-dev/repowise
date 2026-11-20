@@ -7,7 +7,10 @@ a cross-file ``include_router(prefix=...)`` mount, the in-file
 
 from __future__ import annotations
 
+import ast
+import posixpath
 import re
+import textwrap
 from typing import TYPE_CHECKING
 
 from ..base import line_at
@@ -15,7 +18,14 @@ from ..calls import code_matches
 from ..langs import PYTHON
 from .dialect import METHODS, build_provider_contract
 from .flask import flask_file
-from .mounts import balanced_args, compose_prefix, router_prefixes
+from .mounts import (
+    add_mounts,
+    balanced_args,
+    compose_prefix,
+    declare_module_mount,
+    module_prefix,
+    router_prefixes,
+)
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -35,12 +45,15 @@ _FASTAPI_RE = re.compile(
     re.IGNORECASE,
 )
 
-# include_router(...) — a cross-file mount of a router.
-_INCLUDE_ROUTER_RE = re.compile(r"""include_router\s*\(""")
+# <receiver>.include_router(...): a router mounted on an app or a parent router.
+_INCLUDE_ROUTER_RE = re.compile(r"""(?:(\w+)\s*\.\s*)?include_router\s*\(""")
 _FIRST_ARG_RE = re.compile(r"""\s*([\w.]+)""")
 _PREFIX_KW_RE = re.compile(r"""prefix\s*=\s*['"]([^'"]+)['"]""")
 
 _DEFAULT_ROUTER_NAMES = frozenset({"app", "router"})
+
+# Mount keys are ``fastapi:<file>:<router variable>``.
+_NAMESPACE = "fastapi"
 
 
 class FastApiDialect:
@@ -51,20 +64,44 @@ class FastApiDialect:
     requires = ("@app.", "@router.", "APIRouter", "FastAPI", "include_router")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        """Find ``include_router(var, prefix=...)`` mounts declared in the file.
+        """Find ``include_router(target, prefix=...)`` mounts declared in the file.
 
-        Keyed by the router variable's final name segment (``pkg.router`` ->
-        ``router``); only mounts that carry an explicit ``prefix=`` are recorded.
+        Keyed by the mounted router's identity, the file that defines it and
+        its variable (``routers/users.py:router``), never by the name alone:
+        most FastAPI modules call their router ``router``, so a name key put
+        one module's mount prefix on all of them. A router mounted on another
+        router is recorded under that parent, so nested prefixes compose. A
+        target whose defining file cannot be found is left unmounted.
         """
         if flask_file(ctx.content):
             return {}
+        own = router_prefixes(ctx.content, "APIRouter")
+        imports: dict[str, tuple[str, str | None]] | None = None
         out: dict[str, str] = {}
         for m in code_matches(ctx, _INCLUDE_ROUTER_RE):
             args = balanced_args(ctx.content, m.end() - 1)  # m.end()-1 is the '('
             var_m = _FIRST_ARG_RE.match(args)
+            if not var_m:
+                continue
+            if imports is None:
+                imports = _python_imports(ctx.content)
+            target = _router_identity(ctx, var_m.group(1), imports)
+            if target is None:
+                continue
             pm = _PREFIX_KW_RE.search(args)
-            if var_m and pm:
-                out[var_m.group(1).split(".")[-1]] = pm.group(1)
+            prefix = pm.group(1) if pm else ""
+            receiver = m.group(1)
+            parent = ""
+            if receiver in own:
+                # Mounted on an in-file APIRouter: that router's own prefix
+                # comes first, then wherever the router itself is mounted.
+                prefix = compose_prefix(own[receiver], prefix)
+                parent = _router_key(ctx.rel_path, receiver)
+            elif receiver and receiver in imports:
+                # Ceiling: an imported parent router's own APIRouter(prefix=)
+                # lives in its file and is not composed here.
+                parent = _router_identity(ctx, receiver, imports) or ""
+            add_mounts(out, declare_module_mount(_NAMESPACE, target, prefix, parent))
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
@@ -83,7 +120,7 @@ class FastApiDialect:
                 continue
             # In-file APIRouter(prefix=...) then any cross-file mount of this var.
             path = compose_prefix(prefixes.get(var, ""), path_raw)
-            path = compose_prefix(ctx.mounts.get(var, ""), path)
+            path = compose_prefix(mount_prefix(ctx, var), path)
             c = build_provider_contract(
                 ctx,
                 method=method.upper(),
@@ -94,3 +131,100 @@ class FastApiDialect:
             if c is not None:
                 out.append(c)
         return out
+
+
+def _router_key(rel_path: str, var: str) -> str:
+    return f"{rel_path}:{var}"
+
+
+def mount_prefix(ctx: ScanContext, var: str) -> str:
+    """Where the router *var* defined in *ctx*'s file is mounted, "" if nowhere.
+
+    A router mounted at two different prefixes reads as unmounted, as an
+    ambiguous mount always has: its routes keep their in-file path.
+    """
+    _mounted, prefix = module_prefix(ctx.mounts, _NAMESPACE, _router_key(ctx.rel_path, var))
+    return prefix or ""
+
+
+def _python_imports(content: str) -> dict[str, tuple[str, str | None]]:
+    """``{local name: (module, imported name or None)}`` for the file's imports.
+
+    A relative module keeps its leading dots. Imports inside ``try`` and ``if``
+    blocks count. A file Python cannot parse yields no imports. The text is
+    dedented first so an indented snippet reads as the module it would be.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(content))
+    except (SyntaxError, ValueError):
+        return {}
+    out: dict[str, tuple[str, str | None]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                # `import a.b` binds `a`; `import a.b as c` binds `c` to `a.b`.
+                name = a.asname or a.name.split(".", 1)[0]
+                out[name] = (a.name if a.asname else name, None)
+        elif isinstance(node, ast.ImportFrom):
+            module = "." * node.level + (node.module or "")
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = (module, a.name)
+    return out
+
+
+def _router_identity(
+    ctx: ScanContext, expr: str, imports: dict[str, tuple[str, str | None]]
+) -> str | None:
+    """The ``file:variable`` key of the router *expr* names in *ctx*'s file.
+
+    ``users.router`` after ``from routers import users`` is
+    ``<dir>/routers/users.py:router``; a bare name bound by
+    ``from .users import router as users_router`` is ``<dir>/users.py:router``;
+    a bare name the file does not import is the file's own variable.
+    """
+    head, *rest = expr.split(".")
+    if head not in imports:
+        return None if rest else _router_key(ctx.rel_path, head)
+    module, name = imports[head]
+    if not rest:
+        if name is None:
+            return None
+        rel = _resolve_module(ctx, module)
+        return _router_key(rel, name) if rel else None
+    parts = [*([name] if name else []), *rest[:-1]]
+    joiner = "" if module.endswith(".") else "."
+    rel = _resolve_module(ctx, module + joiner + ".".join(parts) if parts else module)
+    return _router_key(rel, rest[-1]) if rel else None
+
+
+def _resolve_module(ctx: ScanContext, dotted: str) -> str | None:
+    """The repo-relative file a Python module name resolves to from *ctx*'s file.
+
+    A relative name resolves against the file's package. An absolute name is
+    tried under each directory from the file's own up to the repo root, since
+    the import root is often a subdirectory (``backend/``) and not the repo root.
+    """
+    root = ctx.repo_root
+    if root is None:
+        return None
+    level = len(dotted) - len(dotted.lstrip("."))
+    parts = [p for p in dotted[level:].split(".") if p]
+    here = posixpath.dirname(ctx.rel_path)
+    if level:
+        base = here
+        for _ in range(level - 1):
+            base = posixpath.dirname(base)
+        bases = [base]
+    else:
+        bases = [here]
+        while bases[-1]:
+            bases.append(posixpath.dirname(bases[-1]))
+    for base in bases:
+        stem = posixpath.join(base, *parts)
+        if not stem:
+            continue
+        for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
+            if (root / candidate).is_file():
+                return candidate
+    return None
