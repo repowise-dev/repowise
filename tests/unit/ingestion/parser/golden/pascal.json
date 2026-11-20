@@ -132,7 +132,6 @@
         "receiver_call": null,
         "start_byte": 303,
         "scope_name": null,
-        "namespace": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
