@@ -653,7 +653,7 @@ repowise next --horizon quarter --all
 ### `repowise mark ID STATUS`
 
 Records an answer to one repo report item. `ID` is the item's `fl_` id from
-`repowise report repo --format json`; `STATUS` is `done`, `ack`, `false-positive` or `snooze`.
+`repowise report --format json`; `STATUS` is `done`, `ack`, `false-positive` or `snooze`.
 
 ```bash
 repowise mark fl_3a91c0d2e4f1 done
@@ -665,15 +665,16 @@ repowise mark fl_7be0c1d2a3f4 ack --reason "kept for the plugin API"
 | `--reason` | Why. Required for `ack` and `false-positive`. | |
 | `--days` | With `snooze`: how many days, 1 to 365. | 14 |
 | `--path` | Repo path. | cwd |
-| `--json` | The result as JSON (`id`, `status`, `store`, and `until` for a snooze), or `{"error": {"code", "message"}}`. | off |
+| `--json` | The result as JSON: `{id, store, status, reason, until}` (`reason` and `until` null when absent). An error is `{"error": {"code", "message"}}` on stderr. | off |
 
 - The answer goes to every row the item stands for (a grouped item has several), in the stores the web app
-  and `repowise next` read: next actions, dead-code, health finding and refactoring statuses. An item no
-  store holds keeps its answer under its own id; so does a snooze on a finding item.
-- `repowise report repo` shows each item's status; an answered item stays listed after the index drops it.
+  and `repowise next` read: next actions, dead-code, health finding and refactoring statuses, each with the
+  reason. An item no store holds keeps its answer under its own id; so does a snooze on a finding item.
+- `repowise report` shows each item's status and reason; an answered item stays listed after the index drops it.
 - A security finding is never marked `false-positive` here: put a `repowise-security-ignore` comment on its
   line, or accept it in a baseline with `repowise security check --write-baseline FILE`.
-- Errors exit 1 with a code: `unknown_item`, `reason_required`, `security_use_ignore`, `bad_status`, `no_index`.
+- Errors exit 1 with a code: `unknown_item` (ids are `fl_` and 12 hex characters), `reason_required`,
+  `security_use_ignore`, `bad_status`, `no_index`.
 
 ---
 
@@ -1868,7 +1869,8 @@ lists components with no owner team.
 - A period summary and a method appendix (what git alone cannot attest) both state the window. Unknown counts apart, never as failure; people counted, never named.
 - Shares the `changes export` evidence pass: missing checklists are built and stored a few at a time, after stderr says how many and how long.
 
-**`repowise report repo [PATH]`** (alias `repowise report first-look`): the repo report `init` writes after the first index. What Repowise found, most
+**`repowise report repo [PATH]`** (alias `repowise report first-look`; bare `repowise report` runs it on the current
+directory with the same flags): the repo report `init` writes after the first index. What Repowise found, most
 urgent first, in plain language: every item has its path and line, a link into the app and a "Fix with your agent"
 prompt. Renders the first look, the stored baseline (`.repowise/reports/first-look.json`, written from the index when
 there is none: no model, free), as the index has it now: each item with its status from [`repowise mark`](#repowise-mark-id-status), the
@@ -1876,9 +1878,20 @@ items new since, and the items resolved since the first look.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--format` | `html` (written to `.repowise/reports/repo-report.html` and opened, with each listed item's prompt), `md`, or `json` (for agents: each item with its id, `status`, `status_reason`, `status_until` and `change`, a `baseline` block with the resolved items, and the whole-report prompt). Markdown and JSON carry no per-item prompt. | `html` |
+| `--format` | `html` (written to `.repowise/reports/repo-report.html` and opened, with each listed item's prompt), `md` (its top section, headline, counts and "Do these first" with places, reads on its own as a summary), or `json` (for agents, below). Markdown and JSON carry no prompt. | `html` |
 | `--out` | Output file. | stdout for `md` and `json` |
 | `--since-last` | What was fixed, changed or found new since the report was written, from the index now (text, or JSON with `--format json`). | off |
+| `--prompt` | Print the whole-report agent prompt (the web page's "Hand to agent"): the open items with their ids and the `repowise mark` commands. | off |
+
+```bash
+repowise report --format json && repowise mark fl_3a91c0d2e4f1 done --json
+```
+
+- JSON: each item in `sections[].items[]` has `id`, `section`, `rule`, `status` (`open`, `done`, `acknowledged`,
+  `false_positive`, `snoozed`), `status_reason`, `status_until`, `change` (`new`, `changed` or `resolved` against the
+  first look, else null), `locations` (`path`, `line`, `symbol`), `effort` and `confidence`; `baseline.resolved[]` lists
+  the first look's items the index no longer finds; `prose_source` is `{writer, written_at, cost_usd}` (`writer` is
+  `template` or the model id).
 
 - Sections, in order: Security, Performance, Code health, Tests and coverage, Dead code, Docs, Decisions, Repo hygiene,
   Ownership.

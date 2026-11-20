@@ -410,8 +410,13 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
             "Repo report  http://127.0.0.1:3000/repos/r1/report  "
             "(written by claude-haiku-5-5, $0.003)",
         ),
+        (
+            FirstLook(".repowise/reports/repo-report.html", agent=True, open_items=4),
+            "Repo report: tell the user what it found (repowise report --format md); "
+            "they decide what to fix next.",
+        ),
     ],
-    ids=["keyless", "model"],
+    ids=["keyless", "model", "agent"],
 )
 def test_one_footer_line_names_the_repo_report(first_look, line):
     import io

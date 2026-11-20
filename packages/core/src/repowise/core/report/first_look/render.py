@@ -250,8 +250,13 @@ def _md_top(doc: Mapping[str, Any]) -> list[str]:
     out = ["", "## Do these first", ""]
     for n, (section, item) in enumerate(top, 1):
         open_link = _item_href(doc, item)
+        # Each line names its place, so this list reads on its own as a summary.
+        chips, hidden = _chips(item)
+        places = [f"{p}:{ln}" if ln else p for p, ln, _ in chips[:1]]
+        more = len(chips) - 1 + hidden
+        where = f" ({_code(places[0])}{f' and {more:,} more' if more > 0 else ''})" if places else ""
         out.append(
-            f"{n}. {_title(doc, section['key']).split(':')[0]}: {_one(_text(doc, item))}"
+            f"{n}. {_title(doc, section['key']).split(':')[0]}: {_one(_text(doc, item))}{where}"
             + (f" [Open]({open_link})" if open_link else "")
         )
     return out
