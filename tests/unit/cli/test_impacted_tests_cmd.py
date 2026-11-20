@@ -132,6 +132,19 @@ def test_the_args_header_counts_the_broadcast_and_import_closure_apart() -> None
     assert selection.to_dict()["import_closure"] == {"tests/test_c.py": 3}
 
 
+def test_the_inferred_and_unknown_footers_say_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands import impacted_tests_cmd as cmd
+
+    cmd._print_inferred(
+        [{"source_file": "a.ts", "test_file": "a.test.ts", "via": "filename-pattern"}]
+    )
+    cmd._print_unknown(["b.ts"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "with no per-test coverage." in out
+    assert "have no per-test coverage," in out
+    assert "with no coverage" not in out
+
+
 def test_json_adds_the_selection_to_the_report(repo) -> None:
     result = _run(repo, "main...feat", "--format", "json", "--runner", "files")
     assert result.exit_code == 0, result.output
