@@ -24,7 +24,6 @@ from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, method_from_options
 from .commonjs import exports_mounts
 from .node_clients import client_calls, client_mounts
-from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -41,8 +40,11 @@ _FETCH_RE = re.compile(
 # led by the `(` and reads the identifier back from it: led by the identifier,
 # the regex was tried at every word of every file.
 _WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""")
-# The callee may carry TypeScript type arguments: `apiGet<Paginated<Commit>>(`.
-_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)\s*" + GENERIC_ARGS + r"$")
+# The callee may carry TypeScript type arguments, nested up to three levels
+# (`apiGet<Paginated<Array<Commit>>>(`). Each inner level starts at a `<`, so
+# the pattern cannot backtrack across levels.
+_TYPE_ARGS = r"(?:<[^<>()]*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>[^<>()]*)*>\s*)?"
+_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)\s*" + _TYPE_ARGS + r"$")
 _CALLEE_WINDOW = 200
 
 # The callee names that read as an HTTP wrapper rather than navigation/util.
