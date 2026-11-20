@@ -372,3 +372,28 @@ async def test_every_store_keeps_the_reason_and_reads_it_back(async_session) -> 
     await mark_item(async_session, rid, finding.id, "done")
     await async_session.commit()
     assert await _status(async_session, rid, finding) == ("done", None)
+
+
+async def test_a_writer_without_a_reason_keeps_it_for_the_same_status_only(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import set_action_state
+    from repowise.core.persistence.crud.analysis.health.findings import (
+        update_health_finding_status,
+    )
+
+    rid, _ = await _report(async_session)
+    row = HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="long_method",
+                        severity="medium", public_id="hf_pub")
+    async_session.add(row)
+    await async_session.flush()
+    await update_health_finding_status(async_session, row.id, "acknowledged", note="by design")
+    # A surface that knows no reason (the web triage) re-sends the same status.
+    await update_health_finding_status(async_session, row.id, "acknowledged")
+    assert row.status_note == "by design"
+    await update_health_finding_status(async_session, row.id, "resolved")
+    assert row.status_note is None
+
+    await set_action_state(async_session, rid, "act_1", state="dismissed", note="later")
+    await set_action_state(async_session, rid, "act_1", state="dismissed")
+    assert (await get_action_states(async_session, rid))["act_1"].note == "later"
+    await set_action_state(async_session, rid, "act_1", state="done")
+    assert (await get_action_states(async_session, rid))["act_1"].note is None

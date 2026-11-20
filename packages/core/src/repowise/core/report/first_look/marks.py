@@ -393,7 +393,8 @@ def _plan_ids(details_json: Any) -> list[str]:
 
 async def _opportunities(session: Any, repo_id: str, refs: set[str]) -> dict:
     """``{opportunity id: [(status, note), ...]}``: the rolled-up status, with
-    the note a person gave on its member plans (an opportunity has no note of its own)."""
+    the note a person gave a member plan in that same status (an opportunity
+    has no note of its own)."""
     from sqlalchemy import or_, select
 
     from repowise.core.persistence.models import RefactoringOpportunity as O
@@ -408,20 +409,20 @@ async def _opportunities(session: Any, repo_id: str, refs: set[str]) -> dict:
         )
         rows += [(ref, status, _plan_ids(raw)) for ref, status, raw in found.all()]
     plan_ids = {p for *_, ids in rows for p in ids}
-    notes: dict[str, str] = {}
+    notes: dict[str, tuple[str, str]] = {}
     for chunk in _chunks(plan_ids):
         found = await session.execute(
-            select(S.id, S.public_id, S.status_note).where(
+            select(S.id, S.public_id, S.status, S.status_note).where(
                 S.repository_id == repo_id,
                 S.status_note.is_not(None),
                 or_(S.id.in_(chunk), S.public_id.in_(chunk)),
             )
         )
-        for row_id, public_id, note in found.all():
-            notes[row_id] = notes[public_id or row_id] = note
+        for row_id, public_id, status, note in found.all():
+            notes[row_id] = notes[public_id or row_id] = (status, note)
     out: dict[str, list[tuple[str, str | None]]] = {}
     for ref, status, ids in rows:
-        note = next((notes[p] for p in ids if p in notes), None)
+        note = next((notes[p][1] for p in ids if notes.get(p, ("",))[0] == status), None)
         out.setdefault(ref, []).append((status, note))
     return out
 

@@ -90,6 +90,7 @@ from ...read_snapshots import (
     refresh_snapshot,
     snapshot_key,
 )
+from ._notes import KEEP, next_note
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -590,10 +591,10 @@ async def set_action_state(
     state: str | None,
     fingerprint: str = "",
     until: datetime | None = None,
-    note: str | None = None,
+    note: Any = KEEP,
 ) -> None:
     """Record, replace, or (``state=None``) clear a person's answer to one action,
-    with the *note* saying why (``None`` clears an earlier one).
+    with the *note* saying why (see :func:`._notes.next_note`).
 
     Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
     apply on every read, so writing one keeps the stored views.
@@ -617,11 +618,12 @@ async def set_action_state(
                 state=state,
                 fingerprint=fingerprint,
                 until=until,
-                note=note,
+                note=None if note is KEEP else note,
             )
         )
     else:
-        row.state, row.fingerprint, row.until, row.note = state, fingerprint, until, note
+        row.note = next_note(row.state, state, row.note, note)
+        row.state, row.fingerprint, row.until = state, fingerprint, until
 
 
 #: The stored rules' output's ``read_snapshots.kind``.
