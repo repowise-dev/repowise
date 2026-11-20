@@ -155,7 +155,7 @@ _ENV_RE = re.compile(r"(?:process\.env|import\.meta\.env)\b")
 # Statement text before a template that makes it something other than the URL
 # the wrapper requests: a nested callback, a log line, an error message.
 _NOT_A_REQUEST_RE = re.compile(
-    r"=>|\bfunction\b|\bconsole\.|\bthrow\b|Error\s*\(|\blog\w*\s*\(|\bwarn\s*\("
+    r"=>|\bfunction\b|\bconsole\.|\bthrow\b|Error\s*\(|\blog\w*\s*[.(]|\bwarn\s*\("
 )
 
 

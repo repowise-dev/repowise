@@ -98,6 +98,8 @@ def test_only_the_requested_template_is_the_prefix(tmp_path: Path) -> None:
         "import { baseFetch } from './base';\n"
         "async function apiRequest(endpoint: string) {\n"
         "  console.log(`/debug${endpoint}`);\n"
+        "  logger.error(`/failed${endpoint}`);\n"
+        "  this.log.info(`/seen${endpoint}`);\n"
         "  items.map((x) => `/other${endpoint}`);\n"
         "  return baseFetch(`/api/v1${endpoint}`);\n"
         "}\n"
@@ -105,7 +107,7 @@ def test_only_the_requested_template_is_the_prefix(tmp_path: Path) -> None:
     )
     paths = {p for _m, p in _paths(tmp_path, "src/b.ts", text)}
     assert "/api/v1/a" in paths
-    assert not paths & {"/debug/a", "/other/a", "/a"}
+    assert not paths & {"/debug/a", "/failed/a", "/seen/a", "/other/a", "/a"}
 
 
 @pytest.mark.parametrize(
