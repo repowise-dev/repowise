@@ -242,7 +242,9 @@ def _measured_workload(live: list[Any], measured: Mapping[str, str]) -> str | No
     return min(names) if names else None
 
 
-def _facets(r: _Reading, confidence: str, cold_name: bool) -> dict[str, str]:
+def _facets(
+    r: _Reading, confidence: str, cold_name: bool, confirmed: str | None
+) -> dict[str, str]:
     return {
         "actionability_confidence": confidence,
         "exposure": exposure(r.reachable),
@@ -257,7 +259,19 @@ def _facets(r: _Reading, confidence: str, cold_name: bool) -> dict[str, str]:
         # The name said it runs once and a run said otherwise: kept, never led.
         **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
         **_query_facets(r.queries),
+        **({"confirmed": confirmed} if confirmed else {}),
     }
+
+
+def _confirmed(r: _Reading, hot: frozenset[str]) -> str | None:
+    """What confirms the cause, or ``None``: exact evidence at its call path
+    (``query_count``: statements grow with the items), else a live member's
+    loop owner a leading workload measured hot (``measured``)."""
+    if r.queries is not None and r.queries.verdict == "grows":
+        return "query_count"
+    if any(f.details.get("role_owner") in hot for f in r.live):
+        return "measured"
+    return None
 
 
 def _query_facets(reading: Any) -> dict[str, str]:
@@ -278,6 +292,7 @@ def _assemble(
     origins: Mapping[str, str | None],
     measured: Mapping[str, str],
     queries: Mapping[str, Any],
+    hot: frozenset[str],
 ) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
@@ -325,7 +340,7 @@ def _assemble(
         provenance=r.provenance,
         magnitude=r.magnitude,
     )
-    facets = _facets(r, acted.confidence, cold_name)
+    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot))
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
@@ -368,6 +383,7 @@ def build_performance_opportunities(
     origins: Mapping[str, str | None] | None = None,
     measured: Mapping[str, str] | None = None,
     queries: Mapping[str, Any] | None = None,
+    hot: frozenset[str] = frozenset(),
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
@@ -377,13 +393,17 @@ def build_performance_opportunities(
     name; a group whose loop owner is one carries the ``measured`` facet.
     *queries* maps a call site's symbol id to its query-count reading
     (``evidence.query_counts``); a database cause reached by one carries the
-    ``queries`` facet.
+    ``queries`` facet. *hot* holds the functions a leading workload
+    measured hot; a cause inside one, or whose query counts grow, carries
+    the ``confirmed`` facet.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
-        opportunity = _assemble(key, members, cap, origins or {}, measured or {}, queries or {})
+        opportunity = _assemble(
+            key, members, cap, origins or {}, measured or {}, queries or {}, hot
+        )
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}
     return link_siblings(opportunities, sites, rank_sort_key)

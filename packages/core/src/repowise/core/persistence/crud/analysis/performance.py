@@ -255,7 +255,7 @@ async def finalize_performance_opportunities(
         rows,
         evidence_limit=_EVIDENCE_LIMIT,
         origins=await _unknown_context_origins(session, repository_id, rows),
-        measured=await _measured_functions(session, repository_id),
+        **(await _measured_functions(session, repository_id))._asdict(),
         queries=await _query_readings(session, repository_id),
     )
 
@@ -297,8 +297,18 @@ async def _restamp_roles(
     return out
 
 
-async def _measured_functions(session: AsyncSession, repository_id: str) -> dict[str, str]:
-    """Each function a leading workload's newest run ranks, with that workload's name.
+class _Measured(NamedTuple):
+    #: Function -> the leading workload that ranks it best.
+    measured: dict[str, str]
+    #: Functions a leading workload measured hot (``lead_candidate``).
+    hot: frozenset[str]
+
+
+async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
+    """Each function a leading workload's newest run ranks, with that workload's
+    name, and the ones any such run measured hot (``evidence.hotness``'s
+    ``lead_candidate`` tier: the share and interval rule, or ranked in
+    several runs).
 
     Read off ``workload_hotness``, which the health writers rebuild before
     this runs, so it describes the current code. Only workload classes that
@@ -312,16 +322,19 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> dict
     from .evidence import ranked_by_workload
 
     best: dict[str, tuple[int, str]] = {}
+    hot: set[str] = set()
     for run, rows in await ranked_by_workload(session, repository_id):
         if run.workload_class not in LEAD_CLASSES:
             continue
         for row in rows:
             if row.ordering_only:
                 continue
+            if row.tier == "lead_candidate":
+                hot.add(row.symbol_id)
             key = (row.rank, run.workload_name)
             if row.symbol_id not in best or key < best[row.symbol_id]:
                 best[row.symbol_id] = key
-    return {symbol_id: name for symbol_id, (_rank, name) in best.items()}
+    return _Measured({sid: name for sid, (_rank, name) in best.items()}, frozenset(hot))
 
 
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
