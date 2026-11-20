@@ -1118,3 +1118,28 @@ export async function removeProviderKey(providerId: string, repoId?: string) {
         from repowise.core.workspace.extractors.http.dialect import method_from_callee
 
         assert method_from_callee("fetchJSON") == "GET"
+
+
+ANALYTICS_TS = """\
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export class Analytics {
+  private baseUrl = `${API_BASE_URL}/api/analytics/ai-interview`;
+
+  private async makeRequest<T>(endpoint: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`);
+    return response.json();
+  }
+
+  async getOverview(userId: string) {
+    return this.makeRequest<Overview>(`/overview/${userId}`);
+  }
+}
+"""
+
+
+class TestWrapperBase:
+    def test_the_wrapper_prefix_composes_onto_its_calls(self):
+        contracts, _u, _c = _run(ANALYTICS_TS, "src/lib/api/analytics.ts")
+        assert "http::GET::/api/analytics/ai-interview/overview/{param}" in _ids(contracts)
+        assert "http::GET::/overview/{param}" not in _ids(contracts)

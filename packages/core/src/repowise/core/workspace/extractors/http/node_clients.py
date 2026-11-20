@@ -379,7 +379,7 @@ def _request(
     return method, join_base(client.base if base is None else base, url)
 
 
-class _Fields:
+class FieldScope:
     """The class fields in scope at a call, settled into the file's strings.
 
     Only the innermost class holding the call is in scope, so a field of one
@@ -392,6 +392,10 @@ class _Fields:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
         self._current: ClassFields | None = None
+
+    def raw(self, name: str) -> str | None:
+        """The source text the class entered last sets field *name* (``this.x``) to."""
+        return self._current.fields.get(name) if self._current else None
 
     def enter(self, pos: int) -> None:
         if self._classes is None:
@@ -432,7 +436,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
     if not names:
         return [], frozenset()
-    fields = _Fields(strings)
+    fields = FieldScope(strings)
     out: list[Contract] = []
     for _call, args, m, _strings in call_sites(ctx, _calls_for(names), strings):
         if any("this." in a for a in args[:3]):
@@ -465,4 +469,4 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     return out, frozenset(names)
 
 
-__all__ = ["client_calls", "client_mounts"]
+__all__ = ["FieldScope", "client_calls", "client_mounts"]
