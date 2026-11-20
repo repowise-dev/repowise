@@ -148,7 +148,9 @@ async def test_a_mark_goes_through_the_one_marker_and_its_errors_read_plainly(
 
     calls: list[tuple] = []
 
-    async def fake_mark(session, repository_id, item_id, status, *, reason=None, days=None):
+    async def fake_mark(
+        session, repository_id, item_id, status, *, reason=None, days=None, repo_root=None
+    ):
         calls.append((repository_id, item_id, status, reason, days))
         return {"id": item_id, "status": "snoozed", "store": "actions", "until": "2026-12-04T00:00:00+00:00"}
 

@@ -139,7 +139,13 @@ async def mark_first_look_item(
     repo = await _require_repo(session, repo_id)
     try:
         return await mark_item(
-            session, repo.id, item_id, body.status, reason=body.reason, days=body.days
+            session,
+            repo.id,
+            item_id,
+            body.status,
+            reason=body.reason,
+            days=body.days,
+            repo_root=_root(repo),
         )
     except MarkError as exc:
         status = 404 if exc.code == "unknown_item" else 422
