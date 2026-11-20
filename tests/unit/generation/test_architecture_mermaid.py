@@ -313,6 +313,56 @@ class TestStructure:
         assert [(n.name, n.role) for n in shared] == [("Shared libraries", "2 TypeScript files")]
         assert _tier_of(sm)["core"] == "engine"
 
+    @staticmethod
+    def _tool_over_web(web: list[str], tool_files: int):
+        """A dev tool importing a web app that calls an API over a core library.
+
+        The web app imports a UI kit nothing else uses.
+        """
+        files = dict.fromkeys([f"web/{p}" for p in web], "typescript")
+        files.update({f"tool/t{i}.ts": "typescript" for i in range(tool_files)})
+        files["ui/button.ts"] = "typescript"
+        files.update(dict.fromkeys(["api/routes.py", "core/x.py", "cli/main.py"], "python"))
+        edges = [(f"tool/t{i}.ts", f"web/{web[0]}", "imports") for i in range(tool_files)]
+        edges += [
+            (f"web/{web[0]}", "ui/button.ts", "imports"),
+            ("api/routes.py", "core/x.py", "imports"),
+            ("cli/main.py", "core/x.py", "imports"),
+        ]
+        return build_system_map(
+            files,
+            edges,
+            repo_name="demo",
+            manifests=["web/package.json", "tool/package.json", "ui/package.json"]
+            + [f"{d}/pyproject.toml" for d in ("api", "core", "cli")],
+            route_files={"api/routes.py"},
+            http_links=[(f"web/{web[-1]}", "api/routes.py")],
+        )
+
+    def test_a_small_tool_does_not_absorb_the_larger_app_it_imports(self):
+        sm = self._tool_over_web([f"src/m{i}.ts" for i in range(6)], tool_files=1)
+        nodes = {n.path: n for n in sm.nodes if n.path}
+        # The app keeps its box and takes in the UI kit only it imports.
+        assert nodes["web"].role == "7 TypeScript files"
+        assert nodes["web"].tier == "surface"
+        assert "ui" not in nodes
+        assert ("n_web", "n_api") in {(e.source, e.target) for e in sm.edges}
+
+    def test_a_routed_web_page_makes_its_app_a_way_in(self):
+        web = ["app/page.tsx", "app/api/items/route.ts", "src/client.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        verbs = {(e.source, e.target): e.verb for e in sm.edges}
+        assert verbs[("n_actor_user", "n_web")] == "uses"
+        assert next(n for n in sm.nodes if n.path == "web").role == "4 TypeScript files"
+        starts = next(f for n in sm.nodes if n.path == "web" for f in n.facts if "entry" in f)
+        assert starts == "entry points: web/app/page.tsx"
+
+    def test_other_files_in_an_app_folder_are_not_a_way_in(self):
+        """An Express or Angular ``app/`` folder holds middleware and error files too."""
+        web = ["app/middleware.js", "app/error.ts", "app/api/items/route.ts", "src/c.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        assert ("n_actor_user", "n_web") not in {(e.source, e.target) for e in sm.edges}
+
     def test_re_exports_are_not_flow(self):
         files = {f"src/pkg/{n}/m.py": "python" for n in ("app", "cli", "a", "b", "c")}
         files["src/pkg/__init__.py"] = "python"
