@@ -30,8 +30,9 @@ async def test_writes_json_markdown_html_and_the_row(async_session, tmp_path) ->
     md = rendered_path(tmp_path, ".md").read_text(encoding="utf-8")
     html = rendered_path(tmp_path, ".html").read_text(encoding="utf-8")
     listed = sum(min(len(s.items), 12) for s in report.sections)
-    assert md.count("<summary>Fix with your agent</summary>") == listed
-    assert "src/settings.py:4" in md and "value redacted" in md
+    assert "<details>" not in md
+    assert html.count("<summary>Fix with your agent</summary>") == listed
+    assert "src/settings.py:4" in md and "values redacted" in md
     assert "No live secrets" not in md
     assert html.startswith("<!doctype html>") and "src/settings.py" in html
     assert "—" not in md + html

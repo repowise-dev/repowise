@@ -16,6 +16,7 @@ from typing import Any
 
 from .collect import collect_first_look
 from .config import FirstLookSettings, first_look_settings
+from .living import LivingReport
 from .model import SECTION_CAP, FirstLookReport
 from .prompts import render_item_prompt, render_report_prompt
 from .store import report_path, store_report, write_report_file
@@ -47,39 +48,52 @@ def with_prose(report: FirstLookReport) -> FirstLookReport:
 async def render_document(
     session: Any,
     repository_id: str,
-    report: FirstLookReport,
+    report: FirstLookReport | LivingReport,
     *,
     app_url: str | None = None,
     flavor: str = "generic",
+    prompts: bool = True,
 ) -> dict[str, Any]:
     """The document the ``first-look-*`` renderers read.
 
-    *app_url* is the web app's origin (``http://127.0.0.1:3000``) when one is
-    running; links then point into it. Prompts are rendered for the items a
-    page lists (``SECTION_CAP`` per section), from what the index holds now.
+    *report* is a stored report or the living one (:func:`.living.build_living`),
+    whose items carry their status. *app_url* is the web app's origin
+    (``http://127.0.0.1:3000``) when one is running; links then point into it.
+    With *prompts*, each item a page lists (``SECTION_CAP`` per section) gets
+    its agent prompt from what the index holds now; Markdown and JSON exports
+    carry none. The whole-report prompt lists the open items.
     """
-    from repowise.core.analysis.actions.engine import actions_by_id
-    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+    from .living import LivingReport
 
-    report = with_prose(report)
-    prompts: dict[str, str] = {}
-    name = report.repo.get("name")
-    # Read the facts once; each action prompt would otherwise read them again.
-    actions = actions_by_id(await load_repo_facts(session, repository_id))
-    for block in report.sections:
-        for item in block.items[:SECTION_CAP]:
-            try:
-                async with session.begin_nested():
-                    prompts[item.id] = await render_item_prompt(
-                        session, repository_id, item, flavor=flavor, repo_name=name,
-                        actions=actions,
-                    )
-            except Exception:  # a missing prompt must not cost the page
-                logger.warning("first look: prompt for %s failed", item.id, exc_info=True)
+    if isinstance(report, LivingReport):
+        data = report.to_json()
+        statuses = {i: s.status for i, s in report.statuses.items()}
+        report = report.report
+    else:
+        report = with_prose(report)
+        data, statuses = report.to_json(), {}
+    rendered: dict[str, str] = {}
+    if prompts:
+        from repowise.core.analysis.actions.engine import actions_by_id
+        from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+
+        name = report.repo.get("name")
+        # Read the facts once; each action prompt would otherwise read them again.
+        actions = actions_by_id(await load_repo_facts(session, repository_id))
+        for block in report.sections:
+            for item in block.items[:SECTION_CAP]:
+                try:
+                    async with session.begin_nested():
+                        rendered[item.id] = await render_item_prompt(
+                            session, repository_id, item, flavor=flavor, repo_name=name,
+                            actions=actions,
+                        )
+                except Exception:  # a missing prompt must not cost the page
+                    logger.warning("first look: prompt for %s failed", item.id, exc_info=True)
     return {
-        **report.to_json(),
-        "prompts": prompts,
-        "report_prompt": render_report_prompt(report, flavor=flavor),
+        **data,
+        **({"prompts": rendered} if prompts else {}),
+        "report_prompt": render_report_prompt(report, flavor=flavor, statuses=statuses),
         "app_url": f"{app_url.rstrip('/')}/repos/{repository_id}" if app_url else None,
     }
 
@@ -92,6 +106,19 @@ async def _setup_facts(session: Any, repository_id: str, repo_root: Path) -> Any
     except Exception:  # "Turn on more" then lists the stored steps only
         logger.warning("first look: setup facts unavailable", exc_info=True)
         return None
+
+
+async def build_report(
+    session: Any, repository_id: str, repo_root: Path | None, *, setup: Any | None = None
+) -> FirstLookReport:
+    """The report at the index now, with its template text: what every writer starts from.
+
+    *setup* is this machine's setup facts, read here from *repo_root* when not given.
+    """
+    if setup is None and repo_root is not None:
+        setup = await _setup_facts(session, repository_id, repo_root)
+    report = await collect_first_look(session, repository_id, repo_root, setup=setup)
+    return dataclasses.replace(report, prose=template_prose(report))
 
 
 async def write_first_look(
@@ -120,10 +147,7 @@ async def write_first_look(
     root = Path(repo_root) if repo_root is not None else None
     if settings is None:
         settings = first_look_settings(root) if root is not None else FirstLookSettings()
-    if setup is None and root is not None:
-        setup = await _setup_facts(session, repository_id, root)
-    report = await collect_first_look(session, repository_id, root, setup=setup)
-    report = dataclasses.replace(report, prose=template_prose(report))
+    report = await build_report(session, repository_id, root, setup=setup)
     if not (store and settings.enabled):
         return report
     await store_report(session, repository_id, report)
@@ -154,6 +178,7 @@ async def write_files(
 
 __all__ = [
     "RENDERED",
+    "build_report",
     "render_document",
     "rendered_path",
     "with_prose",
