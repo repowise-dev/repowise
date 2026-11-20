@@ -10,7 +10,7 @@ export type LivingSection = FirstLookLivingReport["sections"][number];
 /** Statuses a person or an agent set that close an item. */
 const CLOSED: ReadonlySet<FirstLookItemStatus> = new Set(["done", "resolved", "false_positive"]);
 
-export const isClosed = (item: FirstLookLivingItem): boolean => CLOSED.has(item.status ?? "open");
+export const isClosed = (item: FirstLookLivingItem): boolean => CLOSED.has(item.status);
 
 /** How far the repository has come since the first look, for the progress line. */
 export interface Progress {
@@ -77,8 +77,7 @@ export function factNumber(item: FirstLookLivingItem, key: string): number | nul
 
 /** The status pill an item shows, if any: new beats open, and open shows nothing. */
 export function pillOf(item: FirstLookLivingItem): FirstLookItemStatus | "new" | null {
-  const status = item.status ?? "open";
-  if (status !== "open") return status;
+  if (item.status !== "open") return item.status;
   return item.change === "new" ? "new" : null;
 }
 
@@ -87,7 +86,7 @@ export function resolvedBySection(report: FirstLookLivingReport): Map<string, Fi
   const out = new Map<string, FirstLookLivingItem[]>();
   for (const item of report.baseline?.resolved ?? []) {
     const list = out.get(item.section) ?? [];
-    list.push({ ...item, status: "resolved" });
+    list.push(item);
     out.set(item.section, list);
   }
   return out;

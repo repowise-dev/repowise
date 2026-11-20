@@ -8,7 +8,7 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 import type { AgentPromptFlavor } from "@repowise-dev/types/agent-prompts";
-import type { FirstLookRouteKey } from "@repowise-dev/types/first-look";
+import type { FirstLookLivingItem, FirstLookMark, FirstLookRouteKey } from "@repowise-dev/types/first-look";
 import { FirstLookReport, type FirstLookPromptTarget } from "@repowise-dev/ui/report/first-look";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -19,6 +19,7 @@ import {
   firstLookMarkdownPath,
   getFirstLook,
   getFirstLookPrompt,
+  markFirstLookItem,
   rewriteFirstLook,
 } from "@/lib/api/reports";
 import { firstLookHref } from "./first-look-href";
@@ -46,6 +47,20 @@ export function FirstLookView({ repoId }: { repoId: string }) {
     async (target: FirstLookPromptTarget, flavor: AgentPromptFlavor) =>
       (await getFirstLookPrompt(repoId, target, flavor)).text,
     [repoId],
+  );
+  const onMark = useCallback(
+    async (item: FirstLookLivingItem, mark: FirstLookMark, reason: string | null) => {
+      try {
+        await markFirstLookItem(repoId, item.id, { status: mark, ...(reason ? { reason } : {}) });
+      } catch (err) {
+        // The server's words say what to do (a secret is ignored in code, not here).
+        throw new Error(
+          err instanceof ApiClientError && err.detail ? err.detail : toFriendlyMessage(err, t("markFailed")),
+        );
+      }
+      await mutate();
+    },
+    [mutate, repoId, t],
   );
   const onRewrite = useCallback(async () => {
     setRewriting(true);
@@ -79,6 +94,7 @@ export function FirstLookView({ repoId }: { repoId: string }) {
       overviewHref={`${prefix}/overview`}
       loadPrompt={loadPrompt}
       promptFlavor={FLAVOR}
+      onMark={onMark}
       markdownHref={firstLookMarkdownPath(repoId)}
       sinceCommand="repowise report first-look --since-last"
       canRewrite={data.can_rewrite}

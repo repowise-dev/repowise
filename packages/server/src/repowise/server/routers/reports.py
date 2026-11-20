@@ -1,15 +1,18 @@
-"""/api/repos/{repo_id}/reports/first-look: the stored report, its prompts and a rewrite.
+"""/api/repos/{repo_id}/reports/first-look: the repo report, its prompts, marks, exports and a rewrite.
 
-A thin layer over ``repowise.core.report.first_look``: the report is read
-from the index (the file in the checkout when the index has none), compared
-with the index as it is now, and each item's prompt is rendered on demand,
-one per request, because the action prompts read the whole action view.
+A thin layer over ``repowise.core.report.first_look``: every read is the
+living report (:func:`~repowise.core.report.first_look.living.build_living`),
+the report at the index now, measured against the stored first look, with each
+item's status. Marks go through :func:`~repowise.core.report.first_look.marks.mark_item`,
+the call ``repowise mark`` makes. Each item's prompt is rendered on demand, one
+per request, because the action prompts read the whole action view.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -19,25 +22,23 @@ from repowise.core.agent_prompts import Flavor
 from repowise.core.cost_estimator import estimate_first_look_cost
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
-from repowise.core.report.first_look import FirstLookReport
 from repowise.core.report.first_look.config import first_look_settings
+from repowise.core.report.first_look.living import LivingReport, build_living
 from repowise.core.report.first_look.llm import first_look_model
+from repowise.core.report.first_look.marks import MarkError, find_item, mark_item
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
 from repowise.core.report.first_look.render import render_first_look_markdown
-from repowise.core.report.first_look.staleness import staleness
-from repowise.core.report.first_look.store import load_report, read_report_file
-from repowise.core.report.first_look.write import write_first_look
+from repowise.core.report.first_look.write import render_document, write_first_look
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._repo_pricing import _provider_configured, resolve_provider
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
-from repowise.server.schemas.reports import FirstLookResponse
+from repowise.server.schemas.reports import (
+    FirstLookMarkRequest,
+    FirstLookMarkResponse,
+    FirstLookResponse,
+)
 
 router = APIRouter(tags=["reports"], dependencies=[Depends(verify_api_key)])
-
-_NO_REPORT = (
-    "No first-look report for this repository yet. `repowise init` writes one; "
-    "`repowise report first-look` writes it again."
-)
 
 
 async def _require_repo(session: AsyncSession, repo_id: str) -> Repository:
@@ -52,13 +53,13 @@ def _root(repo: Repository) -> Path | None:
     return root if root is not None and root.is_dir() else None
 
 
-async def _require_report(session: AsyncSession, repo: Repository) -> FirstLookReport:
-    report = await load_report(session, repo.id)
-    if report is None and (root := _root(repo)) is not None:
-        report = read_report_file(root)
-    if report is None:
-        raise HTTPException(status_code=404, detail=_NO_REPORT)
-    return report
+async def _living(session: AsyncSession, repo: Repository) -> LivingReport:
+    # A read never writes: with no stored report the page shows the report now, without a baseline.
+    return await build_living(session, repo.id, _root(repo))
+
+
+def _statuses(living: LivingReport) -> dict[str, str]:
+    return {i: s.status for i, s in living.statuses.items()}
 
 
 def _rewrite_offer(repo: Repository) -> tuple[bool, float | None]:
@@ -71,15 +72,14 @@ def _rewrite_offer(repo: Repository) -> tuple[bool, float | None]:
     return True, estimate_first_look_cost(provider_name, model).estimated_cost_usd
 
 
-async def _page(
-    session: AsyncSession, repo: Repository, report: FirstLookReport, flavor: Flavor
-) -> FirstLookResponse:
-    stale = await staleness(session, repo.id, report, _root(repo))
+async def _page(session: AsyncSession, repo: Repository, flavor: Flavor) -> FirstLookResponse:
+    living = await _living(session, repo)
     can_rewrite, cost = _rewrite_offer(repo)
     return FirstLookResponse(
-        report=report.to_json(),
-        staleness=stale.to_json(),
-        report_prompt=render_report_prompt(report, flavor=flavor, repo_name=repo.name),
+        report=living.to_json(),
+        report_prompt=render_report_prompt(
+            living.report, flavor=flavor, repo_name=repo.name, statuses=_statuses(living)
+        ),
         flavor=flavor,
         can_rewrite=can_rewrite,
         rewrite_cost_usd=cost,
@@ -92,9 +92,8 @@ async def get_first_look(
     flavor: Flavor = Query("generic"),
     session: AsyncSession = Depends(get_db_session),
 ) -> FirstLookResponse:
-    """The stored report, how far the index has moved since, and its whole-report prompt."""
-    repo = await _require_repo(session, repo_id)
-    return await _page(session, repo, await _require_report(session, repo), flavor)
+    """The report at the index now, each item's status against the first look, and the open items' prompt."""
+    return await _page(session, await _require_repo(session, repo_id), flavor)
 
 
 @router.get("/api/repos/{repo_id}/reports/first-look/prompt", response_model=AgentPromptResponse)
@@ -102,28 +101,49 @@ async def get_first_look_prompt(
     repo_id: str,
     flavor: Flavor = Query("generic"),
     item: str | None = Query(None, max_length=32, description="An item id; omit for the whole report."),
-    section: str | None = Query(None, max_length=32, description="A section key: its items only."),
+    section: str | None = Query(None, max_length=32, description="A section key: its open items only."),
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentPromptResponse:
     """One item's prompt, one section's, or the whole report's, worded for *flavor*."""
-    repo = await _require_repo(session, repo_id)
-    report = await _require_report(session, repo)
     if item is not None and section is not None:
         raise HTTPException(status_code=422, detail="Ask for an item or a section, not both")
-    if item is None:
-        if section is not None:
-            block = report.section(section)
-            if block is None:
-                raise HTTPException(status_code=404, detail="No section with that key in the report")
-            report = replace(report, sections=(block,))
-        return AgentPromptResponse(
-            flavor=flavor, text=render_report_prompt(report, flavor=flavor, repo_name=repo.name)
-        )
-    found = report.item(item)
-    if found is None:
-        raise HTTPException(status_code=404, detail="No item with that id in the report")
-    text = await render_item_prompt(session, repo_id, found, flavor=flavor, repo_name=repo.name)
+    repo = await _require_repo(session, repo_id)
+    if item is not None:
+        found = await find_item(session, repo_id, item, _root(repo))
+        if found is None:
+            raise HTTPException(status_code=404, detail="No item with that id in the report")
+        text = await render_item_prompt(session, repo_id, found, flavor=flavor, repo_name=repo.name)
+        return AgentPromptResponse(flavor=flavor, text=text)
+    living = await _living(session, repo)
+    report = living.report
+    if section is not None:
+        block = report.section(section)
+        if block is None:
+            raise HTTPException(status_code=404, detail="No section with that key in the report")
+        report = replace(report, sections=(block,))
+    text = render_report_prompt(report, flavor=flavor, repo_name=repo.name, statuses=_statuses(living))
     return AgentPromptResponse(flavor=flavor, text=text)
+
+
+@router.put(
+    "/api/repos/{repo_id}/reports/first-look/items/{item_id}/mark",
+    response_model=FirstLookMarkResponse,
+)
+async def mark_first_look_item(
+    repo_id: str,
+    item_id: str,
+    body: FirstLookMarkRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Done, acknowledged, a false positive or snoozed: the answer `repowise mark` records."""
+    repo = await _require_repo(session, repo_id)
+    try:
+        return await mark_item(
+            session, repo.id, item_id, body.status, reason=body.reason, days=body.days
+        )
+    except MarkError as exc:
+        status = 404 if exc.code == "unknown_item" else 422
+        raise HTTPException(status_code=status, detail=exc.message) from exc
 
 
 @router.get("/api/repos/{repo_id}/reports/first-look/export.md", response_class=PlainTextResponse)
@@ -131,13 +151,15 @@ async def export_first_look_markdown(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> PlainTextResponse:
-    """The report as a Markdown file, the same document the CLI writes."""
+    """The report as a Markdown file: the document the CLI writes, statuses as text, no prompts."""
     repo = await _require_repo(session, repo_id)
-    report = await _require_report(session, repo)
+    doc = await render_document(session, repo_id, await _living(session, repo), prompts=False)
     # ASCII only: a header is latin-1, and a quote or line break must never reach it.
-    name = "".join(c if c.isascii() and (c.isalnum() or c in "-_.") else "-" for c in repo.name or "repo")
+    name = "".join(
+        c if c.isascii() and (c.isalnum() or c in "-_.") else "-" for c in repo.name or "repo"
+    )
     return PlainTextResponse(
-        render_first_look_markdown(report.to_json()),
+        render_first_look_markdown(doc),
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{name}-report.md"'},
     )
@@ -156,5 +178,5 @@ async def rewrite_first_look(
         raise HTTPException(
             status_code=409, detail=error or "No model provider is configured for this repository"
         )
-    report = await write_first_look(session, repo_id, _root(repo), provider=provider)
-    return await _page(session, repo, report, flavor)
+    await write_first_look(session, repo_id, _root(repo), provider=provider)
+    return await _page(session, repo, flavor)

@@ -134,7 +134,7 @@ export function ItemRow({ item, h }: { item: FirstLookLivingItem; h: SectionHand
   return (
     <li
       id={item.id}
-      data-status={item.status ?? "open"}
+      data-status={item.status}
       className="group relative grid scroll-mt-20 grid-cols-[14px_minmax(0,1fr)] gap-x-2.5 gap-y-1 border-b border-[var(--color-border-default)] py-3 last:border-b-0"
     >
       <span
@@ -234,7 +234,7 @@ function FunctionTable({ items, h }: { items: FirstLookLivingItem[]; h: SectionH
           {items.map((item) => {
             const symbol = item.locations[0]?.symbol ?? (item.title_facts.symbol as string | undefined);
             return (
-              <tr key={item.id} id={item.id} data-status={item.status ?? "open"} className="scroll-mt-20">
+              <tr key={item.id} id={item.id} data-status={item.status} className="scroll-mt-20">
                 <PathCell item={item} h={h} label={<code className="font-mono text-[0.92em]">{symbol ?? item.rule}</code>} />
                 <td className={cn(TD, NUM)}>{num(factNumber(item, "ccn"))}</td>
                 <td className={cn(TD, NUM)}>{num(factNumber(item, "nloc"))}</td>
@@ -274,7 +274,7 @@ function CountTable({
         ) : null}
         <tbody>
           {items.map((item) => (
-            <tr key={item.id} id={item.id} data-status={item.status ?? "open"} className="scroll-mt-20">
+            <tr key={item.id} id={item.id} data-status={item.status} className="scroll-mt-20">
               <PathCell item={item} h={h} />
               <td className={cn(TD, NUM)}>{num(fact(item))}</td>
             </tr>

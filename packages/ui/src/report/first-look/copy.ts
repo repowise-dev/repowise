@@ -154,9 +154,9 @@ export const FIRST_LOOK_COPY_EN: FirstLookCopy = {
   linesCovered: "lines covered",
   branchesCovered: "branches covered",
   table: {
-    function: "Function",
-    ccn: "CCN",
-    lines: "Lines",
+    function: "File",
+    ccn: "Max CCN",
+    lines: "Code lines",
     importers: "Importers",
     changes: "Changes 90d",
     document: "Document",

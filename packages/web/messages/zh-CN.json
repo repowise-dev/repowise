@@ -1060,9 +1060,9 @@
         "linesCovered": "行覆盖率",
         "branchesCovered": "分支覆盖率",
         "table": {
-          "function": "函数",
-          "ccn": "圈复杂度",
-          "lines": "行数",
+          "function": "文件",
+          "ccn": "最大圈复杂度",
+          "lines": "代码行数",
           "importers": "引用方",
           "changes": "90 天变更",
           "document": "文档",

@@ -275,7 +275,8 @@ export function ProgressLine({ p, copy, tail }: { p: Progress; copy: FirstLookCo
 }
 
 function Header({ report, copy }: { report: FirstLookLivingReport; copy: FirstLookCopy }) {
-  const { repo, stamp, baseline } = report;
+  const { repo, stamp } = report;
+  const first = report.baseline?.stamp ?? null;
   const sha = (stamp.commit ?? "").slice(0, 7);
   return (
     <header className="relative isolate grid gap-3.5 pt-9">
@@ -288,9 +289,9 @@ function Header({ report, copy }: { report: FirstLookLivingReport; copy: FirstLo
         {sha ? <span>{repo.branch ? `${repo.branch} @ ${sha}` : sha}</span> : null}
         <span>{copy.writtenOn(formatDate(stamp.created_at))}</span>
         {repo.files != null ? <span>{copy.files(formatNumber(repo.files))}</span> : null}
-        {baseline ? <span>{copy.firstLookOn(formatDate(baseline.stamp.created_at))}</span> : null}
+        {first ? <span>{copy.firstLookOn(formatDate(first.created_at))}</span> : null}
       </div>
-      {baseline ? <ProgressLine p={progress(report)} copy={copy} /> : null}
+      {first ? <ProgressLine p={progress(report)} copy={copy} /> : null}
       {report.prose?.summary ? (
         <p className="m-0 mt-1 max-w-[66ch] text-[16.5px] leading-[1.6]">{inline(report.prose.summary)}</p>
       ) : null}

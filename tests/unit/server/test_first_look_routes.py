@@ -1,4 +1,4 @@
-"""/api/repos/{repo_id}/reports/first-look: the stored report, its prompts, staleness and a rewrite."""
+"""/api/repos/{repo_id}/reports/first-look: the living report, its prompts, marks, exports and a rewrite."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from repowise.core.report.first_look.model import (
     file_link,
     item_id,
 )
-from repowise.core.report.first_look.store import store_report, write_report_file
+from repowise.core.report.first_look.store import store_report
 from repowise.server.routers import reports
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
 from repowise.server.schemas.reports import FirstLookResponse
@@ -66,11 +66,11 @@ async def _stored_repo(client: AsyncClient, session_factory) -> dict:
 
 
 @pytest.mark.anyio
-async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
+async def test_the_report_now_is_measured_against_the_first_look(
     reports_client: AsyncClient, session_factory, monkeypatch
 ) -> None:
-    monkeypatch.setattr(reports, "_provider_configured", lambda *a: False)
     monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (None, None, None, "no key"))
+    monkeypatch.setattr(reports, "_provider_configured", lambda *a: False)
     repo = await _stored_repo(reports_client, session_factory)
 
     resp = await reports_client.get(
@@ -79,15 +79,15 @@ async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
 
     assert resp.status_code == 200
     body = FirstLookResponse.model_validate(resp.json())
-    assert body.report == _report().to_json()
-    assert body.report["prose"]["items"] == {_ID: "Break the cycle."}
     assert body.flavor == "cursor"
     assert body.report_prompt.strip()
-    # The empty index no longer has the cycle: the report's one item reads as fixed.
-    assert body.staleness["fixed"] == [_ID]
-    assert body.staleness["report_commit"] == "c1"
-    assert body.can_rewrite is False  # no provider, no rewrite button
-    assert body.rewrite_cost_usd is None
+    # The empty index no longer has the cycle and nobody answered it: it reads as resolved.
+    baseline = body.report["baseline"]
+    assert baseline["stamp"]["commit"] == "c1"
+    (gone,) = baseline["resolved"]
+    assert gone["id"] == _ID and gone["status"] == "resolved" and gone["text"] == "Break the cycle."
+    assert all(i["id"] != _ID for s in body.report["sections"] for i in s["items"])
+    assert body.can_rewrite is False and body.rewrite_cost_usd is None
 
     class Provider:
         model_name = "claude-haiku-5-5"
@@ -99,32 +99,21 @@ async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
 
 
 @pytest.mark.anyio
-async def test_the_file_in_the_checkout_is_read_when_the_index_has_none(
+async def test_a_repository_with_no_stored_report_still_reads_without_writing_one(
     reports_client: AsyncClient,
 ) -> None:
     repo = await create_test_repo(reports_client)
-    write_report_file(Path(repo["local_path"]), _report())
 
     resp = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look")
 
     assert resp.status_code == 200
-    assert resp.json()["report"]["stamp"]["commit"] == "c1"
+    assert resp.json()["report"]["baseline"] == {"stamp": None, "resolved": []}
+    assert not (Path(repo["local_path"]) / ".repowise" / "reports").exists()
+    assert (await reports_client.get("/api/repos/nope/reports/first-look")).status_code == 404
 
 
 @pytest.mark.anyio
-async def test_no_report_is_a_404_that_says_how_to_write_one(reports_client: AsyncClient) -> None:
-    repo = await create_test_repo(reports_client)
-
-    for path in ("", "/prompt", "/export.md"):
-        resp = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look{path}")
-        assert resp.status_code == 404
-        assert "repowise init" in resp.json()["detail"]
-    missing = await reports_client.get("/api/repos/nope/reports/first-look")
-    assert missing.status_code == 404
-
-
-@pytest.mark.anyio
-async def test_an_item_prompt_and_the_whole_report_prompt(
+async def test_prompts_for_an_item_a_section_and_the_whole_report(
     reports_client: AsyncClient, session_factory
 ) -> None:
     repo = await _stored_repo(reports_client, session_factory)
@@ -133,13 +122,60 @@ async def test_an_item_prompt_and_the_whole_report_prompt(
     one = AgentPromptResponse.model_validate(
         (await reports_client.get(url, params={"item": _ID, "flavor": "claude-code"})).json()
     )
-    assert one.flavor == "claude-code"
-    assert "src/a.py" in one.text
+    assert one.flavor == "claude-code" and "src/a.py" in one.text
+    assert (await reports_client.get(url, params={"item": "fl_000000000000"})).status_code == 404
 
     whole = (await reports_client.get(url)).json()
-    assert whole["flavor"] == "generic" and "src/a.py" in whole["text"]
+    assert whole["flavor"] == "generic" and whole["text"].strip()
+    assert (await reports_client.get(url, params={"section": "nope"})).status_code == 404
+    both = await reports_client.get(url, params={"item": _ID, "section": "hygiene"})
+    assert both.status_code == 422
 
-    assert (await reports_client.get(url, params={"item": "fl_000000000000"})).status_code == 404
+
+@pytest.mark.anyio
+async def test_a_mark_goes_through_the_one_marker_and_its_errors_read_plainly(
+    reports_client: AsyncClient, session_factory, monkeypatch
+) -> None:
+    repo = await _stored_repo(reports_client, session_factory)
+    url = f"/api/repos/{repo['id']}/reports/first-look/items"
+
+    unknown = await reports_client.put(f"{url}/fl_000000000000/mark", json={"status": "done"})
+    assert unknown.status_code == 404 and "No first-look item" in unknown.json()["detail"]
+    no_reason = await reports_client.put(f"{url}/{_ID}/mark", json={"status": "ack"})
+    assert no_reason.status_code == 422 and "reason" in no_reason.json()["detail"]
+    bad = await reports_client.put(f"{url}/{_ID}/mark", json={"status": "later"})
+    assert bad.status_code == 422
+
+    calls: list[tuple] = []
+
+    async def fake_mark(session, repository_id, item_id, status, *, reason=None, days=None):
+        calls.append((repository_id, item_id, status, reason, days))
+        return {"id": item_id, "status": "snoozed", "store": "actions", "until": "2026-12-04T00:00:00+00:00"}
+
+    monkeypatch.setattr(reports, "mark_item", fake_mark)
+    ok = await reports_client.put(f"{url}/{_ID}/mark", json={"status": "snooze", "days": 14})
+    assert ok.status_code == 200 and ok.json()["status"] == "snoozed"
+    assert calls == [(repo["id"], _ID, "snooze", None, 14)]
+
+
+@pytest.mark.anyio
+async def test_the_markdown_export_downloads_with_a_safe_name_and_no_prompts(
+    reports_client: AsyncClient, session_factory
+) -> None:
+    repo = await _stored_repo(reports_client, session_factory)
+    url = f"/api/repos/{repo['id']}/reports/first-look/export.md"
+
+    md = await reports_client.get(url)
+    assert md.status_code == 200
+    assert md.headers["content-type"].startswith("text/markdown")
+    assert md.headers["content-disposition"] == 'attachment; filename="test-repo-report.md"'
+    assert "<details>" not in md.text
+
+    async with get_session(session_factory) as session:
+        row = await session.get(Repository, repo["id"])
+        row.name = 'café "x"\r\n'
+    named = await reports_client.get(url)
+    assert named.headers["content-disposition"] == 'attachment; filename="caf---x----report.md"'
 
 
 @pytest.mark.anyio
@@ -147,6 +183,7 @@ async def test_rewrite_runs_the_one_writer_with_the_repos_provider(
     reports_client: AsyncClient, session_factory, monkeypatch
 ) -> None:
     repo = await _stored_repo(reports_client, session_factory)
+    url = f"/api/repos/{repo['id']}/reports/first-look/rewrite"
     calls: list[tuple] = []
     provider = object()
 
@@ -155,61 +192,12 @@ async def test_rewrite_runs_the_one_writer_with_the_repos_provider(
         return _report(generator="claude-haiku-5-5")
 
     monkeypatch.setattr(reports, "write_first_look", fake_write)
-    monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (provider, "x", "m", None))
-
-    resp = await reports_client.post(f"/api/repos/{repo['id']}/reports/first-look/rewrite")
-
-    assert resp.status_code == 200
-    assert resp.json()["report"]["stamp"]["generator"] == "claude-haiku-5-5"
-    assert calls == [(repo["id"], Path(repo["local_path"]), provider)]
-
-
-@pytest.mark.anyio
-async def test_rewrite_without_a_provider_is_refused(
-    reports_client: AsyncClient, session_factory, monkeypatch
-) -> None:
-    repo = await _stored_repo(reports_client, session_factory)
-    url = f"/api/repos/{repo['id']}/reports/first-look/rewrite"
-
-    async def fake_write(*a, **k):
-        raise AssertionError("the writer must not run without a provider")
-
-    monkeypatch.setattr(reports, "write_first_look", fake_write)
     monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (None, None, None, "no key"))
+    refused = await reports_client.post(url)
+    assert refused.status_code == 409 and refused.json()["detail"] == "no key"
+    assert calls == []
+
+    monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (provider, None, "m", None))
     resp = await reports_client.post(url)
-    assert resp.status_code == 409 and resp.json()["detail"] == "no key"
-
-
-@pytest.mark.anyio
-async def test_a_section_prompt_and_the_markdown_export(
-    reports_client: AsyncClient, session_factory
-) -> None:
-    repo = await _stored_repo(reports_client, session_factory)
-    base = f"/api/repos/{repo['id']}/reports/first-look"
-
-    one = (await reports_client.get(f"{base}/prompt", params={"section": "hygiene"})).json()
-    assert "src/a.py" in one["text"]
-    assert (await reports_client.get(f"{base}/prompt", params={"section": "nope"})).status_code == 404
-
-    md = await reports_client.get(f"{base}/export.md")
-    assert md.status_code == 200
-    assert md.headers["content-type"].startswith("text/markdown")
-    assert 'filename="test-repo-report.md"' in md.headers["content-disposition"]
-    assert "src/a.py" in md.text
-
-
-@pytest.mark.anyio
-async def test_an_item_and_a_section_together_is_refused_and_any_name_downloads(
-    reports_client: AsyncClient, session_factory
-) -> None:
-    repo = await _stored_repo(reports_client, session_factory)
-    base = f"/api/repos/{repo['id']}/reports/first-look"
-    both = await reports_client.get(f"{base}/prompt", params={"item": _ID, "section": "hygiene"})
-    assert both.status_code == 422
-
-    async with get_session(session_factory) as session:
-        row = await session.get(Repository, repo["id"])
-        row.name = 'café "x"\r\n'
-    md = await reports_client.get(f"{base}/export.md")
-    assert md.status_code == 200
-    assert md.headers["content-disposition"] == 'attachment; filename="caf---x----report.md"'
+    assert resp.status_code == 200
+    assert calls == [(repo["id"], Path(repo["local_path"]), provider)]

@@ -1,6 +1,10 @@
 import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
-import type { FirstLookPage } from "@repowise-dev/types/first-look";
-import { apiGet, apiPost } from "./client";
+import type {
+  FirstLookMarkRequest,
+  FirstLookMarkResponse,
+  FirstLookPage,
+} from "@repowise-dev/types/first-look";
+import { apiGet, apiPost, apiPut } from "./client";
 
 const firstLook = (repoId: string) => `/api/repos/${repoId}/reports/first-look`;
 
@@ -19,6 +23,18 @@ export async function getFirstLookPrompt(
   flavor: AgentPromptFlavor,
 ): Promise<AgentPromptResponse> {
   return apiGet<AgentPromptResponse>(`${firstLook(repoId)}/prompt`, { flavor, ...(target ?? {}) });
+}
+
+/** Done, acknowledged, a false positive or snoozed: what `repowise mark` records. */
+export async function markFirstLookItem(
+  repoId: string,
+  itemId: string,
+  body: FirstLookMarkRequest,
+): Promise<FirstLookMarkResponse> {
+  return apiPut<FirstLookMarkResponse>(
+    `${firstLook(repoId)}/items/${encodeURIComponent(itemId)}/mark`,
+    body,
+  );
 }
 
 /** The report as a Markdown download, relative to the API base. */

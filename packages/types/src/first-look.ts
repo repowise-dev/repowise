@@ -52,10 +52,28 @@ export interface FirstLookLink {
   params: Record<string, string | number>;
 }
 
+/** The stores a mark writes to. */
+export type FirstLookMemberStore =
+  | "action"
+  | "dead_code"
+  | "health_finding"
+  | "performance"
+  | "refactoring_opportunity"
+  | "refactoring_plan";
+
+/** One stored row an item stands for. */
+export interface FirstLookMember {
+  store: FirstLookMemberStore;
+  ref: string;
+  fingerprint: string;
+}
+
 export interface FirstLookItem {
   id: string;
   section: FirstLookSectionKey | (string & {});
+  /** The primary rule; `rules` lists every rule a grouped item merges. */
   rule: string;
+  rules: string[];
   /** The facts the prose is written from. Never source text. */
   title_facts: Record<string, unknown>;
   locations: FirstLookLocation[];
@@ -73,6 +91,8 @@ export interface FirstLookItem {
   link: FirstLookLink;
   prompt: { renderer: FirstLookPromptRenderer; payload_ref: string | null };
   fingerprint: string;
+  /** The stored rows (or next actions) a mark on this item writes to. */
+  members: FirstLookMember[];
 }
 
 export interface FirstLookSection {
@@ -175,22 +195,21 @@ export type FirstLookMark = "done" | "ack" | "false_positive" | "snooze";
 
 /** What the living report adds to each item: its mark and whether it is new since the first look. */
 export interface FirstLookLiving {
-  /** The merged rules when one item groups several (`rule` stays the primary). */
-  rules?: string[];
-  status?: FirstLookItemStatus;
-  status_reason?: string | null;
-  status_until?: string | null;
+  status: FirstLookItemStatus;
+  status_reason: string | null;
+  status_until: string | null;
   /** `new`: the first-look report did not have it. */
-  change?: "new" | null;
+  change: "new" | null;
 }
 
 export type FirstLookLivingItem = FirstLookItem & FirstLookLiving;
 
 /** The first-look report the living one is compared with, and what it had that is gone now. */
 export interface FirstLookBaseline {
-  stamp: FirstLookStamp;
+  /** Null when no first look is stored yet: the page then shows the report now. */
+  stamp: FirstLookStamp | null;
   /** Items gone from the index since, each with the sentence the report gave it. */
-  resolved: (FirstLookLivingItem & { text?: string | null })[];
+  resolved: (FirstLookLivingItem & { text: string })[];
 }
 
 /** The report rebuilt from the index on every read, compared with the first look. */
@@ -202,9 +221,10 @@ export interface FirstLookLivingReport extends Omit<FirstLookReport, "sections">
 /** Items one section shows before "N more in the app" (core's `SECTION_CAP`). */
 export const FIRST_LOOK_SECTION_CAP = 12;
 
-/** `GET /api/repos/{id}/reports/first-look` with the report and staleness typed. */
-export type FirstLookPage = Omit<FirstLookResponse, "report" | "staleness"> & {
-  report: FirstLookReport;
-  staleness: FirstLookStaleness;
+/** `GET /api/repos/{id}/reports/first-look` with the living report typed. */
+export type FirstLookPage = Omit<FirstLookResponse, "report"> & {
+  report: FirstLookLivingReport;
 };
+
+export type { FirstLookMarkRequest, FirstLookMarkResponse } from "./generated/http.js";
 

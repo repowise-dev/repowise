@@ -12,6 +12,7 @@ function item(id: string, section: string, over: Partial<FirstLookLivingItem> = 
     id,
     section,
     rule: "rule_" + id,
+    rules: ["rule_" + id],
     title_facts: {},
     locations: [{ path: `src/${id}.py`, line: 7, symbol: null }],
     locations_total: 1,
@@ -27,7 +28,10 @@ function item(id: string, section: string, over: Partial<FirstLookLivingItem> = 
     link: { route: "file", params: { path: `src/${id}.py`, line: 7 } },
     prompt: { renderer: "first_look_item", payload_ref: null },
     fingerprint: "f",
+    members: [],
     status: "open",
+    status_reason: null,
+    status_until: null,
     change: null,
     ...over,
   };
@@ -108,7 +112,12 @@ function report(over: Partial<FirstLookLivingReport> = {}): FirstLookLivingRepor
         cost: null,
         schema_version: 1,
       },
-      resolved: [item("fl_vendored", "hygiene", { rule: "vendored_in_tree", text: "A vendored file sits in the code tree." } as Partial<FirstLookLivingItem>)],
+      resolved: [
+        {
+          ...item("fl_vendored", "hygiene", { rule: "vendored_in_tree", status: "resolved" }),
+          text: "A vendored file sits in the code tree.",
+        },
+      ],
     },
     ...over,
   };
@@ -180,7 +189,8 @@ describe("FirstLookReport", () => {
     renderReport();
     const health = document.querySelector('[data-section="health"]')!;
     expect(within(health as HTMLElement).getAllByRole("row")).toHaveLength(7); // head + 6
-    expect(within(health as HTMLElement).getByRole("columnheader", { name: "CCN" })).toBeInTheDocument();
+    expect(within(health as HTMLElement).getByRole("columnheader", { name: "Max CCN" })).toBeInTheDocument();
+    expect(within(health as HTMLElement).getByText("200")).toBeInTheDocument();
     expect(within(health as HTMLElement).getByRole("link", { name: "2 more in the app" })).toHaveAttribute("href", "/r/health_file");
     const dead = document.querySelector('[data-section="dead_code"]') as HTMLElement;
     expect(within(dead).getByText("429")).toBeInTheDocument();
@@ -270,5 +280,20 @@ describe("RepoReportCard", () => {
     expect(screen.getByText(/new since Nov 20, 2026/).textContent).toMatch(/1 resolved · 1 acknowledged · 1 new since/);
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
     expect(screen.getByRole("link", { name: /Open report/ })).toHaveAttribute("href", "/r/first-look");
+  });
+});
+
+describe("FirstLookReport without a stored first look", () => {
+  it("shows the report now with no progress line", () => {
+    render(
+      <FirstLookReport
+        report={report({ baseline: { stamp: null, resolved: [] } })}
+        hrefFor={hrefFor}
+        overviewHref="/r/overview"
+        loadPrompt={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/since the first look/)).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "acme-web" })).toBeInTheDocument();
   });
 });

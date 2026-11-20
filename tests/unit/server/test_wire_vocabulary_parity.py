@@ -327,3 +327,19 @@ def test_first_look_vocabularies_and_shapes_match_python() -> None:
         assert _interface_fields(name, "first-look.ts") == set(payload), name
     cap = re.search(r"FIRST_LOOK_SECTION_CAP = (\d+);", (_TYPES_SRC / "first-look.ts").read_text(encoding="utf-8"))
     assert cap and int(cap.group(1)) == model.SECTION_CAP
+
+
+def test_living_first_look_shapes_match_python() -> None:
+    """The living report's statuses, marks, member stores and the fields each item gains."""
+    from repowise.core.report.first_look import marks, model
+    from repowise.core.report.first_look.marks import ItemStatus
+
+    def unions(alias: str) -> set[str]:
+        return _union_members(alias, "first-look.ts")
+
+    assert unions("FirstLookItemStatus") == set(marks.ITEM_STATUSES)
+    assert unions("FirstLookMark") == set(marks.MARK_STATUSES)
+    assert unions("FirstLookMemberStore") == set(model.MEMBER_STORES)
+    assert _interface_fields("FirstLookMember", "first-look.ts") == set(model.Member("action", "a").to_json())
+    assert _interface_fields("FirstLookLiving", "first-look.ts") == {*ItemStatus().to_json(), "change"}
+    assert _interface_fields("FirstLookBaseline", "first-look.ts") == {"stamp", "resolved"}

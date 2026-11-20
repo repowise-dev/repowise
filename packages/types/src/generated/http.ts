@@ -2396,9 +2396,21 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FirstLookMarkRequest {
+  status: "done" | "ack" | "false_positive" | "snooze";
+  reason?: string | null;
+  days?: number | null;
+}
+
+export interface FirstLookMarkResponse {
+  id: string;
+  status: string;
+  store: string;
+  until?: string | null;
+}
+
 export interface FirstLookResponse {
   report: Record<string, unknown>;
-  staleness: Record<string, unknown>;
   report_prompt: string;
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   can_rewrite: boolean;
