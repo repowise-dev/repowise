@@ -41,10 +41,10 @@ def _basis_runs(runs: Sequence[Any]) -> list[Any]:
 
     timed = [r for r in runs if r.kind == "test_timing"]
     complete = [r for r in timed if not r.mapping_partial]
-    covered = {(r.workload_name, r.environment) for r in complete}
-    newest = newest_runs(complete) | newest_runs(
-        r for r in timed if (r.workload_name, r.environment) not in covered
-    )
+    # Keyed by workload alone: a partial run of one environment never displaces
+    # the complete run of another.
+    covered = {r.workload_name for r in complete}
+    newest = newest_runs(complete) | newest_runs(r for r in timed if r.workload_name not in covered)
     best: dict[str, Any] = {}
     for run in timed:
         if run.id in newest and (

@@ -149,3 +149,15 @@ async def test_a_map_naming_no_timed_test_falls_back_to_inferred(session) -> Non
     costs = (await suite_costs(session, repo.id, HEAD))["file_costs"]
 
     assert costs["basis"] == "inferred"
+
+
+async def test_a_newer_partial_run_elsewhere_never_displaces_a_complete_one(session) -> None:
+    repo = await insert_repo(session)
+    await _timings(session, repo.id, [_t(SLOW, 3.0)])
+    await _timings(session, repo.id, [_t(SLOW, 9.0)], environment="macos-local",
+                   at=T0 + timedelta(days=1), partial=True)
+
+    out = await suite_costs(session, repo.id, HEAD)
+
+    assert [(r["environment"], r["mapping_partial"]) for r in out["runs"]] == [("linux-ci", False)]
+    assert out["slow_tests"][0]["duration_s"] == 3.0
