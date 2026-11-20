@@ -637,30 +637,57 @@ def _script_command(pm: str, name: str) -> str:
     return f"{pm} run {name}"
 
 
-def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tuple[str, ...]]:
-    """The plain test command, its runner, and the lifecycle scripts it leaves out.
+def _direct_base(pm: str, scripts: dict, name: str) -> tuple[str, tuple[str, ...]]:
+    """The runner the script *name* is, run by *pm*'s exec, and the hooks that leaves out.
 
-    A test script, else the runner the package depends on; ``""`` when the package has
-    neither, so it has no tests to cover. A script with ``pre``/``post`` hooks that is
-    the runner alone is run by the package manager's exec: the hooks (a lint, a check
-    that fails on another platform) write no coverage and can stop the run first.
+    Only for a script with ``pre``/``post`` hooks that is the runner alone: the hooks (a
+    lint, a check that fails on another platform) write no coverage and can stop the run
+    first. ``("", ())`` otherwise, and the script stays.
     """
-    name, runner = _test_script(scripts)
-    script = str(scripts.get(name) or "").strip() if name else ""
-    hooks = tuple(h for h in (f"pre{name}", f"post{name}") if name and scripts.get(h))
+    hooks = tuple(h for h in (f"pre{name}", f"post{name}") if scripts.get(h))
+    script = str(scripts.get(name) or "").strip()
     if hooks and _PLAIN_RUNNER.fullmatch(script):
-        return f"{_NODE_EXEC[pm]} {script}", runner, hooks
+        return f"{_NODE_EXEC[pm]} {script}", hooks
+    return "", ()
+
+
+def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tuple[str, ...]]:
+    """The plain test command, its runner, and the lifecycle scripts it leaves out
+    (:func:`_direct_base`): a test script, else the runner the package depends on;
+    ``""`` when the package has neither, so it has no tests to cover."""
+    name, runner = _test_script(scripts)
     if name:
-        return _script_command(pm, name), runner, ()
+        direct, hooks = _direct_base(pm, scripts, name)
+        return direct or _script_command(pm, name), runner, hooks
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
     if runner is None:
         return "", None, ()
     return f"{_NODE_EXEC[pm]} {runner}" + (" run" if runner == "vitest" else ""), runner, ()
 
 
+def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, deps: dict, workspace: bool) -> tuple[str, ...]:
+    """The step that installs jest-junit for test timings, when Jest runs and the package lacks it."""
+    if test is None or runner != "jest" or "jest-junit" in deps:
+        return ()
+    return _dev_install(pm, "jest-junit", workspace)
+
+
+def _node_junit(runner: str | None) -> dict[str, str]:
+    """The :class:`Stack` JUnit fields for *runner*."""
+    flag = _NODE_JUNIT_FLAGS.get(runner or "", "")
+    jest = runner == "jest"
+    return {
+        "junit_report": "junit.xml" if flag else "",
+        "junit_flag": flag,
+        "junit_env": _JEST_JUNIT_ENV if jest else "",
+        "junit_path_prefix": _JEST_JUNIT_PREFIX if jest else "",
+    }
+
+
 def _node_notes(
-    test: CommandEdit | None, workspace: bool, script: str, base: str, *, reporter: bool = False
+    test: CommandEdit | None, workspace: bool, script: str, base: str, *, reporter: bool, hooks: tuple[str, ...]
 ) -> tuple[str, ...]:
+    """Why the unit has no command, or what its command installs and leaves out (*hooks*: :func:`_hooks_note`)."""
     if test is not None:
         notes = []
         if test.prepare:
@@ -669,7 +696,7 @@ def _node_notes(
         if reporter:
             notes.append("Jest writes test timings through `jest-junit`, so the workflow installs it for "
                          "the run. Add it to `devDependencies` to drop that install.")
-        return tuple(notes)
+        return (*notes, *hooks)
     if workspace and (not script or _DELEGATES.search(script)):
         return ("This is a monorepo whose packages run their own tests, so Repowise could not add "
                 "one coverage flag for all of them. Run each package's tests with an lcov reporter "
@@ -680,7 +707,7 @@ def _node_notes(
 
 
 def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
-    """Why the command runs the runner, not the test script, and how to run the hooks it skips."""
+    """Why the command runs the runner, not the test script, and how to run the *hooks* it skips."""
     if not hooks:
         return ()
     pre = hooks[0].startswith("pre")
@@ -701,22 +728,18 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
         return None
     editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=workspace)
     test = editor(base, _NODE.search(base)) if runner else None
-    jest = runner == "jest"
     # Test timings need the reporter in node_modules, beside the runner.
-    reporter = _dev_install(pm, "jest-junit", workspace) if test and jest and "jest-junit" not in deps else ()
+    reporter = _reporter_install(test, runner, pm, deps, workspace)
     prepare = (*test.prepare, *reporter) if test else ()
-    notes = _node_notes(test, workspace, str(scripts.get("test") or ""), base, reporter=bool(reporter))
     return Stack(
         "node", runner, pm, test.reports if test else "coverage/lcov.info",
         setup=_node_setup(root, package, pm, install),
         test=test.text if test else "", prepare=prepare,
-        notes=(*notes, *(_hooks_note(pm, hooks) if test else ())),
+        notes=_node_notes(test, workspace, str(scripts.get("test") or ""), base,
+                          reporter=bool(reporter), hooks=_hooks_note(pm, hooks)),
         # The install comes first: the runner and the coverage provider live in node_modules.
         requires=(install, *_run_lines(prepare)) if test else (), pattern=_NODE, editor=editor,
-        junit_report="junit.xml" if runner in _NODE_JUNIT_FLAGS else "",
-        junit_flag=_NODE_JUNIT_FLAGS.get(runner or "", ""),
-        junit_env=_JEST_JUNIT_ENV if jest else "",
-        junit_path_prefix=_JEST_JUNIT_PREFIX if jest else "",
+        **_node_junit(runner),
     )
 
 
