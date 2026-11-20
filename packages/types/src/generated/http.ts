@@ -2406,6 +2406,7 @@ export interface FirstLookMarkResponse {
   id: string;
   status: "open" | "done" | "acknowledged" | "false_positive" | "snoozed" | "resolved";
   store: string;
+  reason?: string | null;
   until?: string | null;
 }
 

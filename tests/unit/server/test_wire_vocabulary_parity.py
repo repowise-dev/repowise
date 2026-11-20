@@ -343,6 +343,8 @@ def test_living_first_look_shapes_match_python() -> None:
     assert _interface_fields("FirstLookMember", "first-look.ts") == set(model.Member("action", "a").to_json())
     assert _interface_fields("FirstLookLiving", "first-look.ts") == {*ItemStatus().to_json(), "change"}
     assert _interface_fields("FirstLookBaseline", "first-look.ts") == {"stamp", "resolved"}
+    report = model.FirstLookReport(model.Stamp("c", None, "2026-11-20T00:00:00+00:00"), {}, ())
+    assert _interface_fields("FirstLookProseSource", "first-look.ts") == set(report.prose_source())
 
     from typing import get_args
 

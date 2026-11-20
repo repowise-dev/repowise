@@ -72,6 +72,7 @@ function report(over: Partial<FirstLookLivingReport> = {}): FirstLookLivingRepor
       cost: null,
       schema_version: 1,
     },
+    prose_source: { writer: "template", written_at: null, cost_usd: null },
     repo: {
       name: "acme-web",
       branch: "main",
@@ -248,10 +249,10 @@ describe("FirstLookReport", () => {
     expect(document.querySelector("[data-export]")).toBeNull();
   });
 
-  it("offers Write it with AI only when the host can rewrite, with its price", () => {
+  it("says who wrote the wording, and offers a rewrite only when the host can, with its price", () => {
     const onRewrite = vi.fn();
     const { rerender, loadPrompt } = renderReport();
-    expect(screen.queryByRole("button", { name: /Write it with AI/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Rewrite/ })).toBeNull();
     rerender(
       <FirstLookReport
         report={report()}
@@ -263,7 +264,8 @@ describe("FirstLookReport", () => {
         rewriteCost={0.25}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Write it with AI, about \$0\.25/ }));
+    expect(screen.getByText("Template wording")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Rewrite with your model (~$0.25)" }));
     expect(onRewrite).toHaveBeenCalledOnce();
   });
 
@@ -319,5 +321,19 @@ describe("Code health without recorded numbers", () => {
     expect(within(section).queryByRole("table")).toBeNull();
     expect(within(section).getByText("Split Board0 into 7 helpers. CCN 248, 605 lines.")).toBeInTheDocument();
     expect(within(section).queryByText("—")).toBeNull();
+  });
+});
+
+describe("Prose source and mark reasons", () => {
+  it("dates a model's wording and shows a marked item's reason on its pill", () => {
+    const r = report({
+      prose_source: { writer: "claude-haiku-5-5", written_at: "2026-11-20T09:00:00+00:00", cost_usd: 0.003 },
+    });
+    render(
+      <FirstLookReport report={r} hrefFor={hrefFor} overviewHref="/r/overview" loadPrompt={vi.fn()} canRewrite onRewrite={vi.fn()} />,
+    );
+    expect(screen.getByText("Wording by your model, Nov 20, 2026")).toHaveAttribute("title", "claude-haiku-5-5");
+    expect(screen.getByRole("button", { name: "Rewrite" })).toBeInTheDocument();
+    expect(within(document.getElementById("fl_perf")!).getByText("acknowledged")).toHaveAttribute("title", "batched later");
   });
 });

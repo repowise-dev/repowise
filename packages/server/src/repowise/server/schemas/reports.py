@@ -47,4 +47,6 @@ class FirstLookMarkResponse(BaseModel):
     status: Literal["open", "done", "acknowledged", "false_positive", "snoozed", "resolved"]
     #: The store the answer went to.
     store: str
+    #: Why, for an acknowledged item or a false positive.
+    reason: str | None = None
     until: str | None = None

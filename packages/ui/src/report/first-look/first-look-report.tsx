@@ -178,18 +178,12 @@ function Footer({
   report,
   copy,
   sinceCommand,
-  rewrite,
 }: {
   report: FirstLookLivingReport;
   copy: FirstLookCopy;
   sinceCommand: string | null | undefined;
-  rewrite: { onRewrite: () => void; cost: number | null; running: boolean } | null;
 }) {
   const { stamp } = report;
-  const writer =
-    stamp.generator === "template"
-      ? copy.writerTemplate
-      : copy.writerModel(stamp.generator, stamp.cost != null ? formatCost(stamp.cost) : null);
   return (
     <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-[12.5px] text-[var(--color-text-secondary)]">
       <span className="font-mono">{copy.reportAt((stamp.commit ?? "").slice(0, 7))}</span>
@@ -198,34 +192,39 @@ function Footer({
           {copy.sinceThen} <code className="font-mono text-[0.86em]">{sinceCommand}</code>
         </span>
       ) : null}
-      <span>{writer}</span>
-      {rewrite ? <RewriteButton copy={copy} {...rewrite} /> : null}
     </footer>
   );
 }
 
-function RewriteButton({
-  copy,
-  onRewrite,
-  cost,
-  running,
-}: {
-  copy: FirstLookCopy;
-  onRewrite: () => void;
-  cost: number | null;
-  running: boolean;
-}) {
+type Rewrite = { onRewrite: () => void; cost: number | null; running: boolean } | null;
+
+/** Who wrote the wording, and the way to have the model write it again. */
+function ProseSource({ report, copy, rewrite }: { report: FirstLookLivingReport; copy: FirstLookCopy; rewrite: Rewrite }) {
+  const source = report.prose_source;
+  const model = source.writer !== "template";
+  const label = model ? copy.rewrite : copy.rewriteWithModel;
   return (
-    <button
-      type="button"
-      onClick={onRewrite}
-      disabled={running}
-      className={cn(CONTROL, "inline-flex items-center gap-1 text-[var(--color-accent-primary)] hover:underline disabled:opacity-60")}
-    >
-      {running ? copy.writing : copy.writeWithAi}
-      {cost != null && !running ? `, ${copy.about(formatCost(cost))}` : null}
-      <ArrowUpRight aria-hidden className="size-3.5" />
-    </button>
+    <div className="flex flex-wrap items-center gap-x-1.5 text-[12.5px] text-[var(--color-text-secondary)]">
+      <span title={model ? source.writer : undefined}>
+        {model ? copy.wordingByModel(formatDate(source.written_at ?? report.stamp.created_at)) : copy.wordingTemplate}
+      </span>
+      {rewrite ? (
+        <>
+          <span aria-hidden className={CONTROL}>
+            ·
+          </span>
+          <button
+            type="button"
+            onClick={rewrite.onRewrite}
+            disabled={rewrite.running}
+            className={cn(CONTROL, "text-[var(--color-accent-primary)] hover:underline disabled:opacity-60")}
+          >
+            {rewrite.running ? copy.writing : label}
+            {rewrite.cost != null && !rewrite.running ? ` (${copy.approxCost(formatCost(rewrite.cost))})` : null}
+          </button>
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -335,18 +334,17 @@ export function FirstLookReport({
         hasMarkdown={Boolean(markdownHref)}
       />
       <main className="mx-auto max-w-[900px] px-4 pb-16">
-        <Header report={report} copy={copy} />
+        <Header
+          report={report}
+          copy={copy}
+          rewrite={canRewrite && onRewrite ? { onRewrite, cost: rewriteCost ?? null, running: rewriting } : null}
+        />
         <Strip report={report} copy={copy} />
         <Insight report={report} copy={copy} />
         <StartHere report={report} copy={copy} text={text} />
         {report.sections.map((s) => (paired && PAIRED.includes(s.key) ? null : renderSection(s.key)))}
         {paired ? <div className="grid gap-x-10 md:grid-cols-2">{PAIRED.map(renderSection)}</div> : null}
-        <Footer
-          report={report}
-          copy={copy}
-          sinceCommand={sinceCommand}
-          rewrite={canRewrite && onRewrite ? { onRewrite, cost: rewriteCost ?? null, running: rewriting } : null}
-        />
+        <Footer report={report} copy={copy} sinceCommand={sinceCommand} />
       </main>
       <Toast message={toast} />
     </div>
@@ -376,7 +374,7 @@ export function ProgressLine({ p, copy, tail }: { p: Progress; copy: FirstLookCo
   );
 }
 
-function Header({ report, copy }: { report: FirstLookLivingReport; copy: FirstLookCopy }) {
+function Header({ report, copy, rewrite }: { report: FirstLookLivingReport; copy: FirstLookCopy; rewrite: Rewrite }) {
   const { repo, stamp } = report;
   const first = report.baseline?.stamp ?? null;
   const sha = (stamp.commit ?? "").slice(0, 7);
@@ -393,6 +391,7 @@ function Header({ report, copy }: { report: FirstLookLivingReport; copy: FirstLo
         {repo.files != null ? <span>{copy.files(formatNumber(repo.files))}</span> : null}
         {first ? <span>{copy.firstLookOn(formatDate(first.created_at))}</span> : null}
       </div>
+      <ProseSource report={report} copy={copy} rewrite={rewrite} />
       {first ? <ProgressLine p={progress(report)} copy={copy} /> : null}
       {report.prose?.summary ? (
         <p className="m-0 mt-1 max-w-[66ch] text-[16.5px] leading-[1.6]">{inline(report.prose.summary)}</p>

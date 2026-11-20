@@ -1284,15 +1284,15 @@
         "cancel": "Cancel",
         "reportAt": "Report at {sha}",
         "sinceThen": "Since then:",
-        "writerTemplate": "Written from the index by a template. No model, no cost.",
-        "writerModel": "Written by {model}.",
-        "writerModelCost": "Written by {model}, {cost}.",
-        "writeWithAi": "Write it with AI",
         "writing": "Writing...",
-        "about": "about {cost}",
         "repoReport": "Repo report",
         "openReport": "Open report",
-        "countOf": "{n} of {total}"
+        "countOf": "{n} of {total}",
+        "wordingByModel": "Wording by your model, {date}",
+        "wordingTemplate": "Template wording",
+        "rewrite": "Rewrite",
+        "rewriteWithModel": "Rewrite with your model",
+        "approxCost": "~{cost}"
       },
       "markFailed": "Couldn't save the mark"
     }

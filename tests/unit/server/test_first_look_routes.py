@@ -139,7 +139,7 @@ async def test_a_mark_goes_through_the_one_marker_and_its_errors_read_plainly(
     url = f"/api/repos/{repo['id']}/reports/first-look/items"
 
     unknown = await reports_client.put(f"{url}/fl_000000000000/mark", json={"status": "done"})
-    assert unknown.status_code == 404 and "No first-look item" in unknown.json()["detail"]
+    assert unknown.status_code == 404 and "No repo report item" in unknown.json()["detail"]
     no_reason = await reports_client.put(f"{url}/{_ID}/mark", json={"status": "ack"})
     assert no_reason.status_code == 422 and "reason" in no_reason.json()["detail"]
     bad = await reports_client.put(f"{url}/{_ID}/mark", json={"status": "later"})

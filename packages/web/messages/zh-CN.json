@@ -1098,15 +1098,15 @@
         "cancel": "取消",
         "reportAt": "报告提交 {sha}",
         "sinceThen": "此后：",
-        "writerTemplate": "由模板根据索引生成。未使用模型，无费用。",
-        "writerModel": "由 {model} 撰写。",
-        "writerModelCost": "由 {model} 撰写，{cost}。",
-        "writeWithAi": "用 AI 撰写",
         "writing": "正在撰写...",
-        "about": "约 {cost}",
         "repoReport": "仓库报告",
         "openReport": "打开报告",
-        "countOf": "{n} / {total}"
+        "countOf": "{n} / {total}",
+        "wordingByModel": "措辞由你的模型撰写，{date}",
+        "wordingTemplate": "模板措辞",
+        "rewrite": "重写",
+        "rewriteWithModel": "用你的模型重写",
+        "approxCost": "约 {cost}"
       },
       "markFailed": "无法保存标记"
     }

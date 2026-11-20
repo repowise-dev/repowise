@@ -152,6 +152,7 @@ export interface FirstLookRepo {
 export interface FirstLookReport {
   schema_version: number;
   stamp: FirstLookStamp;
+  prose_source: FirstLookProseSource;
   repo: FirstLookRepo;
   /** "Do these first": at most three item ids. */
   top: string[];
@@ -193,13 +194,25 @@ export type FirstLookItemStatus =
 /** What a mark sets (`repowise mark <id> done|ack|false-positive|snooze`). */
 export type FirstLookMark = "done" | "ack" | "false_positive" | "snooze";
 
+export type FirstLookChange = "new" | "changed" | "resolved";
+
+/** Who wrote the report's wording, when, and what the model call cost. */
+export interface FirstLookProseSource {
+  /** `template`, or the model id. */
+  writer: string;
+  /** When a model wrote it; null for the template, written fresh on every read. */
+  written_at: string | null;
+  cost_usd: number | null;
+}
+
 /** What the living report adds to each item: its mark and whether it is new since the first look. */
 export interface FirstLookLiving {
   status: FirstLookItemStatus;
   status_reason: string | null;
   status_until: string | null;
-  /** `new`: the first-look report did not have it. */
-  change: "new" | null;
+  /** Against the first look: `new` (it did not have it), `changed` (its facts moved),
+   *  `resolved` (gone from the index, kept for a person's answer); null when the same. */
+  change: FirstLookChange | null;
 }
 
 export type FirstLookLivingItem = FirstLookItem & FirstLookLiving;

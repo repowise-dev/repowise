@@ -91,6 +91,7 @@ export function StatusPill({ item, copy }: { item: FirstLookLivingItem; copy: Fi
   return (
     <span
       data-status={pill}
+      title={item.status_reason ?? undefined}
       className={cn(
         "whitespace-nowrap rounded-full border border-[var(--color-border-default)] px-2 text-[11.5px] text-[var(--color-text-secondary)]",
         PILL[pill],

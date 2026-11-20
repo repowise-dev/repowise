@@ -83,13 +83,14 @@ export interface FirstLookCopy {
   /** "Report at {sha}". */
   reportAt: (sha: string) => string;
   sinceThen: string;
-  writerTemplate: string;
-  /** "Written by {model}, {cost}." */
-  writerModel: (model: string, cost: string | null) => string;
-  writeWithAi: string;
+  /** "Wording by your model, {date}". */
+  wordingByModel: (date: string) => string;
+  wordingTemplate: string;
+  rewrite: string;
+  rewriteWithModel: string;
   writing: string;
-  /** "about {cost}". */
-  about: (cost: string) => string;
+  /** "~{cost}", what a rewrite costs. */
+  approxCost: (cost: string) => string;
   repoReport: string;
   openReport: string;
 }
@@ -188,11 +189,12 @@ export const FIRST_LOOK_COPY_EN: FirstLookCopy = {
   cancel: "Cancel",
   reportAt: (sha) => `Report at ${sha}`,
   sinceThen: "Since then:",
-  writerTemplate: "Written from the index by a template. No model, no cost.",
-  writerModel: (model, cost) => `Written by ${model}${cost ? `, ${cost}` : ""}.`,
-  writeWithAi: "Write it with AI",
+  wordingByModel: (date) => `Wording by your model, ${date}`,
+  wordingTemplate: "Template wording",
+  rewrite: "Rewrite",
+  rewriteWithModel: "Rewrite with your model",
   writing: "Writing...",
-  about: (cost) => `about ${cost}`,
+  approxCost: (cost) => `~${cost}`,
   repoReport: "Repo report",
   openReport: "Open report",
 };
