@@ -414,7 +414,7 @@ def _namespace_imported(importer_source: bytes | None) -> set[str]:
                 "is_test": False,
                 "is_api_contract": False,
                 "symbol_count": 2,
-                "symbols": [sym("verify", 1), sym("extract_token", 4)],
+                "symbols": [sym("verify", 1), sym("extract_token", 4), sym("io", 7)],
             },
             "app.py": {"is_entry_point": True, "is_test": False, "symbol_count": 0, "symbols": []},
         },
@@ -441,6 +441,8 @@ def test_namespace_import_rescues_only_the_names_an_importer_writes():
     names = _namespace_imported(b"from mw import auth\n\nauth.verify()\n")
     assert "verify" not in names
     assert "extract_token" in names
+    # Too short for the identifier scan to see: never read as absent.
+    assert "io" not in names
 
 
 def test_namespace_import_rescues_everything_when_the_importer_is_unread():

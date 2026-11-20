@@ -24,7 +24,7 @@ from ..decorator_rules import (
 from ..finding_helpers import _is_synthetic_node, _symbol_span
 from ..jvm_reachability import defines_main
 from ..models import DeadCodeFindingData, DeadCodeKind
-from ..name_occurrences import file_identifiers
+from ..name_occurrences import file_identifiers, searchable_token
 from ..risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
@@ -507,8 +507,13 @@ class UnusedExportPass:
 
 
 def _namespace_rescues(file_ctx: _ExportFile, sym_name: str) -> bool:
-    """Whether a namespace importer may reach *sym_name* as ``mod.<attr>``."""
+    """Whether a namespace importer may reach *sym_name* as ``mod.<attr>``.
+
+    A name the identifier scan cannot see (too short, non-ASCII) is never read
+    as absent: it keeps the rescue.
+    """
     if not file_ctx.imported_as_namespace:
         return False
     tokens = file_ctx.namespace_tokens
-    return tokens is None or sym_name.encode("utf-8", "replace") in tokens
+    token = searchable_token(sym_name)
+    return tokens is None or not token or token in tokens
