@@ -338,8 +338,10 @@ class TestOptionsMethod:
             ("{ method: 'POST' } as RequestInit", "POST"),
             ("{ method: 'POST' } as unknown as RequestInit", "POST"),
             ("{ method: 'PATCH' as unknown as Method }", "PATCH"),
+            ("{ method: 'POST' } satisfies RequestInit", "POST"),
             ("{ ...opts, method: 'PUT' }", "PUT"),
-            ("{ method: 'PURGE' }", "PURGE"),
+            # A body passed as the second argument, with a field of its own.
+            ("{ method: 'card', amount: 10 }", None),
             ("{ method }", None),
         ],
     )
