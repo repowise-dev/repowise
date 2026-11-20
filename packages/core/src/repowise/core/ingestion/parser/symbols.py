@@ -64,6 +64,7 @@ from ..symbol_identity import (
     disambiguate_colliding_ids,
     make_symbol_id,
     split_python_property_mutators,
+    split_swift_initializers,
     symbol_discriminator,
 )
 from .symbol_rules import (
@@ -709,6 +710,8 @@ def _finalize_symbols(
     if lang == "python":
         symbols = _drop_python_rebindings(symbols)
         split_python_property_mutators(symbols)
+    if lang == "swift":
+        split_swift_initializers(symbols)
     # Anonymous members go last, once the overloads holding them carry
     # their discriminators.
     anonymous = [s for s in symbols if is_anonymous_member(s)]

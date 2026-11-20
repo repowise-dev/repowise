@@ -395,6 +395,33 @@ def split_python_property_mutators(symbols: list[Symbol]) -> None:
             symbol.id = f"{symbol.id}#{role}"
 
 
+def swift_initializer_selector(symbol: Symbol) -> str:
+    """``(_:label:)``: the argument labels Swift itself names an initialiser by.
+
+    A parameter written ``x: Int`` has the label ``x``; ``_ y: Int`` and
+    ``label z: Int`` spell their label first.
+    """
+    labels = [
+        parameter.split(":", 1)[0].split()[0]
+        for parameter in signature_parameters(symbol.signature or "") or []
+        if parameter.strip()
+    ]
+    return "(" + "".join(f"{label}:" for label in labels) + ")"
+
+
+def split_swift_initializers(symbols: list[Symbol]) -> None:
+    """Give each of a type's initialisers its own id, in place.
+
+    Every ``init`` of a type is named ``init``, so without this they share one
+    id and one graph node. Swift has no general overload discriminator here,
+    so only initialisers are split, by their argument labels: ``init#(x:)``.
+    """
+    taken = Counter(s.id for s in symbols if s.name == "init" and s.kind == "method")
+    for symbol in symbols:
+        if symbol.name == "init" and symbol.kind == "method" and taken[symbol.id] > 1:
+            symbol.id = f"{symbol.id}#{swift_initializer_selector(symbol)}"
+
+
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
     """Append parameter types to every count two members share, when they differ.
 
@@ -549,6 +576,7 @@ __all__ = [
     "pair_overloads",
     "parameter_type_arity",
     "split_python_property_mutators",
+    "split_swift_initializers",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",
