@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from rich.console import Console
 
 from repowise.cli.commands.update_cmd import reporting
@@ -93,3 +94,39 @@ def test_loader_reads_the_split_from_the_store(tmp_path: Path) -> None:
 
     asyncio.run(build())
     assert load_cascade_overflow_split(repo_path, ["src/a.py", "src/b.py"]) == (3, 3)
+
+
+def test_loader_counts_only_this_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import upsert_page, upsert_repository
+    from repowise.core.persistence.database import init_db
+
+    repo_path = (tmp_path / "repo").resolve()
+    url = f"sqlite+aiosqlite:///{tmp_path / 'shared.db'}"
+    monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+    async def build() -> None:
+        engine = create_engine(url)
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            for name in ("repo", "other"):
+                repo = await upsert_repository(session, name=name, local_path=str(tmp_path / name))
+                await upsert_page(
+                    session,
+                    page_id=f"repo_overview:{name}",
+                    repository_id=repo.id,
+                    page_type="repo_overview",
+                    title=name,
+                    content="body",
+                    target_path=name,
+                    source_hash="",
+                    model_name="mock",
+                    provider_name="mock",
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(build())
+    assert load_cascade_overflow_split(repo_path, []) == (1, 0)
