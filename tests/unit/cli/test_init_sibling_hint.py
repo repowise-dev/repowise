@@ -48,6 +48,16 @@ def test_a_workspace_member_gets_no_hint(tmp_path: Path) -> None:
     assert _sibling_hint.sibling_repo_count(backend) == 0
 
 
+def test_a_clone_under_a_workspace_that_does_not_list_it_gets_no_hint(tmp_path: Path) -> None:
+    """The parent is already a workspace, so there is no new one to suggest."""
+    clone = _repo(tmp_path / "clone")
+    _repo(tmp_path / "frontend")
+    (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text(
+        "repos:\n  - {path: frontend, alias: frontend}\n", encoding="utf-8"
+    )
+    assert _sibling_hint.sibling_repo_count(clone) == 0
+
+
 def test_repos_in_the_home_folder_get_no_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
