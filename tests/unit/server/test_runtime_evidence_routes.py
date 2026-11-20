@@ -307,3 +307,28 @@ async def test_status_and_measured_name_the_same_newest_run(
     status_runs = {w["run_id"] for w in status["workloads"] if w["workload"] == "w-r1"}
     measured_runs = {r["run_id"] for r in measured["measured"]["runs"]}
     assert status_runs == measured_runs == {"r1"}
+
+
+async def test_tests_lists_slow_tests_with_their_basis_run(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    from repowise.core.persistence.crud import save_evidence_run
+
+    repo_id = await _repo(ev_client, session_factory)
+    empty = (await ev_client.get(f"/api/repos/{repo_id}/evidence/tests")).json()
+    assert (empty["status"], empty["command"]) == ("no_test_timings", "repowise evidence setup")
+    async with session_factory() as session:
+        run = {
+            "run_key": "t1", "kind": "test_timing", "format": "junit", "source": "cli",
+            "workload_name": "pytest", "workload_class": "unit_test", "commit_sha": HEAD,
+        }
+        rows = [{"test_id": f"tests/test_a.py::test_{i}", "duration_s": float(i)} for i in range(3)]
+        await save_evidence_run(session, repo_id, run, rows, history_runs=5, max_runs=20)
+        await session.commit()
+
+    out = (await ev_client.get(f"/api/repos/{repo_id}/evidence/tests", params={"limit": 2})).json()
+
+    assert out["status"] == "measured"
+    assert [t["test_id"] for t in out["slow_tests"]] == ["tests/test_a.py::test_2", "tests/test_a.py::test_1"]
+    assert out["runs"][0]["freshness"] == "current"
+    assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0}

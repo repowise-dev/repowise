@@ -1395,8 +1395,18 @@ repowise evidence add parent.json worker-1.json worker-2.json --workload "build"
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
 repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence status --format json   # newest run of each workload
+repowise evidence tests                  # slowest tests, and test time per production file
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
+
+`repowise evidence setup --write` also writes a CI file, one job per build unit that runs its tests
+with coverage and JUnit XML on pull requests and default-branch pushes and keeps the report and test <!-- repowise-drift-ignore -->
+results as artifacts: `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+(include it from `.gitlab-ci.yml`) when the repository has a `.gitlab-ci.yml` and no GitHub workflows.
+`--ci github|gitlab` picks one; GitLab skips a unit whose command needs its GitHub Actions step
+(Gradle without the JaCoCo plugin) and says so. A different file already at that path is left alone, and a repository
+with no unit repowise has a test command for gets no file; both exit `1`. Without `--write`, setup
+writes nothing.
 
 | Flag | What it does | Default |
 |------|--------------|---------|

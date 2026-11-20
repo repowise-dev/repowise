@@ -15,7 +15,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .eligibility import SCOPE_EXCLUSIONS, Verdict, perf_low_priority, perf_queue_verdict
+from .eligibility import (
+    SCOPE_EXCLUSIONS,
+    Verdict,
+    observation,
+    perf_low_priority,
+    perf_queue_verdict,
+)
 from .order import DUE_TIERS
 from .value import perf_confidence, perf_ready, perf_value, tier
 
@@ -28,8 +34,17 @@ NOT_FILE_LEAD = "not_file_lead"
 #: A row the queue builder did not read this run (for example an opportunity
 #: of an older model): judged out so it never reads as unjudged.
 NOT_IN_QUEUE = "not_in_queue"
+#: A cause whose marker has no fix strategy (``eligibility.observation``): kept
+#: in the performance inventory, never a unit of the queue, so never counted.
+OBSERVATION = "observation"
 #: Reasons a stored judgement can carry beyond ``eligibility.REASONS``.
-STORED_REASONS: tuple[str, ...] = (NOT_JUDGED, COVERED_BY_PLAN, NOT_FILE_LEAD, NOT_IN_QUEUE)
+STORED_REASONS: tuple[str, ...] = (
+    NOT_JUDGED,
+    COVERED_BY_PLAN,
+    NOT_FILE_LEAD,
+    NOT_IN_QUEUE,
+    OBSERVATION,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,12 +74,17 @@ class Judgement:
 def perf_judgement(row: Any, facets: Mapping[str, Any], plan: Mapping[str, Any]) -> Judgement:
     """A cause's place in the performance default queue, valued and tiered as
     Fix first values and tiers it when the cause leads its item."""
+    if observation(row):
+        return _OBSERVATION
     verdict = perf_queue_verdict(row)
     if not verdict.eligible:
         return Judgement(verdict.reason)
     value = perf_value(row, facets)
     level, _why = tier(value, perf_confidence(facets), perf_ready(row, plan), perf_low_priority(row))
     return Judgement(None, value, level)
+
+
+_OBSERVATION = Judgement(OBSERVATION)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,10 +116,12 @@ def queue_counts(
 ) -> QueueCounts:
     """Fold ``(reason, tier, n)`` groups of served units (``reason`` ``None``
     for an eligible unit) into the counts; ``shown`` is the caller's and
-    ``gated`` the units a language gate held back."""
+    ``gated`` the units a language gate held back. An observation is no unit."""
     eligible = due = 0
     excluded: dict[str, int] = {}
     for reason, level, n in groups:
+        if reason == OBSERVATION:
+            continue
         if reason is None:
             eligible += n
             due += n if level in DUE_TIERS else 0
@@ -132,6 +154,7 @@ __all__ = [
     "NOT_FILE_LEAD",
     "NOT_IN_QUEUE",
     "NOT_JUDGED",
+    "OBSERVATION",
     "STORED_REASONS",
     "Judgement",
     "QueueCounts",

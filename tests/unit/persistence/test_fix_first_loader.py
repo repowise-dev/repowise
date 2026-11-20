@@ -454,3 +454,27 @@ async def test_loader_reads_hidden_findings_to_price_a_fix(async_session) -> Non
         select(HealthFinding).where(HealthFinding.repository_id == rid))).scalars()}
     assert by_id["finding_u1"].queue_eligible is None
     assert by_id["finding_n1"].queue_eligible is not None
+
+
+async def test_loader_leaves_an_observation_out_as_the_builder_does(async_session) -> None:
+    """The loader reads an ``investigate`` row's prerequisites in SQL, so a
+    marker with no fix strategy leaves the stored queue uncounted."""
+    from tests.unit.health.test_perf_observations import _observation_row
+
+    rid = await seed_fix_first(async_session)
+    row = _observation_row()
+    details = {**row["details"], "prerequisites": list(row.pop("prerequisites"))}
+    async_session.add(
+        PerformanceOpportunity(repository_id=rid, **_with_json({**row, "details": details}, "details"))
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=no_tests,
+    )
+    assert loaded == built
