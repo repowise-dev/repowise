@@ -45,6 +45,7 @@ import {
 import { QUIET_LINK_CLS, type RowCallbacks } from "./performance/queue";
 import { ScopeControl, ScopeSentence, type ScopeCounts } from "./performance/scope";
 import {
+  ConnectEvidenceState,
   FilteredEmpty,
   GoodState,
   IgnoredArgumentsNotice,
@@ -87,6 +88,7 @@ export function PerformanceView({
   onFiltersChange,
   openOpportunityId,
   onOpenOpportunityChange,
+  runtimeEvidence = null,
 }: {
   adapter: PerformanceViewAdapter;
   /** The tab's URL parameters (or a pre-flat `perf` blob), so a shared link opens the same view. */
@@ -101,6 +103,13 @@ export function PerformanceView({
   openOpportunityId?: string | null;
   /** Called with the open cause's id, or null when the drawer closes. */
   onOpenOpportunityChange?: ((opportunityId: string | null) => void) | undefined;
+  /**
+   * Runtime evidence for this repository, when the host can read it. With
+   * `connected: false`, an empty queue asks for profiles and benchmark results
+   * instead of reporting a clean result; `found` names files already on disk.
+   * Omitted, the view never mentions runtime evidence.
+   */
+  runtimeEvidence?: { connected: boolean; found?: readonly string[] | null } | null;
 }) {
   const { filters, current, apply } = usePerformanceFilters(initialFilters, onFiltersChange);
 
@@ -311,6 +320,8 @@ export function PerformanceView({
           // A scope with no causes is clean, not a failed filter.
           narrowingCount(filters) > 0 && repositoryTotal > 0 ? (
             <FilteredEmpty onClear={() => apply(clearNarrowing(filters))} />
+          ) : runtimeEvidence && !runtimeEvidence.connected ? (
+            <ConnectEvidenceState found={runtimeEvidence.found} />
           ) : (
             <GoodState
               scope={GOOD_STATE_SCOPE[filters.scope]}

@@ -37,8 +37,9 @@ export function actionHref(action: NextAction, prefix: string): string {
     case "dead_code":
       return attentionSourceHref("dead_code", prefix);
     case "setup":
-      // The Setup page names each row by the rule that raises it.
-      return `${prefix}/setup#${action.rule}`;
+      // The Setup page (under the repo's settings) names each row by the
+      // rule that raises it.
+      return `${prefix}/settings/setup#${action.rule}`;
     default:
       return prefix;
   }

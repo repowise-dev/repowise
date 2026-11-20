@@ -7,12 +7,10 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import { CommandLine } from "@repowise-dev/ui/shared/command-line";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
-import { firstPrompts, type FirstPromptFacts } from "@repowise-dev/ui/onboarding/first-prompts";
 import { connectSetupAgent, type SetupResponse } from "@/lib/api/setup";
 import {
   MOMENT_BODY,
   MOMENT_CAPTION,
-  MOMENT_CARD,
   MOMENT_LINK,
   MOMENT_MICRO,
 } from "@/components/layout/moment-shell";
@@ -64,18 +62,21 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Step 2: the agents found on this machine, connected ones first, and the
- *  first prompts to try, built from this repo's index. */
+/** True while an agent is connected and none has called yet, with the call
+ *  log readable: the welcome then checks again for the first call. */
+export function waitingForFirstCall(setup: SetupResponse | null): boolean {
+  if (!setup?.calls_available || setup.calls.first_call_at) return false;
+  return (setup.agents ?? []).some((a) => a.connected && !a.first_call_at);
+}
+
+/** Step 2: the agents found on this machine, connected ones first, each
+ *  waiting for its first call. Tips show after two minutes of waiting. */
 export function WelcomeStepAgent({
   repoId,
-  repoName,
   setup,
-  promptFacts,
 }: {
   repoId: string;
-  repoName: string;
   setup: SetupResponse | null;
-  promptFacts: FirstPromptFacts;
 }) {
   const t = useTranslations("welcome.agent");
   // Connected here, before the setup data catches up.
@@ -85,50 +86,36 @@ export function WelcomeStepAgent({
     .sort((a, b) => Number(b.connected) - Number(a.connected));
   const agents = found.slice(0, AGENTS_SHOWN);
   const more = found.length - agents.length;
-  const questions = firstPrompts(repoName, promptFacts);
 
   return (
-    <div className="space-y-8">
-      <section aria-labelledby="welcome-agents">
-        <h3 id="welcome-agents" className={`${MOMENT_MICRO} mb-3`}>
-          {t("listLabel")}
-        </h3>
-        {agents.length === 0 ? (
-          <p className={MOMENT_CAPTION}>{t("none")}</p>
-        ) : (
-          <ul className="divide-y divide-[var(--color-border-default)]">
-            {agents.map((agent) => (
-              <AgentRow
-                key={agent.id}
-                repoId={repoId}
-                agent={agent}
-                connected={connected[agent.id] ?? agent.connected}
-                writesAllowed={setup?.writes_allowed ?? false}
-                callsKnown={setup?.calls_available ?? false}
-                onConnected={(value) => setConnected((c) => ({ ...c, [agent.id]: value }))}
-              />
-            ))}
-          </ul>
-        )}
-        {more > 0 && <p className={`${MOMENT_CAPTION} mt-3`}>{t("moreAgents", { count: more })}</p>}
-      </section>
-
-      <section aria-labelledby="welcome-ask">
-        <h3 id="welcome-ask" className={`${MOMENT_MICRO} mb-3`}>
-          {t("askLabel")}
-        </h3>
-        <ul className={`${MOMENT_CARD} divide-y divide-[var(--color-border-default)]`}>
-          {questions.map((q) => (
-            <li key={q} className="flex items-center justify-between gap-4 py-1 pl-4 pr-2">
-              <span className={`${MOMENT_BODY} min-w-0 py-2 text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
-                {q}
-              </span>
-              <CopyQuestion text={q} />
-            </li>
+    <section aria-labelledby="welcome-agents">
+      <h3 id="welcome-agents" className={`${MOMENT_MICRO} mb-3`}>
+        {t("listLabel")}
+      </h3>
+      {agents.length === 0 ? (
+        <p className={MOMENT_CAPTION}>{t("none")}</p>
+      ) : (
+        <ul className="divide-y divide-[var(--color-border-default)]">
+          {agents.map((agent) => (
+            <AgentRow
+              key={agent.id}
+              repoId={repoId}
+              agent={agent}
+              connected={connected[agent.id] ?? agent.connected}
+              writesAllowed={setup?.writes_allowed ?? false}
+              callsKnown={setup?.calls_available ?? false}
+              onConnected={(value) => setConnected((c) => ({ ...c, [agent.id]: value }))}
+            />
           ))}
         </ul>
-      </section>
-    </div>
+      )}
+      {more > 0 && <p className={`${MOMENT_CAPTION} mt-3`}>{t("moreAgents", { count: more })}</p>}
+      {waitingForFirstCall(setup) && (
+        <p role="status" className={`${MOMENT_CAPTION} mt-4`}>
+          {t("waitingNote")}
+        </p>
+      )}
+    </section>
   );
 }
 
