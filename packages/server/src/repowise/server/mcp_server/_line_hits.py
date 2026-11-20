@@ -355,7 +355,8 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
 _DECLARATION_HEAD = re.compile(
     rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
     rf"(?:(?:{_DECL_WORDS})\b(?:\s*\*\s*|\s+))+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
-    r"(?:(?:[\w$:]+\s*)?\{[^}]*\}|[\[(][^\])]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
+    # A pattern holding a default (``{ a = load() }``) is not read: the default is a use.
+    r"(?:(?:[\w$:]+\s*)?\{[^}=(]*\}|[\[(][^\])=(]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
 
 

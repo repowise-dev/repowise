@@ -1025,6 +1025,8 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
         ("const { a, b } = load();", r"load\(", "match"),
         ("let Point { x, y } = p;", r"\bx\b", "definition"),
         ("let (a, b) = pair();", r"\bb\b", "definition"),
+        ("const { a = load() } = opts;", r"load\(", "match"),
+        ("const [a = load()] = opts;", r"load\(", "match"),
         ("def run(x): return helper()", r"\brun\(", "definition"),
         # A Go receiver names a type the method does not declare.
         ("func (s *Store) Save() error {", r"Store\b", "match"),
