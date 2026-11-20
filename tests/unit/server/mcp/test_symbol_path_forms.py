@@ -263,11 +263,13 @@ async def test_an_absolute_file_path_inside_the_repo_lists_its_symbols(service_f
 
 
 @pytest.mark.asyncio
-async def test_an_absolute_path_outside_the_repo_stays_a_miss(service_file, tmp_path):
+@pytest.mark.parametrize("escape", [False, True], ids=["sibling", "dot-dot"])
+async def test_an_absolute_path_outside_the_repo_stays_a_miss(service_file, tmp_path, escape):
     """Never resolved against the repo by its tail: the caller's id is named as given."""
     from repowise.server.mcp_server import get_symbol
 
-    outside = str(tmp_path.parent / "elsewhere" / "src" / "auth" / "service.py") + "::login"
+    base = tmp_path / ".." / tmp_path.name / ".." if escape else tmp_path.parent
+    outside = str(base / "elsewhere" / "src" / "auth" / "service.py") + "::login"
     result = await get_symbol(outside)
     assert "source" not in result
     assert result["error"].startswith(f"Symbol not found: {outside!r}.")
