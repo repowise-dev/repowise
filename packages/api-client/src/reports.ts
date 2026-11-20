@@ -1,5 +1,5 @@
 import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
-import type { FirstLookPage, FirstLookStampResponse } from "@repowise-dev/types/first-look";
+import type { FirstLookPage } from "@repowise-dev/types/first-look";
 import { apiGet, apiPost } from "./client";
 
 const firstLook = (repoId: string) => `/api/repos/${repoId}/reports/first-look`;
@@ -12,21 +12,18 @@ export async function getFirstLook(
   return apiGet<FirstLookPage>(firstLook(repoId), { flavor: opts.flavor });
 }
 
-/** When the stored report was written, without the report. */
-export async function getFirstLookStamp(repoId: string): Promise<FirstLookStampResponse> {
-  return apiGet<FirstLookStampResponse>(`${firstLook(repoId)}/stamp`);
-}
-
-/** One item's prompt, or the whole report's when `itemId` is null, rendered by core for `flavor`. */
+/** One item's prompt, one section's, or the whole report's (null), rendered by core for `flavor`. */
 export async function getFirstLookPrompt(
   repoId: string,
-  itemId: string | null,
+  target: { item: string } | { section: string } | null,
   flavor: AgentPromptFlavor,
 ): Promise<AgentPromptResponse> {
-  return apiGet<AgentPromptResponse>(`${firstLook(repoId)}/prompt`, {
-    flavor,
-    item: itemId ?? undefined,
-  });
+  return apiGet<AgentPromptResponse>(`${firstLook(repoId)}/prompt`, { flavor, ...(target ?? {}) });
+}
+
+/** The report as a Markdown download, relative to the API base. */
+export function firstLookMarkdownPath(repoId: string): string {
+  return `${firstLook(repoId)}/export.md`;
 }
 
 /** Write the report again with the repository's model: one call. */

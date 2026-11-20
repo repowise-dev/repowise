@@ -161,6 +161,44 @@ export interface FirstLookStaleness {
   unknown: Record<string, string>;
 }
 
+/** Where an item stands now: marked by a person or an agent, or gone from the index. */
+export type FirstLookItemStatus =
+  | "open"
+  | "done"
+  | "acknowledged"
+  | "false_positive"
+  | "snoozed"
+  | "resolved";
+
+/** What a mark sets (`repowise mark <id> done|ack|false-positive|snooze`). */
+export type FirstLookMark = "done" | "ack" | "false_positive" | "snooze";
+
+/** What the living report adds to each item: its mark and whether it is new since the first look. */
+export interface FirstLookLiving {
+  /** The merged rules when one item groups several (`rule` stays the primary). */
+  rules?: string[];
+  status?: FirstLookItemStatus;
+  status_reason?: string | null;
+  status_until?: string | null;
+  /** `new`: the first-look report did not have it. */
+  change?: "new" | null;
+}
+
+export type FirstLookLivingItem = FirstLookItem & FirstLookLiving;
+
+/** The first-look report the living one is compared with, and what it had that is gone now. */
+export interface FirstLookBaseline {
+  stamp: FirstLookStamp;
+  /** Items gone from the index since, each with the sentence the report gave it. */
+  resolved: (FirstLookLivingItem & { text?: string | null })[];
+}
+
+/** The report rebuilt from the index on every read, compared with the first look. */
+export interface FirstLookLivingReport extends Omit<FirstLookReport, "sections"> {
+  sections: (Omit<FirstLookSection, "items"> & { items: FirstLookLivingItem[] })[];
+  baseline?: FirstLookBaseline | null;
+}
+
 /** Items one section shows before "N more in the app" (core's `SECTION_CAP`). */
 export const FIRST_LOOK_SECTION_CAP = 12;
 
@@ -170,4 +208,3 @@ export type FirstLookPage = Omit<FirstLookResponse, "report" | "staleness"> & {
   staleness: FirstLookStaleness;
 };
 
-export type { FirstLookStampResponse } from "./generated/http.js";

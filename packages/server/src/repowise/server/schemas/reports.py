@@ -27,11 +27,3 @@ class FirstLookResponse(BaseModel):
     #: What one rewrite costs, when it can be priced.
     rewrite_cost_usd: float | None = None
 
-
-class FirstLookStampResponse(BaseModel):
-    """When and how the stored report was written, without the report."""
-
-    commit: str | None
-    created_at: str
-    generator: str
-    cost: float | None = None

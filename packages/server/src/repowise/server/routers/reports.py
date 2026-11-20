@@ -8,9 +8,11 @@ one per request, because the action prompts read the whole action view.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor
@@ -21,13 +23,14 @@ from repowise.core.report.first_look import FirstLookReport
 from repowise.core.report.first_look.config import first_look_settings
 from repowise.core.report.first_look.llm import first_look_model
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
+from repowise.core.report.first_look.render import render_first_look_markdown
 from repowise.core.report.first_look.staleness import staleness
 from repowise.core.report.first_look.store import load_report, read_report_file
 from repowise.core.report.first_look.write import write_first_look
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._repo_pricing import _provider_configured, resolve_provider
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
-from repowise.server.schemas.reports import FirstLookResponse, FirstLookStampResponse
+from repowise.server.schemas.reports import FirstLookResponse
 
 router = APIRouter(tags=["reports"], dependencies=[Depends(verify_api_key)])
 
@@ -94,30 +97,23 @@ async def get_first_look(
     return await _page(session, repo, await _require_report(session, repo), flavor)
 
 
-@router.get("/api/repos/{repo_id}/reports/first-look/stamp", response_model=FirstLookStampResponse)
-async def get_first_look_stamp(
-    repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
-) -> FirstLookStampResponse:
-    """When the stored report was written: enough for a link to it, without the staleness pass."""
-    repo = await _require_repo(session, repo_id)
-    stamp = (await _require_report(session, repo)).stamp
-    return FirstLookStampResponse(
-        commit=stamp.commit, created_at=stamp.created_at, generator=stamp.generator, cost=stamp.cost
-    )
-
-
 @router.get("/api/repos/{repo_id}/reports/first-look/prompt", response_model=AgentPromptResponse)
 async def get_first_look_prompt(
     repo_id: str,
     flavor: Flavor = Query("generic"),
     item: str | None = Query(None, max_length=32, description="An item id; omit for the whole report."),
+    section: str | None = Query(None, max_length=32, description="A section key: its items only."),
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentPromptResponse:
-    """One item's "Fix with your agent" prompt, or the whole report's, worded for *flavor*."""
+    """One item's prompt, one section's, or the whole report's, worded for *flavor*."""
     repo = await _require_repo(session, repo_id)
     report = await _require_report(session, repo)
     if item is None:
+        if section is not None:
+            block = report.section(section)
+            if block is None:
+                raise HTTPException(status_code=404, detail="No section with that key in the report")
+            report = replace(report, sections=(block,))
         return AgentPromptResponse(
             flavor=flavor, text=render_report_prompt(report, flavor=flavor, repo_name=repo.name)
         )
@@ -126,6 +122,22 @@ async def get_first_look_prompt(
         raise HTTPException(status_code=404, detail="No item with that id in the report")
     text = await render_item_prompt(session, repo_id, found, flavor=flavor, repo_name=repo.name)
     return AgentPromptResponse(flavor=flavor, text=text)
+
+
+@router.get("/api/repos/{repo_id}/reports/first-look/export.md", response_class=PlainTextResponse)
+async def export_first_look_markdown(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """The report as a Markdown file, the same document the CLI writes."""
+    repo = await _require_repo(session, repo_id)
+    report = await _require_report(session, repo)
+    name = "".join(c if c.isalnum() or c in "-_." else "-" for c in repo.name or "repo")
+    return PlainTextResponse(
+        render_first_look_markdown(report.to_json()),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}-report.md"'},
+    )
 
 
 @router.post("/api/repos/{repo_id}/reports/first-look/rewrite", response_model=FirstLookResponse)

@@ -1,6 +1,6 @@
 "use client";
 
-/** The body of `/repos/[id]/first-look`: the stored report, routed into this app. */
+/** The body of `/repos/[id]/first-look`: the repo report, routed into this app. */
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
@@ -9,22 +9,32 @@ import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 import type { AgentPromptFlavor } from "@repowise-dev/types/agent-prompts";
 import type { FirstLookRouteKey } from "@repowise-dev/types/first-look";
-import { FirstLookReport } from "@repowise-dev/ui/report/first-look";
+import { FirstLookReport, type FirstLookPromptTarget } from "@repowise-dev/ui/report/first-look";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { ApiClientError } from "@/lib/api/client";
-import { getFirstLook, getFirstLookPrompt, rewriteFirstLook } from "@/lib/api/reports";
+import {
+  firstLookMarkdownPath,
+  getFirstLook,
+  getFirstLookPrompt,
+  rewriteFirstLook,
+} from "@/lib/api/reports";
 import { firstLookHref } from "./first-look-href";
+import { useFirstLookCopy } from "./first-look-copy";
 
-/** The flavor the page asks the report prompt in; the modal fetches any other. */
+/** The flavor the page's prompts are worded for. */
 const FLAVOR: AgentPromptFlavor = "generic";
+
+export const firstLookKey = (repoId: string) => `first-look:${repoId}`;
 
 export function FirstLookView({ repoId }: { repoId: string }) {
   const t = useTranslations("views.firstLook");
-  const key = `first-look:${repoId}`;
-  const { data, error, isLoading, mutate } = useSWR(key, () => getFirstLook(repoId, { flavor: FLAVOR }));
+  const copy = useFirstLookCopy();
+  const { data, error, isLoading, mutate } = useSWR(firstLookKey(repoId), () =>
+    getFirstLook(repoId, { flavor: FLAVOR }),
+  );
   const [rewriting, setRewriting] = useState(false);
 
   const prefix = `/repos/${repoId}`;
@@ -33,8 +43,8 @@ export function FirstLookView({ repoId }: { repoId: string }) {
     [prefix],
   );
   const loadPrompt = useCallback(
-    async (itemId: string | null, flavor: AgentPromptFlavor) =>
-      (await getFirstLookPrompt(repoId, itemId, flavor)).text,
+    async (target: FirstLookPromptTarget, flavor: AgentPromptFlavor) =>
+      (await getFirstLookPrompt(repoId, target, flavor)).text,
     [repoId],
   );
   const onRewrite = useCallback(async () => {
@@ -50,10 +60,10 @@ export function FirstLookView({ repoId }: { repoId: string }) {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-[880px] space-y-3">
-        <Skeleton className="h-8 w-1/2" />
+      <div className="mx-auto max-w-[900px] space-y-3 px-4 pt-9">
+        <Skeleton className="h-9 w-1/2" />
         <Skeleton className="h-4 w-1/3" />
-        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-20 w-full" />
       </div>
     );
   }
@@ -65,15 +75,16 @@ export function FirstLookView({ repoId }: { repoId: string }) {
   return (
     <FirstLookReport
       report={data.report}
-      staleness={data.staleness}
       hrefFor={hrefFor}
-      promptFlavor={data.flavor}
-      reportPrompt={data.report_prompt}
+      overviewHref={`${prefix}/overview`}
       loadPrompt={loadPrompt}
+      promptFlavor={FLAVOR}
+      markdownHref={firstLookMarkdownPath(repoId)}
       canRewrite={data.can_rewrite}
       onRewrite={() => void onRewrite()}
       rewriteCost={data.rewrite_cost_usd ?? null}
       rewriting={rewriting}
+      copy={copy}
       LinkComponent={Link}
     />
   );

@@ -2405,14 +2405,6 @@ export interface FirstLookResponse {
   rewrite_cost_usd?: number | null;
 }
 
-/** When and how the stored report was written, without the report. */
-export interface FirstLookStampResponse {
-  commit: string | null;
-  created_at: string;
-  generator: string;
-  cost?: number | null;
-}
-
 export interface FixAction {
   summary: string;
   steps: FixStep[];

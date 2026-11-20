@@ -114,7 +114,7 @@ async def test_the_file_in_the_checkout_is_read_when_the_index_has_none(
 async def test_no_report_is_a_404_that_says_how_to_write_one(reports_client: AsyncClient) -> None:
     repo = await create_test_repo(reports_client)
 
-    for path in ("", "/stamp", "/prompt"):
+    for path in ("", "/prompt", "/export.md"):
         resp = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look{path}")
         assert resp.status_code == 404
         assert "repowise init" in resp.json()["detail"]
@@ -139,22 +139,6 @@ async def test_an_item_prompt_and_the_whole_report_prompt(
     assert whole["flavor"] == "generic" and "src/a.py" in whole["text"]
 
     assert (await reports_client.get(url, params={"item": "fl_000000000000"})).status_code == 404
-
-
-@pytest.mark.anyio
-async def test_the_stamp_names_the_writer_without_the_report(
-    reports_client: AsyncClient, session_factory
-) -> None:
-    repo = await _stored_repo(reports_client, session_factory)
-
-    resp = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look/stamp")
-
-    assert resp.json() == {
-        "commit": "c1",
-        "created_at": "2026-11-20T00:00:00+00:00",
-        "generator": "template",
-        "cost": None,
-    }
 
 
 @pytest.mark.anyio
@@ -193,3 +177,21 @@ async def test_rewrite_without_a_provider_is_refused(
     monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (None, None, None, "no key"))
     resp = await reports_client.post(url)
     assert resp.status_code == 409 and resp.json()["detail"] == "no key"
+
+
+@pytest.mark.anyio
+async def test_a_section_prompt_and_the_markdown_export(
+    reports_client: AsyncClient, session_factory
+) -> None:
+    repo = await _stored_repo(reports_client, session_factory)
+    base = f"/api/repos/{repo['id']}/reports/first-look"
+
+    one = (await reports_client.get(f"{base}/prompt", params={"section": "hygiene"})).json()
+    assert "src/a.py" in one["text"]
+    assert (await reports_client.get(f"{base}/prompt", params={"section": "nope"})).status_code == 404
+
+    md = await reports_client.get(f"{base}/export.md")
+    assert md.status_code == 200
+    assert md.headers["content-type"].startswith("text/markdown")
+    assert 'filename="test-repo-report.md"' in md.headers["content-disposition"]
+    assert "src/a.py" in md.text

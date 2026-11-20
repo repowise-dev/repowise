@@ -1,14 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type {
-  FirstLookItem,
-  FirstLookReport as Report,
-  FirstLookStaleness,
+  FirstLookLivingItem,
+  FirstLookLivingReport,
 } from "@repowise-dev/types/first-look";
 
-import { FirstLookReport } from "../../src/report/first-look";
+import { FirstLookReport, RepoReportCard, contourPaths } from "../../src/report/first-look";
 
-function item(id: string, section: string, over: Partial<FirstLookItem> = {}): FirstLookItem {
+function item(id: string, section: string, over: Partial<FirstLookLivingItem> = {}): FirstLookLivingItem {
   return {
     id,
     section,
@@ -28,59 +27,88 @@ function item(id: string, section: string, over: Partial<FirstLookItem> = {}): F
     link: { route: "file", params: { path: `src/${id}.py`, line: 7 } },
     prompt: { renderer: "first_look_item", payload_ref: null },
     fingerprint: "f",
+    status: "open",
+    change: null,
     ...over,
   };
 }
 
-const secret = item("fl_secret", "security", {
+const secrets = item("fl_secret", "security", {
   rule: "hardcoded_password",
+  rules: ["hardcoded_password", "hardcoded_secret"],
   severity: "act_now",
-  basis: "measured",
-  locations: [{ path: "scripts/admin.py", line: 27, symbol: null }],
-  link: { route: "security", params: {} },
-  prompt: { renderer: "action", payload_ref: "act_1" },
-});
-const dead = Array.from({ length: 14 }, (_, n) =>
-  item(`fl_dead${n}`, "dead_code", { link: { route: "dead_code", params: {} } }),
-);
-dead[0] = {
-  ...dead[0]!,
   locations: [
-    { path: "src/models.py", line: null, symbol: "QueueItem" },
-    { path: "src/models.py", line: null, symbol: "QueueStats" },
+    { path: "scripts/seed.py", line: 20, symbol: null },
+    { path: "scripts/admin.py", line: 27, symbol: null },
   ],
-  locations_total: 5,
-};
-const perf = item("fl_perf", "performance", { title_facts: { verify: "pytest tests/test_x.py" } });
+  locations_total: 2,
+  link: { route: "security", params: {} },
+});
+const perf = item("fl_perf", "performance", { status: "acknowledged", status_reason: "batched later" });
+const fns = Array.from({ length: 8 }, (_, n) =>
+  item(`fl_fn${n}`, "health", {
+    rule: "finding",
+    locations: [{ path: `web/Board${n}.tsx`, line: 10 + n, symbol: `Board${n}` }],
+    title_facts: { ccn: 200 + n, nloc: 600, importers: 7, changes_90d: 46 },
+  }),
+);
+const cycle = item("fl_cycle", "hygiene", { rule: "import_cycle", severity: "improve", change: "new" });
+const unreachable = item("fl_dead", "dead_code", { rule: "unreachable_file", title_facts: { lines: 429 } });
+const exports_ = item("fl_exp", "dead_code", { rule: "safe_to_delete", title_facts: { symbols: 10, lines: 93 } });
+const doc = item("fl_doc", "docs", { rule: "broken_doc_refs", title_facts: { references: 3 } });
 
-function report(over: Partial<Report> = {}): Report {
+function report(over: Partial<FirstLookLivingReport> = {}): FirstLookLivingReport {
   return {
     schema_version: 1,
     stamp: {
       commit: "c120332450ea96e2",
       indexed_at: null,
-      created_at: "2026-11-20T09:29:49+00:00",
+      created_at: "2026-11-21T09:00:00+00:00",
       generator: "template",
       cost: null,
       schema_version: 1,
     },
-    repo: { name: "acme-web", branch: "master", files: 18306, health: { score: 7.71, band: "good", band_label: "Good" } },
-    top: ["fl_secret", "fl_perf"],
+    repo: {
+      name: "acme-web",
+      branch: "main",
+      files: 1200,
+      health: { score: 7.7, band: "good", band_label: "Good" },
+      headline_facts: [{ id: "defect_accuracy", lift: 8.28 }],
+    },
+    top: ["fl_secret", "fl_perf", "fl_fn0"],
     sections: [
-      { key: "security", source_layer: "security", items: [secret], facts: {} },
-      { key: "performance", source_layer: "performance", items: [perf], facts: {} },
-      { key: "dead_code", source_layer: "dead_code", items: dead, facts: { safe_exports: 59 } },
+      { key: "security", source_layer: "security", items: [secrets], facts: {} },
+      { key: "performance", source_layer: "performance", items: [perf], facts: { production_causes: 40 } },
+      { key: "health", source_layer: "code_health", items: fns, facts: {} },
+      { key: "tests", source_layer: "test_intelligence", items: [], facts: { line_pct: 52.1, branch_pct: 42.7 } },
+      { key: "dead_code", source_layer: "dead_code", items: [unreachable, exports_], facts: { safe_exports: 10, unreachable_files: 1 } },
+      { key: "docs", source_layer: "doc_drift", items: [doc], facts: {} },
+      { key: "hygiene", source_layer: "graph", items: [cycle], facts: {} },
     ],
-    setup: [{ action_id: "act_cov", rule: "coverage_missing", title: "Add a coverage report", command: "repowise coverage add" }],
+    setup: [],
     unavailable: {},
     prose: {
       writer: "template",
-      summary: "Health is 7.7/10 (Good). Security comes first.",
+      summary: "Health is 7.7/10. Security comes first.",
       headline: "16 of the 20 lowest-health files had a bug fix in the last 6 months.",
-      titles: { security: "Security", performance: "Performance", dead_code: "Dead code" },
-      sections: { security: "1 tracked file holds a hard-coded password.", dead_code: "14 files hold unused exports." },
-      items: { fl_secret: "Hard-coded password in 1 tracked file.", fl_perf: "`scan_rows`: list membership check inside a loop." },
-      setup: { act_cov: "Record backend coverage." },
+      titles: { security: "Security", performance: "Performance", health: "Code health", tests: "Tests", dead_code: "Dead code", docs: "Docs", hygiene: "Repo hygiene" },
+      sections: { security: "Deleting the line is not enough.", tests: "Measured across 900 files." },
+      items: {
+        fl_secret: "Rotate 2 hard-coded credentials.",
+        fl_perf: "`scan_rows` checks list membership inside a loop.",
+        fl_cycle: "A new import cycle between 2 files.",
+      },
+    },
+    baseline: {
+      stamp: {
+        commit: "a41b9c0e2d7f",
+        indexed_at: null,
+        created_at: "2026-11-20T09:00:00+00:00",
+        generator: "template",
+        cost: null,
+        schema_version: 1,
+      },
+      resolved: [item("fl_vendored", "hygiene", { rule: "vendored_in_tree", text: "A vendored file sits in the code tree." } as Partial<FirstLookLivingItem>)],
     },
     ...over,
   };
@@ -92,110 +120,121 @@ const hrefFor = (route: string, params: Record<string, string | number>) =>
 function renderReport(props: Partial<Parameters<typeof FirstLookReport>[0]> = {}) {
   const loadPrompt = vi.fn().mockResolvedValue("PROMPT TEXT");
   const utils = render(
-    <FirstLookReport report={report()} hrefFor={hrefFor} promptFlavor="generic" loadPrompt={loadPrompt} {...props} />,
+    <FirstLookReport report={report()} hrefFor={hrefFor} overviewHref="/r/overview" loadPrompt={loadPrompt} {...props} />,
   );
   return { ...utils, loadPrompt };
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("FirstLookReport", () => {
-  it("lays sections out in report order after Do these first", () => {
+  it("reads as one document: strip, Start here, then sections in report order", () => {
     const { container } = renderReport();
-    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Do these first", "Security", "Performance", "Dead code", "Turn on more"]);
-    expect([...container.querySelectorAll("[data-section]")].map((s) => s.getAttribute("data-section"))).toEqual([
-      "security",
-      "performance",
-      "dead_code",
+    const strip = screen.getByRole("navigation", { name: "Repo report" });
+    expect(within(strip).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual([
+      "#security",
+      "#performance",
+      "#health",
+      "#tests",
+      "#dead_code",
+      "#docs",
+      "#hygiene",
     ]);
+    expect(within(strip).getByRole("link", { name: /Dead code/ })).toHaveTextContent("11");
+    const order = [...container.querySelectorAll("[data-section]")].map((s) => s.getAttribute("data-section"));
+    expect(order).toEqual(["security", "performance", "health", "dead_code", "docs", "tests", "hygiene"]);
+    expect(screen.getByRole("heading", { name: "Start here" })).toBeInTheDocument();
   });
 
-  it("prints the report's prose: summary, intros, item sentences and setup", () => {
+  it("prints only the report's prose, with backtick names as code", () => {
     renderReport();
-    expect(screen.getByText("Health is 7.7/10 (Good). Security comes first.")).toBeInTheDocument();
-    expect(screen.getByText("1 tracked file holds a hard-coded password.")).toBeInTheDocument();
-    expect(screen.getAllByText("Hard-coded password in 1 tracked file.")).toHaveLength(2); // Do first + item
-    expect(screen.getByText("Record backend coverage.")).toBeInTheDocument();
+    expect(screen.getByText("Health is 7.7/10. Security comes first.")).toBeInTheDocument();
     expect(screen.getByText(/16 of the 20 lowest-health files/)).toHaveTextContent("measured");
-    // Prose marks names with backticks; they set in mono, never as literal ticks.
-    const perf = document.getElementById("fl_perf")!;
-    expect(within(perf).getByText("scan_rows").tagName).toBe("CODE");
-    expect(perf.textContent).not.toContain("`");
+    expect(screen.getByText("8.3×")).toBeInTheDocument();
+    const perfRow = document.getElementById("fl_perf")!;
+    expect(within(perfRow).getByText("scan_rows").tagName).toBe("CODE");
+    expect(perfRow.textContent).not.toContain("`");
   });
 
-  it("lists a Do these first item only where its row is on the page", () => {
-    renderReport({ report: report({ top: ["fl_secret", "fl_dead13"] }) });
-    const first = within(screen.getByRole("heading", { name: "Do these first" }).parentElement!);
-    expect(first.getAllByRole("listitem")).toHaveLength(1);
-    expect(first.getByRole("link", { name: /Go to item: Hard-coded password/ })).toHaveAttribute("href", "#fl_secret");
-  });
-
-  it("links chips and actions through hrefFor", () => {
-    renderReport();
-    const chip = screen.getByRole("link", { name: /scripts\/admin\.py\s?:27/ });
-    expect(chip).toHaveAttribute("href", "/r/files/scripts/admin.py?line=27");
-    const secretRow = document.getElementById("fl_secret")!;
-    expect(within(secretRow).getByRole("link", { name: "Open in app" })).toHaveAttribute("href", "/r/security");
-    expect(screen.getByRole("link", { name: "Open Security in the app" })).toHaveAttribute("href", "/r/security");
-  });
-
-  it("shows a secret's location, never a value", () => {
-    renderReport();
-    const row = document.getElementById("fl_secret")!;
-    expect(within(row).getByText("value redacted")).toBeInTheDocument();
-    expect(row.textContent).not.toMatch(/password\s*=|["']/);
-  });
-
-  it("marks act_now and shows basis, confidence and effort", () => {
+  it("shows a grouped item once with every location, values never", () => {
     renderReport();
     const row = within(document.getElementById("fl_secret")!);
-    expect(row.getByText("do now")).toBeInTheDocument();
-    expect(row.getByText("measured")).toBeInTheDocument();
-    expect(row.getByText("high confidence")).toBeInTheDocument();
-    expect(within(document.getElementById("fl_perf")!).queryByText("do now")).toBeNull();
-    expect(screen.getByText("verify: pytest tests/test_x.py")).toBeInTheDocument();
+    expect(row.getByText("Rotate 2 hard-coded credentials.")).toBeInTheDocument();
+    expect(row.getByRole("link", { name: /scripts\/seed\.py\s?:\s?20/ })).toHaveAttribute("href", "/r/files/scripts/seed.py?line=20");
+    expect(row.getByRole("link", { name: /scripts\/admin\.py\s?:\s?27/ })).toBeInTheDocument();
+    expect(row.getByText(/values redacted/)).toBeInTheDocument();
   });
 
-  it("names each symbol when one file holds several, and counts locations past the cap", () => {
+  it("measures progress against the first look and marks each item's status", () => {
     renderReport();
-    const row = within(document.getElementById("fl_dead0")!);
-    expect(row.getAllByRole("link", { name: /^src\/models\.py/ })).toHaveLength(2);
-    expect(row.getByText("QueueItem")).toBeInTheDocument();
-    expect(row.getByText("QueueStats")).toBeInTheDocument();
-    expect(row.getByText("+ 3 more")).toBeInTheDocument();
+    expect(screen.getByText(/resolved · /).textContent).toMatch(/1 resolved · 1 acknowledged · 1 new since the first look/);
+    expect(within(document.getElementById("fl_perf")!).getByText("acknowledged")).toHaveAttribute("data-status", "acknowledged");
+    expect(within(document.getElementById("fl_perf")!).getByText(/"batched later"/)).toBeInTheDocument();
+    expect(within(document.getElementById("fl_cycle")!).getByText("new")).toBeInTheDocument();
+    const gone = document.getElementById("fl_vendored")!;
+    expect(gone).toHaveAttribute("data-status", "resolved");
+    expect(within(gone).getByText("A vendored file sits in the code tree.")).toBeInTheDocument();
   });
 
-  it("caps a section and counts the rest in the app", () => {
+  it("lays code health, dead code and docs out as compact tables, capped", () => {
     renderReport();
-    expect(document.querySelectorAll('[data-section="dead_code"] article')).toHaveLength(12);
-    expect(screen.getByRole("link", { name: "2 more in the app" })).toHaveAttribute("href", "/r/dead_code");
+    const health = document.querySelector('[data-section="health"]')!;
+    expect(within(health as HTMLElement).getAllByRole("row")).toHaveLength(7); // head + 6
+    expect(within(health as HTMLElement).getByRole("columnheader", { name: "CCN" })).toBeInTheDocument();
+    expect(within(health as HTMLElement).getByRole("link", { name: "2 more in the app" })).toHaveAttribute("href", "/r/health_file");
+    const dead = document.querySelector('[data-section="dead_code"]') as HTMLElement;
+    expect(within(dead).getByText("429")).toBeInTheDocument();
+    expect(within(dead).getByText("10")).toBeInTheDocument();
+    const docs = document.querySelector('[data-section="docs"]') as HTMLElement;
+    expect(within(docs).getByRole("columnheader", { name: "Broken" })).toBeInTheDocument();
   });
 
-  it("strikes fixed items and marks changed ones when the index moved", () => {
-    const staleness: FirstLookStaleness = {
-      report_commit: "c120332450ea96e2",
-      current_commit: "9f2e1aa000",
-      behind: true,
-      fixed: ["fl_perf"],
-      changed: ["fl_dead0"],
-      changed_items: [],
-      new: [],
-      unknown: {},
-    };
-    renderReport({ staleness });
-    expect(document.getElementById("fl_perf")).toHaveAttribute("data-state", "fixed");
-    expect(screen.getByText("Fixed since c120332")).toBeInTheDocument();
-    expect(screen.getByText("Changed since c120332")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("The index is now at 9f2e1aa: 1 fixed, 1 changed.");
+  it("copies the section's prompt from its header and an item's from its row", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const { loadPrompt } = renderReport();
+    const security = document.querySelector('[data-section="security"]') as HTMLElement;
+    await act(async () => fireEvent.click(within(security).getAllByRole("button", { name: /Fix with agent/ })[0]!));
+    expect(loadPrompt).toHaveBeenCalledWith({ section: "security" }, "generic");
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("PROMPT TEXT"));
+    await act(async () =>
+      fireEvent.click(within(document.getElementById("fl_secret")!).getByRole("button", { name: "Copy prompt for this item" })),
+    );
+    expect(loadPrompt).toHaveBeenCalledWith({ item: "fl_secret" }, "generic");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Hand to agent" })));
+    expect(loadPrompt).toHaveBeenCalledWith(null, "generic");
   });
 
-  it("says nothing about staleness while the index is at the report's commit", () => {
-    renderReport({
-      staleness: { report_commit: "c1", current_commit: "c1", behind: false, fixed: [], changed: [], changed_items: [], new: [], unknown: {} },
-    });
-    expect(screen.queryByRole("status")).toBeNull();
+  it("marks an item, asking for a reason where one is due", async () => {
+    const onMark = vi.fn().mockResolvedValue(undefined);
+    renderReport({ onMark });
+    const row = within(document.getElementById("fl_secret")!);
+    fireEvent.click(row.getByRole("button", { name: /^Mark:/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Done/ }));
+    expect(onMark).toHaveBeenCalledWith(expect.objectContaining({ id: "fl_secret" }), "done", null);
+
+    fireEvent.click(row.getByRole("button", { name: /^Mark:/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Not an issue/ }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "test fixture" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onMark).toHaveBeenLastCalledWith(expect.objectContaining({ id: "fl_secret" }), "false_positive", "test fixture");
   });
 
-  it("offers Write it with AI only when the host can rewrite", () => {
+  it("drops every control in the export view", async () => {
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    renderReport();
+    fireEvent.click(screen.getByRole("button", { name: /Share/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Preview export/ }));
+    expect(document.querySelector("[data-export]")).not.toBeNull();
+    const rules = [...document.querySelectorAll("style")].map((s) => s.textContent).join("");
+    expect(rules).toContain("[data-export] .first-look-control{display:none!important}");
+    // The page's own rule hides them: nothing to press, nothing announced.
+    expect(screen.queryAllByRole("button", { name: /Fix with agent|Hand to agent|Copy prompt|^Mark/ })).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Back to the app view" }));
+    expect(document.querySelector("[data-export]")).toBeNull();
+  });
+
+  it("offers Write it with AI only when the host can rewrite, with its price", () => {
     const onRewrite = vi.fn();
     const { rerender, loadPrompt } = renderReport();
     expect(screen.queryByRole("button", { name: /Write it with AI/ })).toBeNull();
@@ -203,28 +242,29 @@ describe("FirstLookReport", () => {
       <FirstLookReport
         report={report()}
         hrefFor={hrefFor}
-        promptFlavor="generic"
+        overviewHref="/r/overview"
         loadPrompt={loadPrompt}
         canRewrite
         onRewrite={onRewrite}
-        rewriteCost={0.003}
+        rewriteCost={0.25}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Write it with AI, about <$0.01" }));
+    fireEvent.click(screen.getByRole("button", { name: /Write it with AI, about \$0\.25/ }));
     expect(onRewrite).toHaveBeenCalledOnce();
   });
 
-  it("names the model and its cost on a model-written report", () => {
-    renderReport({
-      report: report({ stamp: { ...report().stamp, generator: "claude-haiku-5-5", cost: 0.25 } }),
-    });
-    expect(screen.getByText("Written by claude-haiku-5-5, $0.25")).toBeInTheDocument();
+  it("draws the header contours from the commit, the same every time", () => {
+    expect(contourPaths("c1203324")).toEqual(contourPaths("c1203324"));
+    expect(contourPaths("c1203324")).not.toEqual(contourPaths("9f2e1aa0"));
   });
+});
 
-  it("asks the host for the item's prompt", async () => {
-    const { loadPrompt } = renderReport();
-    fireEvent.click(screen.getByRole("button", { name: "Fix with your agent: Hard-coded password in 1 tracked file." }));
-    await waitFor(() => expect(loadPrompt).toHaveBeenCalledWith("fl_secret", expect.any(String)));
-    expect(await screen.findByText("PROMPT TEXT")).toBeInTheDocument();
+describe("RepoReportCard", () => {
+  it("shows progress since the first look, the top three and a way in", () => {
+    render(<RepoReportCard report={report()} href="/r/first-look" />);
+    expect(screen.getByRole("heading", { name: "Repo report" })).toBeInTheDocument();
+    expect(screen.getByText(/new since Nov 20, 2026/).textContent).toMatch(/1 resolved · 1 acknowledged · 1 new since/);
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByRole("link", { name: /Open report/ })).toHaveAttribute("href", "/r/first-look");
   });
 });
