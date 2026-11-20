@@ -31,7 +31,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`risk`](#repowise-risk-revspec), [`overlap`](#repowise-overlap), [`dead-code`](#repowise-dead-code-path),
   [`doc-drift`](#repowise-doc-drift-path), [`security`](#repowise-security), [`check`](#repowise-check-revspec), [`ci-summary`](#repowise-ci-summary-dir),
   [`impacted-tests`](#repowise-impacted-tests-revspec), [`coverage`](#repowise-coverage),
-  [`evidence`](#repowise-evidence), [`perf measure`](#repowise-perf-measure----command),
+  [`evidence`](#repowise-evidence), [`perf measure`](#repowise-perf-measure----command), [`perf check`](#repowise-perf-check),
   [`components`](#repowise-components), [`packages`](#repowise-packages), [`changes`](#repowise-changes),
   [`suspects`](#repowise-suspects), [`events`](#repowise-events), [`report
   assessment`](#repowise-report-assessment-path), [`report estate`](#repowise-report-estate-path)
@@ -1513,6 +1513,39 @@ repowise perf measure --base-dir ../main-checkout -- python -m mypkg build
   gate CI on it.
 - `--base-dir` must name another checkout. An editable install can load one checkout's code for
   both sides; run each side with its own environment when that applies.
+
+### `repowise perf check`
+
+Gate a change on exact runtime evidence: allocations per operation from stored benchmark results
+(`go test -bench -benchmem` output ingested with `evidence add`). Runs nothing. Timing never gates.
+
+```bash
+repowise perf check --save base      # before the edit, after ingesting the benchmark results
+<edit, run the benchmarks again, repowise evidence add the results>
+repowise perf check --against base   # exit 1 when a benchmark allocates more per operation
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--save NAME` | Store the newest benchmark run of each workload and its allocations per operation as `.repowise/perf/exact/NAME.json`, beside a `perf measure` baseline of the same name and never in place of it. | |
+| `--against NAME` | Compare the newest benchmark run of each workload now with baseline `NAME`. | |
+| `--workload` | Only this workload's runs. With `--save`, only this workload's entry is replaced; the baseline's other workloads are kept. | every workload |
+| `--path` | Repo path. | cwd / workspace primary |
+| `--format` | `table` or `json`. | `table` |
+
+- Pass exactly one of `--save` and `--against`.
+- A benchmark regresses when it allocates more per operation than in the baseline. Time per
+  operation is stored with the results but never compared: use `perf measure` for wall time.
+- The newest run of each workload counts, whatever its environment. A workload whose newest run is
+  still the saved one, not ingested since, was not run again and is not judged (`not_rerun`); one
+  with no stored run now is `missing`. A benchmark the baseline has and the run now lacks is listed
+  under `dropped`, not judged.
+- Exits `0` when saved or when no exact value grew, `1` when a benchmark allocates more per
+  operation, `2` when nothing could be judged (no index, no exact value on both sides, no workload
+  run again, a missing or unreadable baseline) or on a usage error. With `--format json`, stdout is
+  one document: `verdict` (`passed` or `regressed`), `metrics`, `compared`, `regressed` and
+  `improved` (each `workload`, `benchmark`, `metric`, `base`, `head`), `not_rerun`, `missing`,
+  `dropped` and `baseline`; an error is `{"error", "message"}`.
 
 ---
 

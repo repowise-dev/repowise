@@ -98,7 +98,7 @@ export interface NextActionsCopy {
 
 export const NEXT_ACTIONS_COPY: NextActionsCopy = {
   title: "Do next",
-  titleCount: (count) => `Do next · ${count.toLocaleString("en-US")}`,
+  titleCount: (count) => `Do next · ${formatNumber(count)}`,
   timeFrame: "Time frame",
   week: "This week",
   weekHint: "What the last 7 days of commits changed",
@@ -169,7 +169,7 @@ export function renderActionTitle(title: string): ReactNode {
 
 // en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return `${formatNumber(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

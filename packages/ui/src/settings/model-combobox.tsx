@@ -51,6 +51,10 @@ export interface ModelComboboxProps {
   ariaLabel?: string;
   autoFocus?: boolean;
   labels?: Partial<ModelComboboxLabels>;
+  /** Offer the typed text as a choice of its own. Off for a closed list. */
+  allowTyped?: boolean;
+  /** What the closed input shows for `value`, when the id is not for people. */
+  displayValue?: string | undefined;
   className?: string;
 }
 
@@ -59,25 +63,27 @@ interface ModelOption extends ModelChoice {
   typed: boolean;
 }
 
-/** Models matching *typed*, plus the typed text itself when no id equals it. */
-function useModelOptions(models: ModelChoice[], typed: string): ModelOption[] {
+/** Models matching *typed*, plus the typed text itself when no id equals it
+ *  and `allowTyped` is on. */
+function useModelOptions(models: ModelChoice[], typed: string, allowTyped: boolean): ModelOption[] {
   return useMemo(() => {
     const needle = typed.toLowerCase();
     const matches = needle
       ? models.filter((m) => `${m.id} ${m.label ?? ""}`.toLowerCase().includes(needle))
       : models;
     const rows: ModelOption[] = matches.map((m) => ({ ...m, typed: false }));
-    if (typed && !models.some((m) => m.id === typed)) {
+    if (allowTyped && typed && !models.some((m) => m.id === typed)) {
       rows.push({ id: typed, label: null, typed: true });
     }
     return rows;
-  }, [models, typed]);
+  }, [models, typed, allowTyped]);
 }
 
 interface ComboboxState {
   expanded: boolean;
   /** null while the user has not typed: the input then shows the value. */
   query: string | null;
+  /** The typed text, when the list takes it as a choice; "" otherwise. */
   typed: string;
   active: number;
   options: ModelOption[];
@@ -119,11 +125,13 @@ const KEY_ACTIONS: Record<string, KeyAction> = {
 function useComboboxState({
   models,
   inline,
+  allowTyped,
   onOpen,
   onSelect,
 }: {
   models: ModelChoice[];
   inline: boolean;
+  allowTyped: boolean;
   onOpen: (() => void) | undefined;
   onSelect: (model: string) => void;
 }): ComboboxState {
@@ -131,8 +139,9 @@ function useComboboxState({
   const [open, setOpen] = useState(inline);
   const [query, setQuery] = useState<string | null>(null);
   const [active, setActive] = useState(-1);
-  const typed = (query ?? "").trim();
-  const options = useModelOptions(models, typed);
+  const text = (query ?? "").trim();
+  const options = useModelOptions(models, text, allowTyped);
+  const typed = allowTyped ? text : "";
   const expanded = inline || open;
 
   function show() {
@@ -202,10 +211,12 @@ export function ModelCombobox({
   ariaLabel,
   autoFocus,
   labels: labelOverrides,
+  allowTyped = true,
+  displayValue,
   className,
 }: ModelComboboxProps) {
   const labels = { ...DEFAULT_LABELS, ...labelOverrides };
-  const state = useComboboxState({ models, inline, onOpen, onSelect });
+  const state = useComboboxState({ models, inline, allowTyped, onOpen, onSelect });
   const { active, options } = state;
 
   return (
@@ -222,8 +233,8 @@ export function ModelCombobox({
         autoComplete="off"
         spellCheck={false}
         autoFocus={autoFocus}
-        placeholder={inline ? labels.placeholder : value || labels.placeholder}
-        value={state.query ?? (inline ? "" : value)}
+        placeholder={inline ? labels.placeholder : (displayValue ?? value) || labels.placeholder}
+        value={state.query ?? (inline ? "" : (displayValue ?? value))}
         onChange={(event) => state.type(event.target.value)}
         onFocus={inline ? undefined : state.show}
         onClick={inline ? undefined : state.show}
