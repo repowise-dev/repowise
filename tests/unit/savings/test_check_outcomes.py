@@ -216,3 +216,29 @@ def test_a_sidecar_read_before_its_upgrade_reports_calls_without_outcomes(tmp_pa
     row = _rows(SavingsRepository(conn).report("repo", as_of=AS_OF))["get_why"]
     assert (row["calls"], row["outcome_calls"], row["decisions_accepted"]) == (1, 0, None)
     conn.close()
+
+
+def test_outcome_sums_stay_exact_past_one_page_of_distinct_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.savings import repository as repository_module
+
+    monkeypatch.setattr(repository_module, "_CHECK_OUTCOME_PAGE", 3)
+    # 11 distinct health outcomes and 4 distinct risk ones: several pages, and
+    # a page boundary that falls between two tools.
+    events = [_event(i, "get_health", {"findings": i, "files": 1}) for i in range(11)]
+    events += [_event(100 + i, "get_risk", {"high": i, "low": 1}) for i in range(4)]
+    events.append(_event(200, "get_health", {"findings": 3, "files": 1}))  # a repeated outcome
+    conn = _connect(tmp_path / "omissions.db")
+    schema.initialize_savings_schema(conn)
+    repository = SavingsRepository(conn)
+    for event in events:
+        repository.record_event(event)
+    report = repository.report("repo", as_of=AS_OF)
+    rows = _rows(report)
+    health, risk = rows["get_health"], rows["get_risk"]
+    assert (health["calls"], health["outcome_calls"]) == (12, 12)
+    assert (health["findings"], health["files"]) == (sum(range(11)) + 3, 12)
+    assert (risk["calls"], risk["outcome_calls"], risk["high"], risk["low"]) == (4, 4, 6, 4)
+    assert report.checks == build_report(events, as_of=AS_OF).checks
+    conn.close()

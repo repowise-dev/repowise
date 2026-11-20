@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -42,10 +42,10 @@ _REF_QUERY_BATCH = 400
 #: return: a year of days across every agent and surface fits several times.
 _FILE_CELL_LIMIT = 20_000
 
-#: Distinct ``(tool, outcome)`` pairs the check-row query folds. Outcomes are a
-#: few small counts, so real ledgers hold a few hundred; past the cap the rarest
-#: pairs drop out of the outcome sums (never out of the call counts).
-_CHECK_OUTCOME_LIMIT = 20_000
+#: Distinct ``(tool, outcome)`` groups one page of the check-row read folds.
+#: Real ledgers hold a few hundred, so this is one page; a larger window pages
+#: on, so the sums stay exact while each statement stays bounded.
+_CHECK_OUTCOME_PAGE = 5_000
 
 _ANSWERED_SQL = "(result_state = 'success' OR (result_state = 'partial' AND is_usable = 1))"
 #: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
@@ -291,22 +291,37 @@ class SavingsRepository:
         ):
             tallies[tool] = CheckTally(calls=int(calls))
         try:
-            outcomes = self._conn.execute(
-                f"SELECT operation, outcome_json, COUNT(*) FROM savings_events "
-                f"WHERE {scope} AND outcome_json IS NOT NULL GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
-                [*scoped, _CHECK_OUTCOME_LIMIT],
-            ).fetchall()
+            for tool, text, calls in self._outcome_groups(scope, scoped):
+                try:
+                    outcome = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(outcome, dict) and tool in tallies:
+                    tallies[tool].add_outcome(outcome, tool, int(calls))
         except sqlite3.OperationalError:
             # A sidecar opened read-only before its first upgrade has no column yet.
-            outcomes = []
-        for tool, text, calls in outcomes:
-            try:
-                outcome = json.loads(text)
-            except ValueError:
-                continue
-            if isinstance(outcome, dict) and tool in tallies:
-                tallies[tool].add_outcome(outcome, tool, int(calls))
+            pass
         return check_rows(tallies)
+
+    def _outcome_groups(self, scope: str, params: list[Any]) -> Iterator[tuple[Any, ...]]:
+        """Every ``(tool, outcome_json, calls)`` group in *scope*, a bounded page at a time.
+
+        Keyset paging on the group key, so no group is dropped however many
+        distinct outcomes a window holds, and memory stays at one page.
+        """
+        after: tuple[str, str] | None = None
+        while True:
+            keyset = " AND (operation, outcome_json) > (?, ?)" if after else ""
+            page = self._conn.execute(
+                f"SELECT operation, outcome_json, COUNT(*) FROM savings_events "
+                f"WHERE {scope} AND outcome_json IS NOT NULL{keyset} "
+                "GROUP BY 1, 2 ORDER BY 1, 2 LIMIT ?",
+                [*params, *(after or ()), _CHECK_OUTCOME_PAGE],
+            ).fetchall()
+            yield from page
+            if len(page) < _CHECK_OUTCOME_PAGE:
+                return
+            after = (page[-1][0], page[-1][1])
 
     def adopt_rows(self, repository_id: str) -> int:
         """File every row of this sidecar under *repository_id*; return how many moved.
