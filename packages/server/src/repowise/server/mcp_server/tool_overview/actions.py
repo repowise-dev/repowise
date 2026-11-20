@@ -117,9 +117,13 @@ async def setup_facts(session: Any, repository: Any) -> Any | None:
         load_setup_facts,
         with_current_call,
     )
+    from repowise.server.mcp_server._meta import served_root
 
-    root = Path(repository.local_path or "")
-    if not repository.local_path or not root.is_dir():
+    # The served checkout, none for a context with no source: the stored path
+    # names where the index was built, which such a server cannot read.
+    served = served_root(repository)
+    root = Path(served or "")
+    if not served or not root.is_dir():
         return None
     try:
         return with_current_call(await load_setup_facts(session, repository.id, root))
