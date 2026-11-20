@@ -258,6 +258,20 @@ def test_npm_workspace_members_get_their_own_stacks():
     assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
 
 
+@pytest.mark.parametrize("lockfile", ["bun.lock", "bun.lockb"])
+def test_bun_workspace_members_inherit_the_root_lockfile(lockfile):
+    files = {
+        "package.json": _package({"test": "turbo run test"}, private=True, workspaces=["packages/*"]),
+        "packages/a/package.json": _package(
+            {"test": "vitest"}, devDependencies={"vitest": "^3"}
+        ),
+    }
+    found = detect_stacks([*files, lockfile], files)
+    member = next(stack for stack in found if stack.root == "packages/a")
+    assert member.package_manager == "bun"
+    assert member.requires[0] == "bun install --frozen-lockfile"
+
+
 MONOREPO = {
     "README.md": "# mono\n",
     "services/api/pyproject.toml": '[project]\nname = "api"\n',
