@@ -421,8 +421,8 @@ _JEST_JUNIT_MAJOR = 16
 #: What each package manager runs a package's own binary with.
 _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 #: A script that is Jest or Vitest and plain arguments alone, so the package manager's exec
-#: runs it as it is: no environment, chain, quoting, expansion or redirection.
-_PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+[^\s'\"`$\\<>&|;()]+)*")
+#: runs it as it is: no environment, chain, quoting, expansion, redirection or comment.
+_PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+[^\s'\"`$\\<>&|;()#]+)*")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
 
