@@ -22,6 +22,8 @@ class ImportNameMaps:
     ``import_names``    — {file: {local_name: source_file}}
     ``import_bindings`` — {file: {local_name: NamedBinding}} (call resolver only)
     ``module_aliases``  — {file: {alias: source_file}} (call resolver only)
+    ``local_scopes``    — {file: {local_name: function line spans}} for a name
+                          only imports inside function bodies bind (Python)
     """
 
     import_names: dict[str, dict[str, str]] = field(
@@ -31,6 +33,9 @@ class ImportNameMaps:
         default_factory=lambda: defaultdict(dict)
     )
     module_aliases: dict[str, dict[str, str]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+    local_scopes: dict[str, dict[str, tuple[tuple[int, int], ...]]] = field(
         default_factory=lambda: defaultdict(dict)
     )
 
@@ -44,6 +49,7 @@ def build_import_name_maps(parsed_files: dict[str, ParsedFile]) -> ImportNameMap
     """
     maps = ImportNameMaps()
     for path, parsed in parsed_files.items():
+        file_wide: set[str] = set()
         for imp in parsed.imports:
             if imp.resolved_file is None:
                 continue
@@ -63,9 +69,26 @@ def build_import_name_maps(parsed_files: dict[str, ParsedFile]) -> ImportNameMap
                     maps.import_bindings[path][binding.local_name] = binding
                     if binding.is_module_alias:
                         maps.module_aliases[path][binding.local_name] = binding.source_file
+                    _record_scope(maps, path, binding.local_name, imp.scopes, file_wide)
             else:
                 # Fallback for imports without binding data
                 for name in imp.imported_names:
                     if name != "*":
                         maps.import_names[path][name] = resolved
     return maps
+
+
+def _record_scope(
+    maps: ImportNameMaps,
+    path: str,
+    name: str,
+    scopes: tuple[tuple[int, int], ...] | None,
+    file_wide: set[str],
+) -> None:
+    """Track the function bodies *name* is bound in, until a file-wide import binds it."""
+    if scopes is None:
+        file_wide.add(name)
+        if path in maps.local_scopes:
+            maps.local_scopes[path].pop(name, None)
+    elif name not in file_wide:
+        maps.local_scopes[path][name] = maps.local_scopes[path].get(name, ()) + scopes

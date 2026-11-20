@@ -324,6 +324,9 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: the ``(start_line, end_line)`` of each function whose body holds
+    # the statement, the only code its names are bound for. None: file-wide.
+    scopes: tuple[tuple[int, int], ...] | None = None
 
     @property
     def local_names(self) -> list[str]:

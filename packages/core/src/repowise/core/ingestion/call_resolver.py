@@ -499,6 +499,8 @@ class CallResolver(
         self._import_bindings: dict[str, dict[str, NamedBinding]] = import_maps.import_bindings
         # Module alias mapping: {file_path: {alias: source_file}}
         self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
+        # Names only a function-body import binds: {file_path: {name: spans}}
+        self._local_import_scopes = import_maps.local_scopes
 
         # Lazy per-file merged views of every imported file's symbol and
         # method tables, merged in sorted import order with first-wins so
@@ -1772,7 +1774,9 @@ class CallResolver(
             if hit is not None:
                 return hit
 
-        # Tier 2: import-scoped
+        # Tier 2: import-scoped. A name only other functions import is unbound here.
+        if not self._import_binds_at(file_path, call.line, target_name):
+            return None
         binding = self._import_bindings.get(file_path, {}).get(target_name)
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
@@ -2310,6 +2314,8 @@ class CallResolver(
             hit = self._module_alias_call(file_path, held, call, caller_id)
             if hit is not None:
                 return self._body_typed_call(caller_id, hit.callee_id, "import", call.line)
+        if not self._import_binds_at(file_path, call.line, receiver_name):
+            return None
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
@@ -2323,6 +2329,17 @@ class CallResolver(
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+
+    def _import_binds_at(self, file_path: str, line: int, name: str | None) -> bool:
+        """Whether *name* is imported at *line* of *file_path*.
+
+        A name only function-body imports bind is a local of those functions
+        and of what they nest, a lexical scope read off the line, since a
+        nested function is no symbol of its own. Elsewhere the name is a
+        parameter, another local or unbound.
+        """
+        spans = self._local_import_scopes.get(file_path, {}).get(name or "")
+        return spans is None or any(start <= line <= end for start, end in spans)
 
     def _module_held_by_local(
         self, file_path: str, caller_id: str, receiver_name: str | None
