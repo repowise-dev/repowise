@@ -25,6 +25,7 @@ import {
   type ExcludedReview,
 } from "./performance/grouping";
 import { LegacyPerformanceFindings } from "./performance/legacy";
+import { RunSplit, RunSplitSentence, RuntimeEvidenceSection } from "./performance/measured";
 import { ACTIONABILITY_LABEL } from "./performance/presentation";
 import { usePerformancePrompts } from "./performance/prompts";
 import {
@@ -57,6 +58,7 @@ import {
 } from "./performance/states";
 import { usePerformanceFilters } from "./performance/use-filters";
 import { usePerformanceQueue } from "./performance/use-queue";
+import { useRuntimeEvidenceView } from "./performance/runtime";
 import { PerformanceVerdict, verdictOf } from "./performance/verdict";
 import { formatNumber } from "../lib/format";
 
@@ -151,6 +153,7 @@ export function PerformanceView({
   }, [linked]);
 
   const { openPrompt, promptModal } = useAiPromptAction();
+  const runtime = useRuntimeEvidenceView(adapter);
   const prompts = usePerformancePrompts(adapter);
   const prefetch = usePrefetchDetail(adapter);
   const detailById = capabilities.detailById;
@@ -280,15 +283,27 @@ export function PerformanceView({
         <PerformanceVerdict
           verdict={verdictOf(filters.scope, data.total, groups)}
           analyzedCommit={summary.analyzed_commit}
+          figureFooter={runtime.run ? <RunSplit run={runtime.run} /> : null}
         >
           {sentence}
+          {runtime.run ? <RunSplitSentence run={runtime.run} /> : null}
         </PerformanceVerdict>
       ) : null}
+
+      <RuntimeEvidenceSection
+        view={runtime}
+        adapter={adapter}
+        onOpenCause={detailById ? openById : undefined}
+        onPrompt={openPrompt}
+      />
 
       <section aria-label="Performance causes" className="space-y-4">
         {summary.status === "stale_model" ? <StaleModelNotice summary={summary} /> : null}
         {data.ignored_arguments ? (
           <IgnoredArgumentsNotice ignored={data.ignored_arguments} />
+        ) : null}
+        {runtimeEvidence && !runtimeEvidence.connected && items.length > 0 ? (
+          <ConnectEvidenceState variant="row" />
         ) : null}
 
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
