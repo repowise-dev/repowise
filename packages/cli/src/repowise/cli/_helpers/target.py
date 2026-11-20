@@ -224,7 +224,9 @@ def resolve_command_target(
          that has been indexed before) → single-repo mode, even if a
          workspace exists upstream. cd-into-the-repo is the strongest
          signal of user intent.
-       - If a workspace exists upstream of cwd → workspace mode.
+       - If a workspace exists upstream of cwd → workspace mode. A git
+         repo that is not a member of that workspace is never routed to
+         it (see ``find_workspace_root``).
        - Otherwise → single-repo mode (cwd, even if not indexed).
 
     The returned :class:`CommandTarget` carries a ``reason`` string and an
@@ -331,7 +333,7 @@ def resolve_command_target(
     # 4b: cwd is an indexed repo — respect that even if a workspace exists upstream
     cwd_state = get_repowise_dir(base_path) / STATE_FILENAME
     if cwd_state.exists():
-        upstream = find_workspace_root(base_path.parent if base_path.parent != base_path else None)
+        upstream = find_workspace_root(base_path)
         return CommandTarget(
             mode="single",
             repo_path=base_path,

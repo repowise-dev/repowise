@@ -195,6 +195,28 @@ def test_plain_dir_stays_single(tmp_path, chdir):
     assert target.auto_detected is False
 
 
+def test_nested_non_member_repo_is_its_own_target(fake_workspace, chdir):
+    """A git repo cloned under the workspace, but not one of its members,
+    is targeted itself even before it is indexed."""
+    clone = fake_workspace / "test-repos" / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "src").mkdir()
+
+    for cwd in (clone, clone / "src"):
+        chdir(cwd)
+        target = resolve_command_target()
+        assert target.mode == "single"
+        assert target.repo_path == cwd
+        assert target.ws_root is None
+
+    # Indexed, it stays single and names no upstream workspace either.
+    (clone / ".repowise").mkdir()
+    (clone / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    chdir(clone)
+    target = resolve_command_target()
+    assert (target.mode, target.ws_root) == ("single", None)
+
+
 # ---------------------------------------------------------------------------
 # CommandTarget helpers
 # ---------------------------------------------------------------------------

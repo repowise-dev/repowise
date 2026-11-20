@@ -460,19 +460,39 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
     Stops at the filesystem root, or at the directory named by the
     ``REPOWISE_WORKSPACE_CEILING`` environment variable: the ceiling
     directory itself is still checked, but the walk does not ascend past it.
+
+    A git repository of its own wins over a workspace above it: when the
+    nearest enclosing git root sits below the workspace root and is not one
+    of its members, *start* belongs to that repository and this returns
+    ``None``. A member, or a directory under the workspace root's own git
+    checkout, still resolves to the workspace.
     """
     ceiling = os.environ.get(WORKSPACE_CEILING_ENV_VAR)
     ceiling_dir = Path(ceiling).resolve() if ceiling else None
     current = (start or Path.cwd()).resolve()
+    git_root: Path | None = None
     while True:
         if (current / WORKSPACE_CONFIG_FILENAME).is_file():
-            return current
+            return current if _owns_git_root(current, git_root) else None
+        if git_root is None and (current / ".git").exists():
+            git_root = current
         if ceiling_dir is not None and current == ceiling_dir:
             return None  # ceiling: the directory itself was checked
         parent = current.parent
         if parent == current:
             return None  # reached filesystem root
         current = parent
+
+
+def _owns_git_root(ws_root: Path, git_root: Path | None) -> bool:
+    """Whether the workspace at *ws_root* covers the nearest *git_root* below it."""
+    if git_root is None or git_root == ws_root:
+        return True
+    try:
+        config = WorkspaceConfig.load(ws_root)
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        return True  # unreadable config: callers report it as before
+    return config.alias_for_path(ws_root, git_root) is not None
 
 
 def ensure_workspace_data_dir(workspace_root: Path) -> Path:
