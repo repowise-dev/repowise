@@ -149,6 +149,30 @@ def test_a_per_call_cause_is_confident_only_once_an_entry_point_reaches_it() -> 
     assert perf_confident_verdict(unreached).reason == "unconfirmed_cost"
 
 
+def test_a_measured_cold_role_is_queued_but_never_confident() -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
+
+    cli = {"loop_magnitude": "grows_with_data", "growth_source": "loop", "execution_role": "cli"}
+    measured = _cause(facets={**cli, "measured": "import-bench"})
+    # A leading workload ran it at cost: the cold role was a guess.
+    assert perf_queue_verdict(measured).eligible
+    # Kept in the queue, never made the work to lead with.
+    assert perf_confident_verdict(measured).reason == "unconfirmed_cost"
+    assert perf_queue_verdict(_cause(facets=cli)).reason == "cold_role"
+
+
+def test_a_measured_cold_name_is_never_confident_whatever_its_shape() -> None:
+    # A shape that grows by itself skips the loop-growth check; the override must not.
+    facets = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
+    static = _cause(biomarker_type="sql_cartesian_join", facets=facets)
+    assert perf_confident_verdict(static).eligible
+    overridden = _cause(
+        biomarker_type="sql_cartesian_join",
+        facets={**facets, "measured": "boot", "measured_overrides": "cold_path"},
+    )
+    assert perf_confident_verdict(overridden).reason == "unconfirmed_cost"
+
+
 class _Shaped(_Facts):
     def __init__(self, shape, *, dead=False, cloned=False):
         self._shape, self._dead, self._cloned = shape, dead, cloned

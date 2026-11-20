@@ -393,6 +393,13 @@ def execution_role(row: Any) -> str:
     return field(row, "execution_role") or perf_facets(row).get("execution_role") or "unknown"
 
 
+def measured(facets: Mapping[str, Any]) -> bool:
+    """Whether a leading workload's newest run ranks the cause's loop owner
+    (the ``measured`` facet). A run overrides the static guesses that the
+    code runs once per process: a cold role or a cold name."""
+    return bool(facets.get("measured"))
+
+
 def lead_reason(marker: str | None, facets: Mapping[str, Any]) -> LowPriority | None:
     """Why a performance cause may not lead, or ``None`` when it may.
 
@@ -446,6 +453,7 @@ __all__ = [
     "low_priority",
     "magnitude",
     "measure",
+    "measured",
     "measured_nloc",
     "perf_facets",
     "terminal_shaped",
