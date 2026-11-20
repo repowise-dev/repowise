@@ -267,7 +267,8 @@ def resolve_command_target(
 
     # ----- Rule 2: --workspace or --repo -----
     if workspace_flag or repo_alias is not None:
-        ws_root = find_workspace_root(base_path)
+        # Asked for by name: any repo under the workspace may reach it.
+        ws_root = find_workspace_root(base_path, any_repo=True)
         if ws_root is None:
             raise WorkspaceNotFound(
                 "No .repowise-workspace.yaml found at or above "

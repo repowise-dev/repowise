@@ -118,6 +118,16 @@ def test_repo_alias_implies_workspace(fake_workspace, chdir):
     assert target.repo_filter == "backend"
 
 
+def test_workspace_flag_reaches_the_workspace_from_a_non_member_repo(fake_workspace, chdir):
+    clone = fake_workspace / "clones" / "other"
+    (clone / ".git").mkdir(parents=True)
+    chdir(clone)
+    assert resolve_command_target().ws_root is None
+    target = resolve_command_target(workspace_flag=True)
+    assert target.mode == "workspace"
+    assert target.ws_root == fake_workspace
+
+
 def test_workspace_flag_raises_when_no_workspace(tmp_path, chdir):
     chdir(tmp_path)
     with pytest.raises(WorkspaceNotFound):

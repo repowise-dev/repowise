@@ -341,6 +341,18 @@ class TestFindWorkspaceRoot:
         (ws / "mono" / "pkg-a" / "src").mkdir(parents=True)
         assert find_workspace_root(ws / "mono" / "pkg-a" / "src") == ws
 
+    def test_a_config_that_fails_to_load_still_found_from_a_nested_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text("version: 1", encoding="utf-8")
+        (tmp_path / "repo" / ".git").mkdir(parents=True)
+
+        def _broken(_root: Path) -> WorkspaceConfig:
+            raise KeyError("missing field")
+
+        monkeypatch.setattr(WorkspaceConfig, "load", staticmethod(_broken))
+        assert find_workspace_root(tmp_path / "repo") == tmp_path.resolve()
+
     def test_unreadable_config_still_found_from_a_nested_repo(self, tmp_path: Path) -> None:
         (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text("repos: [", encoding="utf-8")
         (tmp_path / "repo" / ".git").mkdir(parents=True)

@@ -492,8 +492,8 @@ def _owns_git_root(ws_root: Path, git_root: Path | None) -> bool:
         return True
     try:
         config = WorkspaceConfig.load(ws_root)
-    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
-        return True  # unreadable config: callers report it as before
+    except Exception:  # any broken config: callers report it as before
+        return True
     # The git root is a member, or a monorepo whose subfolders are members.
     return any(
         (ws_root / e.path).resolve().is_relative_to(git_root) for e in config.repos
