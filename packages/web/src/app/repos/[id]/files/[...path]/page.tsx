@@ -63,16 +63,20 @@ const THEMES = { light: "github-light", dark: "vesper" } as const;
 
 /** Best-effort shiki render of the file with per-line coverage attributes.
  *  Returns undefined when the source can't be fetched or highlighted —
- *  the Coverage tab falls back to the summary-only view. */
+ *  the Coverage tab falls back to the summary-only view. A `?line=N` link on
+ *  a file no test ran still gets the source, untinted, to carry the mark. */
 async function renderCoverageCode(
   content: string | undefined,
   detail: FileDetailResponse,
+  line: number | undefined,
 ): Promise<string | undefined> {
-  if (!content) return undefined;
-  if (!detail.coverage || detail.coverage.covered_lines.length === 0) return undefined;
+  if (!content || !detail.coverage) return undefined;
   // Line numbers measured on another version of the file would tint the
   // wrong lines; the tab says why the source is untinted instead.
   if (detail.coverage.freshness === "stale") return undefined;
+  if (detail.coverage.covered_lines.length === 0) {
+    return renderLinkedSource(content, detail, line);
+  }
   return highlightSource(content, detail, new Set(detail.coverage.covered_lines));
 }
 
@@ -149,21 +153,17 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
   // render could not produce a body for.
   const wantsFull = requested !== undefined && HEAVY_TABS.includes(requested);
   const highlightLine = asLineNumber(line);
-  // A line link shows the source on Overview, where a link without `?tab=`
-  // lands; on Coverage the tab's own source carries the mark.
-  const linkedSource =
-    highlightLine !== undefined && (requested === undefined || requested === "overview");
 
   let detail: FileDetailResponse;
   let source: string | undefined;
   try {
-    // Only the Coverage tab renders highlighted source, and reading the file
-    // off disk costs three DB queries of its own inside `/file-content`.
-    // Fetched beside the aggregate rather than after it: the highlight needs
-    // `detail`, but the source bytes do not.
+    // Only the Coverage tab and a `?line=N` link render highlighted source,
+    // and reading the file off disk costs three DB queries of its own inside
+    // `/file-content`. Fetched beside the aggregate rather than after it: the
+    // highlight needs `detail`, but the source bytes do not.
     [detail, source] = await Promise.all([
       getFileDetail(id, filePath, { fields: wantsFull ? "full" : "slim" }),
-      requested === "coverage" || linkedSource
+      requested === "coverage" || highlightLine !== undefined
         ? getFileContent(id, filePath).catch(() => undefined)
         : Promise.resolve(undefined),
     ]);
@@ -172,13 +172,16 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     throw err;
   }
 
-  const [coverageCodeHtml, sourceCodeHtml] = await Promise.all([
-    requested === "coverage" ? renderCoverageCode(source, detail) : undefined,
-    linkedSource ? renderLinkedSource(source, detail, highlightLine) : undefined,
-  ]);
-
   const tabs = fileTabsFor(detail);
   const initialTab = resolveFileTab(requested, tabs);
+
+  // A line link shows the source on Overview, where a link without `?tab=`
+  // lands and where a tab this file does not have (Decisions on an ungoverned
+  // file) falls back to; on Coverage the tab's own source carries the mark.
+  const [coverageCodeHtml, sourceCodeHtml] = await Promise.all([
+    requested === "coverage" ? renderCoverageCode(source, detail, highlightLine) : undefined,
+    initialTab === "overview" ? renderLinkedSource(source, detail, highlightLine) : undefined,
+  ]);
 
   // Which tabs this render could not produce a usable body for. A tab with
   // nothing behind it is left out: clicking Documentation on a file that has
