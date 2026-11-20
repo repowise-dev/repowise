@@ -55,7 +55,7 @@ async def collect_sections(
         except UnavailableError as exc:
             unavailable[key] = str(exc) or _UNREADABLE
         except Exception:  # one section must not cost the report
-            logger.warning("first look: section %s failed", key, exc_info=True)
+            logger.warning("repo report: section %s failed", key, exc_info=True)
             unavailable[key] = _UNREADABLE
     return out, unavailable
 

@@ -451,7 +451,7 @@ class FirstLookReport:
         version = int(data.get("schema_version") or 0)
         if version > SCHEMA_VERSION:
             raise ValueError(
-                f"first-look report schema {version} is newer than this Repowise reads "
+                f"Repo report schema {version} is newer than this Repowise reads "
                 f"({SCHEMA_VERSION}); upgrade Repowise or rebuild the report"
             )
         return cls(
