@@ -19,6 +19,7 @@ def _real_grammar_cache() -> str | None:
 
 _GRAMMAR_CACHE = _real_grammar_cache()
 
+
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path_factory, monkeypatch):
     """Point "home" at a per-test temp directory for every unit test.
