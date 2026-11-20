@@ -154,6 +154,8 @@ export interface FirstLookStaleness {
   fixed: string[];
   /** Item ids whose facts moved since. */
   changed: string[];
+  /** The current item for each id in `changed`, in the same order. */
+  changed_items: FirstLookItem[];
   /** Items the report never had; listed beside it, never inside. */
   new: FirstLookItem[];
   unknown: Record<string, string>;

@@ -177,6 +177,7 @@ describe("FirstLookReport", () => {
       behind: true,
       fixed: ["fl_perf"],
       changed: ["fl_dead0"],
+      changed_items: [],
       new: [],
       unknown: {},
     };
@@ -189,7 +190,7 @@ describe("FirstLookReport", () => {
 
   it("says nothing about staleness while the index is at the report's commit", () => {
     renderReport({
-      staleness: { report_commit: "c1", current_commit: "c1", behind: false, fixed: [], changed: [], new: [], unknown: {} },
+      staleness: { report_commit: "c1", current_commit: "c1", behind: false, fixed: [], changed: [], changed_items: [], new: [], unknown: {} },
     });
     expect(screen.queryByRole("status")).toBeNull();
   });
