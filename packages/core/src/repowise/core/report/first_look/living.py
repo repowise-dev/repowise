@@ -107,27 +107,70 @@ def _open_top(report: FirstLookReport, statuses: Mapping[str, ItemStatus]) -> tu
     return top_items(open_blocks)
 
 
+def _model_written(baseline: FirstLookReport | None) -> bool:
+    return baseline is not None and (baseline.prose or {}).get("writer") not in (None, WRITER)
+
+
+def _kept_sections(
+    report: FirstLookReport, baseline: FirstLookReport, same: set[str]
+) -> dict[str, str]:
+    """The baseline's section intros whose sections hold the same unchanged items."""
+    was = (baseline.prose or {}).get("sections") or {}
+    old = {b.key: {i.id for i in b.items} for b in baseline.sections}
+    out = {}
+    for block in report.sections:
+        ids = {i.id for i in block.items}
+        if was.get(block.key) and ids <= same and ids == old.get(block.key):
+            out[block.key] = was[block.key]
+    return out
+
+
 def _prose(report: FirstLookReport, baseline: FirstLookReport | None) -> dict[str, Any]:
     """Template text, with a model's baseline text wherever its facts still hold."""
     prose = template_prose(report)
-    was = (baseline.prose or {}) if baseline is not None else {}
-    if not was or was.get("writer") in (None, WRITER):
+    if not _model_written(baseline):
         return prose
+    was = baseline.prose
     before = {i.id: i.fingerprint for i in baseline.items()}
     same = {i.id for i in report.items() if before.get(i.id) == i.fingerprint}
     items = _texts(baseline)
-    prose["items"] = {k: (items.get(k) if k in same and items.get(k) else v) for k, v in prose["items"].items()}
-    old_sections = {b.key: {i.id for i in b.items} for b in baseline.sections}
-    for block in report.sections:
-        ids = {i.id for i in block.items}
-        if ids <= same and ids == old_sections.get(block.key) and (was.get("sections") or {}).get(block.key):
-            prose["sections"][block.key] = was["sections"][block.key]
+    prose["items"] = {
+        k: (items[k] if k in same and items.get(k) else v) for k, v in prose["items"].items()
+    }
+    prose["sections"].update(_kept_sections(report, baseline, same))
     if set(before) == {i.id for i in report.items()} == same:
-        for key in ("summary", "headline"):
-            if was.get(key):
-                prose[key] = was[key]
+        prose.update({k: was[k] for k in ("summary", "headline") if was.get(k)})
     prose["writer"] = was["writer"]
     return prose
+
+
+async def _current(
+    session: Any, repository_id: str, root: Path | None, store_missing: bool, app_url: str | None
+) -> tuple[FirstLookReport, FirstLookReport | None, bool]:
+    """The report at the index now, the stored one, and whether this call stored it."""
+    from .write import build_report, write_first_look
+
+    baseline = await load_baseline(session, repository_id, root)
+    if baseline is None and store_missing:
+        current = await write_first_look(session, repository_id, root, app_url=app_url)
+        return current, current, True
+    return await build_report(session, repository_id, root), baseline, False
+
+
+def _finish(
+    current: FirstLookReport,
+    baseline: FirstLookReport | None,
+    carried: list[Item],
+    statuses: Mapping[str, ItemStatus],
+) -> FirstLookReport:
+    """*current* with the answered items it dropped, open-only "Do these first",
+    and the prose (a model's where it still holds, stamped as the model's)."""
+    report = _with_items(current, carried)
+    report = dataclasses.replace(report, top=_open_top(report, statuses))
+    stamp = report.stamp
+    if _model_written(baseline):
+        stamp = dataclasses.replace(stamp, generator=baseline.stamp.generator, cost=baseline.stamp.cost)
+    return dataclasses.replace(report, stamp=stamp, prose=_prose(report, baseline))
 
 
 async def build_living(
@@ -144,45 +187,27 @@ async def build_living(
     stored first (as ``init`` writes it, *app_url* in its rendered files) and
     is its own baseline.
     """
-    from .write import build_report, write_first_look
-
     root = Path(repo_root) if repo_root is not None else None
-    baseline = await load_baseline(session, repository_id, root)
-    wrote = False
-    if baseline is None and store_missing:
-        current = await write_first_look(session, repository_id, root, app_url=app_url)
-        baseline, wrote = current, True
-    else:
-        current = await build_report(session, repository_id, root)
-
-    found = (
-        compare(baseline, current.items(), unknown=current.unavailable)
-        if baseline is not None
-        else None
-    )
+    current, baseline, wrote = await _current(session, repository_id, root, store_missing, app_url)
+    if baseline is None:
+        statuses = await item_statuses(session, repository_id, current.items())
+        report = _finish(current, None, [], statuses)
+        return LivingReport(report=report, statuses=statuses)
+    found = compare(baseline, current.items(), unknown=current.unavailable)
     now_ids = {i.id for i in current.items()}
+    dropped = [i for i in baseline.items() if i.id not in now_ids]
     # A section the index cannot read now keeps the baseline's items as they were.
-    unknown = set(found.unknown) if found is not None else set()
-    dropped = [
-        i for i in (baseline.items() if baseline is not None else ()) if i.id not in now_ids
-    ]
     statuses = await item_statuses(
         session,
         repository_id,
         [*current.items(), *dropped],
-        gone=[i.id for i in dropped if i.section not in unknown],
+        gone=[i.id for i in dropped if i.section not in found.unknown],
     )
     carried = [i for i in dropped if statuses[i.id].status != "resolved"]
-    report = _with_items(current, carried)
-    report = dataclasses.replace(report, top=_open_top(report, statuses))
-    stamp = report.stamp
-    if baseline is not None and (baseline.prose or {}).get("writer") not in (None, WRITER):
-        stamp = dataclasses.replace(stamp, generator=baseline.stamp.generator, cost=baseline.stamp.cost)
-    report = dataclasses.replace(report, stamp=stamp, prose=_prose(report, baseline))
     return LivingReport(
-        report=report,
+        report=_finish(current, baseline, carried, statuses),
         statuses=statuses,
-        new=frozenset(i.id for i in found.new) if found is not None else frozenset(),
+        new=frozenset(i.id for i in found.new),
         baseline=baseline,
         resolved=tuple(i for i in dropped if statuses[i.id].status == "resolved"),
         wrote_baseline=wrote,
