@@ -1,4 +1,4 @@
-"""``repowise report first-look`` - the report written after the first index.
+"""``repowise report repo`` (alias ``first-look``) - the repo report.
 
 Renders the living report: the stored report (``.repowise/reports/first-look.json``,
 written from the index when there is none: no model, no network, free) as the
@@ -31,7 +31,7 @@ def _web_url(root: Path) -> str | None:
     return live_web_url(root)
 
 
-_WRITING = "[dim]No first-look report yet; writing it from the index.[/dim]"
+_WRITING = "[dim]No repo report yet; writing it from the index.[/dim]"
 
 
 async def _report(session: Any, repo_id: str, root: Path, web: str | None) -> Any:
@@ -110,7 +110,7 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
     return report_renderers.get(RENDERED[f".{fmt}"])(doc)
 
 
-@click.command("first-look")
+@click.command("repo")
 @click.argument("path", required=False, type=click.Path(exists=True, file_okay=False))
 @click.option(
     "--format",
@@ -127,8 +127,8 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
     help="List what was fixed, changed or found new since the report was written.",
 )
 def first_look_command(path: str | None, fmt: str, out_path: str | None, since_last: bool) -> None:
-    """The first-look report: what Repowise found at the first index, most urgent
-    first, as the index has it now, with each item's status. Free: no model."""
+    """The repo report: what Repowise found, most urgent first, as the index has
+    it now, with each item's status. Free: no model."""
     from repowise.core.report.first_look.write import rendered_path
 
     root = Path(path or ".").resolve()
@@ -142,6 +142,15 @@ def first_look_command(path: str | None, fmt: str, out_path: str | None, since_l
     target = Path(out_path) if out_path else rendered_path(root, ".html")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
-    err_console.print(f"Wrote the first-look report to {target}")
+    err_console.print(f"Wrote the repo report to {target}")
     if fmt == "html" and not out_path and sys.stdout.isatty():
         click.launch(str(target))
+
+
+#: ``repowise report first-look``: the name the report first shipped under.
+first_look_alias = click.Command(
+    "first-look",
+    callback=first_look_command.callback,
+    params=first_look_command.params,
+    help="Alias for `repowise report repo`.",
+)

@@ -18,7 +18,7 @@ def _cli(*args: str):
 
 
 def _items(root: Path) -> dict[str, dict]:
-    result = _cli("report", "first-look", str(root), "--format", "json")
+    result = _cli("report", "repo", str(root), "--format", "json")
     assert result.exit_code == 0, result.output
     doc = json.loads(result.stdout[result.stdout.index("{") :])
     return {i["rule"]: i for s in doc["sections"] for i in s["items"]}

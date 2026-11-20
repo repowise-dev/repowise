@@ -10,26 +10,27 @@ opens offline.
 | `report assessment` | Component posture, hotspots, bus factor, dead code by tier, test reach, contracts, governing decisions, provenance coverage and what moved in the last quarter | Acquirer, board, platform lead, migration committee |
 | `report changes` | Every change merged in a period: components and owning teams, review record, reaching tests, policy verdict, provenance and later outcome, with a period summary | Auditor reviewing change management (SOC 2 CC8.1, ISO 27001 A.8.32, PCI DSS 6.5) |
 | `report inventory` | Components with owner teams, languages, entry points and the packages they import | Software inventory review (PCI DSS 6.3.2) |
-| `report first-look` | What Repowise found at the first index, most urgent first: each item with its path and line, a link into the app, an agent prompt and its status (`repowise mark`). Written by `init`, free | The developer who just indexed the repo, and their agent |
+| `report repo` | What Repowise found, most urgent first: each item with its path and line, a link into the app, an agent prompt and its status (`repowise mark`). Written by `init`, free | The developer who just indexed the repo, and their agent |
 | `report estate` | A workspace's repos and services, the system map and architecture with the evidence behind them, contracts and the calls that reached no provider, health and churn per repo, the riskiest seams and where to start | Platform lead, acquirer, team taking over an estate |
 
 ```bash
 repowise report assessment --format html --out assessment.html
 repowise report changes --since 2026-07-01 --format markdown --out q3-changes.md
 repowise report inventory --format csv --out inventory.csv
-repowise report first-look --since-last
+repowise report repo --since-last
 ```
 
 In a workspace, `report assessment` and `report inventory` cover every repository.
 `report estate` covers the workspace as one system, from what `repowise update --workspace`
 stored.
 
-## The first-look report
+## The repo report
 
-`init` writes it once, after the first index, to `.repowise/reports/` as JSON, Markdown and
-HTML, and names it on one line of the finish panel. `repowise report first-look` opens it as
-a living report: the stored report as the index has it now, each item with its status, what is
-new since and what was resolved. `--format json` hands it to an agent; `--since-last` lists what
+`init` writes it once, after the first index, to `.repowise/reports/`: the first look (the
+baseline, `first-look.json`) and its exports `repo-report.md` and `repo-report.html`, and names it on
+one line of the finish panel. `repowise report repo` (alias `report first-look`) opens it as a
+living report: the first look as the index has it now, each item with its status, what is
+new since and what was resolved since the first look. `--format json` hands it to an agent; `--since-last` lists what
 was fixed since. Its sentences come from one template table over the stored findings (no model,
 no cost); links, paths and prompts come from finding ids. Items one fix covers (a hard-coded
 password and a hard-coded secret) are one item with every location. Sections are providers on

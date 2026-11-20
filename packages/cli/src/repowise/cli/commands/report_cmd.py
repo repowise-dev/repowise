@@ -17,12 +17,13 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "repowise.cli.commands.report_changes_cmd:changes_command",
     "repowise.cli.commands.report_estate_cmd:estate_command",
     "repowise.cli.commands.report_first_look_cmd:first_look_command",
+    "repowise.cli.commands.report_first_look_cmd:first_look_alias",
 )
 
 
 @click.group("report")
 def report_group() -> None:
-    """Evidence reports built from the index: assessment, inventory, changes, estate, first look."""
+    """Evidence reports built from the index: assessment, inventory, changes, estate, repo report."""
 
 
 for _target in _SUBCOMMANDS:

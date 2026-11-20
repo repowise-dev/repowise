@@ -1,4 +1,4 @@
-"""The first-look report as Markdown and as one self-contained HTML file.
+"""The repo report as Markdown and as one self-contained HTML file.
 
 Both are renderers on the ``report-renderer`` seam (``first-look-markdown``,
 ``first-look-html``) and, like every renderer there, take only a document and
@@ -197,7 +197,7 @@ def writer_line(stamp: Mapping[str, Any]) -> str:
     )
 
 
-_SINCE_LAST = "repowise report first-look --since-last"
+_SINCE_LAST = "repowise report repo --since-last"
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ def render_first_look_markdown(doc: dict[str, Any]) -> str:
     prose = _prose(doc)
     repo, stamp = doc.get("repo") or {}, doc.get("stamp") or {}
     out = [
-        f"# First look: {_one(repo.get('name') or '')}",
+        f"# Repo report: {_one(repo.get('name') or '')}",
         "",
         " · ".join(_meta(doc)),
         "",
@@ -506,7 +506,7 @@ def render_first_look_html(doc: dict[str, Any]) -> str:
     tag = "template" if (stamp.get("generator") or "template") == "template" else "model"
     body = [
         '<div class="page"><header>',
-        '<div class="eyebrow">First look</div>',
+        '<div class="eyebrow">Repo report</div>',
         f"<h1>{e(name)}</h1>",
         '<div class="meta">' + "".join(f"<span>{e(m)}</span>" for m in _meta(doc)) + "</div>",
         f'<div class="writer"><span class="tag">{tag}</span><span>{e(writer_line(stamp))}</span></div>',
@@ -522,7 +522,7 @@ def render_first_look_html(doc: dict[str, Any]) -> str:
         body += _h_section(doc, section)
     body += _h_tail(doc)
     body.append("</div>")
-    return html_page(f"First look: {name}", _CSS, body)
+    return html_page(f"Repo report: {name}", _CSS, body)
 
 
 def _h_tail(doc: Mapping[str, Any]) -> list[str]:

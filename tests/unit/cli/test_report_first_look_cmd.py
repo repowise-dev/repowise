@@ -1,8 +1,9 @@
-"""``repowise report first-look``: html, md and json from one stored report, and --since-last."""
+"""``repowise report repo``: html, md and json from one stored report, and --since-last."""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -81,17 +82,17 @@ def indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _run(*args: str):
     from repowise.cli.main import cli
 
-    return CliRunner().invoke(cli, ["report", "first-look", *args])
+    return CliRunner().invoke(cli, ["report", "repo", *args])
 
 
 def test_html_is_written_beside_the_stored_report(indexed: Path) -> None:
     result = _run(str(indexed))
     assert result.exit_code == 0, result.output
     reports = indexed / ".repowise" / "reports"
-    html = (reports / "first-look.html").read_text(encoding="utf-8")
+    html = (reports / "repo-report.html").read_text(encoding="utf-8")
     assert "<h1>shop</h1>" in html and "Fix with your agent" in html
     # Built on first use, so the JSON, Markdown and the row exist too.
-    assert (reports / "first-look.json").exists() and (reports / "first-look.md").exists()
+    assert (reports / "first-look.json").exists() and (reports / "repo-report.md").exists()
     assert SECRET not in html
 
 
@@ -113,7 +114,7 @@ def test_json_for_agents_and_markdown_to_stdout(indexed: Path, tmp_path: Path) -
     md = _run(str(indexed), "--format", "md", "--out", str(out))
     assert md.exit_code == 0, md.output
     text = out.read_text(encoding="utf-8")
-    assert text.startswith("# First look: shop")
+    assert text.startswith("# Repo report: shop")
     assert SECRET not in text
 
 
@@ -132,6 +133,18 @@ def test_since_last_lists_what_was_fixed(indexed: Path) -> None:
 
     data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
     assert data["behind"] is True and len(data["fixed"]) == 1
+
+
+def test_first_look_is_an_alias_of_report_repo(indexed: Path) -> None:
+    from repowise.cli.main import cli
+
+    runner = CliRunner()
+    old = runner.invoke(cli, ["report", "first-look", str(indexed), "--format", "md"])
+    new = runner.invoke(cli, ["report", "repo", str(indexed), "--format", "md"])
+    assert old.exit_code == 0, old.output
+    assert old.stdout[old.stdout.index("# Repo report") :] == new.stdout
+    listed = runner.invoke(cli, ["report", "--help"]).output
+    assert re.search(r"first-look\s+Alias for `repowise report repo`\.", listed)
 
 
 def test_since_last_shows_a_changed_item_as_it_is_now(indexed: Path) -> None:
@@ -166,10 +179,10 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     steps = SimpleNamespace(step=lambda name: contextlib.nullcontext())
     run = SimpleNamespace(repo_path=indexed, effective_index_only=True, provider=None)
     first_look = _finish._write_first_look(run, steps)
-    assert first_look.line() == "First look  .repowise/reports/first-look.html  (template, free)"
+    assert first_look.line() == "Repo report  .repowise/reports/repo-report.html  (template, free)"
     stored = indexed / ".repowise" / "reports" / "first-look.json"
     written = stored.read_text(encoding="utf-8")
-    assert (indexed / ".repowise" / "reports" / "first-look.html").exists()
+    assert (indexed / ".repowise" / "reports" / "repo-report.html").exists()
 
     async def broken(*args, **kwargs):
         raise RuntimeError("store is gone")

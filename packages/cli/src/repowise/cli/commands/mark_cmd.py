@@ -1,8 +1,8 @@
-"""``repowise mark ID STATUS`` - record your answer to a first-look item.
+"""``repowise mark ID STATUS`` - record your answer to a repo report item.
 
 A thin caller of :func:`repowise.core.report.first_look.marks.mark_item`: the
 answer goes to every row the item stands for, in the stores the web app and
-``repowise next`` read, so ``repowise report first-look`` shows it.
+``repowise next`` read, so ``repowise report repo`` shows it.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from repowise.cli.output import emit_json
 #: What to do next, by error code, for a person at the terminal.
 HINTS = {
     "reason_required": "Say why with --reason.",
-    "unknown_item": "Ids are listed by `repowise report first-look --format json`.",
+    "unknown_item": "Ids are listed by `repowise report repo --format json`.",
 }
 
 #: The statuses as typed here; ``false-positive`` reaches core as ``false_positive``.
@@ -66,8 +66,8 @@ def _said(out: dict[str, Any]) -> str:
 def mark_command(
     item_id: str, status: str, reason: str | None, days: int | None, repo: str | None, as_json: bool
 ) -> None:
-    """Mark a first-look report item done, acknowledged (ack), a false positive or
-    snoozed. ID is the item's id (fl_...) from `repowise report first-look --format json`."""
+    """Mark a repo report item done, acknowledged (ack), a false positive or
+    snoozed. ID is the item's id (fl_...) from `repowise report repo --format json`."""
     from repowise.core.report.first_look.marks import MarkError
 
     if days is not None and status != "snooze":

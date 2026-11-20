@@ -1,4 +1,4 @@
-"""The template text of a first-look report: one table, written from facts.
+"""The template text of a repo report: one table, written from facts.
 
 :func:`template_prose` fills ``report.prose`` with the shape every writer
 fills and every renderer prints::

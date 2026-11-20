@@ -652,8 +652,8 @@ repowise next --horizon quarter --all
 
 ### `repowise mark ID STATUS`
 
-Records an answer to one first-look report item. `ID` is the item's `fl_` id from
-`repowise report first-look --format json`; `STATUS` is `done`, `ack`, `false-positive` or `snooze`.
+Records an answer to one repo report item. `ID` is the item's `fl_` id from
+`repowise report repo --format json`; `STATUS` is `done`, `ack`, `false-positive` or `snooze`.
 
 ```bash
 repowise mark fl_3a91c0d2e4f1 done
@@ -670,7 +670,7 @@ repowise mark fl_7be0c1d2a3f4 ack --reason "kept for the plugin API"
 - The answer goes to every row the item stands for (a grouped item has several), in the stores the web app
   and `repowise next` read: next actions, dead-code, health finding and refactoring statuses. An item no
   store holds keeps its answer under its own id; so does a snooze on a finding item.
-- `repowise report first-look` shows each item's status; an answered item stays listed after the index drops it.
+- `repowise report repo` shows each item's status; an answered item stays listed after the index drops it.
 - A security finding is never marked `false-positive` here: put a `repowise-security-ignore` comment on its
   line, or accept it in a baseline with `repowise security check --write-baseline FILE`.
 - Errors exit 1 with a code: `unknown_item`, `reason_required`, `security_use_ignore`, `bad_status`, `no_index`.
@@ -1868,15 +1868,15 @@ lists components with no owner team.
 - A period summary and a method appendix (what git alone cannot attest) both state the window. Unknown counts apart, never as failure; people counted, never named.
 - Shares the `changes export` evidence pass: missing checklists are built and stored a few at a time, after stderr says how many and how long.
 
-**`repowise report first-look [PATH]`**: the report `init` writes after the first index. What Repowise found, most
+**`repowise report repo [PATH]`** (alias `repowise report first-look`): the repo report `init` writes after the first index. What Repowise found, most
 urgent first, in plain language: every item has its path and line, a link into the app and a "Fix with your agent"
-prompt. Renders the stored report (`.repowise/reports/first-look.json`, written from the index when there is none: no
-model, free) as the index has it now: each item with its status from [`repowise mark`](#repowise-mark-id-status), the
-items new since, and the items since resolved.
+prompt. Renders the first look, the stored baseline (`.repowise/reports/first-look.json`, written from the index when
+there is none: no model, free), as the index has it now: each item with its status from [`repowise mark`](#repowise-mark-id-status), the
+items new since, and the items resolved since the first look.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--format` | `html` (written to `.repowise/reports/first-look.html` and opened, with each listed item's prompt), `md`, or `json` (for agents: each item with its id, `status`, `status_reason`, `status_until` and `change`, a `baseline` block with the resolved items, and the whole-report prompt). Markdown and JSON carry no per-item prompt. | `html` |
+| `--format` | `html` (written to `.repowise/reports/repo-report.html` and opened, with each listed item's prompt), `md`, or `json` (for agents: each item with its id, `status`, `status_reason`, `status_until` and `change`, a `baseline` block with the resolved items, and the whole-report prompt). Markdown and JSON carry no per-item prompt. | `html` |
 | `--out` | Output file. | stdout for `md` and `json` |
 | `--since-last` | What was fixed, changed or found new since the report was written, from the index now (text, or JSON with `--format json`). | off |
 

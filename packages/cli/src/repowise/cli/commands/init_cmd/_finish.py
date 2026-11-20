@@ -438,7 +438,7 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
 
 
 def _write_first_look(run: InitRun, steps: Any) -> Any:
-    """Write the first-look report from the finished index; ``None`` when off or failed.
+    """Write the repo report from the finished index; ``None`` when off or failed.
 
     Written once: a later init keeps the stamped report (``--since-last`` shows
     progress against it). A failure is logged and never fails init.
@@ -482,7 +482,7 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
             app_url=web,
         )
     where = (
-        f"{web}/repos/{repo_id}/first-look"
+        f"{web}/repos/{repo_id}/report"
         if web
         else rendered_path(root, ".html").relative_to(root).as_posix()
     )

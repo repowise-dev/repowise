@@ -68,7 +68,7 @@ class StoodOut:
 
 @dataclass(frozen=True)
 class FirstLook:
-    """Where the first-look report is and who wrote it: one footer line."""
+    """Where the repo report is and who wrote it: one footer line."""
 
     #: The app page while ``repowise serve`` runs, else the HTML file's path.
     where: str
@@ -83,7 +83,7 @@ class FirstLook:
             how = f"written by {self.generator}" + (
                 f", ${self.cost:.3f}" if self.cost is not None else ""
             )
-        return f"First look  {self.where}  ({how})"
+        return f"Repo report  {self.where}  ({how})"
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,7 @@ class FinishFacts:
     stood_out: StoodOut = field(default_factory=StoodOut)
     #: The PR bot install link, on the one run that shows it; None on every other.
     pr_bot_url: str | None = None
-    #: The first-look report this run wrote; None when it wrote none.
+    #: The repo report this run wrote; None when it wrote none.
     first_look: FirstLook | None = None
 
 
