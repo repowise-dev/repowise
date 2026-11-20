@@ -42,9 +42,7 @@ async def _fix_the_secret(root: Path) -> None:
     engine = create_engine(f"sqlite+aiosqlite:///{(root / '.repowise' / 'wiki.db').as_posix()}")
     try:
         async with get_session(create_session_factory(engine)) as session:
-            await session.execute(
-                delete(SecurityFinding).where(SecurityFinding.file_path == "src/settings.py")
-            )
+            await session.execute(delete(SecurityFinding))
             repo = (await session.execute(Repository.__table__.select())).first()
             (await session.get(Repository, repo.id)).head_commit = "d" * 40
             await session.commit()
@@ -103,8 +101,12 @@ def test_json_for_agents_and_markdown_to_stdout(indexed: Path, tmp_path: Path) -
     # The runner mixes in stderr's one "writing it from the index" line.
     doc = json.loads(result.stdout[result.stdout.index("{") :])
     assert doc["prose"]["writer"] == "template"
-    assert set(doc["prompts"]) <= {i["id"] for s in doc["sections"] for i in s["items"]}
-    assert doc["report_prompt"]
+    # Each item with its id and status, and no per-item prompt.
+    assert "prompts" not in doc
+    items = [i for s in doc["sections"] for i in s["items"]]
+    assert {i["status"] for i in items} == {"open"} and {i["change"] for i in items} == {None}
+    assert doc["baseline"]["stamp"]["commit"] == "c" * 40
+    assert all(i["id"] in doc["report_prompt"] for i in items[:3])
     assert SECRET not in result.stdout
 
     out = tmp_path / "fl.md"
@@ -126,7 +128,7 @@ def test_since_last_lists_what_was_fixed(indexed: Path) -> None:
     assert text.stdout.startswith(
         "Written at cccccccc. The index is now at dddddddd. 1 fixed, 0 changed, 0 new."
     )
-    assert "Security:" in text.stdout and "src/settings.py:4" in text.stdout
+    assert "Security:" in text.stdout and "scripts/tool.py:9" in text.stdout
 
     data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
     assert data["behind"] is True and len(data["fixed"]) == 1
@@ -141,11 +143,11 @@ def test_since_last_shows_a_changed_item_as_it_is_now(indexed: Path) -> None:
     text = _run(str(indexed), "--since-last")
     assert text.exit_code == 0, text.output
     assert "0 fixed, 1 changed, 0 new." in text.stdout
-    changed = text.stdout.split("Changed:", 1)[1]
-    assert "src/settings.py:7" in changed and "src/settings.py:4" not in changed
+    assert "src/settings.py:7" in text.stdout.split("Changed:", 1)[1]
 
     data = json.loads(_run(str(indexed), "--since-last", "--format", "json").stdout)
-    assert data["changed_items"][0]["locations"][0]["line"] == 7
+    moved = {loc["path"]: loc["line"] for loc in data["changed_items"][0]["locations"]}
+    assert moved["src/settings.py"] == 7
 
 
 def test_without_an_index_it_says_so(tmp_path: Path) -> None:

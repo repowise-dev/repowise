@@ -22,6 +22,7 @@ from ..model import (
     Item,
     Link,
     Location,
+    Member,
     PromptRef,
     first_look_sections,
     item_id,
@@ -84,6 +85,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 ),
                 origin=ctx.origin(path),
                 priority=action.effective_priority,
+                members=(Member("action", action.action_id, action.fingerprint),),
             )
         )
     listed = {

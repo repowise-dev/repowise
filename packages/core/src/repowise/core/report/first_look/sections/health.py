@@ -23,6 +23,7 @@ from ..model import (
     Item,
     Link,
     Location,
+    Member,
     PromptRef,
     file_link,
     first_look_sections,
@@ -34,6 +35,32 @@ SECTION = "health"
 logger = logging.getLogger(__name__)
 #: Lowest-health production files listed beside the queue.
 LOWEST_FILES = 3
+
+
+def _sizes(ctx: FirstLookContext, path: str) -> dict[str, int | None]:
+    """The numbers a health row is read by, from the rows the section reads:
+    the file's largest function CCN and code lines (its health metrics), the
+    files importing it and its commits in 90 days (the facts). ``None`` when
+    the index has no figure."""
+    metric = ctx.metric(path)
+    facts = ctx.facts.files.get(path)
+    return {
+        "ccn": metric.max_ccn if metric is not None else None,
+        "nloc": metric.nloc if metric is not None else None,
+        "importers": facts.dependents if facts is not None else None,
+        "changes_90d": facts.commits_90d if facts is not None else None,
+    }
+
+
+def _members(fix: Any) -> tuple[Member, ...]:
+    """The stored rows a Fix-first item stands for: a refactor's opportunity
+    (its plans follow it), else its plans; a finding's health findings."""
+    source = fix.source
+    if fix.kind == "refactor":
+        if source.opportunity_id:
+            return (Member("refactoring_opportunity", source.opportunity_id),)
+        return tuple(Member("refactoring_plan", p) for p in source.plan_ids)
+    return tuple(Member("health_finding", f) for f in source.finding_ids)
 
 
 def _fix_items(ctx: FirstLookContext, queue: Any) -> list[Item]:
@@ -55,6 +82,7 @@ def _fix_items(ctx: FirstLookContext, queue: Any) -> list[Item]:
                     "title": fix.title,
                     "facts": facts,
                     "verify": fix.verify.command,
+                    **_sizes(ctx, path),
                 },
                 locations=(Location(path, fix.target.line_start, symbol),),
                 locations_total=1,
@@ -69,6 +97,7 @@ def _fix_items(ctx: FirstLookContext, queue: Any) -> list[Item]:
                 priority=shared_priority(fix.value, "medium", level, fix.effort.bucket),
                 # The queue's own order breaks ties inside a priority.
                 weight=float(-fix.rank),
+                members=_members(fix),
             )
         )
     return items
@@ -87,7 +116,7 @@ def _lowest_files(ctx: FirstLookContext) -> list[Item]:
                 id=item_id(SECTION, "lowest_health_file", m.file_path),
                 section=SECTION,
                 rule="lowest_health_file",
-                title_facts={"score": score, "band": band_for(score), "nloc": m.nloc},
+                title_facts={"score": score, "band": band_for(score), **_sizes(ctx, m.file_path)},
                 locations=(Location(m.file_path),),
                 locations_total=1,
                 confidence="medium",

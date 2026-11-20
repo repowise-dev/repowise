@@ -10,7 +10,9 @@ with the same supersession, so the two never disagree.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+from collections.abc import Collection
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
@@ -25,7 +27,7 @@ from .model import (
     Stamp,
     first_look_sections,
 )
-from .rank import order_items, section_key, top_items
+from .rank import group_items, order_items, section_key, top_items
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +36,22 @@ ALWAYS_SHOWN = frozenset({"security"})
 _UNREADABLE = "Could not be read from this index."
 
 
-async def collect_sections(ctx: FirstLookContext) -> tuple[dict[str, Collected], dict[str, str]]:
-    """Every registered section's output by key, and why any could not run."""
+async def collect_sections(
+    ctx: FirstLookContext, keys: Collection[str] | None = None
+) -> tuple[dict[str, Collected], dict[str, str]]:
+    """Every registered section's output by key (only *keys* when given), its
+    family members grouped (:func:`.rank.group_items`), and why any could not run."""
     import_module(f"{__package__}.sections")  # registers the built-in sections
 
     out: dict[str, Collected] = {}
     unavailable: dict[str, str] = {}
     for key, section in sorted(first_look_sections.all(), key=lambda p: section_key(p[0])):
+        if keys is not None and key not in keys:
+            continue
         try:
             async with ctx.session.begin_nested():
-                out[key] = await section.collect(ctx)
+                found = await section.collect(ctx)
+            out[key] = dataclasses.replace(found, items=group_items(found.items))
         except UnavailableError as exc:
             unavailable[key] = str(exc) or _UNREADABLE
         except Exception:  # one section must not cost the report

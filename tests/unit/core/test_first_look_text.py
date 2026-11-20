@@ -189,8 +189,10 @@ def test_links_come_from_route_keys_when_the_app_is_known() -> None:
     doc = {**report.to_json(), "prompts": {item.id: "Do it."}, "app_url": "http://h:3000/repos/r1"}
     md = render_first_look_markdown(doc)
     assert "[`src/a b.py:3`](http://h:3000/repos/r1/files/src/a%20b.py?line=3)" in md
-    assert "<details><summary>Fix with your agent</summary>" in md
+    # The Markdown export carries no prompt; the HTML page does.
+    assert "<details>" not in md and "Do it." not in md
     html = render_first_look_html(doc)
+    assert "Do it." in html
     assert 'href="http://h:3000/repos/r1/files/src/a%20b.py?line=3"' in html
     assert "default-src 'none'" in html and "<script" not in html
     assert "prefers-color-scheme: dark" in html

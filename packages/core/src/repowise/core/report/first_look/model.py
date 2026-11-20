@@ -16,6 +16,7 @@ shape as ``report_sections``: a plugin adds one by registering a
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,6 +75,21 @@ ROUTE_KEYS: tuple[str, ...] = (
 
 #: Renderers an item's prompt resolves through (:func:`.prompts.render_item_prompt`).
 PROMPT_RENDERERS: tuple[str, ...] = ("action", "fix_item", "perf_opportunity", "first_look_item")
+
+#: The stores an item's members live in; :mod:`.marks` reads and writes each
+#: through its existing writer. ``action``: a next action's id (``action_states``);
+#: ``dead_code``: ``[kind, symbol, path]`` as JSON, the identity a dismissal
+#: survives re-index on; ``health_finding``: a health finding's public id;
+#: ``performance``: a performance cause's id (its health findings);
+#: ``refactoring_opportunity`` and ``refactoring_plan``: their public ids.
+MEMBER_STORES: tuple[str, ...] = (
+    "action",
+    "dead_code",
+    "health_finding",
+    "performance",
+    "refactoring_opportunity",
+    "refactoring_plan",
+)
 
 #: Items one section shows on a page before "N more in the app". The JSON keeps
 #: every item, so staleness compares whole sets.
@@ -153,6 +169,41 @@ class PromptRef:
 
 
 @dataclass(frozen=True, slots=True)
+class Member:
+    """One stored row (or next action) an item stands for, by a stable id.
+
+    ``fingerprint`` is an action's own, which a person's answer holds against.
+    """
+
+    store: str
+    ref: str
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if self.store not in MEMBER_STORES:
+            raise ValueError(f"unknown store {self.store!r}; expected one of {MEMBER_STORES}")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"store": self.store, "ref": self.ref, "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> Member:
+        return cls(data["store"], data["ref"], data.get("fingerprint") or "")
+
+
+def dead_code_ref(kind: str, symbol: str | None, path: str) -> str:
+    """A dead-code finding's identity as a :class:`Member` ref (open rows get new
+    ids on every index; this triple does not)."""
+    return json.dumps([kind, symbol or "", path], separators=(",", ":"))
+
+
+def parse_dead_code_ref(ref: str) -> tuple[str, str, str]:
+    """``(kind, symbol, path)`` from :func:`dead_code_ref`; ``symbol`` is ``""`` for none."""
+    kind, symbol, path = json.loads(ref)
+    return kind, symbol, path
+
+
+@dataclass(frozen=True, slots=True)
 class Item:
     id: str
     section: str
@@ -180,6 +231,12 @@ class Item:
     weight: float = 0.0
     #: Every location the source had; ``locations`` keeps :data:`LOCATIONS_CAP`.
     locations_total: int = 0
+    #: Every rule a grouped item merged (:func:`.rank.group_items`), primary
+    #: first; empty reads as ``(rule,)``.
+    rules: tuple[str, ...] = ()
+    #: The stored rows the item stands for; empty for an item no store holds
+    #: (its answer is kept under the item's own id, :mod:`.marks`).
+    members: tuple[Member, ...] = ()
 
     def __post_init__(self) -> None:
         for name, value, allowed in (
@@ -200,6 +257,7 @@ class Item:
             "id": self.id,
             "section": self.section,
             "rule": self.rule,
+            "rules": list(self.rules or (self.rule,)),
             "title_facts": dict(self.title_facts),
             "locations": [loc.to_json() for loc in self.locations],
             "locations_total": max(self.locations_total, len(self.locations)),
@@ -215,6 +273,7 @@ class Item:
             "link": self.link.to_json(),
             "prompt": self.prompt.to_json(),
             "fingerprint": self.fingerprint,
+            "members": [m.to_json() for m in self.members],
         }
 
     @classmethod
@@ -237,6 +296,8 @@ class Item:
             priority=float(data.get("priority") or 0.0),
             weight=float(data.get("weight") or 0.0),
             locations_total=int(data.get("locations_total") or 0),
+            rules=tuple(data.get("rules") or ()),
+            members=tuple(Member.from_json(m) for m in data.get("members") or ()),
         )
 
 
@@ -409,6 +470,7 @@ __all__ = [
     "CONFIDENCES",
     "EFFORTS",
     "LOCATIONS_CAP",
+    "MEMBER_STORES",
     "PROMPT_RENDERERS",
     "ROUTE_KEYS",
     "SCHEMA_VERSION",
@@ -422,13 +484,16 @@ __all__ = [
     "Item",
     "Link",
     "Location",
+    "Member",
     "PromptRef",
     "SectionBlock",
     "SetupStep",
     "Stamp",
+    "dead_code_ref",
     "file_link",
     "first_look_sections",
     "item_id",
     "locations",
+    "parse_dead_code_ref",
     "source_layer",
 ]

@@ -1,9 +1,10 @@
 """``repowise report first-look`` - the report written after the first index.
 
-Re-renders the stored report (``.repowise/reports/first-look.json``), or
-builds it from the index when there is none (no model, no network, free),
-and opens the HTML. ``--format json`` is the agent-readable form, with each
-listed item's prompt; ``--since-last`` compares the report with the index now.
+Renders the living report: the stored report (``.repowise/reports/first-look.json``,
+written from the index when there is none: no model, no network, free) as the
+index has it now, with each item's status (``repowise mark``), what is new and
+what was resolved since. Opens the HTML. ``--format json`` is the
+agent-readable form; ``--since-last`` lists what changed since the report.
 ``--llm`` writes a new report whose prose one model call writes, after the estimate.
 """
 
@@ -98,14 +99,17 @@ def _rewrite_with_model(root: Path, yes: bool) -> bool:
     return True
 
 
+_WRITING = "[dim]No first-look report yet; writing it from the index.[/dim]"
+
+
 async def _report(session: Any, repo_id: str, root: Path, web: str | None) -> Any:
     """The stored report: the checkout's file, else the index row, else a new one."""
-    from repowise.core.report.first_look.store import load_report, read_report_file
+    from repowise.core.report.first_look.living import load_baseline
     from repowise.core.report.first_look.write import write_first_look
 
-    report = read_report_file(root) or await load_report(session, repo_id)
+    report = await load_baseline(session, repo_id, root)
     if report is None:
-        err_console.print("[dim]No first-look report yet; writing it from the index.[/dim]")
+        err_console.print(_WRITING)
         report = await write_first_look(session, repo_id, root, app_url=web)
     return report
 
@@ -125,8 +129,10 @@ def _since_last_text(report: Any, found: Any) -> str:
     ]
 
     def row(item: Any, text: str) -> str:
-        loc = item.locations[0] if item.locations else None
-        where = f" ({loc.path}{f':{loc.line}' if loc.line else ''})" if loc else ""
+        # A grouped item names its first few places.
+        places = [f"{loc.path}{f':{loc.line}' if loc.line else ''}" for loc in item.locations[:3]]
+        more = max(item.locations_total, len(item.locations)) - len(places)
+        where = f" ({', '.join(places)}{f' and {more} more' if more > 0 else ''})" if places else ""
         return f"- {title(item.section).split(':')[0]}: {text}{where}"
 
     if found.fixed:
@@ -146,6 +152,7 @@ def _since_last_text(report: Any, found: Any) -> str:
 
 async def _run(root: Path, fmt: str, since_last: bool) -> str:
     """The text to emit."""
+    from repowise.core.report.first_look.living import build_living, load_baseline
     from repowise.core.report.first_look.staleness import staleness
     from repowise.core.report.first_look.write import RENDERED, render_document
     from repowise.core.report.render import render_json, report_renderers
@@ -155,13 +162,17 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
             raise click.ClickException(f"No index for {root}. Run `repowise init` there first.")
         session, repo_id = opened
         web = _web_url(root)
-        report = await _report(session, repo_id, root, web)
         if since_last:
+            report = await _report(session, repo_id, root, web)
             found = await staleness(session, repo_id, report, root)
             if fmt == "json":
                 return render_json(found.to_json())
             return _since_last_text(report, found)
-        doc = await render_document(session, repo_id, report, app_url=web)
+        if await load_baseline(session, repo_id, root) is None:
+            err_console.print(_WRITING)
+        living = await build_living(session, repo_id, root, store_missing=True, app_url=web)
+        # The HTML page holds each item's prompt; the Markdown and JSON exports none.
+        doc = await render_document(session, repo_id, living, app_url=web, prompts=fmt == "html")
     if fmt == "json":
         return render_json(doc)
     return report_renderers.get(RENDERED[f".{fmt}"])(doc)
@@ -175,7 +186,7 @@ async def _run(root: Path, fmt: str, since_last: bool) -> str:
     type=click.Choice(FORMATS),
     default="html",
     show_default=True,
-    help="html (written and opened), md, or json (for agents: the report with each item's prompt).",
+    help="html (written and opened), md, or json (for agents: each item with its id and status).",
 )
 @click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write to this file.")
 @click.option(
@@ -193,7 +204,7 @@ def first_look_command(
     path: str | None, fmt: str, out_path: str | None, since_last: bool, llm: bool, yes: bool
 ) -> None:
     """The first-look report: what Repowise found at the first index, most urgent
-    first, with a path, a link and an agent prompt per item. Free unless --llm."""
+    first, as the index has it now, with each item's status. Free unless --llm."""
     from repowise.core.report.first_look.write import rendered_path
 
     root = Path(path or ".").resolve()

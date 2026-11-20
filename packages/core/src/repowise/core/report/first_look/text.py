@@ -71,7 +71,9 @@ def title(key: str) -> str:
 
 def _secret(item: Item) -> str:
     f = item.title_facts
-    label = SECRET_KINDS.get(item.rule, "credential")
+    # A group of kinds reads as what they share.
+    rules = item.rules or (item.rule,)
+    label = SECRET_KINDS.get(item.rule, "credential") if len(rules) == 1 else "hard-coded credential"
     count = int(f.get("locations") or len(item.locations) or 1)
     if count == 1:
         return (
@@ -84,6 +86,12 @@ def _secret(item: Item) -> str:
 
 
 def _public_env(item: Item) -> str:
+    count = int(item.title_facts.get("locations") or len(item.locations) or 1)
+    if count > 1:
+        return (
+            f"{_num(count)} secrets in public environment variables, values redacted. A web "
+            "build ships them to every visitor: read each from a server-side variable instead."
+        )
     return (
         "A secret in a public environment variable, value redacted. A web build ships it "
         "to every visitor: read it from a server-side variable instead."
@@ -280,17 +288,19 @@ def _security_intro(block: SectionBlock) -> str:
     )
     if not block.items:
         return "No live secrets in tracked files." + also
-    kinds: dict[str, int] = {}
-    for i in block.items:
-        kinds[i.rule] = kinds.get(i.rule, 0) + 1
+    kinds = {r for i in block.items for r in (i.rules or (i.rule,))}
     if len(kinds) == 1 and next(iter(kinds)) in SECRET_KINDS:
         held = f"a {SECRET_KINDS[next(iter(kinds))]}"
     else:
         held = "a credential"
-    files = len(block.items)
+    files = len(_secret_files(block))
     verb = "holds" if files == 1 else "hold"
     rotate = _ROTATE.format(it="it" if files == 1 else "each one")
     return f"{plural(files, 'tracked file')} {verb} {held}. {rotate}{also}"
+
+
+def _secret_files(block: SectionBlock) -> set[str]:
+    return {loc.path for i in block.items for loc in i.locations}
 
 
 def _performance_intro(block: SectionBlock) -> str:
@@ -417,7 +427,9 @@ def section_text(block: SectionBlock) -> str:
 
 #: How the summary counts a section: noun for one item, from its items or facts.
 _FOUND: dict[str, Callable[[SectionBlock], str | None]] = {
-    "security": lambda b: plural(len(b.items), "live secret") if b.items else None,
+    "security": lambda b: (
+        plural(sum(max(i.locations_total, 1) for i in b.items), "live secret") if b.items else None
+    ),
     "performance": lambda b: plural(len(b.items), "performance cause") + " worth fixing now",
     "health": lambda b: plural(len(b.items), "refactor-first item"),
     "tests": lambda b: (
