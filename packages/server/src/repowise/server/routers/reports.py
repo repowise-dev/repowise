@@ -14,9 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor
+from repowise.core.cost_estimator import estimate_first_look_cost
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
 from repowise.core.report.first_look import FirstLookReport
+from repowise.core.report.first_look.config import first_look_settings
+from repowise.core.report.first_look.llm import first_look_model
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
 from repowise.core.report.first_look.staleness import staleness
 from repowise.core.report.first_look.store import load_report, read_report_file
@@ -55,16 +58,28 @@ async def _require_report(session: AsyncSession, repo: Repository) -> FirstLookR
     return report
 
 
+def _rewrite_offer(repo: Repository) -> tuple[bool, float | None]:
+    """Whether a model can write the report, and what its one call costs."""
+    provider, provider_name, _, _ = resolve_provider(repo.local_path, repo_id=repo.id)
+    if provider is None or not provider_name:
+        return _provider_configured(repo.local_path, repo.id), None
+    root = _root(repo)
+    model = first_look_model(provider, first_look_settings(root).model if root else None)
+    return True, estimate_first_look_cost(provider_name, model).estimated_cost_usd
+
+
 async def _page(
     session: AsyncSession, repo: Repository, report: FirstLookReport, flavor: Flavor
 ) -> FirstLookResponse:
     stale = await staleness(session, repo.id, report, _root(repo))
+    can_rewrite, cost = _rewrite_offer(repo)
     return FirstLookResponse(
         report=report.to_json(),
         staleness=stale.to_json(),
         report_prompt=render_report_prompt(report, flavor=flavor, repo_name=repo.name),
         flavor=flavor,
-        can_rewrite=_provider_configured(repo.local_path, repo.id),
+        can_rewrite=can_rewrite,
+        rewrite_cost_usd=cost,
     )
 
 

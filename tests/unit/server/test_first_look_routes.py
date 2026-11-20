@@ -69,6 +69,7 @@ async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
     reports_client: AsyncClient, session_factory, monkeypatch
 ) -> None:
     monkeypatch.setattr(reports, "_provider_configured", lambda *a: False)
+    monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (None, None, None, "no key"))
     repo = await _stored_repo(reports_client, session_factory)
 
     resp = await reports_client.get(
@@ -85,10 +86,15 @@ async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
     assert body.staleness["fixed"] == [_ID]
     assert body.staleness["report_commit"] == "c1"
     assert body.can_rewrite is False  # no provider, no rewrite button
+    assert body.rewrite_cost_usd is None
 
-    monkeypatch.setattr(reports, "_provider_configured", lambda *a: True)
-    again = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look")
-    assert again.json()["can_rewrite"] is True
+    class Provider:
+        model_name = "claude-haiku-5-5"
+
+    monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (Provider(), "anthropic", "m", None))
+    again = (await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look")).json()
+    assert again["can_rewrite"] is True
+    assert again["rewrite_cost_usd"] is not None and again["rewrite_cost_usd"] >= 0
 
 
 @pytest.mark.anyio
