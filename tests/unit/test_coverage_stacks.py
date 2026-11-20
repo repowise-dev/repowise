@@ -776,6 +776,8 @@ def test_other_runners_need_no_junit_environment():
         ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
         # A shell comment would swallow the flags appended after it.
         ("package-lock.json", "jest # unit tests", "npm test -- --coverage --coverageReporters=lcov"),
+        # A bare -- would turn the flags appended after it into test patterns.
+        ("package-lock.json", "jest --", "npm test -- --coverage --coverageReporters=lcov"),
     ],
 )
 def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command):
