@@ -461,7 +461,7 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
     from repowise.cli.helpers import repo_index_session
     from repowise.cli.ui.finish_panel import FirstLook
     from repowise.core.report.first_look.store import read_report_file
-    from repowise.core.report.first_look.write import rendered_path, write_first_look
+    from repowise.core.report.first_look.write import rendered_path, write_files, write_first_look
 
     root = run.repo_path
     async with repo_index_session(root) as opened:
@@ -469,7 +469,10 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
             return None
         session, repo_id = opened
         web = live_web_url(root)
-        report = read_report_file(root) or await write_first_look(
+        report = read_report_file(root)
+        if report is not None and not rendered_path(root, ".html").exists():
+            await write_files(session, repo_id, root, report, app_url=web)
+        report = report or await write_first_look(
             session,
             repo_id,
             root,
