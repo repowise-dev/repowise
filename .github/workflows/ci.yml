@@ -885,12 +885,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Integration tests: every push and the nightly run, and a pull request
-  # whenever its Python suites run, so a break shows before it merges. About
-  # 8 minutes, inside the unit shards' wall time.
+  # whenever its Python suites run, so a break shows before it merges.
   # ---------------------------------------------------------------------------
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.python == 'true'
 
