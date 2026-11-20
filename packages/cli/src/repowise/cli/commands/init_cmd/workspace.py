@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import structlog
 from rich.markup import escape
 
 from repowise.cli._setup import setup_logging_silence
@@ -101,6 +102,8 @@ from .persistence import (
     stamp_fresh_index,
 )
 from .reporting import show_workspace_completion
+
+logger = structlog.get_logger(__name__)
 
 
 def _run_workspace_generation(
@@ -1022,7 +1025,8 @@ def cross_repo_finding(root: Path) -> str | None:
         links = 0 if pair else _contract_links(root)
     except Exception:
         # Analysis wrote these moments ago; an unreadable one costs the panel
-        # a line, never the run.
+        # a line, never the run. Logged so a bug here is still visible.
+        logger.warning("workspace_cross_repo_finding_failed", root=str(root), exc_info=True)
         return None
     if pair:
         (first, second), sessions = pair

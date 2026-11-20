@@ -165,3 +165,17 @@ def test_the_cross_repo_finding_reads_what_analysis_wrote(tmp_path):
     # The file pair with the most shared sessions names the repo pair; sessions
     # are not summed across file pairs, which would count one session twice.
     assert cross_repo_finding(tmp_path) == "api and web changed together in 30 work sessions"
+
+
+def test_a_failing_cross_repo_read_costs_the_line_and_is_logged(tmp_path, monkeypatch):
+    from structlog.testing import capture_logs
+
+    from repowise.cli.commands.init_cmd import workspace
+
+    def broken(_root):
+        raise ValueError("bad overlay")
+
+    monkeypatch.setattr(workspace, "_busiest_repo_pair", broken)
+    with capture_logs() as logs:
+        assert workspace.cross_repo_finding(tmp_path) is None
+    assert any(e["event"] == "workspace_cross_repo_finding_failed" for e in logs)
