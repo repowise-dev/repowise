@@ -323,6 +323,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "object_declaration": "class",
             "type_alias": "type_alias",
             "property_declaration": "variable",
+            # Named after its class by the query, like a Java constructor.
+            "secondary_constructor": "method",
         },
         import_node_types=["import"],
         export_node_types=[],
