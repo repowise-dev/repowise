@@ -1304,6 +1304,170 @@ def test_php_duplicate_name_keeps_the_first_root(tmp_path):
     assert _owners(index, "b/dup/B.php") == ["manifest:b/dup"]
 
 
+_MIX_UMBRELLA_ROOT = (
+    "defmodule Umbrella.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [apps_path: \"apps\", version: \"0.1.0\"]\n"
+    "  end\n"
+    "end\n"
+)
+
+_MIX_CORE = (
+    "defmodule Core.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [app: :core, version: \"0.1.0\", elixir: \"~> 1.14\"]\n"
+    "  end\n"
+    "end\n"
+)
+
+_MIX_WEB = (
+    "defmodule Web.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [\n"
+    "      app: :web,\n"
+    "      version: \"0.1.0\",\n"
+    "      deps: deps()\n"
+    "    ]\n"
+    "  end\n\n"
+    "  defp deps do\n"
+    "    [\n"
+    "      {:core, in_umbrella: true, only: :test},\n"
+    "      {:missing, in_umbrella: true},\n"
+    "      {:ecto, \"~> 3.9\"}\n"
+    "    ]\n"
+    "  end\n"
+    "end\n"
+)
+
+
+def test_elixir_umbrella_apps_linked_by_in_umbrella(tmp_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_UMBRELLA_ROOT,
+        "apps/web/mix.exs": _MIX_WEB,
+        "apps/web/lib/web.ex": "defmodule Web do\nend\n",
+        "apps/core/mix.exs": _MIX_CORE,
+        "apps/core/lib/core.ex": "defmodule Core do\nend\n",
+    })
+    assert _deps(index) == {"elixir:web": ("elixir:core",), "elixir:core": ()}
+    web = index.unit("elixir:web")
+    assert (web.root, web.manifest, web.name, web.source) == (
+        "apps/web", "apps/web/mix.exs", "web", "mix",
+    )
+    # The umbrella root is ruled out, not a unit; no manifest: fallback anywhere.
+    assert "manifest:." not in index.units
+    assert "manifest:apps/web" not in index.units
+    assert "manifest:apps/core" not in index.units
+    assert _owners(index, "apps/web/lib/web.ex") == ["elixir:web"]
+    assert [u.id for u in index.dependents("elixir:core")] == ["elixir:web"]
+
+
+def test_elixir_path_dep_links_in_repo_app(tmp_path):
+    index = _collect(tmp_path, {
+        "app/mix.exs": (
+            "defmodule App.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [app: :app, deps: deps()]\n"
+            "  end\n\n"
+            "  defp deps do\n"
+            "    [\n"
+            "      {:shared, \"~> 1.0\", path: \"../shared\"},\n"
+            "      {:core, in_umbrella: true}\n"
+            "    ]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "app/lib/app.ex": "",
+        "shared/mix.exs": (
+            "defmodule Shared.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [app: :shared, version: \"0.1.0\"]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "shared/lib/shared.ex": "",
+    })
+    # in_umbrella: true with no umbrella root links nothing.
+    assert _deps(index) == {"elixir:app": ("elixir:shared",), "elixir:shared": ()}
+
+
+def test_elixir_path_dep_outside_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/mix.exs": (
+            "defmodule App.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [\n"
+            "      app: :app,\n"
+            "      deps: [\n"
+            "        {:gone, path: \"../../elsewhere\"},\n"
+            "        {:abs, path: \"/opt/shared\"}\n"
+            "      ]\n"
+            "    ]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "app/lib/app.ex": "",
+    })
+    assert index.unit("elixir:app").deps == ()
+
+
+def test_elixir_unreadable_mix_exs_falls_back(tmp_path):
+    _write(tmp_path, {
+        "good/mix.exs": _MIX_CORE,
+        "good/lib/core.ex": "",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "mix.exs").write_bytes(
+        b"defmodule Bad.MixProject do\n  app: :caf\xe9\nend\n"
+    )
+    (tmp_path / "bad" / "lib").mkdir()
+    (tmp_path / "bad" / "lib" / "bad.ex").write_text("")
+    (tmp_path / "noname").mkdir()
+    (tmp_path / "noname" / "mix.exs").write_text("# Nothing Mix can read here\n")
+    (tmp_path / "noname" / "lib").mkdir()
+    (tmp_path / "noname" / "lib" / "noname.ex").write_text("")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"elixir:core", "manifest:bad", "manifest:noname"}
+    assert _owners(index, "bad/lib/bad.ex") == ["manifest:bad"]
+    assert _owners(index, "noname/lib/noname.ex") == ["manifest:noname"]
+
+
+def test_elixir_duplicate_app_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/mix.exs": _MIX_CORE,
+        "a/dup/lib/dup.ex": "",
+        "b/dup/mix.exs": _MIX_CORE,
+        "b/dup/lib/dup.ex": "",
+    })
+    assert index.unit("elixir:core").root == "a/dup"
+    assert "manifest:b/dup" in index.units
+    assert _owners(index, "b/dup/lib/dup.ex") == ["manifest:b/dup"]
+
+
+def test_elixir_repo_without_mix_exs_has_no_elixir_units(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/app.ex": "defmodule App do\nend\n",
+        "lib/other.ex": "defmodule Other do\nend\n",
+    })
+    assert index.units == {}
+
+
+def test_elixir_standalone_app_at_root(tmp_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_CORE,
+        "lib/core.ex": "",
+    })
+    assert _deps(index) == {"elixir:core": ()}
+    core = index.unit("elixir:core")
+    assert (core.root, core.manifest) == ("", "mix.exs")
+    assert "manifest:." not in index.units
+
+
 _PAS = "unit U;\ninterface\nimplementation\nend.\n"
 _DPR = "program P;\nbegin\nend.\n"
 
