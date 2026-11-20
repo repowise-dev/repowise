@@ -635,12 +635,24 @@ async def update_single_repo_index(
     if reason is None:
         # Re-cover a range an earlier update failed to persist, as the
         # single-repo update does.
+        from ...git_sha import is_sha_prefix
         from ...pipeline.incremental.repair import resolve_repair_base
 
+        marker = state.get("pending_repair")
+        repair_from = marker.get("from_commit") if isinstance(marker, dict) else None
         base_ref, give_up = resolve_repair_base(repo_path, state, str(base_ref), None)
         if give_up is not None:
             _log.warning("workspace_update: %s dropping a pending repair: %s", alias, give_up)
             state.pop("pending_repair", None)
+        # No give-up and no widening means git could not check the marker, so
+        # this run did not re-cover its range: keep it for the next update.
+        # A value that is not a commit id is dropped instead.
+        unrepaired = (
+            give_up is None
+            and isinstance(repair_from, str)
+            and repair_from != base_ref
+            and is_sha_prefix(repair_from.lower())
+        )
         incremental_result, update_error = await _try_incremental_update(
             repo_path,
             state,
@@ -651,6 +663,8 @@ async def update_single_repo_index(
             rescore_health=rescore_health,
         )
         if incremental_result is not None:
+            if unrepaired and incremental_result.pending_repair is None:
+                incremental_result.pending_repair = marker
             return incremental_result
         reason = "update_failed"
 
