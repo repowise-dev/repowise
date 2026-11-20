@@ -33,7 +33,8 @@ from repowise.server.mcp_server import _setup_refresh
 async def indexed(tmp_path: Path, monkeypatch: Any):
     """A checkout with an index whose setup has open steps and no agent calls yet."""
     monkeypatch.setenv("DO_NOT_TRACK", "1")
-    monkeypatch.setattr(_setup_refresh, "_considered", set())
+    monkeypatch.setattr(_setup_refresh, "_settled", set())
+    monkeypatch.setattr(_setup_refresh, "_attempts", {})
     root = (tmp_path / "repo").resolve()
     root.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -64,11 +65,11 @@ def _serve(monkeypatch: Any, root: Path, factory: Any) -> None:
     monkeypatch.setattr(_state, "_served_repo_id", None)
 
 
-def _as_agent_call(monkeypatch: Any) -> None:
+def _as_agent_call(monkeypatch: Any, session_id: str = "s1") -> None:
     """Make the call in flight look like one that arrived over an MCP session."""
     from repowise.server.mcp_server._savings import interaction
 
-    live = interaction.Interaction(event_id="e", tool="get_why", session_id="s1")
+    live = interaction.Interaction(event_id="e", tool="get_why", session_id=session_id)
     monkeypatch.setattr(interaction, "current", lambda: live)
 
 
@@ -200,3 +201,109 @@ async def test_a_failing_refresh_never_breaks_the_tool_call(indexed, monkeypatch
 
     monkeypatch.setattr(_setup_refresh, "schedule_setup_refresh", raising)
     assert await tool(query="q") == expected
+
+
+def _broken_store() -> Any:
+    raise RuntimeError("store gone")
+
+
+async def test_a_failed_refresh_is_retried_on_a_later_session(indexed, monkeypatch) -> None:
+    root, factory = indexed
+    _serve(monkeypatch, root, _broken_store)
+    _as_agent_call(monkeypatch, "s1")
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert not (root / ".repowise" / "setup.json").exists()
+
+    _serve(monkeypatch, root, factory)
+    # The same session does not try again: its handshake is already sent.
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    assert not _setup_refresh._tasks
+
+    _as_agent_call(monkeypatch, "s2")
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert read_setup_state(root)["offer"] == FINISH_SETUP_OFFER
+
+    # Settled: a third session starts nothing.
+    _as_agent_call(monkeypatch, "s3")
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    assert not _setup_refresh._tasks
+
+
+async def test_a_broken_store_is_tried_at_most_the_cap(indexed, monkeypatch) -> None:
+    root, _factory = indexed
+    _serve(monkeypatch, root, _broken_store)
+    started = 0
+    for n in range(_setup_refresh.MAX_ATTEMPTS + 2):
+        _as_agent_call(monkeypatch, f"s{n}")
+        _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+        started += len(_setup_refresh._tasks)
+        await _settle()
+    assert started == _setup_refresh.MAX_ATTEMPTS
+    assert not (root / ".repowise" / "setup.json").exists()
+
+
+async def _dismiss_like_the_cli(root: Path, factory: Any) -> None:
+    from repowise.core.persistence.crud.analysis.setup_facts import dismiss_setup
+    from repowise.server.mcp_server._helpers import _get_repo
+
+    async with get_session(factory) as session:
+        await dismiss_setup(session, (await _get_repo(session)).id)
+    write_setup_state(root, dismissed=True, offer=None)
+
+
+async def test_a_dismissal_during_the_refresh_stays_dismissed(indexed, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import actions
+    from repowise.server.mcp_server import _server
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    _as_agent_call(monkeypatch)
+    real = actions.load_actions_view
+    seen: list[dict] = []
+
+    async def dismissed_mid_read(*args: Any, **kwargs: Any) -> dict:
+        view = await real(*args, **kwargs)
+        seen.append(view["setup"])
+        # The person declines after the refresh read the answers.
+        await _dismiss_like_the_cli(root, factory)
+        return view
+
+    monkeypatch.setattr(actions, "load_actions_view", dismissed_mid_read)
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+
+    assert seen and seen[0]["offer"] == FINISH_SETUP_OFFER and not seen[0]["dismissed"]
+    state = read_setup_state(root)
+    assert state["dismissed"] is True and state["offer"] is None
+    assert _server._setup_extra(str(root)) == []
+
+
+async def test_an_undone_dismissal_offers_again_on_a_full_read(indexed, monkeypatch) -> None:
+    from repowise.core.analysis.actions.setup import SETUP_STATE_ID
+    from repowise.core.persistence.crud.analysis.actions import (
+        load_actions_view,
+        set_action_state,
+    )
+    from repowise.core.persistence.crud.analysis.setup_facts import (
+        load_setup_facts,
+        with_current_call,
+    )
+    from repowise.server.mcp_server._helpers import _get_repo
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    await _dismiss_like_the_cli(root, factory)
+    assert read_setup_state(root)["dismissed"] is True
+
+    async with get_session(factory) as session:
+        repo_id = (await _get_repo(session)).id
+        # The web's Undo clears the answer.
+        await set_action_state(session, repo_id, SETUP_STATE_ID, state=None)
+    async with get_session(factory) as session:
+        setup = with_current_call(await load_setup_facts(session, repo_id, root))
+        await load_actions_view(session, repo_id, setup=setup)
+
+    state = read_setup_state(root)
+    assert state["dismissed"] is False and state["offer"] == FINISH_SETUP_OFFER

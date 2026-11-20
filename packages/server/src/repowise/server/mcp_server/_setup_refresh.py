@@ -8,10 +8,15 @@ first successful call now runs the same full read in the background, and the
 offer reaches the handshake of its next session.
 
 The refresh never touches the response: it runs as its own task after the
-call returns, swallows every failure, and runs at most once per served
-checkout per server process, even when that one attempt fails (the next
-full read or session retries it). It is skipped when the last answer is final
-(completed or dismissed) or already carries the offer.
+call returns and swallows every failure. A served checkout is settled for the
+server process once a refresh succeeds or the last answer cannot change
+(completed, dismissed, or already offering). A failed refresh is retried on a
+later session's call, at most :data:`MAX_ATTEMPTS` times per process, so a
+broken store cannot start a task on every call.
+
+The answer is stored only if the person's dismissal still reads as the view
+saw it: a dismissal, or its undo, made while the refresh ran is left for the
+next full read instead of being overwritten by a stale answer.
 """
 
 from __future__ import annotations
@@ -25,8 +30,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Checkouts this process has already considered, so the check runs once each.
-_considered: set[str] = set()
+#: Refreshes one checkout may start in a process before it gives up.
+MAX_ATTEMPTS = 3
+
+#: Checkouts whose refresh succeeded or was not needed: one set lookup per call.
+_settled: set[str] = set()
+
+#: Per checkout, refreshes started and the session that started the last one.
+_attempts: dict[str, tuple[int, str]] = {}
 
 #: Strong references to running refreshes, so none is collected mid-run.
 _tasks: set[asyncio.Task[None]] = set()
@@ -52,10 +63,11 @@ def _needed(root: str) -> bool:
 
 
 def schedule_setup_refresh(result: Any) -> None:
-    """Start the one background refresh after a successful agent call, if needed.
+    """Start the background refresh after a successful agent call, if needed.
 
     An agent's call is one that arrived over an MCP session; a direct call
-    (tests, embedders) has none and is left alone.
+    (tests, embedders) has none and is left alone. One attempt per session:
+    the refreshed answer only reaches a later handshake anyway.
     """
     if not isinstance(result, dict) or result.get("error"):
         return
@@ -66,46 +78,77 @@ def schedule_setup_refresh(result: Any) -> None:
     if live is None or live.session_id is None:
         return
     root = _state.served_path()
-    # Checked before any file read, so later calls pay one set lookup.
-    if not root or root in _considered:
+    # Checked before any file read, so later calls pay a set and a dict lookup.
+    if not root or root in _settled:
         return
-    _considered.add(root)
+    tried, last_session = _attempts.get(root, (0, ""))
+    if tried >= MAX_ATTEMPTS or last_session == live.session_id:
+        return
+    _attempts[root] = (tried + 1, live.session_id)
     if not (Path(root) / ".repowise").is_dir() or not _needed(root):
+        _settled.add(root)
         return
     # The task must not write into the finished call's interaction.
     context = contextvars.copy_context()
     context.run(interaction._CURRENT.set, None)
-    task = asyncio.get_running_loop().create_task(_refresh(_key(root)), context=context)
+    task = asyncio.get_running_loop().create_task(_refresh(root), context=context)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
 
-async def _refresh(key: str) -> None:
-    """Gather the setup facts and the actions view, which records the answer."""
-    try:
-        from repowise.core.persistence.crud.analysis.actions import load_actions_view
-        from repowise.core.persistence.database import get_session
-        from repowise.server.mcp_server._helpers import (
-            _cross_repo_cut,
-            _get_repo,
-            _resolve_repo_context,
-        )
-        from repowise.server.mcp_server.tool_overview.actions import setup_facts
+async def _refresh(root: str) -> None:
+    """Gather the setup facts and the actions view, and store the answer.
 
-        ctx = await _resolve_repo_context(None)
-        # In a workspace the default repo may live elsewhere than the served
-        # root, whose setup.json is the one the handshake reads.
-        if ctx.path is None or _key(str(ctx.path)) != key:
-            return
-        async with get_session(ctx.session_factory) as session:
-            repository = await _get_repo(session)
-            setup = await setup_facts(session, repository)
-            if setup is not None:
-                await load_actions_view(
-                    session, repository.id, setup=setup, **_cross_repo_cut(ctx.alias)
-                )
+    Settles *root* unless something raised; a failure leaves it to a later
+    session's attempt.
+    """
+    try:
+        await _read_and_record(_key(root))
     except Exception:  # best-effort: the handshake keeps the last answer
         logger.debug("setup refresh failed", exc_info=True)
+        return
+    _settled.add(root)
 
 
-__all__ = ["schedule_setup_refresh"]
+async def _read_and_record(key: str) -> None:
+    from repowise.core.analysis.actions.setup import SETUP_STATE_ID
+    from repowise.core.persistence.crud.analysis.actions import (
+        get_action_states,
+        load_actions_view,
+    )
+    from repowise.core.persistence.database import get_session
+    from repowise.core.setup_state import record_setup
+    from repowise.server.mcp_server._helpers import (
+        _cross_repo_cut,
+        _get_repo,
+        _resolve_repo_context,
+    )
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    ctx = await _resolve_repo_context(None)
+    # In a workspace the default repo may live elsewhere than the served
+    # root, whose setup.json is the one the handshake reads.
+    if ctx.path is None or _key(str(ctx.path)) != key:
+        return
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        repo_id = repository.id
+        setup = await setup_facts(session, repository)
+        if setup is None:
+            return
+        view = await load_actions_view(
+            session, repo_id, setup=setup, record=False, **_cross_repo_cut(ctx.alias)
+        )
+    block = view.get("setup")
+    if block is None:
+        return
+    # A fresh session sees a dismissal (or its undo) committed while the view
+    # was built; the "setup" action state is the source of truth for both.
+    async with get_session(ctx.session_factory) as session:
+        answer = (await get_action_states(session, repo_id)).get(SETUP_STATE_ID)
+    if (answer is not None and answer.state == "dismissed") != bool(block.get("dismissed")):
+        return
+    record_setup(setup.root, block)
+
+
+__all__ = ["MAX_ATTEMPTS", "schedule_setup_refresh"]
