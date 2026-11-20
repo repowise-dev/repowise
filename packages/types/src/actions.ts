@@ -175,12 +175,11 @@ export interface ActionsResponse {
   setup?: ActionsSetup | null;
 }
 
-/** Depth rows usage has unlocked: Claude Code calls for the first two, synced commits for the rest. */
+/** Depth rows usage has unlocked: Claude Code calls for the first two, synced commits for the last. */
 export interface SetupUnlocks {
   always_load: boolean;
   distill: boolean;
   suggested_settings: boolean;
-  dead_code_batch: boolean;
 }
 
 export interface ActionsSetup {

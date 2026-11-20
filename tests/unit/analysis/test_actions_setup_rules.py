@@ -18,6 +18,7 @@ from repowise.core.analysis.actions.engine import (
 from repowise.core.analysis.actions.rules import setup as rules
 from repowise.core.analysis.actions.setup import (
     AGENT_CALLS_UNLOCK,
+    NAMED_FILES,
     SETUP_STATE_ID,
     SYNCED_COMMITS_UNLOCK,
     FoundFile,
@@ -109,7 +110,7 @@ def test_suggested_settings_unlock_on_synced_commits(commits: int, fires: bool) 
     facts = replace(FRESH, synced_commits=commits, suggested_settings=("indexing.exclude",))
     assert ("settings_suggested" in _fired(facts)) is fires
     assert facts.unlocks()["suggested_settings"] is fires
-    assert facts.unlocks()["dead_code_batch"] is fires
+    assert "dead_code_batch" not in facts.unlocks()
 
 
 def test_a_model_row_names_the_source_and_asks_before_spending() -> None:
@@ -235,3 +236,26 @@ def test_zero_steps_with_an_unread_fact_is_not_completed(unread: dict) -> None:
     assert rank_actions(ruled, {}, now=NOW, setup=done)["setup"]["completed"] is True
     partial = rank_actions(ruled, {}, now=NOW, setup=replace(done, **unread))["setup"]
     assert partial["open"] == 0 and partial["completed"] is False
+
+
+def test_a_snoozed_step_keeps_setup_from_completing() -> None:
+    ruled = rule_actions(RepoFacts(anchor=None))
+    one_left = replace(
+        FRESH, sync_hook=False, coverage_ingested=True, runtime_stored=True, background_records=0
+    )
+    sync = _fired(one_left)["sync_hook_missing"]
+    snoozed = ActionStateRecord("snoozed", sync.fingerprint, until=datetime(2026, 12, 3, tzinfo=UTC))
+    block = rank_actions(ruled, {sync.action_id: snoozed}, now=NOW, setup=one_left)["setup"]
+    assert block["open"] == 0 and block["completed"] is False
+
+    dismissed = ActionStateRecord("dismissed", sync.fingerprint)
+    block = rank_actions(ruled, {sync.action_id: dismissed}, now=NOW, setup=one_left)["setup"]
+    assert block["open"] == 0 and block["completed"] is True
+
+
+def test_many_coverage_reports_are_counted_and_ingested_in_full() -> None:
+    reports = tuple(FoundFile(f"pkg{i}/coverage.xml", i) for i in range(NAMED_FILES + 2))
+    step = _fired(replace(FRESH, coverage_reports=reports))["coverage_found"]
+    assert step.title == f"Add the {NAMED_FILES + 2} coverage reports found on disk"
+    assert step.command == "repowise coverage add"
+    assert len(step.details) == NAMED_FILES

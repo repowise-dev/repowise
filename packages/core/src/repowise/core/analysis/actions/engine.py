@@ -247,7 +247,19 @@ def rank_actions(
     }
     if setup is not None:
         answer = states.get(SETUP_STATE_ID)
-        view["setup"] = setup_block(horizons, setup, answer is not None and answer.state == "dismissed")
+        # A snoozed step is still to do: it comes back, so setup is not complete.
+        snoozed = sum(
+            1
+            for r in actions
+            if "week" in r.action["horizons"]
+            and r.action["tier"] == "improve_signal"
+            and (record := states.get(r.action["id"])) is not None
+            and record.state == "snoozed"
+            and _hidden(r.action, record, now)
+        )
+        view["setup"] = setup_block(
+            horizons, setup, answer is not None and answer.state == "dismissed", snoozed=snoozed
+        )
     return view
 
 

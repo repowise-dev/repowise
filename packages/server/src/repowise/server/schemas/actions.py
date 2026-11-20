@@ -91,12 +91,11 @@ class ActionContext(BaseModel):
 
 class SetupUnlocks(BaseModel):
     """Depth rows usage has unlocked: Claude Code calls for the first two,
-    synced commits for the last two. Never a calendar."""
+    synced commits for the last. Never a calendar."""
 
     always_load: bool
     distill: bool
     suggested_settings: bool
-    dead_code_batch: bool
 
 
 class ActionsSetup(BaseModel):

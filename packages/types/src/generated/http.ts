@@ -4850,13 +4850,12 @@ export interface SetupThresholds {
 
 /**
  * Depth rows usage has unlocked: Claude Code calls for the first two,
- * synced commits for the last two. Never a calendar.
+ * synced commits for the last. Never a calendar.
  */
 export interface SetupUnlocks {
   always_load: boolean;
   distill: boolean;
   suggested_settings: boolean;
-  dead_code_batch: boolean;
 }
 
 /** What a write did. ``ok`` is the command's own success. */

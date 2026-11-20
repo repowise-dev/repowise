@@ -27,9 +27,12 @@ from repowise.core.setup_state import FINISH_SETUP_OFFER
 
 #: Usage that unlocks the depth rows, never a calendar: Claude Code calls to
 #: this index (always-load, distill), and commits the index synced after it
-#: was first built (suggested settings, the dead-code batch).
+#: was first built (suggested settings).
 AGENT_CALLS_UNLOCK = 20
 SYNCED_COMMITS_UNLOCK = 10
+
+#: Files a step names one by one; past this it counts them and names the first.
+NAMED_FILES = 10
 
 #: The ``action_states`` id that records the person's answer to the pass.
 SETUP_STATE_ID = "setup"
@@ -96,21 +99,21 @@ class SetupFacts:
             "always_load": calls,
             "distill": calls,
             "suggested_settings": commits,
-            "dead_code_batch": commits,
         }
 
 
 def setup_block(
-    horizons: Mapping[str, Any], setup: SetupFacts, dismissed: bool
+    horizons: Mapping[str, Any], setup: SetupFacts, dismissed: bool, *, snoozed: int = 0
 ) -> dict[str, Any]:
     """The view's ``setup``: steps left, and whether the agent pass is offered.
 
     A step is any visible ``improve_signal`` action, stored or live: the pass
-    works through exactly those.
+    works through exactly those. *snoozed* counts the steps hidden only by a
+    snooze: they come back, so they keep setup from counting as complete.
     """
     week = horizons.get("week") or {}
     left = int((week.get("by_tier") or {}).get("improve_signal", 0))
-    completed = setup.completed or (left == 0 and setup.readable)
+    completed = setup.completed or (left == 0 and snoozed == 0 and setup.readable)
     offered = left > 0 and not dismissed and not completed and (setup.agent_calls or 0) > 0
     return {
         "open": left,
@@ -127,6 +130,7 @@ def setup_block(
 
 __all__ = [
     "AGENT_CALLS_UNLOCK",
+    "NAMED_FILES",
     "SETUP_STATE_ID",
     "SYNCED_COMMITS_UNLOCK",
     "FoundFile",

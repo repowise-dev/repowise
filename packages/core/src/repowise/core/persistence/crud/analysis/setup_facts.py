@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.actions.setup import (
+    NAMED_FILES,
     SETUP_STATE_ID,
     SYNCED_COMMITS_UNLOCK,
     FoundFile,
@@ -34,8 +35,6 @@ from .actions import set_action_state
 
 logger = logging.getLogger(__name__)
 
-#: Reports and profiles named per step; the walk itself is bounded too.
-_FILES_CAP = 10
 
 
 async def load_setup_facts(
@@ -159,10 +158,12 @@ def _sync(root: Path) -> dict[str, Any]:
     return {"sync_hook": installed, "unsynced_commits": behind}
 
 
-def _found(root: Path, paths: list[Path], kinds: list[str]) -> tuple[FoundFile, ...]:
+def _found(
+    root: Path, paths: list[Path], kinds: list[str], cap: int | None = NAMED_FILES
+) -> tuple[FoundFile, ...]:
     now = time.time()
     found = []
-    for path, kind in zip(paths[:_FILES_CAP], kinds, strict=False):
+    for path, kind in zip(paths[:cap], kinds, strict=False):
         try:
             age = max(0, int((now - path.stat().st_mtime) // 86_400))
         except OSError:
@@ -178,8 +179,10 @@ def _reports(root: Path) -> dict[str, Any]:
     cfg = CoverageConfig.from_repo_config(load_repo_config(root))
     if not cfg.auto_discover and not cfg.artifacts:
         return {"coverage_reports": ()}
+    # Every report, not the first few: the step counts and ingests them all.
+    # The discovery walk is bounded on its own.
     paths = discover_artifacts(root, globs=cfg.artifacts or None)
-    return {"coverage_reports": _found(root, paths, [""] * len(paths))}
+    return {"coverage_reports": _found(root, paths, [""] * len(paths), cap=None)}
 
 
 def _evidence(root: Path) -> dict[str, Any]:

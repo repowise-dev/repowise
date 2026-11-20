@@ -14,7 +14,7 @@ from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.evidence.setup import EVIDENCE_SETUP, SETUP_COMMAND, coverage_ingest_line
 
 from ..model import Action, ActionDetail, RuleOutcome, WhyFact, fingerprint
-from ..setup import AGENT_CALLS_UNLOCK, SYNCED_COMMITS_UNLOCK, SetupFacts
+from ..setup import AGENT_CALLS_UNLOCK, NAMED_FILES, SYNCED_COMMITS_UNLOCK, SetupFacts
 from ._text import code, plural
 
 SetupRule = Callable[[SetupFacts], RuleOutcome]
@@ -116,6 +116,13 @@ def coverage_found(facts: SetupFacts) -> RuleOutcome:
     else:
         title = f"Add the {len(reports)} coverage reports found on disk"
         why = (WhyFact("reports found", str(len(reports))), WhyFact("newest", _age(newest)))
+    # Past the named few, the bare command discovers and ingests every report.
+    named = reports[:NAMED_FILES]
+    command = (
+        coverage_ingest_line(r.path for r in reports)
+        if len(reports) <= NAMED_FILES
+        else "repowise coverage add"
+    )
     return _step(
         rule,
         title=title,
@@ -126,9 +133,9 @@ def coverage_found(facts: SetupFacts) -> RuleOutcome:
         why=why,
         surface="coverage",
         done_when="A coverage report is ingested.",
-        command=coverage_ingest_line(r.path for r in reports),
+        command=command,
         marks=tuple(r.path for r in reports),
-        details=tuple(ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in reports),
+        details=tuple(ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in named),
     )
 
 
