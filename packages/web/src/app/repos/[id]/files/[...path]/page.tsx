@@ -175,12 +175,13 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
   const tabs = fileTabsFor(detail);
   const initialTab = resolveFileTab(requested, tabs);
 
-  // A line link shows the source on Overview, where a link without `?tab=`
-  // lands and where a tab this file does not have (Decisions on an ungoverned
-  // file) falls back to; on Coverage the tab's own source carries the mark.
+  // A line link always gives Overview the source, whichever tab it opens on:
+  // the host switches tabs client-side and keeps `line` in the URL, so a later
+  // click back to Overview must still find the marked line. On Coverage the
+  // tab's own source carries the mark too.
   const [coverageCodeHtml, sourceCodeHtml] = await Promise.all([
     requested === "coverage" ? renderCoverageCode(source, detail, highlightLine) : undefined,
-    initialTab === "overview" ? renderLinkedSource(source, detail, highlightLine) : undefined,
+    highlightLine !== undefined ? renderLinkedSource(source, detail, highlightLine) : undefined,
   ]);
 
   // Which tabs this render could not produce a usable body for. A tab with

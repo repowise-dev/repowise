@@ -50,11 +50,11 @@ function makeDetail(overrides: Partial<FileDetailResponse> = {}): FileDetailResp
 
 const SOURCE = "a = 1\nb = 2\nc = 3\n";
 
-async function renderPage(tab: string | undefined, line: string) {
+async function renderPage(tab: string | undefined, line?: string) {
   mocks.panelArgs.length = 0;
   await FileEntityPage({
     params: Promise.resolve({ id: "repo-1", path: ["src", "app.py"] }),
-    searchParams: Promise.resolve({ ...(tab ? { tab } : {}), line }),
+    searchParams: Promise.resolve({ ...(tab ? { tab } : {}), ...(line ? { line } : {}) }),
   });
   return mocks.panelArgs[0]!;
 }
@@ -72,10 +72,19 @@ describe("file page ?line=N", () => {
     expect(args.highlightLine).toBe(2);
   });
 
-  it("does not render the Overview source when the link opens another tab", async () => {
+  it("keeps the Overview source when the link opens another tab", async () => {
+    // The host switches back to Overview client-side with `line` still in the URL.
     mocks.getFileDetail.mockResolvedValue(makeDetail());
     const args = await renderPage("health", "2");
+    expect(args.sourceCodeHtml).toContain('data-line="2"');
+  });
+
+  it("fetches no source without a line link", async () => {
+    mocks.getFileContent.mockClear();
+    mocks.getFileDetail.mockResolvedValue(makeDetail());
+    const args = await renderPage("health");
     expect(args.sourceCodeHtml).toBeUndefined();
+    expect(mocks.getFileContent).not.toHaveBeenCalled();
   });
 
   it("renders untinted source on Coverage for a file no test ran", async () => {
