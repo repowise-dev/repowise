@@ -21,9 +21,9 @@ from repowise.core.code_origin import path_origin
 from repowise.core.test_paths import in_test_tree
 
 from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
-from ..perf.actionability import EXPECTED_REASONS
+from ..perf.actionability import EXPECTED_REASONS, NO_STRATEGY_FOR_MARKER
 from ..perf.causal import code_context
-from ..rows import detail_map, field
+from ..rows import detail_map, field, json_field
 from ..worth import (
     SIZE_MARKERS,
     LowPriority,
@@ -439,6 +439,22 @@ QUEUE_ROLES = frozenset(EXECUTION_ROLES) - COLD_ROLES
 proven growth. ``unknown`` is no evidence either way, so it stays."""
 
 
+def observation(item: Any) -> bool:
+    """Whether a cause's marker has no fix strategy at all, so it is an
+    observation: kept in the performance inventory, never a unit of any queue.
+
+    Unlike a cause waiting on a proof (``no_strategy``), no fact about the code
+    would give it a strategy, so counting it as queue work left out says
+    something false. Reads an opportunity, an ORM row or a plain row.
+    """
+    if field(item, "actionability_state") != "investigate":
+        return False
+    prerequisites = json_field(item, "prerequisites", None)
+    if prerequisites is None:
+        prerequisites = detail_map(item).get("prerequisites") or ()
+    return NO_STRATEGY_FOR_MARKER in prerequisites
+
+
 def perf_strategy_verdict(
     item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
 ) -> Verdict:
@@ -540,10 +556,13 @@ def perf_confident_verdict(
 
 
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
-    """The performance default queue's size and what it leaves out, by reason."""
+    """The performance default queue's size and what it leaves out, by reason.
+    An :func:`observation` is no unit of the queue, so it is not counted."""
     tally = Tally(DEFAULT_QUEUE_EXCLUSIONS)
     queued = 0
     for item in items:
+        if observation(item):
+            continue
         if not tally.add(perf_queue_verdict(item)):
             queued += 1
     return {"total": queued, "excluded": tally.excluded}
@@ -617,6 +636,7 @@ __all__ = [
     "dead_spans",
     "dead_target",
     "finding_verdict",
+    "observation",
     "path_verdict",
     "perf_confident_verdict",
     "perf_fix_verdict",

@@ -38,6 +38,11 @@ ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"
 #: count as ``expected``.
 EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
 
+#: The one prerequisite of a group whose marker has no fix strategy at all. No
+#: proof about the code would produce one, so the group is an observation: a
+#: true fact worth reading, never work in a queue (``queue.eligibility.observation``).
+NO_STRATEGY_FOR_MARKER = "supported_strategy_for_marker"
+
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
 _EXPECTED_REFUSALS = frozenset(
     {"inherent_to_boundary", "loop_already_chunked", "loop_not_batchable"}
@@ -305,7 +310,7 @@ def assess_fix(
             ),
             ("shared_state_ordering",),
         )
-    return FixAssessment(None, ("supported_strategy_for_marker",))
+    return FixAssessment(None, (NO_STRATEGY_FOR_MARKER,))
 
 
 def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str | None:
@@ -381,6 +386,7 @@ __all__ = [
     "BATCHABLE_MARKERS",
     "BOUNDARY_NOUN",
     "LOCK_SERIALIZED_BOUNDARIES",
+    "NO_STRATEGY_FOR_MARKER",
     "Actionability",
     "ActionabilityState",
     "FixAssessment",
