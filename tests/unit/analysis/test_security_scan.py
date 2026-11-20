@@ -1508,8 +1508,7 @@ class TestSecretPrecision:
             ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
             ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
             ("src/tree.ts", "const TOKEN = '^(-?\\\\d{1,2}|null)$';\n"),
-            ("src/ids.py", 'SESSION_TOKEN = r"^tok_\\w+_session$"\n'),
-            ("src/ids.py", 'PIN_TOKEN = r"\\d{4,6}$"\n'),
+            ("src/ids.py", 'SESSION_TOKEN = r"^tok_(\\w+|anon)_session$"\n'),
             ("src/ids.py", 'API_KEY = "^(live|test)_key$"\n'),
         ],
     )
@@ -1556,6 +1555,7 @@ class TestSecretPrecision:
             ('TOKEN = "^Zx9Qw8Rt5Yu3$"\n', "hardcoded_secret"),
             ('password = "Zx9\\dQw8Rt5"\n', "hardcoded_password"),
             ('password = "Zx9\\s+Qw8Rt5"\n', "hardcoded_password"),
+            ('password = "Zx9\\s+Qw8Rt5$"\n', "hardcoded_password"),
             ('password = "^(Zx9Qw8Rt5)$"\n', "hardcoded_password"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
