@@ -125,7 +125,12 @@ def extract_heritage(
     # work out the purpose of.
     scores: list[float] = []
     try:
-        for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
+        file_nodes = list(_file_symbol_nodes(file_path, graph, symbol_index))
+        # A child defined in this file has already reported its edge from its
+        # own end, with the parent's file, so its in-edge would list the same
+        # relationship twice.
+        in_file = {node for node, _data in file_nodes}
+        for node, data in file_nodes:
             for _, target, edata in graph.out_edges(node, data=True):
                 etype = edata.get("edge_type", "")
                 if etype in ("extends", "implements"):
@@ -141,7 +146,7 @@ def extract_heritage(
                     scores.append(float(edata.get("confidence") or 0.0))
             for source, _, edata in graph.in_edges(node, data=True):
                 etype = edata.get("edge_type", "")
-                if etype in ("extends", "implements"):
+                if etype in ("extends", "implements") and source not in in_file:
                     sdata = graph.nodes.get(source, {})
                     entries.append(
                         {
