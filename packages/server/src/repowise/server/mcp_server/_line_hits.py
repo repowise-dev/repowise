@@ -349,24 +349,28 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
 
 
 # A declaration's head: its keywords (``const enum``, ``const fn``) and the
-# names it declares (``var x, y``, ``const { a, b }``), past a Go receiver
-# (``func (s *S) Name``) or a ``mut``. ``let c = open_ro(p)`` heads at ``let c``.
+# names it declares (``var x, y``, ``const { a, b }``, ``let Point { x, y }``,
+# ``let (a, b)``), past a ``mut`` or a Go receiver (``func (s *S) Name``), which
+# names a type it does not declare. ``let c = open_ro(p)`` heads at ``let c``.
 _DECLARATION_HEAD = re.compile(
     rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
-    rf"(?:(?:{_DECL_WORDS})\b\*?\s*)+(?:\([^)]*\)\s*)?(?:mut\s+)?"
-    r"(?:[\w$]+(?:\s*,\s*[\w$]+)*|[{\[][^}\]]*[}\]])?"
+    rf"(?:(?:{_DECL_WORDS})\b\*?\s*)+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
+    r"(?:(?:[\w$:]+\s*)?\{[^}]*\}|[\[(][^\])]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
 
 
 def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
     """Whether a line declares what a regex query matched: the first match
-    starts inside the declaration's head, so a call on a declaring line
-    (``const x = f(1)``) is a match, not a definition of ``f``."""
+    starts inside the declaration's head, outside a Go receiver, so a call on
+    a declaring line (``const x = f(1)``) is a match, not a definition of ``f``."""
 
     def check(line: str) -> bool:
         head = _DECLARATION_HEAD.match(line)
         m = pattern.search(line) if head else None
-        return m is not None and head is not None and m.start() < head.end()
+        if m is None or head is None or m.start() >= head.end():
+            return False
+        start, end = head.span("receiver")
+        return not start <= m.start() < end
 
     return check
 
