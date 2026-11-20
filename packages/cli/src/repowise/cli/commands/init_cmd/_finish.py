@@ -285,6 +285,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     record_decision_lanes(
         base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
     )
+    record_index_decision_mining(
+        base_state, repo_path, getattr(result, "decision_report", None), head
+    )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     from repowise.core.pipeline.incremental.feature import stamp_graph_update
@@ -301,6 +304,29 @@ def _base_state(run: InitRun) -> dict[str, Any]:
         base_state["knowledge_graph"] = build_kg_state(kg)
         save_knowledge_graph_json(repo_path, kg)
     return base_state
+
+
+def record_index_decision_mining(
+    state: dict[str, Any], repo_path: Path, report: Any, head: str | None
+) -> None:
+    """The mining ledger for the decision sources this init ran (#6031).
+
+    ``repowise update`` records each source's last run; without this a fresh
+    index read as never run until the first update, and a later failure could
+    not be told from that. Every index source the policy enabled ran in the
+    decision phase: the ones in the report's ``failures`` are recorded as
+    failed, the rest as mined through *head*. No report means the phase was
+    skipped (its warning is already in the run), so nothing is recorded.
+    """
+    if report is None:
+        return
+    from repowise.core.analysis.decisions import mining_state
+    from repowise.core.analysis.decisions.policy import resolve_policy
+    from repowise.core.repo_config import load_repo_config
+
+    policy = resolve_policy(load_repo_config(repo_path)).policy
+    failures = dict(getattr(report, "failures", None) or {})
+    mining_state.record_run(state, policy.enabled_index_sources(), failures, head)
 
 
 def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:

@@ -13,6 +13,7 @@ behaviour, so an older state file keeps working.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -81,6 +82,21 @@ def record_failure(
         last_failure_at=at,
         last_failure_commit=commit,
     )
+
+
+def record_run(
+    state: dict[str, Any] | None,
+    sources: Iterable[str],
+    failures: Mapping[str, str],
+    commit: str | None,
+) -> None:
+    """Record one run of *sources* through *commit*: a failure for each one in
+    *failures* (its error text), a success for the rest."""
+    for source in sources:
+        if source in failures:
+            record_failure(state, source, commit, failures[source])
+        else:
+            record_success(state, source, commit)
 
 
 def status_fields(entry: dict[str, Any] | None) -> dict[str, Any]:
