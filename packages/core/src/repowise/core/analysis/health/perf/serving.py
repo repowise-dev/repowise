@@ -627,7 +627,7 @@ def serialize(
     :func:`served_position` in its place.
 
     ``workloads`` (the leading workloads the stored causes were judged
-    against, ``None`` for a caller that shows no evidence) adds ``evidence``,
+    against, ``None`` for a caller that shows no evidence) adds ``runtime_evidence``,
     the :func:`evidence_mark`, when it has something to say.
     """
     details = detail_map(row)
@@ -664,7 +664,8 @@ def serialize(
     if workloads is not None and (
         mark := evidence_mark(details.get("facets") or {}, workloads)
     ):
-        payload["evidence"] = mark
+        # Not ``evidence``: that key is the raw observations a list may add.
+        payload["runtime_evidence"] = mark
     if summary:
         return {**payload, **_decision_fields(row, details)} if decisions else payload
     return {**payload, **_decision_fields(row, details), **_detail_fields(row, details)}

@@ -595,7 +595,7 @@ export interface PerformanceOpportunity {
   /** What runtime evidence says about this cause (`perf.serving.evidence_mark`).
    *  On the dashboard's rows only; absent when the repository has no runtime
    *  evidence. */
-  evidence?: PerformanceEvidenceMark;
+  runtime_evidence?: PerformanceEvidenceMark;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;

@@ -430,9 +430,9 @@ async def _queue_and_rows(session, repo_id: str) -> tuple[list[str], list[dict],
     order = [r.intervention_symbol.rpartition(":")[2] for r in stored]
     query, _ = parse_query(context="all", actionability="all", proof="all", lift_defaults=True)
     service = PerformanceHealthService(session, repo_id, "repo")
-    rest = (await service.page(query, row_decisions=True)).items
+    rest = (await service.page(query, row_decisions=True, evidence_per_item=8)).items
     agent = (await service.page(query)).items
-    assert all("evidence" not in item for item in agent)
+    assert all("runtime_evidence" not in item for item in agent)
     summary = json.loads((await session.get(PerformanceSummary, repo_id)).summary_json)
     return order, rest, summary
 
@@ -443,7 +443,7 @@ async def test_evidence_puts_a_measured_cause_first_and_labels_the_rest(async_se
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
     assert order == ["zzz_measured", "aaa_first"]
     assert summary["evidence_workloads"] == ["w-r1"]
-    marks = {i["intervention_symbol"].rpartition(":")[2]: i["evidence"] for i in rest}
+    marks = {i["intervention_symbol"].rpartition(":")[2]: i["runtime_evidence"] for i in rest}
     assert marks["zzz_measured"] == {"state": "confirmed", "basis": "measured"}
     # Never hidden: the unmeasured cause is listed, in its static place among the rest.
     assert marks["aaa_first"] == {"state": "not_exercised", "workloads": ["w-r1"]}
@@ -455,7 +455,7 @@ async def test_without_evidence_the_order_and_rows_are_the_static_ones(async_ses
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
     assert order == ["aaa_first", "zzz_measured"]
     assert "evidence_workloads" not in summary
-    assert all("evidence" not in item for item in rest)
+    assert all("runtime_evidence" not in item for item in rest)
 
 
 async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
@@ -464,4 +464,4 @@ async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
     assert order == ["aaa_first", "zzz_measured"]
     assert "evidence_workloads" not in summary
-    assert all("evidence" not in item for item in rest)
+    assert all("runtime_evidence" not in item for item in rest)

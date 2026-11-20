@@ -328,7 +328,7 @@ def evidence_tier(facets: Mapping[str, Any]) -> int:
     cause of a repository with no runtime evidence is ``2``, so its order is
     the static one. Counter-evidence demotes nothing, and a cause measured
     against its cold name (``measured_overrides``) is kept, never led, even
-    when evidence confirms it: both keep their static place."""
+    when evidence confirms it: both stay among the rest, in static order."""
     if facets.get("measured_overrides"):
         return 2
     state = evidence_state(facets)
