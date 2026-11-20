@@ -52,7 +52,6 @@ class RustPathCallsMixin:
         module, rest = start
         # The inline ``mod`` block the walk stands in, None at a file's top level.
         scope = self._rust_start_scope(file_path, segments, call.line) if module == file_path else None
-        entered = False
         for i, segment in enumerate(rest):
             child = None if scope else self._rust_child_module(module, segment)
             if child is not None:
@@ -62,12 +61,12 @@ class RustPathCallsMixin:
                 if self._rust_name_reused(module, segment):
                     # Items of two blocks named alike share one key: no pick.
                     return None
-                scope, entered = segment, True
+                scope = segment
                 continue
             if i < len(rest) - 1:
                 return None
             # The last segment is no module: a type the call names a method of.
-            if entered and self._rust_type_reused(module, segment):
+            if scope is not None and self._rust_type_reused(module, segment):
                 return None  # ``a::S::new()`` and ``b::S::new()`` share one key
             target = self._file_methods.get(module, {}).get((segment, call.target_name))  # type: ignore[attr-defined]
             return self._rust_path_edge(caller_id, target, call)

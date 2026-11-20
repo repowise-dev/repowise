@@ -234,3 +234,14 @@ def test_blocks_named_alike_in_two_parents_bind_nothing(tmp_path: Path) -> None:
 def test_a_self_path_in_a_block_does_not_fall_back_to_the_file(tmp_path: Path) -> None:
     files = {"src/lib.rs": "fn f() {}\n\nmod a {\n    pub fn g() {\n        self::f();\n    }\n}\n"}
     assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::a::g")} == set()
+
+
+def test_a_self_path_to_a_type_named_like_a_top_level_one_binds_nothing(tmp_path: Path) -> None:
+    files = {
+        "src/lib.rs": (
+            "pub struct S;\n\nimpl S {\n    pub fn new() -> S { S }\n}\n\n"
+            "mod m {\n    pub struct S;\n\n    impl S {\n        pub fn new() -> S { S }\n    }\n\n"
+            "    fn g() {\n        self::S::new();\n    }\n}\n"
+        )
+    }
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::m::g")} == set()
