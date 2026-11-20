@@ -172,24 +172,30 @@ describe("PerformanceView runtime evidence", () => {
 });
 
 describe("Runtime evidence marks", () => {
-  it("marks a cause the server says was measured and confirmed, and nothing else", async () => {
+  it("marks a cause with what runtime evidence says, as a word, and nothing else", async () => {
     const base = opportunity();
-    const marked = opportunity({
-      opportunity_id: "perf2_marked",
-      facets: { ...base.facets, measured: "cli build", confirmed: "measured" },
-    });
-    render(
-      <PerformanceView
-        adapter={adapter({ getPerformanceOpportunities: async () => page({ items: [marked, base] }) })}
-      />,
-    );
-    const row = (await screen.findAllByRole("listitem")).find(
-      (li) => li.getAttribute("data-performance-opportunity") === "perf2_marked",
-    )!;
-    expect(within(row).getByText("Measured")).toBeTruthy();
-    expect(within(row).getByText("cli build")).toBeTruthy();
-    expect(within(row).getByText("by a measured run")).toBeTruthy();
-    expect(screen.getAllByText("Measured")).toHaveLength(1);
+    const items = [
+      opportunity({
+        opportunity_id: "perf2_unreached",
+        runtime_evidence: { state: "not_exercised", workloads: ["cli build", "bench parse"] },
+      }),
+      opportunity({ opportunity_id: "perf2_measured", runtime_evidence: { state: "measured", workload: "cli build" } }),
+      // An older server says it on the detail view's facets.
+      opportunity({ opportunity_id: "perf2_facets", facets: { ...base.facets, confirmed: "query_count" } }),
+      base,
+    ];
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => page({ items }) })} />);
+    const row = async (id: string) =>
+      (await screen.findAllByRole("listitem")).find(
+        (li) => li.getAttribute("data-performance-opportunity") === id,
+      )!;
+    expect(within(await row("perf2_unreached")).getByText("Not exercised")).toBeTruthy();
+    expect(within(await row("perf2_unreached")).getByText("in cli build, bench parse")).toBeTruthy();
+    expect(within(await row("perf2_measured")).getByText("Measured")).toBeTruthy();
+    expect(within(await row("perf2_measured")).getByText("in cli build")).toBeTruthy();
+    expect(within(await row("perf2_facets")).getByText("Confirmed")).toBeTruthy();
+    expect(within(await row("perf2_facets")).getByText("by query counts that grow")).toBeTruthy();
+    expect(screen.getAllByText(/^(Measured|Confirmed|Not exercised)$/)).toHaveLength(3);
   });
 
   it("lists slow tests only when the host passes them", () => {

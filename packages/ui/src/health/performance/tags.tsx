@@ -1,39 +1,52 @@
 "use client";
 
-import type { PerformanceOpportunity } from "@repowise-dev/types/health";
+import type { PerformanceEvidenceMark, PerformanceOpportunity } from "@repowise-dev/types/health";
 
 import { LowerPriorityTag } from "../lower-priority-tag";
 import { PreviewBadge } from "../preview-badge";
 
-const CONFIRMED_BY: Record<string, string> = {
-  measured: "by a measured run",
-  query_count: "by query counts that grow",
-};
+/** Each runtime evidence state as a word, and the reason beside it. Never a colour. */
+function markWords(mark: PerformanceEvidenceMark): { word: string; why: string; ink: boolean } {
+  switch (mark.state) {
+    case "confirmed":
+      return {
+        word: "Confirmed",
+        why: mark.basis === "query_count" ? "by query counts that grow" : "by a measured run",
+        ink: true,
+      };
+    case "measured":
+      return { word: "Measured", why: mark.workload ? `in ${mark.workload}` : "", ink: true };
+    case "counter_evidence":
+      return { word: "Counter-evidence", why: "query counts stay flat as the input grows", ink: false };
+    case "ran":
+      return { word: "Ran", why: "query counts read at one input size", ink: false };
+    case "not_exercised":
+      return {
+        word: "Not exercised",
+        why: mark.workloads?.length ? `in ${mark.workloads.join(", ")}` : "",
+        ink: false,
+      };
+  }
+}
 
-/** What runtime evidence says about a cause, when the server read any: the
- *  workload that measured its function, and what confirmed it. */
-function EvidenceMarks({ opportunity }: { opportunity: PerformanceOpportunity }) {
-  const measured = opportunity.facets?.measured;
-  const confirmedBy = opportunity.facets?.confirmed
-    ? CONFIRMED_BY[opportunity.facets.confirmed]
-    : undefined;
-  if (!measured && !confirmedBy) return null;
+/** The row's mark, or one read from the detail view's facets on an older server. */
+function evidenceMarkOf(opportunity: PerformanceOpportunity): PerformanceEvidenceMark | null {
+  if (opportunity.runtime_evidence) return opportunity.runtime_evidence;
+  const facets = opportunity.facets;
+  if (facets?.confirmed) return { state: "confirmed", basis: facets.confirmed };
+  if (facets?.measured) return { state: "measured", workload: facets.measured };
+  return null;
+}
+
+/** What runtime evidence says about a cause, when the server read any. */
+function EvidenceMark({ opportunity }: { opportunity: PerformanceOpportunity }) {
+  const mark = evidenceMarkOf(opportunity);
+  if (!mark) return null;
+  const { word, why, ink } = markWords(mark);
   return (
     <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
-      {measured ? (
-        <>
-          <EvidenceWordTag ink>Measured</EvidenceWordTag>
-          <span>
-            in <code className="font-mono">{measured}</code>
-          </span>
-        </>
-      ) : null}
-      {confirmedBy ? (
-        <>
-          <EvidenceWordTag ink>Confirmed</EvidenceWordTag>
-          <span>{confirmedBy}</span>
-        </>
-      ) : null}
+      <EvidenceWordTag ink={ink}>{word}</EvidenceWordTag>
+      {why ? <span>{why}</span> : null}
     </p>
   );
 }
@@ -44,7 +57,7 @@ function EvidenceMarks({ opportunity }: { opportunity: PerformanceOpportunity })
 export function OpportunityTags({ opportunity }: { opportunity: PerformanceOpportunity }) {
   return (
     <>
-      <EvidenceMarks opportunity={opportunity} />
+      <EvidenceMark opportunity={opportunity} />
       {opportunity.lower_priority ? (
         <p className="mt-1">
           <LowerPriorityTag reason={opportunity.lower_priority} />

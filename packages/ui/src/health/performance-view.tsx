@@ -294,7 +294,8 @@ export function PerformanceView({
       <RuntimeEvidenceSection
         view={runtime}
         adapter={adapter}
-        onOpenCause={detailById ? openById : undefined}
+        onOpenCause={openById}
+        canOpenCause={detailById}
         onPrompt={openPrompt}
       />
 

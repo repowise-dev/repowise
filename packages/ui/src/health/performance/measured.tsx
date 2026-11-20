@@ -534,18 +534,22 @@ const disclosureTitle = (title: string, caption?: string) => (
 export function RuntimeEvidenceSection({
   view,
   adapter,
-  onOpenCause,
+  onOpenCause: openCause,
+  canOpenCause = true,
   onPrompt,
   slowTests,
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
   onOpenCause?: ((opportunityId: string) => void) | undefined;
+  /** False when the host cannot open a cause by id, so a findings tag stays a word. */
+  canOpenCause?: boolean;
   onPrompt: (request: AiPromptRequest) => void;
   /** The slowest timed tests, when the host reads them; nothing renders without rows. */
   slowTests?: readonly SlowTestRow[] | null | undefined;
 }) {
   const { run, leads, pick, testRun, runs } = view;
+  const onOpenCause = canOpenCause ? openCause : undefined;
   if (!run && !testRun && !slowTests?.length) return null;
   const testsTotal = view.testsTotal;
   return (
