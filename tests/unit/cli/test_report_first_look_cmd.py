@@ -232,6 +232,11 @@ def test_init_plan_line_only_when_the_call_will_run(tmp_path: Path) -> None:
     config.write_text("", encoding="utf-8")
     (tmp_path / ".repowise" / "reports").mkdir()
     (tmp_path / ".repowise" / "reports" / "first-look.json").write_text("{}", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) == line  # unreadable: init writes anew
+    from repowise.core.report.first_look.store import write_report_file
+    from tests.unit.core.test_first_look import _item, _report
+
+    write_report_file(tmp_path, _report(_item()))
     assert first_look_plan_line(tmp_path, provider) is None  # a stamped report is kept
 
 
