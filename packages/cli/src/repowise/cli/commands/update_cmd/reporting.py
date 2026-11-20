@@ -15,6 +15,7 @@ from typing import Any
 
 import click
 
+from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
     build_completion_panel,
@@ -79,27 +80,51 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The structural and the model page counts, by `stale_remedy`. `model` says
+# nothing per count: there `--full` writes the whole wiki, in one priced run.
+_STRUCTURAL_PAGES = "{n} structural pages (file / cycle)"
+_CASCADE_PAGES = {
+    "llm": (
+        f"{_STRUCTURAL_PAGES}, no model needed",
+        "{n} pages written by a model, priced before they are rewritten",
+    ),
+    "model": (_STRUCTURAL_PAGES, "{n} pages of the types a model writes"),
+    "code": (
+        f"{_STRUCTURAL_PAGES}, no model needed",
+        "{n} pages of the types a model writes, rebuilt from code with no model calls",
+    ),
+}
+_WHOLE_WIKI_NOTE = f" It {WHOLE_WIKI_REMEDY}."
+
+
 def render_cascade_budget_warning(
-    budget: int, skipped_files: int, split: tuple[int, int] | None, command: str
+    budget: int,
+    skipped_files: int,
+    split: tuple[int, int] | None,
+    command: str,
+    remedy: str,
 ) -> None:
     """Warn that the cascade budget left pages stale, and the one command that catches up.
 
     ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
     unsplit warning. ``command`` is ``repowise update --full``, aimed at the
-    repo in a workspace.
+    repo in a workspace. ``remedy`` is ``stale_remedy``'s answer for the repo.
     """
     console.print(
         f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
         "dependent files were skipped and their pages marked stale.[/yellow]"
     )
     model, structural = split or (0, 0)
+    structural_pages, model_pages = _CASCADE_PAGES[remedy]
     kinds = [
-        f"{structural} structural pages (file / cycle), no model needed" if structural else "",
-        f"{model} pages written by a model, priced before they are rewritten" if model else "",
+        structural_pages.format(n=structural) if structural else "",
+        model_pages.format(n=model) if model else "",
     ]
     detail = "; ".join(k for k in kinds if k)
     console.print(
-        f"  Run [cyan]{command}[/cyan] to refresh them" + (f": {detail}." if detail else ".")
+        f"  Run [cyan]{command}[/cyan] to refresh them"
+        + (f": {detail}." if detail else ".")
+        + (_WHOLE_WIKI_NOTE if remedy == "model" else "")
     )
     console.print()
 
