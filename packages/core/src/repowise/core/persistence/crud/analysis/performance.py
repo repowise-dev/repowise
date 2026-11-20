@@ -255,6 +255,7 @@ async def finalize_performance_opportunities(
         rows,
         evidence_limit=_EVIDENCE_LIMIT,
         origins=await _unknown_context_origins(session, repository_id, rows),
+        measured=await _measured_functions(session, repository_id),
     )
 
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
@@ -293,6 +294,29 @@ async def _restamp_roles(
     if changed:
         await session.execute(update(HealthFinding), changed)
     return out
+
+
+async def _measured_functions(session: AsyncSession, repository_id: str) -> dict[str, str]:
+    """Each function a leading workload's newest run ranks, with that workload's name.
+
+    Read off ``workload_hotness``, which the health writers rebuild before
+    this runs, so it describes the current code. Only workload classes that
+    may lead (``evidence.hotness.LEAD_CLASSES``) count: a unit-test run says
+    nothing about production. A function two workloads rank takes the one
+    that ranks it best, ties by name. One indexed lookup without evidence.
+    """
+    from ....evidence.hotness import LEAD_CLASSES
+    from .evidence import ranked_by_workload
+
+    best: dict[str, tuple[int, str]] = {}
+    for run, rows in await ranked_by_workload(session, repository_id):
+        if run.workload_class not in LEAD_CLASSES:
+            continue
+        for row in rows:
+            key = (row.rank, run.workload_name)
+            if row.symbol_id not in best or key < best[row.symbol_id]:
+                best[row.symbol_id] = key
+    return {symbol_id: name for symbol_id, (_rank, name) in best.items()}
 
 
 async def _unknown_context_origins(

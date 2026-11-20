@@ -33,6 +33,7 @@ from ..worth import (
     execution_role,
     large_function,
     lead_reason,
+    measured,
     measured_nloc,
     perf_facets,
     terminal_shaped,
@@ -463,12 +464,13 @@ def perf_strategy_verdict(
 def _role_reason(item: Any) -> Reason | None:
     """Why the role running *item*'s loop keeps it out, or ``None``.
 
-    A loop only startup, a CLI, tooling or tests run is paid once per process.
+    A loop only startup, a CLI, tooling or tests run is paid once per process,
+    unless a leading workload measured it: the role is a guess, the run is not.
     A scheduled job's loop matters only once it is shown to grow with the data.
     """
     role = execution_role(item)
     if role in COLD_ROLES:
-        return "cold_role"
+        return None if measured(perf_facets(item)) else "cold_role"
     if role == "scheduled_job" and perf_facets(item).get("loop_magnitude") != "grows_with_data":
         return "background_unproven"
     return None
@@ -509,7 +511,9 @@ def _unconfirmed(item: Any) -> bool:
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
     with no known role, an entry point must reach it. Only a ``plan_ready``
-    cause qualifies.
+    cause qualifies, and never one whose role is cold: a measurement keeps
+    such a cause in the queue (:func:`_role_reason`), it does not make it
+    the work to lead with.
     """
     # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
     # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
@@ -520,6 +524,8 @@ def _unconfirmed(item: Any) -> bool:
     if lead_reason(field(item, "biomarker_type"), facets) is not None:
         return True
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
+        return True
+    if execution_role(item) in COLD_ROLES:
         return True
     return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
 

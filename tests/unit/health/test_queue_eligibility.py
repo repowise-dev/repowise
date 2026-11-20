@@ -149,6 +149,18 @@ def test_a_per_call_cause_is_confident_only_once_an_entry_point_reaches_it() -> 
     assert perf_confident_verdict(unreached).reason == "unconfirmed_cost"
 
 
+def test_a_measured_cold_role_is_queued_but_never_confident() -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
+
+    cli = {"loop_magnitude": "grows_with_data", "growth_source": "loop", "execution_role": "cli"}
+    measured = _cause(facets={**cli, "measured": "import-bench"})
+    # A leading workload ran it at cost: the cold role was a guess.
+    assert perf_queue_verdict(measured).eligible
+    # Kept in the queue, never made the work to lead with.
+    assert perf_confident_verdict(measured).reason == "unconfirmed_cost"
+    assert perf_queue_verdict(_cause(facets=cli)).reason == "cold_role"
+
+
 class _Shaped(_Facts):
     def __init__(self, shape, *, dead=False, cloned=False):
         self._shape, self._dead, self._cloned = shape, dead, cloned

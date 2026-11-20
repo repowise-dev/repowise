@@ -318,3 +318,51 @@ async def test_callers_are_read_in_one_statement_and_tests_never_count(async_ses
     assert rows[load]["callers"] == [f"src/c00{i}.py::f" for i in range(3)]
     assert rows[f"{APP}::serve"]["callers_total"] == 1
     assert len([s for s in edge_reads if "ORDER BY" in s]) == 1
+
+
+async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    repo = await insert_repo(async_session)
+
+    def owned(line: int, owner: str) -> HealthFinding:
+        row = _finding(repo.id, line, None)
+        row.file_path = "src/startup.py"
+        row.function_name = owner
+        row.details_json = json.dumps(
+            {"boundary_kind": "db", "loop_magnitude": "grows_with_data",
+             "role_owner": f"src/startup.py::{owner}", "execution_role": "startup"}
+        )
+        return row
+
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            _run(repo.id, "r3", cls="unit_test"),
+            owned(5, "warm_cache"),
+            owned(25, "load_settings"),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(
+        async_session,
+        repo.id,
+        [
+            {**_hot("x"), "symbol_id": "src/startup.py::warm_cache"},
+            # A unit-test run says nothing about production.
+            {**_hot("x", run="r3"), "symbol_id": "src/startup.py::load_settings"},
+        ],
+    )
+
+    await finalize_performance_opportunities(async_session, repo.id)
+
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    by_owner = {r.intervention_symbol.rpartition(":")[2]: r for r in rows}
+    measured = json.loads(by_owner["warm_cache"].details_json)["facets"]
+    assert measured["measured"] == "w-r1"
+    assert by_owner["warm_cache"].queue_eligible
+    unmeasured = json.loads(by_owner["load_settings"].details_json)["facets"]
+    assert "measured" not in unmeasured
+    assert not by_owner["load_settings"].queue_eligible
