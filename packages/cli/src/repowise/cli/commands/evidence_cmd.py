@@ -43,6 +43,7 @@ from repowise.core.evidence.add import (
     evidence_paths,
     prepare_evidence_files,
 )
+from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
@@ -403,9 +404,22 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
 
 @evidence_group.command("setup")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--write",
+    is_flag=True,
+    help="Also write a CI file that runs each unit's tests with coverage and JUnit XML "
+    "and keeps them as artifacts.",
+)
+@click.option(
+    "--ci",
+    type=click.Choice(CI_KINDS),
+    default=None,
+    help="The CI file --write writes. Default: gitlab with a .gitlab-ci.yml and no "
+    "GitHub workflows, else github.",
+)
 @format_option()
-def evidence_setup_command(repo: str | None, fmt: str) -> None:
-    """Print how to collect evidence here; run nothing, write nothing.
+def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: str) -> None:
+    """Print how to collect evidence here; run nothing, write nothing without --write.
 
     For each build unit: the stack, the command that writes a coverage report
     repowise reads (run from the unit's root), what it needs first, where the
@@ -417,21 +431,41 @@ def evidence_setup_command(repo: str | None, fmt: str) -> None:
     profile, then the tests with coverage. ``stack: unknown`` when repowise is
     not sure how a unit runs. Works before the repository is indexed.
 
+    --write adds one CI file (``.github/workflows/repowise-evidence.yml`` or
+    ``.gitlab/repowise-evidence.yml``) with a job per unit that runs its tests
+    with coverage and JUnit XML on pull requests and default-branch pushes and
+    keeps both as artifacts. It never overwrites a file that differs.
+
     Examples:
 
         repowise evidence setup
         repowise evidence setup --format json
+        repowise evidence setup --write
+        repowise evidence setup --write --ci gitlab
     """
-    _print_setup(repo, fmt)
+    if ci is not None and not write:
+        raise click.UsageError("--ci names the file --write writes; add --write.")
+    _print_setup(repo, fmt, write=write, ci=ci)
 
 
-def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> None:
+def _print_setup(
+    repo: str | None,
+    fmt: str,
+    *,
+    coverage_only: bool = False,
+    write: bool = False,
+    ci: str | None = None,
+) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
+    from repowise.core.evidence.ci_snippet import detect_ci
     from repowise.core.evidence.setup import evidence_setup
+    from repowise.core.git_refs import default_branch
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
+    if write:
+        ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
         _stored_inputs(repo_path, runtime=not coverage_only)
     )
@@ -445,13 +479,22 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
         coverage_only=coverage_only,
         index_error=index_error,
         index_fix=index_fix,
+        ci=ci if write else None,
+        branch=default_branch(str(repo_path)) if write else None,
     )
+    if write:
+        _write_ci(repo_path, plan["ci"], fmt)
     if fmt == "json":
         emit_json(plan)
         return
     for unit in plan["units"]:
         for line in _setup_lines(unit):
             notices.print(line)
+    _print_next(plan, notices)
+
+
+def _print_next(plan: dict[str, Any], notices: Any) -> None:
+    """The plan's reason and ``next_call``, in words."""
     call = plan["next_call"]
     if plan["reason"]:
         notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
@@ -464,6 +507,56 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
         optional = call["optional"]
         notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
                       f"{escape(optional['purpose'])}")
+
+
+def _write_ci(repo_path: Path, snippet: dict[str, Any], fmt: str) -> None:
+    """Write *snippet*'s CI file under *repo_path*; refuse when none applies or a different one is there.
+
+    Sets ``snippet["written"]``: True when written, False when the same file was already there.
+    """
+    content = snippet.pop("content")
+    if content is None:
+        emit_refusal(
+            "no_ci_command",
+            "No unit has a test command repowise is sure of, so no CI file was written.",
+            fmt,
+            remedy="Run `repowise evidence setup` and see each unit's reason.",
+            skipped=snippet["skipped"],
+        )
+    target = repo_path / snippet["path"]
+    try:
+        existing = target.read_text(encoding="utf-8") if target.exists() else None
+    except OSError:
+        existing = ""
+    if existing is not None and existing != content:
+        emit_refusal(
+            "ci_file_exists",
+            f"{snippet['path']} already exists and differs; nothing was written.",
+            fmt,
+            remedy=f"Remove {snippet['path']} to write a fresh one, or edit it by hand.",
+            path=snippet["path"],
+        )
+    snippet["written"] = existing is None
+    if existing is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+    if fmt != "json":
+        _print_written(snippet, notice_console(fmt))
+
+
+def _print_written(snippet: dict[str, Any], notices: Any) -> None:
+    """What ``--write`` did, how to include a GitLab file, and the units it left out."""
+    verb = "Wrote" if snippet["written"] else "Unchanged"
+    notices.print(f"[bold]{verb}[/bold] {escape(snippet['path'])} ({len(snippet['units'])} job(s))")
+    if snippet["ci"] == "gitlab":
+        notices.print(
+            f"  include it from .gitlab-ci.yml: [cyan]include: [{{local: {escape(snippet['path'])}}}][/cyan]"
+        )
+    for unit in snippet["skipped"]:
+        notices.print(
+            f"  [yellow]skipped {escape(unit['root'] or 'the repository root')}: "
+            f"{escape(unit['reason'] or '')}[/yellow]"
+        )
 
 
 def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
