@@ -781,6 +781,8 @@ def test_the_build_unit_index_names_the_same_pip_applications():
     assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
 
 
-def test_a_root_requirements_file_without_a_suite_plans_no_pytest_run():
-    paths = ["requirements.txt", "main.py"]
-    assert detect_stacks(paths, {"requirements.txt": "flask\n"}) == [stacks.UNKNOWN]
+def test_a_root_requirements_file_keeps_its_pytest_guess():
+    """The repository root's requirements file is the project's; only units below it need a suite."""
+    paths = ["requirements.txt", "main.py", "test_main.py"]
+    (stack,) = detect_stacks(paths, {"requirements.txt": "flask\n"})
+    assert (stack.root, stack.language, stack.runner) == ("", "python", "pytest")
