@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack
 
 #: The CI systems a snippet is written for, the first the default.
@@ -196,7 +197,7 @@ def _gitlab_job(name: str, stack: Stack) -> list[str]:
     image = _GITLAB_IMAGES.get(stack.package_manager or "") or _GITLAB_IMAGES.get(stack.language, "alpine")
     tool = _GITLAB_TOOLS.get(stack.package_manager or "")
     script = list(dict.fromkeys([
-        *([f"cd {stack.root}"] if stack.root else []),
+        *([f"cd {quote_arg(stack.root)}"] if stack.root else []),
         *([tool] if tool else []),
         # A workstation's installs when the unit names them, else its CI setup's.
         *(stack.requires or _setup_runs(stack)),

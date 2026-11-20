@@ -132,3 +132,11 @@ def test_units_whose_roots_slug_alike_keep_their_own_artifact() -> None:
 
     names = [job["steps"][-1]["with"]["name"] for job in jobs]
     assert len(names) == 2 and len(set(names)) == 2
+
+
+def test_gitlab_quotes_a_unit_root_with_a_space() -> None:
+    stacks = detect_stacks(["my app/go.mod", "my app/main.go"], {"my app/go.mod": "module example.com/m\n"})
+
+    doc = yaml.safe_load(ci_snippet(stacks, "gitlab", "main")["content"])
+
+    assert doc["repowise-evidence"]["script"][0] == 'cd "my app"'
