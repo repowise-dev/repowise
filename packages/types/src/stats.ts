@@ -71,6 +71,12 @@ export interface StatsChurn {
   deleted_per_hundred: number;
 }
 
+export interface StatsAnalysisScope {
+  paths: string[];
+  exclude_patterns: string[];
+  label: string;
+}
+
 /**
  * Coding-rhythm heatmap: commit counts by weekday (0=Monday) x hour (0-23).
  *
@@ -236,6 +242,7 @@ export interface StatsRepo {
 }
 
 export interface StatsHighlights {
+  scope?: StatsAnalysisScope;
   repo: StatsRepo;
   scale: StatsScale;
   origin: StatsOrigin;

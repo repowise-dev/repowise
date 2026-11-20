@@ -423,6 +423,9 @@ class FileTraverser:
         keep_unparsed: frozenset[str] = frozenset(),
     ) -> None:
         self.repo_root = repo_root.resolve()
+        from ..repo_config import analysis_paths, load_repo_config
+
+        self._analysis_paths = analysis_paths(load_repo_config(self.repo_root))
         self._keep_unparsed = keep_unparsed
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
@@ -430,7 +433,10 @@ class FileTraverser:
         self._extra_ignore = load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
-        self._extra_exclude = _compile_gitignore(patterns)
+        from .exclusions import directory_patterns, file_patterns
+
+        self._extra_exclude = _compile_gitignore(file_patterns(patterns))
+        self._extra_exclude_dirs = _compile_gitignore(directory_patterns(patterns))
         root_ignore_lines: list[str] = []
         root_ignore_file = self.repo_root / extra_ignore_filename
         if root_ignore_file.exists():
@@ -555,6 +561,11 @@ class FileTraverser:
     def traverse(self) -> Iterator[FileInfo]:
         """Yield FileInfo for every includable source file in the repo."""
         for abs_path in self._walk():
+            relative = abs_path.relative_to(self.repo_root).as_posix()
+            if self._analysis_paths and not any(
+                relative == path or relative.startswith(path + "/") for path in self._analysis_paths
+            ):
+                continue
             info = self._build_file_info(abs_path)
             if info is not None:
                 with self._count_lock:
@@ -696,7 +707,7 @@ class FileTraverser:
 
     def _is_dir_ignored(self, dirname: str, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
         dir_slash = f"{dirname}/"
-        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude.match_file(
+        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude_dirs.match_file(
             f"{rel_str}/"
         ):
             return True
@@ -712,6 +723,11 @@ class FileTraverser:
         dir_ignore: _DirIgnore | None = None,
     ) -> bool:
         rel_str = rel_path.as_posix()
+        if self._analysis_paths and not any(
+            rel_str == path or rel_str.startswith(path + "/") or path.startswith(rel_str + "/")
+            for path in self._analysis_paths
+        ):
+            return True
         # Submodules and nested repos are hard boundaries; negation rules never bypass them.
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True

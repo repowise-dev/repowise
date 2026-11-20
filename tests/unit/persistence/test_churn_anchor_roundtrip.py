@@ -11,6 +11,8 @@ into the shape the capture expects.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.core.persistence.crud import get_repository, update_repo_git_totals
@@ -18,6 +20,70 @@ from repowise.core.pipeline.incremental import _churn_prior
 from tests.unit.persistence.helpers import insert_repo
 
 _SHA = "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_stats_rejects_stale_scope_then_reports_refreshed_scope(async_session, tmp_path) -> None:
+    from fastapi import HTTPException
+
+    from repowise.core.repo_config import analysis_git_pathspecs, save_repo_config
+    from repowise.server.routers.stats import stats_highlights
+
+    repo = await insert_repo(async_session)
+    repo.local_path = str(tmp_path)
+    config = {"analysis_paths": ["selected"], "exclude_patterns": ["*.pdf"]}
+    save_repo_config(tmp_path, config)
+    with pytest.raises(HTTPException) as error:
+        await stats_highlights(repo.id, session=async_session)
+    assert error.value.status_code == 409
+
+    await update_repo_git_totals(
+        async_session, repo.id, total_commit_count=2, total_lines_added=8,
+        total_lines_deleted=3, history_pathspecs=analysis_git_pathspecs(config),
+    )
+    payload = await stats_highlights(repo.id, session=async_session)
+    assert payload["scope"]["paths"] == ["selected"]
+    assert payload["churn"]["net"] == 5
+
+
+@pytest.mark.asyncio
+async def test_stats_normalizes_null_exclusions(async_session, tmp_path) -> None:
+    from repowise.core.repo_config import analysis_git_pathspecs, save_repo_config
+    from repowise.server.routers.stats import stats_highlights
+
+    repo = await insert_repo(async_session)
+    repo.local_path = str(tmp_path)
+    config = {"analysis_paths": ["selected"], "exclude_patterns": None}
+    save_repo_config(tmp_path, config)
+    await update_repo_git_totals(
+        async_session, repo.id, history_pathspecs=analysis_git_pathspecs(config)
+    )
+
+    payload = await stats_highlights(repo.id, session=async_session)
+
+    assert payload["scope"]["exclude_patterns"] == []
+
+
+@pytest.mark.asyncio
+async def test_scope_change_clears_incompatible_totals_and_preserves_settings(async_session) -> None:
+    repo = await insert_repo(async_session)
+    repo.settings_json = json.dumps({"wiki_style": "compact"})
+    await update_repo_git_totals(
+        async_session, repo.id, total_commit_count=100, total_lines_added=900,
+        total_lines_deleted=100, churn_anchor_sha=_SHA,
+    )
+    await update_repo_git_totals(
+        async_session, repo.id, total_commit_count=2,
+        history_pathspecs=(":(top,literal)selected",),
+    )
+    row = await get_repository(async_session, repo.id)
+    assert row.total_commit_count == 2
+    assert row.total_lines_added is None
+    assert row.total_lines_deleted is None
+    assert row.churn_anchor_sha is None
+    assert json.loads(row.settings_json) == {
+        "wiki_style": "compact", "history_pathspecs": [":(top,literal)selected"],
+    }
 
 
 @pytest.mark.asyncio

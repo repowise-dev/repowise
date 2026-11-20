@@ -298,6 +298,19 @@ class GitIndexer:
         read_only: bool = False,
     ) -> None:
         self.repo_path = Path(repo_path)
+        from repowise.core.repo_config import (
+            analysis_git_pathspecs,
+            analysis_paths,
+            load_repo_config,
+        )
+
+        config = load_repo_config(self.repo_path)
+        if exclude_patterns is not None:
+            config = {**config, "exclude_patterns": exclude_patterns}
+        self._analysis_paths = analysis_paths(config)
+        self._analysis_pathspecs = analysis_git_pathspecs(config)
+        self._history_scope_lock = threading.Lock()
+        self._history_scope_cache: tuple[str, tuple[str, ...]] | None = None
         # Normalised here, the one place every caller's config value meets
         # git: a quoted "false" or a limit above the maximum reads the same on
         # update as it did at init.
@@ -319,8 +332,15 @@ class GitIndexer:
 
         import pathspec
 
-        self._exclude_patterns = exclude_patterns
-        self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
+        from ..exclusions import directory_patterns, file_patterns
+
+        self._exclude_patterns = exclude_patterns if exclude_patterns is not None else config.get("exclude_patterns")
+        self._exclude = pathspec.PathSpec.from_lines(
+            "gitwildmatch", file_patterns(self._exclude_patterns or [])
+        )
+        self._exclude_dirs = pathspec.PathSpec.from_lines(
+            "gitwildmatch", directory_patterns(self._exclude_patterns or [])
+        )
 
     async def index_repo(
         self,
@@ -541,7 +561,8 @@ class GitIndexer:
             return _IndexSetup(outcome="partial_clone")
 
         tracked_files = self._get_tracked_files(repo)
-        if not tracked_files:
+        if not tracked_files and (not self._analysis_pathspecs or not repo.head.is_valid()):
+            repo.close()
             return _IndexSetup(outcome="no_tracked")
 
         # Started first: the per-file pass waits for it, it reads only the
@@ -646,6 +667,32 @@ class GitIndexer:
         from repowise.core.pipeline.phase_timing import timed
 
         from ..git_commit_index import load_sampled_commit_index
+
+        if self._analysis_pathspecs:
+            from ..git_commit_index import load_commit_index
+
+            allowed = set(indexable_files) | history_files
+            stats: dict[str, int | bool] = {}
+            head = repo.head.commit.hexsha if self._exclude_patterns and repo.head.is_valid() else None
+            with timed(timings, "git.commit_index"), _step(
+                progress, "git.history"
+            ) as on_commits:
+                on_commits(0, None)
+                commits = load_commit_index(
+                    repo,
+                    self.commit_limit,
+                    allowed,
+                    commit_sink=commit_sink,
+                    provenance_classifier=prov_clf,
+                    trace_index=trace_index,
+                    stats_sink=stats,
+                    pathspecs=self._git_analysis_pathspecs(repo, head),
+                    history_revision=head or "HEAD",
+                )
+                count = int(stats.get("commits", 0))
+                on_commits(count, None)
+            fallback = allowed if count >= self.commit_limit or not stats.get("succeeded") else set()
+            return CommitSample(commits, fallback, set(commits), set(), count, 0, count)
 
         with timed(timings, "git.commit_index"), _step(progress, "git.history") as on_commits:
             sample = load_sampled_commit_index(
@@ -902,6 +949,11 @@ class GitIndexer:
         deep_threshold = 1 if refresh_idle or history_changed else _DEEP_WALK_MIN_FALLBACK
         if self.follow_renames:
             return {}, set(target_files)
+        if self._analysis_pathspecs:
+            sample = self._full_commit_index(
+                repo, sorted(target_files), set(), [], prov_clf, trace_index, timings
+            )
+            return sample.commits, sample.fallback_files
         from repowise.core.pipeline.phase_timing import timed
 
         from ..git_commit_index import load_sampled_commit_index
@@ -936,6 +988,20 @@ class GitIndexer:
         # Callers hand over paths relative to the indexed directory; git and the
         # rows this indexer writes are keyed relative to the repository root.
         module_prefix = self._module_prefix(repo)
+        if self._analysis_paths or self._exclude_patterns:
+            from ..exclusions import excluded_file
+
+            def in_scope(path: str) -> bool:
+                return (
+                    (not self._analysis_paths or any(
+                        path == boundary or path.startswith(boundary + "/") for boundary in self._analysis_paths
+                    ))
+                    and not excluded_file(path, self._exclude, self._exclude_dirs)
+                )
+
+            changed_file_paths = [path for path in changed_file_paths if in_scope(path)]
+            if all_files is not None:
+                all_files = {path for path in all_files if in_scope(path)}
         if module_prefix:
             changed_file_paths = [f"{module_prefix}/{p}" for p in changed_file_paths]
             if all_files:
@@ -1121,6 +1187,7 @@ class GitIndexer:
             from .commit_rows import build_commit_file_rows, build_commit_rows
 
             sink: list[dict] = []
+            head = repo.head.commit.hexsha if self._exclude_patterns and repo.head.is_valid() else None
             # Empty indexable set: we only want the full-footprint sink, not the
             # per-file bucket (which the incremental file pass already rebuilt).
             load_commit_index(
@@ -1130,6 +1197,8 @@ class GitIndexer:
                 commit_sink=sink,
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
+                pathspecs=self._git_analysis_pathspecs(repo, head),
+                history_revision=head or "HEAD",
             )
             rows = build_commit_rows(sink)
             files = build_commit_file_rows(sink, self._scope_prefix(repo))
@@ -1163,7 +1232,14 @@ class GitIndexer:
         try:
             if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
                 return None
-            out = repo.git.rev_list("--no-merges", "HEAD")
+            head = repo.head.commit.hexsha if self._exclude_patterns and repo.head.is_valid() else None
+            pathspecs = self._git_analysis_pathspecs(repo, head)
+            if pathspecs:
+                from .history_scope import history_git
+
+                out = history_git(repo, "rev_list", ["--no-merges"], head or "HEAD", pathspecs)
+            else:
+                out = repo.git.rev_list("--no-merges", "HEAD")
         except Exception as exc:
             logger.debug("reachable_shas_failed", error=str(exc))
             return None
@@ -1173,7 +1249,7 @@ class GitIndexer:
         shas = {line.strip() for line in out.split("\n") if line.strip()}
         # An empty result on a repo that has rows is far more likely to be a
         # broken call than a genuinely empty history.
-        return shas or None
+        return shas if pathspecs else shas or None
 
     def capture_commit_offsets(self, shas: Sequence[str]) -> dict[str, int]:
         """Map each requested sha to its commit's UTC offset in minutes.
@@ -1302,7 +1378,7 @@ class GitIndexer:
                 except Exception as exc:
                     logger.debug("prior_defect_pass_failed", error=str(exc))
             with timed(timings, "git.repo_totals"):
-                totals = capture_repo_totals(repo)
+                totals = self._capture_scoped_totals(repo)
         finally:
             repo.close()
         return fix_walk, prior_defects, totals
@@ -1357,10 +1433,18 @@ class GitIndexer:
         if repo is None:
             return RepoTotals()
         try:
-            return capture_repo_totals(repo, prior)
+            return self._capture_scoped_totals(repo, prior)
         finally:
             with contextlib.suppress(Exception):
                 repo.close()
+
+    def _capture_scoped_totals(self, repo: Any, prior: Any = None) -> RepoTotals:
+        head = repo.head.commit.hexsha if self._exclude_patterns and repo.head.is_valid() else None
+        totals = capture_repo_totals(
+            repo, prior, pathspecs=self._git_analysis_pathspecs(repo, head), head_sha=head
+        )
+        totals.history_pathspecs = self._analysis_pathspecs
+        return totals
 
     # ------------------------------------------------------------------
     # Internal methods
@@ -1571,14 +1655,58 @@ class GitIndexer:
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
             prefix = self._scope_prefix(repo)
-            output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
+            if self._analysis_paths:
+                module_prefix = self._module_prefix(repo)
+                includes = [
+                    f":(top,literal){module_prefix + '/' if module_prefix else ''}{path}"
+                    for path in self._analysis_paths
+                ]
+                output = repo.git.ls_files("--", *includes)
+            else:
+                output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
             paths = [f for f in output.splitlines() if f.strip()]
             if self._exclude.patterns:
-                paths = [p for p in paths if not self._exclude.match_file(p)]
+                from ..exclusions import excluded_file
+
+                module_prefix = self._module_prefix(repo)
+                paths = [
+                    p for p in paths
+                    if not excluded_file(
+                        p[len(module_prefix) + 1:] if module_prefix and p.startswith(module_prefix + "/") else p,
+                        self._exclude,
+                        self._exclude_dirs,
+                    )
+                ]
             return paths
         except Exception as exc:
             logger.warning("Failed to list tracked files", error=str(exc))
             return []
+
+    def _git_analysis_pathspecs(self, repo: Any, head: str | None = None) -> tuple[str, ...]:
+        """Resolve the configured boundaries and gitignore rules for Git."""
+        prefix = self._module_prefix(repo)
+        if self._exclude_patterns:
+            from .history_scope import historical_pathspecs
+
+            if head is None:
+                if not repo.head.is_valid():
+                    return ()
+                head = repo.head.commit.hexsha
+            with self._history_scope_lock:
+                if self._history_scope_cache is None or self._history_scope_cache[0] != head:
+                    self._history_scope_cache = (
+                        head,
+                        historical_pathspecs(
+                            repo, prefix, self._analysis_paths, self._exclude_patterns, head
+                        ),
+                    )
+                return self._history_scope_cache[1]
+        if not prefix or not self._analysis_paths:
+            return self._analysis_pathspecs
+        return tuple(
+            f"{spec[:spec.index(')') + 1]}{prefix}/{spec[spec.index(')') + 1:]}"
+            for spec in self._analysis_pathspecs
+        )
 
     def _module_prefix(self, repo: Any) -> str:
         """Where the indexed path sits inside the git working tree ("" at the root).

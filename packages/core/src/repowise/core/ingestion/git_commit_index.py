@@ -244,15 +244,26 @@ def _write_window_cache(cache_path: Path, key: dict, shallow: bool, records: lis
         logger.debug("commit_window_cache_write_failed", error=str(exc))
 
 
-def _log_records(repo: object, *revisions: str) -> list[str]:
+def _log_records(
+    repo: object, *revisions: str, pathspecs: tuple[str, ...] = (), history_revision: str = "HEAD"
+) -> list[str]:
     """The non-empty raw ``--numstat`` log records git returns for *revisions*."""
     from .git_indexer import _LOG_FORMAT, _RECORD_SEP
 
     # ``-M`` explicitly: the rename trail needs rename rows whatever the
     # repository's ``diff.renames`` says.
-    raw = repo.git.log(  # type: ignore[attr-defined]
-        *revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
-    )
+    if pathspecs:
+        from .git_indexer.history_scope import history_git
+
+        raw = history_git(
+            repo, "log",
+            [*revisions, "--numstat", "--no-merges", f"--format={_LOG_FORMAT}", "--no-renames"],
+            history_revision, pathspecs,
+        )
+    else:
+        raw = repo.git.log(  # type: ignore[attr-defined]
+            *revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
+        )
     # Without the trailing newline, which only the last record of a call lacks,
     # a record reads the same whichever call it came from.
     return [rec.rstrip("\n") for rec in raw.split(_RECORD_SEP) if rec.strip()]
@@ -611,6 +622,8 @@ def load_commit_index(
     cache_writable: bool = True,
     stats_sink: dict[str, int | bool] | None = None,
     renames: RenameTrail | None = None,
+    pathspecs: tuple[str, ...] = (),
+    history_revision: str = "HEAD",
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -665,7 +678,7 @@ def load_commit_index(
     # ``ts <= since_ts`` check in the walk stays, this only stops git from
     # diffing commits whose fate is already known.
     depth = commit_limit
-    if since_ts is not None:
+    if since_ts is not None and not pathspecs:
         newer = _depth_newer_than(repo, commit_limit, since_ts)
         if newer is None:
             return {}
@@ -681,12 +694,15 @@ def load_commit_index(
             return {}
 
     try:
-        records = _window_records(
-            repo,
-            depth,
-            cache_dir if since_ts is None else None,
-            cache_writable=cache_writable,
-        )
+        if pathspecs:
+            records = _log_records(repo, f"-{depth}", pathspecs=pathspecs, history_revision=history_revision)
+        else:
+            records = _window_records(
+                repo,
+                depth,
+                cache_dir if since_ts is None else None,
+                cache_writable=cache_writable,
+            )
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return {}

@@ -83,6 +83,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
+| `analysis_paths` | `[]` |  | Repository-relative literal directories to include in analysis; empty means all. |  |
 | `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
@@ -116,6 +117,15 @@ Code-health rules live in [`health-rules.json`](#the-health-rulesjson-file).
 `--skip-tests`, `--skip-infra` and `--include-submodules` apply only to their
 run and are not stored here; `--include-submodules` is recorded in `state.json`
 (workspace state).
+
+### `analysis_paths`
+
+Set this to a list of literal directories relative to the indexed directory to
+limit analysis, for example `analysis_paths: [services/api, shared]`. An empty
+list selects the whole repository. After changing it, run
+`repowise update --index-only --defer-docs --refresh-git` to refresh history.
+History also respects the configured `exclude_patterns`, including ordered
+negations. Changing exclusions likewise requires a history refresh.
 
 ### `commit_limit`
 

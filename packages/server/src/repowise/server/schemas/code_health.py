@@ -70,6 +70,8 @@ class ChurnComplexityResponse(BaseModel):
     points: list[ChurnComplexityPoint] = []
     #: Points before the request's limit, so a slice is not read as the whole.
     total: int = 0
+    #: Newest commit to any scored file, so an empty window can say how quiet it is.
+    latest_change_at: str | None = None
 
 
 class FileTrendPointResponse(BaseModel):

@@ -9,6 +9,7 @@ query, and nothing recomputes analysis.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,7 @@ from repowise.core.persistence.models import (
     HealthFileMetric,
     WikiSymbol,
 )
+from repowise.core.repo_config import analysis_git_pathspecs, analysis_paths, load_repo_config
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.services.index_storage import index_storage_bytes
 
@@ -164,6 +166,16 @@ async def stats_highlights(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    config = load_repo_config(repo.local_path) if repo.local_path else {}
+    paths = analysis_paths(config)
+    expected_pathspecs = analysis_git_pathspecs(config)
+    stored_pathspecs = json.loads(repo.settings_json or "{}").get("history_pathspecs", [])
+    if list(expected_pathspecs) != stored_pathspecs:
+        raise HTTPException(
+            status_code=409,
+            detail="Analysis scope changed; run repowise update --index-only --defer-docs --refresh-git",
+        )
+
     totals = {
         "total_commit_count": repo.total_commit_count,
         "total_merge_commit_count": repo.total_merge_commit_count,
@@ -246,6 +258,11 @@ async def stats_highlights(
     index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
+        "scope": {
+            "paths": list(paths),
+            "exclude_patterns": config.get("exclude_patterns") or [],
+            "label": ", ".join(paths) if paths else "Whole repository",
+        },
         "scale": sh.build_scale(file_nodes, metrics, await crud.count_symbols(session, repo_id)),
         "origin": activity["origin"],
         "churn": sh.build_churn(totals),

@@ -89,6 +89,7 @@ async def persist_git(
             total_lines_added=totals.total_lines_added,
             total_lines_deleted=totals.total_lines_deleted,
             churn_anchor_sha=getattr(totals, "churn_anchor_sha", None),
+            history_pathspecs=getattr(totals, "history_pathspecs", None),
         )
 
 

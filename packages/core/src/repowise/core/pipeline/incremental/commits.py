@@ -111,6 +111,7 @@ async def persist_incremental_commits(
         total_lines_added=totals.total_lines_added,
         total_lines_deleted=totals.total_lines_deleted,
         churn_anchor_sha=totals.churn_anchor_sha,
+        history_pathspecs=totals.history_pathspecs,
     )
 
     with timed(timings, "persist.commits.fix_events"):
@@ -125,6 +126,8 @@ def _churn_prior(repo_row: Any) -> Any:
     that is missing or has no anchor yet, which makes the capture walk the whole
     history exactly as it always did.
     """
+    import json
+
     from repowise.core.ingestion.git_indexer.records import RepoTotals
 
     if repo_row is None:
@@ -137,6 +140,7 @@ def _churn_prior(repo_row: Any) -> Any:
         total_lines_added=repo_row.total_lines_added,
         total_lines_deleted=repo_row.total_lines_deleted,
         churn_anchor_sha=anchor,
+        history_pathspecs=tuple(json.loads(repo_row.settings_json or "{}").get("history_pathspecs", [])),
     )
 
 
