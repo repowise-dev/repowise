@@ -15,7 +15,10 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
-from repowise.core.workspace.extractors.http.dialect import build_consumer_contract
+from repowise.core.workspace.extractors.http.dialect import (
+    build_consumer_contract,
+    method_from_callee,
+)
 from repowise.core.workspace.extractors.http.paths import (
     absolute_host,
     extract_path_from_url,
@@ -303,6 +306,42 @@ class TestLiteralSpan:
         assert (row.url, row.method) == ('`${API}/repos${q ? `?${q}` : ""}`', "POST")
         (row,) = wrapper_calls(content, frozenset())
         assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
+
+
+class TestOptionsMethod:
+    def test_a_method_on_a_later_line_of_the_options_is_read(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            "await apiRequest(`/api/sessions/${id}`, {\n"
+            "  headers: { 'Content-Type': 'application/json' },\n"
+            "  method: 'DELETE',\n"
+            "});\n"
+            "fetch('/api/events', {\n  headers: { a: 'b' },\n  method: 'POST',\n});\n"
+        )
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.method == "DELETE"
+        (row,) = fetch_calls(content)
+        assert row.method == "POST"
+
+    def test_a_method_inside_the_body_is_not_the_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/rpc', { body: JSON.stringify({ method: 'DELETE' }) });"
+        (row,) = fetch_calls(content)
+        assert row.method is None
+
+    def test_a_typed_wrapper_call_is_read_with_its_name_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = (
+            "return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {\n"
+            "  limit,\n});\n"
+            "return apiDelete<{ ok: boolean }>(`/api/repos/${repoId}`);\n"
+        )
+        rows = list(wrapper_calls(content, frozenset()))
+        assert [(r.callee, r.method) for r in rows] == [("apiGet", None), ("apiDelete", None)]
+        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE"]
 
 
 class TestConsumerContracts:

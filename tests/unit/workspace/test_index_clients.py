@@ -201,12 +201,17 @@ class TestModuleLevelHelper:
             "http::GET::/snapshots/{param}/commits",
         }
 
-    def test_regex_dialect_yields_nothing_here(self):
-        """Fails before this change: this file's yield was 0."""
+    def test_regex_dialect_reads_the_type_argument_too(self):
+        """The text dialect reads ``publicFetch<T>(...)`` by name, which is how a
+        wrapper imported from another file is seen at all; the index layer
+        supersedes its rows wherever both read a call."""
         ctx = ScanContext(
             "frontend", "src/lib/api/public-client.ts", ".ts", PUBLIC_CLIENT_TS, {}
         )
-        assert JsClientsDialect().extract(ctx) == []
+        assert _ids(JsClientsDialect().extract(ctx)) == {
+            "http::GET::/snapshots/{param}/overview",
+            "http::GET::/snapshots/{param}/commits",
+        }
 
 
 # Named exactly like an HTTP wrapper, reaches no sink. `_HTTP_NAME_RE` matches

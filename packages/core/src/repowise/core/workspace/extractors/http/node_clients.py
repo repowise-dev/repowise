@@ -45,7 +45,7 @@ from ..strings import (
     select_argument,
 )
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
-from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
 from .wrappers import GENERIC_ARGS
@@ -116,7 +116,6 @@ _GLOBALS = tuple((g, lib) for lib in _LIBRARY_LIST for g in lib.globals)
 # Qualifiers a client is called through: its own class, the browser global, Vue.
 _QUALIFIER_RE = re.compile(r"(?:this|window|Vue)\s*\.\s*$")
 
-_METHOD_KEY = Arg(keys=("method",))
 # A local a call's URL or options may be held in; a dotted name is a member, not a local.
 _LOCAL_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
@@ -372,8 +371,7 @@ def _request(
             return None  # `request` takes a config object
         url_raws = select_argument(args[:1], Arg(keys=library.url_keys)) if config else args[:1]
         options = args[:1] if config else args[1:2]
-        methods = select_argument(options, _METHOD_KEY)
-        method = (method_from_argument(methods[0]) if methods else None) or "GET"
+        method = method_from_options(options) or "GET"
     url = strings.text(local(url_raws[0])) if url_raws else None
     if url is None:
         return None

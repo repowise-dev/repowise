@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
-from ..strings import StringSyntax, literal_span, resolve_string
+from ..strings import Arg, StringSyntax, literal_span, resolve_string, select_argument
 from .dialect import build_consumer_contract, method_from_callee
 
 if TYPE_CHECKING:
@@ -86,6 +86,20 @@ def method_from_argument(text: str) -> str | None:
     if not m and word.startswith("Method") and len(word) > len("Method"):
         word = word[len("Method") :]
     return word.upper() if word.lower() in VERBS else None
+
+
+_METHOD_KEY = Arg(keys=("method",))
+
+
+def method_from_options(args: list[str]) -> str | None:
+    """The verb a call's options names (``{ method: 'POST' }``, ``method="POST"``), else ``None``.
+
+    *args* are the call's arguments after the URL. Only a top-level ``method``
+    entry of an options object (or a ``method=`` keyword) counts, so a
+    ``method`` key inside a request body is not read as the call's verb.
+    """
+    methods = select_argument(args, _METHOD_KEY)
+    return method_from_argument(methods[0]) if methods else None
 
 
 # ---------------------------------------------------------------------------
@@ -201,4 +215,5 @@ __all__ = [
     "join_base",
     "matches_in",
     "method_from_argument",
+    "method_from_options",
 ]
