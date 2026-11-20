@@ -45,6 +45,12 @@ is never marked a false positive there: a `repowise-security-ignore` comment on 
 security baseline, says so. The report's "Work through this report" prompt (`repowise report
 --prompt`) lists the open items with their ids and asks the agent to mark each one.
 
+A model writes the report's wording once, at `init` when one is configured, and again only when
+asked (`repowise report --llm`, which shows the cost first). `repowise update` and every read
+reuse the stored wording for each item whose facts have not changed; a new or changed item reads
+in template sentences. `prose_source` in the JSON says who wrote the wording, when, and what it
+cost.
+
 ## The change report period
 
 ```bash

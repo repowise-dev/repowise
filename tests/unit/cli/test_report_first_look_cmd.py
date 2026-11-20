@@ -336,3 +336,41 @@ def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> No
     assert live_web_url(tmp_path) is None  # API only: no web page to link
     lock.write_text("{not json")
     assert live_web_url(tmp_path) is None
+
+
+def test_reads_and_update_never_call_the_model(indexed: Path, monkeypatch) -> None:
+    """The model writes the wording at init or on --llm only: every read of the
+    report, and `repowise update`, reuse the stored wording or the template."""
+    from repowise.cli import helpers
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.report.first_look import llm
+    from repowise.core.report.first_look.living import build_living
+    from tests.unit.persistence.test_first_look_write import EchoProvider
+
+    provider = EchoProvider()
+    monkeypatch.setattr(helpers, "resolve_provider", lambda *a, **k: provider)
+    assert _run(str(indexed), "--llm", "--yes", "--format", "json").exit_code == 0
+    assert provider.calls == 1  # the explicit request
+
+    async def refused(*args, **kwargs):
+        raise AssertionError("a read called the model")
+
+    monkeypatch.setattr(llm, "rewrite_prose", refused)
+    for args in (["--format", "json"], ["--format", "md"], ["--prompt"], ["--since-last"], []):
+        result = _run(str(indexed), *args)
+        assert result.exit_code == 0, result.output
+
+    async def living():
+        async with repo_index_session(indexed) as (session, repo_id):
+            return await build_living(session, repo_id, indexed, store_missing=True)
+
+    report = run_async(living()).to_json()
+    assert provider.calls == 1
+    # The stored model wording is reused, and says whose it is.
+    assert report["prose_source"]["writer"] == "claude-haiku-5-5"
+    assert report["prose_source"]["written_at"] is not None
+
+    # `repowise update` has no path to the report writer or the model call.
+    update = Path(helpers.__file__).parent / "commands" / "update_cmd"
+    sources = [p.read_text(encoding="utf-8") for p in sorted(update.glob("*.py"))]
+    assert sources and not any("report.first_look" in text for text in sources)
