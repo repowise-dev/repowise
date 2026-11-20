@@ -2,7 +2,6 @@
 
 import * as React from "react";
 
-import { CollapsibleSection } from "../shared/collapsible-section";
 import { ReleaseNotice } from "../shared/release-notice";
 
 /**
@@ -62,64 +61,5 @@ export function SavingsResetNotice({
       converted, so they were restarted rather than carried over. Your omission history and
       everything else in this repository were not deleted.
     </ReleaseNotice>
-  );
-}
-
-export interface SavingsMethodologyProps {
-  /** Link to the full accounting document. */
-  href?: string | undefined;
-  LinkComponent?: React.ElementType | undefined;
-}
-
-/**
- * How the numbers on this page were arrived at, folded away by default.
- *
- * Quiet rather than absent: a page that asks to be trusted about token counts
- * has to be able to show its working, but the working is not what a reader
- * came for. Collapsed, at the end, in full.
- */
-export function SavingsMethodology({ href, LinkComponent }: SavingsMethodologyProps) {
-  const A = LinkComponent ?? "a";
-  return (
-    <CollapsibleSection title="Method and limits">
-      <div className="flex max-w-[72ch] flex-col gap-3 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
-        <p>
-          A saving is input tokens your agent never had to read. One logical interaction
-          produces one event and contributes to the total once, whether it passed through{" "}
-          <code>repowise distill</code>, a replacement hook, or an MCP call.
-        </p>
-        <p>
-          <strong className="font-medium text-[var(--color-text-primary)]">Measured</strong>{" "}
-          figures compare a known before and after from an operation that actually ran.{" "}
-          <strong className="font-medium text-[var(--color-text-primary)]">Inferred</strong>{" "}
-          figures are a documented estimate of the exploration a Repowise answer replaced.
-          They are reported apart because they are different evidence, and the headline says
-          Estimated for as long as any inferred figure is in it.
-        </p>
-        <p>
-          Observed opportunities are behaviour that could have been optimised and was not.
-          They are never added to achieved savings.
-        </p>
-        <p>
-          Each event is valued at the rate recorded at the moment it happened, so history is
-          never repriced from today's rates. An event recorded before a rate could be
-          resolved is counted in tokens and left unvalued, which is why priced and unpriced
-          totals are shown separately.
-        </p>
-        <p>
-          Token counts are estimates from character length and deliberately undersell.
-          Dead ends and errors save nothing and are counted separately from answered
-          queries. Everything on this page was recorded on this machine and stays here.
-          {href && (
-            <>
-              {" "}
-              <A href={href} className="text-[var(--color-accent-primary)] hover:underline">
-                Read the full accounting document
-              </A>
-            </>
-          )}
-        </p>
-      </div>
-    </CollapsibleSection>
   );
 }

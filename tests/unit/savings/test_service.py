@@ -227,6 +227,13 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
         "backfilled_input_savings_usd",
     ):
         assert sql.pop(key) == pytest.approx(pure.pop(key))
+    for key in ("per_operation", "per_surface", "per_model", "per_day"):
+        sql_rows = [dict(row) for row in sql.pop(key)]
+        pure_rows = [dict(row) for row in pure.pop(key)]
+        assert [row.pop("priced_input_savings_usd") for row in sql_rows] == pytest.approx(
+            [row.pop("priced_input_savings_usd") for row in pure_rows]
+        )
+        assert sql_rows == pure_rows
     assert sql == pure
 
     # Guard rails on the fixture itself: if it ever stops covering the mixed
@@ -564,6 +571,11 @@ def test_codex_backfill_recorded_under_the_old_cap_reports_at_the_plateau(
     assert report.unique_events == 5
     # Every aggregate reads the capped rows, not only the headline.
     assert sum(row["saved_input_tokens"] for row in report.per_agent) == expected
+    for rows in (report.per_operation, report.per_day, report.per_model, report.per_surface):
+        assert sum(row["saved_input_tokens"] for row in rows) == expected
+        assert sum(row["priced_input_savings_usd"] for row in rows) == pytest.approx(
+            report.priced_input_savings_usd
+        )
     # The reduction denominator is capped with the saving, so the ratio agrees.
     assert report.baseline_input_tokens == 10_025 + 5_000 + 50_000 + 60_000
 
