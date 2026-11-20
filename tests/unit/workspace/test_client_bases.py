@@ -144,3 +144,13 @@ def test_a_call_on_another_object_does_not_take_the_local_prefix(tmp_path: Path)
     paths = {p for _m, p in _paths(tmp_path, "src/d.ts", text)}
     assert "/users/list" in paths
     assert "/api/users/list" not in paths
+
+
+def test_a_receiver_named_like_a_logger_is_still_a_request(tmp_path: Path) -> None:
+    text = (
+        "async function apiRequest(endpoint: string) {\n"
+        "  return logsApi.request(`/api/logs${endpoint}`);\n"
+        "}\n"
+        "export const a = () => apiRequest('/recent');\n"
+    )
+    assert "/api/logs/recent" in {p for _m, p in _paths(tmp_path, "src/e.ts", text)}
