@@ -514,6 +514,28 @@ export interface PerformanceOpportunityPlanEconomics {
   risk: number;
 }
 
+/** `confirmed` and `measured` lead the queue, except a cause measured
+ *  against its cold name (startup, migration), which keeps its static place
+ *  like the rest. `not_exercised` names the leading workloads that ran ("not
+ *  exercised in <workload>"). */
+export type PerformanceEvidenceState =
+  | "confirmed"
+  | "measured"
+  | "counter_evidence"
+  | "ran"
+  | "not_exercised";
+
+export interface PerformanceEvidenceMark {
+  state: PerformanceEvidenceState;
+  /** `query_count` or `measured` for `confirmed`; `query_count` for
+   *  `counter_evidence` and `ran`. */
+  basis?: "query_count" | "measured";
+  /** The leading workload that ranks the cause's loop owner (`measured`). */
+  workload?: string;
+  /** The leading workloads that ran and never reached it (`not_exercised`). */
+  workloads?: string[];
+}
+
 export interface PerformanceOpportunity {
   opportunity_id: string;
   /** Ids are stable within a model version and never translated across one. */
@@ -572,6 +594,10 @@ export interface PerformanceOpportunity {
   /** The measurement note when the row's language cell is served as a preview;
    *  null or absent for a validated cell. */
   preview?: string | null;
+  /** What runtime evidence says about this cause (`perf.serving.evidence_mark`).
+   *  On the dashboard's rows only; absent when the repository has no runtime
+   *  evidence. */
+  runtime_evidence?: PerformanceEvidenceMark;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
