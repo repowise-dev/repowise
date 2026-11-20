@@ -16,7 +16,7 @@ from repowise.core.evidence.runtime_setup import (
     load_runtime_inputs,
     runtime_targets,
 )
-from repowise.core.evidence.setup import evidence_setup
+from repowise.core.evidence.setup import evidence_setup, offered_classes, runtime_offer
 from repowise.core.generation.flow_entries import console_scripts, python_scripts
 from repowise.core.test_runners.stacks import detect_repo_stacks
 
@@ -790,6 +790,34 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
     done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert done["next_call"] is None
     assert done["reason"] == "Evidence at this commit is ingested; nothing left to run."
+
+
+def test_the_offer_is_what_the_plan_prints_an_ingest_line_for(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    offer = runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=SHA)
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    printed = [t["workload"] for u in plan["units"] for t in u["runtime"] if t["ingest"]]
+    assert [t["workload"] for t in offer] == printed == ["app", "python tests"]
+    assert offered_classes(offer) == ("entry_point", "unit_test")
+    assert {t["format"] for t in offer} == {"speedscope"}
+    # The format is for the callers that read the offer, never printed.
+    assert all("format" not in t for u in plan["units"] for t in u["runtime"])
+    # Without a commit nothing can be ingested, so nothing is offered.
+    assert runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=None) == []
+
+
+def test_a_unit_with_nothing_to_profile_offers_nothing_and_says_so(tmp_path: Path) -> None:
+    # A Jest unit: coverage, but no entry point, benchmark or suite recipe to profile.
+    (tmp_path / "package.json").write_text(
+        '{"name": "web", "scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}}'
+    )
+
+    assert runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=SHA) == []
+    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs(), coverage_commit=SHA)
+    assert done["next_call"] is None
+    assert done["reason"].startswith("Coverage at this commit is ingested. No unit has an entry point")
 
 
 def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> None:

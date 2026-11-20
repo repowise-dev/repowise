@@ -417,7 +417,7 @@ def perf_check_command(
             perf_check.snapshot_path(get_repowise_dir(repo_path), save_name)  # refuse a bad name first
             current = _current_snapshot(repo_path, workload, fmt)
             if not current["workloads"]:
-                cannot_evaluate(fmt, "no_exact_evidence", _NO_EXACT)
+                cannot_evaluate(fmt, "no_exact_evidence", _no_exact(repo_path))
             if workload is not None:
                 current = _keep_other_workloads(repo_path, save_name, current)
             path = perf_check.save_snapshot(ensure_repowise_dir(repo_path), save_name, current)
@@ -451,6 +451,31 @@ _NO_EXACT = (
     "no stored benchmark run reports allocations per operation; run the Go benchmark "
     "results target `repowise evidence setup` prints and its ingest line, then save"
 )
+_NOTHING_TO_GATE = (
+    "no stored benchmark run reports allocations per operation, and this repository has no "
+    "Go benchmark (`go test -bench`) that `repowise evidence setup` can run, so there is "
+    "nothing to gate; `repowise perf measure -- <command>` compares a command's wall time "
+    "before and after a change"
+)
+
+
+def _no_exact(repo_path: Path) -> str:
+    """Why there is nothing to save: name setup's Go benchmark results target only when it prints one."""
+    offer = run_async(_runtime_offer(repo_path))
+    if offer is None or any(t.get("format") in perf_check.EXACT_FORMATS for t in offer):
+        return _NO_EXACT
+    return _NOTHING_TO_GATE
+
+
+async def _runtime_offer(repo_path: Path) -> list[dict] | None:
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.evidence.setup import load_runtime_offer
+
+    async with repo_index_session(repo_path) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        return await load_runtime_offer(session, repo_id, repo_path, read_head_commit(repo_path))
 
 
 def _current_snapshot(repo_path: Path, workload: str | None, fmt: str) -> dict:

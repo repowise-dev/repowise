@@ -384,6 +384,26 @@ async def test_runtime_state_reads_the_newest_run_and_what_could_run(async_sessi
     assert (await _runtime(async_session, rid, "newer"))["runtime"].commit_sha == "older"
 
 
+async def test_with_a_checkout_runtime_targets_are_what_setup_offers(async_session, tmp_path) -> None:
+    """A test file the index holds is nothing to run until setup finds the unit that runs it."""
+    from repowise.core.persistence.crud.analysis.actions import _runtime
+    from repowise.core.persistence.models import GraphNode, Repository
+
+    rid = await _seed(async_session)
+    (await async_session.get(Repository, rid)).local_path = str(tmp_path)
+    async_session.add(
+        GraphNode(repository_id=rid, node_id="tests/test_cli.py", node_type="file", is_test=True)
+    )
+    await async_session.flush()
+    # The index alone says a suite could run; the checkout has no Python unit to run it in.
+    assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ()
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_cli.py").write_text("def test_x():\n    pass\n")
+    assert (await _runtime(async_session, rid, "head"))["runtime"].targets == ("unit_test",)
+
+
 async def test_a_benchmark_alone_is_something_to_run(async_session) -> None:
     from repowise.core.evidence.runtime_setup import stored_target_classes
     from repowise.core.persistence.models import GraphNode
