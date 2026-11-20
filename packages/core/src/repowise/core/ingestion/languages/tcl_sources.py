@@ -21,12 +21,34 @@ log = structlog.get_logger(__name__)
 
 ProcKey = tuple[str | None, str]
 ProcEntry = tuple[str, str]
+SymbolKey = tuple[int, str, str | None]
 
 
 @dataclass
 class _FileSites:
     procs: list[tuple[Node, str, str]]
     sources: list[tuple[Node, str]]
+
+
+def _proc_site(node: Node, symbols: dict[SymbolKey, list[str]]) -> tuple[Node, str, str] | None:
+    if node.type != "procedure" or is_tcl_switch_arm(node):
+        return None
+    name = node.child_by_field_name("name")
+    if name is None:
+        return None
+    raw = (name.text or b"").decode("utf-8", "replace")
+    key = (node.start_point.row + 1, tcl_leaf_name(raw, ""), tcl_proc_namespace(node, raw))
+    ids = symbols.get(key, [])
+    return (node, raw, ids[0]) if len(ids) == 1 else None
+
+
+def _source_site(node: Node, targets: dict[str, str]) -> tuple[Node, str] | None:
+    head = node.child_by_field_name("name") if node.type == "command" else None
+    if head is None or head.text != b"source" or is_tcl_switch_arm(node):
+        return None
+    raw = (node.text or b"").decode("utf-8", "replace").strip()
+    target = targets.get(raw)
+    return (node, target) if target is not None else None
 
 
 class TclSourceIndex:
@@ -151,7 +173,7 @@ class TclSourceIndex:
         if language is None:
             raise RuntimeError("Tcl grammar unavailable while resolving source namespaces")
         root = Parser(language).parse(data).root_node
-        symbols: dict[tuple[int, str, str | None], list[str]] = defaultdict(list)
+        symbols: dict[SymbolKey, list[str]] = defaultdict(list)
         for symbol in parsed.symbols:
             symbols[(symbol.start_line, symbol.name, symbol.parent_name)].append(symbol.id)
         targets = self._source_targets(path)
@@ -161,26 +183,10 @@ class TclSourceIndex:
         while stack:
             node = stack.pop()
             stack.extend(node.named_children)
-            if node.type == "procedure" and not is_tcl_switch_arm(node):
-                name = node.child_by_field_name("name")
-                if name is None:
-                    continue
-                raw = (name.text or b"").decode("utf-8", "replace")
-                key = (
-                    node.start_point.row + 1,
-                    tcl_leaf_name(raw, ""),
-                    tcl_proc_namespace(node, raw),
-                )
-                ids = symbols.get(key, [])
-                if len(ids) == 1:
-                    procs.append((node, raw, ids[0]))
-            elif node.type == "command":
-                head = node.child_by_field_name("name")
-                if head is not None and head.text == b"source" and not is_tcl_switch_arm(node):
-                    raw = (node.text or b"").decode("utf-8", "replace").strip()
-                    target = targets.get(raw)
-                    if target is not None:
-                        sources.append((node, target))
+            if (proc := _proc_site(node, symbols)) is not None:
+                procs.append(proc)
+            if (source := _source_site(node, targets)) is not None:
+                sources.append(source)
         sites = _FileSites(procs, sources)
         self._sites[path] = sites
         return sites
