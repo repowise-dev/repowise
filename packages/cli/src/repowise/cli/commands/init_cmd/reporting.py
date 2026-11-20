@@ -361,17 +361,9 @@ def _signed_in_agent() -> tuple[str, str] | None:
 
 def _keyed_provider(repo_path: Path) -> tuple[str, str] | None:
     """``(provider id, source line)`` for the first provider a key or local model is set for."""
-    from repowise.core.providers.llm.resolve import credentialed_providers
-    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+    from repowise.core.providers.llm.subscription import keyed_model_source
 
-    for name in credentialed_providers(repo_path):
-        spec = PROVIDER_SPECS.get(name)
-        if spec is None or spec.agent or name == "mock":
-            continue
-        if spec.local:
-            return name, f"Uses {spec.label.removesuffix(' (Local)')} on this machine"
-        return name, f"Uses your {spec.label} key"
-    return None
+    return keyed_model_source(repo_path)
 
 
 def _template_pages(result: Any) -> tuple[str | None, None]:

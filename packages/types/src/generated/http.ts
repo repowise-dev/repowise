@@ -89,6 +89,25 @@ export interface ActionsResponse {
   summary: Record<string, string>;
   rules: ActionRuleStatus[];
   unavailable: Record<string, string>;
+  setup?: ActionsSetup | null;
+}
+
+/** Setup steps left, and whether the finish-setup agent pass is offered. */
+export interface ActionsSetup {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
 }
 
 /** The provider/model this scope resolves to; ``None`` when unset. */
@@ -4751,6 +4770,18 @@ export interface SetupModel {
   configured_providers?: string[];
 }
 
+/**
+ * Whether each Read/search hook surface is on for this repo (``hooks.*`` flags).
+ *
+ * The flags only; the augment hook that carries them is the Claude Code
+ * agent row's hooks.
+ */
+export interface SetupReadHooks {
+  read_skeleton: boolean;
+  read_reread: boolean;
+  search_digest: boolean;
+}
+
 export interface SetupRegistration {
   method: string;
   scope: string;
@@ -4775,6 +4806,10 @@ export interface SetupResponse {
   checks?: SetupCheck[];
   onboarding: OnboardingState;
   writes_allowed: boolean;
+  setup_available?: boolean;
+  setup?: SetupSteps | null;
+  read_hooks_available?: boolean;
+  read_hooks?: SetupReadHooks | null;
 }
 
 export interface SetupRewriteHook {
@@ -4782,9 +4817,45 @@ export interface SetupRewriteHook {
   detail?: string;
 }
 
+/** Setup steps left (the same rows Do next shows) and the agent-pass offer. */
+export interface SetupSteps {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
+  actions?: NextAction[];
+  thresholds: SetupThresholds;
+}
+
 export interface SetupSync {
   installed?: boolean | null;
   detail?: string;
+}
+
+/** The usage each depth row unlocks at. */
+export interface SetupThresholds {
+  agent_calls: number;
+  synced_commits: number;
+}
+
+/**
+ * Depth rows usage has unlocked: Claude Code calls for the first two,
+ * synced commits for the last. Never a calendar.
+ */
+export interface SetupUnlocks {
+  always_load: boolean;
+  distill: boolean;
+  suggested_settings: boolean;
 }
 
 /** What a write did. ``ok`` is the command's own success. */
@@ -5695,6 +5766,32 @@ export interface WorkspaceServiceLinksTotal {
   kind: string;
   direction: "a_to_b" | "b_to_a" | "both";
   count: number;
+}
+
+/** One member's setup, as the workspace Setup table shows it. */
+export interface WorkspaceSetupRepo {
+  alias: string;
+  path: string;
+  repo_id: string | null;
+  status: "available" | "not_indexed" | "unavailable";
+  reason?: string;
+  index_state?: "up_to_date" | "behind" | "incomplete" | null;
+  agent_calls?: number | null;
+  first_call_at?: string | null;
+  sync?: boolean | null;
+  coverage?: "on" | "found" | "none" | null;
+  evidence?: "on" | "found" | "none" | null;
+  open?: number;
+  offer?: "finish_setup" | null;
+  essentials_done?: boolean;
+}
+
+export interface WorkspaceSetupResponse {
+  repos: WorkspaceSetupRepo[];
+  essentials_done: number;
+  open: number;
+  offer?: "finish_setup" | null;
+  prompt?: string | null;
 }
 
 export interface WorkspaceSymbolIdentity {
