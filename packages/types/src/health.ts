@@ -552,7 +552,9 @@ export interface PerformanceOpportunity {
   /** What fixing this cause buys, in the words Fix first uses. Absent on an older server. */
   gain_text?: string;
   actionability_state: PerformanceActionabilityState;
-  actionability_reason: string;
+  /** Why the cause sits in its state. The detail view only: a summary row
+   *  (the queue's list) leaves it out. */
+  actionability_reason?: string;
   prerequisites: string[];
   rank_score: number;
   /** 0-based place in the ranked list that served the row; another sort or a
