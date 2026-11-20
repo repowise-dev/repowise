@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
+
+def _real_grammar_cache() -> str | None:
+    """The language pack's grammar cache, resolved while home is still real."""
+    try:
+        import tree_sitter_language_pack as pack
+
+        return str(pack.cache_dir())
+    except Exception:
+        return None
+
+
+_GRAMMAR_CACHE = _real_grammar_cache()
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path_factory, monkeypatch):
@@ -28,7 +41,13 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     Every entry here is an absolute-path variable that outranks ``~``. Any new
     target that resolves its config through one belongs in this list, and the
     check is not "does redirecting home cover it", because it does not.
+
+    The language pack's grammar cache derives from home too, so it stays pinned
+    to the real one: a read-only download cache, not user state, and without it
+    every runtime grammar would download again (or fail offline) per test.
     """
+    if _GRAMMAR_CACHE and not os.environ.get("REPOWISE_GRAMMAR_DIR"):
+        monkeypatch.setenv("REPOWISE_GRAMMAR_DIR", _GRAMMAR_CACHE)
     fake_home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
