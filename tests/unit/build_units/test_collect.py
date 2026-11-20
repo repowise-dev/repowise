@@ -1712,3 +1712,15 @@ def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch
     index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
     assert list(index.units) == ["manifest:pkg"]
     assert index.failed_ecosystems == frozenset()
+
+
+def test_a_pip_application_in_a_subdirectory_is_a_unit(tmp_path):
+    """A requirements file and no pyproject still makes its directory a unit."""
+    index = _collect(tmp_path, {
+        "backend/requirements.txt": "fastapi\n",
+        "backend/requirements-dev.txt": "pytest\n",
+        "backend/app.py": "",
+        "frontend/package.json": json.dumps({"name": "web"}),
+    })
+    assert index.unit("manifest:backend").manifest == "backend/requirements-dev.txt"
+    assert _owners(index, "backend/app.py") == ["manifest:backend"]

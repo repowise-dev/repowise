@@ -350,8 +350,25 @@ def _python_tool(
     return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
 
 
-def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
-    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
+def _runs_pytest(root: set[str], paths: list[str], files: dict[str, str], requirements: str) -> bool:
+    """Whether a unit its requirements files alone declare has pytest tests.
+
+    Such a directory often holds only a deploy's or a script's dependencies; a
+    ``conftest.py``, pytest in its requirements, a pytest config or a ``tests/``
+    directory says it has a suite.
+    """
+    if "conftest.py" in root or re.search(r"(?im)^\s*pytest\b", requirements):
+        return True
+    configs = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    return "" in configs.by_dir or any(p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths)
+
+
+def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack | None:
+    reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
+    spec = REGISTRY.get("python")
+    requirements = "\n".join(files.get(p, "") for p in reqs)
+    if not root & set(spec.manifest_files if spec else ()) and not _runs_pytest(root, paths, files, requirements):
+        return None
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
@@ -1222,7 +1239,13 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
     roots = _units(paths, units).roots
     names = sorted(_read_names())
     wanted = [path for root in sorted(roots) for n in names if (path := _join(root, n)) in present]
-    wanted += [p for p in paths if "/" not in p and _REQUIREMENTS.fullmatch(p)]
+    wanted += [
+        path
+        for root, stacks in sorted(roots.items())
+        if "python" in stacks
+        for path in paths
+        if (rel := _under(root, path)) is not None and _REQUIREMENTS.fullmatch(rel)
+    ]
     for root, stacks in sorted(roots.items()):
         if "dotnet" in stacks:
             rel = _listing_at(root, "dotnet", paths, roots)

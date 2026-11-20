@@ -737,3 +737,50 @@ def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, insta
     monkeypatch.setattr(stacks, "_gradle_init", lambda: ())
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
+
+
+_MONOREPO = {
+    "backend/requirements.txt": "fastapi\n",
+    "backend/requirements-dev.txt": "pytest\npytest-cov\n",
+    "backend/pytest.ini": "[pytest]\nmarkers =\n    e2e: end to end\n",
+    "backend/app.py": "",
+    "backend/tests/test_app.py": "",
+    # A deploy's dependencies, no tests: not a unit to run.
+    "backend/deploy/requirements.txt": "modal\n",
+    "backend/deploy/app.py": "",
+    # A script folder whose requirements name pytest has a suite.
+    "scripts/avatar/requirements.txt": "pytest>=8\n",
+    "scripts/avatar/run.py": "",
+    "scripts/avatar/test_run.py": "",
+}
+
+
+def _monorepo_stacks(units: BuildUnitIndex | None = None) -> dict[str, str]:
+    paths = sorted(_MONOREPO)
+    files = {p: _MONOREPO[p] for p in files_to_read(paths, units)}
+    return {s.root: s.test for s in detect_stacks(paths, files, units) if s.language == "python"}
+
+
+def test_a_pip_application_in_a_subdirectory_runs_its_tests():
+    stacks_by_root = _monorepo_stacks()
+    assert set(stacks_by_root) == {"backend", "scripts/avatar"}
+    (backend,) = [s for s in detect_stacks(sorted(_MONOREPO), _MONOREPO) if s.root == "backend"]
+    assert backend.requires[-1] == "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"
+    assert backend.test.startswith("pytest --cov=")
+
+
+def test_the_build_unit_index_names_the_same_pip_applications():
+    roots = ("backend", "backend/deploy", "scripts/avatar")
+    index = BuildUnitIndex.from_units(
+        [
+            BuildUnit(f"manifest:{r}", "manifest", r.rsplit("/", 1)[-1], r, f"{r}/requirements.txt", "manifest-root")
+            for r in roots
+        ],
+        sorted(_MONOREPO),
+    )
+    assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
+
+
+def test_a_root_requirements_file_without_a_suite_plans_no_pytest_run():
+    paths = ["requirements.txt", "main.py"]
+    assert detect_stacks(paths, {"requirements.txt": "flask\n"}) == [stacks.UNKNOWN]
