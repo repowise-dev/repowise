@@ -1,10 +1,7 @@
-import type { Metadata } from "next";
-import { FirstLookView } from "@/components/reports/first-look-view";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Repo report" };
-
-/** `/repos/[id]/first-look`: the repo report, measured against the first look. */
-export default async function FirstLookPage({ params }: { params: Promise<{ id: string }> }) {
+/** The repo report's first address: links written before it was renamed still land on it. */
+export default async function FirstLookRedirect({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <FirstLookView repoId={id} />;
+  redirect(`/repos/${id}/report`);
 }

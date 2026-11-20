@@ -160,14 +160,10 @@ async def export_first_look_markdown(
     """The report as a Markdown file: the document the CLI writes, statuses as text, no prompts."""
     repo = await _require_repo(session, repo_id)
     doc = await render_document(session, repo_id, await _living(session, repo), prompts=False)
-    # ASCII only: a header is latin-1, and a quote or line break must never reach it.
-    name = "".join(
-        c if c.isascii() and (c.isalnum() or c in "-_.") else "-" for c in repo.name or "repo"
-    )
     return PlainTextResponse(
         render_first_look_markdown(doc),
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{name}-report.md"'},
+        headers={"Content-Disposition": 'attachment; filename="repo-report.md"'},
     )
 
 

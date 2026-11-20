@@ -1184,8 +1184,8 @@
     "firstLook": {
       "title": "Repo report",
       "description": "What the index finds now, measured against the first look.",
-      "empty": "No first-look report yet",
-      "emptyHint": "repowise init writes one; repowise report first-look writes it again.",
+      "empty": "No repo report yet",
+      "emptyHint": "repowise init writes one; repowise report repo writes it again.",
       "rewriteFailed": "Couldn't write the report",
       "copy": {
         "eyebrow": "Repo report",

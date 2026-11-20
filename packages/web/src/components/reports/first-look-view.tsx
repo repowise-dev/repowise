@@ -1,6 +1,6 @@
 "use client";
 
-/** The body of `/repos/[id]/first-look`: the repo report, routed into this app. */
+/** The body of `/repos/[id]/report`: the repo report, routed into this app. */
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
@@ -96,7 +96,7 @@ export function FirstLookView({ repoId }: { repoId: string }) {
       promptFlavor={FLAVOR}
       onMark={onMark}
       markdownHref={firstLookMarkdownPath(repoId)}
-      sinceCommand="repowise report first-look --since-last"
+      sinceCommand="repowise report repo --since-last"
       canRewrite={data.can_rewrite}
       onRewrite={() => void onRewrite()}
       rewriteCost={data.rewrite_cost_usd ?? null}

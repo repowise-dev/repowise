@@ -8,7 +8,6 @@ import pytest
 from httpx import AsyncClient
 
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import Repository
 from repowise.core.report.first_look.model import (
     FirstLookReport,
     Item,
@@ -161,7 +160,7 @@ async def test_a_mark_goes_through_the_one_marker_and_its_errors_read_plainly(
 
 
 @pytest.mark.anyio
-async def test_the_markdown_export_downloads_with_a_safe_name_and_no_prompts(
+async def test_the_markdown_export_downloads_as_the_repo_report_with_no_prompts(
     reports_client: AsyncClient, session_factory
 ) -> None:
     repo = await _stored_repo(reports_client, session_factory)
@@ -170,14 +169,9 @@ async def test_the_markdown_export_downloads_with_a_safe_name_and_no_prompts(
     md = await reports_client.get(url)
     assert md.status_code == 200
     assert md.headers["content-type"].startswith("text/markdown")
-    assert md.headers["content-disposition"] == 'attachment; filename="test-repo-report.md"'
+    assert md.headers["content-disposition"] == 'attachment; filename="repo-report.md"'
     assert "<details>" not in md.text
 
-    async with get_session(session_factory) as session:
-        row = await session.get(Repository, repo["id"])
-        row.name = 'café "x"\r\n'
-    named = await reports_client.get(url)
-    assert named.headers["content-disposition"] == 'attachment; filename="caf---x----report.md"'
 
 
 @pytest.mark.anyio

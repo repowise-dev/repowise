@@ -998,8 +998,8 @@
     "firstLook": {
       "title": "仓库报告",
       "description": "索引当前的发现，与初次检视对比。",
-      "empty": "还没有初次检视报告",
-      "emptyHint": "repowise init 会生成一份；repowise report first-look 会重新生成。",
+      "empty": "还没有仓库报告",
+      "emptyHint": "repowise init 会生成一份；repowise report repo 会重新生成。",
       "rewriteFailed": "无法生成报告",
       "copy": {
         "eyebrow": "仓库报告",

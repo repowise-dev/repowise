@@ -8,7 +8,7 @@ import { apiGet, apiPost, apiPut } from "./client";
 
 const firstLook = (repoId: string) => `/api/repos/${repoId}/reports/first-look`;
 
-/** The stored first-look report, its staleness and its whole-report prompt for `flavor`. */
+/** The repo report now, each item's status against the first look, and the open items' prompt for `flavor`. */
 export async function getFirstLook(
   repoId: string,
   opts: { flavor?: AgentPromptFlavor } = {},

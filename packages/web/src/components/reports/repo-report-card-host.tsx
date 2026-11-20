@@ -16,7 +16,7 @@ export function RepoReportCardHost({ repoId }: { repoId: string }) {
   if (!data) return null;
   return (
     <div className="mb-6">
-      <RepoReportCard report={data.report} href={`/repos/${repoId}/first-look`} copy={copy} LinkComponent={Link} />
+      <RepoReportCard report={data.report} href={`/repos/${repoId}/report`} copy={copy} LinkComponent={Link} />
     </div>
   );
 }
