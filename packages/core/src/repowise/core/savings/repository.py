@@ -96,7 +96,8 @@ class SavingsRepository:
     def _read_only(self) -> bool:
         """Whether a newer Repowise owns this store, so every write here is dropped.
 
-        Checked once per repository: one ``PRAGMA`` read, on the writes only.
+        Checked once per repository, which callers create per write: one
+        ``PRAGMA`` read, on the writes only.
         """
         if self._newer is None:
             self._newer = is_newer_store(self._conn)
