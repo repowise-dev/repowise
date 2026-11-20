@@ -61,12 +61,13 @@ _SCHEME_TEMPLATE_VALUE = re.compile(
     r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
 # A regular expression, not a key: a character range with a quantifier
-# (``(_D[0-9]+D_)``), a shorthand class with a quantifier (``\d{1,2}``, ``\w+``,
-# with one or two backslashes as the source spells it), or a pattern anchored at
-# both ends around a group (``^(-?\\d{1,2}|null)$``).
+# (``(_D[0-9]+D_)``), an anchored pattern with a quantified shorthand class
+# (``^\d{4}``, ``\w+$``, with one or two backslashes as the source spells it), or
+# a pattern anchored at both ends around a group (``^(-?\\d{1,2}|null)$``). The
+# anchor keeps a password that merely holds ``\s+`` reportable.
 _REGEX_VALUE = re.compile(
     r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]"
-    r"|\\{1,2}[dDwWsS](?:[+*?]|\{\d)"
+    r"|(?=\A\^|.*\$\Z).*\\{1,2}[dDwWsS](?:[+*?]|\{\d)"
     r"|\A\^.*\(.*\).*\$\Z"
 )
 _OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
