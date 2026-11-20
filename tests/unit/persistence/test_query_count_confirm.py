@@ -19,10 +19,13 @@ from tests.unit.persistence.helpers import insert_repo
 OWNER = "src/api.py::list_orders"
 
 
-def _run(repo_id: str, run_id: str, day: int) -> EvidenceRun:
+def _run(
+    repo_id: str, run_id: str, day: int, *, name: str = "api-tests", partial: bool = False
+) -> EvidenceRun:
     return EvidenceRun(
         id=run_id, repository_id=repo_id, run_key=run_id, kind="query_count",
-        format="repowise-evidence-v1", source="cli", workload_name="api-tests",
+        format="repowise-evidence-v1", source="cli", workload_name=name,
+        mapping_partial=partial,
         workload_class="unit_test", unit="count", commit_sha="c" * 40,
         measured_at=datetime(2026, 11, day, tzinfo=UTC),
     )
@@ -55,6 +58,10 @@ async def test_the_newest_run_decides_and_lands_on_the_cause(async_session) -> N
             _run(repo.id, "new", 15),
             _count(repo.id, "new", "t_small", 10, 11),
             _count(repo.id, "new", "t_big", 100, 101),
+            # A newer run that mapped only part of its entries never decides.
+            _run(repo.id, "partial", 16, partial=True),
+            _count(repo.id, "partial", "t_small", 10, 2),
+            _count(repo.id, "partial", "t_big", 100, 2),
         ]
     )
     await async_session.flush()
@@ -68,6 +75,30 @@ async def test_the_newest_run_decides_and_lands_on_the_cause(async_session) -> N
         "101",
         "100",
     )
+
+
+async def test_sizes_from_two_workloads_are_never_compared(async_session) -> None:
+    repo = await insert_repo(async_session)
+    async_session.add_all(
+        [
+            HealthFinding(
+                repository_id=repo.id, file_path="src/api.py", biomarker_type="io_in_loop",
+                severity="medium", line_start=5, line_end=5, dimension="performance",
+                status="open",
+                details_json=json.dumps({"boundary_kind": "db", "role_owner": OWNER}),
+            ),
+            _run(repo.id, "a", 15, name="small"),
+            _count(repo.id, "a", "t", 10, 2),
+            _run(repo.id, "b", 15, name="big"),
+            _count(repo.id, "b", "t", 100, 2),
+        ]
+    )
+    await async_session.flush()
+
+    await finalize_performance_opportunities(async_session, repo.id)
+
+    row = (await async_session.execute(select(PerformanceOpportunity))).scalar_one()
+    assert json.loads(row.details_json)["facets"]["queries"] == "ran"
 
 
 async def test_no_query_runs_add_nothing(async_session) -> None:

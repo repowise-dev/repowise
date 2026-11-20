@@ -323,10 +323,14 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> dict
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
     """Each call site's query-count reading (``evidence.query_counts``), by symbol id.
 
-    Read from each workload's newest ``query_count`` run, so a superseded run
-    never speaks for the current code. Ceiling: a newest run measured before
-    the site's body changed still counts; query rows carry no body digest to
-    tell. Two statements, the second only when such a run exists.
+    Read from each workload's newest complete ``query_count`` run, so a
+    superseded run never speaks for the current code and a partly mapped one,
+    which is never a basis for ranking either, never decides. Sizes are
+    compared within one run and one scope kind only: a test and a request, or
+    two workloads, are not the same measurement. Ceiling: a newest run
+    measured before the site's body changed still counts; query rows carry
+    no body digest to tell. Two statements, the second only when such a run
+    exists.
     """
     from ....evidence.hotness import newest_runs
     from ....evidence.query_counts import read_statement, strongest
@@ -339,21 +343,22 @@ async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str
             )
         )
     ).scalars()
-    keep = sorted(newest_runs(runs))
+    keep = sorted(newest_runs(r for r in runs if not r.mapping_partial))
     if not keep:
         return {}
     q = EvidenceQueryCount
-    points: dict[tuple[str, str], list[tuple[int | None, int]]] = {}
+    points: dict[tuple[str, str, str, str], list[tuple[int | None, int]]] = {}
+    columns = (q.run_id, q.scope_kind, q.site_symbol_id, q.statement_fp)
     for batch in chunked(keep):
         result = await session.execute(
-            select(q.site_symbol_id, q.statement_fp, q.scope_items, q.query_count).where(
+            select(*columns, q.scope_items, q.query_count).where(
                 q.repository_id == repository_id, q.run_id.in_(batch)
             )
         )
-        for site, fp, items, count in result:
-            points.setdefault((site, fp), []).append((items, count))
+        for run_id, kind, site, fp, items, count in result:
+            points.setdefault((run_id, kind, site, fp), []).append((items, count))
     by_site: dict[str, list[Any]] = {}
-    for (site, _fp), seen in points.items():
+    for (_run, _kind, site, _fp), seen in points.items():
         by_site.setdefault(site, []).append(read_statement(seen))
     return {site: strongest(readings) for site, readings in by_site.items()}
 

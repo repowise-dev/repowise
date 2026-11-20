@@ -23,6 +23,11 @@ def test_growth_anywhere_outweighs_a_flat_pair() -> None:
     assert read_statement([(1, 2), (10, 2), (100, 50)]).verdict == "grows"
 
 
+def test_flat_needs_every_size_to_agree() -> None:
+    # A drop at the largest size is not a flat count.
+    assert read_statement([(1, 3), (5, 3), (10, 2)]).verdict == "ran"
+
+
 def test_the_strongest_reading_leads_and_none_reads_none() -> None:
     ran, flat = QueryReading("ran", 90, 9), QueryReading("flat", 1, 50)
     assert strongest([ran, flat]) == flat

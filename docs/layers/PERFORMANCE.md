@@ -148,13 +148,14 @@ names that workload. A unit-test run never does this. Such a cause is still neve
 the one Fix first, Do next or the queue's lead name.
 
 Query counts are exact, so they can confirm or contradict a database cause. The
-`queries` facet reads the newest `query_count` run of each workload at the cause's
-loop owner and along its call path:
+`queries` facet reads the newest complete `query_count` run of each workload at the
+cause's loop owner and along its call path. Sizes are compared only within one run
+and one scope kind (tests or requests):
 
 | `queries` | Meaning |
 |---|---|
 | `grows` | Two tests or requests ran over different numbers of items, and the larger one issued more statements. The cause is confirmed |
-| `flat` | Two of them ran over different numbers of items with the same count. This is counter-evidence |
+| `flat` | They ran over at least two different numbers of items, and every one issued the same count. This is counter-evidence |
 | `ran` | Anything else. It reports "ran with `query_statements` statements at `query_items` items" and confirms nothing |
 
 Telling `grows` from `flat` needs the scope's `items` in the evidence document
