@@ -68,7 +68,7 @@ async def _stored_repo(client: AsyncClient, session_factory) -> dict:
 async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
     reports_client: AsyncClient, session_factory, monkeypatch
 ) -> None:
-    monkeypatch.setattr(reports, "write_first_look", None)
+    monkeypatch.setattr(reports, "_provider_configured", lambda *a: False)
     repo = await _stored_repo(reports_client, session_factory)
 
     resp = await reports_client.get(
@@ -84,7 +84,11 @@ async def test_the_stored_report_comes_back_with_staleness_and_its_prompt(
     # The empty index no longer has the cycle: the report's one item reads as fixed.
     assert body.staleness["fixed"] == [_ID]
     assert body.staleness["report_commit"] == "c1"
-    assert body.can_rewrite is False  # no writer, no rewrite button
+    assert body.can_rewrite is False  # no provider, no rewrite button
+
+    monkeypatch.setattr(reports, "_provider_configured", lambda *a: True)
+    again = await reports_client.get(f"/api/repos/{repo['id']}/reports/first-look")
+    assert again.json()["can_rewrite"] is True
 
 
 @pytest.mark.anyio
@@ -170,14 +174,11 @@ async def test_rewrite_runs_the_one_writer_with_the_repos_provider(
 
 
 @pytest.mark.anyio
-async def test_rewrite_without_a_provider_or_a_writer_is_refused(
+async def test_rewrite_without_a_provider_is_refused(
     reports_client: AsyncClient, session_factory, monkeypatch
 ) -> None:
     repo = await _stored_repo(reports_client, session_factory)
     url = f"/api/repos/{repo['id']}/reports/first-look/rewrite"
-
-    monkeypatch.setattr(reports, "write_first_look", None)
-    assert (await reports_client.post(url)).status_code == 501
 
     async def fake_write(*a, **k):
         raise AssertionError("the writer must not run without a provider")

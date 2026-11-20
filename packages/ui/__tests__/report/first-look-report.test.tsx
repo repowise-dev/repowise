@@ -46,8 +46,8 @@ const dead = Array.from({ length: 14 }, (_, n) =>
 dead[0] = {
   ...dead[0]!,
   locations: [
-    { path: "src/types.py", line: null, symbol: "EmailQueueItem" },
-    { path: "src/types.py", line: null, symbol: "EmailStatistics" },
+    { path: "src/models.py", line: null, symbol: "QueueItem" },
+    { path: "src/models.py", line: null, symbol: "QueueStats" },
   ],
   locations_total: 5,
 };
@@ -64,7 +64,7 @@ function report(over: Partial<Report> = {}): Report {
       cost: null,
       schema_version: 1,
     },
-    repo: { name: "interview-coach", branch: "master", files: 18306, health: { score: 7.71, band: "good", band_label: "Good" } },
+    repo: { name: "acme-web", branch: "master", files: 18306, health: { score: 7.71, band: "good", band_label: "Good" } },
     top: ["fl_secret", "fl_perf"],
     sections: [
       { key: "security", source_layer: "security", items: [secret], facts: {} },
@@ -158,9 +158,9 @@ describe("FirstLookReport", () => {
   it("names each symbol when one file holds several, and counts locations past the cap", () => {
     renderReport();
     const row = within(document.getElementById("fl_dead0")!);
-    expect(row.getAllByRole("link", { name: /^src\/types\.py/ })).toHaveLength(2);
-    expect(row.getByText("EmailQueueItem")).toBeInTheDocument();
-    expect(row.getByText("EmailStatistics")).toBeInTheDocument();
+    expect(row.getAllByRole("link", { name: /^src\/models\.py/ })).toHaveLength(2);
+    expect(row.getByText("QueueItem")).toBeInTheDocument();
+    expect(row.getByText("QueueStats")).toBeInTheDocument();
     expect(row.getByText("+ 3 more")).toBeInTheDocument();
   });
 

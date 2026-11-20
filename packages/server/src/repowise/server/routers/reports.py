@@ -20,15 +20,11 @@ from repowise.core.report.first_look import FirstLookReport
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
 from repowise.core.report.first_look.staleness import staleness
 from repowise.core.report.first_look.store import load_report, read_report_file
+from repowise.core.report.first_look.write import write_first_look
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._repo_pricing import _provider_configured, resolve_provider
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
 from repowise.server.schemas.reports import FirstLookResponse, FirstLookStampResponse
-
-try:
-    from repowise.core.report.first_look.write import write_first_look
-except ImportError:  # The one writer lands with the CLI; until then nothing rewrites.
-    write_first_look = None
 
 router = APIRouter(tags=["reports"], dependencies=[Depends(verify_api_key)])
 
@@ -59,10 +55,6 @@ async def _require_report(session: AsyncSession, repo: Repository) -> FirstLookR
     return report
 
 
-def _can_rewrite(repo: Repository) -> bool:
-    return write_first_look is not None and _provider_configured(repo.local_path, repo.id)
-
-
 async def _page(
     session: AsyncSession, repo: Repository, report: FirstLookReport, flavor: Flavor
 ) -> FirstLookResponse:
@@ -72,7 +64,7 @@ async def _page(
         staleness=stale.to_json(),
         report_prompt=render_report_prompt(report, flavor=flavor, repo_name=repo.name),
         flavor=flavor,
-        can_rewrite=_can_rewrite(repo),
+        can_rewrite=_provider_configured(repo.local_path, repo.id),
     )
 
 
@@ -129,8 +121,6 @@ async def rewrite_first_look(
 ) -> FirstLookResponse:
     """Write the report again at the indexed commit, its prose by the repo's model (one call)."""
     repo = await _require_repo(session, repo_id)
-    if write_first_look is None:
-        raise HTTPException(status_code=501, detail="This Repowise cannot write the report yet")
     provider, _, _, error = resolve_provider(repo.local_path, repo_id=repo_id)
     if provider is None:
         raise HTTPException(
