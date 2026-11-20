@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -29,7 +28,8 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     omission store falls back to ``~/.repowise/omissions/omissions.db`` for a
     directory with no ``.repowise/``, which every ``tmp_path`` repository is. A
     test would otherwise leak into, or fail on, the developer's real files.
-    Tests that build their own fake home patch over this one.
+    Only the variables move, never ``Path.home`` itself, so a test that sets
+    ``HOME``/``USERPROFILE`` for its own fake home still gets it.
 
     ``XDG_CONFIG_HOME`` is cleared because it is an *absolute* path that wins
     over ``~`` outright (the OpenCode target reads it on every platform).
@@ -56,7 +56,6 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     monkeypatch.delenv("COPILOT_HOME", raising=False)
     monkeypatch.delenv("KIRO_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(fake_home / "AppData" / "Local"))
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
     return fake_home
 
 
