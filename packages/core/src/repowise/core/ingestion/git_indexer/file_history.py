@@ -17,6 +17,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.author_identity import IdentityResolver, build_identity_resolver
 from repowise.core.forges import CHANGE_BODY_MARKERS, ForgeKind, change_number
 
 from ._constants import (
@@ -33,9 +34,8 @@ from .enrich import detect_original_path, is_significant_commit
 from .function_blame import (
     _MIN_COMMITS_FOR_BLAME,
     build_blame_index,
-    ownership_from_blame,
+    top_blame_identity,
 )
-from .identity import canonicalize_author_email, is_noreply
 from .records import (
     _LOG_FORMAT,
     _RECORD_SEP,
@@ -314,6 +314,7 @@ def index_file(
     history_only: bool = False,
     forge: ForgeKind = ForgeKind.GENERIC,
     shallow_roots: frozenset[str] = frozenset(),
+    resolve: IdentityResolver | None = None,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -338,6 +339,10 @@ def index_file(
     no author, are never a key commit and add no churn. A file whose history
     reaches one is marked ``commit_count_capped``: its first commit is where
     the clone's history starts, not when the file was made.
+
+    *resolve* is the repo's people resolver (:func:`.records.repo_people`):
+    every author figure keys on it. Without one, the file's own authors are
+    merged by the same rules.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -373,7 +378,7 @@ def index_file(
     # the earlier steps already wrote.
     try:
         _add_span(meta, commits, authored, now)
-        authors = _Authors.tally(authored, ninety_days_ago_ts)
+        authors = _Authors.tally(authored, ninety_days_ago_ts, resolve)
         _add_windows(meta, authored, ninety_days_ago_ts, thirty_days_ago_ts)
         _add_ownership(meta, authors)
         meta["is_stable"] = _is_stable(meta)
@@ -480,52 +485,62 @@ def _add_windows(
 
 @dataclass
 class _Authors:
-    """Per-author commit counts, one stable email each, and first/last commit times."""
+    """Per-identity commit counts and first/last commit times.
 
+    Keyed on the people resolver, never the display name: one person who
+    commits as "Jane Doe" and "jdoe", or from a real and a noreply email, is
+    one author, so the bus factor, owners and top authors do not split them.
+    """
+
+    resolve: IdentityResolver
     counts: Counter[str] = field(default_factory=Counter)
     recent_counts: Counter[str] = field(default_factory=Counter)
-    emails: dict[str, str] = field(default_factory=dict)
+    # The name each identity was seen under here, for an identity the
+    # resolver was not built from (a merge-only author of a repo-wide one).
+    seen_names: dict[str, str] = field(default_factory=dict)
     # Each author's own first/last commit to this file, not the file's: a
     # co-owner touching a shared file must not refresh everyone's "last touched".
     first_ts: dict[str, int] = field(default_factory=dict)
     last_ts: dict[str, int] = field(default_factory=dict)
 
     @classmethod
-    def tally(cls, commits: list[_CommitRec], recent_since_ts: float) -> _Authors:
-        authors = cls()
-        for c in commits:
-            if c.pure_move:
-                continue  # moving a file is not authoring it
-            name = c.author_name
-            authors.counts[name] += 1
+    def tally(
+        cls,
+        commits: list[_CommitRec],
+        recent_since_ts: float,
+        resolve: IdentityResolver | None = None,
+    ) -> _Authors:
+        """*resolve* is the repo's people resolver; without one, the file's own
+        authors are merged by the same rules."""
+        authored = [c for c in commits if not c.pure_move]  # moving a file is not authoring it
+        if resolve is None:
+            resolve = build_identity_resolver((c.author_name, c.author_email) for c in authored)
+        authors = cls(resolve)
+        for c in authored:
+            key = resolve(c.author_name, c.author_email)
+            authors.counts[key] += 1
+            authors.seen_names.setdefault(key, c.author_name)
             if c.ts >= recent_since_ts:
-                authors.recent_counts[name] += 1
-            if c.author_email:
-                authors._prefer_email(name, c.author_email)
+                authors.recent_counts[key] += 1
             if c.ts > 0:
-                authors.last_ts[name] = max(authors.last_ts.get(name, c.ts), c.ts)
-                authors.first_ts[name] = min(authors.first_ts.get(name, c.ts), c.ts)
+                authors.last_ts[key] = max(authors.last_ts.get(key, c.ts), c.ts)
+                authors.first_ts[key] = min(authors.first_ts.get(key, c.ts), c.ts)
         return authors
 
-    def _prefer_email(self, name: str, email: str) -> None:
-        # One email per name: fold noreply variants and prefer a real address,
-        # so owner_profile (keyed on email) does not split a person.
-        canon = canonicalize_author_email(email) or email
-        existing = self.emails.get(name)
-        if existing is None or (is_noreply(existing) and not is_noreply(canon)):
-            self.emails[name] = canon
+    def name(self, key: str) -> str:
+        return self.resolve.display_name(key, self.seen_names.get(key))
 
-    def entry(self, name: str, count: int) -> dict[str, Any]:
+    def entry(self, key: str, count: int) -> dict[str, Any]:
         entry: dict[str, Any] = {
-            "name": name,
-            "email": self.emails.get(name, ""),
+            "name": self.name(key),
+            "email": self.resolve.email(key),
             "commit_count": count,
-            "recent_commit_count": self.recent_counts.get(name, 0),
+            "recent_commit_count": self.recent_counts.get(key, 0),
         }
-        if name in self.last_ts:
-            entry["last_commit_ts"] = self.last_ts[name]
-        if name in self.first_ts:
-            entry["first_commit_ts"] = self.first_ts[name]
+        if key in self.last_ts:
+            entry["last_commit_ts"] = self.last_ts[key]
+        if key in self.first_ts:
+            entry["first_commit_ts"] = self.first_ts[key]
         return entry
 
 
@@ -565,7 +580,7 @@ def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
         meta["bus_factor"] = _bus_factor(authors.counts, total_commits)
 
     top_authors = [
-        authors.entry(name, count) for name, count in authors.counts.most_common(_MAX_TOP_AUTHORS)
+        authors.entry(key, count) for key, count in authors.counts.most_common(_MAX_TOP_AUTHORS)
     ]
     meta["top_authors_json"] = json.dumps(top_authors)
 
@@ -579,7 +594,7 @@ def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
 
     if authors.recent_counts:
         recent_top = authors.recent_counts.most_common(1)[0]
-        meta["recent_owner_name"] = recent_top[0]
+        meta["recent_owner_name"] = authors.name(recent_top[0])
         recent_total = sum(authors.recent_counts.values())
         meta["recent_owner_commit_pct"] = recent_top[1] / recent_total if recent_total > 0 else 0.0
 
@@ -622,13 +637,17 @@ def _add_blame_ownership(
         blame_idx.as_of_ts = int(now.timestamp())
         if meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME:
             meta["blame_index"] = blame_idx
-        blame_name, blame_email, blame_pct = ownership_from_blame(blame_idx)
-        if blame_name:
-            meta["primary_owner_name"] = blame_name
-            meta["primary_owner_email"] = blame_email
+        # Blame credits lines to the same identities the commit tally counts.
+        blame_idx.resolve = authors.resolve
+        for name, email in blame_idx.authors.values():
+            authors.seen_names.setdefault(authors.resolve(name, email), name)
+        blame_key, blame_pct = top_blame_identity(blame_idx, blame_idx.lines)
+        if blame_key is not None:
+            meta["primary_owner_name"] = authors.name(blame_key)
+            meta["primary_owner_email"] = authors.resolve.email(blame_key)
             meta["primary_owner_line_pct"] = blame_pct
             total_commits = sum(authors.counts.values())
-            own_commits = authors.counts.get(blame_name, 0)
+            own_commits = authors.counts.get(blame_key, 0)
             meta["primary_owner_commit_pct"] = (
                 own_commits / total_commits if own_commits and total_commits else None
             )
