@@ -7,8 +7,13 @@ from typing import Any
 
 import pytest
 
+from repowise.core.analysis.security.credentials import holds_secret
 from repowise.core.cost_estimator import estimate_first_look_cost
-from repowise.core.providers.llm.base import GeneratedResponse, ProviderError
+from repowise.core.providers.llm.base import (
+    GeneratedResponse,
+    ProviderError,
+    record_generation_cost,
+)
 from repowise.core.report.first_look.llm import (
     MAX_TOKENS,
     OPERATION,
@@ -49,9 +54,7 @@ def _item(section: str, rule: str, path: str, facts: dict[str, Any]) -> Item:
     )
 
 
-SECRET = _item(
-    "security", "hardcoded_password", "backend/scripts/seed_admin.py", {"locations": 1}
-)
+SECRET = _item("security", "hardcoded_password", "backend/scripts/seed_admin.py", {"locations": 1})
 SLOW = _item(
     "performance",
     "io_in_loop",
@@ -123,12 +126,15 @@ class FakeProvider:
         self.calls.append({"system": system_prompt, "user": user_prompt, **kw})
         if isinstance(self.content, Exception):
             raise self.content
-        return GeneratedResponse(
+        response = GeneratedResponse(
             content=self.content,
             input_tokens=4_000,
             output_tokens=1_000,
             stop_reason=self.stop_reason,
         )
+        # As every real provider does: the spend goes on the attached tracker.
+        await record_generation_cost(self._cost_tracker, model=self.model_name, result=response)
+        return response
 
 
 async def _run(content: str | Exception, **kw: Any):
@@ -263,6 +269,38 @@ async def test_markdown_links_urls_code_and_html_are_stripped() -> None:
     assert outcome.fallbacks == {}
 
 
+def test_markdown_block_marks_are_dropped() -> None:
+    assert clean_text("# Fix it now") == "Fix it now"
+    assert clean_text("- Fix *this* | that") == "Fix this that"
+    assert clean_text("Keep the .env file out") == "Keep the .env file out"
+
+
+@pytest.mark.parametrize("text", ["Fix 3-5000 things.", "Split it 1/9999 ways.", "Run .75 times."])
+async def test_every_digit_run_is_checked(text: str) -> None:
+    _, outcome, _ = await _run(json.dumps(_reply(items={SLOW.id: text})))
+    assert outcome.fallbacks == {SLOW.id: "number"}
+
+
+async def test_an_invented_email_keeps_the_template() -> None:
+    _, outcome, _ = await _run(json.dumps(_reply(items={SLOW.id: "Ask x@y.io about sync_all."})))
+    assert outcome.fallbacks == {SLOW.id: "path"}
+
+
+def test_paths_inside_sentences_reach_the_model_as_basenames() -> None:
+    item = _item("health", "finding", "src/app/foo.py", {"title": "Split src/app/foo.py now"})
+    report = FirstLookReport(Stamp(None, None, "t"), {}, (SectionBlock("health", (item,)),))
+    facts = build_input(report)["sections"][0]["items"][0]["facts"]
+    assert facts == {"title": "Split foo.py now"}
+
+
+def test_holds_secret_uses_the_scan_detectors() -> None:
+    assert holds_secret(f"key {_AWS}")
+    assert holds_secret(_PASSWORD_LINE)
+    assert not holds_secret(
+        "Rotate the password in seed_admin.py, then read it from the environment."
+    )
+
+
 def test_a_bare_domain_reads_as_a_path() -> None:
     assert clean_text("see evil.example") == "see evil.example"  # left to the path guard
 
@@ -317,38 +355,16 @@ async def test_nothing_usable_keeps_the_template_writer() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _Tracker:
-    def __init__(self) -> None:
-        self.operation = "doc_generation"
-        self.seen: list[str] = []
-
-    def record_as(self, operation: str):
-        import contextlib
-
-        @contextlib.contextmanager
-        def scope():
-            prev, self.operation = self.operation, operation
-            try:
-                yield
-            finally:
-                self.operation = prev
-
-        return scope()
-
-
 async def test_spend_is_recorded_under_the_first_look_operation() -> None:
+    from repowise.core.generation.cost_tracker import CostTracker
+
     provider = FakeProvider(json.dumps(_reply()))
-    tracker = _Tracker()
+    # Buffered rows stay in memory until a flush, so the label can be read back.
+    tracker = CostTracker(session_factory=object(), repo_id="r1", buffered=True)
     provider._cost_tracker = tracker
-    real = provider.generate
-
-    async def generate(*a: Any, **kw: Any) -> GeneratedResponse:
-        tracker.seen.append(tracker.operation)
-        return await real(*a, **kw)
-
-    provider.generate = generate  # type: ignore[method-assign]
     await rewrite_prose(_report(), provider, template=TEMPLATE)
-    assert tracker.seen == [OPERATION] and tracker.operation == "doc_generation"
+    assert [row["operation"] for row in tracker._pending] == [OPERATION]
+    assert tracker.operation == "doc_generation"  # restored after the call
 
 
 async def test_model_override_that_cannot_be_built_falls_back_without_a_call() -> None:

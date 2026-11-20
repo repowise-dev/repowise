@@ -23,6 +23,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.analysis.health.fix_first.text import basename
+
 from .model import SECTION_CAP, FirstLookReport, Item, SectionBlock
 
 log = structlog.get_logger(__name__)
@@ -84,19 +86,23 @@ _PATH_TOKEN = re.compile(
     r"[\w.@~-]*(?:[/\\][\w.@~-]+)*[/\\][\w@~-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b"
     r"|[\w.@~-]+(?:[/\\][\w.@~-]+){2,}"
     r"|\b[\w-]{2,}\.[A-Za-z][A-Za-z0-9]{0,7}\b"
+    r"|[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
 )
 # A written number: ``16``, ``1,811``, ``8.28`` (in ``8.28x``), ``52`` (in ``52%``).
-# Not one inside a word or a name (``run_10``, ``v2``, ``gpt-6``).
-_NUMBER = re.compile(r"(?<![\w.\-/])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?")
+# Not one inside a word or a name (``run_10``, ``v2``); every digit run of a
+# range or a fraction (``3-5000``, ``1/9999``) is checked.
+_NUMBER = re.compile(r"(?<!\w)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?")
 
 _MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"<?(?:https?://|www\.)[^\s<>)]*[^\s<>).,;:!?]>?", re.IGNORECASE)
 _FENCED = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
-_EMPHASIS = re.compile(r"\*\*|__")
+_EMPHASIS = re.compile(r"\*+|\|")
+# Markdown block marks a line could open with: a heading, a quote, a list.
+_BLOCK_MARK = re.compile(r"^\s*(?:[#>]+|[-+*]\s|\d+[.)]\s)\s*")
 _EM_DASH = re.compile(r"\s*\u2014\s*")
 _SPACES = re.compile(r"\s+")
-_SPACE_BEFORE_MARK = re.compile(r"\s+([,.;:!?])")
+_SPACE_BEFORE_MARK = re.compile(r"\s+([,.;:!?])(?=\s|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,15 +189,18 @@ def _provider_for(provider: Any, model: str | None, repo_root: Path | str | None
 
 
 def _basename(path: str) -> str:
-    return re.split(r"[/\\]", path.rstrip("/\\"))[-1]
+    return basename(path.replace("\\", "/").rstrip("/"))
+
+
+def _short_path(match: re.Match[str]) -> str:
+    token = match.group(0)
+    return _basename(token) if "/" in token or "\\" in token else token
 
 
 def _fact_value(value: Any) -> Any:
-    """*value* as the model may see it: a path becomes its basename."""
+    """*value* as the model may see it: every path in it becomes its basename."""
     if isinstance(value, str):
-        if not any(c.isspace() for c in value) and ("/" in value or "\\" in value):
-            return _basename(value)
-        return value
+        return _PATH_TOKEN.sub(_short_path, value)
     if isinstance(value, Mapping):
         return _facts(value)
     if isinstance(value, list | tuple):
@@ -300,7 +309,8 @@ def clean_text(text: str) -> str:
     text = text.replace("`", "")
     text = _EMPHASIS.sub("", text)
     text = _EM_DASH.sub(", ", text)
-    return _SPACE_BEFORE_MARK.sub(r"\1", _SPACES.sub(" ", text)).strip()
+    text = _SPACE_BEFORE_MARK.sub(r"\1", _SPACES.sub(" ", text)).strip()
+    return _BLOCK_MARK.sub("", text)
 
 
 def _number_ok(text: str, allowed: _Allowed) -> bool:
@@ -423,6 +433,75 @@ def _reasoning(provider: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _call(provider: Any, model: str | None, repo_root: Any, sent: dict[str, Any]) -> Any:
+    """The one ``generate`` call, its spend recorded under :data:`OPERATION`."""
+    runner = _provider_for(provider, model, repo_root)
+    tracker = getattr(runner, "_cost_tracker", None)
+    scope = (
+        tracker.record_as(OPERATION)
+        if tracker is not None and hasattr(tracker, "record_as")
+        else contextlib.nullcontext()
+    )
+    with scope:
+        return await runner.generate(
+            SYSTEM_PROMPT,
+            json.dumps(sent, ensure_ascii=False),
+            max_tokens=MAX_TOKENS,
+            temperature=0.2,
+            reasoning=_reasoning(runner),
+        )
+
+
+def _read(content: str, truncated: bool) -> dict[str, Any] | None:
+    """The reply's pieces; from a cut-off reply, the complete ones."""
+    reply = _parse_reply(content)
+    if reply is None and truncated:
+        reply = _salvage(content)
+        if not (reply["items"] or reply["sections"] or reply["summary"]):
+            return None
+    return reply
+
+
+@dataclass
+class _Merge:
+    """Places each guarded piece of the reply into the prose; counts the rest."""
+
+    prose: dict[str, Any]
+    reply: Mapping[str, Any]
+    missing: str
+    fallbacks: dict[str, str] = field(default_factory=dict)
+    used: int = 0
+
+    def place(
+        self, target: dict[str, Any], key: str, piece: str, raw: Any, allowed: _Allowed
+    ) -> None:
+        if raw is None:
+            self.fallbacks[piece] = self.missing
+            return
+        text, reason = _guard(raw, allowed, piece)
+        if text is None:
+            self.fallbacks[piece] = reason or "missing"
+            return
+        target[key] = text
+        self.used += 1
+
+    def section(self, sent: Mapping[str, Any], block: SectionBlock) -> None:
+        located = {i.id: i for i in block.items}
+        section_sent = [_without_ids(sent), *(_without_ids(i) for i in sent["items"])]
+        paths = (loc.path for i in block.items for loc in i.locations)
+        intros = self.prose.setdefault("sections", {})
+        intro = self.reply["sections"].get(block.key)
+        self.place(intros, block.key, f"section:{block.key}", intro, _allowed(section_sent, paths))
+        items = self.prose.setdefault("items", {})
+        for entry in sent["items"]:
+            allowed = _allowed(
+                [_without_ids(entry)], [loc.path for loc in located[entry["id"]].locations]
+            )
+            self.place(
+                items, entry["id"], entry["id"], self.reply["items"].get(entry["id"]), allowed
+            )
+
+
 async def rewrite_prose(
     report: FirstLookReport,
     provider: Any,
@@ -441,101 +520,43 @@ async def rewrite_prose(
     """
     prose = copy.deepcopy(dict(template))
     model_id = first_look_model(provider, model)
-    provider_name = str(getattr(provider, "provider_name", "") or "")
-
-    def outcome(**kw: Any) -> LlmOutcome:
-        return LlmOutcome(model=model_id, provider=provider_name, **kw)
-
+    meta = {"model": model_id, "provider": str(getattr(provider, "provider_name", "") or "")}
     sent = build_input(report)
     try:
-        runner = _provider_for(provider, model, repo_root)
-        tracker = getattr(runner, "_cost_tracker", None)
-        scope = (
-            tracker.record_as(OPERATION)
-            if tracker is not None and hasattr(tracker, "record_as")
-            else contextlib.nullcontext()
-        )
-        with scope:
-            response = await runner.generate(
-                SYSTEM_PROMPT,
-                json.dumps(sent, ensure_ascii=False),
-                max_tokens=MAX_TOKENS,
-                temperature=0.2,
-                reasoning=_reasoning(runner),
-            )
+        response = await _call(provider, model, repo_root, sent)
     except Exception as exc:
         # Broad on purpose: a report must never fail the run that writes it.
         log.warning("first_look_llm_failed", model=model_id, error=str(exc))
-        return prose, outcome(fallback_reason="provider_error")
+        return prose, LlmOutcome(**meta, fallback_reason="provider_error")
 
     tokens_in, tokens_out = int(response.input_tokens or 0), int(response.output_tokens or 0)
-    spend = {
-        "input_tokens": tokens_in,
-        "output_tokens": tokens_out,
-        "cost_usd": _cost(model_id, tokens_in, tokens_out),
-    }
     truncated = response.stop_reason == "max_tokens"
-    reply = _parse_reply(response.content or "")
-    if reply is None and truncated:
-        reply = _salvage(response.content or "")
-        if not (reply["items"] or reply["sections"] or reply["summary"]):
-            reply = None
+    meta.update(
+        input_tokens=tokens_in,
+        output_tokens=tokens_out,
+        cost_usd=_cost(model_id, tokens_in, tokens_out),
+        truncated=truncated,
+    )
+    reply = _read(response.content or "", truncated)
     if reply is None:
         reason = "truncated" if truncated else "unparseable"
-        return prose, outcome(fallback_reason=reason, truncated=truncated, **spend)
+        return prose, LlmOutcome(**meta, fallback_reason=reason)
 
-    missing = "truncated" if truncated else "missing"
-    fallbacks: dict[str, str] = {}
-    used = 0
-
-    def place(target: dict[str, Any], key: str, piece: str, raw: Any, allowed: _Allowed) -> None:
-        nonlocal used
-        if raw is None:
-            fallbacks[piece] = missing
-            return
-        text, reason = _guard(raw, allowed, piece)
-        if text is None:
-            fallbacks[piece] = reason or "missing"
-            return
-        target[key] = text
-        used += 1
-
-    item_texts = prose.setdefault("items", {})
-    intros = prose.setdefault("sections", {})
+    merge = _Merge(prose, reply, "truncated" if truncated else "missing")
     for section, block in zip(sent["sections"], report.sections, strict=True):
-        located = {i.id: i for i in block.items}
-        section_sent = [_without_ids(section), *(_without_ids(i) for i in section["items"])]
-        place(
-            intros,
-            block.key,
-            f"section:{block.key}",
-            reply["sections"].get(block.key),
-            _allowed(section_sent, (loc.path for i in block.items for loc in i.locations)),
-        )
-        for entry in section["items"]:
-            paths = [loc.path for loc in located[entry["id"]].locations]
-            place(
-                item_texts,
-                entry["id"],
-                entry["id"],
-                reply["items"].get(entry["id"]),
-                _allowed([_without_ids(entry)], paths),
-            )
+        merge.section(section, block)
     every_path = (loc.path for i in report.items() for loc in i.locations)
-    place(prose, "summary", "summary", reply["summary"], _allowed([sent], every_path))
+    merge.place(prose, "summary", "summary", reply["summary"], _allowed([sent], every_path))
 
     sent_ids = {i["id"] for s in sent["sections"] for i in s["items"]}
-    unknown = sum(1 for key in reply["items"] if key not in sent_ids)
-    if not used:
-        return prose, outcome(
-            fallback_reason="no_usable_text",
-            fallbacks=fallbacks,
-            unknown_ids=unknown,
-            truncated=truncated,
-            **spend,
-        )
+    meta.update(
+        fallbacks=merge.fallbacks,
+        unknown_ids=sum(1 for key in reply["items"] if key not in sent_ids),
+    )
+    if not merge.used:
+        return prose, LlmOutcome(**meta, fallback_reason="no_usable_text")
     prose["writer"] = model_id
-    return prose, outcome(fallbacks=fallbacks, unknown_ids=unknown, truncated=truncated, **spend)
+    return prose, LlmOutcome(**meta)
 
 
 __all__ = [
