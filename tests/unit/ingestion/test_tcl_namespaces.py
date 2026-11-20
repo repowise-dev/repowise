@@ -22,7 +22,7 @@ _PARSER = ASTParser()
 _LANGUAGES = {".tcl": "tcl", ".py": "python"}
 
 
-def _build(tmp_path: Path, sources: dict[str, str]):
+def _build(tmp_path: Path, sources: dict[str, str], *, snapshot: bool = False):
     builder = GraphBuilder(tmp_path)
     for rel, text in sources.items():
         abs_path = tmp_path / rel
@@ -41,6 +41,10 @@ def _build(tmp_path: Path, sources: dict[str, str]):
             is_entry_point=False,
         )
         builder.add_file(_PARSER.parse_file(info, text.encode("utf-8")))
+    if snapshot:
+        builder.set_source_map({path: text.encode("utf-8") for path, text in sources.items()})
+        for rel in sources:
+            (tmp_path / rel).write_text("# different working tree\n", encoding="utf-8")
     return builder.build()
 
 
@@ -166,6 +170,202 @@ def test_a_transitively_sourced_proc_is_preferred(tmp_path: Path) -> None:
     assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::run") == {
         "bin/helpers.tcl::helper": "import_merged"
     }
+
+
+def test_sourced_procs_are_defined_in_the_sourcing_namespace(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc helper {} { return 1 }\n",
+        "bin/main.tcl": (
+            "proc helper {} { return 0 }\n"
+            "namespace eval N {\n  source lib.tcl\n  proc run {} { helper }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::run") == {
+        "bin/lib.tcl::helper": "enclosing_class"
+    }
+
+
+def test_transitively_sourced_procs_follow_nested_namespace_context(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "namespace eval Inner { proc helper {} { return 1 } }\n",
+        "bin/loader.tcl": "namespace eval Middle { source lib.tcl }\n",
+        "bin/main.tcl": (
+            "proc helper {} { return 0 }\n"
+            "namespace eval N {\n"
+            "  source loader.tcl\n"
+            "  namespace eval Middle { namespace eval Inner { proc run {} { helper } } }\n"
+            "}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::Middle::Inner::run") == {
+        "bin/lib.tcl::Inner::helper": "enclosing_class"
+    }
+
+
+def test_sourcing_an_absolute_proc_does_not_move_it(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc ::helper {} { return 1 }\n",
+        "bin/main.tcl": (
+            "namespace eval N {\n"
+            "  proc helper {} { return 0 }\n"
+            "  source lib.tcl\n"
+            "  proc run {} { helper }\n"
+            "  proc absolute {} { ::helper }\n"
+            "}\n"
+        ),
+    }
+    graph = _build(tmp_path, sources)
+    assert _calls_from(graph, "bin/main.tcl::N::run") == {
+        "bin/main.tcl::N::helper": "enclosing_class"
+    }
+    assert _calls_from(graph, "bin/main.tcl::N::absolute") == {
+        "bin/lib.tcl::helper": "import_merged"
+    }
+
+
+def test_same_file_sourced_into_two_namespaces(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc helper {} { return 1 }\n",
+        "bin/main.tcl": (
+            "proc helper {} { return 0 }\n"
+            "namespace eval A {\n  source lib.tcl\n  proc run {} { helper }\n}\n"
+            "namespace eval B {\n  source lib.tcl\n  proc run {} { helper }\n}\n"
+        ),
+    }
+    graph = _build(tmp_path, sources)
+    for namespace in ("A", "B"):
+        assert _calls_from(graph, f"bin/main.tcl::{namespace}::run") == {
+            "bin/lib.tcl::helper": "enclosing_class"
+        }
+
+
+def test_sourced_relative_and_absolute_namespace_definitions(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": (
+            "namespace eval Inner { proc relative {} {} }\n"
+            "namespace eval ::Other { proc absolute {} {} }\n"
+        ),
+        "bin/main.tcl": (
+            "namespace eval N {\n  source lib.tcl\n"
+            "  proc run {} {\n    Inner::relative\n    ::Other::absolute\n  }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::run") == {
+        "bin/lib.tcl::Inner::relative": "scoped_name",
+        "bin/lib.tcl::Other::absolute": "scoped_name",
+    }
+
+
+def test_sourced_namespace_ambiguity_does_not_bind_global(tmp_path: Path) -> None:
+    sources = {
+        "bin/a.tcl": "proc helper {} {}\n",
+        "bin/b.tcl": "proc helper {} {}\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  source a.tcl\n  source b.tcl\n"
+            "  proc run {} { helper }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::run") == {}
+
+
+def test_source_cycles_terminate_and_keep_the_sourcing_namespace(tmp_path: Path) -> None:
+    sources = {
+        "bin/a.tcl": "source b.tcl\nproc helper {} {}\n",
+        "bin/b.tcl": "source a.tcl\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  source a.tcl\n  proc run {} { helper }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::run") == {
+        "bin/a.tcl::helper": "enclosing_class"
+    }
+
+
+def test_source_namespace_uses_analysed_snapshot(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc helper {} {}\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  source lib.tcl\n  proc run {} { helper }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources, snapshot=True), "bin/main.tcl::N::run") == {
+        "bin/lib.tcl::helper": "enclosing_class"
+    }
+
+
+def test_call_inside_sourced_proc_uses_its_execution_namespace(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc run {} { helper }\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  proc helper {} {}\n  source lib.tcl\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/lib.tcl::run") == {
+        "bin/main.tcl::N::helper": "enclosing_class"
+    }
+
+
+def test_module_call_in_sourced_file_uses_its_execution_namespace(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "helper\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  proc helper {} {}\n  source lib.tcl\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/lib.tcl::__module__") == {
+        "bin/main.tcl::N::helper": "enclosing_class"
+    }
+
+
+def test_sourced_proc_with_different_context_targets_is_unresolved(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc run {} { helper }\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval A {\n  proc helper {} {}\n  source lib.tcl\n}\n"
+            "namespace eval B {\n  proc helper {} {}\n  source lib.tcl\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/lib.tcl::run") == {}
+
+
+def test_sourced_proc_in_multiple_contexts_can_resolve_the_same_definition(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc helper {} {}\nproc run {} { helper }\n",
+        "bin/main.tcl": (
+            "namespace eval A {\n  source lib.tcl\n}\n"
+            "namespace eval B {\n  source lib.tcl\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/lib.tcl::run") == {
+        "bin/lib.tcl::helper": "enclosing_class"
+    }
+
+
+def test_source_inside_proc_uses_proc_namespace(tmp_path: Path) -> None:
+    sources = {
+        "bin/lib.tcl": "proc helper {} {}\n",
+        "bin/main.tcl": (
+            "proc helper {} {}\n"
+            "namespace eval N {\n  proc load {} {\n    source lib.tcl\n  }\n"
+            "  proc run {} { helper }\n}\n"
+        ),
+    }
+    assert _calls_from(_build(tmp_path, sources), "bin/main.tcl::N::run") == {
+        "bin/lib.tcl::helper": "enclosing_class"
+    }
+
+
+def test_repo_wide_tcl_guess_has_shared_global_unique_confidence(tmp_path: Path) -> None:
+    graph = _build(tmp_path, {"a.tcl": "proc helper {} {}\n", "b.tcl": "proc run {} { helper }\n"})
+    edge = graph.edges["b.tcl::run", "a.tcl::helper"]
+    assert edge["resolution_origin"] == "global_unique"
+    assert edge["confidence"] == 0.50
 
 
 def test_a_namespace_eval_inside_a_proc_moves_its_calls(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ from ..extractors import (
 from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
-from ..extractors.tcl import tcl_proc_namespace
+from ..extractors.tcl import is_tcl_switch_arm, tcl_proc_namespace
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
 from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
 from ..lang_helpers.source_prep import cpp_class_head_macros
@@ -580,6 +580,8 @@ def _symbol_kind(
     # def the caller has placed already (``keep_nested``), a Perl named
     # ``sub``, which is package-global wherever it is declared, and a Tcl
     # ``proc``, which defines a real command when the proc around it runs.
+    if language == "tcl" and node_type == "procedure" and is_tcl_switch_arm(def_node):
+        return None
     if (
         not keep_nested
         and node_type not in _MODULE_ANCHORED_NODE_TYPES

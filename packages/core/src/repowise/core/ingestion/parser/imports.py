@@ -7,7 +7,7 @@ What each statement yields is the language's ``LanguageConfig.import_extractor``
 from __future__ import annotations
 
 from ..extractors import node_text
-from ..extractors.tcl import is_tcl_switch_arm
+from ..extractors.tcl import is_tcl_switch_arm, unwrap_word
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
 from ..parser_helpers import import_load_kind, python_import_scope
@@ -61,6 +61,8 @@ def _extract_imports(
         seen_imports[dedup_key] = []
 
         module_text = node_text(module_nodes[0], src).strip().strip("\"'` ")
+        if language == "tcl" and module_nodes[0].type == "braced_word":
+            module_text = unwrap_word(module_text)
         if not module_text:
             continue
 

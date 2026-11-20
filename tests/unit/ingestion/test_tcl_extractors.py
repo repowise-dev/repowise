@@ -50,6 +50,11 @@ class TestTclSymbols:
             ("top", "function", 7, 7),
         ]
 
+    def test_proc_switch_pattern_is_not_a_symbol(self, parser: ASTParser) -> None:
+        src = b"proc d {c} {\n  switch $c {\n    proc { helper }\n    other { go }\n  }\n}\n"
+        result = parser.parse_file(_file(), src)
+        assert [s.name for s in result.symbols] == ["d"]
+
 
 class TestTclImports:
     def test_source_and_package_require(self, parser: ASTParser) -> None:
@@ -70,6 +75,14 @@ class TestTclImports:
 
     def test_package_require_exact_names_the_package(self, parser: ASTParser) -> None:
         result = parser.parse_file(_file(), b"package require -exact myutil 1.0\n")
+        assert [i.module_path for i in result.imports] == ["myutil"]
+
+    @pytest.mark.parametrize("option", ["", "-exact "])
+    @pytest.mark.parametrize("separator", [" ", "\t"])
+    def test_braced_package_name(self, parser: ASTParser, option: str, separator: str) -> None:
+        result = parser.parse_file(
+            _file(), f"package{separator}require {option}{{myutil}} 1.0\n".encode()
+        )
         assert [i.module_path for i in result.imports] == ["myutil"]
 
 
@@ -127,5 +140,8 @@ def test_a_tcltest_file_is_tcl_and_other_dot_test_files_are_not() -> None:
     )
     assert _detect_language(Path("tests/parser.test"), tcltest) == "tcl"
     assert _detect_language(Path("tests/b.test"), b"::tcltest::test b-1 {} { go }\n") == "tcl"
+    assert _detect_language(
+        Path("tests/exact.test"), b"package require -exact tcltest 2.5\ntcltest::test x {} {}\n"
+    ) == "tcl"
     lit = b"; RUN: llvm-objdump -d %s | FileCheck %s\n"
     assert _detect_language(Path("llvm/test/x.test"), lit) != "tcl"

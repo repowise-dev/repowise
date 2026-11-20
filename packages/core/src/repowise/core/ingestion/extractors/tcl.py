@@ -76,37 +76,38 @@ def tcl_scope(proc_namespace: str | None, call_namespace: str | None) -> str | N
     return _join_namespace(proc_namespace or "", call_namespace) or None
 
 
-def _execution_namespace(node: Node | None) -> str:
+def _execution_namespace(node: Node | None, base: str = "") -> str:
     """The namespace code at *node* runs in; ``""`` for the global one.
 
     Inside a proc that is the proc's own namespace, moved by the
     ``namespace eval`` blocks between it and *node*; outside any proc, the
-    blocks alone move it from the global namespace.
+    blocks move it from *base*, the namespace in which the file was sourced.
     """
     blocks: list[str] = []
     while node is not None and node.type != "procedure":
         if node.type == "namespace" and (name := _namespace_eval_name(node)) is not None:
             blocks.append(name)
         node = node.parent
-    current = ""
+    current = base
     if node is not None:
         name_node = node.child_by_field_name("name")
         raw = (name_node.text or b"").decode("utf-8", "replace") if name_node else ""
-        current = tcl_proc_namespace(node, raw) or ""
+        current = tcl_proc_namespace(node, raw, base) or ""
     for name in reversed(blocks):
         current = _join_namespace(current, name)
     return current
 
 
-def tcl_proc_namespace(def_node: Node, raw_name: str) -> str | None:
+def tcl_proc_namespace(def_node: Node, raw_name: str, base: str = "") -> str | None:
     """The namespace a ``proc`` defines its command in; None for the global one.
 
     The ``namespace eval`` blocks around it set the current namespace, and a
     qualified name (``proc a::f`` relative, ``proc ::x::f`` absolute) moves
-    the command from there. ``namespace eval`` bodies built at run time
-    (``namespace eval $ns``) are read literally.
+    the command from there. *base* is the namespace in which the file was
+    sourced. ``namespace eval`` bodies built at run time (``namespace eval
+    $ns``) are read literally.
     """
-    current = _execution_namespace(def_node.parent)
+    current = _execution_namespace(def_node.parent, base)
     name = unwrap_word(raw_name)
     qualifier = name.rpartition("::")[0]
     if name.startswith("::"):
@@ -203,6 +204,12 @@ def _tcl_words(text: bytes, base: int) -> list[tuple[int, int]]:
     words: list[tuple[int, int]] = []
     i = 0
     while i < len(text):
+        if text[i : i + 3] == b"\\\r\n":
+            i += 3
+            continue
+        if text[i : i + 2] == b"\\\n":
+            i += 2
+            continue
         if text[i : i + 1].isspace():
             i += 1
             continue
@@ -224,6 +231,8 @@ def _word_end(text: bytes, i: int) -> int:
         return min(end + 1, len(text))
     end = i
     while end < len(text) and not text[end : end + 1].isspace():
+        if text[end : end + 2] == b"\\\n" or text[end : end + 3] == b"\\\r\n":
+            break
         end += 2 if text[end : end + 1] == b"\\" else 1
     return min(end, len(text))
 

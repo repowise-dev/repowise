@@ -33,7 +33,7 @@
     .
     (simple_word) @_pkg_sub
     .
-    (simple_word) @import.module)
+    [(simple_word) (braced_word)] @import.module)
   (#eq? @_pkg_cmd "package")
   (#eq? @_pkg_sub "require")
   (#not-eq? @import.module "-exact")
@@ -48,7 +48,7 @@
     .
     (simple_word) @_pkg_opt
     .
-    (simple_word) @import.module)
+    [(simple_word) (braced_word)] @import.module)
   (#eq? @_pkg_cmd "package")
   (#eq? @_pkg_sub "require")
   (#eq? @_pkg_opt "-exact")
