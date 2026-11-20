@@ -491,6 +491,29 @@ recorded: add the profile again). The JSON form adds
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
 
+## `evidence tests`
+
+```bash
+repowise evidence tests
+repowise evidence tests --limit 50 --format json
+```
+
+The slowest tests and the test time spent on each production file, from the
+JUnit XML timings `evidence add` stored: the newest complete run of each test
+workload (the newest environment when a workload ran in several), each test at
+its longest duration across them. A test flagged `first_in_class` may carry
+fixture time its whole class or module shares.
+
+Test time per file is the summed duration of the timed tests that run it, with
+how many of its tests were timed. Its `basis` is `measured` when a per-test
+coverage map is stored (`repowise coverage add` with per-test contexts), and
+`inferred` from each function's nearest tests on the call graph without one.
+Only production files are listed; files of other origins run by timed tests are
+counted under `not_production`. With nothing stored, `status` is
+`no_test_timings` and `command` is `repowise evidence setup`, which prints how
+each unit's tests write JUnit XML. Timing orders tests and files; it never
+gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
+
 ## What is stored
 
 Evidence lives in the local index (`evidence_runs` and one table per kind:

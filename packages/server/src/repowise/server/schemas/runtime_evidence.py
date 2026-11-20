@@ -6,7 +6,8 @@ core gains fails here instead of vanishing from the API:
 - :class:`EvidenceRunSummary` is ``evidence.status.run_status``;
 - :class:`MeasuredRun` and :class:`MeasuredRow` are the run and row of
   ``crud.measured_costs``;
-- :class:`MeasuredFunction` is one ``symbol_hotness`` row.
+- :class:`MeasuredFunction` is one ``symbol_hotness`` row;
+- :class:`SuiteCostResponse` is ``evidence.suite_cost.suite_costs``.
 
 No row means no evidence: unknown, never zero. Shares are fractions of the
 run's whole value (0-1); intervals come from the core statistics module.
@@ -219,3 +220,48 @@ class MeasuredFunctionsResponse(_Strict):
     """Measured functions of the asked symbol or file; empty means unknown."""
 
     functions: list[MeasuredFunction]
+
+
+class SlowTest(_Strict):
+    """One timed test, at its longest duration across the basis runs."""
+
+    test_id: str
+    test_file: str | None
+    duration_s: float
+    #: ``passed``, ``failed``, ``skipped``, ``error``; null: not reported.
+    outcome: str | None
+    #: First test its run reports for its class: its time may include shared fixtures.
+    first_in_class: bool | None
+    workload: str
+
+
+class FileTestCost(_Strict):
+    """The summed duration of the timed tests that run one production file."""
+
+    file_path: str
+    test_seconds: float
+    timed_tests: int
+    #: Tests that run the file, timed or not.
+    tests: int
+
+
+class FileTestCosts(_Strict):
+    #: ``measured`` from the per-test coverage map, ``inferred`` from the call graph.
+    basis: Literal["measured", "inferred"]
+    files: list[FileTestCost]
+    files_total: int
+    #: Non-production files run by timed tests: counted, not listed.
+    not_production: int
+
+
+class SuiteCostResponse(_Strict):
+    """The slowest tests and the test time per production file, from stored JUnit timings."""
+
+    status: Literal["measured", "no_test_timings"]
+    #: What writes test timings; null when some are stored.
+    command: str | None
+    #: The basis runs: each test-timing workload's newest complete run.
+    runs: list[EvidenceRunSummary]
+    slow_tests: list[SlowTest]
+    tests_total: int
+    file_costs: FileTestCosts | None
