@@ -1028,3 +1028,24 @@ class TestQuerySuffix:
         )
         # A specifier that is only a query has no path before the ``?`` to keep.
         assert resolve_ts_js_import("?raw", "src/main.ts", ctx) == "external:?raw"
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("raw-loader!../../lib/page-check.js", "lib/page-check.js"),
+            ("!!raw-loader!../../lib/page-check.js?x=1", "lib/page-check.js"),
+            # A loader's own query is not the file's.
+            ("worker-loader?inline=true!../worker", "src/worker.ts"),
+            ("-!svg-loader!../logo.svg", "src/logo.svg"),
+        ],
+    )
+    def test_a_webpack_inline_loader_resolves_to_the_file_after_it(
+        self, tmp_path: Path, spec: str, expected: str
+    ) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import(spec, "src/lib/page-check.test.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/lib/page-check.test.ts", ctx) == (expected,)
+
+    def test_a_loader_with_no_file_after_it_is_left_alone(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, list(self._PATHS))
+        assert resolve_ts_js_import("raw-loader!", "src/main.ts", ctx) == "external:raw-loader!"

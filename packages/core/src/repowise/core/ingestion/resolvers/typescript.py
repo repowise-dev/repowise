@@ -40,7 +40,15 @@ def _without_query(module_path: str) -> str:
     ``?``, as the Astro and HTML resolvers already read it. A test that imports
     the script it runs as text then pairs with that script. A ``#`` stays: it
     starts a Node subpath import.
+
+    Webpack's inline loaders come before the path, each ending in ``!``
+    (``raw-loader!./kit.js``, ``!!style-loader!css-loader?modules!./a.css``):
+    the file is what follows the last ``!``, and is cut out first because a
+    loader may carry a query of its own.
     """
+    _, bang, resource = module_path.rpartition("!")
+    if bang and resource:
+        module_path = resource
     head, sep, _ = module_path.partition("?")
     return head if sep and head else module_path
 
