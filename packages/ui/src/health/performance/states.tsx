@@ -123,6 +123,21 @@ export function ConnectEvidenceState({
 }
 
 /**
+ * The slim connect row above a queue that has causes, shown only when the
+ * host knows no runtime evidence is connected.
+ */
+export function ConnectEvidenceRow({
+  runtimeEvidence,
+  hasCauses,
+}: {
+  runtimeEvidence: { connected: boolean } | null;
+  hasCauses: boolean;
+}) {
+  if (!runtimeEvidence || runtimeEvidence.connected || !hasCauses) return null;
+  return <ConnectEvidenceState variant="row" />;
+}
+
+/**
  * Analyzed, and nothing in this scope needs a change: the good state. It
  * names the scope and commit it holds for; the accounting sentence beneath
  * says where the rest of the repository is, so "clear" is a statement about

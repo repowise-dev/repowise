@@ -25,7 +25,7 @@ import {
   type ExcludedReview,
 } from "./performance/grouping";
 import { LegacyPerformanceFindings } from "./performance/legacy";
-import { RunSplit, RunSplitSentence, RuntimeEvidenceSection } from "./performance/measured";
+import { RunSplitSentence, RuntimeEvidenceSection, runSplitFooter } from "./performance/measured";
 import { ACTIONABILITY_LABEL } from "./performance/presentation";
 import { usePerformancePrompts } from "./performance/prompts";
 import {
@@ -46,6 +46,7 @@ import {
 import { QUIET_LINK_CLS, type RowCallbacks } from "./performance/queue";
 import { ScopeControl, ScopeSentence, type ScopeCounts } from "./performance/scope";
 import {
+  ConnectEvidenceRow,
   ConnectEvidenceState,
   FilteredEmpty,
   GoodState,
@@ -283,10 +284,10 @@ export function PerformanceView({
         <PerformanceVerdict
           verdict={verdictOf(filters.scope, data.total, groups)}
           analyzedCommit={summary.analyzed_commit}
-          figureFooter={runtime.run ? <RunSplit run={runtime.run} /> : null}
+          figureFooter={runSplitFooter(runtime.run)}
         >
           {sentence}
-          {runtime.run ? <RunSplitSentence run={runtime.run} /> : null}
+          <RunSplitSentence run={runtime.run} />
         </PerformanceVerdict>
       ) : null}
 
@@ -302,9 +303,7 @@ export function PerformanceView({
         {data.ignored_arguments ? (
           <IgnoredArgumentsNotice ignored={data.ignored_arguments} />
         ) : null}
-        {runtimeEvidence && !runtimeEvidence.connected && items.length > 0 ? (
-          <ConnectEvidenceState variant="row" />
-        ) : null}
+        <ConnectEvidenceRow runtimeEvidence={runtimeEvidence} hasCauses={items.length > 0} />
 
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <ScopeControl value={filters.scope} counts={scopes} onChange={toScope} />

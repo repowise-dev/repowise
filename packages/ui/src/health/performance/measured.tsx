@@ -54,8 +54,8 @@ const SPLIT_INK = {
 } as const;
 
 /** Where the run spent its time: repo code, libraries, waits. Null without the split. */
-export function RunSplit({ run }: { run: MeasuredRun }) {
-  if (run.repo_self_share == null) return null;
+export function RunSplit({ run }: { run: MeasuredRun | null }) {
+  if (run?.repo_self_share == null) return null;
   const parts = [
     { key: "repo", label: "Repo code", value: run.repo_self_share },
     { key: "library", label: "Libraries", value: run.library_share },
@@ -79,9 +79,14 @@ export function RunSplit({ run }: { run: MeasuredRun }) {
   );
 }
 
+/** The split for a lede's figure footer: null without a run that has one. */
+export function runSplitFooter(run: MeasuredRun | null): React.ReactNode {
+  return run?.repo_self_share != null ? <RunSplit run={run} /> : null;
+}
+
 /** The lede's sentence for the run: how much of it repo code can move. */
-export function RunSplitSentence({ run }: { run: MeasuredRun }) {
-  if (run.repo_self_share == null) return null;
+export function RunSplitSentence({ run }: { run: MeasuredRun | null }) {
+  if (run?.repo_self_share == null) return null;
   return (
     <p className="mt-2.5">
       Repo code explains{" "}
@@ -245,6 +250,89 @@ function MeasuredRowItem({
   );
 }
 
+/** The rows' heading and description, with the prompt for the rows shown. */
+function RowsHead({
+  heading,
+  description,
+  count,
+  onPromptAll,
+}: {
+  heading: string | null;
+  description: string;
+  count: number;
+  onPromptAll: () => void;
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+      <div className="min-w-0">
+        {heading ? (
+          <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">{heading}</h3>
+        ) : null}
+        <p className="mt-1 max-w-[70ch] text-xs text-[var(--color-text-secondary)]">{description}</p>
+      </div>
+      <PromptForRowsButton
+        count={count}
+        label={(n) => (n === 1 ? "Copy prompt for this one" : `Copy prompt for the top ${formatNumber(n)}`)}
+        onClick={onPromptAll}
+      />
+    </div>
+  );
+}
+
+/** What the list leaves out and how its bars read, as one caption. */
+function rowsCaption(run: MeasuredRun, shown: number, total: number): string {
+  const outside = run.outside_production ?? 0;
+  return [
+    total > shown ? `Showing ${formatNumber(shown)} of ${plural(total, "ranked function")}.` : null,
+    outside > 0
+      ? `${plural(outside, "function")} measured in test and tooling code ${outside === 1 ? "is" : "are"} counted, not listed.`
+      : null,
+    run.repo_self_share != null && !run.ordering_only
+      ? "Bars are scaled to the repo-code share of the run."
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function RowsFooter({
+  caption,
+  showAll,
+}: {
+  caption: string;
+  /** "Show all N", when more rows are ranked than shown. */
+  showAll: { count: number; onClick: () => void } | null;
+}) {
+  return (
+    <p className="mt-2.5 pl-10 text-xs text-[var(--color-text-tertiary)]">
+      {caption}{" "}
+      {showAll ? (
+        <button type="button" onClick={showAll.onClick} className={QUIET_LINK_CLS}>
+          Show all {formatNumber(showAll.count)}
+        </button>
+      ) : null}
+    </p>
+  );
+}
+
+/** The list while it loads, when it could not be read, or nothing when it is empty. */
+function RowsPending({ loading }: { loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="space-y-px" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-[72px] rounded-none" />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <p role="status" className="text-sm text-[var(--color-text-tertiary)]">
+      Could not read the ranked functions. Reload to try again.
+    </p>
+  );
+}
+
 /**
  * One run's ranked functions with a "Show all" past the preview, under a
  * heading whose action is the agent prompt for the rows shown. Keyed by run
@@ -284,83 +372,45 @@ function MeasuredRows({
     filePath: subset.length === 1 ? rowLocation(subset[0]!) : null,
     getPrompt: (flavor) => buildMeasuredFunctionsPrompt({ run, rows: subset, flavor }),
   });
-
-  const head = (
-    <div className="mb-3 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
-      <div className="min-w-0">
-        {heading ? (
-          <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">{heading}</h3>
-        ) : null}
-        <p className="mt-1 max-w-[70ch] text-xs text-[var(--color-text-secondary)]">{description}</p>
-      </div>
-      <PromptForRowsButton
-        count={rows.length}
-        label={(n) => (n === 1 ? "Copy prompt for this one" : `Copy prompt for the top ${formatNumber(n)}`)}
-        onClick={() => onPrompt(promptFor(rows))}
-      />
-    </div>
-  );
-
-  if (isLoading && !data) {
-    return (
-      <div>
-        {head}
-        <div className="space-y-px" aria-busy="true">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-[72px] rounded-none" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  if (error && !data) {
-    return (
-      <div>
-        {head}
-        <p role="status" className="text-sm text-[var(--color-text-tertiary)]">
-          Could not read the ranked functions. Reload to try again.
-        </p>
-      </div>
-    );
-  }
-  if (rows.length === 0) return null;
-  const outside = run.outside_production ?? 0;
+  const pending = !data && (isLoading || Boolean(error));
+  if (!pending && rows.length === 0) return null;
   return (
     <div>
-      {head}
-      <ul
-        aria-label={`Measured in ${run.workload_name}`}
-        className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
-      >
-        {rows.map((row) => (
-          <MeasuredRowItem
-            key={`${row.run_id}:${row.symbol_id}`}
-            row={row}
-            run={run}
-            scale={scale}
-            onOpenCause={onOpenCause}
-            onPrompt={(one) => onPrompt(promptFor([one]))}
+      <RowsHead
+        heading={heading}
+        description={description}
+        count={rows.length}
+        onPromptAll={() => onPrompt(promptFor(rows))}
+      />
+      {pending ? (
+        <RowsPending loading={isLoading} />
+      ) : (
+        <>
+          <ul
+            aria-label={`Measured in ${run.workload_name}`}
+            className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
+          >
+            {rows.map((row) => (
+              <MeasuredRowItem
+                key={`${row.run_id}:${row.symbol_id}`}
+                row={row}
+                run={run}
+                scale={scale}
+                onOpenCause={onOpenCause}
+                onPrompt={(one) => onPrompt(promptFor([one]))}
+              />
+            ))}
+          </ul>
+          <RowsFooter
+            caption={rowsCaption(run, rows.length, total)}
+            showAll={
+              total > rows.length && !all
+                ? { count: Math.min(total, MEASURED_MAX), onClick: () => setAll(true) }
+                : null
+            }
           />
-        ))}
-      </ul>
-      <p className="mt-2.5 pl-10 text-xs text-[var(--color-text-tertiary)]">
-        {total > rows.length
-          ? `Showing ${formatNumber(rows.length)} of ${plural(total, "ranked function")}. `
-          : null}
-        {outside > 0
-          ? `${plural(outside, "function")} measured in test and tooling code ${
-              outside === 1 ? "is" : "are"
-            } counted, not listed. `
-          : null}
-        {run.repo_self_share != null && !run.ordering_only
-          ? "Bars are scaled to the repo-code share of the run. "
-          : null}
-        {total > rows.length && !all ? (
-          <button type="button" onClick={() => setAll(true)} className={QUIET_LINK_CLS}>
-            Show all {formatNumber(Math.min(total, MEASURED_MAX))}
-          </button>
-        ) : null}
-      </p>
+        </>
+      )}
     </div>
   );
 }
