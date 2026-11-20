@@ -123,10 +123,16 @@ def render_report_prompt(
     flavor: str = "generic",
     repo_name: str | None = None,
     per_section: int = SECTION_CAP,
+    statuses: Mapping[str, str] | None = None,
 ) -> str:
-    """The "Work through this report" prompt: the items a page shows, in report order."""
+    """The "Work through this report" prompt: the open items a page shows, in
+    report order. *statuses* is each item's status (:mod:`.marks`); an item
+    with none reads as open."""
+    statuses = statuses or {}
     items: list[Mapping[str, Any]] = [
-        i.to_json() for s in report.sections for i in s.items[:per_section]
+        i.to_json()
+        for s in report.sections
+        for i in [i for i in s.items if statuses.get(i.id, "open") == "open"][:per_section]
     ]
     return render_first_look_report(items, flavor, repo_name or report.repo.get("name"))
 

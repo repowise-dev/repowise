@@ -14,8 +14,10 @@ from typing import Any
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, count, join_sections, repo_suffix
 
-#: What finished looks like, per item rule; a rule not listed reads the default.
+#: What finished looks like, per item rule family or rule; one not listed reads the default.
 DONE_WHEN: dict[str, str] = {
+    "credentials": "Each credential is rotated with its provider and read from the environment; no file holds a value.",
+    "public_env_secrets": "Each secret is read only from a server-side variable.",
     "import_cycle": "The files no longer import each other, directly or through one another.",
     "vendored_in_tree": "Each vendored file sits under a vendor or third_party folder, or is gone.",
     "unreachable_file": "Each file is deleted after you confirmed nothing loads it, or kept with the reason.",
@@ -88,7 +90,7 @@ def render_first_look_item(
             ),
             "## Done when",
             "",
-            DONE_WHEN.get(item["rule"], _DONE_DEFAULT),
+            DONE_WHEN.get(facts.get("family"), DONE_WHEN.get(item["rule"], _DONE_DEFAULT)),
             "",
             *closing_sections(_CONSTRAINTS, _EXPECTED),
         ]
@@ -96,20 +98,29 @@ def render_first_look_item(
 
 
 _REPORT_LOOP = (
-    "Work through the items below in the order listed, one at a time. For each one: "
+    "Work through the open items below in the order listed, one at a time. For each one: "
     "confirm it against the code, make the smallest change that resolves it, run the "
-    "tests that cover the files you touched, then move to the next. Rotate a leaked "
-    "credential with its provider before you remove it from the file; deleting it does "
-    "not remove it from git history. Do not spend money, and do not turn on anything "
-    "that sends code to a model, without asking. Stop when the list is done, or when an "
-    "item repeats one you already handled."
+    "tests that cover the files you touched, then record it and move to the next. Rotate "
+    "a leaked credential with its provider before you remove it from the file; deleting "
+    "it does not remove it from git history. Do not spend money, and do not turn on "
+    "anything that sends code to a model, without asking. Stop when the list is done, or "
+    "when an item repeats one you already handled."
+)
+
+#: How the agent records each item, by its id.
+_RECORD = (
+    "- Fixed: `repowise mark <id> done`",
+    '- Holds, but stays as it is: `repowise mark <id> ack --reason "why"`',
+    '- Wrong: `repowise mark <id> false-positive --reason "why"`. A security finding that '
+    "is not a secret takes a `repowise-security-ignore` comment on its line instead.",
 )
 
 
 def render_first_look_report(
     items: Sequence[Mapping[str, Any]], flavor: str = "generic", repo_name: str | None = None
 ) -> str:
-    """The whole report as one task list, in report order (*items* as served)."""
+    """The whole report's open items as one task list, in report order (*items*
+    as served, open ones only), each with the id ``repowise mark`` records it by."""
 
     def line(i: int, item: Mapping[str, Any]) -> str:
         loc = (item.get("locations") or [{}])[0]
@@ -124,6 +135,10 @@ def render_first_look_report(
             f"## First-look report{repo_suffix(repo_name)}",
             "",
             _REPORT_LOOP,
+            "",
+            "## Record each item",
+            "",
+            "\n".join(_RECORD),
             "",
             f"## Items ({count(len(items))})",
             "",

@@ -60,14 +60,19 @@ class Ranked(NamedTuple):
     action: dict[str, Any]
 
 
-def _hidden(action: dict[str, Any], record: ActionStateRecord | None, now: datetime) -> bool:
+def answer_holds(record: ActionStateRecord | None, fingerprint: str, now: datetime) -> bool:
+    """Whether a person's answer still stands on something whose facts read *fingerprint*."""
     if record is None:
         return False
     if record.state == "snoozed":
         return record.until is not None and _naive(record.until) > _naive(now)
     # Dismissed and done both hold only while the facts are the ones the person
     # saw. A dismissed "raise coverage" returns when ten more fixes land.
-    return record.fingerprint == action["fingerprint"]
+    return record.fingerprint == fingerprint
+
+
+def _hidden(action: dict[str, Any], record: ActionStateRecord | None, now: datetime) -> bool:
+    return answer_holds(record, action["fingerprint"], now)
 
 
 def _naive(value: datetime) -> datetime:
