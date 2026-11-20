@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .resolvers.rust import (
     _crate_root_file,
@@ -59,18 +59,23 @@ class RustPathCallsMixin:
                 module = child
                 continue
             if self._rust_inline_module(module, segment, scope):
+                if self._rust_name_reused(module, segment):
+                    # Items of two blocks named alike share one key: no pick.
+                    return None
                 scope, entered = segment, True
                 continue
             if i < len(rest) - 1:
                 return None
             # The last segment is no module: a type the call names a method of.
+            if entered and self._rust_type_reused(module, segment):
+                return None  # ``a::S::new()`` and ``b::S::new()`` share one key
             target = self._file_methods.get(module, {}).get((segment, call.target_name))  # type: ignore[attr-defined]
             return self._rust_path_edge(caller_id, target, call)
         if scope is not None:
             # An item of an inline block is keyed by the block's name.
+            # ``self::f()`` in a block names the block's ``f``, never the file's.
             target = self._file_methods.get(module, {}).get((scope, call.target_name))  # type: ignore[attr-defined]
-            if target is not None or entered:
-                return self._rust_path_edge(caller_id, target, call)
+            return self._rust_path_edge(caller_id, target, call)
         hit = self._module_alias_call(file_path, module, call, caller_id)  # type: ignore[attr-defined]
         if hit is not None:
             return hit if hit.callee_id != caller_id else None
@@ -174,18 +179,28 @@ class RustPathCallsMixin:
         found = _probe_rust_path(_rust_module_dir(module), [name], self._rust_keys())
         return found if found != module else None
 
+    def _rust_modules(self, file_path: str) -> list[Symbol]:
+        """The ``mod`` symbols of *file_path* in source order, read once per file."""
+        cache: dict[str, list[Symbol]] | None = getattr(self, "_rust_modules_cache", None)
+        if cache is None:
+            cache = self._rust_modules_cache = {}
+        found = cache.get(file_path)
+        if found is None:
+            parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
+            symbols = parsed.symbols if parsed is not None else []
+            found = cache[file_path] = sorted(
+                (sym for sym in symbols if sym.kind == "module"), key=lambda sym: sym.start_line
+            )
+        return found
+
     def _rust_enclosing_modules(self, file_path: str, line: int) -> list[str]:
         """The inline ``mod name { ... }`` blocks that hold *line*, outermost first."""
-        parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
-        if parsed is None:
-            return []
         # A ``mod name;`` line holds no call, so any module spanning the line is inline.
-        held = [
-            sym
-            for sym in parsed.symbols
-            if sym.kind == "module" and sym.start_line <= line <= sym.end_line
+        return [
+            sym.name
+            for sym in self._rust_modules(file_path)
+            if sym.start_line <= line <= sym.end_line
         ]
-        return [sym.name for sym in sorted(held, key=lambda sym: sym.start_line)]
 
     def _rust_start_scope(self, file_path: str, segments: list[str], line: int) -> str | None:
         """The inline block a path read in its own file starts from.
@@ -204,8 +219,20 @@ class RustPathCallsMixin:
 
     def _rust_inline_module(self, module: str, name: str, parent: str | None = None) -> bool:
         """Whether *module* holds a ``mod name`` block directly inside block *parent*."""
-        parsed = self._parsed_files.get(module)  # type: ignore[attr-defined]
-        return parsed is not None and any(
-            sym.kind == "module" and sym.name == name and sym.parent_name == parent
-            for sym in parsed.symbols
+        return any(
+            sym.name == name and sym.parent_name == parent for sym in self._rust_modules(module)
         )
+
+    def _rust_type_reused(self, module: str, name: str) -> bool:
+        """Whether *module* declares a type *name* in more than one block."""
+        parsed = self._parsed_files.get(module)  # type: ignore[attr-defined]
+        owners = {
+            sym.parent_name
+            for sym in (parsed.symbols if parsed is not None else [])
+            if sym.name == name and sym.kind not in ("function", "method", "module")
+        }
+        return len(owners) > 1
+
+    def _rust_name_reused(self, module: str, name: str) -> bool:
+        """Whether two ``mod name`` blocks of *module* sit in different parents."""
+        return len({sym.parent_name for sym in self._rust_modules(module) if sym.name == name}) > 1

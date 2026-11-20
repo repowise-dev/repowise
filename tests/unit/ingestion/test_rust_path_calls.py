@@ -217,3 +217,20 @@ def test_an_external_path_binds_nothing(tmp_path: Path) -> None:
     }
     callees = {c for c, _o in _callees(tmp_path, files, "src/lib.rs::go")}
     assert "src/io.rs::read" not in callees
+
+
+def test_blocks_named_alike_in_two_parents_bind_nothing(tmp_path: Path) -> None:
+    # Both ``inner`` blocks key their ``helper`` alike, so neither can be told apart.
+    files = {
+        "src/lib.rs": (
+            "mod a {\n    pub mod inner {\n        pub fn helper() {}\n    }\n}\n"
+            "mod b {\n    pub mod inner {\n        pub fn helper() {}\n    }\n}\n"
+            "fn top() {\n    a::inner::helper();\n}\n"
+        )
+    }
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")} == set()
+
+
+def test_a_self_path_in_a_block_does_not_fall_back_to_the_file(tmp_path: Path) -> None:
+    files = {"src/lib.rs": "fn f() {}\n\nmod a {\n    pub fn g() {\n        self::f();\n    }\n}\n"}
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::a::g")} == set()
