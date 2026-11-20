@@ -476,6 +476,20 @@ def test_agent_calls_give_each_agent_its_first_and_last_mcp_call(tmp_path: Path)
     assert calls["codex"][1].startswith("2026-10-03")
 
 
+def test_agent_usage_counts_each_agent_s_calls(tmp_path: Path) -> None:
+    from repowise.core.savings.service import load_agent_usage
+
+    assert load_agent_usage(tmp_path) is None
+    _sidecar(tmp_path)
+    for day in (1, 2, 3):
+        _record(tmp_path, baseline=10, agent="claude_code", occurred_at=f"2026-10-0{day}T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="codex", occurred_at="2026-10-05T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="claude_code", surface="distill")
+    usage = load_agent_usage(tmp_path)
+    assert usage["claude_code"].calls == 3 and usage["codex"].calls == 1
+    assert usage["claude_code"].first.startswith("2026-10-01")
+
+
 @pytest.mark.parametrize(
     ("source", "backfilled"),
     [("session_model:claude_code", 1_000), ("session_model:unknown", 0)],

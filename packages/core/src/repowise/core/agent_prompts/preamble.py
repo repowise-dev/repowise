@@ -22,6 +22,15 @@ ROLE: dict[str, str] = {
     "cursor": "Work in this repository.",
 }
 
+#: Who the agent is across a workspace's repositories. ``packages/ui`` mirrors
+#: it as ``WORKSPACE_ROLE``.
+WORKSPACE_ROLE: dict[str, str] = {
+    "generic": "You are a senior engineer working across the repositories of one workspace.",
+    "claude-code": "You are Claude Code working across the repositories of one workspace.",
+    "claude-code-mcp": "You are Claude Code working across the repositories of one workspace indexed by repowise, with its MCP tools available.",
+    "cursor": "Work across the repositories referenced below.",
+}
+
 _WHO: dict[str, str] = {
     flavor: f"{role} " + ("" if flavor == "claude-code-mcp" else _INDEX) for flavor, role in ROLE.items()
 }

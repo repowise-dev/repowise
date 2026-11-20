@@ -61,7 +61,7 @@ That default is what Claude Code is listed: it loads a tool's schema only when t
 
 **The read tools** are `get_answer`, `get_context`, `get_symbol` and `search_codebase`: the core profile without `get_why`. They are the set always-load keeps loaded.
 
-**Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2k to 2.6k more tokens per turn, depending on the model. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
+**Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2.5k more tokens a turn. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
 
 `repowise init` and `repowise agents add` print what each connected agent lists, and the always-load state for Claude Code; `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field.
 

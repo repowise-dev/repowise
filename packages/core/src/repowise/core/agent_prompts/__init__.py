@@ -15,16 +15,20 @@ from .fix_and_verify import render_fix_and_verify
 from .fix_first import render_fix_item, render_verify_lines
 from .preamble import FLAVORS, Flavor
 from .refactoring import render_opportunity, render_plan
+from .setup import FINISH_SETUP, render_finish_setup, render_finish_setup_workspace
 
 __all__ = [
     "CHECK_PROMPTS",
     "CONNECT_EVIDENCE",
+    "FINISH_SETUP",
     "FIRST_PROMPTS",
     "FLAVORS",
     "Flavor",
     "first_prompts",
     "render_action",
     "render_connect_evidence",
+    "render_finish_setup",
+    "render_finish_setup_workspace",
     "render_fix_and_verify",
     "render_fix_item",
     "render_opportunity",

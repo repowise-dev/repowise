@@ -25,6 +25,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from repowise.core.savings.contracts import SavingsReport
 from repowise.core.savings.formulas import CODEX_OUTPUT_CAP_TOKENS, TRANSCRIPT_ESTIMATOR
@@ -80,8 +81,16 @@ def load_report(
         connection.close()
 
 
-def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]] | None:
-    """``{agent slug: (first, last)}`` times of the calls that read *repo_root*'s index.
+class AgentUsage(NamedTuple):
+    """One agent's calls to an index: the first and last time, and how many."""
+
+    first: str
+    last: str
+    calls: int
+
+
+def load_agent_usage(repo_root: str | Path | None) -> dict[str, AgentUsage] | None:
+    """``{agent slug: AgentUsage}`` for the calls that read *repo_root*'s index.
 
     ``None`` when there is no ledger to read, same contract as
     :func:`load_report`. ``unknown`` is the slug of calls whose client did not
@@ -96,7 +105,16 @@ def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]]
         return None
     finally:
         connection.close()
-    return {str(agent): (str(first), str(last)) for agent, first, last in rows}
+    return {
+        str(agent): AgentUsage(str(first), str(last), int(calls))
+        for agent, first, last, calls in rows
+    }
+
+
+def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]] | None:
+    """``{agent slug: (first, last)}`` times of the calls that read *repo_root*'s index."""
+    usage = load_agent_usage(repo_root)
+    return None if usage is None else {slug: (u.first, u.last) for slug, u in usage.items()}
 
 
 def _cap_codex_backfill(connection: sqlite3.Connection) -> None:

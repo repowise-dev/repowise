@@ -668,6 +668,63 @@ def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> N
     assert [r.symbol_id for r in _benchmarks(root)] == [None]
 
 
+_GO_BENCH = Path(__file__).parents[2] / "fixtures" / "go_bench"
+
+
+def _go_bench_repo(root: Path) -> str:
+    """The Go fixture module committed into *root*, its benchmarks indexed; the new HEAD."""
+    import shutil
+
+    import git as gitpython
+
+    shutil.copy(_GO_BENCH / "go.mod", root / "go.mod")
+    shutil.copytree(_GO_BENCH / "strs", root / "strs")
+    repo = gitpython.Repo(root)
+    repo.index.add(["go.mod", "strs/join.go", "strs/join_test.go"])
+    head = repo.index.commit("go").hexsha
+    repo.close()
+
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "strs/join_test.go"
+                session.add(HealthFileMetric(repository_id="r1", file_path=path, code_origin="test"))
+                for name, line in (("BenchmarkJoin", 10), ("BenchmarkConcat", 16)):
+                    session.add(
+                        WikiSymbol(
+                            repository_id="r1", file_path=path, symbol_id=f"{path}::{name}",
+                            name=name, qualified_name=name, kind="function", start_line=line,
+                            end_line=line + 5,
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+    return head
+
+
+def test_go_bench_output_is_stored_with_exact_allocations(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    result = _add(
+        str(_GO_BENCH / "bench.txt"), "--workload", "go bench results ./strs",
+        "--class", "benchmark", "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["matched"], payload["unlinked"]) == (
+        "go-bench", "benchmark", 3, {},
+    )
+    rows = {r.benchmark_key: r for r in _benchmarks(root)}
+    join = rows["example.com/gobench/strs.BenchmarkJoin"]
+    assert (join.symbol_id, join.unit, join.rounds) == ("strs/join_test.go::BenchmarkJoin", "ns", 2)
+    assert (join.allocs_per_op, join.bytes_per_op) == (1, 24)
+    concat = rows["example.com/gobench/strs.BenchmarkConcat/n=5"]
+    assert (concat.symbol_id, concat.allocs_per_op) == ("strs/join_test.go::BenchmarkConcat", 4)
+
+
 def test_a_red_suites_profile_is_stored_with_its_failed_count(indexed) -> None:
     root, head = indexed
     path = root / "suite.speedscope.json"

@@ -903,7 +903,9 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     repo_line = decisions_line(repo_path)
 
     def text(served: Iterable[str]) -> str:
-        return server_instructions(served, repo_line=repo_line, workspace=workspace)
+        return server_instructions(
+            served, repo_line=repo_line, workspace=workspace, extra=_setup_extra(repo_path)
+        )
 
     mcp._mcp_server.instructions = text(enabled)
 
@@ -913,6 +915,20 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
 
     _client_instructions = for_client
     return enabled
+
+
+def _setup_extra(repo_path: str | None) -> list[str]:
+    """The temporary setup line while the agent pass is offered, else nothing.
+
+    Read at each handshake from the last full read (``core.setup_state``), so
+    the line drops the session after setup is done or dismissed.
+    """
+    from repowise.core.setup_state import MCP_SETUP_LINE, offered_steps
+
+    try:
+        return [MCP_SETUP_LINE] if offered_steps(repo_path) else []
+    except Exception:  # an optional line must never stop a handshake
+        return []
 
 
 class _ClientSession(ServerSession):

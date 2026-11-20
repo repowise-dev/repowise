@@ -30,6 +30,7 @@ const EVIDENCE_LABEL: Record<ActionSurface, string> = {
   decisions: "Open the decision",
   commits: "Open recent commits",
   coverage: "Open Coverage",
+  setup: "Open Setup",
 };
 
 const BASIS_NOTE: Record<string, string | null> = {
