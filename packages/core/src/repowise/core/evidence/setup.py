@@ -284,7 +284,8 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
     """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
 
     ``flag`` is what to add to the unit's own test command (None: the runner
-    writes the report by default). Test timings are never a step of
+    writes the report by default); ``env`` is what that command needs in its
+    environment for the report (None: nothing). Test timings are never a step of
     ``next_call``: they rank tests, they never decide anything.
     """
     if not stack.junit_report:
@@ -293,6 +294,7 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
     workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
     return {
         "flag": stack.junit_flag or None,
+        "env": stack.junit_vars() or None,
         "report": report,
         "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
     }
