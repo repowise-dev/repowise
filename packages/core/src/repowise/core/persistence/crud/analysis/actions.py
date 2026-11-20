@@ -505,11 +505,24 @@ async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) ->
     runs, newest = await newest_evidence_run(session, repo_id, prefer_commit=head_sha)
     if newest is None:
         from repowise.core.evidence.runtime_setup import stored_target_classes
+        from repowise.core.evidence.setup import load_runtime_offer, offered_classes
 
-        # Only a repository with nothing stored is asked what it could run.
-        return build_runtime(
-            {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
+        from .refactoring_recommendations import repository_checkout
+
+        # Only a repository with nothing stored is asked what it could run:
+        # what ``evidence setup`` offers for its checkout, else the index's guess.
+        checkout = await repository_checkout(session, repo_id)
+        try:
+            offer = await load_runtime_offer(session, repo_id, checkout, head_sha)
+        except Exception as exc:  # a checkout that cannot be read costs only the precision
+            logger.warning("actions: runtime offer unavailable: %s", exc)
+            offer = None
+        targets = (
+            offered_classes(offer)
+            if offer is not None
+            else await stored_target_classes(session, repo_id)
         )
+        return build_runtime({"runs": 0, "targets": targets}, head_sha)
     return build_runtime(
         {"runs": runs, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
         head_sha,
@@ -719,13 +732,16 @@ async def load_actions_view(
     lookup: CrossRepoLookup | None = None,
     alias: str | None = None,
     setup: SetupFacts | None = None,
+    record: bool = True,
 ) -> dict[str, Any]:
     """The one entry point: the rules' output, the person's answers, and the ranked view.
 
     With *setup* (``setup_facts.load_setup_facts``) the live setup steps join
     the list, the view carries a ``setup`` block, and that block is stored in
     the checkout's ``.repowise/setup.json`` for the readers that cannot afford
-    this read (``analysis.actions.setup``).
+    this read (``analysis.actions.setup``). ``record=False`` leaves that store
+    to the caller, for a background read that must first check its answer is
+    still current.
 
     The rules' output is the stored snapshot while it is current, else built
     from the facts here. While a finding stored deletion-ready reads not safe
@@ -741,7 +757,7 @@ async def load_actions_view(
         states = {}
     when = now or datetime.now(UTC)
     view = await _ranked_view(session, repo_id, states, when, lookup, alias, setup)
-    if setup is not None and "setup" in view:
+    if record and setup is not None and "setup" in view:
         record_setup(setup.root, view["setup"])
     return view
 

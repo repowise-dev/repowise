@@ -848,3 +848,32 @@ def test_mixed_formats_in_one_run_are_refused_as_json(indexed) -> None:
     assert result.exit_code == 1, result.output
     assert "different formats" in result.stdout
     assert _stored(root) == ([], [])
+
+
+def _tests(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["tests", *args])
+
+
+def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
+    root, head = indexed
+    assert _json(_tests("--format", "json"))["status"] == "no_test_timings"
+    report = root / "junit.xml"
+    report.write_text(
+        '<testsuite name="pytest">'
+        '<testcase classname="tests.test_app" name="test_fast" time="0.25"/>'
+        '<testcase classname="tests.test_app" name="test_slow" time="4.5"/>'
+        "</testsuite>"
+    )
+    added = _add(str(report), "--workload", "pytest", "--class", "unit_test", "--commit", head)
+    assert added.exit_code == 0, added.output
+
+    payload = _json(_tests("--format", "json", "--limit", "1"))
+
+    assert payload["status"] == "measured"
+    (slowest,) = payload["slow_tests"]
+    assert (slowest["test_id"].endswith("::test_slow"), slowest["duration_s"]) == (True, 4.5)
+    assert payload["tests_total"] == 2
+    assert payload["file_costs"]["basis"] == "inferred"
+    table = _tests()
+    assert table.exit_code == 0
+    assert f"4.50s  {slowest['test_id']}" in table.stdout

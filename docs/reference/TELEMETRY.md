@@ -142,7 +142,7 @@ page path, or anything shown on the page**:
 
 | Field | Example | Purpose |
 |---|---|---|
-| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
+| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`, `setup`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
 
 Moving between pages inside one view (two files under Files), or to the same
 view in another repo, sends nothing new.

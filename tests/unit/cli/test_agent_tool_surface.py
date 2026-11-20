@@ -1,4 +1,4 @@
-"""What MCP tools each wired agent lists, as init and agents add report it."""
+"""What MCP tools each wired agent lists, as agents add and init's JSON report it."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 from repowise.cli.agent_targets.tool_surface import (
     agent_tool_surface,
     always_load_text,
-    surface_lines,
     surface_text,
 )
 from repowise.core.registry.tool_selection import ALWAYS_LOAD_TOOLS
@@ -52,20 +51,6 @@ def test_an_exact_list_has_no_profile(tmp_path: Path) -> None:
 def test_the_all_profile_counts_the_opt_in_tools(tmp_path: Path) -> None:
     _config(tmp_path, "mcp:\n  tools: all\n")
     assert agent_tool_surface(tmp_path, "codex")["tool_count"] > 10
-
-
-def test_lines_are_one_per_host_and_one_shared_hint(tmp_path: Path) -> None:
-    rows = [
-        {"name": "Claude Code", **agent_tool_surface(tmp_path, "claude-code")},
-        {"name": "VS Code", **agent_tool_surface(tmp_path, "vscode")},
-    ]
-    lines = surface_lines(rows)
-    assert lines[0] == "Claude Code: lists 10 MCP tools (standard profile)"
-    assert lines[1].startswith("Claude Code: always-load is off;")
-    assert lines[2] == "VS Code: lists 5 MCP tools (core profile)"
-    assert lines[3].startswith("Change with 'repowise config set mcp.tools")
-    assert len(lines) == 4
-    assert surface_lines([]) == []
 
 
 def test_the_always_load_line_quotes_the_setting_cost(tmp_path: Path) -> None:

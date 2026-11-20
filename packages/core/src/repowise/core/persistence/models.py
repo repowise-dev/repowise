@@ -3253,6 +3253,8 @@ class EvidenceQueryCount(Base):
     lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The line the evidence named, at the evidence commit.
     site_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How many items the scope ran over (its input size), when the run said.
+    scope_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     query_count: Mapped[int] = mapped_column(Integer, nullable=False)
     # The most identical statements from this site in the scope.
     identical_max: Mapped[int | None] = mapped_column(Integer, nullable=True)

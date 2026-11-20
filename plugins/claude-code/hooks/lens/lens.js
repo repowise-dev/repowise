@@ -386,9 +386,12 @@ async function fetchFileContext(host, path) {
 }
 
 // ../ui/src/lib/format.ts
+function isDateOnly(date) {
+  return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date.trim());
+}
 function parseDate(date) {
   if (date instanceof Date) return date;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
+  if (isDateOnly(date)) return new Date(date.trim());
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return /* @__PURE__ */ new Date(`${date.trim()}Z`);
   }

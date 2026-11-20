@@ -242,10 +242,15 @@ export function opportunityCause(opportunity: PerformanceOpportunity): string {
  */
 export function opportunitySubject(opportunity: PerformanceOpportunity): string {
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol;
+  if (symbol) return symbolSubject(symbol);
   const first = opportunity.evidence[0]?.function_name;
   if (first) return first;
   return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
+}
+
+/** A symbol id's short name, without its path: `render_block`. */
+export function symbolSubject(symbolId: string): string {
+  return moduleScopeLabel(symbolId, true) ?? symbolId.split("::").pop() ?? symbolId;
 }
 
 /**
@@ -380,7 +385,9 @@ function asSentence(text: string): string {
 export function causeStandingText(opportunity: PerformanceOpportunity): string {
   const plan = planPresentation(opportunity);
   return [
-    `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`,
+    opportunity.actionability_reason
+      ? `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`
+      : ACTIONABILITY_LABEL[opportunity.actionability_state],
     plan.detail.trim() ? `${plan.label}: ${plan.detail}` : plan.label,
     `The call path resolved with ${CONFIDENCE_LABEL[opportunity.confidence].toLowerCase()} confidence`,
   ]

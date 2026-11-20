@@ -17,6 +17,7 @@ import {
   type SetupResponse,
   type SetupWriteResponse,
 } from "@/lib/api/setup";
+import { getEvidenceStatus } from "@/lib/api/runtime-evidence";
 import { deriveSetup, type SetupHook, type SetupView } from "./setup-rows";
 
 /** The SWR key every Setup surface shares, so one doctor run feeds them all. */
@@ -108,8 +109,14 @@ function useAgentSeenAt(repoId: string, setup: SetupResponse | undefined) {
   return seen;
 }
 
-/** The rows for a repo, in the reader's locale. */
-export function useSetupView(repoId: string, repoName: string, setup: SetupResponse | undefined) {
+/** The rows for a repo, in the reader's locale. `evidenceConnected` feeds the
+ *  performance evidence row; pages that do not show it leave it out. */
+export function useSetupView(
+  repoId: string,
+  repoName: string,
+  setup: SetupResponse | undefined,
+  evidenceConnected: boolean | null = null,
+) {
   const format = useFormatter();
   const seen = useAgentSeenAt(repoId, setup);
   return useMemo<SetupView | null>(() => {
@@ -120,8 +127,16 @@ export function useSetupView(repoId: string, repoName: string, setup: SetupRespo
       now,
       relative: (iso) => format.relativeTime(new Date(iso), now),
       agentSeenAt: seen,
+      evidenceConnected,
     });
-  }, [setup, repoName, format, seen]);
+  }, [setup, repoName, format, seen, evidenceConnected]);
+}
+
+/** Whether runtime evidence is stored; null while unread or unreadable. */
+export function useEvidenceConnected(repoId: string): boolean | null {
+  const { data, error } = useSWR(["evidence-status", repoId], () => getEvidenceStatus(repoId), QUIET);
+  if (!data || error) return null;
+  return data.status !== "no_runtime_data";
 }
 
 // -- writes ------------------------------------------------------------------

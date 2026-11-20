@@ -9,7 +9,8 @@ classname= name= time= [file=]>``, with a ``<failure>``, ``<error>`` or
 
 A test's file comes from the case's ``file`` attribute (pytest's xunit1
 family, jest-junit with ``addFileAttribute``), a ``classname`` that is a
-path (Vitest), or the suite's ``file``. When none says it, the entry keeps
+path (Vitest; jest-junit with ``JEST_JUNIT_CLASSNAME={filepath}``), or the
+suite's ``file``. When none says it, the entry keeps
 the dotted ``classname`` (``tests.unit.test_x.TestC``, ``com.acme.CartTest``)
 and ingest places it on the indexed file that name leads to
 (:func:`repowise.core.evidence.ingest.place_test_entries`). The test id is

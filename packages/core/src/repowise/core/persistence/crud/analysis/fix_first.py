@@ -412,6 +412,13 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
                 case((p.actionability_state == "expected", reason)).label(
                     "actionability_reason"
                 ),
+                # Read for ``investigate`` rows only: an observation leaves the queue.
+                case(
+                    (
+                        p.actionability_state == "investigate",
+                        json_text(p.details_json, "prerequisites"),
+                    )
+                ).label("prerequisites"),
                 case((ready, p.details_json)).label("details_json"),
             )
             .where(p.repository_id == repo_id, p.status == "open")

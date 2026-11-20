@@ -8,8 +8,9 @@ them from the server, and ``tests/fixtures/agent_prompts`` pins the bytes.
 from __future__ import annotations
 
 from .action import render_action
+from .checks import CHECK_PROMPTS
 from .evidence import CONNECT_EVIDENCE, render_connect_evidence
-from .first_prompts import FIRST_PROMPTS, first_prompts
+from .first_prompts import FIRST_PROMPTS, first_prompt, first_prompts, workspace_prompt
 from .fix_and_verify import render_fix_and_verify
 from .fix_first import render_fix_item, render_verify_lines
 from .preamble import FLAVORS, Flavor
@@ -17,11 +18,13 @@ from .refactoring import render_opportunity, render_plan
 from .setup import FINISH_SETUP, render_finish_setup, render_finish_setup_workspace
 
 __all__ = [
+    "CHECK_PROMPTS",
     "CONNECT_EVIDENCE",
     "FINISH_SETUP",
     "FIRST_PROMPTS",
     "FLAVORS",
     "Flavor",
+    "first_prompt",
     "first_prompts",
     "render_action",
     "render_connect_evidence",
@@ -32,4 +35,5 @@ __all__ = [
     "render_opportunity",
     "render_plan",
     "render_verify_lines",
+    "workspace_prompt",
 ]

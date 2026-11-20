@@ -1,12 +1,93 @@
 import { useMemo } from "react";
 import { useTranslations } from "next-intl";
-import { humanizeOperation, type SavingsCopy, type SavingsJobId } from "@repowise-dev/ui/savings";
+import {
+  CHECK_TOOL_IDS,
+  humanizeOperation,
+  type SavingsChecksCopy,
+  type SavingsCopy,
+  type SavingsJobId,
+} from "@repowise-dev/ui/savings";
+import { RELATIVE_TIME_WORDS, type RelativeTimeUnit, type RelativeTimeWords } from "@repowise-dev/ui/lib/format";
 
 const JOBS: SavingsJobId[] = ["trim", "search", "checks", "answers", "rereads"];
+
+/** The "Checks your agents ran" words from `views.costs.checks`, ages from `overview.ago`. */
+function useChecksCopy(): SavingsChecksCopy {
+  const t = useTranslations("views.costs.checks");
+  const tAgo = useTranslations("overview.ago");
+  return useMemo<SavingsChecksCopy>(
+    () => ({
+      title: t("title"),
+      sub: t("sub"),
+      riskyLabel: t("riskyLabel"),
+      riskySub: (checked) => t("riskySub", { checked }),
+      decisionsLabel: t("decisionsLabel"),
+      decisionsSub: t("decisionsSub"),
+      problemsLabel: t("problemsLabel"),
+      problemsSub: t("problemsSub"),
+      tools: Object.fromEntries(
+        CHECK_TOOL_IDS.map((id) => [
+          id,
+          { name: t(`tools.${id}.name`), does: t(`tools.${id}.does`), unit: t(`tools.${id}.unit`) },
+        ]),
+      ) as SavingsChecksCopy["tools"],
+      levels: { high: t("levelHigh"), medium: t("levelMedium"), low: t("levelLow") },
+      changeHigh: (n) => t("changeHigh", { n }),
+      unranked: (n) => t("unranked", { n }),
+      whyAccepted: (n) => t("whyAccepted", { n }),
+      whyCandidate: (n) => t("whyCandidate", { n }),
+      whyNone: (n) => t("whyNone", { n }),
+      riskHigh: (n) => t("riskHigh", { n }),
+      healthFindings: (n) => t("healthFindings", { n }),
+      healthFiles: (n) => t("healthFiles", { n }),
+      deadItems: (n) => t("deadItems", { n }),
+      deadHigh: (n) => t("deadHigh", { n }),
+      links: {
+        get_why: t("linkWhy"),
+        get_health: t("linkHealth"),
+        get_risk: t("linkRisk"),
+        get_dead_code: t("linkDeadCode"),
+      },
+      notRecorded: t("notRecorded"),
+      notUsed: t("notUsed"),
+      missingFor: (agents, count) => t("missingFor", { agents, count }),
+      hasIt: (agent) => t("hasIt", { agent }),
+      lacksIt: (agent) => t("lacksIt", { agent }),
+      addFor: (agent) => t("addFor", { agent }),
+      notListedTo: (agents) => t("notListedTo", { agents }),
+      addInSettings: t("addInSettings"),
+      agentList: (names) =>
+        names.length <= 1
+          ? (names[0] ?? "")
+          : t("listAnd", { rest: names.slice(0, -1).join(", "), last: names[names.length - 1]! }),
+      note: t("note"),
+      oldNote: t("oldNote"),
+      empty: t("empty"),
+      connect: t("connect"),
+      agentsTitle: t("agentsTitle"),
+      tradeoff: (core, standard) => t("tradeoff", { core, standard }),
+      colAgent: t("colAgent"),
+      colProfile: t("colProfile"),
+      colTools: t("colTools"),
+      colLastCall: t("colLastCall"),
+      profilePill: (profile, count) => t("profilePill", { profile, count }),
+      customProfile: t("customProfile"),
+      noCalls: t("noCalls"),
+      changeTools: t("changeTools"),
+      changeHint: t("changeHint"),
+      switchHint: t("switchHint"),
+      ago: Object.fromEntries(
+        (Object.keys(RELATIVE_TIME_WORDS) as RelativeTimeUnit[]).map((u) => [u, tAgo.raw(u) as string]),
+      ) as RelativeTimeWords,
+    }),
+    [t, tAgo],
+  );
+}
 
 /** The savings body's words from the `views.costs` catalog. */
 export function useSavingsCopy(): SavingsCopy {
   const t = useTranslations("views.costs");
+  const checks = useChecksCopy();
   return useMemo<SavingsCopy>(
     () => ({
       heroSince: (date) => t("heroSince", { date }),
@@ -46,6 +127,7 @@ export function useSavingsCopy(): SavingsCopy {
       jobTokens: (tokens) => t("jobTokens", { tokens }),
       jobNotSetUp: t("jobNotSetUp"),
       jobNone: t("jobNone"),
+      checks,
       usageTitle: t("usageTitle"),
       usageSub: t("usageSub"),
       usageGroupLabel: t("usageGroupLabel"),
@@ -80,6 +162,6 @@ export function useSavingsCopy(): SavingsCopy {
       emptyBase: t("emptyBase"),
       nudgeDismiss: t("nudgeDismiss"),
     }),
-    [t],
+    [t, checks],
   );
 }
