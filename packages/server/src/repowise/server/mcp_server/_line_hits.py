@@ -348,11 +348,13 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
     return files, reasons
 
 
-# A declaration's head: its keyword and the name it declares, past a Go
-# receiver (``func (s *S) Name``) or a ``mut``. ``let c = open_ro(p)`` heads at ``let c``.
+# A declaration's head: its keywords (``const enum``, ``const fn``) and the
+# names it declares (``var x, y``, ``const { a, b }``), past a Go receiver
+# (``func (s *S) Name``) or a ``mut``. ``let c = open_ro(p)`` heads at ``let c``.
 _DECLARATION_HEAD = re.compile(
-    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*(?:{_DECL_WORDS})\b"
-    r"\*?(?:\s*\([^)]*\))?(?:\s*(?:mut\s+)?[\w$]+)?"
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
+    rf"(?:(?:{_DECL_WORDS})\b\*?\s*)+(?:\([^)]*\)\s*)?(?:mut\s+)?"
+    r"(?:[\w$]+(?:\s*,\s*[\w$]+)*|[{\[][^}\]]*[}\]])?"
 )
 
 

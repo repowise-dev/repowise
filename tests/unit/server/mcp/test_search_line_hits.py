@@ -1018,6 +1018,11 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
         ("func (s *Store) Load(id int) error {", r"Load\(", "definition"),
         ("type Store struct {", r"Store struct", "definition"),
         ("class Foo(Base):", r"^class ", "definition"),
+        ("pub const fn foo() -> u8 {", r"foo\(", "definition"),
+        ("export const enum Color { Red }", r"Color\b", "definition"),
+        ("var x, y int", r"\by\b", "definition"),
+        ("const { a, b } = load();", r"\bb\b", "definition"),
+        ("const { a, b } = load();", r"load\(", "match"),
         # Lines that declare nothing.
         ("x = make(1)", r"make\(", "match"),
         ("x := make(1)", r"make\(", "match"),
