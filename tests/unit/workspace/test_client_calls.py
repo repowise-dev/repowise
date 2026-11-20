@@ -331,6 +331,27 @@ class TestOptionsMethod:
         (row,) = fetch_calls(content)
         assert row.method is None
 
+    @pytest.mark.parametrize(
+        ("options", "method"),
+        [
+            ("{ method: 'DELETE' as const }", "DELETE"),
+            ("{ method: 'POST' } as RequestInit", "POST"),
+            ("{ ...opts, method: 'PUT' }", "PUT"),
+            ("{ method }", None),
+        ],
+    )
+    def test_the_options_method_reads_through_casts_and_spreads(self, options, method):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        (row,) = fetch_calls(f"fetch('/api/a', {options});")
+        assert row.method == method
+
+    def test_one_url_fetched_twice_gives_a_row_per_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/a');\nfetch('/api/a', { method: 'POST' });\n"
+        assert [r.method for r in fetch_calls(content)] == [None, "POST"]
+
     def test_a_typed_wrapper_call_is_read_with_its_name_verb(self):
         from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
 

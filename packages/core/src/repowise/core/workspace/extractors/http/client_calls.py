@@ -89,6 +89,8 @@ def method_from_argument(text: str) -> str | None:
 
 
 _METHOD_KEY = Arg(keys=("method",))
+# A TypeScript cast after a value or an options object (`'DELETE' as const`).
+_TS_CAST_RE = re.compile(r"\s+as\s+[\w.<>\[\]]+\s*$")
 
 
 def method_from_options(args: list[str]) -> str | None:
@@ -98,8 +100,8 @@ def method_from_options(args: list[str]) -> str | None:
     entry of an options object (or a ``method=`` keyword) counts, so a
     ``method`` key inside a request body is not read as the call's verb.
     """
-    methods = select_argument(args, _METHOD_KEY)
-    return method_from_argument(methods[0]) if methods else None
+    methods = select_argument([_TS_CAST_RE.sub("", a) for a in args], _METHOD_KEY)
+    return method_from_argument(_TS_CAST_RE.sub("", methods[0])) if methods else None
 
 
 # ---------------------------------------------------------------------------
