@@ -3,13 +3,15 @@
 ; tree-sitter-ruby (install separately if needed)
 ; =============================================================================
 
+; Operators (def ==, def [], def +@) name the method with an (operator) node
+; and writers (def name=) with a (setter) node; both texts are the real name.
 (method
-  name: (identifier) @symbol.name
+  name: [(identifier) (operator) (setter)] @symbol.name
   parameters: (method_parameters)? @symbol.params
 ) @symbol.def
 
 (singleton_method
-  name: (identifier) @symbol.name
+  name: [(identifier) (operator) (setter)] @symbol.name
 ) @symbol.def
 
 (class
