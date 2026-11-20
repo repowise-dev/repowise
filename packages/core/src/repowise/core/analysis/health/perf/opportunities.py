@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ....evidence.query_counts import strongest
 from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
@@ -179,9 +180,13 @@ class _Reading:
     growth: str
     # The leading workload whose newest run ranks a live member's loop owner.
     measured: str | None
+    # What query counts at a live member's loop owner or call path say.
+    queries: Any
 
 
-def _read_live(members: list[Any], measured: Mapping[str, str]) -> _Reading:
+def _read_live(
+    members: list[Any], measured: Mapping[str, str], queries: Mapping[str, Any]
+) -> _Reading:
     """Read a group's facts off its live members.
 
     Inert members (:func:`_inert`) decide nothing while a live member exists.
@@ -216,7 +221,19 @@ def _read_live(members: list[Any], measured: Mapping[str, str]) -> _Reading:
         magnitude=loop_magnitude(marker, [f.details for f in owners]),
         growth=growth_source(marker, owners),
         measured=_measured_workload(live, measured),
+        queries=_query_reading(live, queries),
     )
+
+
+def _query_reading(live: list[Any], queries: Mapping[str, Any]) -> Any:
+    """The strongest query-count reading at any live member's loop owner or on
+    its call path to the sink: the statements issue there, not always in the
+    function that loops."""
+    sites = set()
+    for f in live:
+        sites.add(f.details.get("role_owner"))
+        sites.update(f.details.get("path") or ())
+    return strongest(queries[s] for s in sites if s in queries)
 
 
 def _measured_workload(live: list[Any], measured: Mapping[str, str]) -> str | None:
@@ -239,7 +256,19 @@ def _facets(r: _Reading, confidence: str, cold_name: bool) -> dict[str, str]:
         **({"measured": r.measured} if r.measured else {}),
         # The name said it runs once and a run said otherwise: kept, never led.
         **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
+        **_query_facets(r.queries),
     }
+
+
+def _query_facets(reading: Any) -> dict[str, str]:
+    """``queries`` (``grows``, ``flat`` or ``ran``) and the largest count seen,
+    only when query counts reached the group."""
+    if reading is None:
+        return {}
+    out = {"queries": reading.verdict, "query_statements": str(reading.statements)}
+    if reading.items is not None:
+        out["query_items"] = str(reading.items)
+    return out
 
 
 def _assemble(
@@ -248,6 +277,7 @@ def _assemble(
     cap: int,
     origins: Mapping[str, str | None],
     measured: Mapping[str, str],
+    queries: Mapping[str, Any],
 ) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
@@ -261,7 +291,8 @@ def _assemble(
     """
     context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
-    r = _read_live(members, measured)
+    # Statement counts speak only to a cause that crosses a database boundary.
+    r = _read_live(members, measured, queries if boundary == "db" else {})
     evidence_confidence = provenance_confidence(r.provenance)
     assessment = assess_fix(
         r.marker,
@@ -336,6 +367,7 @@ def build_performance_opportunities(
     evidence_limit: int = 8,
     origins: Mapping[str, str | None] | None = None,
     measured: Mapping[str, str] | None = None,
+    queries: Mapping[str, Any] | None = None,
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
@@ -343,12 +375,15 @@ def build_performance_opportunities(
     ``unknown`` context (:func:`.causal.settled_context`). *measured* maps
     each function a leading workload's newest run ranks to that workload's
     name; a group whose loop owner is one carries the ``measured`` facet.
+    *queries* maps a call site's symbol id to its query-count reading
+    (``evidence.query_counts``); a database cause reached by one carries the
+    ``queries`` facet.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
-        opportunity = _assemble(key, members, cap, origins or {}, measured or {})
+        opportunity = _assemble(key, members, cap, origins or {}, measured or {}, queries or {})
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}
     return link_siblings(opportunities, sites, rank_sort_key)

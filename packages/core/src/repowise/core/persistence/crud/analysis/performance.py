@@ -257,6 +257,7 @@ async def finalize_performance_opportunities(
         evidence_limit=_EVIDENCE_LIMIT,
         origins=await _unknown_context_origins(session, repository_id, rows),
         measured=await _measured_functions(session, repository_id),
+        queries=await _query_readings(session, repository_id),
     )
 
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
@@ -322,6 +323,49 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> dict
             if row.symbol_id not in best or key < best[row.symbol_id]:
                 best[row.symbol_id] = key
     return {symbol_id: name for symbol_id, (_rank, name) in best.items()}
+
+
+async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
+    """Each call site's query-count reading (``evidence.query_counts``), by symbol id.
+
+    Read from each workload's newest complete ``query_count`` run, so a
+    superseded run never speaks for the current code and a partly mapped one,
+    which is never a basis for ranking either, never decides. Sizes are
+    compared within one run and one scope kind only: a test and a request, or
+    two workloads, are not the same measurement. Ceiling: a newest run
+    measured before the site's body changed still counts; query rows carry
+    no body digest to tell. Two statements, the second only when such a run
+    exists.
+    """
+    from ....evidence.hotness import newest_runs
+    from ....evidence.query_counts import read_statement, strongest
+    from ...models import EvidenceQueryCount, EvidenceRun
+
+    runs = (
+        await session.execute(
+            select(EvidenceRun).where(
+                EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "query_count"
+            )
+        )
+    ).scalars()
+    keep = sorted(newest_runs(r for r in runs if not r.mapping_partial))
+    if not keep:
+        return {}
+    q = EvidenceQueryCount
+    points: dict[tuple[str, str, str, str], list[tuple[int | None, int]]] = {}
+    columns = (q.run_id, q.scope_kind, q.site_symbol_id, q.statement_fp)
+    for batch in chunked(keep):
+        result = await session.execute(
+            select(*columns, q.scope_items, q.query_count).where(
+                q.repository_id == repository_id, q.run_id.in_(batch)
+            )
+        )
+        for run_id, kind, site, fp, items, count in result:
+            points.setdefault((run_id, kind, site, fp), []).append((items, count))
+    by_site: dict[str, list[Any]] = {}
+    for (_run, _kind, site, _fp), seen in points.items():
+        by_site.setdefault(site, []).append(read_statement(seen))
+    return {site: strongest(readings) for site, readings in by_site.items()}
 
 
 async def _unknown_context_origins(
