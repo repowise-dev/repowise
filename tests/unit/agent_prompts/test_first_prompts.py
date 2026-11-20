@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-from repowise.core.agent_prompts import FIRST_PROMPTS, first_prompts
+from repowise.core.agent_prompts import FIRST_PROMPTS, first_prompt, first_prompts, workspace_prompt
 
 _TS = (
     Path(__file__).resolve().parents[3]
@@ -56,3 +56,19 @@ def test_missing_facts_fall_back_to_questions_any_repo_answers() -> None:
     bare = first_prompts("orbit")
     assert bare[1] == FIRST_PROMPTS["risky"].format(repo="orbit")
     assert bare[2] == FIRST_PROMPTS["unused"].format(repo="orbit")
+
+
+def test_the_one_first_prompt_is_the_hotspot_else_the_tour() -> None:
+    assert first_prompt("orbit", hotspot="src/api.py") == FIRST_PROMPTS["hotspot"].format(
+        path="src/api.py"
+    )
+    assert first_prompt("orbit") == FIRST_PROMPTS["tour"].format(repo="orbit")
+
+
+def test_the_workspace_prompt_names_a_few_repos_and_counts_many() -> None:
+    assert workspace_prompt(["api", "web", "worker"]) == (
+        "Use Repowise to show me how api, web and worker depend on each other: "
+        "the contracts between them and which changes ripple."
+    )
+    assert "how the 5 repos in this workspace depend" in workspace_prompt(list("abcde"))
+    assert workspace_prompt(["api"]) == FIRST_PROMPTS["tour"].format(repo="api")
