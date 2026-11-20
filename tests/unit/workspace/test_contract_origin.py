@@ -53,3 +53,33 @@ def test_an_index_that_cannot_answer_falls_back_to_the_path() -> None:
     kept, dropped = asyncio.run(_production_ends(contracts, _Index()))
     assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
     assert dropped == 1
+
+
+def test_an_end_left_out_is_not_counted_as_a_missed_call(tmp_path) -> None:
+    from repowise.core.workspace.code_api import CodeSurface
+    from repowise.core.workspace.config import ContractConfig
+    from repowise.core.workspace.contracts import (
+        NON_PRODUCTION_ENDS_STAT,
+        _extract_one_repo,
+        _RepoExtraction,
+    )
+    from repowise.core.workspace.extractors.base import make_exclude_predicate
+    from repowise.core.workspace.extractors.masstransit import MessageTypeIndex
+    from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT
+
+    example = tmp_path / "docs" / "examples" / "client.js"
+    example.parent.mkdir(parents=True)
+    example.write_text("fetch('/api/orders', { method: 'POST' });\n", encoding="utf-8")
+    cfg = ContractConfig(detect_code_api=False)
+    extraction = _RepoExtraction(
+        contract_config=cfg,
+        exclude=make_exclude_predicate(tuple(cfg.exclude_globs)),
+        code_surface=CodeSurface(),
+        message_types=MessageTypeIndex(),
+        boundaries_by_repo={"app": []},
+        workspace_index=None,
+    )
+    contracts, stats = asyncio.run(_extract_one_repo(extraction, "app", tmp_path))
+    assert contracts == []
+    assert stats[NON_PRODUCTION_ENDS_STAT] == 1
+    assert stats[UNRECOGNISED_CALL_FILES_STAT] == 0

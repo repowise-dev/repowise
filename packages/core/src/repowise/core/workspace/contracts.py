@@ -976,6 +976,9 @@ async def _extract_one_repo(
     contracts.extend(code_rows)
     stats.update(code_surface.stats.get(alias, {}))
 
+    # The probe still sees every end a dialect read: a call left out for its
+    # origin was recognised, not missed.
+    read = contracts
     contracts, dropped = await _production_ends(contracts, repo_index)
     if dropped:
         stats[NON_PRODUCTION_ENDS_STAT] = dropped
@@ -990,7 +993,7 @@ async def _extract_one_repo(
     # The calls no dialect read, the miss half of any coverage figure.
     stats.update(
         await asyncio.to_thread(
-            _probe_misses, files, contracts, extraction.contract_config.detect_topics
+            _probe_misses, files, read, extraction.contract_config.detect_topics
         )
     )
 
