@@ -26,6 +26,7 @@ from repowise.cli.helpers import (
     stamp_offered_slots,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.decision_lanes import record_decision_lanes
@@ -584,6 +585,11 @@ def save_full_state_and_config(
     apply_git_history_coverage_state(state, result)
     # The docs model ran every decision lane, so none is left for a later run.
     record_decision_lanes(state, repo_path, ran_with_model=True)
+    # Same ledger write the index-only path makes, so a model-backed init also
+    # reads "ran" from the first status page (#6031).
+    mining_state.record_extraction_report(
+        state, getattr(result, "decision_report", None), head
+    )
     _stamp_full_init_scope(
         state,
         result,

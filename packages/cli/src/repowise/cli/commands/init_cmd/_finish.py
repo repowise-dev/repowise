@@ -26,6 +26,7 @@ from repowise.cli.helpers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import OK, mascot, print_stage, progress_steps
 from repowise.cli.ui.glyphs import glyph
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -284,6 +285,11 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     _stamp_scope(run, base_state, docs_mode)
     record_decision_lanes(
         base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
+    )
+    # The ledger has to read "ran" from the first status page: init's
+    # extraction is the only one this index has had (#6031).
+    mining_state.record_extraction_report(
+        base_state, getattr(result, "decision_report", None), head
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
