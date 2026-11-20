@@ -21,7 +21,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n')
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("")
-    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n, _c: tmp_path)
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
     return tmp_path
@@ -220,3 +220,29 @@ def test_ci_needs_write(repo: Path) -> None:
 
     assert result.exit_code == 2
     assert not (repo / ".gitlab").exists()
+
+
+def test_workspace_member_prints_the_running_command_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    fx = ws / "fx"
+    fx.mkdir(parents=True)
+    (fx / ".git").mkdir()
+    (fx / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (ws / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: fx\nrepos:\n  - path: fx\n    alias: fx\n    is_primary: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(fx)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    cov = CliRunner().invoke(coverage_group, ["setup"])
+    assert cov.exit_code == 0, (cov.output, cov.exception)
+    assert "coverage reads" in cov.output
+    assert "evidence reads" not in cov.output
+
+    ev = CliRunner().invoke(evidence_cmd.evidence_group, ["setup"])
+    assert ev.exit_code == 0, (ev.output, ev.exception)
+    assert "evidence reads" in ev.output
