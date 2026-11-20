@@ -368,15 +368,23 @@ def _has_pytest_suite(root: set[str], paths: list[str], files: dict[str, str]) -
     pytest config or a ``tests/`` directory says it has a suite.
     """
     spec = REGISTRY.get("python")
-    if root & set(spec.manifest_files if spec else ()) or "conftest.py" in root:
-        return True
+    # A pytest.ini is pytest's own file even when it does not parse.
+    marked = root & {*(spec.manifest_files if spec else ()), "conftest.py", "pytest.ini"}
+    return bool(marked) or _requires_pytest(root, files) or _configures_pytest(files) or any(
+        p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths
+    )
+
+
+def _requires_pytest(root: set[str], files: dict[str, str]) -> bool:
+    """Whether the unit's requirements files name pytest or a pytest plugin."""
     requirements = "\n".join(files.get(p, "") for p in root if _REQUIREMENTS.fullmatch(p))
     # Packaging spells ``pytest_mock`` and ``pytest-mock`` alike.
-    if re.search(r"(?im)^\s*pytest(?:[-_.]|\b)", requirements):
-        return True
-    configs = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
-    # A pytest.ini is pytest's own file even when it does not parse.
-    return "pytest.ini" in root or "" in configs.by_dir or any(p.startswith(("tests/", "test/")) and p.endswith(".py") for p in paths)
+    return re.search(r"(?im)^\s*pytest(?:[-_.]|\b)", requirements) is not None
+
+
+def _configures_pytest(files: dict[str, str]) -> bool:
+    """Whether a pytest config with a pytest section governs the unit's directory."""
+    return "" in read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES).by_dir
 
 
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
