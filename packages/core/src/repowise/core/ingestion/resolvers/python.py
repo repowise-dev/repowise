@@ -233,11 +233,7 @@ def resolve_python_import_all(
     # a`` inside ``pkg/__init__.py``) still fans out; only the self edge goes.
     base = _resolve_file(imp.module_path, importer_path, ctx)
     if base is None:
-        members = _namespace_members(imp, importer_path, ctx)
-        if members:
-            return members
-        external = _external(imp.module_path, ctx)
-        return (external,) if external else ()
+        return _unresolved_targets(imp, importer_path, ctx)
     targets = [base]
     names = imp.imported_names or []
     # Whether some imported name is not a submodule, so it is read from the
@@ -276,6 +272,15 @@ def resolve_python_import_all(
     if not needs_base and len(targets) > 1:
         targets.remove(base)
     return tuple(t for t in dict.fromkeys(targets) if t != importer_path)
+
+
+def _unresolved_targets(imp: Import, importer_path: str, ctx: ResolverContext) -> tuple[str, ...]:
+    """Targets of an import no file defines: namespace package members, else the external node."""
+    members = _namespace_members(imp, importer_path, ctx)
+    if members:
+        return members
+    external = _external(imp.module_path, ctx)
+    return (external,) if external else ()
 
 
 def _namespace_members(imp: Import, importer_path: str, ctx: ResolverContext) -> tuple[str, ...]:
