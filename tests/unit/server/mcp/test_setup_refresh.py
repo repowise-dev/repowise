@@ -231,6 +231,30 @@ async def test_a_failed_refresh_is_retried_on_a_later_session(indexed, monkeypat
     assert not _setup_refresh._tasks
 
 
+async def test_unreadable_setup_facts_are_retried_too(indexed, monkeypatch) -> None:
+    from repowise.server.mcp_server.tool_overview import actions as overview_actions
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    real = overview_actions.setup_facts
+
+    async def unreadable(*_args: Any) -> None:
+        return None  # what setup_facts returns after swallowing a failed read
+
+    monkeypatch.setattr(overview_actions, "setup_facts", unreadable)
+    _as_agent_call(monkeypatch, "s1")
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert str(root) not in _setup_refresh._settled
+    assert not (root / ".repowise" / "setup.json").exists()
+
+    monkeypatch.setattr(overview_actions, "setup_facts", real)
+    _as_agent_call(monkeypatch, "s2")
+    _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    await _settle()
+    assert read_setup_state(root)["offer"] == FINISH_SETUP_OFFER
+
+
 async def test_a_broken_store_is_tried_at_most_the_cap(indexed, monkeypatch) -> None:
     root, _factory = indexed
     _serve(monkeypatch, root, _broken_store)

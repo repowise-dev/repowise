@@ -99,8 +99,9 @@ def schedule_setup_refresh(result: Any) -> None:
 async def _refresh(root: str) -> None:
     """Gather the setup facts and the actions view, and store the answer.
 
-    Settles *root* unless something raised; a failure leaves it to a later
-    session's attempt.
+    Settles *root* after a write or a confirmed no-op (another checkout, or a
+    dismissal that changed meanwhile). A failure, including setup facts that
+    could not be read, leaves it to a later session's attempt.
     """
     try:
         await _read_and_record(_key(root))
@@ -135,13 +136,14 @@ async def _read_and_record(key: str) -> None:
         repo_id = repository.id
         setup = await setup_facts(session, repository)
         if setup is None:
-            return
+            # setup_facts logs and swallows a failed read: retry it later.
+            raise RuntimeError("setup facts unavailable")
         view = await load_actions_view(
             session, repo_id, setup=setup, record=False, **_cross_repo_cut(ctx.alias)
         )
     block = view.get("setup")
     if block is None:
-        return
+        raise RuntimeError("actions view carried no setup block")
     # A fresh session sees a dismissal (or its undo) committed while the view
     # was built; the "setup" action state is the source of truth for both.
     async with get_session(ctx.session_factory) as session:
