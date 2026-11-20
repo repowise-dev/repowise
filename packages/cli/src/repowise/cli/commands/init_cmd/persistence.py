@@ -656,8 +656,13 @@ def stamp_fresh_index(state: dict[str, Any], repo_path: Path, result: Any) -> No
     Every init path calls this after its config.yaml writes, since the config
     fingerprint reads them.
     """
+    from repowise.core.providers.llm.inherited_pin import PIN_REVIEWED_KEY
+
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
+    # This init records only a provider the repo chose, so there is no
+    # inherited one for a later review to find.
+    state[PIN_REVIEWED_KEY] = True
     # This index's health rows were written by the current analyzer, so start
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.
