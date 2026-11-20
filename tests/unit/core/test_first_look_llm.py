@@ -50,7 +50,7 @@ def _item(section: str, rule: str, path: str, facts: dict[str, Any]) -> Item:
 
 
 SECRET = _item(
-    "security", "hardcoded_password", "backend/scripts/create_admin_user.py", {"locations": 1}
+    "security", "hardcoded_password", "backend/scripts/seed_admin.py", {"locations": 1}
 )
 SLOW = _item(
     "performance",
@@ -62,7 +62,7 @@ DOCS = _item(
     "docs",
     "broken_doc_refs",
     "docs/guide.md",
-    {"references": 2, "targets": ["backend/CREDIT_FIXES.md"], "verify": "pytest -q"},
+    {"references": 2, "targets": ["backend/OLD_NOTES.md"], "verify": "pytest -q"},
 )
 
 
@@ -90,9 +90,9 @@ TEMPLATE = {
 
 def _reply(**over: Any) -> dict[str, Any]:
     texts = {
-        SECRET.id: "create_admin_user.py has a password in it. Rotate it first.",
+        SECRET.id: "seed_admin.py has a password in it. Rotate it first.",
         SLOW.id: "sync_all reads in a loop from 2 call sites. Batch the reads.",
-        DOCS.id: "A guide points at CREDIT_FIXES.md, which is gone. Fix the 2 references.",
+        DOCS.id: "A guide points at OLD_NOTES.md, which is gone. Fix the 2 references.",
     }
     texts.update(over.pop("items", {}))
     reply = {
@@ -147,10 +147,10 @@ def test_input_holds_facts_and_basenames_only() -> None:
     sent = build_input(_report())
     blob = json.dumps(sent)
     assert "backend/" not in blob  # no full path reaches the model
-    assert "create_admin_user.py" in blob and "CREDIT_FIXES.md" in blob
+    assert "seed_admin.py" in blob and "OLD_NOTES.md" in blob
     assert "verify" not in blob and "pytest" not in blob  # commands come from ids
     docs = sent["sections"][2]["items"][0]
-    assert docs["facts"]["targets"] == ["CREDIT_FIXES.md"]
+    assert docs["facts"]["targets"] == ["OLD_NOTES.md"]
     assert sent["top"] == [SECRET.id, SLOW.id]
 
 
@@ -246,7 +246,7 @@ async def test_invented_path_keeps_the_template() -> None:
 
 
 async def test_a_path_the_item_holds_passes() -> None:
-    text = "backend/scripts/create_admin_user.py has a password. Rotate it."
+    text = "backend/scripts/seed_admin.py has a password. Rotate it."
     prose, outcome, _ = await _run(json.dumps(_reply(items={SECRET.id: text})))
     assert prose["items"][SECRET.id] == text and outcome.fallbacks == {}
 
@@ -292,7 +292,7 @@ async def test_truncated_reply_keeps_complete_items_and_templates_the_rest() -> 
     cut = full[: full.index(DOCS.id) + 20]  # stops inside the docs item
     prose, outcome, _ = await _run(cut, stop_reason="max_tokens")
     assert outcome.truncated and outcome.used
-    assert prose["items"][SECRET.id].startswith("create_admin_user.py")
+    assert prose["items"][SECRET.id].startswith("seed_admin.py")
     assert prose["items"][SLOW.id].startswith("sync_all")
     assert prose["items"][DOCS.id] == "T docs item"
     assert prose["summary"].startswith("Rotate one password")  # written before the cut

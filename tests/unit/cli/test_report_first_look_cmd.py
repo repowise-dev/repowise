@@ -162,7 +162,14 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     from repowise.core.report.first_look import write
 
     steps = SimpleNamespace(step=lambda name: contextlib.nullcontext())
-    run = SimpleNamespace(repo_path=indexed, effective_index_only=True, provider=None)
+    run = SimpleNamespace(
+        repo_path=indexed,
+        effective_index_only=True,
+        provider=None,
+        no_provider=True,
+        cost_tracker=None,
+        opts=SimpleNamespace(dry_run=False, index_only=False),
+    )
     first_look = _finish._write_first_look(run, steps)
     assert first_look.line() == "First look  .repowise/reports/first-look.html  (template, free)"
     stored = indexed / ".repowise" / "reports" / "first-look.json"
@@ -178,6 +185,74 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     assert stored.read_text(encoding="utf-8") == written
     stored.unlink()
     assert _finish._write_first_look(run, steps) is None
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "index_only", "no_provider", "effective_index_only", "passed"),
+    [
+        (False, False, False, False, True),
+        (False, True, False, True, False),  # --no-prose
+        (False, False, True, True, False),  # keyless, whatever the environment holds
+        (False, False, False, True, False),  # the cost was declined
+        (True, False, False, False, False),
+    ],
+    ids=["model-run", "no-prose", "keyless", "declined", "dry-run"],
+)
+def test_init_passes_a_provider_only_on_a_model_run(
+    dry_run, index_only, no_provider, effective_index_only, passed
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd._finish import first_look_provider
+
+    provider = object()
+    run = SimpleNamespace(
+        provider=provider,
+        no_provider=no_provider,
+        effective_index_only=effective_index_only,
+        opts=SimpleNamespace(dry_run=dry_run, index_only=index_only),
+    )
+    assert (first_look_provider(run) is provider) is passed
+
+
+def test_init_plan_line_only_when_the_call_will_run(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.report_first_look_cmd import first_look_plan_line
+
+    provider = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-5-5")
+    line = first_look_plan_line(tmp_path, provider)
+    assert line == "First-look report about $0.003 with claude-haiku-5-5 (one model call)."
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("report:\n  first_look:\n    llm: false\n", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) is None
+    config.write_text("", encoding="utf-8")
+    (tmp_path / ".repowise" / "reports").mkdir()
+    (tmp_path / ".repowise" / "reports" / "first-look.json").write_text("{}", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) is None  # a stamped report is kept
+
+
+def test_llm_flag_prints_the_cost_and_writes_with_the_model(indexed: Path, monkeypatch) -> None:
+    from repowise.cli import helpers
+    from tests.unit.persistence.test_first_look_write import EchoProvider
+
+    provider = EchoProvider()
+    monkeypatch.setattr(helpers, "resolve_provider", lambda *a, **k: provider)
+    from repowise.cli.main import cli
+
+    declined = CliRunner().invoke(
+        cli, ["report", "first-look", str(indexed), "--llm", "--format", "json"], input="n\n"
+    )
+    assert declined.exit_code == 0, declined.output
+    assert "about $" in declined.output and provider.calls == 0
+
+    result = _run(str(indexed), "--llm", "--yes", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert provider.calls == 1
+    stored = json.loads((indexed / ".repowise" / "reports" / "first-look.json").read_text())
+    assert stored["stamp"]["generator"] == "claude-haiku-5-5"
+    assert stored["prose"]["writer"] == "claude-haiku-5-5"
 
 
 def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> None:

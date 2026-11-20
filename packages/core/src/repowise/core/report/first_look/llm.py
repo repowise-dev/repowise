@@ -65,10 +65,10 @@ person. No em dashes. Never write "consider", "might want to", "perhaps" or \
 
 Example item in:
 {"id": "fl_3a91c0d2e4f1", "rule": "hardcoded_password", "file": \
-"create_admin_user.py", "facts": {"kind": "hardcoded_password", "locations": 1}, \
+"seed_admin.py", "facts": {"kind": "hardcoded_password", "locations": 1}, \
 "basis": "measured", "confidence": "high", "severity": "act_now", "effort": "S"}
 Its text out:
-{"id": "fl_3a91c0d2e4f1", "text": "create_admin_user.py has a password written \
+{"id": "fl_3a91c0d2e4f1", "text": "seed_admin.py has a password written \
 into the script. Rotate it, then read it from the environment: deleting the line \
 is not enough, because it stays in git history."}
 """
