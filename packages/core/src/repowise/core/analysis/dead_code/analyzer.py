@@ -800,8 +800,9 @@ class DeadCodeAnalyzer:
         Generated and vendored are read from the file's bytes; the path-only
         rules are asked per candidate by ``never_flag_path``. Data is code a
         content folder holds for the product to read by path, which no import
-        reaches. ``is_test=False`` skips the test-path check, which cannot
-        change any of these answers and is half the cost.
+        reaches. ``is_test=False`` skips the test-path check, half the cost: a
+        test file is never judged anyway, so whether it reads as test or as
+        data here changes nothing.
         """
         return {
             path

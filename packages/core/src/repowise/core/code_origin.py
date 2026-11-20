@@ -849,6 +849,9 @@ def _is_content_bank_member(
     )
 
 
+# Ceiling: memoised per folder for the process, like ``_is_docs_site``, so a
+# long-running process keeps a folder's first verdict until it restarts.
+# Upgrade path: key the verdict on the folder listing's mtimes.
 @lru_cache(maxsize=1024)
 def _is_content_bank(folder: str) -> bool:
     """Whether *folder* (an absolute path) holds mostly data, and code in several languages."""
