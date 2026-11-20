@@ -1841,6 +1841,24 @@ lists components with no owner team.
 - A period summary and a method appendix (what git alone cannot attest) both state the window. Unknown counts apart, never as failure; people counted, never named.
 - Shares the `changes export` evidence pass: missing checklists are built and stored a few at a time, after stderr says how many and how long.
 
+**`repowise report first-look [PATH]`**: the report `init` writes after the first index. What Repowise found, most
+urgent first, in plain language: every item has its path and line, a link into the app and a "Fix with your agent"
+prompt. Re-renders the stored report (`.repowise/reports/first-look.json`), or writes it from the index when there is
+none (no model, free).
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--format` | `html` (written to `.repowise/reports/first-look.html` and opened), `md`, or `json` (for agents: the report with each listed item's prompt). | `html` |
+| `--out` | Output file. | stdout for `md` and `json` |
+| `--since-last` | What was fixed, changed or found new since the report was written, from the index now (text, or JSON with `--format json`). | off |
+
+- Sections, in order: Security, Performance, Code health, Tests and coverage, Dead code, Docs, Decisions, Repo hygiene.
+  An empty section is left out, except Security, which says "No live secrets in tracked files".
+- Only the precision tiers `repowise next` acts on are listed; a section shows 12 items, then a count of the rest.
+- A secret shows its place only, never its value. Owners are counted, never named.
+- Links point into the app while `repowise serve` runs, else items show plain `path:line`.
+- `init` writes it once (`report.first_look.enabled`); a later `init` keeps it, and the finish panel names it on one line.
+
 ---
 
 ### `repowise report estate [PATH]`

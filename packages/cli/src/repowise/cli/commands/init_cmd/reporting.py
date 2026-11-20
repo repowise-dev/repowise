@@ -22,6 +22,7 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.finish_panel import (
     FinishFacts,
+    FirstLook,
     StoodOut,
     print_finish_panel,
 )
@@ -130,6 +131,7 @@ def show_completion(
     files_written: list[Path] | None = None,
     verbose: bool = False,
     owl: str = mascot.DONE,
+    first_look: FirstLook | None = None,
 ) -> Completion:
     """Render the one finish panel and return what it showed; generation checks only under ``-v``.
 
@@ -138,7 +140,8 @@ def show_completion(
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
     so the panel reports what setup actually did. Its ``first_index`` also
-    keeps the ``init_success`` hint off a first index.
+    keeps the ``init_success`` hint off a first index. *first_look* is the
+    first-look report this run wrote.
     """
     from repowise.core.agent_prompts import first_prompt
     from repowise.core.index_scope import resolve_index_scope
@@ -163,6 +166,7 @@ def show_completion(
         embed_failed=getattr(result, "embed_failed_pages", 0),
         stood_out=stood_out,
         pr_bot_url=pr_bot_link_once(),
+        first_look=first_look,
     )
     steps = build_contextual_next_steps(fast_mode=(run_mode == "fast"), setup=setup)
     console.print()
