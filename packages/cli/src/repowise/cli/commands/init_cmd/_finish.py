@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.editor_setup import (
     is_editor_setup_disabled,
@@ -47,6 +49,8 @@ from .persistence import (
     stamp_fresh_index,
 )
 from .reporting import show_completion
+
+logger = structlog.get_logger(__name__)
 
 
 def persist_index(run: InitRun) -> None:
@@ -433,6 +437,55 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     return files_written
 
 
+def _write_first_look(run: InitRun, steps: Any) -> Any:
+    """Write the first-look report from the finished index; ``None`` when off or failed.
+
+    Written once: a later init keeps the stamped report (``--since-last`` shows
+    progress against it). A failure is logged and never fails init.
+    """
+    try:
+        from repowise.core.report.first_look.config import first_look_settings
+
+        settings = first_look_settings(run.repo_path)
+        if not settings.enabled:
+            return None
+        with steps.step("first_look"):
+            return run_async(_first_look(run, settings))
+    except Exception:
+        logger.warning("first_look_report_failed", repo=str(run.repo_path), exc_info=True)
+        return None
+
+
+async def _first_look(run: InitRun, settings: Any) -> Any:
+    from repowise.cli.commands.serve_cmd._lock import live_web_url
+    from repowise.cli.helpers import repo_index_session
+    from repowise.cli.ui.finish_panel import FirstLook
+    from repowise.core.report.first_look.store import read_report_file
+    from repowise.core.report.first_look.write import rendered_path, write_first_look
+
+    root = run.repo_path
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        web = live_web_url(root)
+        report = read_report_file(root) or await write_first_look(
+            session,
+            repo_id,
+            root,
+            # No model on a run meant to cost nothing.
+            provider=None if run.effective_index_only else run.provider,
+            settings=settings,
+            app_url=web,
+        )
+    where = (
+        f"{web}/repos/{repo_id}/first-look"
+        if web
+        else rendered_path(root, ".html").relative_to(root).as_posix()
+    )
+    return FirstLook(where, report.stamp.generator, report.stamp.cost)
+
+
 def _keep_out_of_git(run: InitRun) -> None:
     """The plan screen's exclude offer, over the machine-specific files now on disk."""
     if not run.git_exclude:
@@ -453,6 +506,7 @@ def complete_setup(run: InitRun) -> None:
         with steps.step("state"):
             write_run_state(run)
         files_written = _write_editor_files(run, steps)
+        first_look = _write_first_look(run, steps)
     _keep_out_of_git(run)
     _record_init_outcome(run)
 
@@ -497,6 +551,7 @@ def complete_setup(run: InitRun) -> None:
         files_written=files_written,
         verbose=opts.verbose,
         owl=_finish_owl(run),
+        first_look=first_look,
     )
     run.next_steps = completion.steps
     run.stood_out = completion.stood_out

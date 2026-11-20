@@ -67,6 +67,26 @@ class StoodOut:
 
 
 @dataclass(frozen=True)
+class FirstLook:
+    """Where the first-look report is and who wrote it: one footer line."""
+
+    #: The app page while ``repowise serve`` runs, else the HTML file's path.
+    where: str
+    #: ``template``, or the model id that wrote the prose (the report's stamp).
+    generator: str = "template"
+    cost: float | None = None
+
+    def line(self) -> str:
+        if self.generator == "template":
+            how = "template, free"
+        else:
+            how = f"written by {self.generator}" + (
+                f", ${self.cost:.3f}" if self.cost is not None else ""
+            )
+        return f"First look  {self.where}  ({how})"
+
+
+@dataclass(frozen=True)
 class FinishFacts:
     """What the run produced, already counted; the panel only formats it."""
 
@@ -85,6 +105,8 @@ class FinishFacts:
     stood_out: StoodOut = field(default_factory=StoodOut)
     #: The PR bot install link, on the one run that shows it; None on every other.
     pr_bot_url: str | None = None
+    #: The first-look report this run wrote; None when it wrote none.
+    first_look: FirstLook | None = None
 
 
 def _n(count: int, noun: str) -> str:
@@ -350,6 +372,8 @@ def _footer(
     server: bool = False,
 ) -> list[RenderableType]:
     lines = _search_lines(facts, server=server)
+    if facts.first_look is not None and not server:
+        lines.insert(0, dim_line(escape(facts.first_look.line())))
     if files_written:
         lines.append(
             dim_line(
