@@ -21,6 +21,7 @@ from repowise.server.schemas import (
     CostSummaryResponse,
     SavingsAgentRow,
     SavingsBreakdownRow,
+    SavingsCheckRow,
     SavingsFilesRow,
     SavingsOpportunityRow,
     SavingsOutputCalibration,
@@ -272,6 +273,7 @@ async def get_savings(
         backfilled_saved_input_tokens=report.backfilled_saved_input_tokens,
         backfilled_input_savings_usd=report.backfilled_input_savings_usd,
         **_output_estimate_fields(report),
+        checks=[SavingsCheckRow(**row) for row in report.checks],
     )
 
 

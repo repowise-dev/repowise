@@ -4,6 +4,7 @@
  * translation never has to know how a token count is abbreviated.
  */
 import type { SavingsJobId } from "./jobs";
+import type { SavingsChecksCopy } from "./savings-checks";
 import type { SpendGrouping } from "./types";
 
 /**
@@ -58,6 +59,9 @@ export interface SavingsCopy {
   jobTokens: (tokens: string) => string;
   jobNotSetUp: string;
   jobNone: string;
+
+  // Checks your agents ran
+  checks: SavingsChecksCopy;
 
   // What Repowise used
   usageTitle: string;
@@ -174,6 +178,89 @@ export const DEFAULT_SAVINGS_COPY: SavingsCopy = {
   jobTokens: (tokens) => `${tokens} tokens`,
   jobNotSetUp: "Not set up",
   jobNone: "None yet",
+
+  checks: {
+    title: "Checks your agents ran",
+    sub: "Before changing code, agents can ask Repowise what a change risks, which decisions govern a file, and what's unhealthy or unused. Here's what those checks turned up.",
+    riskyLabel: "Risky changes caught",
+    riskySub: (checked) => `Changes Repowise rated high risk for this repository, out of ${checked} it ranked.`,
+    decisionsLabel: "Decisions surfaced",
+    decisionsSub: "Lookups that found a recorded decision governing the file about to change.",
+    problemsLabel: "Problems pointed out",
+    problemsSub: "Health and file-risk findings your agents received while working.",
+    tools: {
+      get_change_risk: {
+        name: "Checked a change before committing",
+        does: "It rates a change's risk before your agent commits.",
+        unit: "checks",
+      },
+      get_why: {
+        name: "Looked up why code is the way it is",
+        does: "It finds the decisions and history behind a file before your agent changes it.",
+        unit: "lookups",
+      },
+      get_risk: {
+        name: "Checked how risky a file is",
+        does: "It flags hotspots and fragile files before an edit.",
+        unit: "checks",
+      },
+      get_health: {
+        name: "Checked code health",
+        does: "It points out the unhealthiest code near the change.",
+        unit: "checks",
+      },
+      get_dead_code: {
+        name: "Looked for unused code",
+        does: "It finds unused files and exports before your agent adds more code.",
+        unit: "checks",
+      },
+    },
+    levels: { high: "high", medium: "medium", low: "low" },
+    changeHigh: (n) => `${n} rated high risk`,
+    unranked: (n) => `${n} not ranked`,
+    whyAccepted: (n) => `${n} found a governing decision`,
+    whyCandidate: (n) => `${n} found candidates only`,
+    whyNone: (n) => `${n} found none`,
+    riskHigh: (n) => `${n} files flagged as hotspots`,
+    healthFindings: (n) => `${n} findings returned`,
+    healthFiles: (n) => `across ${n} files`,
+    deadItems: (n) => `${n} unused items found`,
+    deadHigh: (n) => `${n} high confidence`,
+    links: {
+      get_why: "See decisions",
+      get_health: "Open in Do next",
+      get_risk: "Open Code Health",
+      get_dead_code: "See unused code",
+    },
+    notRecorded: "Outcomes are recorded from your next session on",
+    notUsed: "Not used yet.",
+    missingFor: (agents, count) => `${agents} ${count === 1 ? "doesn't" : "don't"} have this tool.`,
+    hasIt: (agent) => `${agent} has it`,
+    lacksIt: (agent) => `${agent} doesn't`,
+    addFor: (agent) => `Add it for ${agent}`,
+    notListedTo: (agents) => `Not listed to ${agents}`,
+    addInSettings: "Add it in Agents & editors",
+    agentList: (names) =>
+      names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`,
+    note: "A check counts once per call. Findings are what Repowise returned, not what your agent then fixed.",
+    oldNote: "Calls before this release were counted, but their outcomes weren't kept.",
+    empty:
+      "No agent is connected yet. Once your agent calls Repowise, the checks it runs and what they find show up here.",
+    connect: "Connect an agent",
+    agentsTitle: "Your agents' tools",
+    tradeoff: (core, standard) =>
+      `Agents that load every tool's description on each turn (Cursor, Codex and most others) get the ${core} core tools by default, which keeps each turn small. Claude Code loads descriptions only when needed, so it gets all ${standard} standard tools. Adding the check tools to another agent roughly doubles the tool descriptions it carries each turn.`,
+    colAgent: "Agent",
+    colProfile: "Tools",
+    colTools: "Listed to it",
+    colLastCall: "Last call",
+    profilePill: (profile, count) => `${profile} · ${count}`,
+    customProfile: "custom",
+    noCalls: "No calls yet",
+    changeTools: "Change tools in Agents & editors",
+    changeHint: "Pick a profile (core, lean, standard, all) or switch single tools. Applies when the agent restarts.",
+    switchHint: "The prompt asks your agent to switch the profile for you.",
+  },
 
   usageTitle: "What Repowise used",
   usageSub:

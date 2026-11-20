@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   listCosts: vi.fn(),
   getRepoSetup: vi.fn(),
   getRepo: vi.fn(),
+  getMcpToolSurface: vi.fn(),
   repoId: { current: "repo-1" },
 }));
 
@@ -31,6 +32,7 @@ vi.mock("@/lib/api/costs", () => ({
 }));
 vi.mock("@/lib/api/setup", () => ({ getRepoSetup: mocks.getRepoSetup }));
 vi.mock("@/lib/api/repos", () => ({ getRepo: mocks.getRepo }));
+vi.mock("@/lib/api/mcp-tools", () => ({ getMcpToolSurface: mocks.getMcpToolSurface }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: mocks.repoId.current }) }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children?: React.ReactNode }) => (
@@ -42,6 +44,7 @@ vi.mock("next/link", () => ({
 
 import CostsPage from "./page";
 import { jobsNotSetUp, nudgeHref, pickSavingsNudge } from "./savings-nudge";
+import { checkAgents, connectedAgentIds } from "./savings-checks";
 import { ACCOUNTING_METHOD_VERSION } from "@repowise-dev/ui/savings";
 
 function makeSavings(overrides: Partial<Savings> = {}): Savings {
@@ -104,6 +107,32 @@ function renderPage() {
   );
 }
 
+const CORE = ["get_answer", "get_context", "get_symbol", "search_codebase", "get_why"];
+const STANDARD = [...CORE, "get_overview", "get_change_risk", "get_risk", "get_health", "get_dead_code"];
+const SURFACE = {
+  repo_id: "r1",
+  is_workspace: false,
+  override: null,
+  profiles: { core: CORE, standard: STANDARD },
+  tools: [],
+  clients: {
+    "claude-code": { profile: "standard", tools: STANDARD },
+    cursor: { profile: "core", tools: CORE },
+  },
+};
+const AGENTS = [
+  { id: "claude-code", display_name: "Claude Code", installed: true, connected: true, last_call_at: null },
+  { id: "cursor", display_name: "Cursor", installed: true, connected: true, last_call_at: null },
+  { id: "codex", display_name: "Codex", installed: true, connected: false },
+];
+const CHECK_ROWS = [
+  { tool: "get_change_risk", calls: 12, outcome_calls: 12, high: 3, medium: 4, low: 5 },
+  { tool: "get_why", calls: 0, outcome_calls: 0 },
+  { tool: "get_risk", calls: 0, outcome_calls: 0 },
+  { tool: "get_health", calls: 0, outcome_calls: 0 },
+  { tool: "get_dead_code", calls: 0, outcome_calls: 0 },
+];
+
 let repoCounter = 0;
 
 beforeEach(() => {
@@ -116,6 +145,7 @@ beforeEach(() => {
   mocks.listCosts.mockResolvedValue([]);
   mocks.getRepoSetup.mockResolvedValue(makeSetup());
   mocks.getRepo.mockResolvedValue({ id: "r", name: "demo" });
+  mocks.getMcpToolSurface.mockResolvedValue(SURFACE);
 });
 
 afterEach(() => {
@@ -186,6 +216,49 @@ describe("costs page", () => {
     await screen.findByText("50%");
     await waitFor(() => expect(mocks.getRepoSetup).toHaveBeenCalled());
     expect(screen.queryByText("Trim long command output")).toBeNull();
+  });
+});
+
+describe("checks your agents ran", () => {
+  it("asks for connected agents' tools only and names who lacks a tool", async () => {
+    mocks.getRepoSetup.mockResolvedValue(makeSetup({ agents: AGENTS } as Partial<SetupResponse>));
+    mocks.getSavings.mockResolvedValue(makeSavings({ checks: CHECK_ROWS }));
+    renderPage();
+    expect(await screen.findByText("Checks your agents ran")).toBeTruthy();
+    await waitFor(() =>
+      expect(mocks.getMcpToolSurface).toHaveBeenCalledWith(mocks.repoId.current, ["claude-code", "cursor"]),
+    );
+    expect(await screen.findByText("Add it for Cursor")).toBeTruthy();
+    expect(screen.queryByText(/Codex has it|Codex doesn't/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Change tools in Agents & editors" }).getAttribute("href")).toBe(
+      `/repos/${mocks.repoId.current}/settings/agents`,
+    );
+  });
+
+  it("does not fetch tools when no agent is connected and offers to connect one", async () => {
+    mocks.getSavings.mockResolvedValue(
+      makeSavings({ checks: CHECK_ROWS.map((row) => ({ tool: row.tool, calls: 0, outcome_calls: 0 })) }),
+    );
+    renderPage();
+    expect(await screen.findByText("Connect an agent")).toBeTruthy();
+    expect(mocks.getMcpToolSurface).not.toHaveBeenCalled();
+  });
+});
+
+describe("checkAgents", () => {
+  it("is unknown until both Setup and the tool lists are in", () => {
+    const setup = makeSetup({ agents: AGENTS } as Partial<SetupResponse>);
+    expect(checkAgents(undefined, SURFACE)).toBeUndefined();
+    expect(checkAgents(makeSetup({ agents_available: false }), SURFACE)).toBeUndefined();
+    expect(checkAgents(setup, undefined)).toBeUndefined();
+    expect(checkAgents(makeSetup(), undefined)).toEqual([]);
+    expect(checkAgents(setup, SURFACE)?.map((a) => [a.name, a.profile, a.tools.length])).toEqual([
+      ["Claude Code", "standard", 10],
+      ["Cursor", "core", 5],
+    ]);
+    expect(connectedAgentIds(setup)).toEqual(["claude-code", "cursor"]);
+    // A connected agent the server could not resolve: unknown, never dropped.
+    expect(checkAgents(setup, { ...SURFACE, clients: { cursor: SURFACE.clients.cursor } })).toBeUndefined();
   });
 });
 

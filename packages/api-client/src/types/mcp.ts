@@ -37,6 +37,8 @@ export interface McpToolSurface {
   tools: McpToolInfo[];
   /** The `repowise config` command that sets this surface. */
   command?: string;
+  /** Per agent asked for with `clients`: its profile (null for an exact list) and tools. */
+  clients?: Record<string, { profile?: string | null; tools: string[] }>;
 }
 
 /** One agent's MCP config for a repo, as `repowise agents print-config` prints it. */
