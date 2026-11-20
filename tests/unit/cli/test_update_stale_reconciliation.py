@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,7 @@ def test_check_repo_staleness_returns_false_when_all_fresh(tmp_path: Path) -> No
 def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Path) -> None:
     """Doctor check flags stale pages, and load_stale_structural_file_paths identifies them."""
     repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["foo.py", "bar.py"]))
+    (repo_path / ".repowise" / "state.json").write_text(json.dumps({"docs_mode": "llm"}))
 
     # 1. Doctor initially reports stale pages
     _, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="quiet")
@@ -198,6 +200,101 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     assert sorted(stale_paths) == ["bar.py", "foo.py"]
 
 
+async def _add_stale_page(repo_path: Path, page_type: str) -> None:
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+        upsert_page,
+    )
+
+    engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
+    async with get_session(create_session_factory(engine)) as session:
+        repo = await get_repository_by_path(session, str(repo_path))
+        await upsert_page(
+            session,
+            page_id=f"{page_type}:app",
+            repository_id=repo.id,
+            page_type=page_type,
+            title="app",
+            content="body",
+            target_path="app",
+            source_hash="hash",
+            model_name="template",
+            provider_name="template",
+            freshness_status="stale",
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+def _stale_pages_row(repo_path: Path):
+    _, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="quiet")
+    return next(c for c in checks if c.name == "Stale pages")
+
+
+@pytest.mark.parametrize(
+    ("docs_mode", "provider", "count", "remedy"),
+    [
+        pytest.param(
+            "deterministic",
+            False,
+            "1 of a type a model writes",
+            "`repowise update --full` rebuilds them from code, with no model calls.",
+            id="template-wiki-no-provider",
+        ),
+        pytest.param(
+            "deterministic",
+            True,
+            "1 of a type a model writes",
+            "`repowise update --full` writes the whole wiki with a model, and prices it first.",
+            id="template-wiki-provider",
+        ),
+        pytest.param(
+            "llm",
+            True,
+            "1 model-written",
+            "`repowise update --full` refreshes them, pricing the model-written ones "
+            "before it rewrites them.",
+            id="llm-wiki",
+        ),
+    ],
+)
+def test_doctor_stale_remedy_matches_the_wiki(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    docs_mode: str,
+    provider: bool,
+    count: str,
+    remedy: str,
+) -> None:
+    """Issue #5678: the count's label and the remedy follow docs mode and provider."""
+    from repowise.core.providers.llm import resolve
+
+    repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["bar.py"]))
+    asyncio.run(_add_stale_page(repo_path, "module_page"))
+    (repo_path / ".repowise" / "state.json").write_text(json.dumps({"docs_mode": docs_mode}))
+    # Doctor's other rows resolve too, with keyword arguments.
+    named = resolve.LLMSelection(provider="anthropic" if provider else None)
+    monkeypatch.setattr(resolve, "resolve_llm", lambda *args, **kwargs: named)
+
+    row = _stale_pages_row(repo_path)
+    for detail in (row.detail, row.as_json()["detail"]):
+        assert detail.startswith(f"2 stale ({count}, 1 structural)")
+        assert remedy in detail
+        assert detail.endswith(" `--repair` only fixes store drift.")
+
+
+def test_doctor_names_no_remedy_without_a_state_file(tmp_path: Path) -> None:
+    # `update --full` stops on a missing state.json; the state.json row names `repowise init`.
+    repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["bar.py"]))
+
+    detail = _stale_pages_row(repo_path).detail
+    assert detail.startswith("1 stale (1 structural)")
+    assert "repowise update" not in detail
+
+
 def test_doctor_stale_guidance_names_each_owner() -> None:
     detail = repo_checks._stale_page_guidance(
         {
@@ -205,7 +302,8 @@ def test_doctor_stale_guidance_names_each_owner() -> None:
             "onboarding": 1,
             "scc_page": 2,
             "file_page": 3,
-        }
+        },
+        "llm",
     )
 
     assert detail.startswith("10 stale (5 model-written, 5 structural)")
@@ -217,7 +315,7 @@ def test_doctor_stale_guidance_names_each_owner() -> None:
 
 
 def test_doctor_model_only_guidance_keeps_authoritative_fallback() -> None:
-    detail = repo_checks._stale_page_guidance({"module_page": 2})
+    detail = repo_checks._stale_page_guidance({"module_page": 2}, "llm")
 
     assert "repowise generate --stale" not in detail
     assert "repowise update --full" in detail
