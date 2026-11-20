@@ -96,3 +96,16 @@ object Ext {
         assert [(s.name, s.parent_name) for s in result.symbols if s.kind == "method"] == [
             ("shout", "Ext")
         ]
+
+    def test_annotated_abstract_members_keep_their_annotations(self, parser: ASTParser) -> None:
+        source = b"""\
+trait T {
+  @deprecated def all: List[Int]
+  @deprecated def get(i: Int): Int
+  def plain: Int
+}
+"""
+        fi = _make_file_info("scala_pkg/T.scala", "scala")
+        result = parser.parse_file(fi, source)
+        methods = {s.name: s.decorators for s in result.symbols if s.kind == "method"}
+        assert methods == {"all": ["@deprecated"], "get": ["@deprecated"], "plain": []}

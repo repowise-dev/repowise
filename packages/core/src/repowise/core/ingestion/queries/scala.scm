@@ -23,6 +23,12 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; Annotated abstract member: @deprecated def all: List[Int]
+(function_declaration
+  (annotation) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
 (trait_definition
   name: (identifier) @symbol.name
 ) @symbol.def
