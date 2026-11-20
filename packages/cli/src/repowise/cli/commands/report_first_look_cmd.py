@@ -44,15 +44,17 @@ def first_look_estimate(provider: Any, model: str | None = None) -> str:
 
 def first_look_plan_line(repo_path: Path, provider: Any) -> str | None:
     """Init's cost-plan line for the report's model call; ``None`` when init will
-    not make it (the setting is off, or a stamped report is kept)."""
+    not make it (the setting is off, or a stamped report is kept). Init writes
+    a report when :func:`read_report_file` finds none it can read, so this asks
+    the same helper."""
     from repowise.core.report.first_look.config import first_look_settings
-    from repowise.core.report.first_look.store import report_path
+    from repowise.core.report.first_look.store import read_report_file
 
     try:
         settings = first_look_settings(repo_path)
     except Exception:  # a broken config line must not stop the plan
         return None
-    if not (settings.enabled and settings.llm) or report_path(repo_path).exists():
+    if not (settings.enabled and settings.llm) or read_report_file(repo_path) is not None:
         return None
     return f"First-look report {first_look_estimate(provider, settings.model)} (one model call)."
 

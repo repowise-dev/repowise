@@ -45,6 +45,10 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
     """Write *report*; one stamped at another commit is kept as ``first-look.<commit>.json``."""
     path = report_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The new report is on disk before the old one moves, so a failed write
+    # leaves the checkout's current report in place.
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(_dump(report), encoding="utf-8", newline="\n")
     old = read_report_file(repo_root)
     if (
         old is not None
@@ -56,8 +60,6 @@ def write_report_file(repo_root: Path, report: FirstLookReport) -> Path:
         # Unreadable here (damaged, or a newer Repowise's schema): the latest
         # unreadable copy is kept beside it; an earlier one there is replaced.
         os.replace(path, path.with_name("first-look.previous.json"))
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(_dump(report), encoding="utf-8", newline="\n")
     os.replace(tmp, path)
     return path
 
