@@ -275,16 +275,20 @@ def resolve_python_import_all(
 
 
 def _unresolved_targets(imp: Import, importer_path: str, ctx: ResolverContext) -> tuple[str, ...]:
-    """Targets of an import no file defines: namespace package members, else the external node."""
-    members = _namespace_members(imp, importer_path, ctx)
-    if members:
+    """Targets of an import no file defines: namespace package members, plus
+    the external node unless every imported name was a member."""
+    members, complete = _namespace_members(imp, importer_path, ctx)
+    if members and complete:
         return members
     external = _external(imp.module_path, ctx)
-    return (external,) if external else ()
+    return (*members, external) if external else members
 
 
-def _namespace_members(imp: Import, importer_path: str, ctx: ResolverContext) -> tuple[str, ...]:
-    """The submodule files ``from <namespace package> import a, b`` names.
+def _namespace_members(
+    imp: Import, importer_path: str, ctx: ResolverContext
+) -> tuple[tuple[str, ...], bool]:
+    """The submodule files ``from <namespace package> import a, b`` names, and
+    whether every imported name was one.
 
     A directory with no ``__init__.py`` is a PEP 420 namespace package: no
     file defines the package itself, and the only names it can give are its
@@ -294,16 +298,18 @@ def _namespace_members(imp: Import, importer_path: str, ctx: ResolverContext) ->
     names = [n for n in imp.imported_names or [] if n and n != "*" and "." not in n]
     dirs = _namespace_dirs(imp.module_path, importer_path, ctx) if names else []
     targets: list[str] = []
+    complete = bool(names)
     for name in names:
         hit = _namespace_member(imp.module_path, name, dirs, ctx)
         if hit is None or hit == importer_path:
+            complete = complete and hit == importer_path
             continue
         targets.append(hit)
         for binding in imp.bindings:
             if (binding.exported_name or binding.local_name) == name:
                 binding.source_file = hit
                 break
-    return tuple(dict.fromkeys(targets))
+    return tuple(dict.fromkeys(targets)), complete
 
 
 def _namespace_dirs(module_path: str, importer_path: str, ctx: ResolverContext) -> list[str]:

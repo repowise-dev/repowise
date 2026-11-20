@@ -153,3 +153,11 @@ def test_templated_import_module_reaches_a_namespace_rooted_package(tmp_path) ->
     edges = PythonDynamicHints().extract(tmp_path)
     targets = {e.target for e in edges if e.source == "backend/scripts/author.py"}
     assert {"backend/scripts/plugins/alpha.py", "backend/scripts/plugins/beta.py"} <= targets
+
+
+def test_a_name_no_member_defines_keeps_the_external_node() -> None:
+    imp = _imp("middleware", ["local_jwt", "verify"])
+    assert resolve_python_import_all(imp, "backend/middleware/auth.py", _ctx()) == (
+        "backend/middleware/local_jwt.py",
+        "external:middleware",
+    )
