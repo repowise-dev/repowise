@@ -349,7 +349,7 @@ def test_truncate_trims_capped_file_list_instead_of_dropping_it():
 def test_truncate_leaves_small_module_files_untouched():
     """A small module under budget keeps every file row and no truncation flag."""
     name = "packages/core/src/repowise/core/ingestion"
-    target = _module_target(name, 5, summary_len=100, n_symbols=2)
+    before = _module_target(name, 5, summary_len=100, n_symbols=2)
     out = truncate_to_budget({"targets": {name: copy.deepcopy(before)}}, char_budget=9000)
 
     assert "truncated" not in out
