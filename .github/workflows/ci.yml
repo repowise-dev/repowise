@@ -504,7 +504,7 @@ jobs:
   python-tests:
     name: Python tests
     runs-on: ubuntu-latest
-    needs: [changes, test-python]
+    needs: [changes, test-python, test-integration]
     if: ${{ !cancelled() }}
     permissions:
       contents: read
@@ -579,12 +579,17 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TESTS: ${{ needs.test-python.result }}
+          INTEGRATION: ${{ needs.test-integration.result }}
         run: |
-          echo "Changed paths: $CHANGES; Python test jobs: $TESTS"
+          echo "Changed paths: $CHANGES; Python test jobs: $TESTS; integration tests: $INTEGRATION"
           [ "$CHANGES" = success ] || { echo "::error::The path filter did not finish ($CHANGES)."; exit 1; }
           case "$TESTS" in
             success|skipped) ;;
             *) echo "::error::A Python test job did not pass ($TESTS)."; exit 1 ;;
+          esac
+          case "$INTEGRATION" in
+            success|skipped) ;;
+            *) echo "::error::The integration tests did not pass ($INTEGRATION)."; exit 1 ;;
           esac
 
   # ---------------------------------------------------------------------------
@@ -879,12 +884,15 @@ jobs:
         run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
 
   # ---------------------------------------------------------------------------
-  # Integration tests (push and nightly only, slower)
+  # Integration tests: every push and the nightly run, and a pull request
+  # whenever its Python suites run, so a break shows before it merges. About
+  # 8 minutes, inside the unit shards' wall time.
   # ---------------------------------------------------------------------------
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v7
