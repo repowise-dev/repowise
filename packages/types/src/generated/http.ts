@@ -2370,6 +2370,21 @@ export interface FileScoreShiftResponse {
   change?: number | null;
 }
 
+/** The summed duration of the timed tests that run one production file. */
+export interface FileTestCost {
+  file_path: string;
+  test_seconds: number;
+  timed_tests: number;
+  tests: number;
+}
+
+export interface FileTestCosts {
+  basis: "measured" | "inferred";
+  files: FileTestCost[];
+  files_total: number;
+  not_production: number;
+}
+
 export interface FileTrendPointResponse {
   taken_at?: string | null;
   score: number;
@@ -4873,6 +4888,26 @@ export interface SiloModule {
   owned_files: number;
   file_count: number;
   share: number;
+}
+
+/** One timed test, at its longest duration across the basis runs. */
+export interface SlowTest {
+  test_id: string;
+  test_file: string | null;
+  duration_s: number;
+  outcome: string | null;
+  first_in_class: boolean | null;
+  workload: string;
+}
+
+/** The slowest tests and the test time per production file, from stored JUnit timings. */
+export interface SuiteCostResponse {
+  status: "measured" | "no_test_timings";
+  command: string | null;
+  runs: EvidenceRunSummary[];
+  slow_tests: SlowTest[];
+  tests_total: number;
+  file_costs: FileTestCosts | null;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */
