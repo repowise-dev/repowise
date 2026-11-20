@@ -78,6 +78,9 @@ describe("SavingsChecks", () => {
     expect(within(change).getByText("Claude Code has it")).toBeTruthy();
     expect(within(change).getByText("Cursor doesn't")).toBeTruthy();
     expect(within(change).getByText("Add it for Cursor").getAttribute("href")).toBe("/agents");
+    // The link shows once; later rows keep only the quiet marks.
+    expect(screen.getAllByText("Add it for Cursor")).toHaveLength(1);
+    expect(within(item("Checked how risky a file is")).getByText("Cursor doesn't")).toBeTruthy();
     // No dollars or tokens on a check.
     expect(change.textContent).not.toMatch(/\$|tokens/);
   });
@@ -109,7 +112,9 @@ describe("SavingsChecks", () => {
     const rows = RECORDED.map((r) => row(r.tool, r.calls ?? 0));
     render(<SavingsChecks rows={rows} agents={[claude]} profiles={PROFILES} copy={copy} />);
     expect(screen.queryByText("Risky changes caught")).toBeNull();
-    expect(screen.getAllByText(copy.notRecorded)).toHaveLength(4);
+    // Said once under the intro, not on every row.
+    expect(screen.getAllByText(copy.notRecorded)).toHaveLength(1);
+    expect(within(item("Checked code health")).queryByText(copy.notRecorded)).toBeNull();
     expect(screen.getByText(copy.oldNote)).toBeTruthy();
     expect(screen.queryByText("See decisions")).toBeNull();
   });
@@ -195,5 +200,18 @@ describe("summary tiles", () => {
     expect(screen.getByText("Decisions surfaced")).toBeTruthy();
     expect(screen.queryByText("Risky changes caught")).toBeNull();
     expect(screen.queryByText("Problems pointed out")).toBeNull();
+  });
+});
+
+describe("partly recorded windows", () => {
+  it("keeps the per-row line on rows without outcomes when others have them", () => {
+    const rows = [
+      row("get_change_risk", 10, { outcome_calls: 10, high: 1, medium: 2, low: 7 }),
+      row("get_why", 5),
+      ...["get_risk", "get_health", "get_dead_code"].map((t) => row(t, 0)),
+    ];
+    render(<SavingsChecks rows={rows} copy={copy} />);
+    expect(within(item("Looked up why code is the way it is")).getByText(copy.notRecorded)).toBeTruthy();
+    expect(screen.getAllByText(copy.notRecorded)).toHaveLength(1);
   });
 });

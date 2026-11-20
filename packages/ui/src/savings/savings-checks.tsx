@@ -173,15 +173,16 @@ export function SavingsChecks({
 
   const withOutcomes = checksHaveOutcomes(ordered);
   const known = agents && agents.length > 0 ? agents : null;
-  // The Agents & editors link shows once, on the first tool no agent has.
-  const firstMissing = known
-    ? sorted.find((row) => (row.calls ?? 0) === 0 && toolAvailability(row.tool, known).with.length === 0)?.tool
-    : undefined;
+  const firstAdd = known ? firstAddRow(sorted, known) : undefined;
 
   return (
     <section className="mt-14">
       {header}
       {withOutcomes && <ChecksSummary rows={ordered} copy={copy} />}
+      {/* Nothing recorded an outcome yet: say so once, not on every row. */}
+      {!withOutcomes && totalCalls > 0 && (
+        <p className="mt-4 text-[15px] text-[var(--color-text-tertiary)]">{copy.notRecorded}</p>
+      )}
       <ul className="m-0 mt-6 list-none p-0">
         {sorted.map((row) => (
           <CheckRow
@@ -189,7 +190,8 @@ export function SavingsChecks({
             row={row}
             agents={known}
             link={links[row.tool as CheckToolId]}
-            addHref={row.tool === firstMissing || (row.calls ?? 0) > 0 ? agentsHref : undefined}
+            addHref={row.tool === firstAdd ? agentsHref : undefined}
+            sayNotRecorded={withOutcomes}
             copy={copy}
             A={A}
           />
@@ -203,12 +205,25 @@ export function SavingsChecks({
   );
 }
 
+/**
+ * The row that carries the Agents & editors link: the first where a connected
+ * agent lacks the tool. Later rows keep the quiet marks. An unused tool some
+ * agent has carries a copy prompt instead, so it never takes the link.
+ */
+function firstAddRow(rows: readonly SavingsCheckView[], agents: readonly CheckAgentView[]): string | undefined {
+  return rows.find((row) => {
+    const avail = toolAvailability(row.tool, agents);
+    return avail.without.length > 0 && ((row.calls ?? 0) > 0 || avail.with.length === 0);
+  })?.tool;
+}
+
 /** One check tool: what it returned, or a quiet line on why it was not used. */
 function CheckRow({
   row,
   agents,
   link,
   addHref,
+  sayNotRecorded,
   copy,
   A,
 }: {
@@ -216,6 +231,8 @@ function CheckRow({
   agents: readonly CheckAgentView[] | null;
   link: string | undefined;
   addHref: string | undefined;
+  /** Whether a row without outcomes says so itself (some other row has outcomes). */
+  sayNotRecorded: boolean;
   copy: SavingsChecksCopy;
   A: React.ElementType;
 }) {
@@ -233,7 +250,7 @@ function CheckRow({
       <div className="col-span-2 col-start-1 row-start-2 min-w-0 text-[15px] text-[var(--color-text-primary)] md:col-span-1 md:col-start-2 md:row-start-1">
         {calls > 0 ? (
           <>
-            <Outcome row={row} copy={copy} />
+            {((row.outcome_calls ?? 0) > 0 || sayNotRecorded) && <Outcome row={row} copy={copy} />}
             {(row.outcome_calls ?? 0) > 0 && link && copy.links[tool] && (
               <div className="mt-1.5">
                 <A href={link} className={LINK}>
@@ -253,7 +270,7 @@ function CheckRow({
           <Availability
             avail={avail}
             missingEverywhere={missingEverywhere}
-            addHref={missingEverywhere || calls > 0 ? addHref : undefined}
+            addHref={addHref}
             copy={copy}
             A={A}
           />
@@ -425,7 +442,7 @@ function Availability({
   const dot = "inline-flex items-center gap-1.5 before:inline-block before:h-1.5 before:w-1.5 before:rounded-full before:border";
   const missing = copy.agentList(avail.without.map((a) => a.name));
   return (
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs first:mt-0.5 text-[var(--color-text-tertiary)]">
       {missingEverywhere ? (
         <span className={`${dot} before:border-[var(--color-text-tertiary)]`}>{copy.notListedTo(missing)}</span>
       ) : (
