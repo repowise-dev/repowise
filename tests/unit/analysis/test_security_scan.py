@@ -1556,6 +1556,7 @@ class TestSecretPrecision:
             ('TOKEN = "^Zx9Qw8Rt5Yu3$"\n', "hardcoded_secret"),
             ('password = "Zx9\\dQw8Rt5"\n', "hardcoded_password"),
             ('password = "Zx9\\s+Qw8Rt5"\n', "hardcoded_password"),
+            ('password = "^(Zx9Qw8Rt5)$"\n', "hardcoded_password"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
