@@ -165,6 +165,10 @@ class CostGroupResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     cost_usd: float
+    # Calls priced at $0 and why: an agent CLI on the user's plan, or a model
+    # on their own machine. Lets a page say so instead of printing $0.00.
+    subscription_calls: int = 0
+    local_calls: int = 0
 
 
 class CostSummaryResponse(BaseModel):
@@ -173,6 +177,8 @@ class CostSummaryResponse(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     since: str | None
+    subscription_calls: int = 0
+    local_calls: int = 0
 
 
 class SavingsBreakdownRow(BaseModel):
@@ -187,6 +193,8 @@ class SavingsBreakdownRow(BaseModel):
     group: str | None = None
     events: int = 0
     saved_input_tokens: int = 0
+    # Input savings valued at each event's own rate; unpriced events add 0.
+    priced_input_savings_usd: float = 0.0
 
 
 class SavingsAgentRow(BaseModel):

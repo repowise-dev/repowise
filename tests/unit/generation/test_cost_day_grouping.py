@@ -109,3 +109,75 @@ async def test_postgresql_daily_query_groups_by_utc(surface, cost_sessions, monk
 
     sql = str(statement.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
     assert "GROUP BY date(timezone('UTC', llm_costs.ts))" in sql
+
+
+async def test_zero_priced_calls_say_how_they_were_paid_for(cost_sessions):
+    from repowise.server.routers.costs import get_cost_summary
+
+    async with cost_sessions() as session:
+        for model in ("claude_cli/sonnet", "claude_cli/sonnet", "ollama/qwen3", "qwen3.5:4b"):
+            session.add(
+                LlmCost(
+                    repository_id="repo",
+                    ts=datetime(2026, 10, 30, 9, tzinfo=UTC),
+                    model=model,
+                    operation="answer_synthesis",
+                    input_tokens=1,
+                    output_tokens=1,
+                    cost_usd=0.0,
+                )
+            )
+        await session.commit()
+        rows = await list_costs("repo", by="operation", since=None, session=session)
+        summary = await get_cost_summary("repo", since=None, session=session)
+
+    by_group = {row.group: row for row in rows}
+    answers = by_group["answer_synthesis"]
+    assert (answers.calls, answers.subscription_calls, answers.local_calls) == (4, 2, 2)
+    assert answers.cost_usd == 0.0
+    docs = by_group["doc_generation"]
+    assert (docs.subscription_calls, docs.local_calls) == (0, 0)
+    assert rows[0].group == "doc_generation"  # still ranked by cost
+    assert (summary.total_calls, summary.subscription_calls, summary.local_calls) == (7, 2, 2)
+    assert summary.total_cost_usd == 6.0
+
+
+@pytest.mark.parametrize(
+    "model,kind",
+    [
+        ("claude_cli/sonnet", "subscription"),
+        ("codex_cli/gpt-5", "subscription"),
+        ("ollama/qwen3", "local"),
+        ("qwen3.5:4b", "local"),
+        ("mock", "local"),
+        ("claude-sonnet-4-6", "metered"),
+        ("anthropic.claude-sonnet-4-5-20250929-v1:0", "metered"),
+        (None, "metered"),
+    ],
+)
+def test_billing_kind(model, kind):
+    from repowise.core.generation.cost_tracker import billing_kind
+
+    assert billing_kind(model) == kind
+
+
+async def test_zero_cost_groups_keep_a_stable_order(cost_sessions):
+    async with cost_sessions() as session:
+        for operation, calls in (("b_op", 1), ("a_op", 1), ("c_op", 3)):
+            for _ in range(calls):
+                session.add(
+                    LlmCost(
+                        repository_id="repo",
+                        ts=datetime(2026, 10, 30, 9, tzinfo=UTC),
+                        model="claude_cli/sonnet",
+                        operation=operation,
+                        input_tokens=1,
+                        output_tokens=1,
+                        cost_usd=0.0,
+                    )
+                )
+        await session.commit()
+        rows = await list_costs("repo", by="operation", since=None, session=session)
+
+    assert [row.group for row in rows][-3:] == ["c_op", "a_op", "b_op"]
+

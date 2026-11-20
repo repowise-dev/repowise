@@ -20,14 +20,18 @@ shape, but never recomputes a number from its parts.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from repowise.core.savings.contracts import SavingsReport
+from repowise.core.savings.formulas import CODEX_OUTPUT_CAP_TOKENS, TRANSCRIPT_ESTIMATOR
 from repowise.core.savings.recorder import sidecar_path
 from repowise.core.savings.repository import SavingsRepository
+
+logger = logging.getLogger(__name__)
 
 
 def load_report(
@@ -52,6 +56,7 @@ def load_report(
     if connection is None:
         return None
     moment = as_of or datetime.now(UTC)
+    _cap_codex_backfill(connection)
     try:
         return SavingsRepository(connection).report(
             # The recorder files events under the path it wrote to, so the
@@ -92,6 +97,55 @@ def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]]
     finally:
         connection.close()
     return {str(agent): (str(first), str(last)) for agent, first, last in rows}
+
+
+def _cap_codex_backfill(connection: sqlite3.Connection) -> None:
+    """Report Codex transcript events at today's cap, whenever they were recorded.
+
+    A ledger can hold Codex backfill rows stored above
+    ``CODEX_OUTPUT_CAP_TOKENS``, single events crediting hundreds of thousands
+    of tokens. The rows stay as written; this shadows ``savings_events`` on this read-only handle with a temp view
+    (SQLite resolves an unqualified name in ``temp`` before ``main``) that
+    re-applies ``CODEX_OUTPUT_CAP_TOKENS`` exactly as the backfill does today:
+    never below what was delivered. Every aggregate in the report then reads
+    the capped figure, and a row already under the cap is untouched, so this
+    is idempotent and agrees with a fresh backfill.
+
+    Best-effort: on any failure the report reads the rows as written.
+    """
+    try:
+        cap = int(CODEX_OUTPUT_CAP_TOKENS)
+        # Cheapest test first: almost every row fails the integer comparison.
+        over = (
+            f"baseline_input_tokens > {cap} AND integration = 'codex' "
+            f"AND estimator = '{TRANSCRIPT_ESTIMATOR}' AND result_state = 'success' "
+            "AND delivered_input_tokens IS NOT NULL"
+        )
+        baseline = f"MAX(MIN(baseline_input_tokens, {cap}), delivered_input_tokens)"
+        pre_budget = f"MAX(MIN(pre_budget_input_tokens, {cap}), delivered_input_tokens)"
+        capped = {
+            "baseline_input_tokens": baseline,
+            "pre_budget_input_tokens": pre_budget,
+            "dropped_input_tokens": f"MAX({pre_budget} - delivered_input_tokens, 0)",
+            "saved_input_tokens": f"MAX({baseline} - delivered_input_tokens, 0)",
+        }
+        names = [row[1] for row in connection.execute("PRAGMA main.table_info(savings_events)")]
+        # A view naming a missing column would fail every report query, which
+        # loses the report; reading the rows uncapped is the better failure.
+        required = {*capped, "integration", "estimator", "result_state", "delivered_input_tokens"}
+        if not required <= set(names):
+            return
+        columns = ", ".join(
+            f"CASE WHEN {over} THEN {capped[name]} ELSE {name} END AS {name}"
+            if name in capped
+            else name
+            for name in names
+        )
+        connection.execute(
+            f"CREATE TEMP VIEW savings_events AS SELECT {columns} FROM main.savings_events"
+        )
+    except Exception:
+        logger.debug("savings report reads Codex events uncapped", exc_info=True)
 
 
 #: ``pricing_source`` of the default rate a scan falls back to when it sighted

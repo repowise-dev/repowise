@@ -132,6 +132,14 @@ async def test_priced_and_unpriced_savings_are_reported_separately(
     assert models["claude-sonnet-4-6"]["saved_input_tokens"] == 1_000
     # The unpriced bucket is a real row, not a dropped one.
     assert models[None]["saved_input_tokens"] == 500
+    # Each bucket carries its own priced dollars; the unpriced one adds nothing.
+    assert models["claude-sonnet-4-6"]["priced_input_savings_usd"] == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
+    assert models[None]["priced_input_savings_usd"] == 0.0
+    assert sum(row["priced_input_savings_usd"] for row in data["per_day"]) == pytest.approx(
+        data["priced_input_savings_usd"]
+    )
 
 
 async def test_a_dead_end_saves_nothing_and_is_not_an_answered_query(
