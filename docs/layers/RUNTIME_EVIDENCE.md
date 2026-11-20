@@ -33,7 +33,7 @@ repowise evidence add <file> --workload "<name>" --class <class> --commit <sha> 
 repowise evidence status                   # 4. what is stored and how fresh it is
 ```
 
-`evidence setup` runs nothing and writes nothing. For each build unit it prints
+`evidence setup` runs nothing and writes nothing unless asked (see `--write` below). For each build unit it prints
 the stack, the coverage command and its ingest line, then the runtime targets
 (entry points first, then benchmarks, then the unit-test suite), each with a
 profiler command that needs no elevated privileges, its prerequisites, where the
@@ -67,6 +67,12 @@ read, a program with no profiler flag).
   profile even when the program throws or exits nonzero, so check the exit code
   before ingesting.
 - `repowise coverage setup` prints the same plan with the coverage part only.
+- `repowise evidence setup --write` also writes a CI file with one job per unit:
+  its tests with coverage and JUnit XML, on pull requests and pushes to the
+  default branch, the report and test results kept as artifacts. <!-- repowise-drift-ignore -->
+  `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+  (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one.
+  A different file already at that path is left alone and the command exits `1`.
 
 ### Python example
 
@@ -491,6 +497,31 @@ recorded: add the profile again). The JSON form adds
 `runs_stored` per kind and, per run, the tool, value kind, unit, `ingested_at`,
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
+
+## `evidence tests`
+
+```bash
+repowise evidence tests
+repowise evidence tests --limit 50 --format json
+```
+
+The slowest tests and the test time spent on each production file, from the
+JUnit XML timings `evidence add` stored: the newest run of each test workload
+as `evidence status` picks it (the newest environment when a workload ran in
+several), each test at
+its longest duration across them. A test flagged `first_in_class` may carry
+fixture time its whole class or module shares.
+
+Test time per file is the summed duration of the timed tests that run it, with
+how many of its tests were timed. Its `basis` is `measured` when a stored per-test
+coverage map (`repowise coverage add` with per-test contexts) names the timed
+tests, and `inferred` from each function's nearest tests on the call graph
+otherwise.
+Only production files are listed; files of other origins run by timed tests are
+counted under `not_production`. With nothing stored, `status` is
+`no_test_timings` and `command` is `repowise evidence setup`, which prints how
+each unit's tests write JUnit XML. Timing orders tests and files; it never
+gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
 
 ## What is stored
 

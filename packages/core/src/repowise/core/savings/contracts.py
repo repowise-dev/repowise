@@ -211,6 +211,44 @@ def _avoided_files(value: Mapping[str, Any]) -> tuple[tuple[str, int | None], ..
     return tuple(files.items())
 
 
+#: What a check tool's reply returned, as a few counts and one or two enums.
+#: The vocabulary is closed so the column stays small and readable by the
+#: report; anything else is dropped. Each tool uses a subset (see the MCP
+#: wrapper's ``_savings/outcome.py``).
+OUTCOME_LEVELS = ("high", "medium", "low")
+OUTCOME_DECISIONS = ("accepted", "candidate", "none")
+_OUTCOME_ENUMS: dict[str, tuple[str, ...]] = {
+    "level": OUTCOME_LEVELS,
+    "decision": OUTCOME_DECISIONS,
+}
+_OUTCOME_COUNTS = frozenset(
+    {"high", "medium", "low", "findings", "files", "items", "high_confidence"}
+)
+_OUTCOME_COUNT_MAX = 1_000_000
+
+
+def normalize_outcome(value: object) -> dict[str, Any] | None:
+    """*value* reduced to the outcome vocabulary, or ``None`` when it is not a mapping.
+
+    Never raises: an outcome is an annotation, and a bad one costs only itself.
+    An empty mapping is kept as ``{}``: the check ran and returned nothing to count.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _OUTCOME_ENUMS and item in _OUTCOME_ENUMS[key]:
+            out[key] = item
+        elif (
+            key in _OUTCOME_COUNTS
+            and isinstance(item, int)
+            and not isinstance(item, bool)
+            and item >= 0
+        ):
+            out[key] = min(item, _OUTCOME_COUNT_MAX)
+    return out
+
+
 def _file_session(value: Mapping[str, Any]) -> str | None:
     """The cross-surface session key for this event's files, or None."""
     raw = value.get("host_session_id")
@@ -263,6 +301,9 @@ class SavingsEvent:
     #: :func:`~repowise.core.savings.correlation.file_session_key` of the host
     #: session, so a file is credited once per session across surfaces.
     file_session_key: str | None = None
+    #: What a check tool returned (:func:`normalize_outcome`); ``None`` for
+    #: every other operation and for events recorded before outcomes were kept.
+    outcome: Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(
@@ -337,10 +378,16 @@ class SavingsEvent:
             metadata=normalize_metadata(value.get("metadata")),
             avoided_files=avoided,
             file_session_key=file_key,
+            outcome=normalize_outcome(value.get("outcome")),
         )
 
     def metadata_json(self) -> str:
         return json.dumps(dict(self.metadata), sort_keys=True, separators=(",", ":"))
+
+    def outcome_json(self) -> str | None:
+        if self.outcome is None:
+            return None
+        return json.dumps(dict(self.outcome), sort_keys=True, separators=(",", ":"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,3 +521,7 @@ class SavingsReport:
     #: recorded ``saved_output_tokens``, which no producer measures. Null when
     #: no calibration could be loaded.
     output_estimate: OutputEstimate | None = None
+    #: One row per check tool (:data:`~repowise.core.savings.reporting.CHECK_TOOLS`):
+    #: usable MCP calls and what they returned. Outcome fields are null when no
+    #: call in the window recorded one.
+    checks: tuple[Mapping[str, Any], ...] = ()

@@ -1,8 +1,9 @@
 """/api/repos/{repo_id}/evidence/*: what stored runtime evidence measured.
 
 Read-only and thin: run status is ``evidence.status``, the ranked rows are
-``crud.measured_costs`` and the per-function view is ``symbol_hotness``
-through ``crud.hotness_for_symbols``, the readers the CLI and MCP tools use.
+``crud.measured_costs``, the per-function view is ``symbol_hotness``
+through ``crud.hotness_for_symbols``, and test time is
+``evidence.suite_cost.suite_costs``, the readers the CLI and MCP tools use.
 Every measured value names its basis (workload class and name, commit, age,
 samples); no row means unknown, never zero.
 """
@@ -15,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.evidence.status import evidence_status, run_status
+from repowise.core.evidence.suite_cost import DEFAULT_LIMIT, suite_costs
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
@@ -23,6 +25,7 @@ from repowise.server.schemas.runtime_evidence import (
     EvidenceStatusResponse,
     MeasuredFunctionsResponse,
     MeasuredResponse,
+    SuiteCostResponse,
 )
 
 router = APIRouter(
@@ -126,6 +129,19 @@ async def get_measured_functions(
         session, repo_id, [symbol_id] if symbol_id else [], files=files
     )
     return {"functions": [_function(row) for _, row in sorted(rows.items())]}
+
+
+@router.get("/{repo_id}/evidence/tests", response_model=SuiteCostResponse)
+async def get_suite_costs(
+    repo_id: str,
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_MEASURED_LIMIT, description="Tests and files."),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """The slowest tests and the test time per production file, from stored
+    JUnit timings; per file ``measured`` with a per-test coverage map, else
+    ``inferred`` from the call graph."""
+    repo = await _repo(session, repo_id)
+    return await suite_costs(session, repo_id, repo.head_commit, limit=limit)
 
 
 def _function(row: Any) -> dict[str, Any]:

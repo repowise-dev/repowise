@@ -7,6 +7,7 @@ import { DEFAULT_SAVINGS_COPY, type SavingsCopy } from "./copy";
 import type { SavingsJobId } from "./jobs";
 import { RepowiseUsage, type RepowiseUsageProps } from "./repowise-usage";
 import { SavingsHero, SavingsProof } from "./savings-hero";
+import { SavingsChecks, type SavingsChecksProps } from "./savings-checks";
 import { SavingsJobs } from "./savings-jobs";
 import { SavingsOverTime } from "./savings-over-time";
 import { hasSavings, type SavingsView } from "./types";
@@ -27,6 +28,9 @@ export interface SavingsPageBodyProps {
   emptyActions?: React.ReactNode;
   /** Jobs whose source is not set up, shown muted when they recorded nothing. */
   notSetUp?: readonly SavingsJobId[];
+  /** Connected agents, tool profiles and links for "Checks your agents ran".
+   *  The section renders when the report carries check rows. */
+  checks?: Omit<SavingsChecksProps, "rows" | "copy" | "LinkComponent">;
   methodologyHref?: string;
   benchmarkHref?: string;
   LinkComponent?: React.ElementType;
@@ -45,6 +49,7 @@ export function SavingsPageBody({
   nudge,
   emptyActions,
   notSetUp,
+  checks,
   methodologyHref,
   benchmarkHref,
   LinkComponent,
@@ -78,6 +83,9 @@ export function SavingsPageBody({
         </div>
         <SavingsJobs data={savings} copy={copy} {...(notSetUp ? { notSetUp } : {})} />
       </section>
+      {(savings.checks?.length ?? 0) > 0 && (
+        <SavingsChecks rows={savings.checks ?? []} copy={copy.checks} LinkComponent={LinkComponent} {...checks} />
+      )}
       <div className="mt-14">{usageSection}</div>
       <HowWeCount
         data={savings}

@@ -267,6 +267,11 @@ class PerTestMap:
         return sum(count for count, _ in self.sources.values())
 
 
+def source_test_numbers(tmap: PerTestMap) -> dict[str, list[int]]:
+    """The numbers of the tests that ran each source file of *tmap* (indexes into ``tests``)."""
+    return {source: [no for no, _ in _decode_tests(text)] for source, (_, text) in tmap.sources.items()}
+
+
 def _layout(rows: list[Any], source_format: str) -> PerTestMap:
     """Deduped records (:func:`cap_test_map` output) as a :class:`PerTestMap`.
 

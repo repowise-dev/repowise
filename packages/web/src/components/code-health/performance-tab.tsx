@@ -18,6 +18,7 @@ import {
 import { getRefactoringPlan, getRefactoringPlanPrompt } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
+import { useRuntimeEvidence } from "@/components/setup/use-setup-actions";
 
 /** Shared with the map, which uses the same name to pin a cause's files. */
 const OPPORTUNITY_PARAM = "opportunity";
@@ -34,6 +35,7 @@ function currentParams(): URLSearchParams {
 export function PerformanceTab({ repoId }: { repoId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const runtimeEvidence = useRuntimeEvidence(repoId);
   // Held stable across renders: the queue memoizes its rows against it, and a
   // fresh object every render would defeat that for twenty rows at a time.
   const adapter: PerformanceViewAdapter = useMemo(() => {
@@ -99,6 +101,7 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
       onFiltersChange={onFiltersChange}
       openOpportunityId={searchParams.get(OPPORTUNITY_PARAM)}
       onOpenOpportunityChange={onOpenOpportunityChange}
+      runtimeEvidence={runtimeEvidence}
     />
   );
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -61,6 +61,70 @@ def agent_breakdown_rows(rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[str, 
         }
         for row in rows
     )
+
+
+#: The MCP tools an agent runs as a check before changing code, in the order a
+#: page lists them. Their events carry an ``outcome`` (see
+#: :func:`~repowise.core.savings.contracts.normalize_outcome`).
+CHECK_TOOLS = ("get_change_risk", "get_why", "get_risk", "get_health", "get_dead_code")
+
+#: Fields a check row reports per tool. The rest stay null on that row.
+_CHECK_FIELDS: dict[str, tuple[str, ...]] = {
+    "get_change_risk": ("high", "medium", "low"),
+    "get_risk": ("high", "medium", "low"),
+    "get_why": ("decisions_accepted", "decisions_candidate", "decisions_none"),
+    "get_health": ("findings", "files"),
+    "get_dead_code": ("items", "high_confidence"),
+}
+_CHECK_ROW_FIELDS = tuple(dict.fromkeys(f for fields in _CHECK_FIELDS.values() for f in fields))
+_SUMMED_COUNTS = ("high", "medium", "low", "findings", "files", "items", "high_confidence")
+
+
+@dataclass
+class CheckTally:
+    """One check tool's calls and summed outcomes, before shaping."""
+
+    calls: int = 0
+    outcome_calls: int = 0
+    sums: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+    def add_outcome(self, outcome: Mapping[str, Any], tool: str, calls: int = 1) -> None:
+        """Fold in *calls* calls that returned *outcome*. Calls are counted apart."""
+        self.outcome_calls += calls
+        if tool == "get_change_risk":
+            # A change has one level; it counts once under it.
+            level = outcome.get("level")
+            if level:
+                self.sums[level] += calls
+        else:
+            for key in _SUMMED_COUNTS:
+                self.sums[key] += int(outcome.get(key) or 0) * calls
+        decision = outcome.get("decision")
+        if decision:
+            self.sums[f"decisions_{decision}"] += calls
+
+
+def check_rows(tallies: Mapping[str, CheckTally]) -> tuple[Mapping[str, Any], ...]:
+    """One row per check tool, zero calls included, so every surface lists all five.
+
+    Outcome fields are null on a row with no recorded outcome (calls made
+    before outcomes were kept, or a host that records none), and null where a
+    field does not apply to that tool.
+    """
+    rows = []
+    for tool in CHECK_TOOLS:
+        tally = tallies.get(tool) or CheckTally()
+        recorded = tally.outcome_calls > 0
+        row: dict[str, Any] = {
+            "tool": tool,
+            "calls": tally.calls,
+            "outcome_calls": tally.outcome_calls,
+        }
+        for name in _CHECK_ROW_FIELDS:
+            applies = recorded and name in _CHECK_FIELDS[tool]
+            row[name] = int(tally.sums.get(name, 0)) if applies else None
+        rows.append(row)
+    return tuple(rows)
 
 
 #: Surfaces whose events are tool calls Repowise answered: an MCP or VS Code
@@ -235,6 +299,19 @@ def _session_rates(events: Iterable[SavingsEvent]) -> dict[str, float]:
         if event.session_id not in newest or key > newest[event.session_id]:
             newest[event.session_id] = key
     return {session: rate for session, (_at, rate) in newest.items()}
+
+
+def _check_rows_from(scoped: Iterable[SavingsEvent]) -> tuple[Mapping[str, Any], ...]:
+    """The pure path's check rows, tallied exactly as the SQL path tallies them."""
+    tallies: dict[str, CheckTally] = {}
+    for event in scoped:
+        if event.surface != "mcp" or not event.is_usable or event.operation not in CHECK_TOOLS:
+            continue
+        tally = tallies.setdefault(event.operation, CheckTally())
+        tally.calls += 1
+        if event.outcome is not None:
+            tally.add_outcome(event.outcome, event.operation)
+    return check_rows(tallies)
 
 
 def build_report(
@@ -413,4 +490,5 @@ def build_report(
         backfilled_saved_input_tokens=backfilled_tokens,
         backfilled_input_savings_usd=backfilled_usd,
         output_estimate=estimate_output(session_groups(scoped)),
+        checks=_check_rows_from(scoped),
     )

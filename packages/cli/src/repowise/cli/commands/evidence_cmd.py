@@ -43,6 +43,7 @@ from repowise.core.evidence.add import (
     evidence_paths,
     prepare_evidence_files,
 )
+from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
@@ -403,9 +404,22 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
 
 @evidence_group.command("setup")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--write",
+    is_flag=True,
+    help="Also write a CI file that runs each unit's tests with coverage and JUnit XML "
+    "and keeps them as artifacts.",
+)
+@click.option(
+    "--ci",
+    type=click.Choice(CI_KINDS),
+    default=None,
+    help="The CI file --write writes. Default: gitlab with a .gitlab-ci.yml and no "
+    "GitHub workflows, else github.",
+)
 @format_option()
-def evidence_setup_command(repo: str | None, fmt: str) -> None:
-    """Print how to collect evidence here; run nothing, write nothing.
+def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: str) -> None:
+    """Print how to collect evidence here; run nothing, write nothing without --write.
 
     For each build unit: the stack, the command that writes a coverage report
     repowise reads (run from the unit's root), what it needs first, where the
@@ -417,21 +431,41 @@ def evidence_setup_command(repo: str | None, fmt: str) -> None:
     profile, then the tests with coverage. ``stack: unknown`` when repowise is
     not sure how a unit runs. Works before the repository is indexed.
 
+    --write adds one CI file (``.github/workflows/repowise-evidence.yml`` or
+    ``.gitlab/repowise-evidence.yml``) with a job per unit that runs its tests
+    with coverage and JUnit XML on pull requests and default-branch pushes and
+    keeps both as artifacts. It never overwrites a file that differs.
+
     Examples:
 
         repowise evidence setup
         repowise evidence setup --format json
+        repowise evidence setup --write
+        repowise evidence setup --write --ci gitlab
     """
-    _print_setup(repo, fmt)
+    if ci is not None and not write:
+        raise click.UsageError("--ci names the file --write writes; add --write.")
+    _print_setup(repo, fmt, write=write, ci=ci)
 
 
-def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> None:
+def _print_setup(
+    repo: str | None,
+    fmt: str,
+    *,
+    coverage_only: bool = False,
+    write: bool = False,
+    ci: str | None = None,
+) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
+    from repowise.core.evidence.ci_snippet import detect_ci
     from repowise.core.evidence.setup import evidence_setup
+    from repowise.core.git_refs import default_branch
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
+    if write:
+        ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
         _stored_inputs(repo_path, runtime=not coverage_only)
     )
@@ -445,13 +479,22 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
         coverage_only=coverage_only,
         index_error=index_error,
         index_fix=index_fix,
+        ci=ci if write else None,
+        branch=default_branch(str(repo_path)) if write else None,
     )
+    if write:
+        _write_ci(repo_path, plan["ci"], fmt)
     if fmt == "json":
         emit_json(plan)
         return
     for unit in plan["units"]:
         for line in _setup_lines(unit):
             notices.print(line)
+    _print_next(plan, notices)
+
+
+def _print_next(plan: dict[str, Any], notices: Any) -> None:
+    """The plan's reason and ``next_call``, in words."""
     call = plan["next_call"]
     if plan["reason"]:
         notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
@@ -464,6 +507,56 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
         optional = call["optional"]
         notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
                       f"{escape(optional['purpose'])}")
+
+
+def _write_ci(repo_path: Path, snippet: dict[str, Any], fmt: str) -> None:
+    """Write *snippet*'s CI file under *repo_path*; refuse when none applies or a different one is there.
+
+    Sets ``snippet["written"]``: True when written, False when the same file was already there.
+    """
+    content = snippet.pop("content")
+    if content is None:
+        emit_refusal(
+            "no_ci_command",
+            "No unit has a test command repowise is sure of, so no CI file was written.",
+            fmt,
+            remedy="Run `repowise evidence setup` and see each unit's reason.",
+            skipped=snippet["skipped"],
+        )
+    target = repo_path / snippet["path"]
+    try:
+        existing = target.read_text(encoding="utf-8") if target.exists() else None
+    except OSError:
+        existing = ""
+    if existing is not None and existing != content:
+        emit_refusal(
+            "ci_file_exists",
+            f"{snippet['path']} already exists and differs; nothing was written.",
+            fmt,
+            remedy=f"Remove {snippet['path']} to write a fresh one, or edit it by hand.",
+            path=snippet["path"],
+        )
+    snippet["written"] = existing is None
+    if existing is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+    if fmt != "json":
+        _print_written(snippet, notice_console(fmt))
+
+
+def _print_written(snippet: dict[str, Any], notices: Any) -> None:
+    """What ``--write`` did, how to include a GitLab file, and the units it left out."""
+    verb = "Wrote" if snippet["written"] else "Unchanged"
+    notices.print(f"[bold]{verb}[/bold] {escape(snippet['path'])} ({len(snippet['units'])} job(s))")
+    if snippet["ci"] == "gitlab":
+        notices.print(
+            f"  include it from .gitlab-ci.yml: [cyan]include: [{{local: {escape(snippet['path'])}}}][/cyan]"
+        )
+    for unit in snippet["skipped"]:
+        notices.print(
+            f"  [yellow]skipped {escape(unit['root'] or 'the repository root')}: "
+            f"{escape(unit['reason'] or '')}[/yellow]"
+        )
 
 
 def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
@@ -628,10 +721,12 @@ def _total(value: float) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
-async def _status(repo_path: Path) -> dict[str, Any]:
-    from repowise.core.evidence.status import evidence_status
+async def _read_store(repo_path: Path, read: Any, empty: dict[str, Any]) -> dict[str, Any]:
+    """``await read(session, repo_row)`` on the repository's store, with ``repo`` and
+    ``indexed``; *empty* in its place when the repository is not indexed, so a
+    JSON reader never meets a missing key."""
     from repowise.core.persistence import create_engine, create_session_factory, get_session
-    from repowise.core.persistence.crud import get_repository_by_path, list_evidence_runs
+    from repowise.core.persistence.crud import get_repository_by_path
 
     url = get_db_url_for_repo(repo_path)
     await reconcile_schema_best_effort(url)
@@ -640,13 +735,97 @@ async def _status(repo_path: Path) -> dict[str, Any]:
         async with get_session(create_session_factory(engine)) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                # Same keys as an indexed repo, so a JSON reader never meets a missing one.
-                return {"repo": str(repo_path), "indexed": False, **evidence_status([], None)}
-            runs = await list_evidence_runs(session, repo_row.id)
-            return {
-                "repo": str(repo_path),
-                "indexed": True,
-                **evidence_status(runs, repo_row.head_commit),
-            }
+                return {"repo": str(repo_path), "indexed": False, **empty}
+            return {"repo": str(repo_path), "indexed": True, **await read(session, repo_row)}
     finally:
         await engine.dispose()
+
+
+async def _status(repo_path: Path) -> dict[str, Any]:
+    from repowise.core.evidence.status import evidence_status
+    from repowise.core.persistence.crud import list_evidence_runs
+
+    async def read(session: Any, repo_row: Any) -> dict[str, Any]:
+        runs = await list_evidence_runs(session, repo_row.id)
+        return evidence_status(runs, repo_row.head_commit)
+
+    return await _read_store(repo_path, read, evidence_status([], None))
+
+
+@evidence_group.command("tests")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--limit",
+    type=click.IntRange(1, 500),
+    default=20,
+    show_default=True,
+    help="Tests and files to list.",
+)
+@format_option()
+def evidence_tests_command(repo: str | None, limit: int, fmt: str) -> None:
+    """Show the slowest tests and the test time spent on each production file.
+
+    Reads the JUnit XML timings ``evidence add`` stored (the newest run of each
+    test workload). Test time per file sums the timed tests that run it:
+    ``measured`` from the per-test coverage map when one is stored
+    (``repowise coverage add`` with per-test contexts), else ``inferred`` from
+    each function's nearest tests on the call graph. Timing orders, never gates.
+
+    Examples:
+
+        repowise evidence tests
+        repowise evidence tests --limit 50 --format json
+    """
+    notices = notice_console(fmt)
+    repo_path = _resolve_repo(repo, notices)
+    payload = run_async(_tests(repo_path, limit))
+    if fmt == "json":
+        emit_json(payload)
+        return
+    if not payload["indexed"]:
+        notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+        return
+    if payload["status"] != "measured":
+        notices.print(
+            "[yellow]No test timings stored.[/yellow] "
+            f"[cyan]{escape(payload['command'])}[/cyan] prints how this repository's tests write JUnit XML."
+        )
+        return
+    for line in _tests_lines(payload):
+        notices.print(line)
+
+
+async def _tests(repo_path: Path, limit: int) -> dict[str, Any]:
+    from repowise.core.evidence.suite_cost import no_timings, suite_costs
+
+    async def read(session: Any, repo_row: Any) -> dict[str, Any]:
+        return await suite_costs(session, repo_row.id, repo_row.head_commit, limit=limit)
+
+    return await _read_store(repo_path, read, no_timings())
+
+
+def _tests_lines(payload: dict[str, Any]) -> list[str]:
+    """The slow-test list and the file costs, in words."""
+    runs = ", ".join(
+        f"{escape(r['workload'])} ({r['freshness']} at {(r['commit_sha'] or 'unknown')[:12]})"
+        for r in payload["runs"]
+    )
+    lines = [f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:"]
+    for test in payload["slow_tests"]:
+        shared = " [dim](may include its class's shared fixtures)[/dim]" if test["first_in_class"] else ""
+        failed = f" [red]{test['outcome']}[/red]" if test["outcome"] in ("failed", "error") else ""
+        lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
+    costs = payload["file_costs"]
+    if not costs["files"]:
+        lines.append(f"No production file is tied to a timed test ({costs['basis']}).")
+        return lines
+    lines.append(
+        f"[bold]Test time per production file[/bold] ({costs['basis']}), "
+        f"{len(costs['files'])} of {costs['files_total']:,}:"
+    )
+    for row in costs["files"]:
+        lines.append(
+            f"  {row['test_seconds']:8.2f}s  {escape(row['file_path'])} "
+            f"[dim]({row['timed_tests']} of {row['tests']} tests timed)[/dim]"
+        )
+    return lines

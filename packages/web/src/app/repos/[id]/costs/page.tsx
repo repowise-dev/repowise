@@ -22,6 +22,7 @@ import {
   type SpendGrouping,
 } from "@repowise-dev/ui/savings";
 import { getCostSummary, getSavings, listCosts } from "@/lib/api/costs";
+import { getMcpToolSurface } from "@/lib/api/mcp-tools";
 import type { SetupResponse } from "@/lib/api/setup";
 import { useRepo } from "@/lib/hooks/use-repo";
 import { useSetupData, useSetupView } from "@/components/setup/use-setup";
@@ -29,6 +30,7 @@ import { useSetupText } from "@/components/setup/setup-row";
 import { setupHref } from "@/components/settings/settings-groups";
 import type { SetupRow } from "@/components/setup/setup-rows";
 import { useSavingsCopy } from "./savings-copy";
+import { checkAgents, checkLinks, checksHrefs, connectedAgentIds } from "./savings-checks";
 import {
   jobsNotSetUp,
   nudgeHref,
@@ -92,6 +94,13 @@ export default function CostsPage() {
     { revalidateOnFocus: false },
   );
   const { data: setup } = useSetupData(id);
+  // Per-agent tool lists, once Setup says which agents are connected.
+  const connected = connectedAgentIds(setup);
+  const tools = useSWR(
+    connected.length ? [`mcp-tools:${id}`, connected.join(",")] : null,
+    () => getMcpToolSurface(id, connected),
+    { revalidateOnFocus: false },
+  );
   const { repo } = useRepo(id);
   const view = useSetupView(id, repo?.name ?? id, setup);
   const nudge = useSavingsNudge(id, setup, savings.data?.unique_events ?? 0, view?.optional ?? []);
@@ -144,6 +153,12 @@ export default function CostsPage() {
           copy={copy}
           nudge={nudge.element}
           notSetUp={jobsNotSetUp(setup)}
+          checks={{
+            agents: checkAgents(setup, tools.data),
+            profiles: tools.data?.profiles,
+            links: checkLinks(id),
+            ...checksHrefs(id),
+          }}
           emptyActions={
             <>
               {agentRow && <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => nudge.open(agentRow)} />}
