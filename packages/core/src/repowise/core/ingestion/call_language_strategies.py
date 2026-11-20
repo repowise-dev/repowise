@@ -24,6 +24,7 @@ from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.csharp_same_namespace import _BCL_COMMON_TYPES, _USING_ALIAS_RE, _USING_NS_RE
 from .languages.perl_packages import PerlImport, PerlPackageIndex
 from .languages.receiver_types import dart_named_constructors
+from .languages.tcl_sources import TclSourceIndex
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .resolvers.dotnet.namespace_map import declared_namespaces, scan_type_declarations
@@ -144,7 +145,7 @@ _TCL_CONFIDENCE = {
     "same_file": 0.95,
     "scoped_name": 0.93,
     "import_merged": 0.85,
-    "global_unique": 0.75,
+    "global_unique": 0.50,
 }
 
 
@@ -413,6 +414,7 @@ class LanguageStrategiesMixin:
         # and each Tcl file's transitively sourced files.
         self._tcl_procs: dict[tuple[str | None, str], list[tuple[str, str]]] | None = None
         self._tcl_sourced: dict[str, frozenset[str]] = {}
+        self._tcl_source_index: TclSourceIndex | None = None
 
         # {C# file: {top-level type name: namespace}}, read off its source, and
         # {C# file: where a bare type name in it is looked up}.
@@ -738,12 +740,41 @@ class LanguageStrategiesMixin:
         ``N::a::f``, then ``::a::f``. Absolute ``::a::f``: that proc.
         Ceiling: ``namespace path`` / ``namespace import`` are not followed.
         """
+        if self._tcl_source_index is None:
+            self._tcl_source_index = TclSourceIndex(self._parsed_files, self._source_map)
         caller = self._symbols_by_id.get(caller_id)
-        current = tcl_scope(caller.parent_name if caller is not None else None, call.namespace)
+        matches: list[ResolvedCall] = []
+        for root, base in self._tcl_source_index.execution_contexts(file_path):
+            namespace = caller.parent_name if caller is not None else None
+            if root != file_path or base:
+                if caller is not None:
+                    found, namespace = self._tcl_source_index.proc_namespace(
+                        file_path, caller_id, base
+                    )
+                    if not found:
+                        return None
+                else:
+                    namespace = base or None
+            current = tcl_scope(namespace, call.namespace)
+            match = self._resolve_tcl_in_context(file_path, root, call, caller_id, current)
+            if match is None:
+                return None
+            matches.append(match)
+        if not matches or len({match.callee_id for match in matches}) != 1:
+            return None
+        return min(matches, key=lambda match: match.confidence)
+
+    def _resolve_tcl_in_context(
+        self, file_path: str, root: str, call: CallSite, caller_id: str, current: str | None
+    ) -> ResolvedCall | None:
+        assert self._tcl_source_index is not None
         procs = self._get_tcl_procs()
-        sourced = self._tcl_sourced_from(file_path)
+        sourced = self._tcl_sourced_from(root) | {root}
+        projected_files, projected = self._tcl_source_index.project(root)
         for namespace in _tcl_lookup_order(current, call.scope_name):
-            found = procs.get((namespace, call.target_name))
+            key = namespace, call.target_name
+            found = [entry for entry in procs.get(key, ()) if entry[0] not in projected_files]
+            found += projected.get(key, [])
             if not found:
                 continue
             # Tcl only looks further when the command is absent here; two

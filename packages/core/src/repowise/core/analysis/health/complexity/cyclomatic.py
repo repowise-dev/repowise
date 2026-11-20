@@ -542,7 +542,9 @@ def _stops_at_unit(node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, s
     still reads the way the walk would have.
     """
     node_type = node.type
-    if node_type in lmap.function_kinds:
+    if node_type in lmap.function_kinds and not (
+        lmap.local_value is not None and lmap.local_value(node)
+    ):
         return True
     if node_type not in lmap.lambda_kinds or not is_named_lambda(node, lmap):
         return False

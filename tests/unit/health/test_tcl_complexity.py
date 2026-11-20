@@ -96,8 +96,23 @@ class TestSwitch:
         assert _ccn(body) == 4
 
     def test_a_proc_pattern_is_no_function(self) -> None:
-        src = b"proc d {c} {\n  switch $c {\n    run { go }\n    proc { helper }\n  }\n}\n"
-        assert [f.name for f in walk_file("t.tcl", "tcl", src).functions] == ["d"]
+        src = b"proc d {c} {\n  switch $c {\n    proc { if {$c} { helper } }\n    run { go }\n  }\n}\n"
+        functions = walk_file("t.tcl", "tcl", src).functions
+        assert [f.name for f in functions] == ["d"]
+        assert (functions[0].ccn, functions[0].max_nesting) == (4, 2)
+
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+    def test_continued_switch_arms_keep_their_word_pairs(self, newline: bytes) -> None:
+        from repowise.core.ingestion.extractors.tcl import _tcl_words
+
+        text = b"x -\\" + newline + b" y {p} default {q}"
+        assert [text[start:end] for start, end in _tcl_words(text, 0)] == [
+            b"x", b"-", b"y", b"{p}", b"default", b"{q}"
+        ]
+
+    def test_continued_switch_arms_contribute_complexity(self) -> None:
+        body = "switch $a { x -\\\n y { if {$b} { p } } default { q } }"
+        assert _ccn(body) == 4
 
     def test_bare_word_arm_bodies_count(self) -> None:
         assert _ccn("switch $a x p y q") == _ccn("switch $a x {p} y {q}") == 3
