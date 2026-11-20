@@ -342,8 +342,10 @@ The format is detected from the content, never the file name;
   `src/test/java/com/acme/CartTest.java`) among the files the health index
   holds. A name that leads to no file, or to two, keeps its timing under the
   runner's name, counted under `unlinked` as `unplaced`. jest-junit names files
-  only with its `addFileAttribute` option set, so `setup` prints no flag for
-  jest. A path outside the repository (an absolute `file`) is not stored: the
+  only through its options, so `setup` gives a jest unit the environment
+  `JEST_JUNIT_CLASSNAME={filepath}` (plus `JEST_JUNIT_FILE_PATH_PREFIX` with the
+  unit's directory below the root), which makes each classname the test's
+  repo-relative file. A path outside the repository (an absolute `file`) is not stored: the
   test is placed by its classname, or keeps only its own name when the
   classname is that path.
 - A single report that declares a document type is refused.

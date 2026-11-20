@@ -3,7 +3,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PerformanceView } from "../../src/health/performance-view";
 import { buildMeasuredFunctionsPrompt } from "../../src/health/ai-prompts/measured-functions-prompt";
-import { RuntimeEvidenceSection } from "../../src/health/performance/measured";
 import { adapter, opportunity, page, resolvedDetail } from "./fixtures/performance";
 import {
   evidenceAdapter,
@@ -211,34 +210,38 @@ describe("Runtime evidence marks", () => {
     expect(screen.getAllByText(/^(Measured|Confirmed|Not exercised)$/)).toHaveLength(3);
   });
 
-  it("lists slow tests only when the host passes them", () => {
-    const view = {
-      overview: undefined,
-      leads: [],
-      run: null,
-      pick: () => {},
-      testRun: null,
-      testsTotal: 0,
-      runs: undefined,
-    };
-    const { container, rerender } = render(
-      <RuntimeEvidenceSection view={view} adapter={adapter()} onPrompt={() => {}} />,
+  it("lists the slowest timed tests the route returns, and nothing without them", async () => {
+    const getEvidenceTests = vi.fn(async () => ({
+      status: "measured" as const,
+      command: null,
+      runs: [],
+      slow_tests: [
+        {
+          test_id: "tests/test_site.py::test_build",
+          test_file: "tests/test_site.py",
+          duration_s: 4.213,
+          outcome: "failed",
+          first_in_class: false,
+          workload: "pytest",
+        },
+      ],
+      tests_total: 1240,
+      file_costs: null,
+    }));
+    const { unmount } = render(
+      <PerformanceView adapter={adapter({ ...evidenceAdapter(), getEvidenceTests })} />,
     );
-    expect(container.textContent).toBe("");
-    rerender(
-      <RuntimeEvidenceSection
-        view={view}
-        adapter={adapter()}
-        onPrompt={() => {}}
-        slowTests={[
-          { test_id: "tests/test_site.py::test_build", test_file: "tests/test_site.py", duration_s: 4.213, outcome: "failed", workload: "pytest" },
-        ]}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /Slow tests/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Slow tests/ }));
+    expect(screen.getByText(/Longest first, of 1,240 timed tests/)).toBeTruthy();
     expect(screen.getByText("tests/test_site.py::test_build")).toBeTruthy();
     expect(screen.getByText("4.21 s")).toBeTruthy();
     expect(screen.getByText("failed")).toBeTruthy();
+    expect(getEvidenceTests).toHaveBeenCalledWith({ limit: 10 });
+    unmount();
+
+    render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
+    await table();
+    expect(screen.queryByRole("button", { name: /Slow tests/ })).toBeNull();
   });
 });
 

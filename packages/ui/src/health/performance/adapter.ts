@@ -16,6 +16,7 @@ export type PerformanceViewAdapter = Pick<
   | "getMeasured"
   | "listEvidenceRuns"
   | "getMeasuredFunctions"
+  | "getEvidenceTests"
   | "getRefactoringPlan"
   | "getRefactoringPlanPrompt"
   | "refactoringPlanHref"

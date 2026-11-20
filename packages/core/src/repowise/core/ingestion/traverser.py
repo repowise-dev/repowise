@@ -56,6 +56,7 @@ from ..pytest_roots import (
     pytest_options,
     pytest_roots,
 )
+from ..support_paths import is_doc_or_config_path
 from ..test_paths import is_test_related_path
 from .cobol.source import is_cobol_dclgen
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -1286,7 +1287,14 @@ def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag
 
 
 def _detect_by_shebang(abs_path: Path, source: bytes | None = None) -> LanguageTag:
-    """Classify an interpreter line from the bytes supplied by the caller."""
+    """Classify an interpreter line from the bytes supplied by the caller.
+
+    A file with a document or config suffix is never sniffed: a ``.txt`` or
+    ``.cfg`` file that starts with ``#!`` is data that holds a script (a
+    template backup, a fixture), never a script itself.
+    """
+    if is_doc_or_config_path(abs_path.name):
+        return "unknown"
     head = _head(abs_path, source, 800)
     if head is None:
         return "unknown"

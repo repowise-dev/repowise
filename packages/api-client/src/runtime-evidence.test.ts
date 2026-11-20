@@ -5,7 +5,7 @@ vi.mock("./client", () => ({
   apiGet: (...args: unknown[]) => apiGet(...args),
 }));
 
-import { getMeasured, getMeasuredFunctions } from "./runtime-evidence";
+import { getEvidenceTests, getMeasured, getMeasuredFunctions } from "./runtime-evidence";
 
 describe("runtime evidence requests", () => {
   beforeEach(() => {
@@ -32,5 +32,10 @@ describe("runtime evidence requests", () => {
       symbol_id: undefined,
       file: "src/a.py",
     });
+  });
+
+  it("asks for the slowest tests with a limit", async () => {
+    await getEvidenceTests("repo", { limit: 10 });
+    expect(apiGet).toHaveBeenCalledWith("/api/repos/repo/evidence/tests", { limit: 10 });
   });
 });

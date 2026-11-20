@@ -5,6 +5,7 @@ import type {
   EvidenceRunSummary,
   MeasuredRow,
   MeasuredRun,
+  SlowTest,
 } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber, formatPercent, formatRelativeTimeOrNull } from "../../lib/format";
@@ -35,6 +36,7 @@ import {
   useMeasuredRows,
   type RuntimeEvidenceView,
 } from "./runtime";
+import { RuntimeEvidenceNotices, runtimeNotices } from "./runtime-states";
 import { EvidenceWordTag } from "./tags";
 
 /**
@@ -489,16 +491,7 @@ function RunsTable({ runs }: { runs: EvidenceRunSummary[] }) {
 }
 
 /** The slowest timed tests, longest first, with the workload that timed each. */
-/** One timed test, as the slow-test list (`/evidence/tests`) reports it. */
-export interface SlowTestRow {
-  test_id: string;
-  test_file: string | null;
-  duration_s: number;
-  outcome: string | null;
-  workload: string;
-}
-
-function SlowTests({ tests }: { tests: readonly SlowTestRow[] }) {
+function SlowTests({ tests }: { tests: readonly SlowTest[] }) {
   return (
     <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)] text-xs">
       {tests.map((t) => (
@@ -616,15 +609,15 @@ function TestRunGroup({
   );
 }
 
-function SlowTestsGroup({ slowTests }: { slowTests: readonly SlowTestRow[] | null | undefined }) {
-  if (!slowTests || slowTests.length === 0) return null;
+function SlowTestsGroup({ slowTests }: { slowTests: RuntimeEvidenceView["slowTests"] }) {
+  if (!slowTests) return null;
   return (
     <CollapsibleSection
-      title={disclosureTitle("Slow tests", "Longest first")}
-      hint={plural(slowTests.length, "test")}
+      title={disclosureTitle("Slow tests", `Longest first, of ${plural(slowTests.total, "timed test")}`)}
+      hint={plural(slowTests.tests.length, "test")}
     >
       <div className="pb-3">
-        <SlowTests tests={slowTests} />
+        <SlowTests tests={slowTests.tests} />
       </div>
     </CollapsibleSection>
   );
@@ -645,10 +638,10 @@ function RunsGroup({ runs }: { runs: EvidenceRunSummary[] | undefined }) {
 }
 
 /**
- * The runtime evidence block between the lede and the queue: the strip with
- * the workload lens, the measured table, then the unit-test run, the slowest
- * tests and every stored run, closed. Renders nothing until a run ranks
- * something.
+ * The runtime evidence block between the lede and the queue: why stored runs
+ * rank nothing when they do not, the strip with the workload lens, the
+ * measured table, then the unit-test run, the slowest tests and every stored
+ * run, closed. Renders nothing when there is nothing to say.
  */
 export function RuntimeEvidenceSection({
   view,
@@ -656,7 +649,6 @@ export function RuntimeEvidenceSection({
   onOpenCause: openCause,
   canOpenCause = true,
   onPrompt,
-  slowTests,
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
@@ -664,18 +656,18 @@ export function RuntimeEvidenceSection({
   /** False when the host cannot open a cause by id, so a findings tag stays a word. */
   canOpenCause?: boolean;
   onPrompt: (request: AiPromptRequest) => void;
-  /** The slowest timed tests, when the host reads them; nothing renders without rows. */
-  slowTests?: readonly SlowTestRow[] | null | undefined;
 }) {
   const onOpenCause = canOpenCause ? openCause : undefined;
-  if (!view.run && !view.testRun && !slowTests?.length) return null;
+  const notices = runtimeNotices(view);
+  if (!view.run && !view.testRun && !view.slowTests && notices.length === 0) return null;
   const rows = { view, adapter, onOpenCause, onPrompt };
   return (
     <section aria-label="Runtime evidence" className="space-y-10">
+      <RuntimeEvidenceNotices notices={notices} />
       <LeadRun {...rows} />
       <div className="border-b border-[var(--color-border-default)]">
         <TestRunGroup {...rows} />
-        <SlowTestsGroup slowTests={slowTests} />
+        <SlowTestsGroup slowTests={view.slowTests} />
         <RunsGroup runs={view.runs} />
       </div>
     </section>

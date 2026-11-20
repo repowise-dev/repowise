@@ -132,3 +132,44 @@ def test_an_mcp_answer_marks_the_files_it_served(repo: Path) -> None:
 def test_a_broken_mcp_payload_marks_nothing_and_never_raises(repo: Path) -> None:
     _handle_mcp_read_post({"targets": ["not", "a", "dict"], "citations": 7}, str(repo), SESSION)
     assert _load_session_state(repo, SESSION)["credited"] == []
+
+
+def test_a_sidecar_from_a_newer_repowise_changes_nothing_the_hook_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A downgrade leaves a newer store: same replies, no ledger rows, file not restamped."""
+    import sqlite3
+
+    from repowise.cli.commands.augment_cmd._shared import record_forgone
+    from repowise.core.distill.store import OmissionStore
+    from repowise.core.savings.recorder import sidecar_path
+
+    monkeypatch.setenv("REPOWISE_HOOK_UPDATED_OUTPUT", "1")
+    replies, totals = {}, {}
+    for name, version in (("current", None), ("newer", 99)):
+        repo = _make_repo(tmp_path / name)
+        db = sidecar_path(repo)
+        OmissionStore(db).close()
+        if version is not None:
+            with sqlite3.connect(db) as conn:
+                conn.execute(f"PRAGMA user_version={version}")
+        served = _read(repo)
+        collapsed = _read(repo)
+        assert collapsed.replacement is not None
+        replies[name] = json.dumps(
+            [(r.replacement, r.context) for r in (served, collapsed)], default=str
+        ).replace(json.dumps(str(repo))[1:-1], "<repo>")
+        record_forgone(repo, source="hook-read", path="a.py", raw_tokens=90, distilled_tokens=9)
+        totals[name] = _files(repo)
+    assert replies["newer"] == replies["current"]
+    # The newer store is read, not written: nothing credited, still stamped 99.
+    assert totals == {"current": (1, 1), "newer": (0, 0)}
+    conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 99
+        for table in ("savings", "savings_events", "savings_file_reads", "savings_opportunities"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert "forgone_savings" not in tables
+    finally:
+        conn.close()
