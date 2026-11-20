@@ -104,6 +104,7 @@ _SCHEMA_TABLES = (
         input_rate_usd_per_million REAL,
         output_rate_usd_per_million REAL,
         metadata_json TEXT NOT NULL,
+        outcome_json TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256),
         UNIQUE(repository_id, idempotency_key),
         CHECK(schema_version = 1),
         CHECK(surface IN ('distill','hook','mcp','vscode_lm')),
@@ -206,9 +207,32 @@ _REQUIRED_TABLES = frozenset(
 )
 
 
+#: Columns added to an existing table after it shipped, as ``(table, column,
+#: definition)``. Added in place by ``ALTER TABLE ... ADD COLUMN``, which keeps
+#: every row and needs no version bump: an older build names its columns on
+#: insert and never sees the new one.
+_ADDED_COLUMNS = (
+    # What a check tool returned, in a few counts (see ``contracts.normalize_outcome``).
+    (
+        "savings_events",
+        "outcome_json",
+        "TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256)",
+    ),
+)
+
+
+def _missing_columns(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    missing = []
+    for table, column, definition in _ADDED_COLUMNS:
+        names = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in names:
+            missing.append((table, column, definition))
+    return missing
+
+
 def _has_current_schema(conn: sqlite3.Connection) -> bool:
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return tables >= _REQUIRED_TABLES
+    return tables >= _REQUIRED_TABLES and not _missing_columns(conn)
 
 
 def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
@@ -224,6 +248,8 @@ def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
     conn.execute(_LEGACY_SAVINGS_TABLE)
     for statement in _SCHEMA_TABLES:
         conn.execute(statement)
+    for table, column, definition in _missing_columns(conn):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     for statement in _SCHEMA_INDEXES:
         conn.execute(statement)
 

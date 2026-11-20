@@ -20,12 +20,15 @@ from repowise.core.savings.formulas import (
     reduction_ratio,
 )
 from repowise.core.savings.reporting import (
+    CHECK_TOOLS,
     DAY_LIMIT,
     TOOL_CALL_SURFACES,
+    CheckTally,
     FallbackRate,
     agent_breakdown_rows,
     backfill_usd,
     breakdown_rows,
+    check_rows,
     files_not_opened,
 )
 
@@ -38,6 +41,11 @@ _REF_QUERY_BATCH = 400
 #: Cap on the ``(day, agent, surface)`` cells the files-not-opened queries
 #: return: a year of days across every agent and surface fits several times.
 _FILE_CELL_LIMIT = 20_000
+
+#: Distinct ``(tool, outcome)`` pairs the check-row query folds. Outcomes are a
+#: few small counts, so real ledgers hold a few hundred; past the cap the rarest
+#: pairs drop out of the outcome sums (never out of the call counts).
+_CHECK_OUTCOME_LIMIT = 20_000
 
 _ANSWERED_SQL = "(result_state = 'success' OR (result_state = 'partial' AND is_usable = 1))"
 #: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
@@ -79,6 +87,7 @@ _EVENT_COLUMNS = (
     "input_rate_usd_per_million",
     "output_rate_usd_per_million",
     "metadata_json",
+    "outcome_json",
 )
 
 
@@ -151,9 +160,10 @@ class SavingsRepository:
 
     def record_event(self, event: SavingsEvent) -> bool:
         """Atomically insert an event and its links; return false for a retry."""
-        values = [getattr(event, column) for column in _EVENT_COLUMNS[:-1]]
+        values = [getattr(event, column) for column in _EVENT_COLUMNS[:-2]]
         values[18] = int(event.is_usable)
         values.append(event.metadata_json())
+        values.append(event.outcome_json())
         placeholders = ",".join("?" for _ in _EVENT_COLUMNS)
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -261,6 +271,42 @@ class SavingsRepository:
                 cells,
             ).fetchall()
         return files_not_opened(credited, calls, limit)
+
+    def _checks(self, where: str, params: list[Any]) -> tuple[Any, ...]:
+        """Per check tool: usable MCP calls and what they returned.
+
+        Calls are counted in SQL. Outcomes are grouped by their stored text and
+        folded in Python, so the read needs no JSON support in SQLite and costs
+        one row per distinct outcome rather than one per call.
+        """
+        import json
+
+        tools = ",".join("?" for _ in CHECK_TOOLS)
+        scope = f"{where} AND surface = 'mcp' AND is_usable = 1 AND operation IN ({tools})"
+        scoped = [*params, *CHECK_TOOLS]
+        tallies: dict[str, CheckTally] = {}
+        for tool, calls in self._conn.execute(
+            f"SELECT operation, COUNT(*) FROM savings_events WHERE {scope} GROUP BY 1 LIMIT ?",
+            [*scoped, len(CHECK_TOOLS)],
+        ):
+            tallies[tool] = CheckTally(calls=int(calls))
+        try:
+            outcomes = self._conn.execute(
+                f"SELECT operation, outcome_json, COUNT(*) FROM savings_events "
+                f"WHERE {scope} AND outcome_json IS NOT NULL GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?",
+                [*scoped, _CHECK_OUTCOME_LIMIT],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # A sidecar opened read-only before its first upgrade has no column yet.
+            outcomes = []
+        for tool, text, calls in outcomes:
+            try:
+                outcome = json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(outcome, dict) and tool in tallies:
+                tallies[tool].add_outcome(outcome, tool, int(calls))
+        return check_rows(tallies)
 
     def adopt_rows(self, repository_id: str) -> int:
         """File every row of this sidecar under *repository_id*; return how many moved.
@@ -498,6 +544,7 @@ class SavingsRepository:
             backfilled_saved_input_tokens=backfilled_tokens,
             backfilled_input_savings_usd=backfilled_usd,
             output_estimate=output_estimate,
+            checks=self._checks(where, params),
         )
 
     def _unpriced_groups(

@@ -3085,6 +3085,12 @@ export interface McpClientRef {
   display_name: string;
 }
 
+/** The tools one agent is listed for this repo, resolved as its server resolves them. */
+export interface McpClientSurface {
+  profile?: string | null;
+  tools?: string[];
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -3121,6 +3127,7 @@ export interface McpToolSurfaceResponse {
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
   command?: string;
+  clients?: Record<string, McpClientSurface>;
 }
 
 /** What runtime evidence says about one function, from its basis run. */
@@ -4425,6 +4432,31 @@ export interface SavingsBreakdownRow {
   priced_input_savings_usd?: number;
 }
 
+/**
+ * One check tool: the calls agents made and what Repowise returned.
+ *
+ * Outcome fields are null when no call in the window recorded one (calls made
+ * before outcomes were kept, or a host that records none) and where a field
+ * does not apply to the tool. ``high``/``medium``/``low`` count changes by
+ * their repo-relative level for ``get_change_risk`` and assessed files for
+ * ``get_risk``. Counts of what was returned, never of what an agent did.
+ */
+export interface SavingsCheckRow {
+  tool: string;
+  calls?: number;
+  outcome_calls?: number;
+  high?: number | null;
+  medium?: number | null;
+  low?: number | null;
+  decisions_accepted?: number | null;
+  decisions_candidate?: number | null;
+  decisions_none?: number | null;
+  findings?: number | null;
+  files?: number | null;
+  items?: number | null;
+  high_confidence?: number | null;
+}
+
 /** Files not opened and tool calls answered in one day, agent or surface. */
 export interface SavingsFilesRow {
   group?: string | null;
@@ -4541,6 +4573,7 @@ export interface SavingsResponse {
   output_usd_saved_estimated?: number | null;
   total_usd_saved_estimated?: number | null;
   calibration?: SavingsOutputCalibration | null;
+  checks?: SavingsCheckRow[];
 }
 
 export interface SearchResultResponse {

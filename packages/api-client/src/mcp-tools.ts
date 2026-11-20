@@ -1,11 +1,20 @@
 import { apiGet, apiPatch } from "./client";
 import type { McpClientConfig, McpToolSurface, UpdateMcpToolsRequest } from "./types";
 
-/** Fetch the configurable MCP tool surface for a repo. */
-export async function getMcpToolSurface(repoId?: string): Promise<McpToolSurface> {
+/**
+ * Fetch the configurable MCP tool surface for a repo. `clients` (agent ids, as
+ * Setup lists them) adds each agent's resolved tools under `clients`.
+ */
+export async function getMcpToolSurface(
+  repoId?: string,
+  clients?: readonly string[],
+): Promise<McpToolSurface> {
+  const params: Record<string, string> = {};
+  if (repoId) params.repo_id = repoId;
+  if (clients?.length) params.clients = clients.join(",");
   return apiGet<McpToolSurface>(
     "/api/mcp/tools",
-    repoId ? { repo_id: repoId } : undefined,
+    Object.keys(params).length ? params : undefined,
   );
 }
 

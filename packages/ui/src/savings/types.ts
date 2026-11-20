@@ -12,6 +12,7 @@ import type {
   CostGroupResponse,
   CostSummaryResponse,
   SavingsBreakdownRow,
+  SavingsCheckRow,
   SavingsFilesRow,
   SavingsResponse,
 } from "@repowise-dev/types/generated/http";
@@ -19,6 +20,8 @@ import type {
 export type SavingsView = SavingsResponse;
 export type SavingsBreakdownView = SavingsBreakdownRow;
 export type SavingsFilesView = SavingsFilesRow;
+/** One check tool's calls and what Repowise returned; outcome fields null when unrecorded. */
+export type SavingsCheckView = SavingsCheckRow;
 
 /** What Repowise's own model work cost, for the same window. Metered spend,
  *  never netted against savings: they are different accounts. */
