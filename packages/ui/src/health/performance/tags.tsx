@@ -14,8 +14,10 @@ const CONFIRMED_BY: Record<string, string> = {
  *  workload that measured its function, and what confirmed it. */
 function EvidenceMarks({ opportunity }: { opportunity: PerformanceOpportunity }) {
   const measured = opportunity.facets?.measured;
-  const confirmed = opportunity.facets?.confirmed;
-  if (!measured && !confirmed) return null;
+  const confirmedBy = opportunity.facets?.confirmed
+    ? CONFIRMED_BY[opportunity.facets.confirmed]
+    : undefined;
+  if (!measured && !confirmedBy) return null;
   return (
     <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
       {measured ? (
@@ -26,10 +28,10 @@ function EvidenceMarks({ opportunity }: { opportunity: PerformanceOpportunity })
           </span>
         </>
       ) : null}
-      {confirmed ? (
+      {confirmedBy ? (
         <>
           <EvidenceWordTag ink>Confirmed</EvidenceWordTag>
-          <span>{CONFIRMED_BY[confirmed] ?? ""}</span>
+          <span>{confirmedBy}</span>
         </>
       ) : null}
     </p>
@@ -70,10 +72,13 @@ export function EvidenceWordTag({
   children,
   ink = false,
   onClick,
+  label,
 }: {
   children: React.ReactNode;
   ink?: boolean;
   onClick?: (() => void) | undefined;
+  /** The button's accessible name, when the word alone does not say what it opens. */
+  label?: string | undefined;
 }) {
   const tone = ink
     ? "border-[var(--color-text-tertiary)] text-[var(--color-text-primary)]"
@@ -83,6 +88,8 @@ export function EvidenceWordTag({
     <button
       type="button"
       onClick={onClick}
+      aria-label={label}
+      title={label}
       className={`${WORD_TAG_CLS} ${tone} hover:border-[var(--color-border-hover)] hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
     >
       {children}

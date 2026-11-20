@@ -207,7 +207,11 @@ function MeasuredRowItem({
         <RowMeta row={row} run={run} />
         <p className="mt-1.5">
           {findings.length > 0 ? (
-            <EvidenceWordTag ink onClick={onOpenCause ? () => onOpenCause(findings[0]!) : undefined}>
+            <EvidenceWordTag
+              ink
+              onClick={onOpenCause ? () => onOpenCause(findings[0]!) : undefined}
+              label={findings.length > 1 ? `Open the first of ${findings.length} findings` : undefined}
+            >
               {plural(findings.length, "finding")}
             </EvidenceWordTag>
           ) : (
@@ -263,7 +267,7 @@ function MeasuredRows({
   onPrompt: (request: AiPromptRequest) => void;
 }) {
   const [all, setAll] = useState(false);
-  const { data, isLoading } = useMeasuredRows(
+  const { data, error, isLoading } = useMeasuredRows(
     adapter,
     run.run_id,
     all ? MEASURED_MAX : MEASURED_PREVIEW,
@@ -306,6 +310,16 @@ function MeasuredRows({
             <Skeleton key={i} className="h-[72px] rounded-none" />
           ))}
         </div>
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div>
+        {head}
+        <p role="status" className="text-sm text-[var(--color-text-tertiary)]">
+          Could not read the ranked functions. Reload to try again.
+        </p>
       </div>
     );
   }
@@ -536,6 +550,7 @@ export function RuntimeEvidenceSection({
           >
             <div className="pb-4">
               <MeasuredRows
+                key={testRun.run_id}
                 adapter={adapter}
                 run={testRun}
                 heading={null}

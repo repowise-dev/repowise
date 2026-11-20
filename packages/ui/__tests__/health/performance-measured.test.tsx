@@ -7,6 +7,7 @@ import { RuntimeEvidenceSection } from "../../src/health/performance/measured";
 import { adapter, opportunity, page, resolvedDetail } from "./fixtures/performance";
 import {
   evidenceAdapter,
+  measured,
   measuredRow,
   measuredRun,
   NOTHING_MEASURED,
@@ -112,6 +113,43 @@ describe("PerformanceView runtime evidence", () => {
     render(<PerformanceView adapter={adapter()} />);
     await screen.findByText("changes worth making now");
     expect(screen.queryByRole("region", { name: "Runtime evidence" })).toBeNull();
+  });
+
+  it("says the ranked functions could not be read instead of dropping the table", async () => {
+    const evidence = evidenceAdapter();
+    evidence.getMeasured.mockImplementation(async (opts = {}) => {
+      if (opts.runId) throw new Error("boom");
+      return measured(opts);
+    });
+    render(<PerformanceView adapter={adapter(evidence)} />);
+    expect(await screen.findByText(/Could not read the ranked functions/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Measured cost in cli build" })).toBeTruthy();
+  });
+
+  it("gives an ordering-only run a rank and no share", async () => {
+    const evidence = evidenceAdapter();
+    evidence.getMeasured.mockImplementation(async (opts = {}) => {
+      const view = await measured(opts);
+      const strip = <T extends { share: number | null; share_low: number | null; share_high: number | null }>(r: T) => ({
+        ...r,
+        share: null,
+        share_low: null,
+        share_high: null,
+      });
+      return {
+        ...view,
+        measured: view.measured && {
+          ...view.measured,
+          runs: view.measured.runs.map((r) => ({ ...r, ordering_only: true, repo_self_share: null })),
+          rows: view.measured.rows.map(strip),
+        },
+      };
+    });
+    render(<PerformanceView adapter={adapter(evidence)} />);
+    const rows = within(await table()).getAllByRole("listitem");
+    expect(within(rows[0]!).getByText("rank 1")).toBeTruthy();
+    expect(within(rows[0]!).queryByText("2.9%")).toBeNull();
+    expect(screen.queryByText(/Bars are scaled/)).toBeNull();
   });
 
   it("puts a slim connect row above a queue that has causes and no evidence", async () => {
