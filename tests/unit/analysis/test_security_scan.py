@@ -1507,6 +1507,9 @@ class TestSecretPrecision:
             ("aura/Pay/Pay.cmp", '<c:pay token="{#v.sessionToken}"/>\n'),
             ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
             ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
+            ("src/tree.ts", "const TOKEN = '^(-?\\\\d{1,2}|null)$';\n"),
+            ("src/ids.py", 'SESSION_TOKEN = r"tok_\\w+_session"\n'),
+            ("src/ids.py", 'API_KEY = "^(live|test)_key$"\n'),
         ],
     )
     def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
@@ -1549,6 +1552,8 @@ class TestSecretPrecision:
         [
             ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
             ('TOKEN = "Zx9[a]+Qw8Rt5Yu3"\n', "hardcoded_secret"),
+            ('TOKEN = "^Zx9Qw8Rt5Yu3$"\n', "hardcoded_secret"),
+            ('password = "Zx9\\dQw8Rt5"\n', "hardcoded_password"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
