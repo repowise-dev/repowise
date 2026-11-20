@@ -171,10 +171,15 @@ def first_look_command(
         click.echo(text, nl=False)
         return
     target = Path(out_path) if out_path else rendered_path(root, ".html")
+    _write(text, target, open_it=fmt == "html" and not out_path)
+
+
+def _write(text: str, target: Path, *, open_it: bool) -> None:
+    """Write the rendered report to *target*; open the default HTML at a terminal."""
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
     err_console.print(f"Wrote the repo report to {target}")
-    if fmt == "html" and not out_path and sys.stdout.isatty():
+    if open_it and sys.stdout.isatty():
         click.launch(str(target))
 
 
