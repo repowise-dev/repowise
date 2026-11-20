@@ -1,4 +1,4 @@
-"""Write the first-look report: the one path ``init``, the CLI and the server take.
+"""Write the repo report: the one path ``init``, the CLI and the server take.
 
 :func:`write_first_look` collects the report from the index, fills its prose
 with the template text (:mod:`.text`) and, with ``store``, writes the JSON,
@@ -19,18 +19,21 @@ from .config import FirstLookSettings, first_look_settings
 from .living import LivingReport
 from .model import SECTION_CAP, FirstLookReport
 from .prompts import render_item_prompt, render_report_prompt
-from .store import report_path, store_report, write_report_file
+from .store import REPORTS_DIR, store_report, write_report_file
 from .text import template_prose
 
 logger = logging.getLogger(__name__)
 
-#: The rendered files written beside ``first-look.json``, by renderer name.
+#: The rendered files written beside the stored ``first-look.json``, by renderer name.
 RENDERED = {".md": "first-look-markdown", ".html": "first-look-html"}
+
+#: The exports' file name, before the suffix; the stored baseline keeps its own.
+EXPORT_STEM = "repo-report"
 
 
 def rendered_path(repo_root: Path, suffix: str) -> Path:
-    """Where the ``.md`` or ``.html`` rendering of the stored report lives."""
-    return report_path(repo_root).with_suffix(suffix)
+    """Where the ``.md``, ``.html`` or ``.json`` export of the report lives."""
+    return Path(repo_root) / REPORTS_DIR / f"{EXPORT_STEM}{suffix}"
 
 
 def with_prose(report: FirstLookReport) -> FirstLookReport:
@@ -89,7 +92,7 @@ async def render_document(
                             actions=actions,
                         )
                 except Exception:  # a missing prompt must not cost the page
-                    logger.warning("first look: prompt for %s failed", item.id, exc_info=True)
+                    logger.warning("repo report: prompt for %s failed", item.id, exc_info=True)
     return {
         **data,
         **({"prompts": rendered} if prompts else {}),
@@ -104,7 +107,7 @@ async def _setup_facts(session: Any, repository_id: str, repo_root: Path) -> Any
     try:
         return await load_setup_facts(session, repository_id, repo_root)
     except Exception:  # "Turn on more" then lists the stored steps only
-        logger.warning("first look: setup facts unavailable", exc_info=True)
+        logger.warning("repo report: setup facts unavailable", exc_info=True)
         return None
 
 

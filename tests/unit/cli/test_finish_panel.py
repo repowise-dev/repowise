@@ -402,12 +402,12 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
     ("first_look", "line"),
     [
         (
-            FirstLook(".repowise/reports/first-look.html"),
-            "First look  .repowise/reports/first-look.html  (template, free)",
+            FirstLook(".repowise/reports/repo-report.html"),
+            "Repo report  .repowise/reports/repo-report.html  (template, free)",
         ),
         (
-            FirstLook("http://127.0.0.1:3000/repos/r1/first-look", "claude-haiku-5-5", 0.003),
-            "First look  http://127.0.0.1:3000/repos/r1/first-look  "
+            FirstLook("http://127.0.0.1:3000/repos/r1/report", "claude-haiku-5-5", 0.003),
+            "Repo report  http://127.0.0.1:3000/repos/r1/report  "
             "(written by claude-haiku-5-5, $0.003)",
         ),
         (
@@ -418,7 +418,7 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
     ],
     ids=["keyless", "model", "unusable-reply"],
 )
-def test_one_footer_line_names_the_first_look_report(first_look, line):
+def test_one_footer_line_names_the_repo_report(first_look, line):
     import io
 
     from repowise.cli.ui.finish_panel import print_finish_panel
@@ -433,12 +433,12 @@ def test_one_footer_line_names_the_first_look_report(first_look, line):
     console = Console(file=out, width=120, theme=THEME)
     setup = EditorSetupOutcome(editor_setup_disabled=True)
     print_finish_panel(console, facts, steps=[], setup=setup, repo_path=Path("/r"))
-    assert "First look" not in out.getvalue()
+    assert "Repo report" not in out.getvalue()
 
 
 def _render_line(facts, setup) -> str:
     console = Console(record=True, width=160, theme=THEME)
     console.print(build_finish_panel(facts, steps=[], setup=setup, repo_path=Path("/r")))
-    found = [ln.strip("│ ") for ln in console.export_text().splitlines() if "First look" in ln]
+    found = [ln.strip("│ ") for ln in console.export_text().splitlines() if "Repo report" in ln]
     assert len(found) == 1
     return found[0]

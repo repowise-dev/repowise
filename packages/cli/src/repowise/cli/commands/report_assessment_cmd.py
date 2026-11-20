@@ -109,8 +109,8 @@ def _renderer(fmt: str) -> Any:
     from repowise.core.report.first_look.render import PREFIX
     from repowise.core.report.render import report_renderers
 
-    # Loads plugins, so plugin formats count. The first-look renderers read
-    # another document; `report first-look` picks them.
+    # Loads plugins, so plugin formats count. The repo report renderers read
+    # another document; `report repo` picks them.
     available = {k: v for k, v in report_renderers.all() if not k.startswith(PREFIX)}
     if fmt not in available:
         raise click.BadParameter(

@@ -11,6 +11,7 @@ from repowise.core.persistence.models import StoredReport
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.report.first_look.config import FirstLookSettings
 from repowise.core.report.first_look.model import FirstLookReport
+from repowise.core.report.first_look.store import report_path
 from repowise.core.report.first_look.write import rendered_path, write_first_look
 from tests.unit.persistence.test_first_look_collect import SECRET, _seed
 
@@ -55,7 +56,7 @@ async def test_writes_json_markdown_html_and_the_row(async_session, tmp_path) ->
     assert report.stamp.generator == "template"
     assert report.prose["writer"] == "template"
     assert set(report.prose["items"]) == {i.id for i in report.items()}
-    stored = json.loads(rendered_path(tmp_path, ".json").read_text(encoding="utf-8"))
+    stored = json.loads(report_path(tmp_path).read_text(encoding="utf-8"))
     assert FirstLookReport.from_json(stored).prose == report.prose
     rows = (await async_session.execute(select(StoredReport))).scalars().all()
     assert len(rows) == 1 and json.loads(rows[0].payload_json)["prose"] == report.prose

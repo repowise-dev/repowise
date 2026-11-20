@@ -1,4 +1,4 @@
-"""``report:``: the first-look report written after the first index."""
+"""``report:``: the repo report written after the first index."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ SETTINGS: tuple[Setting, ...] = (
         "report.first_look.enabled",
         "bool",
         True,
-        "Write the first-look report after the first index; the template version costs nothing.",
+        "Write the repo report after the first index; the template version costs nothing.",
     ),
     _s(
         "report.first_look.llm",

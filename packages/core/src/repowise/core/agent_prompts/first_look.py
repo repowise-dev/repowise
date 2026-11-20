@@ -1,4 +1,4 @@
-"""First-look prompts: one item no other producer covers, and the whole report.
+"""Repo report prompts: one item no other producer covers, and the whole report.
 
 An item comes as its wire dict (``first_look.model.Item.to_json()``): the
 facts and locations the report holds, never source text. The whole-report
@@ -64,7 +64,7 @@ def render_first_look_item(
         [
             preamble(flavor, "first_look_item"),
             "",
-            f"## First-look item{repo_suffix(repo_name)}",
+            f"## Repo report item{repo_suffix(repo_name)}",
             "",
             f"**{item['rule'].replace('_', ' ')}** ({item['section'].replace('_', ' ')})",
             "",
@@ -132,7 +132,7 @@ def render_first_look_report(
         [
             preamble(flavor, "first_look_report"),
             "",
-            f"## First-look report{repo_suffix(repo_name)}",
+            f"## Repo report{repo_suffix(repo_name)}",
             "",
             _REPORT_LOOP,
             "",
