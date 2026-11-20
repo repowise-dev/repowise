@@ -57,3 +57,22 @@ def test_counts_say_nothing_about_a_cause_off_the_database() -> None:
     )
 
     assert "queries" not in opportunity.facets
+
+
+def test_a_cause_inside_a_function_measured_hot_is_confirmed() -> None:
+    (opportunity,) = build_performance_opportunities(
+        [_finding("network")], measured={OWNER: "api-load"}, hot=frozenset({OWNER})
+    )
+
+    assert opportunity.facets["confirmed"] == "measured"
+
+
+def test_growing_counts_confirm_first_and_a_ranked_function_alone_does_not() -> None:
+    grows = {SINK: QueryReading("grows", 101, 100)}
+    (exact,) = build_performance_opportunities(
+        [_finding()], queries=grows, hot=frozenset({OWNER})
+    )
+    (ranked,) = build_performance_opportunities([_finding()], measured={OWNER: "api-load"})
+
+    assert exact.facets["confirmed"] == "query_count"
+    assert "confirmed" not in ranked.facets
