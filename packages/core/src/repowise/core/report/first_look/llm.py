@@ -1,4 +1,4 @@
-"""One model call that rewrites the first-look report's prose.
+"""One model call that rewrites the repo report's prose.
 
 The model gets facts only (rule, typed facts, counts, basenames where the
 prose needs a name), never source text, a secret's value or a person's name.
@@ -35,7 +35,7 @@ MAX_TOKENS = 6_000
 OPERATION = "first_look"
 
 SYSTEM_PROMPT = """\
-You write the first-look report a developer reads after Repowise indexes their \
+You write the repo report a developer reads after Repowise indexes their \
 repository. Plain language, direct, no hedging, no praise filler.
 
 Input: one JSON object. "repo" holds headline facts. "sections" lists report \

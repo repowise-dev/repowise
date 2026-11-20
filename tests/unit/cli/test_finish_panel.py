@@ -411,8 +411,8 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
             "(written by claude-haiku-5-5, $0.003)",
         ),
         (
-            FirstLook(".repowise/reports/first-look.html", "template", 0.002),
-            "First look  .repowise/reports/first-look.html  "
+            FirstLook(".repowise/reports/repo-report.html", "template", 0.002),
+            "Repo report  .repowise/reports/repo-report.html  "
             "(template: the model's reply was unusable, $0.002)",
         ),
     ],

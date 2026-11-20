@@ -177,7 +177,7 @@ async def _rewrite(
     prose, outcome = await rewrite_prose(
         report, provider, template=report.prose, model=settings.model or None, repo_root=root
     )
-    logger.info("first look: prose %s", outcome.to_json())
+    logger.info("repo report: prose %s", outcome.to_json())
     stamp = dataclasses.replace(
         report.stamp,
         generator=outcome.model if outcome.used else "template",

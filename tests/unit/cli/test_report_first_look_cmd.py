@@ -237,7 +237,7 @@ def test_init_plan_line_only_when_the_call_will_run(tmp_path: Path) -> None:
 
     provider = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-5-5")
     line = first_look_plan_line(tmp_path, provider)
-    assert line == "First-look report about $0.003 with claude-haiku-5-5 (one model call)."
+    assert line == "Repo report about $0.003 with claude-haiku-5-5 (one model call)."
     config = tmp_path / ".repowise" / "config.yaml"
     config.parent.mkdir()
     config.write_text("report:\n  first_look:\n    llm: false\n", encoding="utf-8")
@@ -262,7 +262,7 @@ def test_llm_flag_prints_the_cost_and_writes_with_the_model(indexed: Path, monke
     from repowise.cli.main import cli
 
     declined = CliRunner().invoke(
-        cli, ["report", "first-look", str(indexed), "--llm", "--format", "json"], input="n\n"
+        cli, ["report", "repo", str(indexed), "--llm", "--format", "json"], input="n\n"
     )
     assert declined.exit_code == 0, declined.output
     assert "about $" in declined.output and provider.calls == 0

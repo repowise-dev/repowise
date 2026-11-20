@@ -94,8 +94,8 @@ async def test_model_text_holding_a_secret_never_reaches_a_file(async_session, t
         async_session, rid, tmp_path, provider=EchoProvider(leak="Gx7pQ2vLm9Rt4")
     )
     assert report.stamp.generator == "claude-haiku-5-5"  # the intros and summary were used
-    for suffix in (".json", ".md", ".html"):
-        assert "Gx7pQ2vLm9Rt4" not in rendered_path(tmp_path, suffix).read_text(encoding="utf-8")
+    for path in (report_path(tmp_path), rendered_path(tmp_path, ".md"), rendered_path(tmp_path, ".html")):
+        assert "Gx7pQ2vLm9Rt4" not in path.read_text(encoding="utf-8")
 
 
 async def test_the_llm_setting_off_makes_no_call(async_session, tmp_path) -> None:

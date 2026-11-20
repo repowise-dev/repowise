@@ -56,7 +56,7 @@ def first_look_plan_line(repo_path: Path, provider: Any) -> str | None:
         return None
     if not (settings.enabled and settings.llm) or read_report_file(repo_path) is not None:
         return None
-    return f"First-look report {first_look_estimate(provider, settings.model)} (one model call)."
+    return f"Repo report {first_look_estimate(provider, settings.model)} (one model call)."
 
 
 def _rewrite_with_model(root: Path, yes: bool) -> bool:
@@ -72,7 +72,7 @@ def _rewrite_with_model(root: Path, yes: bool) -> bool:
     provider = resolve_provider(None, None, repo_path=root)
     # Asking for it is the opt-in: the settings only stop the automatic call.
     settings = dataclasses.replace(first_look_settings(root), enabled=True, llm=True)
-    err_console.print(f"First-look report {first_look_estimate(provider, settings.model)}.")
+    err_console.print(f"Repo report {first_look_estimate(provider, settings.model)}.")
     if not yes and not click.confirm("Write it with the model?", default=True, err=True):
         err_console.print("Not written; the stored report is unchanged.")
         return False

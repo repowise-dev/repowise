@@ -438,7 +438,7 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
 
 
 def first_look_provider(run: InitRun) -> Any:
-    """The provider the first-look report is written with; ``None`` on a run meant
+    """The provider the repo report is written with; ``None`` on a run meant
     to cost nothing (keyless, ``--no-prose``, a declined cost) or a dry run, even
     when a key sits in the environment."""
     opts = run.opts
