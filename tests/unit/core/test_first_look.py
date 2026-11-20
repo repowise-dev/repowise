@@ -272,3 +272,21 @@ def test_an_item_round_trips_its_rules_and_members() -> None:
         ]
     )
     assert Item.from_json(json.loads(json.dumps(group.to_json()))) == group
+
+
+def test_a_failed_write_keeps_the_current_report(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    write_report_file(tmp_path, _report(_item(), commit="a" * 40))
+    real = Path.write_text
+
+    def failing(self, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise OSError("disk full")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", failing)
+    with pytest.raises(OSError):
+        write_report_file(tmp_path, _report(_item(), commit="b" * 40))
+    kept = read_report_file(tmp_path)
+    assert kept is not None and kept.stamp.commit == "a" * 40
