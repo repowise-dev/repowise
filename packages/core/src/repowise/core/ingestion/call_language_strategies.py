@@ -394,8 +394,8 @@ class LanguageStrategiesMixin:
         ws = get_or_build_cargo_workspace_index(ctx)
         if ws:
             for crate in ws.crates:
-                normalized = crate.name.replace("-", "_")
-                self._rust_crate_src[normalized] = crate.src_dir
+                for import_name in crate.import_names:
+                    self._rust_crate_src[import_name] = crate.src_dir
         return self._rust_crate_src
 
     def _get_go_index(self) -> Any:
