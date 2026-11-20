@@ -59,24 +59,61 @@ const openFirstCause = async () => {
 describe("Drawer: runs that measured it", () => {
   it("shows the basis run's share, interval and basis for the cause's function", async () => {
     const getMeasuredFunctions = vi.fn(async () => ({ functions: [measuredFunction()] }));
-    render(<PerformanceView adapter={adapter({ getMeasuredFunctions })} />);
+    render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasuredFunctions })} />);
     const panel = await openFirstCause();
     expect(await within(panel).findByText("Runs that measured it")).toBeTruthy();
     expect(within(panel).getByText("cli build · entry point")).toBeTruthy();
     expect(within(panel).getByText("2.9%")).toBeTruthy();
     expect(within(panel).getByText("2.5 to 3.4%")).toBeTruthy();
     expect(within(panel).getByText(/154 of 5,312 samples · self time · 4f9c2a1 · current/)).toBeTruthy();
-    expect(within(panel).getByText(/Inclusive share in cli build: 6.8%/)).toBeTruthy();
+    expect(within(panel).getByText(/Inclusive share in cli build: 6.8%, for context. The rank is by self time./)).toBeTruthy();
     expect(within(panel).getByText(/1 other run also measured it/)).toBeTruthy();
     expect(getMeasuredFunctions).toHaveBeenCalledWith({ symbolId: expect.any(String) });
   });
 
   it("leaves the section out when no run measured the function", async () => {
     const getMeasuredFunctions = vi.fn(async () => ({ functions: [] }));
-    render(<PerformanceView adapter={adapter({ getMeasuredFunctions })} />);
+    render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasuredFunctions })} />);
     const panel = await openFirstCause();
     await vi.waitFor(() => expect(getMeasuredFunctions).toHaveBeenCalled());
     expect(within(panel).queryByText("Runs that measured it")).toBeNull();
+  });
+
+  it("says an ordering-only run orders within itself, and marks a changed function", async () => {
+    const getMeasuredFunctions = vi.fn(async () => ({
+      functions: [
+        measuredFunction({
+          ordering_only: true,
+          self_share: null,
+          share_low: null,
+          share_high: null,
+          total_share: null,
+          run_count: 1,
+          freshness: "stale",
+        }),
+      ],
+    }));
+    render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasuredFunctions })} />);
+    const panel = await openFirstCause();
+    expect(await within(panel).findByText("rank 1")).toBeTruthy();
+    expect(within(panel).getByText("The run orders functions within itself only.")).toBeTruthy();
+    expect(within(panel).getByText("changed since")).toBeTruthy();
+    expect(within(panel).queryByText(/The rank is by self time/)).toBeNull();
+  });
+
+  it("asks about no function when the repository has no stored runs", async () => {
+    const getMeasuredFunctions = vi.fn(async () => ({ functions: [measuredFunction()] }));
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("no_runtime_data", null),
+          getMeasuredFunctions,
+        })}
+      />,
+    );
+    const panel = await openFirstCause();
+    await within(panel).findByText(/Whether it can be changed/i);
+    expect(getMeasuredFunctions).not.toHaveBeenCalled();
   });
 });
 

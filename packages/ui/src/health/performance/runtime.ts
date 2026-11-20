@@ -62,7 +62,10 @@ export function useEvidenceRuns(adapter: PerformanceViewAdapter, enabled: boolea
 /** Slow tests listed before the list folds. */
 export const SLOW_TESTS = 10;
 
-/** The slowest timed tests; read once the measured view has answered. */
+/**
+ * The slowest timed tests; read once the measured view has answered. Not
+ * gated on its status: test timings are stored without any profile run.
+ */
 export function useEvidenceTests(adapter: PerformanceViewAdapter, enabled: boolean) {
   const load = adapter.getEvidenceTests;
   return useSWR<SuiteCostResponse>(

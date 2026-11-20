@@ -32,7 +32,8 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
     out.push({ kind: status, command: view.overview?.command ?? null });
   }
   for (const run of view.runs ?? []) {
-    if (run.mapping_partial) out.push({ kind: "partial", run });
+    // Only a profile's frames rank functions; other kinds map tests or lines.
+    if (run.mapping_partial && run.kind === "profile") out.push({ kind: "partial", run });
   }
   return out;
 }
@@ -52,7 +53,7 @@ function PartialNotice({ run }: { run: EvidenceRunSummary }) {
   return (
     <Notice tone="warning">
       <strong className="font-semibold text-[var(--color-text-primary)]">
-        {share ? `${share} of entries in ` : "Few entries in "}
+        {share ? `${share} of entries in ` : "Some entries in "}
         <code className="font-mono">{run.workload}</code> matched indexed code
       </strong>
       , so the run is stored but not used for ranking.
@@ -113,8 +114,8 @@ function NoticeFor({ notice }: { notice: RuntimeNotice }) {
             <strong className="font-semibold text-[var(--color-text-primary)]">
               The stored runs rank no production function.
             </strong>{" "}
-            Their time is in libraries, waits or test code. Profile a workload that runs more repo
-            code.
+            They have too few samples in repo code, or no frame in it, to rank one. Profile a
+            workload that runs more repo code, or runs it for longer.
           </Notice>
           {notice.command ? <CommandLine command={notice.command} /> : null}
         </div>

@@ -6,6 +6,8 @@ import type { MeasuredFunction } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber, formatRelativeTimeOrNull } from "../../../lib/format";
 import type { PerformanceViewAdapter } from "../adapter";
+import { useMeasuredOverview } from "../runtime";
+import { EvidenceWordTag } from "../tags";
 import { intervalText, plural, shareText, workloadClassLabel } from "../measured-format";
 import { Section } from "./layout";
 
@@ -62,6 +64,11 @@ function RunLine({ fn }: { fn: MeasuredFunction }) {
       </span>
       <span className="col-span-2 font-mono text-[11px] text-[var(--color-text-tertiary)]">
         {basisLine(fn)}
+        {fn.freshness === "stale" ? (
+          <span className="ml-1.5">
+            <EvidenceWordTag>changed since</EvidenceWordTag>
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -76,20 +83,26 @@ export function MeasuredRunsSection({
 }) {
   const load = adapter.getMeasuredFunctions;
   const symbolId = current.intervention_symbol;
+  // The tab's own overview read, shared by key: a repository with no stored
+  // runs never asks about one function.
+  const { data: overview } = useMeasuredOverview(adapter);
+  const stored = overview != null && overview.status !== "no_runtime_data";
   const { data } = useSWR(
-    load && symbolId ? `evidence-function:${adapter.cacheKey}:${symbolId}` : null,
+    load && symbolId && stored ? `evidence-function:${adapter.cacheKey}:${symbolId}` : null,
     () => load!({ symbolId: symbolId! }),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const fn = data?.functions[0];
   if (!fn) return null;
   const others = (fn.run_count ?? 1) - 1;
+  const ranked = fn.rank != null && !fn.ordering_only;
   const notes = [
     fn.total_share != null && fn.workload_name
-      ? `Inclusive share in ${fn.workload_name}: ${shareText(fn.total_share)}, for context. The rank is by self time.`
+      ? `Inclusive share in ${fn.workload_name}: ${shareText(fn.total_share)}, for context.`
       : null,
+    ranked ? "The rank is by self time." : "The run orders functions within itself only.",
     others > 0
-      ? `${plural(others, "other run")} also measured it; this is the run its rank comes from.`
+      ? `${plural(others, "other run")} also measured it; this is the run its figures come from.`
       : null,
   ].filter(Boolean);
   return (
