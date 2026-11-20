@@ -14,6 +14,7 @@ from ..model import (
     FirstLookSection,
     Item,
     Link,
+    Member,
     PromptRef,
     first_look_sections,
     item_id,
@@ -43,6 +44,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
             prompt=PromptRef("action", action.action_id),
             fingerprint=action.fingerprint,
             priority=action.effective_priority,
+            members=(Member("action", action.action_id, action.fingerprint),),
         )
         for action in outcome.actions
     )

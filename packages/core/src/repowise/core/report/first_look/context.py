@@ -53,6 +53,12 @@ class FirstLookContext:
     def is_production(self, path: str) -> bool:
         return self.origin(path) == PRODUCTION
 
+    def metric(self, path: str) -> Any | None:
+        """The stored health metric row of *path*, or ``None``."""
+        if "metrics" not in self._cache:
+            self._cache["metrics"] = {m.file_path: m for m in self.metrics}
+        return self._cache["metrics"].get(path)
+
     @property
     def origins(self) -> dict[str, str]:
         """Stored origin per file with a health row."""

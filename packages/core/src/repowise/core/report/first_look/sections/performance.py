@@ -19,6 +19,7 @@ from ..model import (
     FirstLookSection,
     Item,
     Location,
+    Member,
     PromptRef,
     file_link,
     first_look_sections,
@@ -78,6 +79,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 fingerprint=fingerprint(row.biomarker_type, level, runtime, bucket, len(steps)),
                 origin=ctx.origin(path),
                 priority=shared_priority(row.queue_value, "medium", level, bucket),
+                members=(Member("performance", row.opportunity_id),),
             )
         )
     return Collected(tuple(items), {"production_causes": production_total})

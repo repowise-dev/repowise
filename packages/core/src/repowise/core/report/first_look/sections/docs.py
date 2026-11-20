@@ -17,6 +17,7 @@ from ..model import (
     Item,
     Link,
     Location,
+    Member,
     PromptRef,
     first_look_sections,
     item_id,
@@ -59,6 +60,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 fingerprint=action.fingerprint,
                 origin=ctx.origin(doc),
                 priority=action.effective_priority,
+                members=(Member("action", action.action_id, action.fingerprint),),
             )
         )
     return Collected(tuple(items))

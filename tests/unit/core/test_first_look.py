@@ -217,3 +217,58 @@ async def test_ownership_counts_components_at_bus_factor_one(monkeypatch, tmp_pa
     assert item.title_facts == {"components": 2, "bus_factor_1": 1}
     assert item.link.route == "ownership"
     assert "api" not in json.dumps(item.to_json())
+
+
+def _member_item(rule: str, path: str, ref: str, *, fingerprint: str = "f1") -> Item:
+    import dataclasses
+
+    from repowise.core.report.first_look.model import Member
+
+    return dataclasses.replace(
+        _item(rule=rule, path=path, severity="act_now", fingerprint=fingerprint),
+        prompt=PromptRef("action", ref),
+        members=(Member("action", ref, "fp"),),
+    )
+
+
+def test_one_fix_groups_its_rules_into_one_item() -> None:
+    password = _member_item("hardcoded_password", "b.py", "act_b")
+    secret = _member_item("hardcoded_secret", "a.py", "act_a")
+    other = _item(section="docs", rule="broken_doc_refs", path="README.md")
+    grouped = rank.group_items([password, other, secret])
+
+    assert [i.section for i in grouped] == ["docs", "security"]
+    group = grouped[1]
+    assert group.id == item_id("security", "credentials", "")
+    assert set(group.rules) == {"hardcoded_password", "hardcoded_secret"}
+    assert group.rule in group.rules and group.rules[0] == group.rule
+    assert [loc.path for loc in group.locations] == ["a.py", "b.py"]
+    assert group.locations_total == 2 and group.title_facts["files"] == 2
+    assert {m.ref for m in group.members} == {"act_a", "act_b"}
+    # A group's prompt covers every location; one member keeps its own.
+    assert group.prompt.renderer == "first_look_item"
+    (alone,) = rank.group_items([password])
+    assert alone.prompt == PromptRef("action", "act_b")
+    assert alone.to_json()["rules"] == ["hardcoded_password"]
+
+
+def test_a_group_id_holds_while_files_join_and_its_lines_move() -> None:
+    one = rank.group_items([_member_item("hardcoded_password", "a.py", "act_a")])[0]
+    two = rank.group_items(
+        [
+            _member_item("hardcoded_password", "a.py", "act_a"),
+            _member_item("hardcoded_secret", "c.py", "act_c"),
+        ]
+    )[0]
+    assert one.id == two.id
+    assert one.fingerprint != two.fingerprint  # the report compares it as changed
+
+
+def test_an_item_round_trips_its_rules_and_members() -> None:
+    (group,) = rank.group_items(
+        [
+            _member_item("hardcoded_password", "a.py", "act_a"),
+            _member_item("hardcoded_secret", "c.py", "act_c"),
+        ]
+    )
+    assert Item.from_json(json.loads(json.dumps(group.to_json()))) == group
