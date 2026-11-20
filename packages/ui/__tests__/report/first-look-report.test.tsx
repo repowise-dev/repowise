@@ -332,8 +332,12 @@ describe("Prose source and mark reasons", () => {
     render(
       <FirstLookReport report={r} hrefFor={hrefFor} overviewHref="/r/overview" loadPrompt={vi.fn()} canRewrite onRewrite={vi.fn()} />,
     );
-    expect(screen.getByText("Wording by your model, Nov 20, 2026")).toHaveAttribute("title", "claude-haiku-5-5");
+    const wording = screen.getByText(/^Wording by your model, Nov 20, 2026/);
+    expect(wording).toHaveAttribute("title", "claude-haiku-5-5");
+    expect(wording).toHaveTextContent("(claude-haiku-5-5)");
     expect(screen.getByRole("button", { name: "Rewrite" })).toBeInTheDocument();
-    expect(within(document.getElementById("fl_perf")!).getByText("acknowledged")).toHaveAttribute("title", "batched later");
+    const pill = within(document.getElementById("fl_perf")!).getByText(/^acknowledged/);
+    expect(pill).toHaveAttribute("title", "batched later");
+    expect(pill).toHaveTextContent("acknowledged: batched later");
   });
 });

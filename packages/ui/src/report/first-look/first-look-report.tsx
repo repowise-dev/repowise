@@ -207,6 +207,7 @@ function ProseSource({ report, copy, rewrite }: { report: FirstLookLivingReport;
     <div className="flex flex-wrap items-center gap-x-1.5 text-[12.5px] text-[var(--color-text-secondary)]">
       <span title={model ? source.writer : undefined}>
         {model ? copy.wordingByModel(formatDate(source.written_at ?? report.stamp.created_at)) : copy.wordingTemplate}
+        {model ? <span className="sr-only"> ({source.writer})</span> : null}
       </span>
       {rewrite ? (
         <>

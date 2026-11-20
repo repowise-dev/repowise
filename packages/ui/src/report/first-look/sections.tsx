@@ -98,6 +98,8 @@ export function StatusPill({ item, copy }: { item: FirstLookLivingItem; copy: Fi
       )}
     >
       {copy.status[pill]}
+      {/* The reason is the tooltip; a table row has no fine print to carry it, so say it here too. */}
+      {item.status_reason ? <span className="sr-only">: {item.status_reason}</span> : null}
     </span>
   );
 }
