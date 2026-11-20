@@ -359,10 +359,12 @@ class TestOptionsMethod:
             "return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {\n"
             "  limit,\n});\n"
             "return apiDelete<{ ok: boolean }>(`/api/repos/${repoId}`);\n"
+            'return apiPost<Paginated<Array<Commit>>>("/api/commits");\n'
         )
         rows = list(wrapper_calls(content, frozenset()))
-        assert [(r.callee, r.method) for r in rows] == [("apiGet", None), ("apiDelete", None)]
-        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE"]
+        assert [r.callee for r in rows] == ["apiGet", "apiDelete", "apiPost"]
+        assert {r.method for r in rows} == {None}
+        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE", "POST"]
 
 
 class TestConsumerContracts:
