@@ -167,7 +167,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
         if accuracy is not None:
             facts["defect_accuracy"] = {**accuracy, "basis": "measured"}
     except Exception:  # the headline is optional; the items stand without it
-        logger.warning("first look: defect accuracy unavailable", exc_info=True)
+        logger.warning("repo report: defect accuracy unavailable", exc_info=True)
     return Collected(tuple(items), facts)
 
 

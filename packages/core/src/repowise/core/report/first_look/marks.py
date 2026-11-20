@@ -330,7 +330,7 @@ async def mark_item(
     if item is None:
         raise MarkError(
             "unknown_item",
-            f"No first-look item {item_id!r} in this repository's report or index.",
+            f"No repo report item {item_id!r} in this repository's report or index.",
         )
     if item.section == "security" and status == "false_positive":
         raise MarkError("security_use_ignore", SECURITY_IGNORE)
