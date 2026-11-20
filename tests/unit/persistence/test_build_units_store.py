@@ -286,8 +286,8 @@ def test_the_migration_creates_and_drops_the_tables(tmp_path: Path, warm_start: 
 
     command.upgrade(config, "0129")
     if not warm_start:
-        # 0135 adds ``stale``; the warm start's create_all made it already.
-        command.upgrade(config, "0135")
+        # 0138 adds ``stale``; the warm start's create_all made it already.
+        command.upgrade(config, "0138")
     with sqlite3.connect(path) as connection:
         for model in _TABLES:
             table = model.__tablename__

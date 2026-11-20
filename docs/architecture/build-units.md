@@ -173,7 +173,7 @@ local stores:
   `failed_ecosystems`, the stored units of that ecosystem are read back and
   merged in place of whatever the fallback produced at their roots. Kept file
   rows survive only for paths the fresh index still owns. Kept units are
-  written `stale` (migration `0135_build_units_stale`), and
+  written `stale` (migration `0138_build_units_stale`), and
   `load_build_units` names their ecosystems in `failed_ecosystems`, so a reader
   of the store knows they may not match the manifests. The next clean read
   clears the flag.

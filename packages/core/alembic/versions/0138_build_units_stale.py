@@ -5,8 +5,8 @@
 selection never trusts their edges. Local SQLite stores get it from the models
 through the reconciler.
 
-Revision ID: 0135
-Revises: 0134
+Revision ID: 0138
+Revises: 0137
 Create Date: 2026-11-19
 """
 
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0135"
-down_revision: str | None = "0134"
+revision: str = "0138"
+down_revision: str | None = "0137"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
