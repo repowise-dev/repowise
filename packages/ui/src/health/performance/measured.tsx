@@ -372,7 +372,9 @@ function MeasuredRows({
     filePath: subset.length === 1 ? rowLocation(subset[0]!) : null,
     getPrompt: (flavor) => buildMeasuredFunctionsPrompt({ run, rows: subset, flavor }),
   });
-  const pending = !data && (isLoading || Boolean(error));
+  // An error wins over the rows kept from the last read: a failed "Show all"
+  // must not leave the preview looking like the whole list.
+  const pending = Boolean(error) || (!data && isLoading);
   if (!pending && rows.length === 0) return null;
   return (
     <div>

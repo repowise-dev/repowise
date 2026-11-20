@@ -126,6 +126,19 @@ describe("PerformanceView runtime evidence", () => {
     expect(screen.getByRole("heading", { name: "Measured cost in cli build" })).toBeTruthy();
   });
 
+  it("says Show all failed instead of keeping the preview as the whole list", async () => {
+    const evidence = evidenceAdapter();
+    evidence.getMeasured.mockImplementation(async (opts = {}) => {
+      if (opts.limit === 100) throw new Error("boom");
+      return measured(opts);
+    });
+    render(<PerformanceView adapter={adapter(evidence)} />);
+    await table();
+    fireEvent.click(screen.getByRole("button", { name: "Show all 7" }));
+    expect(await screen.findByText(/Could not read the ranked functions/)).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Measured in cli build" })).toBeNull();
+  });
+
   it("gives an ordering-only run a rank and no share", async () => {
     const evidence = evidenceAdapter();
     evidence.getMeasured.mockImplementation(async (opts = {}) => {
