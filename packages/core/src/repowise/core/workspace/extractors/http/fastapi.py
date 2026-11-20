@@ -28,6 +28,8 @@ from .mounts import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from repowise.core.workspace.contracts import Contract
 
     from ..base import ScanContext
@@ -186,31 +188,52 @@ def _router_identity(
     head, *rest = expr.split(".")
     if head not in imports:
         return None if rest else _router_key(ctx.rel_path, head)
+    root = ctx.repo_root
+    if root is None:
+        return None
     module, name = imports[head]
     if not rest:
         if name is None:
             return None
-        rel = _resolve_module(ctx, module)
-        return _router_key(rel, name) if rel else None
-    parts = [*([name] if name else []), *rest[:-1]]
-    joiner = "" if module.endswith(".") else "."
-    rel = _resolve_module(ctx, module + joiner + ".".join(parts) if parts else module)
-    return _router_key(rel, rest[-1]) if rel else None
+        target, var = module, name
+    else:
+        parts = [*([name] if name else []), *rest[:-1]]
+        joiner = "" if module.endswith(".") else "."
+        target, var = (module + joiner + ".".join(parts) if parts else module), rest[-1]
+    rel = _resolve_module(root, ctx.rel_path, target)
+    return _router_key(*_defined_at(root, rel, var)) if rel else None
 
 
-def _resolve_module(ctx: ScanContext, dotted: str) -> str | None:
-    """The repo-relative file a Python module name resolves to from *ctx*'s file.
+def _defined_at(root: Path, rel: str, var: str) -> tuple[str, str]:
+    """Where *var*, as module *rel* exposes it, is defined.
 
-    A relative name resolves against the file's package. An absolute name is
+    A package ``__init__.py`` that re-exports a router (``from .users import
+    router``) is followed one hop to the defining file. Ceiling: one hop; a
+    longer re-export chain keys the router at the second file.
+    """
+    try:
+        content = (root / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return rel, var
+    if re.search(rf"^[ \t]*{re.escape(var)}\s*(?::[^=\n]+)?=(?!=)", content, re.MULTILINE):
+        return rel, var
+    module, name = _python_imports(content).get(var, ("", None))
+    if name is None:
+        return rel, var
+    source = _resolve_module(root, rel, module)
+    return (source, name) if source else (rel, var)
+
+
+def _resolve_module(root: Path, from_path: str, dotted: str) -> str | None:
+    """The repo-relative file a Python module name resolves to from *from_path*.
+
+    A relative name resolves against that file's package. An absolute name is
     tried under each directory from the file's own up to the repo root, since
     the import root is often a subdirectory (``backend/``) and not the repo root.
     """
-    root = ctx.repo_root
-    if root is None:
-        return None
     level = len(dotted) - len(dotted.lstrip("."))
     parts = [p for p in dotted[level:].split(".") if p]
-    here = posixpath.dirname(ctx.rel_path)
+    here = posixpath.dirname(from_path)
     if level:
         base = here
         for _ in range(level - 1):

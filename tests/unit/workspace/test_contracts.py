@@ -289,6 +289,40 @@ async def get_user(user_id: int): ...
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/api/v1/x/users/{param}" in ids
 
+    def test_fastapi_mount_follows_a_package_reexport(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "app/main.py", """
+from fastapi import FastAPI
+from app.users import router as users_router
+app = FastAPI()
+app.include_router(users_router, prefix="/users")
+""")
+        self._write_file(tmp_path, "app/users/__init__.py", "from .routes import router\n")
+        self._write_file(tmp_path, "app/users/routes.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
+    def test_fastapi_router_mounted_at_two_prefixes_keeps_its_path(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+import items
+app = FastAPI()
+app.include_router(items.router, prefix="/v1")
+app.include_router(items.router, prefix="/v2")
+""")
+        self._write_file(tmp_path, "items.py", """
+router = APIRouter()
+
+@router.get("/items")
+async def items(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/items" in ids
+
     def test_express_cross_file_app_use_prefix(self, tmp_path: Path) -> None:
         # app.use('/api/users', userRouter) mounts a uniquely-named router.
         self._write_file(tmp_path, "src/app.js", """
