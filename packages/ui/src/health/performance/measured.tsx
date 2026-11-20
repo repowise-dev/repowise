@@ -486,6 +486,7 @@ function RunsTable({ runs }: { runs: EvidenceRunSummary[] }) {
   );
 }
 
+/** The slowest timed tests, longest first, with the workload that timed each. */
 /** One timed test, as the slow-test list (`/evidence/tests`) reports it. */
 export interface SlowTestRow {
   test_id: string;
@@ -495,7 +496,6 @@ export interface SlowTestRow {
   workload: string;
 }
 
-/** The slowest timed tests, longest first, with the workload that timed each. */
 function SlowTests({ tests }: { tests: readonly SlowTestRow[] }) {
   return (
     <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)] text-xs">
@@ -506,7 +506,7 @@ function SlowTests({ tests }: { tests: readonly SlowTestRow[] }) {
           </span>
           {t.outcome && t.outcome !== "passed" ? <EvidenceWordTag>{t.outcome}</EvidenceWordTag> : null}
           <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">
-            {formatNumber(Math.round(t.duration_s * 100) / 100)} s
+            {t.duration_s < 0.01 ? "under 0.01" : formatNumber(Math.round(t.duration_s * 100) / 100)} s
           </span>
         </li>
       ))}
@@ -526,10 +526,127 @@ const disclosureTitle = (title: string, caption?: string) => (
   </>
 );
 
+type CauseOpener = ((opportunityId: string) => void) | undefined;
+
+/** The picked workload: its strip with the lens, then its ranked functions. */
+function LeadRun({
+  view,
+  adapter,
+  onOpenCause,
+  onPrompt,
+}: {
+  view: RuntimeEvidenceView;
+  adapter: PerformanceViewAdapter;
+  onOpenCause: CauseOpener;
+  onPrompt: (request: AiPromptRequest) => void;
+}) {
+  const { run, leads, pick, runs } = view;
+  if (!run) return null;
+  return (
+    <>
+      <div>
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <p className={MICRO}>Runtime evidence</p>
+          {leads.length > 1 ? (
+            <Segmented
+              label="Workload"
+              value={run.run_id}
+              options={leads.map((r) => ({
+                value: r.run_id,
+                label: r.workload_name,
+                count: workloadClassLabel(r.workload_class),
+              }))}
+              onChange={pick}
+            />
+          ) : null}
+        </div>
+        <StatRibbon stats={stripStats(run, runs)} />
+      </div>
+      <MeasuredRows
+        key={run.run_id}
+        adapter={adapter}
+        run={run}
+        heading={`Measured cost in ${run.workload_name}`}
+        description="Production functions ranked by self time, waits excluded. A share is of the whole run, with its interval. A function with no row has no evidence, which is not the same as cheap."
+        onOpenCause={onOpenCause}
+        onPrompt={onPrompt}
+      />
+    </>
+  );
+}
+
+/** The newest unit-test run, closed: ordered within the test run only. */
+function TestRunGroup({
+  view,
+  adapter,
+  onOpenCause,
+  onPrompt,
+}: {
+  view: RuntimeEvidenceView;
+  adapter: PerformanceViewAdapter;
+  onOpenCause: CauseOpener;
+  onPrompt: (request: AiPromptRequest) => void;
+}) {
+  const { testRun, testsTotal } = view;
+  if (!testRun) return null;
+  const caption = [
+    testRun.workload_name,
+    "unit test",
+    testRun.samples != null ? plural(testRun.samples, "sample") : null,
+    testsTotal > 0 ? plural(testsTotal, "ranked function") : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <CollapsibleSection title={disclosureTitle("Measured in tests", caption)}>
+      <div className="pb-4">
+        <MeasuredRows
+          key={testRun.run_id}
+          adapter={adapter}
+          run={testRun}
+          heading={null}
+          description="Order within the test run only. A unit-test run never leads the queue: test fixtures decide what is costly there."
+          onOpenCause={onOpenCause}
+          onPrompt={onPrompt}
+        />
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+function SlowTestsGroup({ slowTests }: { slowTests: readonly SlowTestRow[] | null | undefined }) {
+  if (!slowTests || slowTests.length === 0) return null;
+  return (
+    <CollapsibleSection
+      title={disclosureTitle("Slow tests", "Longest first")}
+      hint={plural(slowTests.length, "test")}
+    >
+      <div className="pb-3">
+        <SlowTests tests={slowTests} />
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+function RunsGroup({ runs }: { runs: EvidenceRunSummary[] | undefined }) {
+  if (!runs || runs.length === 0) return null;
+  return (
+    <CollapsibleSection
+      title={disclosureTitle("Runs", "Newest first")}
+      hint={`${formatNumber(runs.length)} stored`}
+    >
+      <div className="pb-3">
+        <RunsTable runs={runs} />
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 /**
  * The runtime evidence block between the lede and the queue: the strip with
- * the workload lens, the measured table, then the unit-test runs and every
- * stored run, closed. Renders nothing until a run ranks something.
+ * the workload lens, the measured table, then the unit-test run, the slowest
+ * tests and every stored run, closed. Renders nothing until a run ranks
+ * something.
  */
 export function RuntimeEvidenceSection({
   view,
@@ -541,100 +658,23 @@ export function RuntimeEvidenceSection({
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
-  onOpenCause?: ((opportunityId: string) => void) | undefined;
+  onOpenCause?: CauseOpener;
   /** False when the host cannot open a cause by id, so a findings tag stays a word. */
   canOpenCause?: boolean;
   onPrompt: (request: AiPromptRequest) => void;
   /** The slowest timed tests, when the host reads them; nothing renders without rows. */
   slowTests?: readonly SlowTestRow[] | null | undefined;
 }) {
-  const { run, leads, pick, testRun, runs } = view;
   const onOpenCause = canOpenCause ? openCause : undefined;
-  if (!run && !testRun && !slowTests?.length) return null;
-  const testsTotal = view.testsTotal;
+  if (!view.run && !view.testRun && !slowTests?.length) return null;
+  const rows = { view, adapter, onOpenCause, onPrompt };
   return (
     <section aria-label="Runtime evidence" className="space-y-10">
-      {run ? (
-        <div>
-          <div className="mb-2.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <p className={MICRO}>Runtime evidence</p>
-            {leads.length > 1 ? (
-              <Segmented
-                label="Workload"
-                value={run.run_id}
-                options={leads.map((r) => ({
-                  value: r.run_id,
-                  label: r.workload_name,
-                  count: workloadClassLabel(r.workload_class),
-                }))}
-                onChange={pick}
-              />
-            ) : null}
-          </div>
-          <StatRibbon stats={stripStats(run, runs)} />
-        </div>
-      ) : null}
-
-      {run ? (
-        <MeasuredRows
-          key={run.run_id}
-          adapter={adapter}
-          run={run}
-          heading={`Measured cost in ${run.workload_name}`}
-          description="Production functions ranked by self time, waits excluded. A share is of the whole run, with its interval. A function with no row has no evidence, which is not the same as cheap."
-          onOpenCause={onOpenCause}
-          onPrompt={onPrompt}
-        />
-      ) : null}
-
+      <LeadRun {...rows} />
       <div className="border-b border-[var(--color-border-default)]">
-        {testRun ? (
-          <CollapsibleSection
-            title={disclosureTitle(
-              "Measured in tests",
-              [
-                testRun.workload_name,
-                "unit test",
-                testRun.samples != null ? plural(testRun.samples, "sample") : null,
-                testsTotal > 0 ? plural(testsTotal, "ranked function") : null,
-              ]
-                .filter(Boolean)
-                .join(" · "),
-            )}
-          >
-            <div className="pb-4">
-              <MeasuredRows
-                key={testRun.run_id}
-                adapter={adapter}
-                run={testRun}
-                heading={null}
-                description="Order within the test run only. A unit-test run never leads the queue: test fixtures decide what is costly there."
-                onOpenCause={onOpenCause}
-                onPrompt={onPrompt}
-              />
-            </div>
-          </CollapsibleSection>
-        ) : null}
-        {slowTests && slowTests.length > 0 ? (
-          <CollapsibleSection
-            title={disclosureTitle("Slow tests", "Longest first")}
-            hint={plural(slowTests.length, "test")}
-          >
-            <div className="pb-3">
-              <SlowTests tests={slowTests} />
-            </div>
-          </CollapsibleSection>
-        ) : null}
-        {runs && runs.length > 0 ? (
-          <CollapsibleSection
-            title={disclosureTitle("Runs", "Newest first")}
-            hint={`${formatNumber(runs.length)} stored`}
-          >
-            <div className="pb-3">
-              <RunsTable runs={runs} />
-            </div>
-          </CollapsibleSection>
-        ) : null}
+        <TestRunGroup {...rows} />
+        <SlowTestsGroup slowTests={slowTests} />
+        <RunsGroup runs={view.runs} />
       </div>
     </section>
   );
