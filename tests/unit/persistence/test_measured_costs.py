@@ -343,6 +343,7 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
             _run(repo.id, "r3", cls="unit_test"),
             owned(5, "warm_cache"),
             owned(25, "load_settings"),
+            owned(45, "seed_defaults"),
         ]
     )
     await async_session.flush()
@@ -353,6 +354,8 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
             {**_hot("x"), "symbol_id": "src/startup.py::warm_cache"},
             # A unit-test run says nothing about production.
             {**_hot("x", run="r3"), "symbol_id": "src/startup.py::load_settings"},
+            # A tracer's order is not a measured cost.
+            {**_hot("y", rank=2, ordering_only=True), "symbol_id": "src/startup.py::seed_defaults"},
         ],
     )
 
@@ -366,3 +369,4 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     unmeasured = json.loads(by_owner["load_settings"].details_json)["facets"]
     assert "measured" not in unmeasured
     assert not by_owner["load_settings"].queue_eligible
+    assert "measured" not in json.loads(by_owner["seed_defaults"].details_json)["facets"]

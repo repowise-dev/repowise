@@ -302,7 +302,9 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> dict
     Read off ``workload_hotness``, which the health writers rebuild before
     this runs, so it describes the current code. Only workload classes that
     may lead (``evidence.hotness.LEAD_CLASSES``) count: a unit-test run says
-    nothing about production. A function two workloads rank takes the one
+    nothing about production. A deterministic tracer's order is not a
+    measured cost (``ordering_only``), so it never counts either, as it never
+    leads in ``evidence.hotness``. A function two workloads rank takes the one
     that ranks it best, ties by name. One indexed lookup without evidence.
     """
     from ....evidence.hotness import LEAD_CLASSES
@@ -313,6 +315,8 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> dict
         if run.workload_class not in LEAD_CLASSES:
             continue
         for row in rows:
+            if row.ordering_only:
+                continue
             key = (row.rank, run.workload_name)
             if row.symbol_id not in best or key < best[row.symbol_id]:
                 best[row.symbol_id] = key
