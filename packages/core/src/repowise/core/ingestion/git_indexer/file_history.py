@@ -573,15 +573,25 @@ def _temporal_hotspot_score(commits: list[_CommitRec], now: datetime) -> float:
 
 
 def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
-    """Contributor count, bus factor, top authors and the overall and 90-day owners."""
-    meta["contributor_count"] = len(authors.counts)
-    total_commits = sum(authors.counts.values())
-    if total_commits > 0:
-        meta["bus_factor"] = _bus_factor(authors.counts, total_commits)
+    """Contributor count, bus factor, top authors and the overall and 90-day owners.
 
-    top_authors = [
-        authors.entry(key, count) for key, count in authors.counts.most_common(_MAX_TOP_AUTHORS)
-    ]
+    Automation (``bot``) identities are not owners or contributors, so they are
+    left out of every figure here; a coding agent's own identity (``agent``) is
+    kept. Commit counts and the primary owner's share still use every commit.
+    """
+
+    def people(counts: Counter[str]) -> Counter[str]:
+        return Counter({k: n for k, n in counts.items() if authors.resolve.kind(k) != "bot"})
+
+    counts = people(authors.counts)
+    recent_counts = people(authors.recent_counts)
+    meta["contributor_count"] = len(counts)
+    total_commits = sum(authors.counts.values())
+    people_commits = sum(counts.values())
+    if people_commits > 0:
+        meta["bus_factor"] = _bus_factor(counts, people_commits)
+
+    top_authors = [authors.entry(key, count) for key, count in counts.most_common(_MAX_TOP_AUTHORS)]
     meta["top_authors_json"] = json.dumps(top_authors)
 
     if top_authors:
@@ -592,10 +602,10 @@ def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
             primary["commit_count"] / total_commits if total_commits > 0 else 0.0
         )
 
-    if authors.recent_counts:
-        recent_top = authors.recent_counts.most_common(1)[0]
+    if recent_counts:
+        recent_top = recent_counts.most_common(1)[0]
         meta["recent_owner_name"] = authors.name(recent_top[0])
-        recent_total = sum(authors.recent_counts.values())
+        recent_total = sum(recent_counts.values())
         meta["recent_owner_commit_pct"] = recent_top[1] / recent_total if recent_total > 0 else 0.0
 
 
