@@ -177,7 +177,8 @@ export function FilteredEmpty({ onClear }: { onClear: () => void }) {
   );
 }
 
-function Notice({
+/** A one-line notice on a hairline: warning ink for a caveat, neutral otherwise. */
+export function Notice({
   tone,
   children,
 }: {

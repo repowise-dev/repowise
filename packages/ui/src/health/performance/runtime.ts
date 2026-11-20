@@ -88,7 +88,11 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
   const [picked, setPicked] = useState<string | null>(null);
   const leads = overview?.measured?.runs ?? [];
   const tests = overview?.measured_in_tests;
-  const { data: runs } = useEvidenceRuns(adapter, overview?.basis === "measured");
+  // Read once anything is stored: the runs explain an unranked status too.
+  const { data: runs } = useEvidenceRuns(
+    adapter,
+    overview != null && overview.status !== "no_runtime_data",
+  );
   return {
     overview,
     leads,
