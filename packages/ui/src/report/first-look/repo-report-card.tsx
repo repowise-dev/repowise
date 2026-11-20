@@ -42,7 +42,7 @@ export function RepoReportCard({
         </Link>
       </div>
       {top.length ? (
-        <ol className="m-0 grid gap-0.5 pl-[18px] text-[13px] text-[var(--color-text-secondary)]">
+        <ol className="m-0 grid list-decimal gap-0.5 pl-[18px] text-[13px] text-[var(--color-text-secondary)]">
           {top.map((item) => (
             <li key={item.id}>{inline(items[item.id] ?? item.rule)}</li>
           ))}
