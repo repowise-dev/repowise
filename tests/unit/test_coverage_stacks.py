@@ -255,7 +255,7 @@ def test_npm_workspace_members_get_their_own_stacks():
     root, member = detect_stacks(*_load("node_monorepo"))
     assert (root.root, member.root) == ("", "packages/a")
     # The member has no lockfile of its own: the workspace root's picks npm and its install.
-    assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
+    assert member.package_manager == "npm" and member.requires[0] == "npm ci"
 
 
 MONOREPO = {
@@ -737,3 +737,65 @@ def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, insta
     monkeypatch.setattr(stacks, "_gradle_init", lambda: ())
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
+
+
+def test_jest_writes_junit_through_jest_junit_with_repo_relative_files():
+    files = {"web/package.json": _package({"test": "jest --ci"}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["web/package.json", "web/package-lock.json", "web/a.test.ts"], files)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    # The classname names the test file; the prefix makes it repo-relative from the unit.
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/"
+    # The reporter is installed for the run, and said why.
+    assert stack.requires == ("npm ci", "npm install --no-save jest-junit")
+    assert stack.prepare == ("- run: npm install --no-save jest-junit",)
+    assert "jest-junit" in stack.notes[-1]
+
+
+def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "yarn.lock", "a.test.ts"], files)
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath}"
+    assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
+
+
+def test_other_runners_need_no_junit_environment():
+    files = {"package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1", "@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.junit_vars() == "" and stack.junit_flag.startswith("--reporter=default")
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest", "npx jest --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest --ci --runInBand", "npx jest --coverage --coverageReporters=lcov --ci --runInBand"),
+        ("yarn.lock", "jest", "yarn jest --coverage --coverageReporters=lcov"),
+        ("pnpm-lock.yaml", "vitest run", f"pnpm exec vitest run {_VITEST}"),
+        # Not the runner alone: the script stays, hooks and all.
+        ("package-lock.json", "cross-env CI=1 jest", "npm test -- --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command):
+    scripts = {"pretest": "node scripts/check-tokens.js", "test": script}
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", lock], {"package.json": _package(scripts, devDependencies=deps)})
+    assert stack.test == command
+    direct = not command.startswith("npm test")
+    assert any("would also run the `pretest` script" in n for n in stack.notes) is direct
+
+
+def test_a_test_script_without_hooks_stays_the_script():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.test == "npm test -- --coverage --coverageReporters=lcov" and stack.notes == ()
+
+
+def test_the_hooks_note_names_both_hooks_and_runs_the_first():
+    scripts = {"pretest": "tsc", "test": "jest", "posttest": "node report.js"}
+    files = {"package.json": _package(scripts, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.notes == (
+        "This runs the test runner directly: `npm test` would also run the `pretest` and `posttest` "
+        "scripts. Run `npm run pretest` first when the tests need it.",
+    )

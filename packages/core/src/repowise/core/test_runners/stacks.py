@@ -106,6 +106,11 @@ class Stack:
     junit_report: str = ""
     #: What to add to the test command for that report; empty when the runner writes it by default.
     junit_flag: str = ""
+    #: ``NAME=value`` words the test command needs in its environment for that report.
+    junit_env: str = ""
+    #: The variable that starts each test path in the report with the unit's directory, for a
+    #: runner that writes paths relative to where it runs; repowise reads them repo-relative.
+    junit_path_prefix: str = ""
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -120,6 +125,11 @@ class Stack:
         """``line`` with coverage added to its test command, or None if it cannot be."""
         m = self.pattern.search(line) if self.pattern else None
         return self.editor(line, m) if m and self.editor else None
+
+    def junit_vars(self) -> str:
+        """:attr:`junit_env`, plus the unit's directory under :attr:`junit_path_prefix` below the root."""
+        prefix = f"{self.junit_path_prefix}={quote_arg(self.root + '/')}" if self.junit_path_prefix and self.root else ""
+        return " ".join(v for v in (self.junit_env, prefix) if v)
 
     def report_paths(self) -> tuple[str, ...]:
         """The report globs, repo-relative."""
@@ -397,10 +407,20 @@ _VITEST_FLAGS = (
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
 #: The flag that makes each runner write ``junit.xml`` beside its other output, naming each
-#: test's file. jest is not here: ``jest-junit`` names files only through its own config.
+#: test's file. Jest needs the ``jest-junit`` package and :data:`_JEST_JUNIT_ENV`.
 _NODE_JUNIT_FLAGS = {
+    "jest": "--reporters=default --reporters=jest-junit",
     "vitest": "--reporter=default --reporter=junit --outputFile.junit=junit.xml",
 }
+#: jest-junit names a test's file only through its config: the classname becomes the test
+#: file's path (as Vitest's is), relative to where Jest runs. The report lands at ``junit.xml``.
+_JEST_JUNIT_ENV = "JEST_JUNIT_CLASSNAME={filepath}"
+_JEST_JUNIT_PREFIX = "JEST_JUNIT_FILE_PATH_PREFIX"
+#: What each package manager runs a package's own binary with.
+_NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
+#: A script that is Jest or Vitest and plain arguments alone, so the package manager's exec
+#: runs it as it is: no environment, chain, quoting, expansion or redirection.
+_PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+[^\s'\"`$\\<>&|;()]+)*")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
 
@@ -451,15 +471,20 @@ def _runner_of(head: str, words: list[str]) -> str | None:
     return None
 
 
+def _dev_install(pm: str, pkg: str, workspace: bool) -> tuple[str, ...]:
+    """The workflow step that installs *pkg* for the run (npm leaves ``package.json`` as it is)."""
+    # pnpm refuses to add to a workspace root without -w.
+    add = "add -D -w" if pm == "pnpm" and workspace else "add -D"
+    cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} {add} {pkg}")
+    return (f"- run: {cmd}",)
+
+
 def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str, ...]:
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
         return ()
     spec = str(deps.get("vitest") or "")
     pkg = f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
-    # pnpm refuses to add to a workspace root without -w.
-    add = "add -D -w" if pm == "pnpm" and workspace else "add -D"
-    cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} {add} {pkg}")
-    return (f"- run: {cmd}",)
+    return _dev_install(pm, pkg, workspace)
 
 
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
@@ -605,27 +630,46 @@ def _fallback_script(test: str, found: dict[str, str]) -> str:
     return plain if variants and len(set(found.values())) == 1 else ""
 
 
-def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None]:
-    """The plain test command and its runner: a test script, else the runner the package
-    depends on; ``""`` when the package has neither, so it has no tests to cover."""
-    name, runner = _test_script(scripts)
+def _script_command(pm: str, name: str) -> str:
+    """How *pm* runs the package script *name*."""
     if name == "test":
-        return f"{pm} {'run test' if pm == 'bun' else 'test'}", runner
+        return f"{pm} {'run test' if pm == 'bun' else 'test'}"
+    return f"{pm} run {name}"
+
+
+def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tuple[str, ...]]:
+    """The plain test command, its runner, and the lifecycle scripts it leaves out.
+
+    A test script, else the runner the package depends on; ``""`` when the package has
+    neither, so it has no tests to cover. A script with ``pre``/``post`` hooks that is
+    the runner alone is run by the package manager's exec: the hooks (a lint, a check
+    that fails on another platform) write no coverage and can stop the run first.
+    """
+    name, runner = _test_script(scripts)
+    script = str(scripts.get(name) or "").strip() if name else ""
+    hooks = tuple(h for h in (f"pre{name}", f"post{name}") if name and scripts.get(h))
+    if hooks and _PLAIN_RUNNER.fullmatch(script):
+        return f"{_NODE_EXEC[pm]} {script}", runner, hooks
     if name:
-        return f"{pm} run {name}", runner
+        return _script_command(pm, name), runner, ()
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
     if runner is None:
-        return "", None
-    base = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}[pm] + f" {runner}"
-    return base + (" run" if runner == "vitest" else ""), runner
+        return "", None, ()
+    return f"{_NODE_EXEC[pm]} {runner}" + (" run" if runner == "vitest" else ""), runner, ()
 
 
-def _node_notes(test: CommandEdit | None, workspace: bool, script: str, base: str) -> tuple[str, ...]:
+def _node_notes(
+    test: CommandEdit | None, workspace: bool, script: str, base: str, *, reporter: bool = False
+) -> tuple[str, ...]:
     if test is not None:
+        notes = []
         if test.prepare:
-            return ("Vitest needs a coverage provider, so the workflow installs `@vitest/coverage-v8` for "
-                    "the run. Add it to `devDependencies` to drop that install.",)
-        return ()
+            notes.append("Vitest needs a coverage provider, so the workflow installs `@vitest/coverage-v8` "
+                         "for the run. Add it to `devDependencies` to drop that install.")
+        if reporter:
+            notes.append("Jest writes test timings through `jest-junit`, so the workflow installs it for "
+                         "the run. Add it to `devDependencies` to drop that install.")
+        return tuple(notes)
     if workspace and (not script or _DELEGATES.search(script)):
         return ("This is a monorepo whose packages run their own tests, so Repowise could not add "
                 "one coverage flag for all of them. Run each package's tests with an lcov reporter "
@@ -635,25 +679,44 @@ def _node_notes(test: CommandEdit | None, workspace: bool, script: str, base: st
             "other runner on Node: prefix it with `npx c8 --reporter=lcov`).",)
 
 
+def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
+    """Why the command runs the runner, not the test script, and how to run the hooks it skips."""
+    if not hooks:
+        return ()
+    pre = hooks[0].startswith("pre")
+    script = _script_command(pm, hooks[0][3:] if pre else hooks[0][4:])
+    named = " and ".join(f"`{h}`" for h in hooks)
+    first = f" Run `{_script_command(pm, hooks[0])}` first when the tests need it." if pre else ""
+    return (f"This runs the test runner directly: `{script}` would also run the {named} "
+            f"script{'s' if len(hooks) > 1 else ''}.{first}",)
+
+
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
     pm, install = _node_manager(root)
-    base, runner = _node_base(pm, scripts, deps)
+    base, runner, hooks = _node_base(pm, scripts, deps)
     workspace = _node_workspace(package, PNPM_WORKSPACE_FILENAME in root)
     if not base and not workspace:
         return None
     editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=workspace)
     test = editor(base, _NODE.search(base)) if runner else None
+    jest = runner == "jest"
+    # Test timings need the reporter in node_modules, beside the runner.
+    reporter = _dev_install(pm, "jest-junit", workspace) if test and jest and "jest-junit" not in deps else ()
+    prepare = (*test.prepare, *reporter) if test else ()
+    notes = _node_notes(test, workspace, str(scripts.get("test") or ""), base, reporter=bool(reporter))
     return Stack(
         "node", runner, pm, test.reports if test else "coverage/lcov.info",
         setup=_node_setup(root, package, pm, install),
-        test=test.text if test else "", prepare=test.prepare if test else (),
-        notes=_node_notes(test, workspace, str(scripts.get("test") or ""), base),
+        test=test.text if test else "", prepare=prepare,
+        notes=(*notes, *(_hooks_note(pm, hooks) if test else ())),
         # The install comes first: the runner and the coverage provider live in node_modules.
-        requires=(install, *_run_lines(test.prepare)) if test else (), pattern=_NODE, editor=editor,
+        requires=(install, *_run_lines(prepare)) if test else (), pattern=_NODE, editor=editor,
         junit_report="junit.xml" if runner in _NODE_JUNIT_FLAGS else "",
         junit_flag=_NODE_JUNIT_FLAGS.get(runner or "", ""),
+        junit_env=_JEST_JUNIT_ENV if jest else "",
+        junit_path_prefix=_JEST_JUNIT_PREFIX if jest else "",
     )
 
 

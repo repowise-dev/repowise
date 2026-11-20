@@ -568,6 +568,8 @@ def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
         if timings["flag"]
         else "written by default"
     )
+    if timings.get("env"):
+        how += f" with [cyan]{escape(timings['env'])}[/cyan] in its environment"
     lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
     if timings["ingest"]:
         lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
