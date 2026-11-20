@@ -16,6 +16,7 @@
 
 import { EDGE_MAX_PER_PARENT } from "./constants";
 import type { ZoomMap, ZoomRelation } from "./types";
+import { formatNumber } from "../lib/format";
 
 /** The co-changes verb, as `c4_builder/labels.py` spells it. */
 export const CO_CHANGES = "co-changes";
@@ -100,7 +101,7 @@ export function toggleVerb(
  * the wording on the arrow labels.
  */
 export function formatVerbCounts(verbs: readonly VerbCount[], sep = " · "): string {
-  return verbs.map((v) => `${v.verb} ${v.count.toLocaleString("en-US")}`).join(sep);
+  return verbs.map((v) => `${v.verb} ${formatNumber(v.count)}`).join(sep);
 }
 
 /**
