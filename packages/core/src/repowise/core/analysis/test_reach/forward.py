@@ -20,6 +20,8 @@ from .model import DEFAULT_CALL_DEPTH
 
 CallGraphView: TypeAlias = ExecutionGraphIndex
 
+_EXTERNAL_PREFIX = "external:"
+
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
     """Build the call-reachability view from an in-memory NetworkX graph.
@@ -94,7 +96,9 @@ def files_with_paired_tests(
     them although no name says so. A test *named* for a file
     (:func:`paired_test_names`) still pairs, but only when the graph agrees
     or cannot say: the named test imports the file directly or through a
-    re-export barrel, has no resolved dependency at all, or there is no graph.
+    re-export barrel, has no resolved dependency inside the repository (its
+    test framework and other third-party modules do not count), or there is
+    no graph.
     Otherwise the name is a collision - ``distill/test_engine.py`` tests the
     distill engine, not ``health/engine.py`` - and does not pair.
 
@@ -142,7 +146,12 @@ def files_with_paired_tests(
         if graph is None:
             return True
         imported = deps[test] if test in deps else imports_of(test)
-        return not imported or path in imported
+        # A third-party module (``external:vitest``, ``external:node:fs``) says
+        # nothing about which of the repository's files the test exercises, as
+        # ``placed_test_files`` already reads it: only a dependency inside the
+        # repository can contradict the name.
+        inside = {dep for dep in imported if not dep.startswith(_EXTERNAL_PREFIX)}
+        return not inside or path in inside
 
     for path in paths:
         if path in paired:
