@@ -466,6 +466,10 @@ export interface PerformanceOpportunityFacets {
   growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
+  /** The workload whose stored run measured the cause's function; absent when none did. */
+  measured?: string;
+  /** What confirmed the cause: a measured run, or query counts that grow. Absent otherwise. */
+  confirmed?: "measured" | "query_count";
 }
 
 /**
