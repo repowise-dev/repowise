@@ -83,6 +83,7 @@ def test_report_json_round_trips() -> None:
     assert data["schema_version"] == SCHEMA_VERSION
     assert data["sections"][0]["items"][0]["source_layer"] == "security"
     assert FirstLookReport.from_json(data).to_json() == report.to_json()
+    assert data["prose_source"] == {"writer": "template", "written_at": None, "cost_usd": None}
 
 
 def test_a_newer_schema_is_refused() -> None:
