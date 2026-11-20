@@ -379,7 +379,9 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     assert "measured" not in json.loads(by_owner["seed_defaults"].details_json)["facets"]
 
 
-async def _two_startup_causes(session, repo_id: str, *, evidence: bool) -> None:
+async def _two_startup_causes(
+    session, repo_id: str, *, evidence: bool, unit_tests_only: bool = False
+) -> None:
     """Two production causes; with evidence, a leading workload measured the
     one the static order puts second."""
     rows = []
@@ -398,11 +400,13 @@ async def _two_startup_causes(session, repo_id: str, *, evidence: bool) -> None:
         session.add_all([_run(repo_id, "r1"), _run(repo_id, "r3", cls="unit_test")])
     await session.flush()
     if evidence:
+        lead = "r3" if unit_tests_only else "r1"
         await replace_workload_hotness(
             session,
             repo_id,
             [
-                {**_hot("x"), "symbol_id": "src/svc.py::zzz_measured", "tier": "lead_candidate"},
+                {**_hot("x", run=lead), "symbol_id": "src/svc.py::zzz_measured",
+                 "tier": "lead_candidate"},
                 # A unit-test run is no workload a cause was "not exercised in".
                 {**_hot("y", run="r3"), "symbol_id": "src/svc.py::other"},
             ],
@@ -448,6 +452,15 @@ async def test_evidence_puts_a_measured_cause_first_and_labels_the_rest(async_se
 async def test_without_evidence_the_order_and_rows_are_the_static_ones(async_session) -> None:
     repo = await insert_repo(async_session)
     await _two_startup_causes(async_session, repo.id, evidence=False)
+    order, rest, summary = await _queue_and_rows(async_session, repo.id)
+    assert order == ["aaa_first", "zzz_measured"]
+    assert "evidence_workloads" not in summary
+    assert all("evidence" not in item for item in rest)
+
+
+async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(async_session, repo.id, evidence=True, unit_tests_only=True)
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
     assert order == ["aaa_first", "zzz_measured"]
     assert "evidence_workloads" not in summary

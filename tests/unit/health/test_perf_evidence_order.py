@@ -14,8 +14,12 @@ from repowise.core.analysis.health.perf.serving import evidence_mark
         ({"confirmed": "query_count"}, 0),
         ({"confirmed": "measured", "measured": "api"}, 0),
         ({"measured": "api"}, 1),
-        # Counter-evidence demotes nothing: the cause keeps its static place.
+        # Counter-evidence demotes nothing: the cause keeps its static place,
+        # even where a workload measured it.
         ({"queries": "flat"}, 2),
+        ({"queries": "flat", "measured": "api"}, 2),
+        # Measured against its cold name: kept, never led.
+        ({"measured": "api", "measured_overrides": "cold_path"}, 2),
         ({"queries": "ran"}, 2),
         ({}, 2),
     ],

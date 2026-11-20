@@ -35,7 +35,7 @@ from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
-from .opportunity_rank import NON_LEADING_MARKERS
+from .opportunity_rank import NON_LEADING_MARKERS, evidence_state
 
 if TYPE_CHECKING:
     from .opportunities import PerformanceOpportunity
@@ -591,15 +591,13 @@ def evidence_mark(facets: Mapping[str, Any], workloads: Sequence[str]) -> dict[s
     too rarely to rank reads as not exercised; the run's own counts would
     tell the two apart.
     """
-    if confirmed := facets.get("confirmed"):
-        return {"state": "confirmed", "basis": confirmed}
-    queries = facets.get("queries")
-    if queries == "flat":
-        return {"state": "counter_evidence", "basis": "query_count"}
-    if workload := facets.get("measured"):
-        return {"state": "measured", "workload": workload}
-    if queries:
-        return {"state": "ran", "basis": "query_count"}
+    state = evidence_state(facets)
+    if state == "confirmed":
+        return {"state": state, "basis": facets["confirmed"]}
+    if state in ("counter_evidence", "ran"):
+        return {"state": state, "basis": "query_count"}
+    if state == "measured":
+        return {"state": state, "workload": facets["measured"]}
     if workloads:
         return {"state": "not_exercised", "workloads": list(workloads)}
     return None

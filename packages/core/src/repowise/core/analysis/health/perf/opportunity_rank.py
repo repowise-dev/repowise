@@ -306,16 +306,35 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
-def evidence_tier(facets: Mapping[str, Any]) -> int:
-    """Where runtime evidence puts a cause ahead of static value: ``0`` when
-    evidence confirms it (the ``confirmed`` facet), ``1`` when a leading
-    workload ranks its loop owner (``measured``), ``2`` otherwise. Every cause
-    of a repository with no runtime evidence is ``2``, so its order is the
-    static one. Counter-evidence (``queries = flat``) demotes nothing: the
-    cause keeps its static place and its label says so."""
+def evidence_state(facets: Mapping[str, Any]) -> str | None:
+    """What runtime evidence says about a cause, in one precedence: exact
+    evidence first. ``confirmed``; ``counter_evidence`` (query counts stayed
+    flat as the items grew); ``measured`` (a leading workload ranks its loop
+    owner); ``ran`` (query counts that settle nothing); ``None`` with no
+    evidence facet."""
     if facets.get("confirmed"):
+        return "confirmed"
+    queries = facets.get("queries")
+    if queries == "flat":
+        return "counter_evidence"
+    if facets.get("measured"):
+        return "measured"
+    return "ran" if queries else None
+
+
+def evidence_tier(facets: Mapping[str, Any]) -> int:
+    """Where runtime evidence puts a cause ahead of static value: ``0``
+    confirmed, ``1`` measured, ``2`` otherwise (:func:`evidence_state`). Every
+    cause of a repository with no runtime evidence is ``2``, so its order is
+    the static one. Counter-evidence demotes nothing, and a cause measured
+    against its cold name (``measured_overrides``) is kept, never led: both
+    keep their static place."""
+    state = evidence_state(facets)
+    if state == "confirmed":
         return 0
-    return 1 if facets.get("measured") else 2
+    if state == "measured" and not facets.get("measured_overrides"):
+        return 1
+    return 2
 
 
 def rank_sort_key(item: Any) -> tuple[int, int, int, int, str]:
@@ -351,6 +370,7 @@ __all__ = [
     "band",
     "change_risk",
     "dominant_marker",
+    "evidence_state",
     "evidence_tier",
     "exposure",
     "growth_source",
