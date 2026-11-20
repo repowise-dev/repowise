@@ -172,89 +172,117 @@ export function SavingsChecks({
   }
 
   const withOutcomes = checksHaveOutcomes(ordered);
-  let addLinkShown = false;
+  const known = agents && agents.length > 0 ? agents : null;
+  // The Agents & editors link shows once, on the first tool no agent has.
+  const firstMissing = known
+    ? sorted.find((row) => (row.calls ?? 0) === 0 && toolAvailability(row.tool, known).with.length === 0)?.tool
+    : undefined;
 
   return (
     <section className="mt-14">
       {header}
       {withOutcomes && <ChecksSummary rows={ordered} copy={copy} />}
       <ul className="m-0 mt-6 list-none p-0">
-        {sorted.map((row) => {
-          const tool = row.tool as CheckToolId;
-          const words = copy.tools[tool];
-          const calls = row.calls ?? 0;
-          const avail = agents && agents.length > 0 ? toolAvailability(tool, agents) : null;
-          const missingEverywhere = calls === 0 && avail !== null && avail.with.length === 0;
-          const showAdd = missingEverywhere && !addLinkShown && Boolean(agentsHref);
-          if (showAdd) addLinkShown = true;
-          return (
-            <li
-              key={tool}
-              className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-7 gap-y-2 border-b border-[var(--color-border-subtle)] py-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.2fr)_auto]"
-            >
-              <div className="min-w-0">
-                <b className="block text-[15px] font-medium text-[var(--color-text-primary)]">{words.name}</b>
-                <code className="mt-0.5 block font-mono text-[11px] text-[var(--color-text-tertiary)]">{tool}</code>
-              </div>
-              <div className="col-span-2 row-start-2 min-w-0 text-[15px] text-[var(--color-text-primary)] md:col-span-1 md:row-start-auto">
-                {calls > 0 ? (
-                  <>
-                    <Outcome row={row} copy={copy} />
-                    {(row.outcome_calls ?? 0) > 0 && links[tool] && copy.links[tool] && (
-                      <A href={links[tool]} className={`mt-1.5 inline-block ${LINK}`}>
-                        {copy.links[tool]}
-                      </A>
-                    )}
-                  </>
-                ) : missingEverywhere ? (
-                  <div className="text-[var(--color-text-secondary)]">
-                    {copy.missingFor(copy.agentList(avail.without.map((a) => a.name)), avail.without.length)}{" "}
-                    {words.does}
-                  </div>
-                ) : (
-                  <>
-                    <div className="text-[var(--color-text-secondary)]">
-                      {copy.notUsed} {words.does}
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-                      <q className="rounded-md bg-[var(--color-bg-inset)] px-2 py-1 text-xs text-[var(--color-text-primary)]">
-                        {CHECK_PROMPTS[tool]}
-                      </q>
-                      <AiPromptButton variant="ghost" label={AGENT_PROMPT_LABEL} copyText={() => CHECK_PROMPTS[tool]} />
-                    </div>
-                  </>
-                )}
-                {avail && avail.without.length > 0 && (
-                  <Availability
-                    avail={avail}
-                    missingEverywhere={missingEverywhere}
-                    addHref={
-                      missingEverywhere ? (showAdd ? agentsHref : undefined) : calls > 0 ? agentsHref : undefined
-                    }
-                    copy={copy}
-                    A={A}
-                  />
-                )}
-              </div>
-              <div className="col-start-2 row-start-1 whitespace-nowrap text-right text-xs tabular-nums text-[var(--color-text-tertiary)] md:col-start-auto">
-                <b
-                  className={`block text-[15px] font-normal ${calls > 0 ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]"}`}
-                >
-                  {formatNumber(calls)}
-                </b>
-                {words.unit}
-              </div>
-            </li>
-          );
-        })}
+        {sorted.map((row) => (
+          <CheckRow
+            key={row.tool}
+            row={row}
+            agents={known}
+            link={links[row.tool as CheckToolId]}
+            addHref={row.tool === firstMissing || (row.calls ?? 0) > 0 ? agentsHref : undefined}
+            copy={copy}
+            A={A}
+          />
+        ))}
       </ul>
       <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">
         {withOutcomes ? copy.note : copy.oldNote}
       </p>
-      {agents && agents.length > 0 && (
-        <AgentTools agents={agents} profiles={profiles} agentsHref={agentsHref} copy={copy} A={A} />
-      )}
+      {known && <AgentTools agents={known} profiles={profiles} agentsHref={agentsHref} copy={copy} A={A} />}
     </section>
+  );
+}
+
+/** One check tool: what it returned, or a quiet line on why it was not used. */
+function CheckRow({
+  row,
+  agents,
+  link,
+  addHref,
+  copy,
+  A,
+}: {
+  row: SavingsCheckView;
+  agents: readonly CheckAgentView[] | null;
+  link: string | undefined;
+  addHref: string | undefined;
+  copy: SavingsChecksCopy;
+  A: React.ElementType;
+}) {
+  const tool = row.tool as CheckToolId;
+  const words = copy.tools[tool];
+  const calls = row.calls ?? 0;
+  const avail = agents ? toolAvailability(tool, agents) : null;
+  const missingEverywhere = calls === 0 && avail !== null && avail.with.length === 0;
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-7 gap-y-2 border-b border-[var(--color-border-subtle)] py-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.2fr)_auto]">
+      <div className="min-w-0">
+        <b className="block text-[15px] font-medium text-[var(--color-text-primary)]">{words.name}</b>
+        <code className="mt-0.5 block font-mono text-[11px] text-[var(--color-text-tertiary)]">{tool}</code>
+      </div>
+      <div className="col-span-2 row-start-2 min-w-0 text-[15px] text-[var(--color-text-primary)] md:col-span-1 md:row-start-auto">
+        {calls > 0 ? (
+          <>
+            <Outcome row={row} copy={copy} />
+            {(row.outcome_calls ?? 0) > 0 && link && copy.links[tool] && (
+              <A href={link} className={`mt-1.5 inline-block ${LINK}`}>
+                {copy.links[tool]}
+              </A>
+            )}
+          </>
+        ) : missingEverywhere ? (
+          <div className="text-[var(--color-text-secondary)]">
+            {copy.missingFor(copy.agentList(avail.without.map((a) => a.name)), avail.without.length)} {words.does}
+          </div>
+        ) : (
+          <UnusedAsk tool={tool} does={words.does} copy={copy} />
+        )}
+        {avail && avail.without.length > 0 && (
+          <Availability
+            avail={avail}
+            missingEverywhere={missingEverywhere}
+            addHref={missingEverywhere || calls > 0 ? addHref : undefined}
+            copy={copy}
+            A={A}
+          />
+        )}
+      </div>
+      <div className="col-start-2 row-start-1 whitespace-nowrap text-right text-xs tabular-nums text-[var(--color-text-tertiary)] md:col-start-auto">
+        <b
+          className={`block text-[15px] font-normal ${calls > 0 ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]"}`}
+        >
+          {formatNumber(calls)}
+        </b>
+        {words.unit}
+      </div>
+    </li>
+  );
+}
+
+/** A listed tool nobody called yet: what it does, a sample ask and the copy-prompt control. */
+function UnusedAsk({ tool, does, copy }: { tool: CheckToolId; does: string; copy: SavingsChecksCopy }) {
+  return (
+    <>
+      <div className="text-[var(--color-text-secondary)]">
+        {copy.notUsed} {does}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <q className="rounded-md bg-[var(--color-bg-inset)] px-2 py-1 text-xs text-[var(--color-text-primary)]">
+          {CHECK_PROMPTS[tool]}
+        </q>
+        <AiPromptButton variant="ghost" label={AGENT_PROMPT_LABEL} copyText={() => CHECK_PROMPTS[tool]} />
+      </div>
+    </>
   );
 }
 
