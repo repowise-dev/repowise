@@ -109,11 +109,15 @@ export interface FirstLookStamp {
 export interface FirstLookProse {
   writer?: string;
   summary?: string;
+  /** The measured headline (bug-fix correlation of the lowest-health files). */
+  headline?: string;
+  /** Section key -> heading. */
+  titles?: Record<string, string>;
   /** Section key -> intro. */
   sections?: Record<string, string>;
   /** Item id -> its sentence. */
   items?: Record<string, string>;
-  /** Setup step key -> its sentence. */
+  /** Setup step `action_id` -> its sentence. */
   setup?: Record<string, string>;
 }
 

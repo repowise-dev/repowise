@@ -76,8 +76,10 @@ function report(over: Partial<Report> = {}): Report {
     prose: {
       writer: "template",
       summary: "Health is 7.7/10 (Good). Security comes first.",
+      headline: "16 of the 20 lowest-health files had a bug fix in the last 6 months.",
+      titles: { security: "Security", performance: "Performance", dead_code: "Dead code" },
       sections: { security: "1 tracked file holds a hard-coded password.", dead_code: "14 files hold unused exports." },
-      items: { fl_secret: "Hard-coded password in 1 tracked file.", fl_perf: "List membership check inside a loop." },
+      items: { fl_secret: "Hard-coded password in 1 tracked file.", fl_perf: "`scan_rows`: list membership check inside a loop." },
       setup: { act_cov: "Record backend coverage." },
     },
     ...over,
@@ -113,6 +115,18 @@ describe("FirstLookReport", () => {
     expect(screen.getByText("1 tracked file holds a hard-coded password.")).toBeInTheDocument();
     expect(screen.getAllByText("Hard-coded password in 1 tracked file.")).toHaveLength(2); // Do first + item
     expect(screen.getByText("Record backend coverage.")).toBeInTheDocument();
+    expect(screen.getByText(/16 of the 20 lowest-health files/)).toHaveTextContent("measured");
+    // Prose marks names with backticks; they set in mono, never as literal ticks.
+    const perf = document.getElementById("fl_perf")!;
+    expect(within(perf).getByText("scan_rows").tagName).toBe("CODE");
+    expect(perf.textContent).not.toContain("`");
+  });
+
+  it("lists a Do these first item only where its row is on the page", () => {
+    renderReport({ report: report({ top: ["fl_secret", "fl_dead13"] }) });
+    const first = within(screen.getByRole("heading", { name: "Do these first" }).parentElement!);
+    expect(first.getAllByRole("listitem")).toHaveLength(1);
+    expect(first.getByRole("link", { name: /Go to item: Hard-coded password/ })).toHaveAttribute("href", "#fl_secret");
   });
 
   it("links chips and actions through hrefFor", () => {
@@ -121,7 +135,7 @@ describe("FirstLookReport", () => {
     expect(chip).toHaveAttribute("href", "/r/files/scripts/admin.py?line=27");
     const secretRow = document.getElementById("fl_secret")!;
     expect(within(secretRow).getByRole("link", { name: "Open in app" })).toHaveAttribute("href", "/r/security");
-    expect(screen.getAllByRole("link", { name: "open in app" })[0]).toHaveAttribute("href", "/r/security");
+    expect(screen.getByRole("link", { name: "Open Security in the app" })).toHaveAttribute("href", "/r/security");
   });
 
   it("shows a secret's location, never a value", () => {

@@ -13,12 +13,12 @@ import { useAiPromptAction } from "../../health/ai-prompt-action";
 import { fileChatContext } from "../../health/ai-prompt-modal";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { cn } from "../../lib/cn";
+import { renderActionTitle as inline } from "../../overview/next-actions";
 import { formatCost, formatDate, formatNumber } from "../../lib/format";
 import {
   FirstLookItemRow,
   MONO_CAPS,
   SECTION_ROUTE,
-  sectionLabel,
   shortSha,
   type FirstLookHrefFor,
   type ItemState,
@@ -70,6 +70,8 @@ export function FirstLookReport({
   const { openPrompt, promptModal } = useAiPromptAction();
   const prose = report.prose ?? {};
   const itemText = prose.items ?? {};
+  const titles = prose.titles ?? {};
+  const title = (key: string) => titles[key] ?? key;
   const states = useMemo(() => itemStates(staleness), [staleness]);
 
   const promptItem = useCallback(
@@ -122,12 +124,21 @@ export function FirstLookReport({
         onReportPrompt={promptReport}
       />
       <Figures report={report} />
-      {prose.summary ? <p className="mt-5 max-w-[68ch] text-base leading-[1.65]">{prose.summary}</p> : null}
-      <DoFirst report={report} text={itemText} />
+      {prose.summary ? <p className="mt-5 max-w-[68ch] text-base leading-[1.65]">{inline(prose.summary)}</p> : null}
+      {prose.headline ? (
+        <p className="mt-2.5 text-xs text-[var(--color-text-secondary)]">
+          {inline(prose.headline)}{" "}
+          <span className={cn(MONO_CAPS, "ml-1 rounded border border-[var(--color-border-default)] px-1.5 py-0.5")}>
+            measured
+          </span>
+        </p>
+      ) : null}
+      <DoFirst report={report} text={itemText} title={title} />
       {report.sections.map((section) => (
         <Section
           key={section.key}
           section={section}
+          title={title(section.key)}
           intro={prose.sections?.[section.key]}
           hrefFor={hrefFor}
           Link={Link}
@@ -305,10 +316,20 @@ function Figures({ report }: { report: Report }) {
   );
 }
 
-function DoFirst({ report, text }: { report: Report; text: Record<string, string> }) {
-  const items = report.top
-    .map((id) => report.sections.flatMap((s) => s.items).find((i) => i.id === id))
-    .filter((i): i is FirstLookItem => i != null);
+function DoFirst({
+  report,
+  text,
+  title,
+}: {
+  report: Report;
+  text: Record<string, string>;
+  title: (key: string) => string;
+}) {
+  // Only the rows a section shows have an anchor to go to.
+  const shown = new Map(
+    report.sections.flatMap((s) => s.items.slice(0, FIRST_LOOK_SECTION_CAP)).map((i) => [i.id, i]),
+  );
+  const items = report.top.map((id) => shown.get(id)).filter((i): i is FirstLookItem => i != null);
   if (!items.length) return null;
   return (
     <section aria-labelledby="fl-first" className="mt-7">
@@ -322,11 +343,14 @@ function DoFirst({ report, text }: { report: Report; text: Record<string, string
             <span className="font-mono text-xs text-[var(--color-accent-primary)]">{n + 1}</span>
             <div className="min-w-0">
               <span className={cn(MONO_CAPS, "block text-[var(--color-text-tertiary)]")}>
-                {sectionLabel(item.section).split(":")[0]}
+                {title(item.section).split(":")[0]}
               </span>
-              {text[item.id] ?? item.rule}
+              {inline(text[item.id] ?? item.rule)}
             </div>
-            <a href={`#${item.id}`} className="col-start-2 whitespace-nowrap text-xs text-[var(--color-accent-primary)] hover:underline sm:col-start-3">
+            <a
+              href={`#${item.id}`}
+              aria-label={`Go to item: ${text[item.id] ?? item.rule}`}
+              className="col-start-2 whitespace-nowrap text-xs text-[var(--color-accent-primary)] hover:underline sm:col-start-3">
               Go to item
             </a>
           </li>
@@ -338,12 +362,14 @@ function DoFirst({ report, text }: { report: Report; text: Record<string, string
 
 function Section({
   section,
+  title,
   intro,
   hrefFor,
   Link,
   children,
 }: {
   section: FirstLookSection;
+  title: string;
   intro: string | undefined;
   hrefFor: FirstLookHrefFor;
   Link: LinkLike;
@@ -356,14 +382,14 @@ function Section({
   return (
     <section aria-labelledby={heading} data-section={section.key} className="mt-11">
       <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-[var(--color-border-default)] pb-2">
-        <h2 id={heading} className="text-xl font-semibold sm:text-[22px]">{sectionLabel(section.key)}</h2>
+        <h2 id={heading} className="text-xl font-semibold sm:text-[22px]">{title}</h2>
         {href ? (
-          <Link href={href} className="font-mono text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)]">
+          <Link href={href} aria-label={`Open ${title} in the app`} className="font-mono text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)]">
             open in app
           </Link>
         ) : null}
       </div>
-      {intro ? <p className="mb-1 mt-3 max-w-[68ch] text-[var(--color-text-secondary)]">{intro}</p> : null}
+      {intro ? <p className="mb-1 mt-3 max-w-[68ch] text-[var(--color-text-secondary)]">{inline(intro)}</p> : null}
       {children}
       {more > 0 ? (
         <p className="mt-2.5 text-xs text-[var(--color-text-tertiary)]">
@@ -389,7 +415,7 @@ function TurnOnMore({ report }: { report: Report }) {
       <ul className="mt-1.5 list-disc pl-[18px] text-[var(--color-text-secondary)]">
         {report.setup.map((step) => (
           <li key={step.action_id} className="my-1.5">
-            {setup[step.action_id] ?? setup[step.rule] ?? step.title}
+            {inline(setup[step.action_id] ?? step.title)}
             {step.command ? (
               <>
                 {" "}

@@ -179,8 +179,8 @@ async def test_rewrite_without_a_provider_or_a_writer_is_refused(
     monkeypatch.setattr(reports, "write_first_look", None)
     assert (await reports_client.post(url)).status_code == 501
 
-    async def fake_write(*a, **k):  # pragma: no cover - never reached
-        raise AssertionError
+    async def fake_write(*a, **k):
+        raise AssertionError("the writer must not run without a provider")
 
     monkeypatch.setattr(reports, "write_first_look", fake_write)
     monkeypatch.setattr(reports, "resolve_provider", lambda *a, **k: (None, None, None, "no key"))

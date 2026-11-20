@@ -8,6 +8,7 @@ import type {
 } from "@repowise-dev/types/first-look";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { cn } from "../../lib/cn";
+import { renderActionTitle as inline } from "../../overview/next-actions";
 import { formatNumber } from "../../lib/format";
 
 /** Injected link component (e.g. Next's Link); defaults to a plain anchor. */
@@ -19,19 +20,6 @@ export type FirstLookHrefFor = (
   params: Record<string, string | number>,
 ) => string | null;
 
-/** Section headings. Labels only: every sentence on the page comes from `report.prose`. */
-export const SECTION_LABEL: Record<string, string> = {
-  security: "Security",
-  performance: "Performance",
-  health: "Code health: refactor first",
-  tests: "Tests and coverage",
-  dead_code: "Dead code",
-  docs: "Docs",
-  decisions: "Decisions",
-  hygiene: "Repo hygiene",
-  ownership: "Ownership",
-};
-
 /** The page a section's "open in app" link goes to, where a route key names one. */
 export const SECTION_ROUTE: Partial<Record<string, FirstLookRouteKey>> = {
   security: "security",
@@ -39,8 +27,6 @@ export const SECTION_ROUTE: Partial<Record<string, FirstLookRouteKey>> = {
   docs: "docs_drift",
   ownership: "ownership",
 };
-
-export const sectionLabel = (key: string): string => SECTION_LABEL[key] ?? key;
 
 /** The first 7 characters of a commit, the way the rest of the app prints one. */
 export const shortSha = (sha: string | null | undefined): string => (sha ?? "").slice(0, 7);
@@ -159,7 +145,7 @@ export function FirstLookItemRow({
           !text && "font-mono text-sm",
         )}
       >
-        {text ?? item.rule}
+        {inline(text ?? item.rule)}
       </p>
       {state ? (
         <p
