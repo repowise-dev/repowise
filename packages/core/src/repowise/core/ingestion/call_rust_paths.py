@@ -7,10 +7,13 @@ The path is walked down the module tree, one segment per module file, and the
 callee is looked up in the module it ends on; a last segment that is no module
 is read as a type, whose method the call names (``index::Store::open()``).
 
-Ceilings: an inline ``mod name { ... }`` is not a module file, so a path
-through one is read in the file that holds it; a ``#[path]`` module is found
-only through its ``mod`` declaration; a crate with both ``lib.rs`` and
-``main.rs`` answers ``crate::f()`` from ``lib.rs``. A child module with no
+An inline ``mod name { ... }`` is no module file: a path through one stays in
+the file that holds it, and the callee is looked up among that block's items
+(``outer::inner::f()``, ``crate::a::m::Type::new()``).
+
+Ceilings: a ``mod x;`` declared inside an inline block is not followed; a
+``#[path]`` module is found only through its ``mod`` declaration; a crate with
+both ``lib.rs`` and ``main.rs`` answers ``crate::f()`` from ``lib.rs``. A child module with no
 ``mod`` declaration is still found by its file, as import resolution does.
 """
 
@@ -47,16 +50,27 @@ class RustPathCallsMixin:
         if start is None:
             return None
         module, rest = start
+        # The inline ``mod`` block the walk stands in, None at a file's top level.
+        scope = self._rust_start_scope(file_path, segments, call.line) if module == file_path else None
+        entered = False
         for i, segment in enumerate(rest):
-            child = self._rust_child_module(module, segment)
+            child = None if scope else self._rust_child_module(module, segment)
             if child is not None:
                 module = child
+                continue
+            if self._rust_inline_module(module, segment, scope):
+                scope, entered = segment, True
                 continue
             if i < len(rest) - 1:
                 return None
             # The last segment is no module: a type the call names a method of.
             target = self._file_methods.get(module, {}).get((segment, call.target_name))  # type: ignore[attr-defined]
             return self._rust_path_edge(caller_id, target, call)
+        if scope is not None:
+            # An item of an inline block is keyed by the block's name.
+            target = self._file_methods.get(module, {}).get((scope, call.target_name))  # type: ignore[attr-defined]
+            if target is not None or entered:
+                return self._rust_path_edge(caller_id, target, call)
         hit = self._module_alias_call(file_path, module, call, caller_id)  # type: ignore[attr-defined]
         if hit is not None:
             return hit if hit.callee_id != caller_id else None
@@ -102,7 +116,7 @@ class RustPathCallsMixin:
             while hops < len(segments) and segments[hops] == "super":
                 hops += 1
             # A ``super`` out of an inline ``mod`` block stays in this file.
-            climb = hops - min(hops, self._rust_inline_depth(file_path, line))
+            climb = hops - min(hops, len(self._rust_enclosing_modules(file_path, line)))
             if not climb:
                 return file_path, segments[hops:]
             module_dir = PurePosixPath(_rust_module_dir(file_path))
@@ -127,6 +141,9 @@ class RustPathCallsMixin:
         child = self._rust_child_module(file_path, head)
         if child is not None:
             return child, segments[1:]
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        if self._rust_inline_module(file_path, head, enclosing[-1] if enclosing else None):
+            return file_path, segments  # the walk enters the inline block
         if len(segments) == 1:
             return None  # a type, or an external crate: other tiers answer
         crate_src = self._get_rust_crate_src().get(head)  # type: ignore[attr-defined]
@@ -157,14 +174,38 @@ class RustPathCallsMixin:
         found = _probe_rust_path(_rust_module_dir(module), [name], self._rust_keys())
         return found if found != module else None
 
-    def _rust_inline_depth(self, file_path: str, line: int) -> int:
-        """How many inline ``mod name { ... }`` blocks hold *line* of *file_path*."""
+    def _rust_enclosing_modules(self, file_path: str, line: int) -> list[str]:
+        """The inline ``mod name { ... }`` blocks that hold *line*, outermost first."""
         parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
         if parsed is None:
-            return 0
+            return []
         # A ``mod name;`` line holds no call, so any module spanning the line is inline.
-        return sum(
-            1
+        held = [
+            sym
             for sym in parsed.symbols
             if sym.kind == "module" and sym.start_line <= line <= sym.end_line
+        ]
+        return [sym.name for sym in sorted(held, key=lambda sym: sym.start_line)]
+
+    def _rust_start_scope(self, file_path: str, segments: list[str], line: int) -> str | None:
+        """The inline block a path read in its own file starts from.
+
+        ``crate::`` starts at the top level; ``self::`` and a bare name at the
+        block the call sits in; each ``super`` one block further out.
+        """
+        if segments[0] == "crate":
+            return None
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        hops = 0
+        while hops < len(segments) and segments[hops] == "super":
+            hops += 1
+        depth = len(enclosing) - hops
+        return enclosing[depth - 1] if depth > 0 else None
+
+    def _rust_inline_module(self, module: str, name: str, parent: str | None = None) -> bool:
+        """Whether *module* holds a ``mod name`` block directly inside block *parent*."""
+        parsed = self._parsed_files.get(module)  # type: ignore[attr-defined]
+        return parsed is not None and any(
+            sym.kind == "module" and sym.name == name and sym.parent_name == parent
+            for sym in parsed.symbols
         )

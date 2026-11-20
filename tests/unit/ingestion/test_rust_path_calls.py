@@ -112,6 +112,51 @@ def test_super_out_of_an_inline_module_stays_in_the_file(tmp_path: Path) -> None
     assert callees == {"src/util.rs::helper"}
 
 
+_NESTED = (
+    "pub fn helper() -> u8 { 0 }\n"
+    "\n"
+    "mod outer {\n"
+    "    pub mod inner {\n"
+    "        pub fn helper() -> u8 { 1 }\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "mod m {\n"
+    "    pub struct S;\n"
+    "\n"
+    "    impl S {\n"
+    "        pub fn new() -> S { S }\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def test_a_path_walks_through_nested_inline_modules(tmp_path: Path) -> None:
+    files = {"src/lib.rs": _NESTED + "\nfn top() -> u8 {\n    outer::inner::helper()\n}\n"}
+    callees = {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")}
+    assert callees == {"src/lib.rs::inner::helper"}
+
+
+def test_a_path_reaches_a_method_of_a_type_in_an_inline_module(tmp_path: Path) -> None:
+    files = {"src/lib.rs": _NESTED + "\nfn top() {\n    m::S::new();\n}\n"}
+    assert ("src/lib.rs::S::new", "module_alias") in _callees(tmp_path, files, "src/lib.rs::top")
+
+
+def test_a_crate_path_walks_through_an_inline_module_of_another_file(tmp_path: Path) -> None:
+    files = {
+        "src/lib.rs": "mod a;\nmod b;\n",
+        "src/a.rs": _NESTED,
+        "src/b.rs": "fn top() {\n    crate::a::m::S::new();\n}\n",
+    }
+    assert ("src/a.rs::S::new", "module_alias") in _callees(tmp_path, files, "src/b.rs::top")
+
+
+def test_an_item_missing_from_the_inline_module_binds_nothing(tmp_path: Path) -> None:
+    # ``outer::helper`` does not exist; the file's top-level ``helper`` is not it.
+    files = {"src/lib.rs": _NESTED + "\nfn top() -> u8 {\n    outer::helper()\n}\n"}
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")} == set()
+
+
 def test_a_self_method_call_is_not_read_as_a_path(tmp_path: Path) -> None:
     files = {
         "src/lib.rs": (
