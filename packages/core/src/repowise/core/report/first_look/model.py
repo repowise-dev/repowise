@@ -16,6 +16,7 @@ shape as ``report_sections``: a plugin adds one by registering a
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -77,8 +78,8 @@ PROMPT_RENDERERS: tuple[str, ...] = ("action", "fix_item", "perf_opportunity", "
 
 #: The stores an item's members live in; :mod:`.marks` reads and writes each
 #: through its existing writer. ``action``: a next action's id (``action_states``);
-#: ``dead_code``: ``kind|symbol|path``, the identity a dismissal survives
-#: re-index on; ``health_finding``: a health finding's public id;
+#: ``dead_code``: ``[kind, symbol, path]`` as JSON, the identity a dismissal
+#: survives re-index on; ``health_finding``: a health finding's public id;
 #: ``performance``: a performance cause's id (its health findings);
 #: ``refactoring_opportunity`` and ``refactoring_plan``: their public ids.
 MEMBER_STORES: tuple[str, ...] = (
@@ -191,8 +192,15 @@ class Member:
 
 
 def dead_code_ref(kind: str, symbol: str | None, path: str) -> str:
-    """A dead-code finding's identity as a :class:`Member` ref (path last: it may hold ``|``)."""
-    return f"{kind}|{symbol or ''}|{path}"
+    """A dead-code finding's identity as a :class:`Member` ref (open rows get new
+    ids on every index; this triple does not)."""
+    return json.dumps([kind, symbol or "", path], separators=(",", ":"))
+
+
+def parse_dead_code_ref(ref: str) -> tuple[str, str, str]:
+    """``(kind, symbol, path)`` from :func:`dead_code_ref`; ``symbol`` is ``""`` for none."""
+    kind, symbol, path = json.loads(ref)
+    return kind, symbol, path
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,5 +494,6 @@ __all__ = [
     "first_look_sections",
     "item_id",
     "locations",
+    "parse_dead_code_ref",
     "source_layer",
 ]

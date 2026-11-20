@@ -23,7 +23,7 @@ from repowise.core.persistence.models import (
     SecurityFinding,
 )
 from repowise.core.report.first_look.collect import collect_first_look
-from repowise.core.report.first_look.model import item_id
+from repowise.core.report.first_look.model import dead_code_ref, item_id
 from repowise.core.report.first_look.prompts import render_item_prompt, render_report_prompt
 from repowise.core.report.first_look.staleness import staleness
 from repowise.core.report.first_look.store import load_report, store_report
@@ -155,7 +155,7 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
     assert dead["safe_to_delete"].locations[0].path == "src/dead.py"
     assert dead["unreachable_file"].locations[0].path == "src/orphan.py"
     assert [m.ref for m in dead["safe_to_delete"].members] == [
-        f"unused_export|f{n}|src/dead.py" for n in (1, 2, 3)
+        dead_code_ref("unused_export", f"f{n}", "src/dead.py") for n in (1, 2, 3)
     ]
     assert perf[0].members[0].ref == "perf1"
     assert len(sections["dead_code"]) == 2
