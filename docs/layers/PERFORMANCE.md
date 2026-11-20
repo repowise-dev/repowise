@@ -141,6 +141,12 @@ Everything else is counted by reason, not hidden:
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
+Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of a
+benchmark, entry point, load test or production workload ranks a cause's loop owner
+among its costliest functions, the cause stays in the queue and its `measured` facet
+names that workload. A unit-test run never does this. Such a cause is still never
+the one Fix first, Do next or the queue's lead name.
+
 To see them, widen the filter (below). Each performance finding also stores the
 reason its cause is in or out of the queue. Code in a package path that only looks
 like an example tree (`com/example/...`) is judged as production when the index

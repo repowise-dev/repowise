@@ -309,6 +309,7 @@ The format is detected from the content, never the file name;
   sub-benchmarks in plain output) names stay whole. Over repeats the
   fewest allocations and bytes are kept: a stray allocation only ever adds.
   Allocations and bytes per operation are exact; time per operation is not.
+  `repowise perf check` gates a change on allocations per operation.
   A failed top-level benchmark is counted under `skipped` as `failed`; output with no
   result line is refused. Text that PowerShell 5 redirected (UTF-16) reads
   the same. Custom metrics (`MB/s`, `b.ReportMetric`) are not read. A
