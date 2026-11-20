@@ -336,7 +336,10 @@ class TestOptionsMethod:
         [
             ("{ method: 'DELETE' as const }", "DELETE"),
             ("{ method: 'POST' } as RequestInit", "POST"),
+            ("{ method: 'POST' } as unknown as RequestInit", "POST"),
+            ("{ method: 'PATCH' as unknown as Method }", "PATCH"),
             ("{ ...opts, method: 'PUT' }", "PUT"),
+            ("{ method: 'PURGE' }", "PURGE"),
             ("{ method }", None),
         ],
     )
@@ -484,3 +487,9 @@ class TestLocust:
 
     def test_a_client_attribute_without_locust_is_not_read(self):
         assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []
+
+
+def test_a_spaced_comparison_is_not_read_as_type_arguments():
+    from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+    assert list(wrapper_calls('if (api < limit && max > ("/api/x")) {}', frozenset())) == []
