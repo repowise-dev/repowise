@@ -201,6 +201,33 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     return found
 
 
+# Only the builtin runs a string. ``model.eval()`` (a PyTorch mode switch) and
+# any other method named ``eval`` do not.
+_PYTHON_EVAL_OWNERS = frozenset({"builtins", "__builtins__"})
+
+
+def _python_call_name(func: ast.expr) -> str | None:
+    """``eval`` or ``exec`` when *func* calls one that runs code, else None."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if not isinstance(func, ast.Attribute):
+        return None
+    if func.attr == "eval":
+        owner = func.value
+        return "eval" if isinstance(owner, ast.Name) and owner.id in _PYTHON_EVAL_OWNERS else None
+    return func.attr
+
+
+def _is_python_method_eval(masked_source: str, match: re.Match) -> bool:
+    """Is a lexical ``eval(`` match a method call rather than the builtin?"""
+    qualifier = re.sub(r"\s+", "", match.group(0)).rpartition("eval")[0]
+    if qualifier and qualifier.rstrip(".") not in _PYTHON_EVAL_OWNERS:
+        return True
+    # ``Net().eval(``: the pattern's qualifier only spans names, so a call or
+    # subscript in front of the dot leaves it empty.
+    return not qualifier and masked_source[: match.start()].rstrip().endswith(".")
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -226,12 +253,7 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                if isinstance(node.func, ast.Name):
-                    call_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    call_name = node.func.attr
-                else:
-                    continue
+                call_name = _python_call_name(node.func)
                 if call_name not in {"eval", "exec"}:
                     continue
                 findings.append(
@@ -261,6 +283,8 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):
+            if kind == "eval_call" and is_python and _is_python_method_eval(masked_source, match):
+                continue
             add(kind, severity, match.start())
 
     if not is_python:
