@@ -19,9 +19,9 @@ from repowise.core.workspace.origins import ContractOrigin
 
 from ..calls import receiver_name
 from ..langs import JS_TS
-from ..strings import JS_SYNTAX, literal_span, string_constants
+from ..strings import JS_SYNTAX, call_arguments, literal_span, string_constants
 from .angular import environment_mounts
-from .client_calls import ClientCallMatch, consumer_contracts, matches_in
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_options
 from .commonjs import exports_mounts
 from .node_clients import client_calls, client_mounts
 
@@ -34,52 +34,43 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
-_OPTIONS_METHOD = r"""\s*,\s*\{[^}]*method\s*:\s*['"](\w+)['"]"""
-_FETCH_METHOD_RE = re.compile(r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""" + _OPTIONS_METHOD, re.DOTALL)
-# The options after a URL literal the capture above stopped short of: a nested
-# template in a hole (`` fetch(`/a${q ? `?${q}` : ""}`, { method }) ``).
-_OPTIONS_METHOD_RE = re.compile(_OPTIONS_METHOD, re.DOTALL)
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
 # i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
 # led by the `(` and reads the identifier back from it: led by the identifier,
 # the regex was tried at every word of every file.
 _WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""")
-_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)\s*$")
+# The callee may carry TypeScript type arguments, nested up to three levels
+# (`apiGet<Paginated<Array<Commit>>>(`). Each inner level starts at a `<`, so
+# the pattern cannot backtrack across levels. The `<` must follow the name
+# directly, as type arguments do and a spaced comparison (`a < b && c > (`) does not.
+_TYPE_ARGS = r"(?:<[^<>()]*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>[^<>()]*)*>)?"
+_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)" + _TYPE_ARGS + r"\s*$")
 _CALLEE_WINDOW = 200
 
 # The callee names that read as an HTTP wrapper rather than navigation/util.
 _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
-
-# A `method: "POST"` option inside the call's argument list.
-_METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 
 # Callees already handled elsewhere (`ofetch(` is a fetch call), or never an HTTP wrapper.
 _WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "catch", "return"})
 
 
 def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
-    """``fetch(url, { method })`` rows first, then plain ``fetch(url)`` as GET.
-
-    A URL that appears with an explicit method anywhere in the file is not
-    re-emitted as a GET.
-    """
-    yield from matches_in(content, _FETCH_METHOD_RE, client="fetch", url_group=1, method_group=2)
-    method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
+    """``fetch(url)`` and ``fetch(url, { method })``; no method option is a GET."""
     for m in _FETCH_RE.finditer(content):
-        if m.group(1) in method_urls:
-            continue
-        url = literal_span(content, m, 1)
-        opt = None
-        if len(url) - 2 > len(m.group(1)):
-            opt = _OPTIONS_METHOD_RE.match(content, m.start(1) + len(url) - 1)
         yield ClientCallMatch(
             client="fetch",
-            url=url,
+            url=literal_span(content, m, 1),
             offset=m.start(),
             callee="fetch",
-            method=opt.group(1).upper() if opt else None,
+            method=_options_method(content, content.index("(", m.start())),
         )
+
+
+def _options_method(content: str, paren: int) -> str | None:
+    """The verb the options after the URL of the call opening at *paren* name."""
+    args = call_arguments(content, paren)
+    return method_from_options(args[1:]) if args else None
 
 
 def _callee(content: str, start: int, end: int) -> str:
@@ -111,22 +102,19 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
             continue
         if clients and _receiver(content, head.start(1)) in clients:
             continue  # `http.post(url, { method })`, a client's own verb
-        url = literal_span(content, m, 1)
-        after = m.start(1) + len(url) - 1  # past the literal, nested templates included
-        nl = content.find("\n", after)
-        window = content[after:] if nl == -1 else content[after:nl]
-        method_opt = _METHOD_OPT_RE.search(window)
+        # The options may span lines: `apiRequest(url, {\n  method: 'POST',`.
+        method = _options_method(content, m.start())
         # Require an HTTP signal: an HTTP-ish callee name or a method option.
-        if not (_HTTP_NAME_RE.search(callee) or method_opt):
+        if not (_HTTP_NAME_RE.search(callee) or method):
             continue
         # No `method:` option: the callee name is the only verb evidence there
         # is, and `apiPost`/`apiDelete` carry it.
         yield ClientCallMatch(
             client="wrapper",
-            url=url,
+            url=literal_span(content, m, 1),
             offset=head.start(),
             callee=callee,
-            method=method_opt.group(1).upper() if method_opt else None,
+            method=method,
             origin=ContractOrigin.NAME_HEURISTIC,
         )
 

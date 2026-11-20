@@ -41,8 +41,9 @@ from ..strings import (
     PYTHON_SYNTAX,
     match_paren,
     split_first_arg,
+    split_top_level,
 )
-from .client_calls import VERBS, is_rooted_url, join_base
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_options
 from .dialect import build_consumer_contract
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
@@ -83,9 +84,6 @@ _CLIENT_CALL_RE = re.compile(
 # ``request`` is absent on purpose: it takes the method as its first argument
 # and the URL as its second, so this rule would record the verb as the path.
 _HTTP_VERBS = VERBS
-
-# ``method: "POST"`` anywhere in the remaining arguments of the same call.
-_METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 
 # Module-level names so a test can stand in a failing scanner.
 _match_paren = match_paren
@@ -272,8 +270,7 @@ def extract_consumers(
             unresolved_by_callee[name] = unresolved_by_callee.get(name, 0) + 1
             continue
         path_taking.add(name)
-        opt = _METHOD_OPT_RE.search(rest)
-        method = opt.group(1).upper() if opt else "GET"
+        method = method_from_options([a.strip() for a in split_top_level(rest, ",")]) or "GET"
         resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT))
 
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
