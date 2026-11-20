@@ -631,7 +631,7 @@ class TestDeleteWithConfiguredDb:
             catch_exceptions=False,
         )
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert f"No repository in the database matches {unknown.resolve()}" in result.output
         assert "Deleted" not in result.output
         assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
@@ -651,7 +651,7 @@ class TestDeleteWithConfiguredDb:
 
         (dest / ".repowise").mkdir()
         result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "Database not found." in result.output
 
     def test_deletes_from_local_wiki_db_when_configured(
