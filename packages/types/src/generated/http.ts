@@ -2396,6 +2396,23 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FirstLookResponse {
+  report: Record<string, unknown>;
+  staleness: Record<string, unknown>;
+  report_prompt: string;
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  can_rewrite: boolean;
+  rewrite_cost_usd?: number | null;
+}
+
+/** When and how the stored report was written, without the report. */
+export interface FirstLookStampResponse {
+  commit: string | null;
+  created_at: string;
+  generator: string;
+  cost?: number | null;
+}
+
 export interface FixAction {
   summary: string;
   steps: FixStep[];

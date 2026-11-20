@@ -8,6 +8,7 @@ import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
+import { getFirstLookStamp } from "@/lib/api/reports";
 import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
@@ -25,9 +26,17 @@ import {
   type RepoIdentityMeta,
 } from "@repowise-dev/ui/overview";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import { formatDateTime, formatLOC } from "@repowise-dev/ui/lib/format";
+import { formatDateTime, formatLOC, parseDateOrNull } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Overview" };
+
+/** The overview links to the first-look report for a week after it was written. */
+const FIRST_LOOK_LINK_DAYS = 7;
+
+function firstLookIsRecent(createdAt: string | null | undefined): boolean {
+  const written = parseDateOrNull(createdAt);
+  return written != null && Date.now() - written.getTime() < FIRST_LOOK_LINK_DAYS * 86_400_000;
+}
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -82,7 +91,7 @@ export default async function OverviewPage({ params }: Props) {
   // Every fetch the page needs, in one wave, on the server. Nothing below
   // renders client-side: this is a static read, so a hydration boundary would
   // only buy a slower first paint and worse indexability.
-  const [summary, providers, actions] = await Promise.all([
+  const [summary, providers, actions, firstLook] = await Promise.all([
     // Only a 404 means the repo is gone; any other failure reaches the route
     // error boundary instead of reading as "not found".
     getOverviewSummary(id).catch((err: unknown) => {
@@ -91,6 +100,7 @@ export default async function OverviewPage({ params }: Props) {
     }),
     safeFetch(() => getProviders()),
     safeFetch(() => getActions(id)),
+    safeFetch(() => getFirstLookStamp(id)),
   ]);
   if (!summary) notFound();
 
@@ -165,6 +175,14 @@ export default async function OverviewPage({ params }: Props) {
         header: (
           <>
             {header}
+            {firstLookIsRecent(firstLook?.created_at) ? (
+              <Link
+                href={`${base}/first-look`}
+                className="mb-4 block w-fit text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              >
+                {tOverview("firstLookLink")}
+              </Link>
+            ) : null}
             <ReviewNudgeHost repoId={id} />
             {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
             <WelcomeMoment

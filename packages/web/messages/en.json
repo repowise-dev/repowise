@@ -1180,6 +1180,13 @@
       "explorer": "Explorer",
       "freshness": "Doc freshness",
       "drift": "Doc drift"
+    },
+    "firstLook": {
+      "title": "First look",
+      "description": "What the first index found, most urgent first.",
+      "empty": "No first-look report yet",
+      "emptyHint": "repowise init writes one; repowise report first-look writes it again.",
+      "rewriteFailed": "Couldn't write the report"
     }
   },
   "settings": {
@@ -2500,7 +2507,8 @@
       "inferred": "(inferred)",
       "openRow": "Open {title}",
       "moreFor": "More for {title}"
-    }
+    },
+    "firstLookLink": "First-look report"
   },
   "risk": {
     "posture": {

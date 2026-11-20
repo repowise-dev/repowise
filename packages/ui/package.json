@@ -78,6 +78,7 @@
     "./stats": "./src/stats/index.ts",
     "./stats/*": "./src/stats/*.tsx",
     "./overview": "./src/overview/index.ts",
+    "./report/first-look": "./src/report/first-look/index.ts",
     "./overview/*": "./src/overview/*.tsx",
     "./workspace": "./src/workspace/index.ts",
     "./workspace/co-change-ai-prompt": "./src/workspace/co-change-ai-prompt.ts",

@@ -994,6 +994,13 @@
       "explorer": "浏览",
       "freshness": "文档新鲜度",
       "drift": "文档漂移"
+    },
+    "firstLook": {
+      "title": "初次检视",
+      "description": "首次索引发现的问题，按紧急程度排列。",
+      "empty": "还没有初次检视报告",
+      "emptyHint": "repowise init 会生成一份；repowise report first-look 会重新生成。",
+      "rewriteFailed": "无法生成报告"
     }
   },
   "settings": {
@@ -2313,7 +2320,8 @@
       "inferred": "（推断）",
       "openRow": "打开：{title}",
       "moreFor": "{title} 的更多操作"
-    }
+    },
+    "firstLookLink": "初次检视报告"
   },
   "risk": {
     "posture": {
