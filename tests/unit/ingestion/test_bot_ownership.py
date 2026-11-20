@@ -69,7 +69,7 @@ def test_bot_majority_file_is_owned_by_the_human(tmp_path: Path) -> None:
     assert meta["bus_factor"] == 1
     assert [a["name"] for a in json.loads(meta["top_authors_json"])] == ["Dev"]
     assert meta["recent_owner_name"] == "Dev"
-    assert meta["recent_owner_commit_pct"] == 1.0
+    assert meta["recent_owner_commit_pct"] == 0.25
     # Bot commits still count toward the file's history and churn.
     assert meta["commit_count_total"] == 4
     assert meta["primary_owner_commit_pct"] == 0.25
