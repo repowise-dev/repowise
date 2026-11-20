@@ -328,7 +328,10 @@ async def items(): ...
         # level is still users.py's router.
         self._write_file(tmp_path, "main.py", """
 from fastapi import FastAPI
-import users
+try:
+    import users
+except ImportError:
+    from legacy import users
 app = FastAPI()
 app.include_router(users.router, prefix="/users")
 

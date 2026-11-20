@@ -172,7 +172,12 @@ def _python_imports(content: str) -> dict[str, tuple[str, str | None]]:
     pending: list[ast.AST] = list(reversed(tree.body))
     while pending:
         node = pending.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        # A function's imports, and an `except` fallback the `try` import
+        # normally wins over, bind only names the module leaves free.
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda, ast.ExceptHandler),
+        ):
             nested.append(node)
             continue
         _bind_import(node, out, overwrite=True)
