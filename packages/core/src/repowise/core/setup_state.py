@@ -1,8 +1,9 @@
 """The last setup answer, in ``.repowise/setup.json``: stdlib only.
 
 ``analysis.actions`` computes whether setup is unfinished; every full read
-(``repowise next``, ``status``, Do next, ``get_overview``) stores the answer
-here, and the readers that cannot afford that read (the SessionStart hook,
+(``repowise next``, ``status``, Do next, ``get_overview``, and one in the
+background after an agent's first MCP call) stores the answer here, and
+the readers that cannot afford that read (the SessionStart hook,
 the MCP handshake) take it from here. It is the last answer, not a live one:
 a step done since shows until the next full read.
 """
