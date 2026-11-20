@@ -514,8 +514,9 @@ export interface PerformanceOpportunityPlanEconomics {
   risk: number;
 }
 
-/** `confirmed` and `measured` lead the queue; the rest keep their static
- *  place. `not_exercised` names the leading workloads that ran ("not
+/** `confirmed` and `measured` lead the queue, except a cause measured
+ *  against its cold name (startup, migration), which keeps its static place
+ *  like the rest. `not_exercised` names the leading workloads that ran ("not
  *  exercised in <workload>"). */
 export type PerformanceEvidenceState =
   | "confirmed"

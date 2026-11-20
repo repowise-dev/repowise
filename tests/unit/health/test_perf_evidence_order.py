@@ -20,6 +20,7 @@ from repowise.core.analysis.health.perf.serving import evidence_mark
         ({"queries": "flat", "measured": "api"}, 2),
         # Measured against its cold name: kept, never led.
         ({"measured": "api", "measured_overrides": "cold_path"}, 2),
+        ({"confirmed": "measured", "measured": "api", "measured_overrides": "cold_path"}, 2),
         ({"queries": "ran"}, 2),
         ({}, 2),
     ],

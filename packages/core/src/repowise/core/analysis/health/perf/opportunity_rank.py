@@ -327,14 +327,14 @@ def evidence_tier(facets: Mapping[str, Any]) -> int:
     confirmed, ``1`` measured, ``2`` otherwise (:func:`evidence_state`). Every
     cause of a repository with no runtime evidence is ``2``, so its order is
     the static one. Counter-evidence demotes nothing, and a cause measured
-    against its cold name (``measured_overrides``) is kept, never led: both
-    keep their static place."""
+    against its cold name (``measured_overrides``) is kept, never led, even
+    when evidence confirms it: both keep their static place."""
+    if facets.get("measured_overrides"):
+        return 2
     state = evidence_state(facets)
     if state == "confirmed":
         return 0
-    if state == "measured" and not facets.get("measured_overrides"):
-        return 1
-    return 2
+    return 1 if state == "measured" else 2
 
 
 def rank_sort_key(item: Any) -> tuple[int, int, int, int, str]:
