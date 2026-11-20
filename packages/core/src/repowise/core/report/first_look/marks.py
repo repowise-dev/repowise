@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .model import Item
+from .model import Item, parse_dead_code_ref
 
 #: What a person can answer.
 MARK_STATUSES: tuple[str, ...] = ("done", "ack", "false_positive", "snooze")
@@ -73,7 +73,8 @@ SECURITY_IGNORE = (
 
 class MarkError(Exception):
     """A mark that was not written: ``code`` is ``unknown_item``,
-    ``reason_required``, ``security_use_ignore`` or ``bad_status``."""
+    ``reason_required``, ``security_use_ignore`` or ``bad_status`` (a caller
+    adds its own, as the CLI's ``no_index``)."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -188,7 +189,7 @@ async def _write_performance(
 def _dead_code_where(repo_id: str, ref: str) -> list[Any]:
     from repowise.core.persistence.models import DeadCodeFinding as D
 
-    kind, symbol, path = ref.split("|", 2)
+    kind, symbol, path = parse_dead_code_ref(ref)
     where = [
         D.repository_id == repo_id,
         D.file_path == path,
@@ -316,7 +317,7 @@ async def mark_item(
     if status in REASON_REQUIRED and reason is None:
         raise MarkError(
             "reason_required",
-            "Say why with --reason: an acknowledged item or a false positive keeps its reason.",
+            "Say why with --reason: an acknowledged item or a false positive needs one.",
         )
     until = None
     if status == "snooze":
@@ -461,7 +462,7 @@ def _member_status(
             return _ACTION_AS_FINDING.get(record.state, "open"), None, None
         return missing, None, None
     if m.store == "dead_code":
-        kind, symbol, path = m.ref.split("|", 2)
+        kind, symbol, path = parse_dead_code_ref(m.ref)
         found = stored.dead_code.get((kind, symbol, path)) if kind else next(
             (v for (_, s, p), v in stored.dead_code.items() if (s, p) == (symbol, path)), None
         )
@@ -497,10 +498,13 @@ def _status_of(item: Item, stored: _Stored, gone: bool, now: datetime) -> ItemSt
     # index no longer has is open while the item is listed, gone after.
     missing = _GONE if gone else "open"
     found = [_member_status(m, stored, missing, gone, now) for m in item.members]
+    statuses = [status for status, _, _ in found]
+    # A member that joined after the answer is still to do: the item is open.
+    if "open" in statuses:
+        return ItemStatus("open")
     snoozed = [until for status, _, until in found if status == "snoozed"]
     if snoozed:
         return ItemStatus("snoozed", until=max((u for u in snoozed if u), default=None))
-    statuses = [status for status, _, _ in found]
     if all(s == _GONE for s in statuses):
         return ItemStatus("resolved")
     rolled = roll_up_status("resolved" if s == _GONE else s for s in statuses)

@@ -37,6 +37,7 @@ from repowise.core.report.first_look.model import (
     Member,
     PromptRef,
     SectionBlock,
+    dead_code_ref,
     file_link,
     item_id,
 )
@@ -298,3 +299,29 @@ async def test_health_items_carry_their_numbers(async_session) -> None:
     facts = lowest.title_facts
     assert (facts["ccn"], facts["nloc"]) == (48, 100)
     assert set(facts) >= {"importers", "changes_90d"}
+
+
+async def test_a_dead_code_symbol_holding_a_bar_still_resolves(async_session) -> None:
+    rid, report = await _report(async_session)
+    async_session.add(
+        DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/ops.py",
+                        symbol_name="operator|", lines=3, confidence=0.9, safe_to_delete=True)
+    )
+    await async_session.commit()
+    item = _stored_item(
+        "safe_to_delete", Member("dead_code", dead_code_ref("unused_export", "operator|", "src/ops.py"))
+    )
+    await _store_items(async_session, rid, report, item)
+    assert (await mark_item(async_session, rid, item.id, "done"))["store"] == "dead_code"
+    await async_session.commit()
+    assert await _status(async_session, rid, item, gone=True) == ("done", None)
+
+
+async def test_a_member_that_joins_a_snoozed_group_opens_it(async_session) -> None:
+    rid, report = await _report(async_session)
+    group = _one(report, "security", "hardcoded_password")
+    await mark_item(async_session, rid, group.id, "snooze")
+    await async_session.commit()
+    assert (await _status(async_session, rid, group))[0] == "snoozed"
+    grown = dataclasses.replace(group, members=(*group.members, Member("action", "act_new", "fp")))
+    assert (await _status(async_session, rid, grown))[0] == "open"
