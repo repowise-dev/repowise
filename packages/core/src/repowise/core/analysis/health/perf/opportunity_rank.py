@@ -306,12 +306,25 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
-def rank_sort_key(item: Any) -> tuple[int, int, int, str]:
-    """A total order: value first, then actionability, leverage, and id.
+def evidence_tier(facets: Mapping[str, Any]) -> int:
+    """Where runtime evidence puts a cause ahead of static value: ``0`` when
+    evidence confirms it (the ``confirmed`` facet), ``1`` when a leading
+    workload ranks its loop owner (``measured``), ``2`` otherwise. Every cause
+    of a repository with no runtime evidence is ``2``, so its order is the
+    static one. Counter-evidence (``queries = flat``) demotes nothing: the
+    cause keeps its static place and its label says so."""
+    if facets.get("confirmed"):
+        return 0
+    return 1 if facets.get("measured") else 2
+
+
+def rank_sort_key(item: Any) -> tuple[int, int, int, int, str]:
+    """A total order: evidence tier, value, then actionability, leverage, and id.
 
     The id tail is what makes it total, so ties never float between runs.
     """
     return (
+        evidence_tier(item.facets),
         -item.rank_score,
         ACTIONABILITY_ORDER[item.actionability_state],
         -item.affected_call_sites_total,
@@ -338,6 +351,7 @@ __all__ = [
     "band",
     "change_risk",
     "dominant_marker",
+    "evidence_tier",
     "exposure",
     "growth_source",
     "leverage",

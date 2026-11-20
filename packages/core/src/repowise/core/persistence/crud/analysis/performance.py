@@ -251,11 +251,13 @@ async def finalize_performance_opportunities(
     )
     if execution_roles is not None:
         rows = await _restamp_roles(session, rows, execution_roles)
+    measured = await _measured_functions(session, repository_id)
     opportunities = build_performance_opportunities(
         rows,
         evidence_limit=_EVIDENCE_LIMIT,
         origins=await _unknown_context_origins(session, repository_id, rows),
-        **(await _measured_functions(session, repository_id))._asdict(),
+        measured=measured.measured,
+        hot=measured.hot,
         queries=await _query_readings(session, repository_id),
     )
 
@@ -264,7 +266,15 @@ async def finalize_performance_opportunities(
         session, repository_id, opportunities, plan_states, analyzed_commit, plans
     )
     await _restamp_findings(session, rows, verdicts)
-    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
+    await _write_summary(
+        session,
+        repository_id,
+        opportunities,
+        plan_states,
+        analyzed_commit,
+        plans,
+        workloads=measured.workloads,
+    )
     return len(opportunities)
 
 
@@ -302,6 +312,9 @@ class _Measured(NamedTuple):
     measured: dict[str, str]
     #: Functions a leading workload measured in the ``lead_candidate`` tier.
     hot: frozenset[str]
+    #: The leading workloads whose runs measured any function: what a cause
+    #: no facet marks was not exercised in.
+    workloads: tuple[str, ...] = ()
 
 
 async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
@@ -323,18 +336,22 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> _Mea
 
     best: dict[str, tuple[int, str]] = {}
     hot: set[str] = set()
+    workloads: set[str] = set()
     for run, rows in await ranked_by_workload(session, repository_id):
         if run.workload_class not in LEAD_CLASSES:
             continue
         for row in rows:
             if row.ordering_only:
                 continue
+            workloads.add(run.workload_name)
             if row.tier == "lead_candidate":
                 hot.add(row.symbol_id)
             key = (row.rank, run.workload_name)
             if row.symbol_id not in best or key < best[row.symbol_id]:
                 best[row.symbol_id] = key
-    return _Measured({sid: name for sid, (_rank, name) in best.items()}, frozenset(hot))
+    return _Measured(
+        {sid: name for sid, (_rank, name) in best.items()}, frozenset(hot), tuple(sorted(workloads))
+    )
 
 
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
@@ -571,13 +588,19 @@ async def _write_summary(
     plan_states: dict[str, str],
     analyzed_commit: str | None,
     plans: dict[str, dict[str, Any]] | None = None,
+    *,
+    workloads: tuple[str, ...] = (),
 ) -> None:
 
     from ....analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 
-    payload = json.dumps(
-        _summary_payload(opportunities, plan_states, plans), separators=(",", ":")
-    )
+    summary = _summary_payload(opportunities, plan_states, plans)
+    if workloads:
+        # Only with runtime evidence, so a repo without any stores what it did.
+        # The causes were judged against these runs: a run added since is not
+        # in their facets until the next index, so it is not named either.
+        summary["evidence_workloads"] = list(workloads)
+    payload = json.dumps(summary, separators=(",", ":"))
     row = await session.get(PerformanceSummary, repository_id)
     if row is None:
         row = PerformanceSummary(repository_id=repository_id)
