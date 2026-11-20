@@ -244,6 +244,7 @@ def _query_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any
     return {
         "scope_kind": entry["scope_kind"],
         "scope_id": entry["scope_id"],
+        "scope_items": entry["scope_items"],
         "site_symbol_id": symbol_id,
         "statement_fp": entry["statement_fp"],
         "site_line": entry["line"],

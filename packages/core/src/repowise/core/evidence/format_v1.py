@@ -376,21 +376,27 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
     }, None
 
 
-def _query_scope(raw: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
-    """``((kind, id), None)`` for the test or request a count belongs to."""
+def _query_scope(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, str, int | None] | None, str | None]:
+    """``((kind, id, items), None)`` for the test or request a count belongs to.
+
+    ``items`` is how many items the scope ran over (the input size), when the
+    run says; it is what lets two scopes show a count growing or staying flat.
+    """
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
     scope_kind = _member(scope.get("kind"), QUERY_SCOPES)
     scope_id, reason = _name(scope.get("id"))
     if scope_kind is None or scope_id is None:
         return None, "no_scope" if reason in (None, "no_name") else reason
-    return (scope_kind, scope_id), None
+    return (scope_kind, scope_id, _count(scope.get("items"))), None
 
 
 def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     scope, reason = _query_scope(raw)
     if scope is None:
         return None, reason
-    scope_kind, scope_id = scope
+    scope_kind, scope_id, items = scope
     site, reason = _location(raw.get("site"))
     if site is None:
         return None, reason
@@ -403,6 +409,7 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
     return {
         "scope_kind": scope_kind,
         "scope_id": scope_id,
+        "scope_items": items,
         **site,
         "statement_fp": fp,
         "query_count": count,
