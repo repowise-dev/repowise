@@ -75,6 +75,37 @@ mixin Cache {
         assert ("count", "Repo") in parents
         assert ("evict", "Cache") in parents
 
+    def test_constructors_are_methods_of_their_class(self, parser: ASTParser) -> None:
+        """Issue #5988: unnamed, named, factory and const constructors."""
+        src = b"""\
+class A {
+  A();
+  A.named() {
+    setUp();
+  }
+  factory A.f() => A();
+  const A.c();
+  void m() {}
+}
+"""
+        result = parser.parse_file(_file(), src)
+        found = sorted(
+            (s.name, s.kind, s.parent_name, s.start_line, s.end_line)
+            for s in result.symbols
+            if s.parent_name == "A"
+        )
+        assert found == [
+            ("A", "method", "A", 2, 2),
+            ("A.c", "method", "A", 7, 7),
+            ("A.f", "method", "A", 6, 6),
+            ("A.named", "method", "A", 3, 5),
+            ("m", "method", "A", 8, 8),
+        ]
+        # The body of a named constructor is its range, so its calls are its own.
+        call = next(c for c in result.calls if c.target_name == "setUp")
+        assert call.caller_symbol_id is not None
+        assert call.caller_symbol_id.endswith("::A.named")
+
     def test_symbol_range_covers_sibling_body(self, parser: ASTParser) -> None:
         # The grammar splits a function into signature + SIBLING body; the
         # symbol range must include the body or call attribution breaks.
