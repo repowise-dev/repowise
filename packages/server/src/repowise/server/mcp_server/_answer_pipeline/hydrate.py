@@ -50,8 +50,9 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
 
 
 def in_scope(path: str, scope: str | None) -> bool:
-    """Whether *path* is under the caller's ``scope`` (a plain path prefix)."""
-    return not scope or path.startswith(scope)
+    """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
+    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
+    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
 
 
 def drop_out_of_scope(hits: list[dict], scope: str | None) -> list[dict]:

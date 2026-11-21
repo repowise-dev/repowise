@@ -14,7 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 _IN = "pkg/alpha/store.py"
-_OUT = "pkg/beta/retry.py"
+# A sibling sharing the scope's spelling: ``pkg/alpha`` is a directory, not a prefix.
+_OUT = "pkg/alphabet/retry.py"
 
 
 def _patch_pipeline(monkeypatch, answer_mod) -> None:
@@ -29,6 +30,9 @@ def _patch_pipeline(monkeypatch, answer_mod) -> None:
             h["snippet"] = ""
             h["page_type"] = "file_page"
         return hits
+
+    async def _fake_flow(session, repo_id, hits, question, question_ids):
+        return hits, [[_IN, _OUT]]
 
     async def _fake_expand(hits, ctx, repo_id):
         # A 1-hop neighbour outside the scope, ranked above the scoped hit.
@@ -46,6 +50,7 @@ def _patch_pipeline(monkeypatch, answer_mod) -> None:
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
     monkeypatch.setattr(answer_mod, "_expand_via_graph", _fake_expand)
+    monkeypatch.setattr(answer_mod, "_expand_via_flow_path", _fake_flow)
 
 
 @pytest.mark.asyncio
@@ -114,3 +119,29 @@ async def test_a_scope_holding_no_hit_says_so(setup_mcp, monkeypatch):
     assert result["confidence"] == "low"
     assert "under pkg/gamma/" in result["note"]
     assert _OUT not in json.dumps(result)
+
+
+def test_union_defs_and_unindexed_lines_outside_the_scope_are_dropped() -> None:
+    from repowise.server.mcp_server.tool_answer.answer import _keep_in_scope
+
+    homonyms = {
+        "union": {
+            "retry": [{"file_path": _IN}, {"file_path": _OUT}],
+            "backoff": [{"file_path": _OUT}],
+        },
+        "unindexed_lines": [{"path": _OUT, "line": 3, "text": "retry = 1"}],
+        "split": {"retry": [_IN, _OUT]},
+    }
+    hits, flows = _keep_in_scope(
+        [{"target_path": _OUT}, {"target_path": _IN}, {"page_id": "pathless"}],
+        homonyms,
+        [[_IN], [_IN, _OUT]],
+        "pkg/alpha",
+    )
+
+    assert hits == [{"target_path": _IN}, {"page_id": "pathless"}]
+    assert flows == [[_IN]]
+    assert homonyms["union"] == {"retry": [{"file_path": _IN}]}
+    assert homonyms["unindexed_lines"] == []
+    # Only lowers a grade: kept, so no label moves up under a scope.
+    assert homonyms["split"] == {"retry": [_IN, _OUT]}

@@ -270,6 +270,34 @@ class _Retrieved(NamedTuple):
     other_repo_lines: list[dict]
 
 
+def _keep_in_scope(
+    hits: list[dict], homonyms: dict, flow_paths: list[list[str]], scope: str | None
+) -> tuple[list[dict], list[list[str]]]:
+    """What retrieval found, less every file outside *scope*.
+
+    Hydration drops out-of-scope hits, but graph expansion, anchoring and flow
+    paths add files after it. A scoped caller asked about the scope, so none of
+    them may reach the answer, its lists or synthesis. A flow path that leaves
+    the scope goes whole: a cut chain would claim a call order that is not there.
+    ``homonyms`` is narrowed in place; ``split`` stays, since it only lowers a grade.
+    """
+    if not scope:
+        return hits, flow_paths
+    homonyms["union"] = {
+        name: kept
+        for name, defs in (homonyms.get("union") or {}).items()
+        if (kept := [d for d in defs if in_scope(d.get("file_path") or "", scope)])
+    }
+    if homonyms.get("unindexed_lines"):
+        homonyms["unindexed_lines"] = [
+            r for r in homonyms["unindexed_lines"] if in_scope(r["path"], scope)
+        ]
+    return (
+        drop_out_of_scope(hits, scope),
+        [p for p in flow_paths if all(in_scope(f, scope) for f in p)],
+    )
+
+
 @timed_stage("retrieve")
 async def _run_retrieval_pipeline(
     question: str, ctx, *, scope: str | None, exclude_spec, repo_id
@@ -393,10 +421,7 @@ async def _run_retrieval_pipeline(
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
         hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
-    # Hydration drops out-of-scope hits, but graph expansion, anchoring and
-    # flow paths add files after it. A scoped caller asked about the scope, so
-    # none of them may reach the answer, citations or candidates.
-    hits = drop_out_of_scope(hits, scope)
+    hits, flow_paths = _keep_in_scope(hits, homonyms, flow_paths, scope)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
