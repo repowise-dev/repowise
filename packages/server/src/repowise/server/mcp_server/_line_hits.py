@@ -22,6 +22,7 @@ import subprocess
 import time
 from collections import Counter
 from collections.abc import Callable, Container
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -296,7 +297,28 @@ def _listed_files(root: Path) -> list[str]:
     ]
 
 
+# One line search's git grep answers, so the edit set's grep of a name also
+# serves the unindexed-definition lookup. Set only inside one repo's line
+# read, so no answer outlives it.
+_HOLDING_MEMO: ContextVar[dict[tuple[Any, ...], list[str] | None] | None] = ContextVar(
+    "_holding_memo", default=None
+)
+
+
 def _files_holding(
+    root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
+) -> list[str] | None:
+    """:func:`_git_files_holding`, answered once per key inside one line read."""
+    memo = _HOLDING_MEMO.get()
+    if memo is None:
+        return _git_files_holding(root, needle, word=word, globs=globs)
+    key = (str(root), needle, word, globs)
+    if key not in memo:
+        memo[key] = _git_files_holding(root, needle, word=word, globs=globs)
+    return memo[key]
+
+
+def _git_files_holding(
     root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
 ) -> list[str] | None:
     """The files :func:`_listed_files` would list whose bytes hold *needle*, via git grep.
@@ -1164,11 +1186,19 @@ async def _repo_line_rows(
             return ([], [no_source_reason()], True) if nodes or literal else None
         root = Path(served_root(repository, ctx.path))
         # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
-        sets = None if len(nodes) > MAX_SYMBOLS else [
-            await reference_edit_set(session, repository.id, root, n) for n in nodes
-        ]
-        names = sorted({_bare_name(n) for n in nodes})
-        unindexed = await _unindexed_holders(session, repository.id, root, names, spec)
+        token = _HOLDING_MEMO.set({})
+        try:
+            sets = None if len(nodes) > MAX_SYMBOLS else [
+                await reference_edit_set(session, repository.id, root, n) for n in nodes
+            ]
+            names = sorted({_bare_name(n) for n in nodes})
+            # A name past MAX_SYMBOLS serves definitions only and already says
+            # it is not every match, so it pays for no extra grep.
+            unindexed = (
+                await _unindexed_holders(session, repository.id, root, names, spec) if sets else []
+            )
+        finally:
+            _HOLDING_MEMO.reset(token)
     served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
     if served is not None and unindexed:
         served = await _with_unindexed_definitions(served, root, names, unindexed)
@@ -1201,7 +1231,8 @@ async def _unindexed_holders(
         # Shortcut: without git there is no cheap list of the files holding the
         # name, so the lines stay the edit sets alone, as before. A walk of every
         # unindexed file under the scan budget is the upgrade path.
-        found = await asyncio.to_thread(_files_holding, root, name, word=True)
+        # The edit set's own grep (resolved root, not word-bounded): a memo hit.
+        found = await asyncio.to_thread(_files_holding, root.resolve(), name)
         held.update(found or ())
     files = sorted(f for f in held if not is_doc_or_config_path(f) and not is_excluded(f, spec))
     indexed: set[str] = set()

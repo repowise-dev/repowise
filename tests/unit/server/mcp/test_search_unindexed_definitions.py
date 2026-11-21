@@ -159,3 +159,39 @@ async def test_an_indexed_name_no_unindexed_file_defines_is_unchanged(tree):
     assert _rows(out) == [("cmd/evaluate.go", 3, "definition")]
     assert out["complete"] is True
     assert out.get("exact_match") is True
+
+
+@pytest.mark.asyncio
+async def test_the_lookup_reuses_the_edit_sets_grep(tree, monkeypatch):
+    # One git grep per name per search: the edit set's answer serves the
+    # unindexed lookup too, and no answer outlives the search.
+    from repowise.server.mcp_server import _line_hits
+
+    calls = []
+    real = _line_hits._git_files_holding
+
+    def counted(root, needle, **kw):
+        calls.append((needle, kw.get("word", False)))
+        return real(root, needle, **kw)
+
+    monkeypatch.setattr(_line_hits, "_git_files_holding", counted)
+
+    for _ in range(2):
+        out = await search_codebase("EvaluationResponse")
+        assert ("rpc/flipt.pb.go", 5, "definition") in _rows(out)
+    assert calls.count(("EvaluationResponse", False)) == 2, calls
+    assert _line_hits._HOLDING_MEMO.get() is None
+
+
+@pytest.mark.asyncio
+async def test_a_name_shared_past_the_symbol_cap_runs_no_extra_grep(tree, monkeypatch):
+    # Past MAX_SYMBOLS the lines are definitions only and already incomplete.
+    from repowise.server.mcp_server import _line_hits
+
+    monkeypatch.setattr(_line_hits, "MAX_SYMBOLS", 0)
+    monkeypatch.setattr(
+        _line_hits, "_git_files_holding", lambda *a, **k: pytest.fail("grep ran")
+    )
+
+    out = await search_codebase("EvaluationResponse")
+    assert out["complete"] is False
