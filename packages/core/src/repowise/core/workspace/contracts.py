@@ -87,8 +87,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # keys Express mounts by module; reads a client call's method from its options
 # and a typed wrapper; composes a base left to a class field or a wrapper, drops
 # the prefix a wrapper's own inner call yields, and reads a static field through
-# ``this``; and leaves contract ends in test, docs, tooling, generated and
-# vendored code out (#6005, #6012, #6014, #6015, #6089).
+# ``this`` or its class name; and leaves contract ends in test, docs, tooling,
+# generated and vendored code out (#6005, #6012, #6014, #6015, #6089, #6104).
 CONTRACTS_VERSION = 17
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
