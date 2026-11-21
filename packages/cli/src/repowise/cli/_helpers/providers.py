@@ -244,6 +244,26 @@ def validate_provider_config(
         """Check if environment variable exists (even if empty)."""
         return var_name in os.environ
 
+    def _missing(name: str, env_vars: list[str]) -> str | None:
+        """The warning for *name* when none of its env vars is set, else ``None``."""
+        if any(_is_env_var_set(var) for var in env_vars):
+            return None
+        if name == "ollama":
+            # OLLAMA_BASE_URL is optional: Ollama has a default endpoint, so the
+            # question is whether anything answers there.
+            from repowise.cli.ui.provider_selection import (
+                _detect_ollama_status,
+                ollama_base_url,
+            )
+
+            if _detect_ollama_status():
+                return None
+            return (
+                f"Ollama is not answering at {ollama_base_url()}: start it with "
+                "'ollama serve', or set OLLAMA_BASE_URL"
+            )
+        return f"Provider '{name}' requires {' or '.join(env_vars)}"
+
     # Required environment variables per provider, read from the registry that
     # also drives resolution, so a provider added there is validated here without
     # a second edit. The agent-CLI providers need no env var; the check for them
@@ -278,9 +298,9 @@ def validate_provider_config(
 
         # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or
         # GOOGLE_API_KEY), the same rule resolution applies.
-        env_vars = provider_env_vars[provider_name]
-        if not any(_is_env_var_set(var) for var in env_vars):
-            warnings.append(f"Provider '{provider_name}' requires {' or '.join(env_vars)}")
+        missing = _missing(provider_name, provider_env_vars[provider_name])
+        if missing:
+            warnings.append(missing)
     else:
         # Check all providers - warn about any that could be configured but are missing keys
         from repowise.core.providers.llm.resolve import resolve_llm
@@ -294,6 +314,8 @@ def validate_provider_config(
             env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
             explicitly_requested = configured == name
             if explicitly_requested or env_var_exists:
-                warnings.append(f"Provider '{name}' requires {' or '.join(env_vars)}")
+                missing = _missing(name, env_vars)
+                if missing:
+                    warnings.append(missing)
 
     return warnings

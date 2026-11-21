@@ -134,6 +134,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # The recipe is shared with generation and ``doctor --repair`` so a page
     # reindexed here gets the same vector it would have got from any of them.
     from repowise.core.persistence.vector_store import embed_item
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
 
     indexed = 0
     failed = 0
@@ -164,6 +165,20 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             except Exception as exc:
                 successful, retry_items, terminal = _batch_recovery_plan(exc, items)
                 indexed += successful
+
+            missing = next(
+                (
+                    exc
+                    for _item, _stage, exc in terminal
+                    if isinstance(exc, OllamaModelMissingError)
+                ),
+                None,
+            )
+            if missing is not None:
+                # Every later request fails the same way: stop on the first one,
+                # with no per-page warnings in front of the one line that fixes it.
+                failed += len(terminal) + len(retry_items)
+                return missing
 
             for (page_id, _text, _meta), stage, exc in terminal:
                 failed += 1
@@ -218,6 +233,9 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 items.append(item)
             provider_failure = await _embed_slice(items)
             progress.advance(task, advance=len(batch))
+            if isinstance(provider_failure, OllamaModelMissingError):
+                provider_circuit_error = provider_failure
+                break
             if provider_failure is None:
                 consecutive_provider_failures = 0
             else:
@@ -253,6 +271,9 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             ]
             provider_failure = await _embed_slice(items)
             progress.advance(task, advance=len(batch))
+            if isinstance(provider_failure, OllamaModelMissingError):
+                provider_circuit_error = provider_failure
+                break
             if provider_failure is None:
                 consecutive_provider_failures = 0
             else:
@@ -264,6 +285,8 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     await vector_store.close()
     await engine.dispose()
 
+    if isinstance(provider_circuit_error, OllamaModelMissingError):
+        raise click.ClickException(str(provider_circuit_error))
     if provider_circuit_error is not None:
         raise click.ClickException(
             "Embedding provider failed in two consecutive batches; stopped the reindex "
@@ -306,6 +329,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
     """Make config.yaml and state.json describe the embedder the table now holds."""
     from repowise.cli.helpers import load_config_for_write, save_config_partial
+    from repowise.core.providers.embedding.resolve import embedding_model_for
     from repowise.core.repo_config import (
         carry_config_fingerprints,
         config_dependency_fingerprints,
@@ -319,11 +343,18 @@ def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
     # A model pinned for the old embedder would be read as the new one's; the
     # same embedder keeps its pin (#2627).
     changed = pinned != embedder_name
-    save_config_partial(
-        repo_path, embedder=embedder_name, **({"embedding_model": None} if changed else {})
-    )
+    # The model the embed used, pinned so the MCP server and `update` embed with
+    # it too. A model set only in this shell (OLLAMA_EMBEDDING_MODEL=...) was
+    # otherwise lost, and every later query embedded with the default.
+    used = embedding_model_for(embedder_name, repo_path) if embedder_name != "mock" else None
+    model_update: dict = {}
+    if used:
+        model_update = {"embedding_model": used}
+    elif changed:
+        model_update = {"embedding_model": None}
+    save_config_partial(repo_path, embedder=embedder_name, **model_update)
     model = str(config.get("embedding_model") or "").strip()
-    if changed and model:
+    if changed and model and model != used:
         # A pin binds to the embedder named beside it, so the embed never read it.
         warn(
             f"Removed embedding_model: {model} from config.yaml: it was pinned for "
