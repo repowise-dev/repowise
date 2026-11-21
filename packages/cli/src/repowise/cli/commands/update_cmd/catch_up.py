@@ -141,6 +141,12 @@ def _retire_unproduced(repo_path: Path, written: Any) -> None:
 
 
 async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
+    """Tombstone these pages and take them out of search.
+
+    Their vectors go at the next update's persist (the same run, from the
+    update path), which drains the cleanup debt: no vector store is open here.
+    The debt also retries a full-text delete that fails below.
+    """
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         FullTextSearch,
@@ -149,6 +155,7 @@ async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
         get_repository_by_path,
         get_session,
     )
+    from repowise.core.pipeline.cleanup_debt import record_cleanup_debt
     from repowise.core.pipeline.persist.tombstones import retire_page_ids
 
     engine = create_engine(get_db_url_for_repo(repo_path))
@@ -159,6 +166,8 @@ async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
                 return []
             retired = await retire_page_ids(session, repo.id, page_ids)
         if retired:
+            for kind in ("fts", "vectors"):
+                record_cleanup_debt(repo_path, kind, set(retired))
             # Search skips a retired page anyway; this only frees its fetch slot.
             with contextlib.suppress(Exception):
                 await FullTextSearch(engine).delete_many(retired)

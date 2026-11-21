@@ -185,6 +185,10 @@ def test_unproduced_stale_pages_are_retired(tmp_path) -> None:
     catch_up_mod._retire_unproduced(repo_path, written)
 
     assert asyncio.run(statuses()) == {"module_page:gone": "tombstone", "module_page:kept": "fresh"}
+    # No vector store is open here: the next update's persist drops its vector.
+    from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
+
+    assert load_cleanup_debt(repo_path)["vectors"] == {"module_page:gone"}
 
 
 def test_the_second_pass_does_not_trip_the_first_pass_lock(monkeypatch, tmp_path) -> None:
