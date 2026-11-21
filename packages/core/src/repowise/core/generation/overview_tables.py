@@ -39,7 +39,30 @@ CAPABILITY_TABLE_HEADING = "## What it does"
 # terminator too. Without it a section that is last on the page runs to the end
 # and the replacement eats the footer — which is what happened the moment the
 # deterministic overview stopped rendering a path table below its packages.
-_SECTION_END = r"(?=^#{1,2}[ \t]|^---[ \t]*$|\Z)"
+#
+# A ``#`` line inside a ``` or ~~~ fence is not a heading: the scan below skips
+# fenced blocks so a shell comment in an install snippet does not end the
+# section mid-fence.
+_FENCE = re.compile(r"^[ \t]*(```|~~~)")
+
+
+def _section_end(content: str, start: int) -> int:
+    """Return the offset where the section starting at *start* ends.
+
+    Scans line by line, ignoring ``#`` lines inside ``` or ~~~ fences, and
+    stops at the next heading, a ``---`` rule, or the end of the text.
+    """
+    pos = start
+    in_fence = False
+    for line in content[start:].splitlines(keepends=True):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and (
+            re.match(r"^#{1,2}[ \t]", line) or re.match(r"^---[ \t]*$", line.rstrip("\n"))
+        ):
+            return pos
+        pos += len(line)
+    return len(content)
 
 
 def embed_section(content: str, heading: str, body: str | None) -> str:
@@ -52,16 +75,19 @@ def embed_section(content: str, heading: str, body: str | None) -> str:
     embedded, and the current facts have nothing to say there.
     """
     pattern = re.compile(
-        r"^##[ \t]+" + re.escape(heading) + r"[ \t]*\n(?:.*?)" + _SECTION_END,
-        re.MULTILINE | re.DOTALL,
+        r"^##[ \t]+" + re.escape(heading) + r"[ \t]*\n",
+        re.MULTILINE,
     )
+    match = pattern.search(content)
     if not body:
-        return pattern.sub("", content, count=1)
+        if not match:
+            return content
+        end = _section_end(content, match.end())
+        return content[: match.start()] + content[end:]
     section = f"## {heading}\n\n{body}\n\n"
-    if pattern.search(content):
-        # Function replacement: table cells carry backslashes and backticks
-        # that re.sub would otherwise read as group references.
-        return pattern.sub(lambda _m: section, content, count=1)
+    if match:
+        end = _section_end(content, match.end())
+        return content[: match.start()] + section + content[end:]
     sep = "" if content.endswith("\n") else "\n"
     return f"{content}{sep}\n{section}"
 
