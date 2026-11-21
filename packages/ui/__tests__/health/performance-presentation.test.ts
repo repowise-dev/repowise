@@ -10,6 +10,7 @@ import {
   fixStrategyLabel,
   humanizeToken,
   moduleScopeLabel,
+  observationsText,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
@@ -67,6 +68,13 @@ describe("performance presentation", () => {
     expect(fixStrategyLabel("reduce_measured_self_time")).toBe(
       "Find and cut the work the run measured",
     );
+  });
+
+  it("counts a measured hotspot's run, never zero observations", () => {
+    const hotspot = opportunity({ biomarker_type: "measured_hotspot", observations_total: 0 });
+    expect(observationsText(hotspot)).toBe("measured run");
+    expect(observationsText(opportunity({ observations_total: 1 }))).toBe("1 observation");
+    expect(observationsText(opportunity({ observations_total: 1234 }))).toBe("1,234 observations");
   });
 
   it("names an absent boundary rather than leaving it blank", () => {

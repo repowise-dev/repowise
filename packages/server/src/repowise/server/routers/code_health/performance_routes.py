@@ -8,14 +8,20 @@ drift apart about what the same opportunity is.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import label_previews
+from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
 from repowise.core.analysis.health.perf.serving import parse_query
+from repowise.core.analysis.health.refactoring.serving import evidence_block
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.persistence.crud import get_performance_opportunity, hotness_for_symbols
 from repowise.server.deps import get_db_session
+from repowise.server.mcp_server.tool_context.measured import symbol_line
 from repowise.server.services.performance_health import PerformanceHealthService
 
 from .._unverified import UnverifiedQuery
@@ -55,6 +61,36 @@ def _paths(raw: str | None) -> tuple[str, ...] | None:
 def _item(item: dict[str, Any]) -> dict[str, Any]:
     """Drop the reference minted for the other address space."""
     return {key: value for key, value in item.items() if key != "plan_reference"}
+
+
+async def _measurement(
+    session: AsyncSession, repo_id: str, biomarker_type: str | None, symbol_id: str | None
+) -> list[dict[str, Any]]:
+    """The evidence of a measured hotspot: the run that measured its function.
+
+    No static finding backs such a cause, so its stored observations are
+    empty. The run is the proof, read from the same ``symbol_hotness`` row the
+    measured table shows; no row (the run was dropped) reads as no evidence.
+    """
+    if biomarker_type != MEASURED_HOTSPOT or not symbol_id:
+        return []
+    row = (await hotness_for_symbols(session, repo_id, [symbol_id])).get(symbol_id)
+    if row is None:
+        return []
+    file_path = file_of_symbol(symbol_id)
+    return [
+        {
+            "finding_id": None,
+            "file_path": file_path,
+            "biomarker_type": MEASURED_HOTSPOT,
+            "function_name": symbol_id[len(file_path) + 2 :] or None,
+            "line_start": None,
+            "line_end": None,
+            "reason": f"Measured: {symbol_line(row, datetime.now(UTC))}",
+            "path": [],
+            "provenance": "measured",
+        }
+    ]
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities")
@@ -180,6 +216,13 @@ async def get_performance_opportunity_detail(
     detail = await _service(session, repo_id).detail(
         opportunity_id, evidence_limit=evidence_limit, evidence_offset=evidence_offset
     )
+    if detail.get("found") and not detail.get("evidence_total"):
+        measured = await _measurement(
+            session, repo_id, detail.get("biomarker_type"), detail.get("intervention_symbol")
+        )
+        if measured:
+            page = measured[evidence_offset : evidence_offset + evidence_limit]
+            detail.update(evidence_block(page, len(measured), evidence_offset))
     return label_previews("performance", [_item(detail)], kind="biomarker_type")[0]
 
 
@@ -195,6 +238,13 @@ async def list_performance_opportunity_findings(
     items, total = await _service(session, repo_id).evidence(
         opportunity_id, limit=limit, offset=offset
     )
+    if total == 0:
+        row = await get_performance_opportunity(session, repo_id, opportunity_id)
+        if row is not None:
+            measured = await _measurement(
+                session, repo_id, row.biomarker_type, row.intervention_symbol
+            )
+            items, total = measured[offset : offset + limit], len(measured)
     emitted = offset + len(items)
     return {
         "items": label_previews("performance", items, kind="biomarker_type"),

@@ -792,6 +792,46 @@ describe("PerformanceView drawer", () => {
   });
 });
 
+describe("PerformanceView measured hotspot drawer", () => {
+  it("shows the run as the evidence, never zero raw observations", async () => {
+    const measurement = 'Measured: rank 1 of repo code in entry_point "cli build" (12% self, 9-15%), 2d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/a.py::build",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: "",
+          file_path: "src/a.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "build",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunityDetail: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Read the raw observations/ })).toBeNull();
+  });
+});
+
 describe("PerformanceView drawer siblings", () => {
   it("names a preferred sibling's fix as the stronger one", async () => {
     const withSiblings = page({
