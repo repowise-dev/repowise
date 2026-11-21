@@ -41,6 +41,7 @@ from repowise.core.evidence.add import (
     detect_environment,
     evidence_caps,
     evidence_paths,
+    evidence_report_dir,
     prepare_evidence_files,
 )
 from repowise.core.evidence.ci_snippet import CI_KINDS
@@ -199,6 +200,7 @@ def evidence_add(
             check_file_size(size, max_file_mb, str(path))
         prepared = prepare_evidence_files(
             [(str(path), path.read_bytes()) for path in paths],
+            report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,
             dirty=dirty,
