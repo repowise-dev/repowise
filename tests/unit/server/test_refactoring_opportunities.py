@@ -331,6 +331,11 @@ async def test_the_default_lists_what_fix_first_takes_and_counts_the_rest(client
     assert body["hidden"] == {"total": 2, "by_reason": {"test": 1, "below_min_worth": 1}}
     assert sum(body["facets"]["effort"].values()) == 2
 
+    # Filtering by type under fix_first still preserves facet counts for all alternatives
+    filtered = (await client.get(url, params={"refactoring_type": "extract_method"})).json()
+    assert sum(filtered["facets"]["effort"].values()) == 2
+    assert filtered["facets"]["lead_type"] == body["facets"]["lead_type"]
+
     everything = (await client.get(url, params={"scope": "all"})).json()
     assert everything["scope"] == "all" and everything["total"] == 4
     assert "hidden" not in everything
