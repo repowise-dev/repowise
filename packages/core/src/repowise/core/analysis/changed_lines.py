@@ -502,6 +502,9 @@ def _diff(repo_path: str, args: list[str]) -> str:
         return _git(args, repo_path)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()
+        for line in detail:
+            if line.lower().startswith(("fatal:", "error:")):
+                raise ValueError(line) from exc
         raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
 
 
