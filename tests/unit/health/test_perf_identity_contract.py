@@ -29,7 +29,7 @@ from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
 )
 
-# The v3 kernel under the v4 prefix, pinned. A change to either string is a
+# The kernel, pinned under the v4 prefix. A change to either string is a
 # model-version change.
 # A loop is one cause whether its sink sits in the loop or behind a call, so a
 # same-function row and a two-node cross-function row in ``run`` share one id.
