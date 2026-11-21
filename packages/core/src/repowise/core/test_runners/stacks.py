@@ -269,15 +269,23 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
 def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
     """``tests`` (or ``test``) when it holds test files and a bare run would collect others too.
 
-    Ceiling: tests kept inside the source packages beside a tests/ directory are
-    left out too; a unit that keeps them there names them in its pytest testpaths.
+    Only our own files count (:func:`~repowise.core.code_origin.path_origin`
+    production or test): a vendored or example ``test_*.py`` is no reason to
+    narrow. A unit that keeps a ``tests/`` directory inside a package as well
+    (``pkg/tests/``) is left to pytest, so those suites keep running.
+    Ceiling: a test file inside a package outside any tests directory is left
+    out once ``tests`` is named.
     """
     roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
-    collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)]
+    collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)
+                 and path_origin(p) in ("production", "test")]
     for base in ("tests", "test"):
-        inside = sum(p.startswith(f"{base}/") for p in collected)
-        if 0 < inside < len(collected):
-            return f" {base}"
+        outside = [p for p in collected if not p.startswith(f"{base}/")]
+        if len(outside) == len(collected) or not outside:
+            continue
+        if any(f"/{d}/" in f"/{p}" for p in outside for d in ("tests", "test")):
+            return ""
+        return f" {base}"
     return ""
 
 
@@ -445,7 +453,10 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     args = _pytest_args(paths, files)
     # A declared pytest-xdist spreads the coverage run over every core (pytest-cov
     # combines the workers' data), unless the config already picks a worker count.
-    xdist = bool(re.search(r"pytest[-_]xdist", texts)) and not re.search(
+    # Ceiling: read from pyproject.toml and the requirements files the install
+    # names, not which extra or group of the pyproject declares it.
+    installed = "\n".join(files.get(p, "") for p in ("pyproject.toml", *(p for p in paths if _TEST_REQUIREMENTS.fullmatch(p))))
+    xdist = bool(re.search(r"pytest[-_]xdist", installed)) and not re.search(
         r"(?<![\w-])(?:-n|--numprocesses)(?:=|\s|\d)", texts)
     tool, setup, base, installs = _python_tool(root, paths, files, args + (" -n auto" if xdist else ""))
     notes: list[str] = []

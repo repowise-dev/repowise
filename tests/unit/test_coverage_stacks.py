@@ -781,6 +781,23 @@ def test_a_tests_directory_is_named_when_other_test_files_would_be_collected():
     assert backend.test.startswith("pytest tests --cov=") and backend.test_paths == ("tests",)
 
 
+@pytest.mark.parametrize(
+    "other",
+    [
+        "services__tests__test_billing_dot_py",  # a package's own suite keeps running
+        "vendor__lib__test_lib_dot_py",  # a vendored file is not ours
+    ],
+)
+def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other):
+    backend = _backend(**{other: ""})
+    assert backend.test_paths == ()
+
+
+def test_xdist_named_only_outside_the_install_adds_no_flag():
+    backend = _backend(**{"tox_dot_ini": "[testenv]\ndeps = pytest-xdist\n"})
+    assert "-n auto" not in backend.test
+
+
 def test_pytests_own_testpaths_keep_deciding():
     backend = _backend(scripts__test_seed_dot_py="", pytest_dot_ini="[pytest]\ntestpaths = tests\n")
     assert backend.test.startswith("pytest --cov=") and backend.test_paths == ()

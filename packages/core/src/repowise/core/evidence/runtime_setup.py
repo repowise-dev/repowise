@@ -460,7 +460,7 @@ def _python_targets(
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
         run = (
             "a=sys.argv[1:];"
-            f"import pytest;sys.exit(pytest.main(([] if any(os.path.exists(x.split('::')[0]) and not (j and a[j-1][:1]=='-') for j,x in enumerate(a)) "
+            f"import pytest;sys.exit(pytest.main(([] if any(os.path.exists(x.split('::')[0]) and not (j and a[j-1] in {sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
             f"else {paths!r})+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
@@ -473,6 +473,9 @@ def _python_targets(
     return out
 
 
+#: pytest options whose value is the next word: a path after one is that option's, not one to run.
+_VALUE_OPTIONS = frozenset({"-k", "-m", "-p", "-c", "-o", "--ignore", "--ignore-glob", "--deselect",
+                            "--rootdir", "--confcutdir", "--basetemp", "--cov", "--junitxml"})
 #: A module-level ASGI application: ``app = FastAPI(...)`` or ``Starlette(...)``, annotated or not.
 _ASGI_APP = re.compile(
     r"(?m)^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:fastapi\.|starlette\.applications\.)?(?:FastAPI|Starlette)\s*\("
@@ -507,8 +510,9 @@ def _asgi_apps(
             text = (repo_root / path).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if (m := _ASGI_APP.search(text)) is not None:
-            found.append((module, m.group(1)))
+        # Of several apps in one file, the one named ``app`` is the one served.
+        if names := _ASGI_APP.findall(text):
+            found.append((module, "app" if "app" in names else names[0]))
     return found[:PER_CLASS]
 
 

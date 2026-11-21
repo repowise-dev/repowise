@@ -551,6 +551,24 @@ def test_an_options_value_does_not_replace_the_suites_paths(tmp_path: Path) -> N
     assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
 
 
+def test_a_path_after_a_flag_still_picks_what_the_suite_profile_runs(tmp_path: Path) -> None:
+    _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "-q", "tests/unit/test_a.py::test_a"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
+def test_of_several_apps_in_a_file_the_one_named_app_is_served(tmp_path: Path) -> None:
+    _asgi(tmp_path, "from fastapi import FastAPI\nadmin = FastAPI()\napp = FastAPI()\n")
+
+    serve = _targets(tmp_path, RuntimeInputs(entry_files=("app/main.py",)))[0]
+
+    assert serve["workload"] == "serve app.main:app"
+
+
 def _asgi(root: Path, source: str = "from fastapi import FastAPI\n\napp: FastAPI = FastAPI(title='x')\n") -> None:
     _python(root, scripts="")
     (root / "app" / "main.py").write_text(source)
