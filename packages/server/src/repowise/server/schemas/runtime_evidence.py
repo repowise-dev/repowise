@@ -252,6 +252,9 @@ class FileTestCosts(_Strict):
     files_total: int
     #: Non-production files run by timed tests: counted, not listed.
     not_production: int
+    #: Production files every timed test runs (test setup imports them): each would show
+    #: the whole timed suite, so they are counted, not listed.
+    every_test: int
 
 
 class SuiteCostResponse(_Strict):

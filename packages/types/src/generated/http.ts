@@ -2383,6 +2383,7 @@ export interface FileTestCosts {
   files: FileTestCost[];
   files_total: number;
   not_production: number;
+  every_test: number;
 }
 
 export interface FileTrendPointResponse {

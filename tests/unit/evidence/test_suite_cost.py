@@ -21,6 +21,7 @@ HEAD = "a" * 40
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
 SLOW = "tests/test_app.py::test_slow"
 FAST = "tests/test_app.py::test_fast"
+OTHER = "tests/test_app.py::test_other"
 
 
 @pytest.fixture
@@ -80,7 +81,7 @@ async def test_slowest_first_from_the_newest_complete_run_of_each_workload(sessi
 
 async def test_file_cost_is_measured_from_the_per_test_map(session) -> None:
     repo = await insert_repo(session)
-    await _timings(session, repo.id, [_t(SLOW, 3.0), _t(FAST, 0.5)])
+    await _timings(session, repo.id, [_t(SLOW, 3.0), _t(FAST, 0.5), _t(OTHER, 1.0)])
     await save_test_coverage(
         session,
         repo.id,
@@ -88,6 +89,7 @@ async def test_file_cost_is_measured_from_the_per_test_map(session) -> None:
             TestCoverage(SLOW, "src/app.py", [1, 2], test_file="tests/test_app.py"),
             TestCoverage(FAST, "src/app.py", [3], test_file="tests/test_app.py"),
             TestCoverage(FAST, "src/util.py", [1], test_file="tests/test_app.py"),
+            TestCoverage(OTHER, "src/util.py", [3], test_file="tests/test_app.py"),
             TestCoverage("tests/test_app.py::test_untimed", "src/util.py", [2]),
             # A test helper run by a timed test: counted, never listed.
             TestCoverage(SLOW, "tests/conftest.py", [1], test_file="tests/test_app.py"),
@@ -100,9 +102,32 @@ async def test_file_cost_is_measured_from_the_per_test_map(session) -> None:
     assert costs["basis"] == "measured"
     assert costs["files"] == [
         {"file_path": "src/app.py", "test_seconds": 3.5, "timed_tests": 2, "tests": 2},
-        {"file_path": "src/util.py", "test_seconds": 0.5, "timed_tests": 1, "tests": 2},
+        {"file_path": "src/util.py", "test_seconds": 1.5, "timed_tests": 2, "tests": 3},
     ]
-    assert costs["not_production"] == 1
+    assert costs["not_production"] == 1 and costs["every_test"] == 0
+
+
+async def test_a_file_every_timed_test_runs_is_counted_not_listed(session) -> None:
+    # Test setup imports src/config.py: every timed test runs it, so its sum is the whole
+    # suite's time, which would lead the list and say nothing of the file.
+    repo = await insert_repo(session)
+    await _timings(session, repo.id, [_t(SLOW, 3.0), _t(FAST, 0.5)])
+    await save_test_coverage(
+        session,
+        repo.id,
+        [
+            TestCoverage(SLOW, "src/config.py", [1], test_file="tests/test_app.py"),
+            TestCoverage(FAST, "src/config.py", [1], test_file="tests/test_app.py"),
+            TestCoverage(SLOW, "src/app.py", [1], test_file="tests/test_app.py"),
+            TestCoverage(FAST, "src/util.py", [1], test_file="tests/test_app.py"),
+        ],
+        source_format="coverage.py",
+    )
+
+    costs = (await suite_costs(session, repo.id, HEAD))["file_costs"]
+
+    assert [f["file_path"] for f in costs["files"]] == ["src/app.py", "src/util.py"]
+    assert costs["files_total"] == 2 and costs["every_test"] == 1
 
 
 async def test_file_cost_is_inferred_from_nearest_tests_without_the_map(session) -> None:
@@ -125,8 +150,9 @@ async def test_file_cost_is_inferred_from_nearest_tests_without_the_map(session)
     # Both parametrizations of a test add up; a test reaching two functions of a file counts once.
     # The test helper is run by a timed test: counted, never listed.
     assert costs["basis"] == "inferred"
+    # Every timed test reaches src/app.py, but it is the only file: listed, not hidden.
     assert costs["files"] == [{"file_path": "src/app.py", "test_seconds": 3.5, "timed_tests": 2, "tests": 2}]
-    assert costs["not_production"] == 1
+    assert costs["not_production"] == 1 and costs["every_test"] == 0
 
 
 async def test_a_partly_mapped_run_stands_in_for_a_workload_with_no_other(session) -> None:
