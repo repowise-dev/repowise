@@ -396,6 +396,12 @@ def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
     # ``env_vars`` is a list both sides write to, so the user's names are kept
     # ahead of ours instead of being replaced by them.
     stored_vars = stored.get("env_vars")
+    if "env_vars" in spec.entry and stored_vars is not None and not isinstance(stored_vars, list):
+        raise reasoned_error(
+            f"Cannot update {config_path}: env_vars in [{table}] must be a list. "
+            "Fix it and retry; no changes were written.",
+            reason="editor_config_unmergeable",
+        )
     if "env_vars" in spec.entry and isinstance(stored_vars, list):
         merged["env_vars"] = [
             *stored_vars,

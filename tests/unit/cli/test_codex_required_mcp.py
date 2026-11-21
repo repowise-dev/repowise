@@ -321,3 +321,17 @@ def test_a_second_install_leaves_the_config_byte_identical(tmp_path: Path) -> No
     codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
 
     assert config.read_bytes() == first
+
+
+def test_a_non_list_env_vars_stops_the_write(tmp_path: Path) -> None:
+    import click
+
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    original = '[mcp_servers.repowise]\ncommand = "repowise"\nenv_vars = "MY_PROXY"\n'
+    config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match="env_vars"):
+        codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    assert config.read_text(encoding="utf-8") == original
