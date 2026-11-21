@@ -551,6 +551,11 @@ _NO_TESTS = "no test specified"
 _SCRIPT_COMMENT = re.compile(r"(?:^|\s)#")
 #: ``packageManager`` naming Yarn 2 or later (Berry).
 _YARN_BERRY = re.compile(r"yarn@(?:[2-9]|\d\d)")
+_YARN_LOCK = "yarn.lock"
+#: The block a Yarn 2 or later lockfile opens with; a classic one has none.
+_YARN_BERRY_LOCK = re.compile(r"^__metadata:", re.MULTILINE)
+#: How much of a ``yarn.lock`` is read: the ``__metadata`` block follows a short comment header.
+_YARN_LOCK_HEAD_CHARS = 1024
 
 
 def _uncommented(script: str) -> tuple[str, bool]:
@@ -627,13 +632,17 @@ def _dev_install(pm: str, pkg: str, workspace: str) -> tuple[str, ...]:
     return (f"- run: {cmd}",)
 
 
-def _yarn_berry(root: set[str], package: dict) -> bool:
-    """Whether Yarn here is Berry (2 or later): its config file, or ``packageManager`` naming it.
+def _yarn_berry(root: set[str], package: dict, lock: str) -> bool:
+    """Whether Yarn here is Berry (2 or later).
 
-    Ceiling: a Berry project with neither (a global Berry install) reads as classic; the
-    lockfile's ``__metadata`` header would tell, but lockfiles are not read here.
+    Its config file, ``packageManager`` naming it, or the ``__metadata`` block a Berry
+    lockfile opens with (*lock* is the head of the governing ``yarn.lock``).
     """
-    return ".yarnrc.yml" in root or bool(_YARN_BERRY.match(str(package.get("packageManager") or "")))
+    return (
+        ".yarnrc.yml" in root
+        or bool(_YARN_BERRY.match(str(package.get("packageManager") or "")))
+        or bool(_YARN_BERRY_LOCK.search(lock))
+    )
 
 
 def _root_add_flag(pm: str, workspace: bool, berry: bool) -> str:
@@ -723,14 +732,14 @@ def _node_package(files: dict[str, str]) -> tuple[dict, dict, dict]:
     return package, scripts, deps
 
 
-def _node_manager(root: set[str], package: dict) -> tuple[str, str]:
-    """The package manager the lockfile names, and its install command."""
+def _node_manager(root: set[str], berry: bool) -> tuple[str, str]:
+    """The package manager the lockfile names, and its install command (*berry*: Yarn 2 or later)."""
     if "bun.lockb" in root or "bun.lock" in root:
         return "bun", "bun install --frozen-lockfile"
     if "pnpm-lock.yaml" in root:
         return "pnpm", "pnpm install --frozen-lockfile"
     if "yarn.lock" in root:
-        return "yarn", "yarn install --immutable" if _yarn_berry(root, package) else "yarn install --frozen-lockfile"
+        return "yarn", "yarn install --immutable" if berry else "yarn install --frozen-lockfile"
     return "npm", "npm ci" if "package-lock.json" in root else "npm install"
 
 
@@ -909,12 +918,13 @@ def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
-    pm, install = _node_manager(root, package)
+    berry = _yarn_berry(root, package, files.get(_YARN_LOCK, ""))
+    pm, install = _node_manager(root, berry)
     base, runner, hooks = _node_base(pm, scripts, deps)
     workspace = _node_workspace(package, PNPM_WORKSPACE_FILENAME in root)
     if not base and not workspace:
         return None
-    add_flag = _root_add_flag(pm, workspace, _yarn_berry(root, package))
+    add_flag = _root_add_flag(pm, workspace, berry)
     editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=add_flag)
     test = editor(base, _NODE.search(base)) if runner else None
     # Test timings need the reporter in node_modules, beside the runner.
@@ -1435,16 +1445,28 @@ def _js_lock_names() -> frozenset[str]:
     return frozenset((*(spec.lock_files if spec else ()), ".yarnrc.yml"))
 
 
-def _governing_lock(root: str, present: set[str]) -> set[str]:
-    """The lockfile names of the nearest directory at or above *root* holding a JavaScript lockfile.
+def _lock_dir(root: str, present: set[str]) -> str | None:
+    """The nearest directory at or above *root* holding a JavaScript lockfile.
 
     A workspace member has none of its own: its root's lockfile picks the package manager.
     """
-    for directory in (root, *reversed(_ancestors(root))):
-        found = {n for n in _js_lock_names() if _join(directory, n) in present}
-        if found - {".yarnrc.yml"}:
-            return found
-    return set()
+    locks = _js_lock_names() - {".yarnrc.yml"}
+    return next(
+        (d for d in (root, *reversed(_ancestors(root))) if any(_join(d, n) in present for n in locks)), None
+    )
+
+
+def _governing_lock(root: str, present: set[str]) -> set[str]:
+    """The lockfile names of :func:`_lock_dir`, with Yarn's config when it sits beside them."""
+    directory = _lock_dir(root, present)
+    return set() if directory is None else {n for n in _js_lock_names() if _join(directory, n) in present}
+
+
+def _governing_yarn_lock(root: str, present: set[str]) -> str | None:
+    """The path of the ``yarn.lock`` that governs *root*, when its lockfile is Yarn's."""
+    directory = _lock_dir(root, present)
+    path = None if directory is None else _join(directory, _YARN_LOCK)
+    return path if path in present else None
 
 
 def _sdk_pin(root: str, present: set[str]) -> str | None:
@@ -1491,6 +1513,8 @@ def detect_stacks(
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
+                if stack == "node" and (lock := _governing_yarn_lock(root, present)) in files:
+                    texts = {**texts, _YARN_LOCK: files[lock]}
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
                 # The repository root keeps its guess when pip's own spelling names its requirements.
@@ -1532,6 +1556,8 @@ def files_to_read(
             wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
             if (pin := _sdk_pin(root, present)) is not None:
                 wanted.append(pin)
+        if "node" in stacks and (lock := _governing_yarn_lock(root, present)) is not None:
+            wanted.append(lock)
     return list(dict.fromkeys(wanted))
 
 
@@ -1550,8 +1576,11 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
     index = units if units is not None and units.units else None
     files: dict[str, str] = {}
     for path in files_to_read(paths, index, str(root)):
+        # A lockfile can run to megabytes; only its head says which Yarn wrote it.
+        size = _YARN_LOCK_HEAD_CHARS if posixpath.basename(path) == _YARN_LOCK else -1
         try:
-            files[path] = (root / path).read_text(encoding="utf-8", errors="ignore")
+            with (root / path).open(encoding="utf-8", errors="ignore") as fh:
+                files[path] = fh.read(size)
         except OSError:
             continue
     return detect_stacks(paths, files, index, str(root))
