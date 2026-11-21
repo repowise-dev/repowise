@@ -105,3 +105,33 @@ def test_two_schema_names_cannot_share_one_identifier(generator) -> None:
 
     with _pytest.raises(ValueError, match="identifier"):
         generator.render({"components": {"schemas": {"A.B": {}, "A-B": {}}}})
+
+
+def test_dataclass_docstring_drift_is_suppressed(generator) -> None:
+    """Pydantic 2.13 emits class docstrings on dataclasses that 2.8-2.12 omit."""
+    schema_without = {
+        "components": {
+            "schemas": {
+                "ActionCommand": {"type": "object", "properties": {"purpose": {"type": "string"}}},
+                "QueueCounts": {"type": "object", "properties": {"inventory": {"type": "integer"}}},
+            }
+        }
+    }
+    schema_with = {
+        "components": {
+            "schemas": {
+                "ActionCommand": {
+                    "type": "object",
+                    "description": "A way to see more: the MCP call an agent makes.",
+                    "properties": {"purpose": {"type": "string"}},
+                },
+                "QueueCounts": {
+                    "type": "object",
+                    "description": "One unit's counts at the five levels.",
+                    "properties": {"inventory": {"type": "integer"}},
+                },
+            }
+        }
+    }
+    assert generator.render(schema_with) == generator.render(schema_without)
+
