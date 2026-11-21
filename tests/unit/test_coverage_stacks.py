@@ -1020,3 +1020,17 @@ def test_the_hooks_note_names_both_hooks_and_runs_the_first():
         "This runs the test runner directly: `npm test` would also run the `pretest` and `posttest` "
         "scripts. Run `npm run pretest` first when the tests need it.",
     )
+
+
+def test_a_manifest_in_a_data_folder_is_no_unit(tmp_path):
+    """A data folder is known from its contents, so only a checkout can tell."""
+    files = {"go.mod": "module example.com/app\n", "main.go": "", "main_test.go": ""}
+    for i in range(4):
+        item = f"backend/data/problems/p{i}"
+        files |= {f"{item}/case{n}.json": "{}" for n in range(12)}
+        files |= {f"{item}/{name}": "" for name in ("python.py", "Solution.java", "go.go")}
+    files["backend/data/problems/p0/package.json"] = _package({"test": "vitest run"})
+    _write(tmp_path, files)
+    paths = list(files)
+    assert "backend/data/problems/p0" in {s.root for s in detect_stacks(paths, files)}
+    assert [(s.root, s.language) for s in detect_repo_stacks(tmp_path)] == [("", "go")]
