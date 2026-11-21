@@ -135,7 +135,9 @@ def project_mcp_config_path(repo_path: Path) -> Path:
 
 def plugin_manifest_path() -> Path:
     """Where the host records which plugins are installed."""
-    return Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    from repowise.cli.editor_integrations.claude_config import _claude_config_dir
+
+    return _claude_config_dir() / "plugins" / "installed_plugins.json"
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +610,9 @@ class ClaudeCodeTarget:
         separately because it is a different product with the same brand and a
         user can have either.
         """
-        if (Path.home() / ".claude").is_dir():
+        from repowise.cli.editor_integrations.claude_config import _claude_config_dir
+
+        if _claude_config_dir().is_dir():
             return True
         desktop = desktop_config_path()
         return desktop is not None and desktop.parent.is_dir()

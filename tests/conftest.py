@@ -154,6 +154,17 @@ def _no_real_editor_setup():
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _no_claude_config_dir():
+    """A developer's CLAUDE_CONFIG_DIR must not send a faked HOME's Claude writes elsewhere."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    yield
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _no_background_commit_health():
     """Keep updates and inits under test from leaving detached scanner processes behind."""
     from _pytest.monkeypatch import MonkeyPatch
