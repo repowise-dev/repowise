@@ -254,6 +254,12 @@ def _store_dir(session: AsyncSession) -> Path | None:
     return db_file.parent.parent
 
 
+#: ``(store dir, row id, checkout path)`` whose row git said is another repo's.
+#: Kept for the process so a miss on every path-keyed read does not rerun the
+#: git checks; a store re-indexed in place gets a new row id.
+_REJECTED_ROWS: set[tuple[str, str, str]] = set()
+
+
 async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
     """The single row of ``local_path``'s own store, re-pointed at ``local_path``.
 
@@ -269,9 +275,15 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     if store_dir is None or not _same_dir(store_dir, local_path):
         return None
     rows = (await session.scalars(select(Repository).limit(2))).all()
-    if len(rows) != 1 or not await asyncio.to_thread(_same_checkout, rows[0], local_path):
+    if len(rows) != 1:
         return None
     repo = rows[0]
+    key = (str(store_dir), repo.id, local_path)
+    if key in _REJECTED_ROWS:
+        return None
+    if not await asyncio.to_thread(_same_checkout, repo, local_path):
+        _REJECTED_ROWS.add(key)
+        return None
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path
     return repo
@@ -411,21 +423,33 @@ async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repo
 
 
 async def _adopt_relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
-    """Re-point and return the store's only row when it is *local_path*'s, else None."""
-    repo = await _relocated_row(session, local_path)
-    if repo is None:
+    """Re-point and return the store's only row when it is *local_path*'s, else None.
+
+    Runs inside a savepoint: a read-only caller (the MCP server, status,
+    doctor) that cannot write, say because an update holds the lock, gets
+    ``None`` as before the store was moved, never a storage error or a
+    half-done move. The savings ledger follows only after the row moved.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        async with session.begin_nested():
+            repo = await _relocated_row(session, local_path)
+            if repo is None:
+                return None
+            old_name, new_name = repo.name, Path(local_path).name
+            if old_name != new_name:
+                # The folder the repo-level page ids are built from moved with
+                # the store; re-key now, before the exact-path lookup stops
+                # missing and the name change becomes invisible (#5366).
+                await rekey_repo_level_pages(
+                    session, repository_id=repo.id, old_name=old_name, new_name=new_name
+                )
+                repo.name = new_name
+    except (SQLAlchemyError, OSError) as exc:
+        _log.debug("Could not adopt the moved index's row for %s: %s", local_path, exc)
         return None
-    old_name, new_name = repo.name, Path(local_path).name
-    if old_name != new_name:
-        # The folder the repo-level page ids are built from moved with the
-        # store; re-key now, before the exact-path lookup stops missing and
-        # the name change becomes invisible (#5366).
-        await rekey_repo_level_pages(
-            session, repository_id=repo.id, old_name=old_name, new_name=new_name
-        )
-        repo.name = new_name
     await _adopt_savings_ledger(session, local_path)
-    await session.flush()
     return repo
 
 

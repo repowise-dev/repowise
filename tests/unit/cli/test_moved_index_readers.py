@@ -136,3 +136,76 @@ async def test_another_repos_index_is_never_adopted(tmp_path: Path, keep_origina
         assert opened is None
     # The other repo's row is left as it was, still naming its own path.
     assert _rows(target) == [(other_id, str(other))]
+
+
+async def _lookup(repo: Path):
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    engine = create_engine(get_db_url_for_repo(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            row = await get_repository_by_path(session, str(repo))
+            return None if row is None else row.id
+    finally:
+        await engine.dispose()
+
+
+async def test_the_stored_path_misses_and_the_reader_still_finds_the_row(tmp_path: Path) -> None:
+    """Negative control: the row names the build path, so an exact match misses."""
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    built.rename(tmp_path / "gone")
+
+    assert _rows(here) == [(repo_id, str(built))]
+    assert str(here) not in {path for _, path in _rows(here)}
+    assert await _lookup(here) == repo_id
+
+
+async def test_a_rejected_row_is_not_rechecked(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.persistence.crud import repository
+
+    other = _git_repo(tmp_path / "other", "other history")
+    await _index(other)
+    target = _git_repo(tmp_path / "target", "target history")
+    shutil.copytree(other / ".repowise", target / ".repowise")
+    calls: list[str] = []
+    real = repository._same_checkout
+
+    def _counting(repo, local_path):
+        calls.append(local_path)
+        return real(repo, local_path)
+
+    monkeypatch.setattr(repository, "_same_checkout", _counting)
+
+    assert await _lookup(target) is None
+    assert await _lookup(target) is None
+    assert calls == [str(target)]
+
+
+async def test_a_failed_adoption_reads_as_unindexed_and_moves_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    ledger_moves: list[str] = []
+
+    async def _locked(*_a, **_k):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    async def _ledger(_session, local_path):
+        ledger_moves.append(local_path)
+
+    monkeypatch.setattr(repository, "rekey_repo_level_pages", _locked)
+    monkeypatch.setattr(repository, "_adopt_savings_ledger", _ledger)
+
+    assert await _lookup(here) is None
+    assert ledger_moves == []
+    assert _rows(here) == [(repo_id, str(built))]
