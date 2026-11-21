@@ -66,7 +66,7 @@ class _Harness:
         self.result = SimpleNamespace(
             repo_name="r",
             index_persisted_incrementally=index_done,
-            generated_pages=[SimpleNamespace(metadata={})],
+            generated_pages=[SimpleNamespace(metadata={}, page_id="file_page:src/a.py")],
             parsed_files=[],
             health_report=None,
             vector_store=self.store,
@@ -172,9 +172,17 @@ async def test_only_failed_domain_replays(monkeypatch, tmp_path, index_done, dom
     assert len({id(s) for s in h.sessions}) == len(h.sessions)
     generation_attempt = h.calls["generation"]
     prune_attempt = h.calls["prune"]
-    h.fts.delete_many.assert_awaited_once_with(
-        [f"swept-{generation_attempt}", f"tombstone-{prune_attempt}"]
-    )
+    # The FTS delete settles this run's retirements plus any attempt that got
+    # as far as recording its ids. The FTS delete happens outside the SQL
+    # transaction, so an attempt whose commit failed leaves debt rather than a
+    # half-deleted index, and the replay clears it. An attempt that failed
+    # before recording leaves nothing behind.
+    expected_fts = {f"swept-{generation_attempt}", f"tombstone-{prune_attempt}"}
+    if stage == "commit" and domain == "generation":
+        expected_fts |= {f"swept-{a}" for a in range(1, generation_attempt)}
+    if stage == "commit" and domain == "prune":
+        expected_fts |= {f"tombstone-{a}" for a in range(1, prune_attempt)}
+    h.fts.delete_many.assert_awaited_once_with(sorted(expected_fts))
     h.publish.assert_awaited_once_with(f"repo-{h.calls['repository']}", tmp_path)
     # Successful outputs are consumed only after every domain committed and closed.
     assert h.events[-2:] == [("close", "job", h.calls["job"]), ("done", "persist")]

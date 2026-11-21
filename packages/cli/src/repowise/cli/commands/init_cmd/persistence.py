@@ -421,10 +421,11 @@ async def persist_result(
         clear_cleanup_debt(repo_path, "vectors", vector_ids)
         clear_cleanup_debt(repo_path, "vectors", regenerated_ids)
         record_cleanup_debt(repo_path, "fts", set(swept_page_ids))
-        debt_fts = debt["fts"]
+        debt_fts = set(debt["fts"]) | set(swept_page_ids)
         return swept_page_ids
 
     async def _tombstones(session: AsyncSession) -> list[str]:
+        nonlocal debt_fts
         # An init has no diff: retire pages whose files have simply disappeared.
         # Keep ordinary sweep errors best-effort, but never swallow a connection
         # loss (which must retry the entire domain, including vector deletions).
@@ -441,6 +442,7 @@ async def persist_result(
         await _delete_page_vectors(engine, repo_path, store, tombstoned_ids)
         clear_cleanup_debt(repo_path, "vectors", tombstoned_ids)
         record_cleanup_debt(repo_path, "fts", tombstoned_ids)
+        debt_fts |= tombstoned_ids
         return tombstoned
 
     async def _job(session: AsyncSession) -> None:
@@ -484,10 +486,11 @@ async def persist_result(
         # FTS shares SQLite's file: delete/index only after the writer sessions
         # have closed, otherwise its connection would contend with their locks.
         with timed(timings, "persist.fts"):
-            # What this run retired plus whatever an earlier run could not
-            # finish deleting. Recorded before the delete and cleared after it,
-            # so a crash mid-delete is retried by the next init instead of
-            # leaving a tombstoned page findable.
+            # What this run retired plus whatever an earlier run (or an
+            # earlier attempt of this one) could not finish deleting. Recorded
+            # before the delete and cleared after it, so a crash mid-delete is
+            # retried by the next init instead of leaving a tombstoned page
+            # findable.
             cleanup_ids = set(swept_page_ids) | debt_fts
             if cleanup_ids:
                 record_cleanup_debt(repo_path, "fts", cleanup_ids)
