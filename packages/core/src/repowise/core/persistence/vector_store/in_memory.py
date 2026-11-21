@@ -66,6 +66,15 @@ class InMemoryVectorStore(VectorStore):
             self._store[page_id] = (list(vector), dict(metadata))
         return True
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        snapshots = {
+            source: (list(self._store[source][0]), dict(self._store[source][1]))
+            for source in mapping if source in self._store
+        }
+        for source, value in snapshots.items():
+            self._store[mapping[source]] = value
+        return set(snapshots)
+
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
     ) -> list[SearchResult]:
@@ -102,6 +111,9 @@ class InMemoryVectorStore(VectorStore):
 
     async def list_page_ids(self) -> set[str]:
         return set(self._store.keys())
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        return {page_id for page_id in page_ids if page_id in self._store}
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

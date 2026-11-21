@@ -8,6 +8,7 @@ from typing import Any
 
 from repowise.core.providers.embedding.base import Embedder
 
+from ..batches import chunked
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import (
     STORED_SNIPPET_CHARS,
@@ -417,6 +418,29 @@ class LanceDBVectorStore(VectorStore):
         await self._upsert_rows(rows)
         return True
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        if not mapping:
+            return set()
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        import pyarrow as pa
+
+        batches = []
+        sources = list(mapping)
+        for start in range(0, len(sources), 500):
+            batch = sources[start:start + 500]
+            batches.append(await self._table.query().where(_page_ids_in_filter(batch)).to_arrow())
+        rows = pa.concat_tables(batches)
+        copied = set(rows.column("page_id").to_pylist())
+        if rows.num_rows:
+            ids = pa.array([mapping[old] for old in rows.column("page_id").to_pylist()])
+            rows = rows.set_column(
+                rows.schema.get_field_index("page_id"), rows.schema.field("page_id"), ids
+            )
+            await self._upsert_rows(rows)
+        return copied
+
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
     ) -> list[SearchResult]:
@@ -499,6 +523,23 @@ class LanceDBVectorStore(VectorStore):
                 exc,
             )
             return set()
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        if not page_ids:
+            return set()
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        present = set()
+        for batch in chunked(sorted(page_ids)):
+            rows = await (
+                self._table.query()
+                .where(_page_ids_in_filter(list(batch)))
+                .select(["page_id"])
+                .to_list()
+            )
+            present.update(row["page_id"] for row in rows)
+        return present
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

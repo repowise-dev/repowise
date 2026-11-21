@@ -32,6 +32,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from repowise.core.analysis.decisions.semantic_match import (
     DECISION_VECTOR_PREFIX,
@@ -591,22 +592,122 @@ def _detach_moved(session: AsyncSession) -> None:
             session.expunge(obj)
 
 
+async def _vector_rewrites(
+    session: AsyncSession, repository_id: str, rewrites: list[IdRowPlan]
+) -> dict[str, str]:
+    """Include prior SQL moves whose retained vector can still be recovered.
+
+    A target retired by another move or fold may still hold that record's
+    vector after an interruption. Leave that ambiguity intact.
+    """
+    source_record = aliased(DecisionRecord)
+    target_alias = aliased(DecisionAlias)
+    aliases = await session.execute(
+        select(DecisionAlias.alias_id, DecisionAlias.decision_id)
+        .join(DecisionRecord, DecisionRecord.id == DecisionAlias.decision_id)
+        .outerjoin(source_record, source_record.id == DecisionAlias.alias_id)
+        .outerjoin(
+            target_alias,
+            (target_alias.alias_id == DecisionAlias.decision_id)
+            & target_alias.reason.in_((REKEYED_REASON, MERGED_REASON)),
+        )
+        .where(
+            DecisionAlias.repository_id == repository_id,
+            DecisionAlias.reason == REKEYED_REASON,
+            DecisionRecord.repository_id == repository_id,
+            source_record.id.is_(None),
+            target_alias.alias_id.is_(None),
+        )
+    )
+    moved = dict(aliases.all())
+    # An occupied source can be another decision's destination in this pass.
+    moved.update({row.old_id: row.new_id for row in rewrites})
+    return moved
+
+
+async def _existing_vector_ids(vector_store: Any, keys: set[str]) -> set[str]:
+    lookup = getattr(vector_store, "existing_page_ids", None)
+    if lookup is not None:
+        return await lookup(keys)
+    return keys & await vector_store.list_page_ids()
+
+
 async def _rekey_vectors(
     vector_store: Any,
     session: AsyncSession,
-    rewrites: list[IdRowPlan],
+    moved: dict[str, str],
+    fresh_sources: set[str] | None = None,
 ) -> int:
-    """Write each moved decision's embedding under its new key, then drop the old.
-
-    The store cannot hand back a stored vector, so the new key is embedded
-    rather than moved. An old key is deleted only once its new key is
-    demonstrably in the store: a re-key that half-succeeded should leave a
-    stale vector for ``doctor`` to report, not a decision with no vector at
-    all.
-    """
-    if not rewrites:
+    """Preserve stored values; release old keys only after destination readback."""
+    if not moved:
         return 0
-    new_ids = [row.new_id for row in rewrites]
+    fresh = fresh_sources or set()
+    keys = {f"{DECISION_VECTOR_PREFIX}{key}" for key in moved.keys() | set(moved.values())}
+    try:
+        present = await _existing_vector_ids(vector_store, keys)
+        mapping = _pending_vector_mapping(moved, present, fresh)
+        if not mapping:
+            return 0
+        fresh_keys = {f"{DECISION_VECTOR_PREFIX}{old}" for old in fresh}
+        missing = await _copy_rekeyed_vectors(vector_store, mapping, present, fresh_keys)
+    except Exception:
+        # A failed copy must remain retryable without recomputing its source.
+        return 0
+    await _embed_rekeyed_vectors(
+        vector_store, session, {new[len(DECISION_VECTOR_PREFIX):] for new in missing}
+    )
+
+    try:
+        present = await _existing_vector_ids(vector_store, mapping.keys() | set(mapping.values()))
+    except Exception:
+        return 0
+    destinations = set(mapping.values())
+    # Existence alone cannot confirm a replacement at an already occupied key.
+    unconfirmed = {mapping[old] for old in fresh_keys} & missing
+    landed = {
+        old for old, new in mapping.items()
+        if old in present and new in present and old not in destinations and new not in unconfirmed
+    }
+    if landed:
+        await vector_store.delete_many(sorted(landed))
+    return len(landed)
+
+
+def _pending_vector_mapping(
+    moved: dict[str, str], present: set[str], fresh_sources: set[str]
+) -> dict[str, str]:
+    """Retained alias sources, plus decisions freshly moved by this call."""
+    return {
+        f"{DECISION_VECTOR_PREFIX}{old}": f"{DECISION_VECTOR_PREFIX}{new}"
+        for old, new in moved.items()
+        if f"{DECISION_VECTOR_PREFIX}{old}" in present or old in fresh_sources
+    }
+
+
+async def _copy_rekeyed_vectors(
+    vector_store: Any, mapping: dict[str, str], present: set[str], fresh_keys: set[str]
+) -> set[str]:
+    """Copy retained sources; return destinations needing the embedding fallback."""
+    pending = {
+        old: new for old, new in mapping.items()
+        if old in fresh_keys or new not in present or new in mapping
+    }
+    # A fresh source owns its vector. Prefer it over an older alias if
+    # both point to the same destination.
+    ordered = sorted(pending, key=lambda old: (old in fresh_keys, old))
+    sources_by_target = {pending[old]: old for old in ordered if old in present}
+    copies = {old: new for new, old in sources_by_target.items()}
+    copy = getattr(vector_store, "copy_vectors", None)
+    copied = await copy(copies) if copies and copy is not None else set()
+    return set(pending.values()) - {copies[old] for old in copied}
+
+
+async def _embed_rekeyed_vectors(
+    vector_store: Any, session: AsyncSession, new_ids: set[str]
+) -> None:
+    """Keep the existing embedding fallback for stores without raw copies."""
+    if not new_ids:
+        return
     result = await session.execute(
         select(
             DecisionRecord.id,
@@ -622,25 +723,7 @@ async def _rekey_vectors(
         )
         if item is not None:
             items.append(item)
-    if not items:
-        return 0
-
     await upsert_decision_vectors(vector_store, items)
-
-    try:
-        present = await vector_store.list_page_ids()
-    except Exception:
-        return 0
-    landed = {
-        row.old_id
-        for row in rewrites
-        if f"{DECISION_VECTOR_PREFIX}{row.new_id}" in present
-        and f"{DECISION_VECTOR_PREFIX}{row.old_id}" in present
-    }
-    if not landed:
-        return 0
-    await vector_store.delete_many([f"{DECISION_VECTOR_PREFIX}{old}" for old in sorted(landed)])
-    return len(landed)
 
 
 async def apply_id_migration(
@@ -663,8 +746,8 @@ async def apply_id_migration(
     so chains and cycles of occupied ids settle in one run. Aliases name the
     original id and the final one, never the parking id.
 
-    Idempotent: a second run classifies every id as ``stable``, finds no
-    rewrites and no folds, and moves nothing.
+    A second run classifies every id as ``stable`` and leaves SQL unchanged.
+    Rekeyed aliases still finish any vector moves the earlier run could not.
     """
     # First, so a record that moves below finds its old id free for its alias.
     await repair_superseded_aliases(session, repository_id)
@@ -680,6 +763,9 @@ async def apply_id_migration(
     if not rewrites and not folds:
         if pinned:
             await session.flush()
+        if vector_store is not None:
+            moved = await _vector_rewrites(session, repository_id, [])
+            await _rekey_vectors(vector_store, session, moved)
         return plan
 
     # The rewrites are raw SQL, so a record already loaded keeps the id it was
@@ -710,8 +796,15 @@ async def apply_id_migration(
     rekeyed = 0
     dropped = 0
     if vector_store is not None:
-        rekeyed = await _rekey_vectors(vector_store, session, rewrites)
-        dropped = await _drop_folded_vectors(vector_store, folds)
+        moved = await _vector_rewrites(session, repository_id, rewrites)
+        folded_keys = {f"{DECISION_VECTOR_PREFIX}{row.old_id}" for row in folds}
+        rekeyed = await _rekey_vectors(
+            vector_store, session, moved, {row.old_id for row in rewrites}
+        )
+        # Rewritten destinations now belong to their keepers.
+        dropped = await _drop_folded_vectors(
+            vector_store, folded_keys - {f"{DECISION_VECTOR_PREFIX}{target}" for target in targets}
+        )
 
     logger.info(
         "decision_ids_derived",
@@ -748,25 +841,14 @@ async def _pin_quotes(session: AsyncSession, plan: IdMigrationPlan) -> int:
     return written
 
 
-async def _drop_folded_vectors(vector_store: Any, folds: list[IdRowPlan]) -> int:
-    """Delete the vector of every record a fold removed.
-
-    The keeper's vector stays and still describes the decision. The loser's
-    describes a record that no longer exists, so leaving it would let search
-    return an id nothing resolves to.
-    """
-    if not folds:
+async def _drop_folded_vectors(vector_store: Any, keys: set[str]) -> int:
+    """Delete only unoccupied keys of records removed by a fold."""
+    if not keys:
         return 0
     try:
-        present = await vector_store.list_page_ids()
+        stale = await _existing_vector_ids(vector_store, keys)
     except Exception:
         return 0
-    stale = [
-        f"{DECISION_VECTOR_PREFIX}{row.old_id}"
-        for row in folds
-        if f"{DECISION_VECTOR_PREFIX}{row.old_id}" in present
-    ]
-    if not stale:
-        return 0
-    await vector_store.delete_many(sorted(stale))
+    if stale:
+        await vector_store.delete_many(sorted(stale))
     return len(stale)
