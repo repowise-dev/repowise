@@ -348,28 +348,95 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
     return files, reasons
 
 
+# Modifiers a declaration may open with, in C, Java and Kotlin as well.
+_MODIFIERS = (
+    r"public|private|protected|internal|static|final|abstract|override|open|sealed|data"
+    r"|suspend|inline|extern|virtual|synchronized|native|transient|volatile|lateinit"
+    r"|operator|infix|tailrec|external|inner|companion|annotation|enum|default|unsigned"
+)
 # A declaration's head: its keywords (``const enum``, ``const fn``) and the
 # names it declares (``var x, y``, ``const { a, b }``, ``let Point { x, y }``,
 # ``let (a, b)``), past a ``mut`` or a Go receiver (``func (s *S) Name``), which
 # names a type it does not declare. ``let c = open_ro(p)`` heads at ``let c``.
 _DECLARATION_HEAD = re.compile(
-    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|(?:{_MODIFIERS})\s+)*"
     rf"(?:(?:{_DECL_WORDS})\b(?:\s*\*\s*|\s+))+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
     # A pattern holding a default (``{ a = load() }``) is not read: the default is a use.
     r"(?:(?:[\w$:]+\s*)?\{[^}=(]*\}|[\[(][^\])=(]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
+# Type parameters, one level of nesting deep: ``<T : Comparable<T>>``.
+_GENERICS = r"<(?:[^<>]|<[^<>]*>)*>"
+# Kotlin's ``fun``, ``val`` and ``object`` heads: past type parameters and an
+# extension receiver (``fun <T> List<T>.second()``), which names a type the
+# function does not declare.
+_KOTLIN_HEAD = re.compile(
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS})\s+)*(?:fun|val|var|object)\s+"
+    rf"(?P<receiver>(?:{_GENERICS}\s*)?(?:[\w$]+(?:{_GENERICS})?\??\.)?)(?P<names>[\w$]+)"
+)
+# A C or Java declaration led by its type: ``static int parse(``, ``public
+# List<Foo> items =``, ``char *name;``. The name follows the type; a line led
+# by a statement keyword (``return f(x);``) declares nothing. Two words alone
+# (``if f(x):``, ``cd dir;``) are a declaration only where the first reads as
+# a type: see ``_reads_as_type``.
+_TYPED_HEAD = re.compile(
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS}|const)\s+)*(?:{_GENERICS}\s*)?"
+    r"(?!(?:return|new|else|throw|case|goto|delete|await|yield|sizeof|typeof|package|import"
+    r"|go|defer|raise|assert|del|not|and|or|in|is|print|puts|echo|then|do)\b)"
+    r"(?P<type>[A-Za-z_][\w.]*)(?P<shape>(?:\s*<[^;=(){}]*>)?(?:\s*\[\s*\])*[\s*&]+)"
+    r"(?P<names>[A-Za-z_]\w*)\s*(?=[(=;,\[])"
+)
+_C_TYPE_WORDS = frozenset(
+    {"void", "int", "char", "long", "short", "float", "double", "bool", "boolean", "byte",
+     "signed", "unsigned", "auto", "var", "string", "size_t"}
+)
+
+
+_C_CONST_TYPE = re.compile(
+    rf"^\s*(?:(?:{_MODIFIERS})\s+)*const\s+(?:{'|'.join(sorted(_C_TYPE_WORDS))})\b"
+)
+
+
+def _reads_as_type(head: re.Match[str], line: str) -> bool:
+    """Whether a typed head's first word is a type, on a line that ends as a
+    declaration does (prose such as ``Returns foo(x) when`` does not): one
+    spelled with generics or an array, a pointer mark before the name
+    (``char *p``), a builtin or ``_t`` name, or a capitalised name (``List``,
+    ``java.util.Map``). ``a * f(x)``, ``a*f(x)`` and ``ok && f(x)`` are
+    operators."""
+    shape = head.group("shape")
+    word = head.group("type").rsplit(".", 1)[-1]
+    if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
+        return False
+    if shape[:1] in ("<", "["):  # spelled on the type: ``List<T>``, ``int[]``
+        return True
+    marks = shape.strip()
+    if marks and "&&" not in marks and shape[0].isspace() and not shape[-1].isspace():
+        return True
+    return (
+        word in _C_TYPE_WORDS
+        or word.endswith("_t")
+        or (word[0].isupper() and any(c.islower() for c in word))
+    )
 
 
 def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
     """Whether a line declares what a regex query matched: a match starts
     inside the declaration's head, outside a Go receiver, so a call on a
     declaring line (``const x = f(1)``) is a match, not a definition of ``f``.
-    A keyword glued to a parenthesis (``type(obj)``) declares nothing."""
+    A keyword glued to a parenthesis (``type(obj)``) declares nothing. A head
+    led by a C or Java type, or by a Kotlin ``fun``, declares only its name."""
 
     def check(line: str) -> bool:
-        head = _DECLARATION_HEAD.match(line)
+        # ``const char *name(`` leads with a type, not a ``const`` binding.
+        head = None if _C_CONST_TYPE.match(line) else _DECLARATION_HEAD.match(line)
         if head is None:
-            return False
+            named = _KOTLIN_HEAD.match(line)
+            if named is None:
+                named = _TYPED_HEAD.match(line)
+                if named is None or not _reads_as_type(named, line):
+                    return False
+            start, end = named.span("names")
+            return any(start <= m.start() < end for m in pattern.finditer(line))
         start, end = head.span("receiver")
         for m in pattern.finditer(line):
             if m.start() >= head.end():
