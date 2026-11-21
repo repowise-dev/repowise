@@ -11,7 +11,8 @@ store. Each round writes its own rows, so a killed drain loses one round at most
 Bounded on every axis. At most one drain runs and one waits per repo: a drain
 that finds another already waiting exits at once, since the waiting one reads
 the window when its turn comes. A drain that never gets its turn gives up after
-:data:`WAIT_SECONDS`, and one that does exits after its budget plus
+:data:`WAIT_SECONDS` and may queue one replacement if work remains. A drain
+that gets its turn exits after its budget plus
 :data:`OVERRUN_SECONDS` whatever it is doing.
 
 Run as ``python -m repowise.core.pipeline.commit_health_drain <repo_path> <repo_id>``.
@@ -25,6 +26,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 #: Set to ``0`` to keep every scan inline (the test suite does).
@@ -33,9 +35,10 @@ BACKGROUND_ENV = "REPOWISE_COMMIT_HEALTH_BACKGROUND"
 #: Wall clock per round: how long an update that starts mid-drain can wait for the CPU.
 ROUND_SECONDS = 30.0
 
-#: How long a drain waits for its turn before giving up. The next update starts another.
+#: How long a drain waits for its turn before giving up its queue slot.
 WAIT_SECONDS = 3600.0
 POLL_SECONDS = 2.0
+HANDOFF_CHECK_SECONDS = 5.0
 
 #: Past its budget, how long a drain may run before it exits regardless. The
 #: budget is checked between commits, so the last commit can overrun it: up to
@@ -49,7 +52,7 @@ def background_enabled() -> bool:
     return os.environ.get(BACKGROUND_ENV, "1") != "0"
 
 
-def start_background_drain(repo_path: str, repo_id: str) -> None:
+def start_background_drain(repo_path: str, repo_id: str, *, replacement: bool = False) -> None:
     """Start the drain detached; never raises, a missed drain is picked up by the next update."""
     if not background_enabled():
         return
@@ -61,7 +64,10 @@ def start_background_drain(repo_path: str, repo_id: str) -> None:
     from repowise.core.spawn import spawn_detached
 
     # -P: the cwd is the user's repo, and a top-level module there must not shadow ours.
-    argv = [sys.executable, "-P", "-m", __name__, str(repo_path), repo_id]
+    module = __spec__.name if __spec__ is not None else __name__
+    argv = [sys.executable, "-P", "-m", module, str(repo_path), repo_id]
+    if replacement:
+        argv.append("--replacement")
     with contextlib.suppress(OSError):
         spawn_detached(argv, str(repo_path))
 
@@ -72,12 +78,14 @@ def _run_active(repo_path: Path) -> bool:
     return read_update_lock(repo_path) is not None or read_init_lock(repo_path) is not None
 
 
-def wait_for_turn(repo_path: Path, timeout: float = WAIT_SECONDS) -> bool:
+def wait_for_turn(
+    repo_path: Path, timeout: float = WAIT_SECONDS, *, on_timeout: Callable[[], None] | None = None
+) -> bool:
     """Block until no update or init runs and the scan lock is ours; ``False`` on timeout.
 
     Waits in the repo's one queue slot and frees it on return, so the next
     update can queue a drain behind this one. ``False`` at once when another
-    drain already waits.
+    drain already waits. The timeout callback runs after the slot is freed.
     """
     from repowise.core.update_lock import (
         release_drain_queue,
@@ -93,10 +101,13 @@ def wait_for_turn(repo_path: Path, timeout: float = WAIT_SECONDS) -> bool:
             if not _run_active(repo_path) and try_acquire_commit_health_lock(repo_path) is None:
                 return True
             if time.monotonic() >= deadline:
-                return False
+                break
             time.sleep(POLL_SECONDS)
     finally:
         release_drain_queue(repo_path)
+    if on_timeout is not None:
+        on_timeout()
+    return False
 
 
 async def drain(
@@ -142,6 +153,31 @@ async def _drain_store(repo_path: Path, repo_id: str) -> None:
             await _rewrite_read_snapshots(factory, repo_id)
     finally:
         await engine.dispose()
+
+
+async def _has_pending_commits(repo_path: Path, repo_id: str) -> bool:
+    from repowise.core.persistence import create_engine, create_session_factory
+    from repowise.core.persistence.database import resolve_db_url
+
+    from .commit_health import pending_window
+
+    engine = create_engine(resolve_db_url(repo_path))
+    try:
+        pending, _ = await asyncio.wait_for(
+            pending_window(create_session_factory(engine), repo_id, str(repo_path)),
+            timeout=HANDOFF_CHECK_SECONDS,
+        )
+        return bool(pending)
+    finally:
+        await engine.dispose()
+
+
+def _retry_waiting_drain(repo_path: Path, repo_id: str) -> None:
+    try:
+        if asyncio.run(_has_pending_commits(repo_path, repo_id)):
+            start_background_drain(str(repo_path), repo_id, replacement=True)
+    except Exception:
+        _log_failure(repo_path)
 
 
 async def _rewrite_read_snapshots(session_factory: object, repo_id: str) -> None:
@@ -196,7 +232,12 @@ def main(argv: list[str]) -> int:
     from .commit_health import budget_seconds
 
     repo_path, repo_id = Path(argv[0]), argv[1]
-    if not wait_for_turn(repo_path):
+    on_timeout = (
+        None
+        if argv[2:] == ["--replacement"]
+        else (lambda: _retry_waiting_drain(repo_path, repo_id))
+    )
+    if not wait_for_turn(repo_path, WAIT_SECONDS, on_timeout=on_timeout):
         return 0
     deadline = _arm_deadline(repo_path, budget_seconds() + OVERRUN_SECONDS)
     try:
