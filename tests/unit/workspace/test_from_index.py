@@ -432,3 +432,33 @@ class TestAgainstARealIndex:
         # the index pass produced no routes for.
         ids = _ids(self._extract_all(path, index))
         assert "http::GET::/snapshots/{param}/chat/added" in ids
+
+    async def test_factory_function_nested_routes_are_extracted(
+        self, tmp_path: Path
+    ) -> None:
+        factory_code = '''\
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/top")
+def top(): ...
+
+def create_app():
+    application = FastAPI()
+
+    @application.get("/health")
+    def health(): ...
+    return application
+'''
+        rel = "app.py"
+        (tmp_path / rel).write_text(factory_code, encoding="utf-8")
+        index = await make_repo_index(
+            tmp_path, {rel: _parse_symbols(rel, factory_code)}
+        )
+        try:
+            contracts = self._extract_all(tmp_path, index)
+            ids = _ids(contracts)
+            assert "http::GET::/top" in ids
+            assert "http::GET::/health" in ids
+        finally:
+            await index.close()
