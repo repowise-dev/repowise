@@ -68,7 +68,8 @@ _REGEX_VALUE = re.compile(
     r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]"
     r"|\A\^.*\([^()]*\|[^()]*\).*\$\Z"
 )
-_OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
+# ``$`` joins a namespace to a key in JavaScript names (``SECRETS$ADD_SECRET``).
+_OWN_NAME_VALUE = re.compile(r"[A-Za-z_$-]+")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # Uppercase env-var names and sentinels can have short version numbers. Four
@@ -91,6 +92,7 @@ def _is_own_name_value(value: str, name: str) -> bool:
     """Whether a letter-only constant holds its own name or a suffix of it."""
     if not _OWN_NAME_VALUE.fullmatch(value):
         return False
+    # ``$`` is kept: ``pass$word`` is not the name ``password``.
     normalized_name = re.sub(r"[_-]", "", name).lower()
     normalized_value = re.sub(r"[_-]", "", value).lower()
     return bool(normalized_name) and normalized_name.endswith(normalized_value)
@@ -98,7 +100,7 @@ def _is_own_name_value(value: str, name: str) -> bool:
 
 def _assignment_name(prefix: str) -> str:
     """Name assigned to the literal immediately following *prefix*."""
-    assignment = re.search(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", prefix)
+    assignment = re.search(r"([A-Za-z_$][A-Za-z0-9_$-]*)\s*=\s*['\"]?$", prefix)
     return assignment.group(1) if assignment else ""
 
 
@@ -122,7 +124,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
-    if name.lower() in _KEYWORD_EXCLUDED_NAMES:
+    if name.lower().rsplit("$", 1)[-1] in _KEYWORD_EXCLUDED_NAMES:
         return False
     value = val.strip()
     if kind == "hardcoded_secret" and (
