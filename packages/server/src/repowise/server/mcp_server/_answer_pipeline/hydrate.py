@@ -54,6 +54,11 @@ def in_scope(path: str, scope: str | None) -> bool:
     return not scope or path.startswith(scope)
 
 
+def drop_out_of_scope(hits: list[dict], scope: str | None) -> list[dict]:
+    """*hits* without the ones whose file is outside ``scope``; pathless hits stay."""
+    return [h for h in hits if not h.get("target_path") or in_scope(h["target_path"], scope)]
+
+
 def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
     """Copy *meta* onto *hit*; False when the hit is tombstoned or out of scope."""
     # Tombstoned pages describe deleted or renamed files.

@@ -83,6 +83,7 @@ from repowise.server.mcp_server._answer_pipeline import (
 from repowise.server.mcp_server._answer_pipeline import (
     demote_noise_hits as _demote_noise_hits,
 )
+from repowise.server.mcp_server._answer_pipeline import drop_out_of_scope, in_scope
 from repowise.server.mcp_server._answer_pipeline import (
     expand_via_graph as _expand_via_graph,
 )
@@ -93,7 +94,6 @@ from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
-from repowise.server.mcp_server._answer_pipeline import in_scope
 from repowise.server.mcp_server._answer_pipeline import (
     retrieval_legs as _retrieval_legs,
 )
@@ -379,9 +379,12 @@ async def _run_retrieval_pipeline(
     except Exception:
         _log.warning("get_answer: issue file lookup failed", exc_info=True)
     else:
-        if traced := [p for p in issue.traced if in_scope(p, scope)]:
+        def _in_scope(paths: list[str]) -> list[str]:
+            return [p for p in paths if in_scope(p, scope)]
+
+        if traced := _in_scope(issue.traced):
             hits = lead_with_files(hits, traced)
-        if named := [p for p in issue.named if in_scope(p, scope)]:
+        if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
@@ -393,8 +396,7 @@ async def _run_retrieval_pipeline(
     # Hydration drops out-of-scope hits, but graph expansion, anchoring and
     # flow paths add files after it. A scoped caller asked about the scope, so
     # none of them may reach the answer, citations or candidates.
-    if scope:
-        hits = [h for h in hits if in_scope(h.get("target_path") or scope, scope)]
+    hits = drop_out_of_scope(hits, scope)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)

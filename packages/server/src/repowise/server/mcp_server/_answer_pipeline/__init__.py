@@ -40,6 +40,7 @@ from repowise.server.mcp_server._answer_pipeline.graph_expand import (
 from repowise.server.mcp_server._answer_pipeline.hydrate import (
     _PAGERANK_BIAS_MAX,
     apply_pagerank_bias,
+    drop_out_of_scope,
     hydrate_hits,
     in_scope,
 )
@@ -407,6 +408,7 @@ __all__ = [
     "begin_leg_record",
     "degraded_legs",
     "demote_noise_hits",
+    "drop_out_of_scope",
     "expand_via_graph",
     "expand_via_parent_page",
     "filename_backed_pages",
