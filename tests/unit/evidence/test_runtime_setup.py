@@ -528,12 +528,13 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
     assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
 
-def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["enterprise", "enterprise edition"])
+def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path, name: str) -> None:
     # The nested unit's conftest imports what only its own install brings.
     _python(tmp_path)
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
-    nested = tmp_path / "enterprise"
+    nested = tmp_path / name
     (nested / "tests").mkdir(parents=True)
     (nested / "pyproject.toml").write_text('[project]\nname = "enterprise"\n')
     (nested / "tests" / "conftest.py").write_text("import missing_enterprise_server\n")

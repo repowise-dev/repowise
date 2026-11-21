@@ -457,9 +457,10 @@ def _python_targets(
         # file or a node id, not an option's value as in ``--ignore tests/slow``;
         # a file option's value such as ``--cov-config .coveragerc`` is neither):
         # then they pick what runs. The plugin keeps the failed count for the
-        # profile (``n``). A nested unit that runs its own tests stays ignored either way.
+        # profile (``n``). A nested unit that runs its own tests stays ignored
+        # either way; its directory may hold a space, which the quoted recipe keeps.
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
-        ignores = [f"--ignore={p}" for p in stack.test_ignores if _SAFE_PATH.fullmatch(p)]
+        ignores = [f"--ignore={p}" for p in stack.test_ignores if _SAFE_PATH.fullmatch(p.replace(" ", "_"))]
         tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
             "a=sys.argv[1:];"
