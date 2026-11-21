@@ -281,8 +281,11 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     key = (str(store_dir), repo.id, local_path)
     if key in _REJECTED_ROWS:
         return None
-    if not await asyncio.to_thread(_same_checkout, repo, local_path):
-        _REJECTED_ROWS.add(key)
+    same = await asyncio.to_thread(_same_checkout, repo, local_path)
+    if not same:
+        if same is False:
+            # Only git's own answer is remembered; a failed git call is retried.
+            _REJECTED_ROWS.add(key)
         return None
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path
@@ -303,8 +306,8 @@ async def _adopt_savings_ledger(session: AsyncSession, local_path: str) -> None:
     await asyncio.to_thread(relocate_ledger, local_path)
 
 
-def _same_checkout(repo: Repository, local_path: str) -> bool:
-    """Whether *repo*'s row describes the checkout at *local_path*.
+def _same_checkout(repo: Repository, local_path: str) -> bool | None:
+    """Whether *repo*'s row describes the checkout at *local_path*, None when git failed.
 
     Called only for the single row of *local_path*'s own store, so the row is
     this checkout's unless git says otherwise: when the row names an indexed
@@ -324,13 +327,14 @@ def _same_checkout(repo: Repository, local_path: str) -> bool:
     return _has_commit(local_path, head)
 
 
-def _has_commit(local_path: str, sha: str) -> bool:
+def _has_commit(local_path: str, sha: str) -> bool | None:
+    """Whether *sha* is a commit in *local_path*, or None when git could not run."""
     from ...analysis.git_cli import run_git
 
     try:
         return run_git(["cat-file", "-e", f"{sha}^{{commit}}"], cwd=local_path).returncode == 0
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
 
 
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:

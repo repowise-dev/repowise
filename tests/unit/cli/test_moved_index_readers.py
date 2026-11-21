@@ -209,3 +209,22 @@ async def test_a_failed_adoption_reads_as_unindexed_and_moves_nothing(
     assert await _lookup(here) is None
     assert ledger_moves == []
     assert _rows(here) == [(repo_id, str(built))]
+
+
+async def test_a_failed_git_check_is_retried_not_remembered(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    (here / "a.py").write_text("# next\n")
+    _git(here, "commit", "-qam", "next")
+    built.rename(tmp_path / "gone")
+    real = repository._has_commit
+    monkeypatch.setattr(repository, "_has_commit", lambda *_a: None)
+
+    assert await _lookup(here) is None
+
+    monkeypatch.setattr(repository, "_has_commit", real)
+    assert await _lookup(here) == repo_id
