@@ -118,16 +118,14 @@ def symbol_command(
         command="symbol",
     )
 
+    arguments = {"symbol_id": symbol_id, "context_lines": context_lines, "query": query}
+
     def _factory():
         from repowise.server.mcp_server.tool_symbol import get_symbol
 
-        return get_symbol(
-            symbol_id=symbol_id,
-            context_lines=context_lines,
-            query=query,
-        )
+        return get_symbol(**arguments)
 
-    payload = _ta.run(repo_path, _factory, "get_symbol")
+    payload = _ta.run(repo_path, _factory, "get_symbol", arguments=arguments)
 
     if full:
         _ta.emit_full(payload)

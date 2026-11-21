@@ -143,6 +143,7 @@ class HeritageResolver:
 
             import_maps = build_import_name_maps(parsed_files)
         self._import_names: dict[str, dict[str, str]] = import_maps.import_names
+        self._import_maps = import_maps
 
         # Lazy per-file merged view of imported files' type tables —
         # Tier-2b lookup; sorted-path merge order, first-wins (see
@@ -279,17 +280,18 @@ class HeritageResolver:
                 line=rel.line,
             )
 
-        # Tier 2a: specific imported name
-        name_to_file = self._import_names.get(file_path, {})
-        if parent_name in name_to_file:
-            source_file = name_to_file[parent_name]
+        # Tier 2a: specific imported name. One only another function imports
+        # binds nothing here, so that import is read as a guess.
+        local = self._import_maps.local_binding(file_path, parent_name, rel.line)
+        source_file = self._import_maps.source_at(file_path, parent_name, rel.line)
+        if source_file is not None:
             source_types = self._file_types.get(source_file, {})
             if parent_name in source_types:
                 return ResolvedHeritage(
                     child_id=child_id,
                     parent_id=source_types[parent_name],
                     edge_type=edge_type,
-                    confidence=0.90,
+                    confidence=0.50 if local is not None and local[1] else 0.90,
                     line=rel.line,
                 )
 

@@ -239,9 +239,10 @@ def is_estimated(kind: Any, details: Any) -> bool:
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
 
 #: The stored ``code_origin`` values the area map leaves out until the reader
-#: brings them back: tests, docs examples and build files, plus everything no
-#: health finding is served on. Prose docs have no health row, so never appear.
-MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", *HELD_ORIGINS)
+#: brings them back: tests, docs examples, build files and data folders' code,
+#: plus everything no health finding is served on. Prose docs have no health
+#: row, so never appear.
+MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", "data", *HELD_ORIGINS)
 
 
 def stored_origin(code_origin: Any, is_test: Any) -> str:

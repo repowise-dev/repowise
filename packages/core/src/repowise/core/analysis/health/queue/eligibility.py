@@ -51,6 +51,7 @@ Reason = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",
@@ -127,11 +128,13 @@ class Tally:
 # --- where the code lives ------------------------------------------------------
 
 #: Code origins that do not ship, by the reason each counts as. A build script
-#: is tooling to a reader choosing what to fix.
+#: is tooling to a reader choosing what to fix. ``data`` is code a data folder
+#: holds for the product to read by path, never a module anyone fixes.
 ORIGIN_EXCLUSION: dict[str, Reason] = {
     "test": "test",
     "vendored": "vendored",
     "docs_example": "docs_example",
+    "data": "data",
     "generated": "generated",
     "tooling": "tooling",
     "build": "tooling",

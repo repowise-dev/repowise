@@ -1686,6 +1686,24 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
         assert self._found("src/run.ts", source) == [("exec_call", "high")]
 
+    def test_a_sink_in_a_data_folders_code_is_low_once_the_root_is_known(self, tmp_path) -> None:
+        """A data folder is read off disk, so the origin needs the repository root."""
+        for i in range(4):
+            item = tmp_path / "backend" / "data" / "problems" / f"p{i}"
+            item.mkdir(parents=True)
+            for n in range(12):
+                (item / f"case{n}.json").write_text("{}")
+            for name in ("python.py", "Solution.java", "go.go"):
+                (item / name).write_text("")
+        path = "backend/data/problems/p0/python.py"
+        source = "import os\nos.system(cmd)\n"
+        assert self._found(path, source) == [("os_system", "high")]
+        info = SimpleNamespace(path=path, abs_path=str(tmp_path / path))
+        found, _ = scan_source_map(
+            [SimpleNamespace(file_info=info, symbols=[])], {path: source.encode()}
+        )
+        assert [(f["kind"], f["severity"]) for f in found[path]] == [("os_system", "low")]
+
     def test_a_secret_in_a_script_stays_high(self) -> None:
         source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'
         assert self._found("scripts/deploy.py", source) == [
