@@ -554,9 +554,14 @@ def _record_class_statics(content: str, text: str, seen: dict[str, str | None]) 
 
     Runs after the object literals fold, so a ``const Api = {...}`` beside a class
     ``Api`` retires the key. A field the file also writes from outside
-    (``Api.BASE = x``, ``Api[k] = x``, ``Object.assign(Api, ...)``) is no constant.
+    (``Api.BASE = x``, ``Api[k] = x``, ``Object.assign(Api, ...)``, ``Reflect.set``)
+    is no constant, nor is a class inside a block comment.
+
+    Ceiling: a write through an alias (``const C = Api; C.BASE = x``) is not seen.
     """
     for cls in js_class_fields(content):
+        if content.rfind("/*", 0, cls.start) > content.rfind("*/", 0, cls.start):
+            continue
         for field_name, rhs in cls.static_fields.items():
             key = cls.name + field_name.removeprefix("this")
             unsettled = (
@@ -572,7 +577,7 @@ def _static_rebinding_re(key: str) -> re.Pattern[str]:
     cls, member = (re.escape(part) for part in key.split(".", 1))
     return re.compile(
         rf"(?<![\w$.]){cls}\s*(?:\.\s*{member}\s*[-+*/%?|&]*=(?![=>])|\[[^\]]*\]\s*[-+*/%?|&]*=(?![=>]))"
-        rf"|Object\s*\.\s*assign\s*\(\s*{cls}\b"
+        rf"|(?:Object\s*\.\s*(?:assign|defineProperty|defineProperties)|Reflect\s*\.\s*set)\s*\(\s*{cls}\b"
     )
 
 

@@ -115,7 +115,15 @@ def test_a_static_field_read_through_the_class_name(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "write", ["Api.BASE = '/v2';", "Api.BASE += '/v2';", "Api['BASE'] = '/v2';", "Object.assign(Api, { BASE: '/v2' });"]
+    "write",
+    [
+        "Api.BASE = '/v2';",
+        "Api.BASE += '/v2';",
+        "Api['BASE'] = '/v2';",
+        "Object.assign(Api, { BASE: '/v2' });",
+        "Object.defineProperty(Api, 'BASE', { value: '/v2' });",
+        "Reflect.set(Api, 'BASE', '/v2');",
+    ],
 )
 def test_a_static_field_the_file_writes_from_outside_is_no_constant(tmp_path: Path, write: str) -> None:
     text = (
@@ -123,6 +131,18 @@ def test_a_static_field_the_file_writes_from_outside_is_no_constant(tmp_path: Pa
         "  static BASE = '/api';\n"
         "}\n"
         f"{write}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    assert ("GET", "/api/top") not in _paths(tmp_path, "src/api.ts", text)
+
+
+def test_a_class_in_a_block_comment_gives_no_static_constant(tmp_path: Path) -> None:
+    text = (
+        "/*\n"
+        "class Api {\n"
+        "  static BASE = '/api';\n"
+        "}\n"
+        "*/\n"
         "export function top() { return fetch(`${Api.BASE}/top`); }\n"
     )
     assert ("GET", "/api/top") not in _paths(tmp_path, "src/api.ts", text)
