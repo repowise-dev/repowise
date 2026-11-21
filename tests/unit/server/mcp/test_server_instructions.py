@@ -44,6 +44,15 @@ def test_instructions_stay_short() -> None:
     assert "uncommitted" not in base
 
 
+def test_the_first_line_says_when_to_call() -> None:
+    # A host that defers tools shows only this line until the model looks.
+    from repowise.core.registry.instructions import server_instructions
+
+    first = server_instructions(None).splitlines()[0]
+    assert first.startswith("Call repowise first for where/how/why questions")
+    assert server_instructions(None, brief=True, extra=["note"]) == first
+
+
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
     text = mcp.instructions
     assert "repowise init --yes" in text
