@@ -752,7 +752,10 @@ async def test_an_env_model_that_replaces_a_pin_says_so(monkeypatch, tmp_path: P
     monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
     cfg, _state, _changes = await _switch_embedder(
-        monkeypatch, tmp_path, "ollama", config="embedder: ollama\nembedding_model: embeddinggemma\n"
+        monkeypatch,
+        tmp_path,
+        "ollama",
+        config="embedder: ollama\nembedding_model: embeddinggemma\n",
     )
 
     assert cfg["embedding_model"] == "nomic-embed-text"
