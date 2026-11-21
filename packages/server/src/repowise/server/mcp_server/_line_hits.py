@@ -1223,9 +1223,10 @@ def _unindexed_definitions(
     alternatives = "|".join(re.escape(n) for n in names)
     name = rf"(?:{alternatives})(?![\w$])"
     # A keyword declaration (``type X struct``, ``class X``, ``def x``), a Go
-    # method past its receiver, or a top-level assignment (``X = ...``).
+    # method past its receiver, or a top-level assignment (``X = ...``); an
+    # indented ``x = ...`` is a local or a keyword argument. One line each.
     pattern = re.compile(
-        rf"\b(?:{_DECL_WORDS})\s+{name}|\bfunc\s*\([^)\n]*\)\s*{name}|^[ \t]*{name}[ \t]*=(?![=>])",
+        rf"\b(?:{_DECL_WORDS})[ \t]+{name}|\bfunc[ \t]*\([^)\n]*\)[ \t]*{name}|^{name}[ \t]*=(?![=>])",
         re.M,
     )
     # No raw needle: a binary git grep listed is skipped, not counted as a match.
