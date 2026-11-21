@@ -9,8 +9,8 @@ import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
 import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
 import { hostedLink } from "@/lib/hosted";
 import type { RepoResponse } from "@/lib/api/types";
-import { SETTINGS_LINK, repoSettingsHref } from "@/components/settings/settings-groups";
-import { StatusDot, useSetupText } from "./setup-row";
+import { SETTINGS_LINK, SettingsBlock, repoSettingsHref } from "@/components/settings/settings-groups";
+import { AttentionPrompt, StatusDot, useSetupText } from "./setup-row";
 import { agentListRows, type SetupRow } from "./setup-rows";
 import { useSetupControls } from "./setup-controls";
 import { useSetupData, useSetupView } from "./use-setup";
@@ -45,8 +45,8 @@ function SetupSettingRow({
       }
     >
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-        {action}
-        <RowPromptAction onClick={onOpenPrompt} subject={title} />
+        {row.action?.kind === "prompt" ? <AttentionPrompt row={row} /> : action}
+        {row.action?.kind !== "prompt" && <RowPromptAction onClick={onOpenPrompt} subject={title} />}
       </div>
     </SettingsRow>
   );
@@ -103,10 +103,31 @@ export function RepoSetupRows({
   const { data } = useSetupData(repoId);
   const view = useSetupView(repoId, repoName, data);
   const rows = useMemo(() => {
-    const all = view ? [...view.attention, ...view.essentials, ...view.optional] : [];
+    const all = view ? [...view.attention, ...view.essentials, ...view.optional, ...view.depth] : [];
     return ids.flatMap((id) => all.filter((r) => r.id === id));
   }, [view, ids]);
   return <SetupRowsBlock repoId={repoId} rows={rows} />;
+}
+
+/**
+ * "Suggested from your usage": the rows agent calls have unlocked (load the
+ * read tools up front, distill) and the settings that fit the repo. Renders
+ * nothing until one is unlocked.
+ */
+export function RepoDepthRows({ repoId, repoName }: { repoId: string; repoName: string }) {
+  const t = useTranslations("setup.depthBlock");
+  const { data } = useSetupData(repoId);
+  const view = useSetupView(repoId, repoName, data);
+  const rows = useMemo(() => view?.depth ?? [], [view]);
+  if (rows.length === 0) return null;
+  const calls = data?.setup?.claude_code_calls ?? 0;
+  return (
+    <SettingsBlock title={t("title")} description={calls > 0 ? t("lede", { count: calls }) : undefined}>
+      <SettingsRows>
+        <SetupRowsBlock repoId={repoId} rows={rows} />
+      </SettingsRows>
+    </SettingsBlock>
+  );
 }
 
 /** "Agents & editors" for one repo: one row per agent, then hosted. */

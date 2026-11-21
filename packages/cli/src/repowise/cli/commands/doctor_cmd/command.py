@@ -40,7 +40,7 @@ def _doctor_repo(repo_path: Path, path: str | None, *, repair: bool, fmt: str, q
     if fmt != "table":
         payload = {
             "ok": all_ok,
-            "checks": [c._asdict() for c in checks],
+            "checks": [c.as_json() for c in checks],
             "suggestions": [s.to_dict() for s in suggested],
         }
         click.echo(json.dumps(payload, indent=2))
@@ -159,7 +159,7 @@ def doctor_command(
             all_ok = overall_ok and not ws_issues and not not_indexed
             payload = {
                 "ok": all_ok,
-                "checks": [c._asdict() for c in all_checks],
+                "checks": [c.as_json() for c in all_checks],
                 "workspace": {
                     "checked": True,
                     "issues": list(ws_issues),

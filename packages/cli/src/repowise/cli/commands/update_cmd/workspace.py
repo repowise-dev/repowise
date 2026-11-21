@@ -263,17 +263,28 @@ def _repo_staleness(
         indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
     )
     is_stale = is_stale or dirty
-    if not indexed:
-        status = "[dim]not indexed[/dim]"
-    elif config_stale and not behind:
-        status = "[yellow]config changed[/yellow]"
-    elif dirty:
-        status = "[yellow]uncommitted changes[/yellow]"
-    elif is_stale:
-        status = f"[yellow]{behind} new commit(s)[/yellow]"
-    else:
-        status = "[green]up to date[/green]"
+    status = _staleness_label(
+        indexed=indexed, config_stale=config_stale, dirty=dirty, behind=behind, is_stale=is_stale
+    )
     return _RepoStaleness(indexed, is_stale, head, status, repo_state)
+
+
+def _staleness_label(
+    *, indexed: bool, config_stale: bool, dirty: bool, behind: int, is_stale: bool
+) -> str:
+    """The scan line's status for one repo, most specific reason first."""
+    if not indexed:
+        return "[dim]not indexed[/dim]"
+    if config_stale and not behind:
+        return "[yellow]config changed[/yellow]"
+    if dirty:
+        return "[yellow]uncommitted changes[/yellow]"
+    if behind:
+        return f"[yellow]{behind} new commit(s)[/yellow]"
+    if is_stale:
+        # HEAD unmoved: a moved version stamp or a stale page owes the work.
+        return "[yellow]stale[/yellow]"
+    return "[green]up to date[/green]"
 
 
 def _wants_docs_update(

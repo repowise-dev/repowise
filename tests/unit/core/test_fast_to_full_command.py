@@ -67,23 +67,23 @@ def test_answers_upgrade_line_names_the_model_step_until_prose_exists() -> None:
 def test_one_upgrade_line_names_a_plan_billed_cli_or_falls_back() -> None:
     route = FreeRoute("claude_cli", "Claude Code", minutes=5)
     assert answers_upgrade_line(_scope("deterministic"), route) == (
-        "answers and docs: `repowise generate --provider claude_cli` uses your Claude Code "
-        "sign-in and plan quota, about 5 minutes; then restart the MCP server"
+        "For answers and docs, run `repowise generate --provider claude_cli`; it uses your "
+        "Claude Code sign-in and plan quota, about 5 minutes. Then restart the MCP server."
     )
     assert answers_upgrade_line(_scope("none"), route).startswith(
-        f"answers and docs: `{FAST_TO_FULL_COMMAND} --provider claude_cli`"
+        f"For answers and docs, run `{FAST_TO_FULL_COMMAND} --provider claude_cli`"
     )
     assert answers_upgrade_line(_scope("deterministic")) == (
-        "answers and docs: `repowise generate` (no re-index) with a provider key or a "
-        "local model, then restart the MCP server"
+        "For answers and docs, run `repowise generate` (no re-index) with a provider key or a "
+        "local model, then restart the MCP server."
     )
     # A prose index needs only the provider; the line never times a setting.
     assert upgrade_line(_scope("llm"), route) == answers_key_line(route)
     assert "about 5 minutes" not in answers_key_line(route)
     assert "repowise config set provider claude_cli" in answers_key_line(route)
     assert "a provider key or a local model" in upgrade_line(_scope("llm"))
-    # The fallback rides on every weak keyless answer: no longer than the lines it replaced.
-    assert len(answers_upgrade_line(_scope("deterministic"))) <= 117
+    # The fallback rides on every weak keyless answer: kept to one short sentence.
+    assert len(answers_upgrade_line(_scope("deterministic"))) <= 126
     assert len(answers_key_line()) <= 142
     # Never called free: a quota is still spent.
     assert "free" not in answers_upgrade_line(_scope("deterministic"), route)

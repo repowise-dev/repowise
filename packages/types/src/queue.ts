@@ -7,7 +7,9 @@
 /**
  * Why a unit is out of a default queue (`queue.eligibility.Reason`), plus the
  * stored-judgement reasons (`queue.counts.STORED_REASONS`): `not_judged` (stored
- * before units were judged), `covered_by_plan`, `not_file_lead`, `not_in_queue`.
+ * before units were judged), `covered_by_plan`, `not_file_lead`, `not_in_queue`,
+ * and `observation` (a performance cause whose marker has no fix strategy; it is
+ * stored on the row and never counted, since it is no unit of the queue).
  */
 export type QueueReason =
   | "test"
@@ -21,6 +23,7 @@ export type QueueReason =
   | "history_only"
   | "vendored"
   | "docs_example"
+  | "data"
   | "deprecated"
   | "gated_off"
   | "cold_path"
@@ -39,14 +42,15 @@ export type QueueReason =
   | "not_judged"
   | "covered_by_plan"
   | "not_file_lead"
-  | "not_in_queue";
+  | "not_in_queue"
+  | "observation";
 
 /** One noun per unit: findings (observations), causes (performance), plans (refactoring), items (Fix first). */
 export type QueueUnit = "findings" | "causes" | "plans" | "items";
 
 /**
  * `inventory` every open unit; `in_scope` those whose code is in scope (not
- * test, tooling, vendored, generated or docs); `eligible` those a default
+ * test, tooling, vendored, generated, docs or data); `eligible` those a default
  * queue holds; `due` eligible units in tier now or next; `shown` what the
  * response carries; `excluded` the non-zero reasons; `gated` the units a
  * language gate holds back, counted there only, so the levels add up.

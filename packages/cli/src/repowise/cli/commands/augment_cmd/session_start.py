@@ -9,6 +9,7 @@ true and new, and is silent otherwise:
   * index behind   → indexed vs HEAD with a changed-file count, and the
     target-scoped trust rule (stale_warning only when a served file changed);
   * the rewrite hook installed but ``repowise`` off PATH → one line saying so;
+  * setup unfinished and the agent pass offered → one line pointing at it;
   * with ``decisions.session_start`` on, the relevance-ranked decisions block
     (see :mod:`.decision_inject`), scored against what this session touches.
 
@@ -82,7 +83,7 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
         freshness = _freshness_block(repo_path, last_sync)
     # Every line here is paid for the whole session, so each one is said only
     # when it is true and not already in the agent's context.
-    lines = [line for line in (freshness, _distill_off_path_note()) if line]
+    lines = [line for line in (freshness, _distill_off_path_note(), _setup_line(repo_path)) if line]
     if not _has_agent_block(checkout):
         lines.insert(0, AGENT_STEER)
 
@@ -100,6 +101,19 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     # which a transcript otherwise cannot recover; the ledger stamps every row
     # for the same reason.
     return f"[repowise {emitting_build()}] " + "\n".join(lines)
+
+
+def _setup_line(repo_path: Path) -> str | None:
+    """One line while the finish-setup pass is offered, from the last full read.
+
+    Reads ``.repowise/setup.json`` only (:mod:`repowise.core.setup_state`):
+    the steps themselves take the index and a walk of the checkout, which a
+    hook does not pay for. Silent once setup is done or the pass dismissed.
+    """
+    from repowise.core.setup_state import offered_steps, session_setup_line
+
+    steps = offered_steps(repo_path)
+    return session_setup_line(steps) if steps else None
 
 
 #: The opening marker of the block ``repowise init`` writes into ``CLAUDE.md``

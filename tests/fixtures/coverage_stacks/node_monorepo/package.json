@@ -1,0 +1,10 @@
+{
+  "name": "m",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "turbo run test"
+  }
+}

@@ -13,10 +13,14 @@ import time
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._code_rationale import can_lead_answer
 from repowise.server.mcp_server._entry_trace import (
+    _PATH_MAX_ROWS,
     call_path,
+    call_route,
     is_call_path_question,
     names_destination,
+    route_ends,
     symbol_at,
+    symbols_named,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path, served_root
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
@@ -37,6 +41,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     file_hybrid_rank,
     lead_leaves_retrieval,
 )
+from repowise.server.mcp_server.tool_answer.config import _BODY_NOTE, _RATIONALE_NOTE
 from repowise.server.mcp_server.tool_answer.evidence import (
     _drop_already_surfaced,
     _first_resolvable_id,
@@ -52,16 +57,6 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
-
-_RATIONALE_NOTE = (
-    " code_rationale carries rationale comments mined from the candidate "
-    "source — they may already answer the question."
-)
-_BODY_NOTE = (
-    " symbol_bodies carries the live body of the symbol(s) you named, so "
-    "answer from that rather than re-reading the file."
-)
-
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.
@@ -260,12 +255,12 @@ async def _attach_call_path(
     The trust hint is re-read without bodies, and the upgrade line a body
     held back is added, so ``_meta`` describes the reply served.
     """
-    body, hops = await _call_path_from_named(
+    start, hops = await _call_path_from_named(
         payload["degraded"], question, question_ids, symbol_bodies, ctx, repository, exclude_spec
     )
     if not hops:
         return
-    _serve_call_path(payload, body, hops)
+    _serve_call_path(payload, start, hops)
     meta = payload["_meta"]
     meta["hint"] = _answer_hint(
         payload["confidence"],
@@ -296,39 +291,85 @@ def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | Non
 async def _call_path_from_named(
     reason: str, question: str, question_ids: set[str], symbol_bodies: list[dict],
     ctx, repository, exclude_spec,
-) -> tuple[dict | None, list[str]]:
-    """``(named body, hops)`` for a keyless question about how a named call travels on.
+) -> tuple[str, list[str]]:
+    """``(where the hops run, hops)`` for a keyless question about how a named call travels on.
 
     Without a model, the body of the symbol the question starts from answers
-    "what is it", not "where does it go"; the hops out of it do. Empty unless
-    the question has that shape, names a served symbol, and the graph has at
-    least two hops out of it.
+    "what is it", not "where does it go"; the hops do. A question that names
+    both ends ("how does X reach Y") gets the route between them. Otherwise,
+    or when the graph holds no such route, the hops out of (or into) the named
+    symbol whose body was served, when there are at least two. Empty unless
+    the question has that shape.
     """
-    if reason != "no-llm-provider" or ctx is None or not is_call_path_question(question):
-        return None, []
+    if reason != "no-llm-provider" or ctx is None:
+        return "", []
+    ends = route_ends(question, question_ids)
+    if ends is None and not is_call_path_question(question):
+        return "", []
+    no_route = ""
+    if ends is not None:
+        start, wanted = ends
+        try:
+            async with get_session(ctx.session_factory) as session:
+                route, reached = await _route_between(
+                    session, repository.id, start, wanted, exclude_spec
+                )
+        except Exception:  # the walk below still answers
+            _log.debug("get_answer: call route failed", exc_info=True)
+            route, reached = None, []
+        if route:
+            return f"on the route from {start} to {', '.join(reached)}", route
+        if route is not None:
+            no_route = f" (no route to {', '.join(wanted)} found)"
     body = _named_body(symbol_bodies, question_ids)
-    if body is None or not isinstance(body.get("lines"), list):
-        return None, []
+    if body is None or not is_call_path_question(question):
+        return "", []
     try:
         async with get_session(ctx.session_factory) as session:
-            root = await symbol_at(session, repository.id, body["path"], body["lines"][0])
-            if root is not None:
-                upstream = names_destination(question, str(body.get("name") or ""))
-                hops = await call_path(
-                    session, repository.id, root, exclude_spec, upstream=upstream,
-                    question=question,
-                )
-                if len(hops) >= 2:
-                    return {**body, "upstream": upstream}, hops
+            way, hops = await _hops_around(session, repository.id, body, question, exclude_spec)
+            if len(hops) >= 2:
+                return f"{way} {body['name']} {body['path']}:{body['lines'][0]}{no_route}", hops
     except Exception:  # the body stays the reply
         _log.debug("get_answer: call path failed", exc_info=True)
-    return None, []
+    return "", []
 
 
-def _serve_call_path(payload: dict, body: dict, hops: list[str]) -> None:
-    """Serve the hops around the named symbol in place of its body and the rationale."""
-    way = "into" if body.get("upstream") else "out of"
-    start = f"{way} {body['name']} {body['path']}:{body['lines'][0]}"
+async def _route_between(
+    session, repo_id: str, start: str, wanted: list[str], exclude_spec
+) -> tuple[list[str] | None, list[str]]:
+    """``(rows, names reached)``: the route from *start* to each name in *wanted*,
+    shared hops once, at most as many rows as the walk serves.
+
+    Rows are ``None`` when *start* names no indexed symbol, empty when no route is found.
+    """
+    starts = await symbols_named(session, repo_id, start)
+    if not starts:
+        return None, []
+    rows: dict[str, None] = {}
+    reached: list[str] = []
+    for name in wanted:
+        finals = await symbols_named(session, repo_id, name)
+        route = await call_route(session, repo_id, starts, finals, exclude_spec)
+        if route:
+            reached.append(name)
+            rows.update(dict.fromkeys(route))
+    return list(rows)[:_PATH_MAX_ROWS], reached
+
+
+async def _hops_around(session, repo_id: str, body: dict, question: str, exclude_spec) -> tuple[str, list[str]]:
+    """``("out of" | "into", hops)`` walked from the symbol *body* defines."""
+    if not isinstance(body.get("lines"), list):
+        return "", []
+    root = await symbol_at(session, repo_id, body["path"], body["lines"][0])
+    if root is None:
+        return "", []
+    upstream = names_destination(question, str(body.get("name") or ""))
+    hops = await call_path(session, repo_id, root, exclude_spec, upstream=upstream, question=question)
+    return ("into" if upstream else "out of"), hops
+
+
+def _serve_call_path(payload: dict, start: str, hops: list[str]) -> None:
+    """Serve the hops in place of the named body and the rationale."""
     payload["call_path"] = hops
     for key in ("symbol_bodies", "code_rationale", "grounding"):
         payload.pop(key, None)

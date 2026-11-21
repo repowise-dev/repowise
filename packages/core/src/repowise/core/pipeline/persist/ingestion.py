@@ -1,4 +1,4 @@
-"""Ingestion-phase persistence: files, symbols, graph and edges."""
+"""Ingestion-phase persistence: files, symbols, graph, edges and build units."""
 
 from __future__ import annotations
 
@@ -15,11 +15,25 @@ from .graph import _edge_row, prune_absent_graph_rows, stamp_edges_parser_finger
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
+async def persist_build_units(session: Any, repo_id: str, graph_builder: Any) -> None:
+    """Replace the stored build units with the ones *graph_builder*'s build collected.
+
+    Skipped when it collected none (a rehydrated builder, a failed collection),
+    so the stored units stay those of the last build that read them.
+    """
+    index = getattr(graph_builder, "build_units", None)
+    if index is None:
+        return
+    from repowise.core.persistence.crud import replace_build_units
+
+    await replace_build_units(session, repo_id, index)
+
+
 async def persist_ingestion(
     result: Any, session: Any, repo_id: str, *, timings: Any | None = None
 ) -> int:
-    """Persist ingestion-phase outputs: graph nodes/edges, external systems,
-    symbols, and the per-file security scan.
+    """Persist ingestion-phase outputs: graph nodes/edges, build units,
+    external systems, symbols, and the per-file security scan.
 
     Every write here is an idempotent UPSERT keyed by ``(repo_id, …)``, so
     this is safe to call incrementally (per phase) and to re-run on resume.
@@ -74,6 +88,8 @@ async def persist_ingestion(
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
     await stamp_edges_parser_fingerprint(session, repo_id, parser_fingerprint())
+
+    await persist_build_units(session, repo_id, result.graph_builder)
 
     # ---- External systems (C4 L1) -------------------------------------------
     # Persist before symbols so the FK linkage step below sees the IDs.

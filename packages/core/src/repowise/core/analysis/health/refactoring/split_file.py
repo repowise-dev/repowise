@@ -55,6 +55,7 @@ from itertools import combinations
 from typing import Any
 
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....ingestion.lang_helpers.anonymous_classes import is_anonymous_scope
@@ -717,9 +718,9 @@ class SplitFileDetector(RefactoringDetector):
             if not parent:
                 return cur
             if is_anonymous_scope(data.get("language"), parent):
-                while parent and f"{file_path}::{parent}" not in defined:
+                while parent and make_symbol_id(file_path, parent) not in defined:
                     parent = outer_scope(parent)
-            pid = f"{file_path}::{parent}"
+            pid = make_symbol_id(file_path, parent)
             if pid not in defined or pid == cur:
                 return cur
             cur = pid

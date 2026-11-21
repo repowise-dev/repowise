@@ -38,6 +38,7 @@ describe("performance scope and its URL", () => {
       confidence: "high",
       actionability: "advisory",
       proof: "unproven",
+      static_cost: "size_unknown",
       role: "cli",
       sort: "leverage",
       page: 3,
@@ -90,7 +91,7 @@ describe("performance scope and its URL", () => {
     expect(parsed.scope).toBe("now");
     expect(parsed.actionability).toBeNull();
     expect(parsed.page).toBe(1);
-    // Proof and role cannot narrow "now", whose causes are all measured and served.
+    // Proof and role cannot narrow "now", whose causes are all proven and served.
     expect(read("scope=now&proof=unproven&context=test")).toMatchObject({ proof: null, context: null });
     // "Worth doing now" holds plan-ready and advisory causes only.
     expect(read("scope=now&actionability=investigate").actionability).toBeNull();
@@ -126,6 +127,16 @@ describe("performance scope queries", () => {
     expect(toQuery({ ...INITIAL_FILTERS, page: 3 }, { limit: 100 }).offset).toBe(200);
   });
 
+  it("narrows by static cost inside the default queue without lifting it", () => {
+    const query = toQuery({ ...INITIAL_FILTERS, static_cost: "size_unknown" }, { limit: 100 });
+    expect(query).toMatchObject({ context: "production", static_cost: "size_unknown" });
+    expect(query.proof).toBeUndefined();
+    expect(read("scope=now&static_cost=bogus").static_cost).toBeNull();
+    expect(withScope({ ...INITIAL_FILTERS, static_cost: "bounded" }, "production").static_cost).toBe(
+      "bounded",
+    );
+  });
+
   it("sends the retired pairing only when told to collapse", () => {
     expect(toQuery(INITIAL_FILTERS, { limit: 20, collapseContexts: true }).context).toBe(
       "production_tooling",
@@ -158,7 +169,7 @@ describe("performance state changes", () => {
       actionability: null,
     });
     expect(withScope(state, "now")).toMatchObject({ boundary: "db", proof: null });
-    expect(narrowingKeysFor("now")).toEqual(["boundary", "confidence"]);
+    expect(narrowingKeysFor("now")).toEqual(["boundary", "confidence", "static_cost"]);
   });
 
   it("keys the server query on every field, the area included", () => {

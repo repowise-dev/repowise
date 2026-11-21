@@ -300,6 +300,19 @@ class TestDeadCodeCountsAreScopedToTheUpdate:
     def test_no_scope_still_counts_everything(self):
         assert reporting._dead_code_counts(self._report(), None) == (2, 2)
 
+    def test_docs_and_examples_stay_out_of_the_unreachable_count(self):
+        from types import SimpleNamespace
+
+        from repowise.core.analysis.dead_code.models import DeadCodeKind
+
+        report = SimpleNamespace(
+            findings=[
+                SimpleNamespace(file_path="examples/demo/run.py", kind=DeadCodeKind.UNREACHABLE_FILE),
+                SimpleNamespace(file_path="src/old.py", kind=DeadCodeKind.UNREACHABLE_FILE),
+            ]
+        )
+        assert reporting._dead_code_counts(report, None) == (1, 0)
+
     def test_a_missing_report_counts_as_nothing(self):
         assert reporting._dead_code_counts(None, ["changed.py"]) == (0, 0)
 

@@ -112,6 +112,13 @@ describe("DocsMoreMenu", () => {
     expect(item).toHaveAttribute("data-router");
   });
 
+  it("gives the icon-only trigger a 40px touch target on phones", () => {
+    render(<DocsMoreMenu groups={groups()} iconOnly label="More actions" />);
+    const trigger = screen.getByRole("button", { name: "More actions" });
+    expect(trigger.className).toContain("max-sm:h-10");
+    expect(trigger.className).toContain("max-sm:w-10");
+  });
+
   it("renders nothing when every group is empty", () => {
     const { container } = render(
       <DocsMoreMenu groups={[{ key: "x", items: [] }]} />,

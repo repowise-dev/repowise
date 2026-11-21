@@ -38,6 +38,8 @@ from repowise.core.analysis.test_reachability import (
     rank_reaching,
 )
 from repowise.core.code_origin import ship_rank
+from repowise.core.ingestion.symbol_identity import make_symbol_id
+from repowise.core.perf_measure import verify_measure
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
@@ -55,7 +57,7 @@ DEFAULT_TEST_LIMIT = 12
 # uncertainty over a whole step set. Two tables would be two policies.
 EFFORT_COST = {"S": 1.0, "M": 2.0, "L": 3.0, "XL": 5.0}
 CONFIDENCE_RISK = {"high": 0.0, "medium": 0.5, "low": 1.25}
-_WEAK_PROVENANCE = {"name-fallback", "global_unique", "unknown"}
+_WEAK_PROVENANCE = {"name-fallback", "global_unique", "import_elsewhere", "unknown"}
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:
@@ -312,6 +314,10 @@ class ValidationPlan:
     # How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs (``commands.TestRuns``),
     # so a later read builds the same commands without a checkout.
     test_runs: dict[str, list[str | None]] = field(default_factory=dict)
+    # A performance plan's ``perf measure`` lines (``perf_measure.verify_measure``),
+    # when its unit has an entry point or benchmark to time. Kept out of
+    # :meth:`as_dict` like ``step_verify``; :meth:`detail_dict` carries it.
+    measure: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -329,6 +335,10 @@ class ValidationPlan:
             **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
         }
 
+    def detail_dict(self) -> dict[str, Any]:
+        """:meth:`as_dict` for one plan read alone (and for what is stored), with ``measure``."""
+        return {**self.as_dict(), **({"measure": self.measure} if self.measure else {})}
+
 
 SymbolSpan = tuple[str, int, int]
 
@@ -345,7 +355,8 @@ class ValidationEvidence:
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
     ``test_runs`` is how each JS/TS, Go, Rust, JVM, Ruby or C# test runs; absent,
-    it gets no command.
+    it gets no command. ``timed`` is the workload a performance plan on each file
+    is timed with (``evidence.setup.timed_targets``); a file without one has none.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
@@ -355,6 +366,7 @@ class ValidationEvidence:
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     test_runs: TestRuns | None = None
+    timed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,7 +409,7 @@ def target_symbol_ids(
         candidates = (
             (name,)
             if "::" in name
-            else (f"{file_path}::{name}", f"{file_path}::{name.replace('.', '::')}")
+            else (make_symbol_id(file_path, name), make_symbol_id(file_path, *name.split(".")))
         )
         found.update(candidate for candidate in candidates if candidate in ids)
     if found or not lines:
@@ -921,6 +933,11 @@ def build_validation_plan(
             shown, total=aggregate_total, runs=facts.test_runs
         )
     files = affected_files(suggestion)
+    timed = (
+        facts.timed.get(suggestion.file_path)
+        if suggestion.refactoring_type == "performance_fix"
+        else None
+    )
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
@@ -940,7 +957,15 @@ def build_validation_plan(
             # Summed per file, a test reaching two files counts twice: no count then.
             aggregate_total if identities_complete or len(target_rows) == 1 else 0,
         ),
+        measure=verify_measure(timed, _baseline_label(suggestion)) if timed else None,
     )
+
+
+def _baseline_label(suggestion: RefactoringSuggestion) -> str:
+    """``<file stem>.<function>``, so two plans on same-named functions keep apart baselines."""
+    stem = suggestion.file_path.rsplit("/", 1)[-1].split(".", 1)[0]
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
+    return f"{stem}.{symbol}" if symbol else stem
 
 
 def with_step_verify(
@@ -1117,6 +1142,7 @@ class Recommendation:
         carrying its ``verify``, and the plan's ``governed_by``, ``risks`` and
         co-change partners."""
         payload = self.as_dict()
+        payload["validation"] = self.validation.detail_dict()
         payload["plan"] = self.suggestion.plan or {}
         steps = payload["plan"].get("steps")
         if isinstance(steps, list) and self.validation.step_verify:
@@ -1150,7 +1176,7 @@ class Recommendation:
             "file_weighted_deficit": self.file_weighted_deficit,
             # Enriched with the caller rollup, which the stored column lacks.
             "blast_radius": self.suggestion.blast_radius or {},
-            "validation": self.validation.as_dict(),
+            "validation": self.validation.detail_dict(),
             **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
             **(
                 {"annotations": self.annotations.as_dict()}

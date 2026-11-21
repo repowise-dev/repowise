@@ -127,3 +127,28 @@ def test_git_show_of_a_file_blob_is_not_routed_as_a_diff(command: str) -> None:
 )
 def test_git_show_of_a_commit_still_routes_as_a_diff(command: str) -> None:
     assert select_filter(command, "").name == "git_diff"
+
+
+@pytest.mark.parametrize(
+    ("command", "filter_name"),
+    [
+        ("cd packages/core && pytest -x", "test_output"),
+        ('cd "my dir"; git log --oneline -5', "git_log"),
+        ("cd a && cd b && npm run lint", "lint_output"),
+        ("cd /d/repo && git diff HEAD~1", "git_diff"),
+        ("cd src && ls -la", "file_listing"),
+        ("cd C:/work/repo && uv run ruff check .", "lint_output"),
+        (r'cd /d "C:\my repo" && pytest -q', "test_output"),
+        (r"cd /D C:\repo && git diff", "git_diff"),
+        (r"cd C:\repo & pytest -q", "test_output"),
+        (r"cd /d C:\my repo && pytest -q", "test_output"),
+    ],
+)
+def test_a_leading_cd_matches_the_command_after_it(command: str, filter_name: str) -> None:
+    chosen = select_filter(command, "")
+    assert chosen is not None and chosen.name == filter_name
+
+
+@pytest.mark.parametrize("command", ["cd a && echo hi", "cd a", "cdk deploy && pytest"])
+def test_a_cd_prefix_alone_matches_nothing_new(command: str) -> None:
+    assert select_filter(command, "") is None

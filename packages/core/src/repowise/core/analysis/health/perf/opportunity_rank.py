@@ -306,12 +306,45 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
-def rank_sort_key(item: Any) -> tuple[int, int, int, str]:
-    """A total order: value first, then actionability, leverage, and id.
+def evidence_state(facets: Mapping[str, Any]) -> str | None:
+    """What runtime evidence says about a cause, in one precedence: exact
+    evidence first. ``confirmed``; ``counter_evidence`` (query counts stayed
+    flat as the items grew); ``measured`` (a leading workload, or a unit-test
+    run, ranks its loop owner); ``ran`` (query counts that settle nothing);
+    ``None`` with no evidence facet."""
+    if facets.get("confirmed"):
+        return "confirmed"
+    queries = facets.get("queries")
+    if queries == "flat":
+        return "counter_evidence"
+    if facets.get("measured") or facets.get("measured_in_tests"):
+        return "measured"
+    return "ran" if queries else None
+
+
+def evidence_tier(facets: Mapping[str, Any]) -> int:
+    """Where runtime evidence puts a cause ahead of static value: ``0``
+    confirmed, ``1`` measured, ``2`` otherwise (:func:`evidence_state`). Every
+    cause of a repository with no runtime evidence is ``2``, so its order is
+    the static one. Counter-evidence demotes nothing, and a cause measured
+    against its cold name (``measured_overrides``) is kept, never led, unless
+    a leading workload measured it above the lead bar (``confirmed``
+    ``measured``): both stay among the rest, in static order."""
+    if facets.get("measured_overrides") and facets.get("confirmed") != "measured":
+        return 2
+    state = evidence_state(facets)
+    if state == "confirmed":
+        return 0
+    return 1 if state == "measured" else 2
+
+
+def rank_sort_key(item: Any) -> tuple[int, int, int, int, str]:
+    """A total order: evidence tier, value, then actionability, leverage, and id.
 
     The id tail is what makes it total, so ties never float between runs.
     """
     return (
+        evidence_tier(item.facets),
         -item.rank_score,
         ACTIONABILITY_ORDER[item.actionability_state],
         -item.affected_call_sites_total,
@@ -338,6 +371,8 @@ __all__ = [
     "band",
     "change_risk",
     "dominant_marker",
+    "evidence_state",
+    "evidence_tier",
     "exposure",
     "growth_source",
     "leverage",

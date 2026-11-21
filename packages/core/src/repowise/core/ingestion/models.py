@@ -42,6 +42,7 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "perl",
     "cobol",
     "gdscript",
     "vbnet",
@@ -323,6 +324,9 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: the ``(start_line, end_line)`` of each function whose body holds
+    # the statement, the only code its names are bound for. None: file-wide.
+    scopes: tuple[tuple[int, int], ...] | None = None
 
     @property
     def local_names(self) -> list[str]:
@@ -554,6 +558,10 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # 0.50 — Python: the name is imported only inside another function of
+    # this file, so here it is a local or a global that import never binds.
+    # The one such import is read as a guess.
+    "import_elsewhere",
     # The four below reach the same scopes as their untyped twins, but through
     # a receiver whose type was read off its declaration rather than written at
     # the call. They share their twin's confidence deliberately: the inferred

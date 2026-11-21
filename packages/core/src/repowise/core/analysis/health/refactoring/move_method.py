@@ -65,6 +65,7 @@ from typing import Any
 from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 from repowise.core.analysis.graph_view import heritage_ancestors
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from ....test_paths import is_test_related_path
 from ..effort import effort_bucket
@@ -150,7 +151,7 @@ def _partial_fragments(graph: Any, file_path: str, class_name: str) -> set[str]:
     if file_path not in graph:
         return set()
     return {
-        f"{other}::{class_name}"
+        make_symbol_id(other, class_name)
         for _u, other, data in graph.out_edges(file_path, data=True)
         if data.get("hint_source") == "partial_class"
         and class_name in (data.get("imported_names") or ())
@@ -308,7 +309,7 @@ def _owning_class_id(graph: Any, callee_id: str) -> str | None:
         parent = data.get("parent_name")
         file_path = data.get("file_path")
         if parent and file_path:
-            class_id = f"{file_path}::{parent}"
+            class_id = make_symbol_id(file_path, parent)
             return class_id if class_id in graph else None
         return None
     if kind == "class":
@@ -382,7 +383,7 @@ class MoveMethodDetector(RefactoringDetector):
         parent = data.get("parent_name")
         if not parent:
             return None
-        own_class_id = f"{ctx.file_path}::{parent}"
+        own_class_id = make_symbol_id(ctx.file_path, parent)
         if own_class_id not in graph:
             return None
         if _overrides(graph, data, own_class_id, ctx.language) or _uses_own_state(

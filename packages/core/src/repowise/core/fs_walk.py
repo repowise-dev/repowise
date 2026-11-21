@@ -49,7 +49,30 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["PRUNED_DIRS", "PRUNED_DIRS_DERIVED", "WalkSnapshot", "iter_glob", "walk_repo"]
+__all__ = [
+    "INDEX_BLOCKED_DIRS",
+    "POLICY_BLOCKED_DIRS",
+    "PRUNED_DIRS",
+    "PRUNED_DIRS_DERIVED",
+    "WalkSnapshot",
+    "iter_glob",
+    "walk_repo",
+]
+
+# The default skip-directory policy lives here and nowhere else. Two sets:
+#
+# - :data:`PRUNED_DIRS`: never-source directories (VCS metadata, build caches,
+#   package stores, tool state). Every walk skips them; ``walk_repo`` and
+#   ``iter_glob`` prune them by default.
+# - :data:`POLICY_BLOCKED_DIRS`: directories that can hold real code but that
+#   the index leaves out on purpose (vendored dependencies, test fixtures).
+#   Walks that read what the index reads (the traverser, dynamic hints) skip
+#   them too, through :data:`INDEX_BLOCKED_DIRS`. Discovery walks that look for
+#   manifests or build files do not, because a vendored tree still says what
+#   the repo depends on.
+#
+# A walk that needs more (``bin`` for .NET, ``bazel-out`` for Bazel) adds its
+# own extras on top of one of these sets instead of re-listing them.
 
 # Directory basenames that can NEVER hold first-party source or manifests:
 # VCS metadata, package/venv caches, and tool caches. Pruned at every level
@@ -57,9 +80,9 @@ __all__ = ["PRUNED_DIRS", "PRUNED_DIRS_DERIVED", "WalkSnapshot", "iter_glob", "w
 # real project could plausibly use as a source directory (``build``,
 # ``out``, ``dist``, ``coverage`` — coveragepy's main package literally
 # lives in ``coverage/``) belongs in :data:`PRUNED_DIRS_DERIVED` instead,
-# and ambiguous names (``bin``, ``obj``, ``lib``, ``vendor``, ``target``)
-# stay out of both — callers post-filter (dotnet skips ``bin``/``obj``,
-# go skips ``vendor``).
+# and ambiguous names (``bin``, ``obj``, ``lib``, ``target``) stay out of
+# both; callers post-filter (dotnet skips ``bin``/``obj``). ``vendor`` is
+# real code the index skips by policy, so it is in POLICY_BLOCKED_DIRS.
 PRUNED_DIRS: frozenset[str] = frozenset(
     {
         # VCS / metadata
@@ -76,6 +99,8 @@ PRUNED_DIRS: frozenset[str] = frozenset(
         ".ruff_cache",
         ".tox",
         ".nox",
+        ".eggs",
+        "site-packages",
         # JS / TS
         "node_modules",
         ".next",
@@ -107,6 +132,15 @@ PRUNED_DIRS: frozenset[str] = frozenset(
 # ``prune`` to skip only real output and still read a source package that has
 # one of those names, as the indexer does.
 PRUNED_DIRS_DERIVED: frozenset[str] = PRUNED_DIRS | frozenset({"out"})
+
+# Directories that can hold real code but that the index leaves out by
+# policy: vendored dependencies and test fixtures or scaffolding (test dirs
+# themselves are indexed and tagged as tests). A ``!`` pattern in
+# ``.repowiseIgnore`` re-includes one for the traverser.
+POLICY_BLOCKED_DIRS: frozenset[str] = frozenset({"vendor", "fixtures", "conftest"})
+
+# What the index never descends into: the never-source set plus the policy set.
+INDEX_BLOCKED_DIRS: frozenset[str] = PRUNED_DIRS | POLICY_BLOCKED_DIRS
 
 # Safety net: bail if walk depth grows pathologically. Real-world repos
 # rarely exceed depth 20; anything beyond strongly suggests a cycle.

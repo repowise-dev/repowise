@@ -532,6 +532,26 @@ def test_legacy_json_selection_moves_into_an_empty_config_yaml(clean_env, tmp_pa
     assert "repos" not in pc._load_config()
 
 
+async def test_preflight_probe_sees_a_legacy_only_selection(clean_env, tmp_path):
+    """The preflight resolves with the repo id, as the index job does, so a
+    choice left only in the legacy per-repo store is probed, not skipped."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from repowise.server.routers._repo_pricing import probe_provider
+
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    _write_store(tmp_path, {"repos": {"r1": {"provider": "openai", "model": "gpt-5.4"}}})
+    built = SimpleNamespace(
+        provider_name="openai", model_name="gpt-5.4", generate=AsyncMock(return_value="OK")
+    )
+    with patch("repowise.core.providers.llm.registry.get_provider", return_value=built):
+        result = await probe_provider(str(repo), "r1")
+
+    assert result["configured"] is True
+    assert (result["ok"], result["name"], result["model"]) == (True, "openai", "gpt-5.4")
+
+
 def test_legacy_json_selection_is_dropped_when_yaml_has_a_provider(clean_env, tmp_path):
     from repowise.core.repo_config import load_repo_config
 

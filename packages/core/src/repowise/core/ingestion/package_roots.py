@@ -23,13 +23,10 @@ of the manifest list (monorepo detection among them) never see these names.
 
 from __future__ import annotations
 
-import fnmatch
 import os
-import re
 import subprocess
 from collections.abc import Callable, Collection, Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from functools import cache
 from pathlib import Path
 
 from ..fs_walk import PRUNED_DIRS, walk_repo
@@ -41,18 +38,9 @@ def package_manifest_names() -> frozenset[str]:
     return _LANG_REGISTRY.package_manifest_filenames()
 
 
-@cache
-def _glob_manifest() -> Callable[[str], re.Match[str] | None]:
-    """Matches a file name against every manifest glob, ignoring case."""
-    globs = sorted(_LANG_REGISTRY.package_manifest_globs())
-    if not globs:
-        return lambda _name: None
-    return re.compile("|".join(map(fnmatch.translate, globs)), re.IGNORECASE).match
-
-
 def _manifests_in(filenames: Collection[str], names: frozenset[str]) -> frozenset[str]:
     """The package manifests among *filenames*: exact *names* and glob matches."""
-    return names.intersection(filenames).union(filter(_glob_manifest(), filenames))
+    return names.intersection(filenames).union(filter(_LANG_REGISTRY.matches_package_manifest_glob, filenames))
 
 
 def _default_prune(repo_root: Path) -> Callable[[Path], bool]:

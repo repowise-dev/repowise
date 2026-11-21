@@ -13,6 +13,7 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
+  DecisionAgentPromptKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -31,13 +32,22 @@ import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import {
   DecisionReviewDrawer,
+  PIN_LABEL,
+  PIN_TITLE,
   PUT_IN_FORCE_LABEL,
-  PinVerb,
   PinnedMark,
+  UNPIN_LABEL,
+  UNPIN_TITLE,
 } from "./decision-review-drawer";
 import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
 import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { Check, ClipboardCopy } from "lucide-react";
+import {
+  DocsMoreMenu,
+  type DocsMenuGroup,
+  type DocsMenuItem,
+  type DocsMenuLinkComponent,
+} from "../docs/docs-more-menu";
 
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -103,7 +113,7 @@ const LANE_DESCRIPTION: Record<DecisionSection, string> = {
   recent:
     "What your agents decided in the last week, newest first: who put each decision in force, and the commit it landed in.",
   candidates:
-    "Mined from pull requests, commits, comments and sessions. Not in force: agents ask about them through get_why for the why behind the code. You can put one in force, or dismiss it.",
+    "Mined from pull requests, commits, comments and sessions. Not in force: agents ask about them through get_why for the why behind the code. Hand one to your agent with its prompt, or decide it yourself from its menu.",
   history:
     "Decisions that were in force and then withdrawn, superseded or dismissed, or whose files no longer exist. Kept so the record of what changed survives.",
 };
@@ -126,6 +136,46 @@ export const REVIEW_WITH_AGENT_LABEL = "Check with your agent";
 
 /** The agent action for recording decisions nobody wrote down yet. */
 export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
+
+/** The prompts the server renders about one record. */
+export type DecisionRecordPromptKind = Extract<
+  DecisionAgentPromptKind,
+  "review" | "edit" | "veto" | "pin" | "unpin"
+>;
+
+/** The currencies of a decision that has left force. */
+const RETIRED_CURRENCIES: ReadonlySet<string> = new Set(["superseded", "dismissed", "stale"]);
+
+/**
+ * Which prompts a record gets, primary first: a background record the check;
+ * a decision in force change, veto, and pin or unpin; a retired or dismissed
+ * one none, since it was settled and checking it again would undo that.
+ */
+export function recordPromptKinds(
+  d: Pick<DecisionRecord, "currency" | "pinned" | "status">,
+): DecisionRecordPromptKind[] {
+  if (d.currency == null) return d.status === "proposed" ? ["review"] : [];
+  if (RETIRED_CURRENCIES.has(d.currency)) return [];
+  return ["edit", "veto", d.pinned ? "unpin" : "pin"];
+}
+
+/** Each record prompt as a menu item names it. */
+export const RECORD_PROMPT_MENU_LABEL: Record<DecisionRecordPromptKind, string> = {
+  review: "Copy prompt to check it",
+  edit: "Copy prompt to change it",
+  veto: "Copy prompt to veto it",
+  pin: "Copy prompt to pin it",
+  unpin: "Copy prompt to unpin it",
+};
+
+/** What a copied record prompt asks, for the status line. */
+const RECORD_PROMPT_VERB: Record<DecisionRecordPromptKind, string> = {
+  review: "check",
+  edit: "change",
+  veto: "veto",
+  pin: "pin",
+  unpin: "unpin",
+};
 
 export interface DecisionReviewLanesProps {
   lane: DecisionSection;
@@ -209,11 +259,26 @@ export interface DecisionReviewLanesProps {
     onProgress: (settled: number) => void,
   ) => Promise<BulkReviewResult>;
   /**
-   * The prompt that hands the candidates to the reader's agent to review,
-   * built on click. Shown on the Candidates lane while it has rows; omit it
-   * and the lane offers no agent action.
+   * @deprecated No longer drawn. The page's discovery prompt leads the page
+   * in `DecisionAgentHero`; each row carries its own prompt through
+   * `loadRecordPrompt`. Kept so existing hosts compile.
    */
   reviewPrompt?: () => string;
+  /**
+   * Reads one record's prompt from the server. Given, each row's primary
+   * action copies its first prompt (the check for a background record, the
+   * change for one in force) and its menu offers the rest. Resolve `null`
+   * when the server has none; the row reports that the copy failed.
+   */
+  loadRecordPrompt?: (
+    decision: DecisionRecord,
+    kind: DecisionRecordPromptKind,
+  ) => Promise<string | null | undefined>;
+  /**
+   * A line above the rows saying the host narrowed the section (for example
+   * to decisions whose code changed), with the way back.
+   */
+  filterNote?: React.ReactNode;
 }
 
 export function DecisionReviewLanes({
@@ -238,7 +303,8 @@ export function DecisionReviewLanes({
   onPin,
   recordPrompts,
   onDismissMany,
-  reviewPrompt,
+  loadRecordPrompt,
+  filterNote,
 }: DecisionReviewLanesProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent as LinkLike;
@@ -255,7 +321,9 @@ export function DecisionReviewLanes({
     lane === "candidates" && onDismissMany !== undefined && !readOnlyReason;
 
   const bulkRun = useBulkSelection(rows, lane, selectable ? onDismissMany : undefined);
-  const { selected, bulk } = bulkRun;
+  const { selected, bulk, selecting } = bulkRun;
+  const copies = useRecordPromptCopy(loadRecordPrompt);
+  const listRef = React.useRef<HTMLDivElement>(null);
 
   // Acting from the drawer moves it to the next record, which is what makes
   // the drawer a queue and not a detour. Read before the host refreshes
@@ -281,7 +349,13 @@ export function DecisionReviewLanes({
     onPin,
     readOnlyReason,
     pendingIds,
-    selection: selectable ? bulkRun.selection : undefined,
+    selection: selectable && selecting ? bulkRun.selection : undefined,
+    copyPrompt: loadRecordPrompt ? copies.copy : undefined,
+    copiedId: copies.copied,
+    openRecord: (d) => setOpenId(d.id),
+    recordHref: (d) => `${prefix}/decisions/${d.id}`,
+    Link,
+    afterRemove: () => requestAnimationFrame(() => listRef.current?.focus()),
   });
 
   const tabs: ViewTab[] = DECISION_SECTIONS.map((id) => {
@@ -302,10 +376,27 @@ export function DecisionReviewLanes({
         order={order}
         source={source}
         onSourceChange={onSourceChange}
-        // The section's one agent action: a queue of background records is
-        // work an agent can check against the code and history, one by one.
-        reviewPrompt={lane === "candidates" && rows.length > 0 ? reviewPrompt : undefined}
+        // Off by default, so the section reads as a list rather than a form.
+        selectToggle={
+          selectable && rows.length > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-pressed={selecting}
+              disabled={bulkRun.selection.busy}
+              onClick={() => bulkRun.setSelecting(!selecting)}
+            >
+              {selecting ? "Done selecting" : "Select"}
+            </Button>
+          ) : null
+        }
       />
+      {filterNote && (
+        <div className="text-xs text-[var(--color-text-secondary)]">{filterNote}</div>
+      )}
+      <p role="status" aria-live="polite" className="text-xs text-[var(--color-text-secondary)] empty:hidden">
+        {copies.note}
+      </p>
 
       {error ? (
         <ApiError
@@ -317,7 +408,7 @@ export function DecisionReviewLanes({
         isLoading ? null : <SectionEmpty lane={lane} source={source} />
       ) : (
         <>
-          {selectable && (selected.size > 0 || bulk !== null) && (
+          {selectable && selecting && (selected.size > 0 || bulk !== null) && (
             <BulkBar
               selected={selected.size}
               bulk={bulk}
@@ -330,16 +421,18 @@ export function DecisionReviewLanes({
               the quote is clamped here and read in full in the drawer, so the
               queue scans as columns and a reviewer can compare what is
               waiting instead of reading it top to bottom. */}
-          <ResponsiveTable
-            columns={columns}
-            rows={rows}
-            rowKey={(d) => d.id}
-            onRowClick={(d) => setOpenId(d.id)}
-            selectedKey={openId}
-            caption={`${SECTION_LABEL[lane]} decisions`}
-            bare
-            className="border-y border-[var(--color-border-subtle)]"
-          />
+          <div ref={listRef} tabIndex={-1} className="focus:outline-none">
+            <ResponsiveTable
+              columns={columns}
+              rows={rows}
+              rowKey={(d) => d.id}
+              onRowClick={(d) => setOpenId(d.id)}
+              selectedKey={openId}
+              caption={`${SECTION_LABEL[lane]} decisions`}
+              bare
+              className="border-y border-[var(--color-border-subtle)]"
+            />
+          </div>
         </>
       )}
       <DecisionReviewDrawer
@@ -365,20 +458,20 @@ export function DecisionReviewLanes({
 
 /**
  * What the section holds, the order the host fetched it in, and its controls:
- * the agent action and the source filter.
+ * the selection toggle and the source filter.
  */
 function SectionToolbar({
   lane,
   order,
   source,
   onSourceChange,
-  reviewPrompt,
+  selectToggle,
 }: {
   lane: DecisionSection;
   order: "review" | undefined;
   source: string;
   onSourceChange: ((source: string) => void) | undefined;
-  reviewPrompt: (() => string) | undefined;
+  selectToggle: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -389,9 +482,7 @@ function SectionToolbar({
         )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        {reviewPrompt && (
-          <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
-        )}
+        {selectToggle}
         {onSourceChange && <SourceFilter source={source} onSourceChange={onSourceChange} />}
       </div>
     </div>
@@ -507,6 +598,18 @@ interface ColumnContext {
   readOnlyReason?: string | undefined;
   pendingIds?: ReadonlySet<string> | undefined;
   selection?: Selection | undefined;
+  copyPrompt?: ((decision: DecisionRecord, kind: DecisionRecordPromptKind) => void) | undefined;
+  /** The row whose prompt was just copied, for its button's acknowledgement. */
+  copiedId?: string | null | undefined;
+  /** Opens the record in the drawer; without it the menu offers the full page only. */
+  openRecord?: ((decision: DecisionRecord) => void) | undefined;
+  recordHref: (decision: DecisionRecord) => string;
+  Link: LinkLike;
+  /**
+   * After a verb that takes the row out of the section: focus moves to the
+   * list, so it does not fall to the page with the row's menu button.
+   */
+  afterRemove?: (() => void) | undefined;
 }
 
 
@@ -611,12 +714,15 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
 }
 
 /**
- * One primary verb per row, and only in the section where it means something.
- * Everything else on the record lives in its drawer and on its detail page.
+ * One primary verb per row, the record's prompt, and a menu for the rest, in
+ * the sections where they mean something. A retired record has no verb: it
+ * was settled, and its drawer and detail page hold the record.
  */
 function hasRowVerbs(ctx: ColumnContext): boolean {
   if (ctx.lane === "candidates") return true;
-  return IN_FORCE_SECTIONS.has(ctx.lane) && Boolean(ctx.onPin || ctx.onReaffirm);
+  return (
+    IN_FORCE_SECTIONS.has(ctx.lane) && Boolean(ctx.onPin || ctx.onReaffirm || ctx.copyPrompt)
+  );
 }
 
 /** Who put a recent decision in force, and where. */
@@ -778,91 +884,307 @@ function renderChangedCell(d: DecisionRecord) {
 /** The row is clickable, so a verb must not also open the drawer. */
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
-function ReaffirmAction({
-  d,
-  pending,
-  onReaffirm,
-}: {
-  d: DecisionRecord;
-  pending: boolean;
-  onReaffirm: (decision: DecisionRecord) => void;
-}) {
-  return (
-    <div className="flex justify-end" onClick={stop} onKeyDown={stop}>
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={pending}
-        title="Still right after re-reading it: mark it current again"
-        onClick={() => onReaffirm(d)}
-      >
-        {pending ? "Reaffirming..." : "Reaffirm"}
-      </Button>
-    </div>
-  );
-}
-
-/** Reaffirm on a decision whose files moved, and Pin or Unpin. */
-function InForceActions({
-  d,
-  ctx,
-  pending,
-}: {
-  d: DecisionRecord;
-  ctx: ColumnContext;
-  pending: boolean;
-}) {
-  const reaffirm = d.currency === "needs_review" ? ctx.onReaffirm : undefined;
-  return (
-    <div className="flex justify-end gap-1.5" onClick={stop} onKeyDown={stop}>
-      {reaffirm && <ReaffirmAction d={d} pending={pending} onReaffirm={reaffirm} />}
-      {ctx.onPin && <PinVerb d={d} pending={pending} onPin={ctx.onPin} />}
-    </div>
-  );
-}
-
-function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
-  const { onAccept, onDismiss, readOnlyReason } = ctx;
-  const pending = ctx.pendingIds?.has(d.id) ?? false;
-  if (readOnlyReason) {
-    return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
+/**
+ * The person's own verbs on a background record. Put in force acts at once
+ * when the record carries what the contract needs; otherwise it opens the
+ * record, where the reason field and the list of gaps are.
+ */
+function backgroundManualItems(
+  d: DecisionRecord,
+  ctx: ColumnContext,
+  pending: boolean,
+): DocsMenuItem[] {
+  const items: DocsMenuItem[] = [];
+  const { onAccept, onDismiss } = ctx;
+  if (onAccept) {
+    // The same checks the engine refuses on, asked before the verb is offered.
+    const blockers = decisionAcceptanceBlockers(d);
+    items.push(
+      blockers.length > 0
+        ? {
+            key: "accept",
+            label: `${PUT_IN_FORCE_LABEL}…`,
+            description: `${capitalize(blockers.map(shortGap).join("; "))}. Opens the record to fix.`,
+            ...(ctx.openRecord
+              ? { onSelect: () => ctx.openRecord?.(d) }
+              : { href: ctx.recordHref(d) }),
+          }
+        : {
+            key: "accept",
+            label: PUT_IN_FORCE_LABEL,
+            disabled: pending,
+            onSelect: () => {
+              onAccept(d);
+              ctx.afterRemove?.();
+            },
+          },
+    );
   }
-  if (IN_FORCE_SECTIONS.has(ctx.lane)) return <InForceActions d={d} ctx={ctx} pending={pending} />;
-  if (!onAccept && !onDismiss) return null;
-  // The same checks the engine refuses on, asked before the button is drawn,
-  // so a candidate that names nothing does not sit beside an Accept that
-  // could only fail.
-  const blockers = decisionAcceptanceBlockers(d);
+  if (onDismiss) {
+    items.push({
+      key: "dismiss",
+      label: "Dismiss",
+      disabled: pending,
+      onSelect: () => {
+        onDismiss(d);
+        ctx.afterRemove?.();
+      },
+    });
+  }
+  return items;
+}
+
+/** The person's own verbs on a decision in force: pin or unpin, and reaffirm where its files moved. */
+function inForceManualItems(
+  d: DecisionRecord,
+  ctx: ColumnContext,
+  pending: boolean,
+): DocsMenuItem[] {
+  const items: DocsMenuItem[] = [];
+  const { onPin } = ctx;
+  if (onPin) {
+    const pinned = d.pinned === true;
+    items.push({
+      key: "pin",
+      label: pinned ? UNPIN_LABEL : PIN_LABEL,
+      description: pinned ? UNPIN_TITLE : PIN_TITLE,
+      disabled: pending,
+      // The row stays, so focus goes back to its menu button.
+      restoresFocus: true,
+      onSelect: () => onPin(d, !pinned),
+    });
+  }
+  const reaffirm = d.currency === "needs_review" ? ctx.onReaffirm : undefined;
+  if (reaffirm) {
+    items.push({
+      key: "reaffirm",
+      label: "Still holds (reaffirm)",
+      description: "Still right after re-reading it: mark it current again",
+      disabled: pending,
+      restoresFocus: true,
+      onSelect: () => reaffirm(d),
+    });
+  }
+  return items;
+}
+
+const ROW_COPY_CLS =
+  "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border-default)] px-2 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-action-soft-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+
+/**
+ * Revealed on hover and focus where a pointer can hover, always on touch. A
+ * background row keeps it visible: that row is the one asking for work.
+ */
+const ROW_COPY_REVEAL =
+  "opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 group-data-[selected=true]/row:opacity-100 [@media(hover:none)]:opacity-100";
+
+/**
+ * The row's verbs: the record's prompt as the one visible action, and a named
+ * menu grouped by who acts. Handing the record to an agent comes first; the
+ * person's own verbs are one click deeper, never gone.
+ */
+function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
+  const pending = ctx.pendingIds?.has(d.id) ?? false;
+  if (ctx.readOnlyReason) {
+    return <span className="text-xs text-[var(--color-text-tertiary)]">{ctx.readOnlyReason}</span>;
+  }
+  const title = stripMarkdown(d.title);
+  const copy = ctx.copyPrompt;
+  const kinds = copy ? recordPromptKinds(d) : [];
+  const primary = kinds[0];
+  const background = ctx.lane === "candidates";
+  const manual = background
+    ? backgroundManualItems(d, ctx, pending)
+    : inForceManualItems(d, ctx, pending);
+  const groups: DocsMenuGroup[] = [
+    {
+      key: "agent",
+      label: "Hand to your agent",
+      items: copy
+        ? kinds.map((kind) => ({
+            key: `prompt-${kind}`,
+            label: RECORD_PROMPT_MENU_LABEL[kind],
+            restoresFocus: true,
+            onSelect: () => copy(d, kind),
+          }))
+        : [],
+    },
+    {
+      key: "manual",
+      label: background ? "Decide it yourself" : "Do it yourself",
+      items: manual,
+    },
+    {
+      key: "record",
+      items: [
+        ...(ctx.openRecord
+          ? [{ key: "open", label: "Read the record here", onSelect: () => ctx.openRecord?.(d) }]
+          : []),
+        { key: "page", label: "Open and edit the full record", href: ctx.recordHref(d) },
+      ],
+    },
+  ];
+  const copied = primary !== undefined && ctx.copiedId === d.id;
   return (
-    <div className="flex flex-col items-end gap-1" onClick={stop} onKeyDown={stop}>
-      <div className="flex items-center justify-end gap-1.5">
-        {onDismiss && (
-          <Button variant="ghost" size="sm" disabled={pending} onClick={() => onDismiss(d)}>
-            Dismiss
-          </Button>
-        )}
-        {onAccept && (
-          <Button
-            size="sm"
-            disabled={pending || blockers.length > 0}
-            title={blockers.length ? blockers.map(shortGap).join("; ") : undefined}
-            onClick={() => onAccept(d)}
-          >
-            {pending ? "Putting in force…" : PUT_IN_FORCE_LABEL}
-          </Button>
-        )}
-      </div>
-      {/* Text, not only a tooltip: a disabled button takes no focus. Dismiss
-          stays available, because a candidate that cannot be accepted is
-          exactly the one worth tombstoning. The drawer says how to fill it. */}
-      {onAccept && blockers.length > 0 && (
-        <p className="max-w-[24ch] text-right text-xs text-[var(--color-text-tertiary)]">
-          {/* The drawer holds the fix, including the reason field. */}
-          {capitalize(blockers.map(shortGap).join("; "))}. Open it to fix.
-        </p>
+    // React bubbles through the menu's portal, so this also keeps a menu
+    // item's click from reaching the row.
+    <div className="flex items-center justify-end gap-1" onClick={stop} onKeyDown={stop}>
+      {pending && (
+        <span className="whitespace-nowrap text-xs text-[var(--color-text-tertiary)]">Saving…</span>
       )}
+      {copy && primary && (
+        <button
+          type="button"
+          onClick={() => copy(d, primary)}
+          aria-label={`${RECORD_PROMPT_MENU_LABEL[primary]}: ${title}`}
+          className={cn(ROW_COPY_CLS, !background && !copied && ROW_COPY_REVEAL)}
+        >
+          {copied ? (
+            <Check aria-hidden className="h-3.5 w-3.5 text-[var(--color-success)]" />
+          ) : (
+            <ClipboardCopy aria-hidden className="h-3.5 w-3.5" />
+          )}
+          {copied ? "Copied" : "Copy prompt"}
+        </button>
+      )}
+      <DocsMoreMenu
+        iconOnly
+        label={`More actions for ${title}`}
+        groups={groups}
+        LinkComponent={ctx.Link as unknown as DocsMenuLinkComponent}
+      />
     </div>
   );
+}
+
+export interface DecisionRecordActionsProps {
+  decision: DecisionRecord;
+  /** The section the record is shown under; it decides which verbs apply. */
+  section: DecisionSection;
+  onAccept?: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void;
+  onDismiss?: (decision: DecisionRecord) => void;
+  onReaffirm?: (decision: DecisionRecord) => void;
+  onPin?: (decision: DecisionRecord, pinned: boolean) => void;
+  loadRecordPrompt?: DecisionReviewLanesProps["loadRecordPrompt"];
+  pending?: boolean;
+  readOnlyReason?: string;
+  /** The record's full page. */
+  href: string;
+  LinkComponent?: DecisionReviewLanesProps["LinkComponent"];
+}
+
+/**
+ * One record's verbs outside the table, the same prompt button and menu a
+ * table row carries, for a list such as the digest's This week.
+ */
+export function DecisionRecordActions({
+  decision,
+  section,
+  onAccept,
+  onDismiss,
+  onReaffirm,
+  onPin,
+  loadRecordPrompt,
+  pending = false,
+  readOnlyReason,
+  href,
+  LinkComponent = "a",
+}: DecisionRecordActionsProps) {
+  const copies = useRecordPromptCopy(loadRecordPrompt);
+  const ctx: ColumnContext = {
+    lane: section,
+    showHotspots: false,
+    onAccept,
+    onDismiss,
+    onReaffirm,
+    onPin: IN_FORCE_SECTIONS.has(section) ? onPin : undefined,
+    readOnlyReason,
+    pendingIds: pending ? new Set([decision.id]) : undefined,
+    copyPrompt: loadRecordPrompt ? copies.copy : undefined,
+    copiedId: copies.copied,
+    recordHref: () => href,
+    Link: LinkComponent as LinkLike,
+  };
+  return (
+    <>
+      <RowActions d={decision} ctx={ctx} />
+      <span role="status" aria-live="polite" className="sr-only">
+        {copies.note}
+      </span>
+    </>
+  );
+}
+
+/**
+ * Copies one record's prompt, which the host reads from the server, and says
+ * so on the status line. The write starts inside the click with the text
+ * still on its way, because Safari only lets a page write the clipboard
+ * during the gesture; a browser without promised items takes the plain write.
+ */
+function useRecordPromptCopy(load: DecisionReviewLanesProps["loadRecordPrompt"]) {
+  const [note, setNote] = React.useState("");
+  const [copied, setCopied] = React.useState<string | null>(null);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The latest copy wins: a slower earlier read must not report over a later
+  // one, or the line would name a record the clipboard does not hold.
+  const latest = React.useRef(0);
+  React.useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const copy = React.useCallback(
+    (d: DecisionRecord, kind: DecisionRecordPromptKind) => {
+      if (!load) return;
+      const title = stripMarkdown(d.title);
+      const run = ++latest.current;
+      void copyPending(load(d, kind)).then((ok) => {
+        if (run !== latest.current) return;
+        setCopied(ok ? d.id : null);
+        setNote(
+          ok
+            ? `Copied the prompt to ${RECORD_PROMPT_VERB[kind]} "${title}". Paste it into your agent.`
+            : `Couldn't copy the prompt for "${title}".`,
+        );
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          setCopied(null);
+          setNote("");
+        }, 4000);
+      });
+    },
+    [load],
+  );
+  return { copy, copied, note };
+}
+
+async function copyPending(pending: Promise<string | null | undefined>): Promise<boolean> {
+  const text = pending.then((t) => {
+    if (!t) throw new Error("No prompt for this record.");
+    return t;
+  });
+  // Observed here so a refused read never surfaces as an unhandled rejection.
+  text.catch(() => undefined);
+  try {
+    if (typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function") {
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": text.then((t) => new Blob([t], { type: "text/plain" })),
+          }),
+        ]);
+        return true;
+      } catch {
+        // No promised clipboard items here: the plain write below. Safari has
+        // let go of the gesture by then, so it reports false there.
+      }
+    }
+    await navigator.clipboard.writeText(await text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -118,7 +118,7 @@ from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
 from .edit_capture import capture_edit
-from .read_state import _handle_edit_post, _handle_read_post, _record_edit
+from .read_state import _handle_edit_post, _handle_read_post, _record_edit, bind_agent
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
@@ -208,6 +208,8 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
     except json.JSONDecodeError:
         return
 
+    # A subagent shares its parent's session id; its state must not.
+    bind_agent(payload)
     event = payload.get("hook_event_name", "")
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})

@@ -18,6 +18,7 @@ from repowise.cli.agent_targets import formats  # noqa: F401  (package import sm
 from repowise.cli.agent_targets.formats import json_merge, marker_block
 from repowise.cli.agent_targets.registry import (
     detect_all,
+    diagnose,
     get_target,
     list_target_ids,
     resolve_target_flag,
@@ -893,7 +894,7 @@ def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
     monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "no_settings.json")
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: desktop)
 
-    report = target_mod.TARGET.doctor()
+    report = diagnose(target_mod.TARGET)
     assert report.status is DoctorStatus.OK
 
 
@@ -930,11 +931,12 @@ def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
     monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: user_config)
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
 
-    report = target_mod.TARGET.doctor()
+    report = diagnose(target_mod.TARGET)
     assert report.status is not DoctorStatus.OK
     assert any("registered twice" in issue for issue in report.issues)
     assert not any("—" in issue for issue in report.issues)
-    assert report.fix_command == "repowise agents remove --target=claude-code"
+    # The plugin stays; the user entry repowise wrote is the copy to drop.
+    assert report.fix_command == "repowise agents remove --target=claude-code --scope=user"
 
 
 def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
@@ -973,8 +975,8 @@ def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
     monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: tmp_path / "none.json")
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
 
-    assert target_mod.TARGET.doctor().status is DoctorStatus.OK
-    report = target_mod.TARGET.doctor(repo_path=repo)
+    assert diagnose(target_mod.TARGET).status is DoctorStatus.OK
+    report = diagnose(target_mod.TARGET, repo_path=repo)
     assert report.status is not DoctorStatus.OK
     issue = next(i for i in report.issues if "registered twice" in i)
     assert str(repo / ".mcp.json") in issue
@@ -2063,7 +2065,7 @@ def test_codex_keeps_user_keys_added_to_its_server_table(tmp_path: Path) -> None
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20", 'startup_timeout_sec = 20\nenv_key = "mine"'
+            "startup_timeout_sec = 60", 'startup_timeout_sec = 60\nenv_key = "mine"'
         ),
         encoding="utf-8",
     )
@@ -2094,8 +2096,8 @@ def test_codex_preserves_an_env_table_rather_than_choking_on_it(tmp_path: Path) 
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20",
-            'startup_timeout_sec = 20\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
+            "startup_timeout_sec = 60",
+            'startup_timeout_sec = 60\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
         ),
         encoding="utf-8",
     )
@@ -2124,7 +2126,7 @@ def test_codex_refuses_a_value_it_cannot_rewrite_without_a_traceback(tmp_path: P
     config_path = repo / ".codex" / "config.toml"
     before = config_path.read_text(encoding="utf-8")
     config_path.write_text(
-        before.replace("startup_timeout_sec = 20", "startup_timeout_sec = 20\nports = [1, 2]"),
+        before.replace("startup_timeout_sec = 60", "startup_timeout_sec = 60\nports = [1, 2]"),
         encoding="utf-8",
     )
     poisoned = config_path.read_text(encoding="utf-8")

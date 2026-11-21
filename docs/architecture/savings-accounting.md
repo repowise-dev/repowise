@@ -108,9 +108,11 @@ sides, since Claude Code numbers the replacement it is handed too.
 
 | Tool | `R` | Why that is what it replaces |
 |---|---|---|
-| `get_symbol` | one Read of each file a served body came from | the agent opens the file to find and read the symbol |
+| `get_symbol` | one Read of each file a served body came from; for a name the index lacks, served as live lines, one Read of that file | the agent opens the file to find and read the symbol |
 | `get_context` file card, with or without skeleton | one Read of the file, once per file per call | the card answers what the file holds and how it is laid out, which is why the agent would open it |
 | `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
+| `get_context` references block marked `complete` | 400 per referencing file, on top of the card | each file is one the agent would otherwise have found by searching for the symbol |
+| `search_codebase` | 400 per distinct file in `results`, plus 1,584 when it served `lines` | opening each hit; `lines` are the grep the agent would have run, and a capped grep measures 1,584 tokens on this repository (5,443 uncapped) |
 | `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
 | `get_answer`, low confidence or no provider | one Read per file whose whole verified body it inlined, plus 400 per other file it points at | a reply that says "verify" does not replace those reads; it replaces the search, as `search_codebase` credits, and any body it served, as `get_symbol` credits |
 | `get_why` | 3,000 per call that serves evidence, plus 2,000 per file whose history it serves (cap 15,000) | searching decision records and commits for the question, and `git log -p` on each file: its median is 2,054 tokens across 23 httpx files and 3,089 across 16 files of this repository |
@@ -135,6 +137,45 @@ floor applies. Each tool decides that from its own reply:
 A reply that ran and found nothing to report, such as a dead-code sweep with no
 findings or a conformance check with no violations, still answered the question
 and keeps its floor.
+
+## Files not opened and tool calls answered
+
+A usable event lists the files it served in place of a Read, as paths with the
+tokens of one Read each, in `savings_event_files` beside the event. Never file
+contents. At most 50 files per event; beyond that the list is cut and the token
+credit is unchanged.
+
+| Surface | Files listed | Size of each |
+|---|---|---|
+| MCP `get_context` | File cards, and the file a symbol skeleton renders | One Read, as the counterfactual measured it |
+| MCP `get_answer` | Cited files of an answered reply; inlined whole bodies otherwise | Same |
+| MCP `get_symbol` | The file each served body or range came from | Same |
+| Hook re-read collapse and Read skeleton | The file whose Read was replaced | The replaced Read |
+
+Search hits, module cards, references and edit sets are not listed: they point
+at files the agent still opens, and the reply never sized a Read of them.
+Sizes come from the counterfactual's own measurement, so listing adds no file
+or index access to a tool call or hook.
+
+The count is distinct (session, path). Within one host session a path is
+credited once across surfaces, owned by the first usable event that served it.
+A Read of that path later in the session, seen by the Read hook, cancels the
+credit (`savings_file_reads`). The session key is hashed without the surface
+or the repository root: the hooks key it by the host's session id, and the MCP
+server by the same id when the host exports it (`CLAUDE_CODE_SESSION_ID`),
+otherwise by its own connection id. An event with no session counts on its own.
+
+The Read hook knows which paths to note from its own per-window session state:
+paths it replaced, and paths a repowise MCP reply served in that window. So a
+cancellation needs the Read hook and the MCP PostToolUse hook installed, and a
+subagent's Read cancels only credits made in its own window. A collapsed
+re-read credits a file the agent opened earlier in the session, because the
+Read it replaced is one the agent did not have to pay for again. Each window
+(`days`) assigns ownership within itself, so a session that spans a window edge
+can credit a path in both windows.
+
+`tool_calls_answered` counts usable MCP, VS Code tool and hook events. Distill
+rows are command output, not tool calls.
 
 ## Correlation and attribution
 
@@ -163,6 +204,17 @@ lands, and an event from an agent since retired still reads back as that agent.
 Never infer agent or model from headers, capabilities, environment variables,
 executable parents, or transport. Session, request and tool-call IDs and model
 stay null until an adapter supplies trustworthy evidence.
+
+The hooks have that evidence. A hook that replaces a tool result is handed the
+serving agent's adapter, and its payload carries the agent's `session_id` and,
+inside a subagent, the subagent's `agent_id`; the event records all three, the
+subagent as `subagent_id`. A command the rewrite hook turned into
+`repowise distill` hears only the hook's `--source` label, which names the
+adapter (`hook-bash` and `hook-powershell` are Claude Code's, every other
+adapter writes `hook-<name>`), so its event records that agent and no session
+or subagent: passing either would need a new `repowise distill` flag, which an
+older install on PATH would run as the command. MCP has no per-subagent signal,
+so its `subagent_id` stays null.
 
 The v1 metadata allow-list is `client_info_normalized` and
 `identity_mapping_version`. Values are bounded strings; no raw prompts,
@@ -209,6 +261,12 @@ cached in the sidecar (`pricing-snapshot.json`, 24-hour TTL). Detecting the
 coding agent's model scans the local transcripts, which measures around six
 seconds on a repository with no Codex history, so it cannot run per event.
 
+One scan records each detected agent's newest model (Claude Code, Codex) beside
+the newest model overall. An event from a detected agent is priced at that
+agent's own model, or left unpriced when that agent was not sighted; it never
+takes another agent's model. Any other agent takes the newest model, and with
+nothing sighted every agent shares the default rate.
+
 **No agent-facing surface ever resolves it.** The MCP path, the rewrite hook
 and the augment hook all read the cache and write an unpriced event when it is
 cold. Each of them runs inside the agent's own tool call, where a six-second
@@ -221,6 +279,16 @@ So a repository that has only ever served MCP calls reports its savings as
 unpriced until someone runs either command. That is a reported state, not a
 gap: the report counts priced and unpriced tokens separately, and the surfaces
 say which is which.
+
+The report then prices what it can of the unpriced tokens, without writing
+anything back: at the rate another event of the same session captured, else at
+the cached rate for the event's agent (cache only, never a scan). Session ids
+are hashed per surface, so the session match only joins events of one surface.
+The default rate a scan falls back to when it sighted no model is never used.
+The result is
+reported as `backfilled_saved_input_tokens` and `backfilled_input_savings_usd`,
+a subset of the unpriced tokens and apart from `priced_input_savings_usd`, which
+keeps meaning "rate captured when it happened".
 
 ## One report, three consumers
 

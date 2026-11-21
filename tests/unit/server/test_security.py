@@ -220,6 +220,32 @@ async def test_masked_credential_snippet_still_locates_its_line(
 
 
 @pytest.mark.asyncio
+async def test_a_credential_is_served_by_kind_and_place_only(client: AsyncClient, app) -> None:
+    from repowise.core.analysis.security_scan import masked_snippet
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    repo = await create_test_repo(client)
+    src = Path(repo["local_path"]) / "app.py"
+    src.write_text(f"import os\n\nAPI_KEY = '{value}'\neval(x)\n")
+    snippet = masked_snippet(f"API_KEY = '{value}'")
+    assert snippet.startswith("API_KEY = 'Zq9X")  # what the store keeps
+    await _insert(app.state.session_factory, repo["id"], snippet=snippet, line_number=3)
+    await _insert(
+        app.state.session_factory, repo["id"], kind="eval_call", snippet="eval(x)", line_number=4
+    )
+
+    response = await client.get(f"/api/repos/{repo['id']}/security")
+    text = response.text
+    assert "API_KEY" not in text and "****" not in text
+    for at in range(len(value) - 2):
+        assert value[at : at + 3] not in text
+    rows = {r["kind"]: r for r in response.json()}
+    secret = rows["hardcoded_secret"]
+    assert (secret["snippet"], secret["line_number"], secret["line_verified"]) == ("", 3, True)
+    assert rows["eval_call"]["snippet"] == "eval(x)"
+
+
+@pytest.mark.asyncio
 async def test_path_outside_the_repo_is_not_read(client: AsyncClient, app) -> None:
     """A finding path is not a licence to read anywhere on disk."""
     repo = await create_test_repo(client)

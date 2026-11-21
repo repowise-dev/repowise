@@ -140,12 +140,17 @@ class RepoUpdateResult:
     # "update_failed". ``skipped_reason`` is then "full_index_required", and
     # ``error`` carries the exception on "update_failed".
     full_index_reason: str | None = None
-    # True when every file's health was re-scored this run, so the caller can
-    # stamp ``last_full_rescore_at`` / ``health_analyzer_version``.
+    # True when every file's health was re-scored this run over git rows that
+    # reached the store, so the caller can stamp ``last_full_rescore_at`` /
+    # ``health_analyzer_version``.
     health_rescored: bool = False
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
     graph_update: dict[str, Any] | None = None
+    # The state.json "pending_repair" marker this run leaves: the range a
+    # range-scoped persist step failed on, so the next update re-covers it.
+    # None clears the marker.
+    pending_repair: dict[str, Any] | None = None
 
 
 @dataclass
@@ -201,6 +206,7 @@ async def _incremental_repo_update(
     """
     from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
     from ...pipeline.incremental.feature import incremental_graph_enabled
+    from ...pipeline.incremental.repair import record_repair_marker
     from ...pipeline.phase_timing import PhaseTimings, timed
     from ...pipeline.phases.git import drop_transient_git_signals
     from ...repo_config import load_repo_config
@@ -214,9 +220,10 @@ async def _incremental_repo_update(
         file_diffs, working_tree_paths = await asyncio.to_thread(
             _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
         )
-    if not file_diffs and not force_full_git:
+    if not file_diffs and not force_full_git and not rescore_health:
         # Nothing the index cares about changed: report success so the caller
-        # bumps ``last_sync_commit`` instead of re-diffing forever.
+        # bumps ``last_sync_commit`` instead of re-diffing forever. A re-score
+        # still runs: it is owed for every file, changed or not.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
 
     # A moved or copied checkout's store still names the old path; adopt its
@@ -338,6 +345,8 @@ async def _incremental_repo_update(
         )
 
     kg_state = _export_kg_state(repo_path, alias, kg)
+    marker: dict[str, Any] = {}
+    record_repair_marker(marker, state, failed_steps)
     timings.stop("run")
     return RepoUpdateResult(
         alias=alias,
@@ -348,8 +357,11 @@ async def _incremental_repo_update(
         phase_timings=timings.totals,
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
-        health_rescored=rescored_report is not None,
+        # The re-score reads git rows from the store: scored over rows that did
+        # not land, it is not stamped, so the next run re-scores with the walk.
+        health_rescored=rescored_report is not None and "Git persist" not in failed_steps,
         graph_update=getattr(graph_builder, "incremental_graph_decision", None),
+        pending_repair=marker.get("pending_repair"),
     )
 
 
@@ -507,6 +519,7 @@ async def _partial_analysis(
         log=_log.info,
         health=health,
         timings=timings,
+        base_ref=base_ref,
     )
     doc_drift_report = run_doc_drift_partial(
         graph_builder,
@@ -620,6 +633,16 @@ async def update_single_repo_index(
     reason = _full_index_reason(repo_path, drift, base_ref, has_persisted_index)
     update_error: str | None = None
     if reason is None:
+        # Re-cover a range an earlier update failed to persist, as the
+        # single-repo update does.
+        from ...pipeline.incremental.repair import resolve_repair_base, unchecked_repair_marker
+
+        base_ref, give_up = resolve_repair_base(repo_path, state, str(base_ref), None)
+        if give_up is not None:
+            _log.warning("workspace_update: %s dropping a pending repair: %s", alias, give_up)
+            state.pop("pending_repair", None)
+        # A marker git could not check was not re-covered: keep it for the next update.
+        unrepaired = unchecked_repair_marker(state, base_ref, give_up)
         incremental_result, update_error = await _try_incremental_update(
             repo_path,
             state,
@@ -630,6 +653,8 @@ async def update_single_repo_index(
             rescore_health=rescore_health,
         )
         if incremental_result is not None:
+            if unrepaired is not None and incremental_result.pending_repair is None:
+                incremental_result.pending_repair = unrepaired
             return incremental_result
         reason = "update_failed"
 
@@ -803,6 +828,8 @@ async def _full_index_update(
             symbol_count=result.symbol_count,
             kg_state=kg_state,
             git_history_refreshed=getattr(result, "git_summary", None) is not None,
+            # The full pipeline scores every file with this build's analyzer.
+            health_rescored=getattr(result, "health_report", None) is not None,
         )
     except Exception as exc:
         return RepoUpdateResult(

@@ -28,9 +28,9 @@ from repowise.core.analysis.execution_graph import (
     is_walkable_execution_edge,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._answer_pipeline import is_subsystem_query
-from repowise.server.mcp_server._graph_files import node_to_file
 from repowise.server.mcp_server._helpers import is_excluded
 from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
 from repowise.server.mcp_server._query_terms import content_terms
@@ -81,6 +81,7 @@ _WALK_RE = re.compile(r"\bwalk (?:me )?through\b", re.IGNORECASE)
 
 # "What happens if X fails" asks about a failure path, which the happy-path
 # call order would answer wrongly.
+_NO_LINE = 1 << 30  # a call edge that recorded no call line sorts last
 _FAILURE_RE = re.compile(
     r"\bwhat happens (?:if|when)\b.*\b(?:fails?|failed|errors?|raises?|throws?|crash(?:es)?"
     r"|times? out|timeouts?|is missing|missing|goes down|is down|breaks?)\b",
@@ -166,7 +167,7 @@ async def _calls(
     for src, tgt, etype, origin, conf, lines_json in res.all():
         if upstream:
             src, tgt = tgt, src
-        if not tgt or tgt == src or is_excluded_execution_path(node_to_file(tgt)):
+        if not tgt or tgt == src or is_excluded_execution_path(file_of_symbol(tgt)):
             continue
         if not is_walkable_execution_edge(etype, origin, conf):
             continue
@@ -174,7 +175,7 @@ async def _calls(
             lines = [int(n) for n in json.loads(lines_json or "[]")]
         except (TypeError, ValueError):
             lines = []
-        first = min(lines) if lines else 1 << 30
+        first = min(lines) if lines else _NO_LINE
         seen = out.setdefault(src, {})
         seen[tgt] = min(first, seen.get(tgt, first))
     return {
@@ -235,7 +236,7 @@ async def _choose_entry(
 
 
 def _label(node_id: str) -> str:
-    return f"{_leaf(node_id)} ({node_to_file(node_id)})"
+    return f"{_leaf(node_id)} ({file_of_symbol(node_id)})"
 
 
 async def expand_via_entry_trace(
@@ -252,7 +253,7 @@ async def expand_via_entry_trace(
     words = _question_words(question)
     seed_files: list[str] = []
     for h in hits[:_SEED_HITS]:
-        path = node_to_file(h.get("target_path") or "")
+        path = file_of_symbol(h.get("target_path") or "")
         if path and path not in seed_files:
             seed_files.append(path)
     if not words or not seed_files:
@@ -285,10 +286,10 @@ async def expand_via_entry_trace(
         "that does not always run): " + " -> ".join(parts)
     )
 
-    entry_file = node_to_file(entry)
+    entry_file = file_of_symbol(entry)
     inject = []
     for step in heavy:
-        path = node_to_file(step)
+        path = file_of_symbol(step)
         if path != entry_file and path not in inject and not is_excluded(path, exclude_spec):
             inject.append(path)
     inject = inject[:_MAX_INJECT]
@@ -397,8 +398,16 @@ async def symbol_at(session: Any, repo_id: str, path: str, line: int) -> str | N
 
 
 def _hop_row(caller: str, call_line: int, callee: str, start: int) -> str:
-    at = f":{call_line}" if call_line < 1 << 30 else ""
-    return f"{_leaf(caller)} {node_to_file(caller)}{at} -> {_leaf(callee)} {node_to_file(callee)}:{start}"
+    at = f":{call_line}" if call_line < _NO_LINE else ""
+    return f"{_leaf(caller)} {file_of_symbol(caller)}{at} -> {_leaf(callee)} {file_of_symbol(callee)}:{start}"
+
+
+def _mention(question: str, name: str) -> re.Match | None:
+    """Where *name*, or its last dotted part, stands in *question* as a whole word."""
+    named = None
+    for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
+        named = named or re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+    return named
 
 
 def names_destination(question: str, name: str) -> bool:
@@ -407,9 +416,7 @@ def names_destination(question: str, name: str) -> bool:
     "How does a message reach run_job" ends at ``run_job``; "trace how
     handle flows to the store" starts at ``handle``.
     """
-    named = None
-    for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
-        named = named or re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+    named = _mention(question, name)
     if named is None:
         return False
     motions = [m.start() for m in _PATH_RE.finditer(question)]
@@ -440,8 +447,8 @@ def _shipped_steps(
         (line, t)
         for line, t in calls
         if t in starts and t not in seen
-        and path_origin(node_to_file(t)) == "production"
-        and not is_excluded(node_to_file(t), exclude_spec)
+        and path_origin(file_of_symbol(t)) == "production"
+        and not is_excluded(file_of_symbol(t), exclude_spec)
     ]
 
 
@@ -481,3 +488,165 @@ async def call_path(
         if not frontier:
             break
     return rows
+
+
+# "How does X reach Y" names both ends: the route between them answers it, not
+# the heaviest calls out of X. Sized like the walk above: six calls deep at
+# most, a few hundred symbols visited, three destinations.
+# Not "called": "is X called by Y" runs the other way.
+_CALL_WORD_RE = re.compile(r"\bcall(?:s|ing)?\b", re.IGNORECASE)
+_ROUTE_DEPTH = 6
+_ROUTE_MAX_VISITED = 600
+_ROUTE_MAX_FOUND = 5000  # symbols one level may add; keeps the IN list under bind-parameter limits
+_ROUTE_MAX_ENDS = 3
+
+
+def _name_spans(question: str, names: set[str]) -> list[tuple[int, int, str]]:
+    """``(start, end, name)`` of each name the question mentions on its own.
+
+    ``db`` and ``save`` inside ``db.save`` are parts of that one mention.
+    """
+    found = [(m.start(), m.end(), name) for name in names if (m := _mention(question, name))]
+    return [
+        s for s in found
+        if not any(o[0] <= s[0] and s[1] <= o[1] and o[1] - o[0] > s[1] - s[0] for o in found)
+    ]
+
+
+def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
+    """``(start, destinations)`` when the question names a symbol, then a motion or
+    call word, then the symbols the call should reach; ``None`` otherwise.
+
+    The start is the name closest before the word; the destinations are the
+    names after it, in order. A dotted name stands for itself, not for its
+    parts. A plain "call" counts ("does X call Y"); a failure question does not.
+    """
+    if _FAILURE_RE.search(question):
+        return None
+    spans = _name_spans(question, names)
+    for word in [*_PATH_RE.finditer(question), *_CALL_WORD_RE.finditer(question)]:
+        before = [s for s in spans if s[1] <= word.start()]
+        after = sorted(s for s in spans if s[0] >= word.end())
+        if before and after:
+            start = max(before, key=lambda s: s[1])[2]
+            ends = list(dict.fromkeys(s[2] for s in after if s[2] != start))
+            if ends:
+                return start, ends[:_ROUTE_MAX_ENDS]
+    return None
+
+
+async def symbols_named(session: Any, repo_id: str, name: str) -> list[str]:
+    """Indexed symbols called *name*; ``Owner.leaf`` keeps those under that owner
+    when any are, and shipped ones when any are. All of them: the search starts
+    from every homonym at once, so it is not told which one the question means."""
+    from repowise.core.code_origin import path_origin
+
+    leaf = name.rsplit(".", 1)[-1]
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.name == leaf,
+        )
+    )
+    found = sorted(node_id for (node_id,) in res.all())
+    if "." in name:
+        owned = [n for n in found if n.endswith("::" + name.replace(".", "::"))]
+        found = owned or found
+    shipped = [n for n in found if path_origin(file_of_symbol(n)) == "production"]
+    return shipped or found
+
+
+def _route_rows(
+    meet: str, fwd: dict[str, tuple[str, int] | None], bwd: dict[str, tuple[str, int] | None]
+) -> list[tuple[str, int, str]]:
+    """``(caller, call line, callee)`` hops of the route through *meet*, in call order."""
+    head: list[tuple[str, int, str]] = []
+    node = meet
+    while fwd[node] is not None:
+        caller, line = fwd[node]
+        head.append((caller, line, node))
+        node = caller
+    tail: list[tuple[str, int, str]] = []
+    node = meet
+    while bwd[node] is not None:
+        callee, line = bwd[node]
+        tail.append((node, line, callee))
+        node = callee
+    return [*reversed(head), *tail]
+
+
+async def _route_level(
+    session: Any, repo_id: str, front: list[str], mine: dict, other: dict, upstream: bool,
+    exclude_spec: Any,
+) -> dict[str, None] | None:
+    """Reach one level out of *front*, recording each new symbol's parent hop in *mine*.
+
+    Returns the symbols reached (between the ends, only indexed shipped code),
+    or ``None`` when the level is too wide to query.
+    """
+    calls = await _calls(session, repo_id, front, upstream=upstream)
+    found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
+    if len(found) > _ROUTE_MAX_FOUND:
+        return None
+    defined = await _symbol_starts(session, repo_id, list(found))
+    seen = set(mine)
+    walkable = {
+        t for src in front for _line, t in _shipped_steps(calls.get(src, []), defined, seen, exclude_spec)
+    }
+    new: dict[str, None] = {}
+    steps = [(src, line, t) for src in sorted(front) for line, t in calls.get(src, [])]
+    for src, line, t in steps:
+        if t not in other and t not in walkable:
+            continue
+        if t not in mine:
+            new[t] = None
+            mine[t] = (src, line)
+        elif t in new and mine[t][1] >= _NO_LINE > line:
+            # Reached at this level without a call line: one with it wins.
+            mine[t] = (src, line)
+    return new
+
+
+async def _best_route(
+    session: Any, repo_id: str, meets: list[str], fwd: dict, bwd: dict
+) -> list[str]:
+    """Rows of the shortest route through one of *meets*, fewest hops without a call line first."""
+    routes = [_route_rows(t, fwd, bwd) for t in meets]
+    best = min(routes, key=lambda r: (len(r), sum(1 for hop in r if hop[1] >= _NO_LINE)))
+    defined = await _symbol_starts(session, repo_id, [hop[2] for hop in best])
+    return [_hop_row(caller, line, callee, defined.get(callee, 0)) for caller, line, callee in best]
+
+
+async def call_route(
+    session: Any, repo_id: str, starts: list[str], ends: list[str], exclude_spec: Any = None
+) -> list[str]:
+    """The shortest call route from any of *starts* to any of *ends*, one row per hop.
+
+    Searched from both ends at once, a level at a time from the smaller side,
+    so a start with many calls does not spend the budget before the route is
+    found. Hops between the ends stay in indexed, shipped code. Among routes of
+    one length, the one with the most call lines wins. Empty when none is found
+    within :data:`_ROUTE_DEPTH` calls.
+    """
+    fwd: dict[str, tuple[str, int] | None] = dict.fromkeys(starts)
+    bwd: dict[str, tuple[str, int] | None] = dict.fromkeys(ends)
+    if set(fwd) & set(bwd):
+        return []
+    fwd_front, bwd_front = list(fwd), list(bwd)
+    for _level in range(_ROUTE_DEPTH):
+        if not fwd_front or not bwd_front or len(fwd) + len(bwd) > _ROUTE_MAX_VISITED:
+            break
+        upstream = len(bwd_front) < len(fwd_front)
+        front, mine, other = (bwd_front, bwd, fwd) if upstream else (fwd_front, fwd, bwd)
+        new = await _route_level(session, repo_id, front, mine, other, upstream, exclude_spec)
+        if new is None:
+            break
+        meets = [t for t in new if t in other]
+        if meets:
+            return await _best_route(session, repo_id, meets, fwd, bwd)
+        if upstream:
+            bwd_front = list(new)
+        else:
+            fwd_front = list(new)
+    return []

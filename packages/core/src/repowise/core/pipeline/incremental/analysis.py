@@ -53,6 +53,7 @@ def run_partial_analysis(
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
     health: bool = True,
+    base_ref: str | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -176,6 +177,13 @@ def run_partial_analysis(
                 # dimension, metric, blame row, and refactoring detector.
                 partial_health_report.authoritative_paths = set(_health_changed)
                 partial_health_report.performance_authoritative_paths = set(_performance_changed)
+                partial_health_report.base_commit = base_ref
+                partial_health_report.renamed_paths = {
+                    fd.old_path: fd.path for fd in file_diffs if fd.status == "renamed" and fd.old_path
+                }
+                partial_health_report.deleted_paths = {
+                    fd.path for fd in file_diffs if fd.status == "deleted"
+                }
                 partial_health_report.metrics = [
                     metric
                     for metric in partial_health_report.metrics
@@ -204,7 +212,7 @@ def run_partial_analysis(
                 # The writer replaces facts only for the re-scored files, so a
                 # sink file's rows would land on top of its stored ones.
                 if partial_health_report.function_facts is not None:
-                    from repowise.core.analysis.execution_graph import file_of_symbol
+                    from repowise.core.ingestion.symbol_identity import file_of_symbol
 
                     _rescored = _health_changed | _performance_changed
                     partial_health_report.function_facts = [

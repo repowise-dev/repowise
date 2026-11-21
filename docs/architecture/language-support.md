@@ -249,18 +249,31 @@ give a monorepo in your language proper per-package health; there is no second
 list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
 truth, and both consumers read it.
 
+The registry is the only place that knows manifest names. Every other reader
+asks it by role: `is_package_manifest(path)` (C4 containers, branch overlap),
+`manifest_filenames()` for package manifests plus build config (the tour, the
+update path's config check, the tech stack memo), or `is_manifest(path)` for
+the same question asked of one path. A reader that needs extra non-manifest
+names (a `Dockerfile`, a test runner config) adds them to these sets instead of
+restating the manifests.
+
 `build_config_manifests` defaults to empty, which is nearly always right. Add to
 it only when a name in `manifest_files` configures a build rather than declaring
 a distributable unit, because such files appear in directories that are not
 packages and each one becomes a false root that fragments the rollup. The shipped
 cases are the .NET `Directory.Build.props` / `global.json` family (measured in
 135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
-`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+`svelte.config.js`, Cabal's `Setup.hs`, `lean-toolchain`, and the CMake and
+Bazel files C and C++ declare (`CMakeLists.txt`, `BUILD`, `BUILD.bazel`,
+`MODULE.bazel`, `WORKSPACE`, `WORKSPACE.bazel`): every CMake subdirectory and
+Bazel package carries one, so their presence says nothing about where a unit
+starts.
 
-`manifest_files` holds exact filenames only, so a language whose package file is
-a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the real
-package declaration, everything C# declares is build configuration, and a .NET
-monorepo therefore still falls back to the top-level directory.
+`manifest_files` holds exact filenames only. A package file whose name varies
+per package goes in `manifest_globs`, matched case-insensitively by the
+package-root scan and by `is_package_manifest`; exact-name readers of
+`manifest_files` never see it. .NET is the live example: `*.csproj` is the real
+package declaration, and everything else C# declares is build configuration.
 
 One caveat worth knowing: package roots are read from a **directory scan**, not
 from the indexed file list, because the traverser only emits files whose language
@@ -350,6 +363,20 @@ silence, never to a wrong answer.
 | 6 | `extractors/bindings/mylang.py` | `extract_import_bindings()` | Imports still resolve, but named-binding-level call resolution does not |
 | 7 | `extractors/heritage/mylang.py` | `HERITAGE_EXTRACTORS` | Inheritance chains never appear in the graph |
 | 8 | `resolvers/mylang.py` | `_RESOLVERS` in `resolvers/__init__.py` | Imports fall back to the generic stem-map (filename matching) |
+
+### Manifests and build units
+
+If the language has a package or build file, two more steps make monorepos in
+it first-class:
+
+| Step | What | Where | Without it |
+|---|---|---|---|
+| 8a | Declare manifests by role on the spec: package manifests in `manifest_files` (or `manifest_globs` for a pattern like `*.csproj`), files that only configure a build in `build_config_manifests`, lockfiles in `lock_files` | `languages/specs/mylang.py` | No package roots, so no per-package health, monorepo bucketing or build units for the language |
+| 8b | A build-unit adapter, when the ecosystem declares dependencies between in-repo packages (path dependencies, workspace members, project references) | `core/build_units/adapters/<ecosystem>.py`, registered in `_ADAPTERS` in `core/build_units/collect.py` | Each package root still becomes a `manifest:` unit with correct file ownership, but no dependency edges between units |
+
+The adapter recipe is in [build-units.md](build-units.md#adding-an-adapter).
+The registry is the only place that knows manifest names; see
+[single-sources.md](single-sources.md) for the other shared owners.
 
 ### Opting into call resolution
 
@@ -473,7 +500,7 @@ The tiers, highest evidence first:
 | 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
 | 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+| 0.50 | `global_unique`, `import_elsewhere` | The name is unique repo-wide, or (Python) imported only inside another function of the file. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
 because they are three different scans over three different scopes:
@@ -775,13 +802,14 @@ dependency surface their syntax supports.
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
-| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths; same-named platform units reach every variant; project files as entry points |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
 | Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
 | Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
+| Good | **Perl** | `.pl` `.pm` `.t`, perl shebang | `use` / `require` through `@INC`-style whole-segment path suffix; pragmas dropped; `Pkg->m()` and `$self->m()` dispatched through `@ISA` (`use parent`, `use base`, `@ISA`) |
 
 ---
 

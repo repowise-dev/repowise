@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from repowise.core.persistence.models import WikiSymbol
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._references import path_identity
 
 from .lookup import _bare_name, _parse_symbol_id, _symbol_suggestions
 from .text import _elapsed_ms, _number_lines, _read_file_text
@@ -145,15 +147,19 @@ def _member_match(lines: list[str], file_path: str, i: int, owner: str) -> dict:
     return match
 
 
-def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict]:
+def _live_grep_fallback(
+    repo_root: Path, file_path: str, name: str, text: str | None = None
+) -> list[dict]:
     """Find ``name`` in the live file when the symbol index misses.
 
     Turns a dead-end call (pure cost) into an answer: constants, imports,
     aliases, and decorators live between indexed symbols, and the line that
     defines them is usually all the agent needs. ±2 lines of context per
-    match, capped at _MAX_FALLBACK_MATCHES.
+    match, capped at _MAX_FALLBACK_MATCHES. *text* is the file's live text when
+    the caller already read it.
     """
-    text = _read_file_text(repo_root, file_path)
+    if text is None:
+        text = _read_file_text(repo_root, file_path)
     if text is None:
         return []
     bare = _bare_name(name)
@@ -187,17 +193,25 @@ def _member_note(file_part: str, name: str, matches: list[dict]) -> str:
 
 
 def _grep_matches(
-    repo_root: Path, file_part: str, name: str, owners: list[tuple[str, int, int]]
+    repo_root: Path,
+    file_part: str,
+    name: str,
+    owners: list[tuple[str, int, int]],
+    text: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Live lines for an index miss and the note that explains them."""
-    text = _read_file_text(repo_root, file_part) if owners else None
+    """Live lines for an index miss and the note that explains them.
+
+    *text* is the file's live text when the caller already read it.
+    """
+    if text is None and owners:
+        text = _read_file_text(repo_root, file_part)
     lines = text.splitlines() if text else []
     # An unqualified name the module itself defines keeps the plain grep.
     if lines and (_owner_qualifier(name) or not _defined_outside(lines, _bare_name(name), owners)):
         members = _member_lines(lines, file_part, name, owners)
         if members:
             return members, _member_note(file_part, name, members)
-    matches = _live_grep_fallback(repo_root, file_part, name)
+    matches = _live_grep_fallback(repo_root, file_part, name, text)
     likely = (
         "defined here, so likely added after the last index"
         if any(m.get("defines") for m in matches)
@@ -235,10 +249,14 @@ def _live_grep_response(
     file_part, name_part = _parse_symbol_id(symbol_id)
     if not file_part or not name_part or _pkg.is_excluded(file_part, exclude_spec):
         return None
-    matches, note = _grep_matches(Path(str(ctx.path)), file_part, name_part, owners or [])
+    root = Path(str(ctx.path))
+    text = _read_file_text(root, file_part)
+    if text is None:
+        return None
+    matches, note = _grep_matches(root, file_part, name_part, owners or [], text)
     if not matches:
         return None
-    return {
+    response = {
         "symbol_id": symbol_id,
         "file": file_part,
         "resolution": "live_grep",
@@ -251,6 +269,15 @@ def _live_grep_response(
             targets=[file_part],
         ),
     }
+    # The lines stand in for reading the file to find the name; the text is
+    # already in hand, so sizing that Read costs no second read. Accounting
+    # never costs the reply.
+    with contextlib.suppress(Exception):
+        from repowise.server.mcp_server._savings import declare_replaced
+        from repowise.server.mcp_server._savings.reads import read_tokens
+
+        declare_replaced(response, read_tokens(text))
+    return response
 
 
 def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
@@ -262,6 +289,47 @@ def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
     target = (root / path).resolve()
     # Only a file inside the checkout: the reply must not confirm one outside it.
     return path if target.is_relative_to(root) and target.is_file() else None
+
+
+async def _file_listing(
+    ctx: Any, repository: Any, symbol_id: str, file_path: str, t0: float
+) -> dict | None:
+    """A file passed as an id: its top-level symbols to pass back, else None.
+
+    Names, not bodies: the caller picks one and gets its source in the next
+    call. The cap is the get_context card's.
+    """
+    from repowise.server.mcp_server.tool_context.targets import _SYMBOL_CAP
+
+    path = path_identity(file_path)
+    async with get_session(ctx.session_factory) as session:
+        res = await session.execute(
+            select(WikiSymbol.symbol_id)
+            .where(
+                WikiSymbol.repository_id == repository.id,
+                WikiSymbol.file_path == path,
+                WikiSymbol.parent_name.is_(None),
+            )
+            .order_by(WikiSymbol.start_line, WikiSymbol.symbol_id)
+        )
+        names = [sid.partition("::")[2] for sid in res.scalars().all()]
+    names = [n for n in dict.fromkeys(names) if n]
+    if not names:
+        return None
+    reply: dict[str, Any] = {
+        "symbol_id": symbol_id,
+        "file": path,
+        "kind": "file",
+        "symbols": names[:_SYMBOL_CAP],
+    }
+    if len(names) > _SYMBOL_CAP:
+        reply["symbols_total"] = len(names)
+    reply["note"] = (
+        f'A file, not a symbol. One symbol: get_symbol("{path}::<name>"). Whole file: '
+        f'get_context(targets=["{path}"], include=["skeleton"]).'
+    )
+    reply["_meta"] = _build_meta(timing_ms=_elapsed_ms(t0), repository=repository)
+    return reply
 
 
 async def _not_found_response(
@@ -278,8 +346,11 @@ async def _not_found_response(
             return live
     from repowise.server.mcp_server._savings.interaction import error_reply
 
-    # Every reply below is a miss.
+    # Every reply below is a miss, but for a file whose symbols it can name.
     if file_path := _bare_file_path(ctx, symbol_id, exclude_spec):
+        listing = await _file_listing(ctx, repository, symbol_id, file_path, t0)
+        if listing is not None:
+            return listing
         return error_reply(
             "not_found",
             {

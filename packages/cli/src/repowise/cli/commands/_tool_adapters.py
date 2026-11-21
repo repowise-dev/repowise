@@ -8,7 +8,7 @@ nothing to say. This module owns those three so the four commands stay thin.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -133,11 +133,13 @@ def run(
     *,
     workspace_root: Path | None = None,
     reads_vectors: bool | None = None,
+    arguments: Mapping[str, Any] | None = None,
 ) -> dict:
     """Await one tool coroutine with this repo's resources published.
 
     With *workspace_root*, the workspace's instead, as the MCP server serves
-    it (see ``tool_bridge.call_tool``).
+    it (see ``tool_bridge.call_tool``). *arguments* are what *factory* passes
+    the tool, so the response is budgeted as the same MCP call would be.
 
     Logs are silenced here rather than on the format option, because these
     four commands need it at *every* format. ``format_option``'s callback only
@@ -158,6 +160,7 @@ def run(
             tool_name,
             workspace_root=workspace_root,
             reads_vectors=reads_vectors,
+            arguments=arguments,
         )
 
 

@@ -38,6 +38,11 @@ ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"
 #: count as ``expected``.
 EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
 
+#: The one prerequisite of a group whose marker has no fix strategy at all. No
+#: proof about the code would produce one, so the group is an observation: a
+#: true fact worth reading, never work in a queue (``queue.eligibility.observation``).
+NO_STRATEGY_FOR_MARKER = "supported_strategy_for_marker"
+
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
 _EXPECTED_REFUSALS = frozenset(
     {"inherent_to_boundary", "loop_already_chunked", "loop_not_batchable"}
@@ -50,7 +55,12 @@ FixStrategy = Literal[
     "shrink_lock_scope",
     "push_reduction_into_query",
     "eager_load_relationship",
+    "reduce_measured_self_time",
 ]
+
+#: The marker of a cause no static finding names: a function a leading
+#: workload measured above the lead bar (``perf.opportunities.measured_hotspots``).
+MEASURED_HOTSPOT = "measured_hotspot"
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
 BATCHABLE_BOUNDARIES = frozenset({"db", "network"})
@@ -305,16 +315,19 @@ def assess_fix(
             ),
             ("shared_state_ordering",),
         )
-    return FixAssessment(None, ("supported_strategy_for_marker",))
+    return FixAssessment(None, (NO_STRATEGY_FOR_MARKER,))
 
 
-def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str | None:
+def expected_reason(
+    members: Sequence[Any], magnitude: str | None = None, *, measured: bool = False
+) -> str | None:
     """Why a group needs no change whatever its strategy, or ``None``.
 
     ``gated_off``: every member sits in a function a constant-false flag in
     its own file switches off. ``cold_path``: every loop owner is named for a
     migration, startup, shutdown or crash recovery (:mod:`.cold_paths`), so it
-    runs once per deploy, boot or incident. ``bounded_loop``: the group's loop
+    runs once per deploy, boot or incident, unless a leading workload
+    *measured* the group running at cost. ``bounded_loop``: the group's loop
     *magnitude* is proven bounded, so its cost does not grow; ``small_table``
     when a member is bounded because its loop reads only small tables
     (:mod:`.table_scale`). Reasons are checked in precedence order.
@@ -323,7 +336,7 @@ def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str
         return None
     if all(dormant(facts.details) for facts in members):
         return "gated_off"
-    if all(is_cold_path(facts.file_path, facts.function_name) for facts in members):
+    if not measured and all(is_cold_path(f.file_path, f.function_name) for f in members):
         return "cold_path"
     if magnitude != "bounded":
         return None
@@ -381,6 +394,7 @@ __all__ = [
     "BATCHABLE_MARKERS",
     "BOUNDARY_NOUN",
     "LOCK_SERIALIZED_BOUNDARIES",
+    "NO_STRATEGY_FOR_MARKER",
     "Actionability",
     "ActionabilityState",
     "FixAssessment",

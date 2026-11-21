@@ -11,8 +11,10 @@ from pathlib import PurePosixPath
 from typing import Any, TypeAlias
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.execution_graph import ExecutionGraphIndex
+from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 from .model import DEFAULT_CALL_DEPTH
@@ -93,7 +95,9 @@ def files_with_paired_tests(
     them although no name says so. A test *named* for a file
     (:func:`paired_test_names`) still pairs, but only when the graph agrees
     or cannot say: the named test imports the file directly or through a
-    re-export barrel, has no resolved dependency at all, or there is no graph.
+    re-export barrel, has no resolved dependency inside the repository (its
+    test framework, other third-party modules and framework anchors do not
+    count: :func:`~repowise.core.ids.is_external`), or there is no graph.
     Otherwise the name is a collision - ``distill/test_engine.py`` tests the
     distill engine, not ``health/engine.py`` - and does not pair.
 
@@ -141,7 +145,13 @@ def files_with_paired_tests(
         if graph is None:
             return True
         imported = deps[test] if test in deps else imports_of(test)
-        return not imported or path in imported
+        # Code the repository does not own (``is_external``: a third-party
+        # module such as ``external:vitest`` or ``external:node:fs``, or a
+        # framework anchor such as ``framework:angular``) says nothing about
+        # which of the repository's files the test exercises: only a
+        # dependency inside the repository can contradict the name.
+        inside = {dep for dep in imported if not is_external(dep)}
+        return not inside or path in inside
 
     for path in paths:
         if path in paired:

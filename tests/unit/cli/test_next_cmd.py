@@ -186,7 +186,7 @@ def test_status_carries_a_next_block_and_json_counts() -> None:
     )
 
     lines = status_cmd._next_actions_lines(view)
-    assert lines[0].endswith("1 thing is worth planning this quarter.")
+    assert lines[0].endswith("1 thing is worth planning this quarter. 1 setup step to finish.")
     assert "src/big.py" in lines[1]
     assert status_cmd._next_actions_lines(None) == []
 
@@ -321,3 +321,74 @@ def test_a_local_store_with_multiple_repositories_requires_an_exact_path(tmp_pat
             assert opened is None
 
     asyncio.run(check())
+
+
+# -- setup steps -------------------------------------------------------------------
+
+
+def test_prompt_setup_prints_the_finish_setup_prompt(tmp_path: Path) -> None:
+    from repowise.core.agent_prompts import render_finish_setup
+
+    result = _run(str(tmp_path), "--prompt", "setup")
+    assert result.exit_code == 0
+    assert result.output == render_finish_setup() + "\n"
+
+
+def test_the_list_points_at_the_one_prompt_while_steps_are_shown(canned, tmp_path: Path) -> None:
+    step = _action(1, "improve_signal", "Keep the index in sync on commit")
+    canned(_view([step], [step], setup={"open": 1, "offer": None, "dismissed": False}))
+    assert "repowise next --prompt setup" in _run(str(tmp_path)).output
+
+    canned(_view([step], [step], setup={"open": 1, "offer": None, "dismissed": True}))
+    assert "--prompt setup" not in _run(str(tmp_path)).output
+
+    work = _action(2, "act_now", "Rotate the key")
+    canned(_view([work], [work]))
+    assert "--prompt setup" not in _run(str(tmp_path)).output
+
+
+def test_a_real_index_lists_live_setup_steps_and_dismiss_stops_the_offer(tmp_path: Path) -> None:
+    repo_path = (tmp_path / "repo").resolve()
+    repo_path.mkdir()
+    asyncio.run(_build_index(repo_path))
+
+    view = json.loads(_run(str(repo_path), "--format", "json").stdout)
+    week = view["horizons"]["week"]["actions"]
+    sync = next(a for a in week if a["rule"] == "sync_hook_missing")
+    assert sync["tier"] == "improve_signal" and sync["command"] == "repowise hook install"
+    setup = view["setup"]
+    assert setup["open"] == view["horizons"]["week"]["by_tier"]["improve_signal"]
+    # No agent has called this index yet, so the pass is not offered.
+    assert setup["offer"] is None and setup["dismissed"] is False
+    stored = json.loads((repo_path / ".repowise" / "setup.json").read_text(encoding="utf-8"))
+    assert stored["open"] == setup["open"] and stored["offer"] is None
+
+    result = _run(str(repo_path), "--dismiss", "setup")
+    assert result.exit_code == 0 and "stop offering" in result.output
+    view = json.loads(_run(str(repo_path), "--format", "json").stdout)
+    assert view["setup"]["dismissed"] is True
+    # The steps stay; only the offer goes.
+    assert any(a["rule"] == "sync_hook_missing" for a in view["horizons"]["week"]["actions"])
+    stored = json.loads((repo_path / ".repowise" / "setup.json").read_text(encoding="utf-8"))
+    assert stored["dismissed"] is True
+
+
+def test_dismiss_without_an_index_says_so(tmp_path: Path) -> None:
+    result = _run(str(tmp_path), "--dismiss", "setup")
+    assert result.exit_code == 0 and "No readable index" in result.output
+
+
+def test_status_offers_the_agent_pass_once(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    offered = _view([], [], setup={"open": 4, "offer": "finish_setup", "dismissed": False})
+
+    line = status_cmd._setup_tail(tmp_path, offered)
+    assert line is not None
+    assert "4 setup steps left" in line and "repowise next --prompt setup" in line
+    assert status_cmd._setup_tail(tmp_path, offered) is None
+
+    fresh = tmp_path / "fresh"
+    (fresh / ".repowise").mkdir(parents=True)
+    quiet = _view([], [], setup={"open": 4, "offer": None, "dismissed": True})
+    assert status_cmd._setup_tail(fresh, quiet) is None
+    assert status_cmd._setup_tail(fresh, None) is None

@@ -68,6 +68,10 @@ class Interaction:
     provider_kind: str | None = None
     #: Wall time in whole ms per named stage, from :data:`STAGES`.
     stage_ms: dict[str, int] = field(default_factory=dict)
+    #: Files this call served in place of a Read, with one Read's tokens each,
+    #: noted where the counterfactual already sized them. Capped like the
+    #: ledger's per-event list (``MAX_AVOIDED_FILES``); first size per path wins.
+    avoided_files: dict[str, int] = field(default_factory=dict)
 
     def observe_pre_budget(self, tokens: int | None) -> None:
         """Record the raw size, first positive writer only.
@@ -83,6 +87,14 @@ class Interaction:
         """
         if self.pre_budget_input_tokens is None and tokens is not None and tokens > 0:
             self.pre_budget_input_tokens = tokens
+
+    def note_avoided_file(self, path: str, tokens: int) -> None:
+        """Note *path* as served in place of a Read costing *tokens*."""
+        from repowise.core.savings.contracts import MAX_AVOIDED_FILES
+
+        if path in self.avoided_files or len(self.avoided_files) >= MAX_AVOIDED_FILES:
+            return
+        self.avoided_files[path] = tokens
 
 
 _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction", default=None)

@@ -55,7 +55,9 @@ export function ChangeabilitySection({ current }: { current: PerformanceOpportun
         <Field
           label="Actionability"
           value={ACTIONABILITY_LABEL[current.actionability_state]}
-          detail={humanizeToken(current.actionability_reason)}
+          detail={
+            current.actionability_reason ? humanizeToken(current.actionability_reason) : undefined
+          }
         />
         <Field
           label="Actionability confidence"

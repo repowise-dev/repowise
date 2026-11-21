@@ -21,6 +21,16 @@ export interface BuildFilePanelsOptions {
   /** Shiki HTML with per-line `data-covered` attributes (Coverage tab). */
   coverageCodeHtml?: string | undefined;
   /**
+   * Shiki HTML of the file with `data-line` on every line, for a `?line=N`
+   * deep link (Overview tab). Pass it only with `highlightLine`.
+   */
+  sourceCodeHtml?: string | undefined;
+  /**
+   * A `?line=N` deep link, narrowed with `asLineNumber`: Overview and the
+   * Coverage source scroll to it and mark it.
+   */
+  highlightLine?: number | undefined;
+  /**
    * The Health panel. It is the one tab body that is genuinely interactive, so
    * the host supplies it already wrapped in whatever client component owns the
    * triage callback — a function cannot cross a server boundary as a prop.
@@ -72,6 +82,8 @@ export function buildFilePanels({
   symbolHref,
   docSlot,
   coverageCodeHtml,
+  sourceCodeHtml,
+  highlightLine,
   healthPanel,
   testsPanel,
   docReferencesPanel,
@@ -84,6 +96,8 @@ export function buildFilePanels({
         data={data}
         symbolHref={symbolHref}
         fileHref={fileHref}
+        sourceCodeHtml={sourceCodeHtml}
+        highlightLine={highlightLine}
         {...link}
       />
     ),
@@ -125,6 +139,7 @@ export function buildFilePanels({
         coverage={data.coverage}
         coverageCodeHtml={coverageCodeHtml}
         filePath={data.file_path}
+        highlightLine={highlightLine}
         testsPanel={testsPanel}
       />
     ),

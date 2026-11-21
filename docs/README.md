@@ -13,7 +13,7 @@ By hand: the [Quickstart](start/QUICKSTART.md) gets you indexed and connected to
 your agent in under five minutes, with no API key.
 
 <div align="center">
-  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools (all ten on Claude Code, five by default on other clients)" width="100%" />
 </div>
 
 For a map of every layer and how they feed each other, read
@@ -35,7 +35,7 @@ For a map of every layer and how they feed each other, read
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 28 parsed to a full AST, 42 on the support ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 29 parsed to a full AST, 43 on the support ladder |
 
 ### Find what to fix first
 
@@ -43,6 +43,7 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability and performance risk per file, and the Fix first queue |
 | [layers/PERFORMANCE.md](layers/PERFORMANCE.md) | N+1 queries, I/O in loops and blocking calls, grouped into plans and a default queue |
+| [layers/RUNTIME_EVIDENCE.md](layers/RUNTIME_EVIDENCE.md) | Profiles, benchmark results, test timings and query counts from your own runs, joined to the functions they measured |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Graph-aware refactoring plans, from Extract Method to Performance Fix |
 | [layers/OWNERSHIP.md](layers/OWNERSHIP.md) | Owners, bus factor, and where knowledge is at risk |
 | [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local dashboard |
@@ -119,8 +120,7 @@ For a map of every layer and how they feed each other, read
 | [business/EVALUATION.md](business/EVALUATION.md) | Try it on your own code in an afternoon, offline, from index to evidence packs |
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
-| [business/FORESIGHT.md](business/FORESIGHT.md) | Foresight: learned models that predict where a fix goes and what a change forgot, coming to hosted and enterprise |
-| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method |
 | [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
 | [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |
 
@@ -137,6 +137,7 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [../.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) | How to set up, test and submit a change |
 | [architecture/README.md](architecture/README.md) | How repowise is built: pipelines, graph algorithms, health internals |
+| [architecture/single-sources.md](architecture/single-sources.md) | Which module owns each shared concept; check it before writing a helper |
 
 ---
 
