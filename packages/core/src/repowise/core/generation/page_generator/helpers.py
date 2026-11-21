@@ -142,6 +142,14 @@ def _is_infra_file(parsed: ParsedFile) -> bool:
     return fi.language in _INFRA_LANGUAGES or name in _INFRA_FILENAMES
 
 
+def is_code_file(parsed: ParsedFile) -> bool:
+    """Whether generation assembles a code context for *parsed*: the file pages' and
+    module pages' material. The generation plan counts module pages by the same rule.
+    """
+    fi = parsed.file_info
+    return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
+
+
 def _is_significant_file(
     parsed: ParsedFile,
     pagerank: dict[str, float],

@@ -19,6 +19,7 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 from repowise.core.ingestion.symbol_use import NO_SYMBOL_USE, SymbolUse
 
+from ..api_contract_detector import detect_code_api_contracts
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
     _humanise,
@@ -133,6 +134,10 @@ class Selection:
     symbol_spotlights: list[tuple[str, str]] = field(
         default_factory=list
     )  # (file_path, symbol_name)
+    # The id of the symbol that won each spotlight. A file can declare one name
+    # twice (a method and a module-level function), and the page id only keys
+    # the pair, so this is what tells the generator which of them was ranked.
+    spotlight_symbol_ids: dict[tuple[str, str], str] = field(default_factory=dict)
     module_groups: list[ModuleGroup] = field(default_factory=list)
     api_contract_paths: list[str] = field(default_factory=list)
     infra_paths: list[str] = field(default_factory=list)
@@ -280,6 +285,26 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     to do before generation starts, in the same terms the policy uses.
     """
     return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
+
+
+def count_eligible_file_pages(
+    parsed_files: list[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+) -> int:
+    """How many files clear every per-file gate of file-page selection.
+
+    Matches the ``len(scored)`` count that :func:`select_pages` computes and
+    caps against, including the ``score_file > 0.0`` floor.
+    """
+    git = git_meta_map or {}
+    return sum(
+        1
+        for p in parsed_files
+        if file_page_eligible(
+            p,
+            is_hotspot=bool(git.get(p.file_info.path, {}).get("is_hotspot", False)),
+        )
+    )
 
 
 def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
@@ -442,10 +467,11 @@ def _build_file_candidates(
 
 def _build_symbol_candidates(
     inputs: SelectionInputs,
-) -> list[tuple[float, tuple[str, str]]]:
-    """Return ``[(score, (file_path, symbol_name)), ...]`` descending."""
-    ranked, keep = rank_symbol_candidates(inputs)
-    return ranked[:keep]
+) -> tuple[list[tuple[float, tuple[str, str]]], dict[tuple[str, str], str]]:
+    """Return ``[(score, (file_path, symbol_name)), ...]`` descending, and each one's symbol id."""
+    ranked, keep, winners = _rank_symbol_candidates(inputs)
+    kept = ranked[:keep]
+    return kept, {target: winners[target] for _, target in kept}
 
 
 # The most spotlights one file keeps. A file whose every symbol is heavily used
@@ -510,17 +536,31 @@ def rank_symbol_candidates(
     page already renders, so the bucket is the strongest
     ``top_symbol_percentile`` of the symbols that clear the floors.
     """
+    ranked, keep, _winners = _rank_symbol_candidates(inputs)
+    return ranked, keep
+
+
+def _rank_symbol_candidates(
+    inputs: SelectionInputs,
+) -> tuple[list[tuple[float, tuple[str, str]]], int, dict[tuple[str, str], str]]:
+    """:func:`rank_symbol_candidates`, plus the id of the symbol behind each target."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
     uses = inputs.symbol_uses or {}
     test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
-    scored: list[tuple[float, tuple[str, str]]] = []
+    scored_ids: list[tuple[float, tuple[str, str], str]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
         for sym in p.symbols:
             s = score_symbol(sym, uses.get(sym.id, NO_SYMBOL_USE), file_pr, max_pr)
             if s > 0.0:
-                scored.append((s, (p.file_info.path, sym.name)))
-    scored.sort(key=lambda x: (-x[0], x[1]))
+                scored_ids.append((s, (p.file_info.path, sym.name), sym.id))
+    # The sort is stable and its key leaves the id out, so the order is the
+    # one ranking on the pair alone gives.
+    scored_ids.sort(key=lambda x: (-x[0], x[1]))
+    winners: dict[tuple[str, str], str] = {}
+    for _score, target, sym_id in scored_ids:
+        winners.setdefault(target, sym_id)
+    scored = [(s, target) for s, target, _sym_id in scored_ids]
     eligible = _first_per_target(scored)
     # Fallback tracks GenerationConfig.top_symbol_percentile; a config object
     # predating the field must not silently select a wider slice than the
@@ -530,7 +570,7 @@ def rank_symbol_candidates(
     # Sized before tests and the per-file cap leave the pool, so production
     # never loses a slot it had; those only hand theirs to the next symbol.
     ranked = _capped_per_file([c for c in eligible if c[1][0] not in test_paths])
-    return ranked, keep
+    return ranked, keep, winners
 
 
 def _layer_map_from_kg(
@@ -946,13 +986,18 @@ def select_pages(inputs: SelectionInputs) -> Selection:
 
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
+
+    Route detection runs first (it is idempotent), so every caller gets the
+    same api_contract and file_page split, including init, generate and
+    restyle, which do not run the pipeline's generation phase.
     """
+    detect_code_api_contracts(inputs.parsed_files)
     scored_files = _score_code_files(inputs)
     files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(
         inputs, scored=scored_files
     )
 
-    symbols = _build_symbol_candidates(inputs)
+    symbols, spotlight_ids = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
     modules = concepts.scored
     apis = _build_api_candidates(inputs.parsed_files)
@@ -975,6 +1020,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     sel = Selection(
         file_page_paths=selected_paths,
         symbol_spotlights=[t for _, t in symbols],
+        spotlight_symbol_ids=spotlight_ids,
         module_groups=[m for _, m in modules],
         concept_groups=list(concepts.groups),
         layer_labels=dict(concepts.layer_labels),
@@ -998,8 +1044,6 @@ def selected_file_keyed_paths(parsed_files: Iterable[Any]) -> dict[str, set[str]
     detection runs first (it is idempotent): a run that skipped generation never
     flagged its route files, and judging them unflagged would retire their pages.
     """
-    from ..api_contract_detector import detect_code_api_contracts
-
     parsed = list(parsed_files)
     detect_code_api_contracts(parsed)
     return {

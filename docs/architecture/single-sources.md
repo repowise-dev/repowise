@@ -1,0 +1,105 @@
+# One owner per concept
+
+Each concept repowise decides (is this file a test, which unit owns it, what a
+commit id looks like) is decided in exactly one module. Every other call site
+asks that module. It never re-derives the answer from a path, a regex or a
+copied list.
+
+The reason is correctness. When two copies of a rule exist, they drift: one
+gets a fix and the other does not. The result is two surfaces giving
+different answers about the same file. A file counted as production in one
+place and as a test in another, a commit id one validator accepts and another
+rejects, an excluded file that one graph view hides and another uses as a
+hop. A single owner makes that class of bug impossible: there is one answer,
+and a fix lands everywhere at once.
+
+This page lists the owners, what to do when one is missing a case, and the
+concepts that still have more than one home.
+
+Module paths below are relative to `packages/core/src/repowise/core/` unless
+they start with `server/`, which means `packages/server/src/repowise/server/`.
+
+## Owners
+
+| Concept | Owner and entry points | What it decides | Callers must not |
+|---|---|---|---|
+| File origin | `code_origin.py`: `code_origin(path, ...)`, `path_origin(path)`, `owes_a_test(path, origin)`, `is_build_file(path)`, `is_benchmark_path(path)`, `is_benchmark_function(path, name)` | One of `production`, `test`, `generated`, `vendored`, `build`, `docs_example`, `tooling`, `data`, in fixed precedence. Stored per file as `health_file_metrics.code_origin` | Re-derive origin from a path. Read the stored `code_origin`; call `path_origin()` only when no stored value exists. Any rule that judges files (untested, dead, health, risk, fix lists) goes through this |
+| Test paths | `test_paths.py`: `is_test_path`, `is_test_support_path`, `is_test_related_path` | Whether a path is a test, test support (`conftest.py`), or either. Patterns come from the language registry. Stamped once at ingestion as `FileInfo.is_test` and `GraphNode.is_test` | Call the path functions when a `FileInfo` or graph node is at hand: read its `is_test` flag. Never write a local test-name regex |
+| Test ids | `test_paths.py`: `nodeid_without_phase(test_id)`, `nodeid_test_file(test_id)`, `nodeid_without_params(test_id)`, `nodeid_function(test_id)`, `dotted_module_paths(dotted, min_parts=1)`, `files_by_stem(paths)`, `dotted_name_file(dotted, by_stem)` | How a runner's test id reads: the pytest-cov phase suffix, the file before `::`, the parameter id and JVM argument list after the test name, and the one indexed file a dotted name (coverage.py contexts, JUnit `classname`) lives in | Split a test id on `::`, `|` or `[` by hand, or turn a dotted name into a path itself |
+| Manifest names, by role | `ingestion/languages/registry.py` (`REGISTRY`): `is_package_manifest(path)`, `is_manifest(path)`, `matches_package_manifest_glob(name)`, `package_manifest_filenames()`, `manifest_filenames()`. Declared per language on `LanguageSpec` (`ingestion/languages/spec.py`): `manifest_files`, `manifest_globs`, `build_config_manifests`, `lock_files` | Which file names are package manifests (mark a unit root), build config (configure a build, mark nothing) and lockfiles | Hand-write a list of manifest names. A reader that needs extra non-manifest names (a `Dockerfile`, a runner config) adds them on top of a registry set |
+| Package roots on disk | `ingestion/package_roots.py`: `scan_package_manifests(repo_path, ...)` | Each directory holding a package manifest, from a pruned directory scan driven by the registry | Walk the tree looking for manifests itself |
+| Build units and file ownership | `build_units/`: `collect.collect_build_units(ctx)` during a graph build, `persistence/crud/build_units.load_build_units(session, repo_id)` from the store; `BuildUnitIndex.units_owning(path)`, `.unit(id)`, `.dependents(id)` | The projects, crates, packages and modules a repo builds, their in-repo dependencies, and which units own each file. See [build-units.md](build-units.md) | In new code, read workspace members, `go.mod`, `*.csproj` or `pom.xml` to answer "which unit owns this file" or "what depends on this unit". Resolvers keep reading their own manifests to resolve imports |
+| Test runners | `test_runners/`: `LANGUAGE_SUFFIXES`, `is_code_file(path)`, `resolve_runner`, `runner_args`, `left_out`; `test_runners/packages.py`: `runs_for_tests(root, manifests, tests)`, `js_root_runs(tests)`; `test_runners/stacks.py`: `detect_stacks(paths, files, units)`, `detect_repo_stacks(repo_path, units)`, `Stack` | Which runner takes a test file, the arguments a selection gives one runner, the command that runs a test's package from the repository root (`go -C`, `cargo test -p`, Maven, Gradle, RSpec or Rake, `dotnet test`, `npm --prefix`), and each build unit's test command with coverage, its prerequisites and report paths | Write a suffix-to-runner table, a coverage-flag table or a stack detector, or build a runner command line itself |
+| Skip directories | `fs_walk.py`: `PRUNED_DIRS`, `PRUNED_DIRS_DERIVED`, `POLICY_BLOCKED_DIRS`, `INDEX_BLOCKED_DIRS`; `walk_repo(root, ...)`, `iter_glob(...)` | Never-source directories (VCS metadata, caches, package stores), directories the index leaves out by policy (`vendor`, `fixtures`), and their union, which the traverser uses | Add a skip-directory set or call `Path.rglob` over the repo. A walk that needs more (`bin` for .NET) adds its extras on top of one of these sets. A guard test fails on any new direct `rglob` in `packages/core` |
+| Commit id shape | `git_sha.py`: `is_full_sha(value)`, `is_sha_prefix(value, min_len=7)`, `FULL_SHA_PATTERN`, `SHA_PREFIX_PATTERN` | A full id is 40 (SHA-1) or 64 (SHA-256) lowercase hex digits; a prefix is 7 to 64 | Write a SHA regex. A caller scanning free text builds its regex from the exported pattern strings and adds its own anchors |
+| Symbol ids | `ingestion/symbol_identity.py`: `make_symbol_id(path, *names)`, `module_symbol_id(path)`, `file_of_symbol(symbol_id)`, `split_symbol_id`, `base_symbol_id` | The `<path>::<parent>::<name>` grammar, the `__module__` symbol that owns top-level code, and overload or variant discriminators | Join `"::"` by hand, spell `"::__module__"`, or take the file with `split("::", 1)[0]` |
+| Node id prefixes | `ids.py`: `parse(raw)`, `render(node)`, `is_external(raw)`, `file_path_of(raw)` | The `file:`, `external:`, `pkg:`, `cmp:` prefixes and how `::` reads inside a prefixed id | Split or `startswith` a node id by hand |
+| Line to enclosing symbol | `symbol_spans.py`: `symbol_at(spans, line)`, `symbols_overlapping(...)`, `innermost(spans)` | Which symbol span holds a line, over spans the caller already has | Loop over spans comparing line ranges |
+| Query-time exclusion | `exclusion.py`: `build_exclude_spec(repo_path)`, `is_excluded(path, spec)`, `decision_is_excluded(row, spec)` | Which stored rows a read path hides: config `exclude_patterns` plus the root `.gitignore` and `.git/info/exclude`, cached per repo and rule-file stamp | Compile its own pathspec from `exclude_patterns`. The MCP helper `server/mcp_server/_helpers.is_excluded` delegates here |
+| Serving-time file reads | `ingestion/source_view.py`: `SourceView` (`read(rel)`, `grep(pattern, ...)`), `DiskSource(root)`; `server/mcp_server/_helpers.source_for(root)` and `read_repo_file_text(root, rel)` | Where an MCP tool reads a repository file or greps it: the request context's source when one is set (`None` on a server with no checkout), else the checkout on disk | Open a repository file or run `git grep` from a tool directly. A field that needs the source and has none says so with `_helpers.no_source_field` |
+| Server code graph | `server/services/graph_views.py`: `load_code_graph(session, repo_id, exclude_spec)` | The repo's code nodes and edges as one `DiGraph`, minus excluded files and non-code relations, cached per index state and exclude rules | Select every edge from SQL and build a graph per request. Callers must not mutate the returned graph |
+| TOML reading | `ingestion/workspace_members.py`: `read_toml(path)`, `read_toml_or_none(path)`, `parse_toml_or_none(text)` | Parse a TOML file, or text already read; `{}` or `None` when it cannot be read, decoded or parsed | Open and `tomllib.load` a manifest with its own error handling |
+| Content hash | `ingestion/models.py`: `compute_content_hash(source)` | The sha256 a file's bytes are keyed by, computed once at ingestion | Hash the same bytes again with another algorithm for a cache key |
+| Edge-type sets | `ingestion/models.py`: `EdgeType`, `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, `EXECUTION_EDGE_TYPES`, `NON_CODE_EDGE_TYPES` | Which edge types count as a file dependency, a symbol use, an execution step, or non-code | Re-type the full sets. Named subsets that are still local are listed under [planned consolidations](#planned-consolidations) |
+| Health bands | `analysis/health/grading.py`: `band_for(score)`, `BAND_LABEL`, `BAND_ORDER` | The score cut-offs and labels for health bands. The TypeScript mirror in `packages/types/src/health.ts` is parity-tested | Compare a score against literal cut-offs |
+| Percentiles and intervals | `stats.py`: `percentile(values, q, method=...)`, `wilson_interval(k, n)`, `bootstrap_median_ratio(head, base, seed=...)`; `Interval`, `RatioInterval` | The q-th percentile value of a sample (`inclusive_lower` or `nearest_rank`, never interpolated), the Wilson score interval on a share of samples, and a seeded percentile-bootstrap interval on a ratio of medians of two run sets | Write a private `_percentile`, or show a share or a ratio without its interval. A percentile *rank* (where one value sits among others) is a separate concept |
+| Running a command the user typed | `command_runner.py`: `render_command(tokens)`, `run_command(command, cwd=, env=, timeout=)`, `CommandRun` | How click's pre-split tokens become one shell line (caret escaping for cmd.exe, refusing `%NAME%` and newlines), and one timed run with a working directory, environment overrides and a timeout that kills the process tree | Join argv into a shell string themselves. `distill` keeps its own `subprocess.run`, as it captures stdout and stderr apart and runs POSIX syntax through Git Bash on Windows |
+| Before and after timing verdict | `perf_measure.py`: `compare(base, head, mode)`, `split_noise`, `threshold`, `verdict` | Whether a command got faster or slower: the median-ratio interval against a threshold of twice the base-versus-base noise (floor 5% before and after, 2% interleaved) | Turn two sets of run times into "faster" or "slower" with a rule of its own |
+| Exact-evidence gate | `perf_check.py`: `EXACT_METRICS`, `EXACT_FORMATS`, `newest_runs`, `snapshot`, `compare` | Whether a change made a benchmark allocate more per operation, against a saved `.repowise/perf/exact/NAME.json`, read through `crud.benchmark_results`; timing is never read | Gate on timing, or compare exact values with a rule of its own |
+| What a performance plan times | `evidence/runtime_setup.py`: `timed_target(stacks, repo_root, inputs, path)`; `evidence/setup.py`: `timed_targets`; `perf_measure.py`: `verify_measure(target, label)` | The entry point or benchmark `evidence setup` names for a file's unit, run without the profiler, and the `perf measure` lines, metric, baseline name and tolerance a plan's `verify.measure` carries | Pick a workload to time from the stack, or write `perf measure` lines and a tolerance by hand |
+| Whether there is anything runtime to run | `evidence/runtime_setup.py`: `offered_targets(stacks, repo_root, inputs, commit)`, `is_offered`; `evidence/setup.py`: `runtime_offer`, `load_runtime_offer(session, repo_id, root, head)`, `offered_classes` | The runtime targets `evidence setup` prints an ingest line for, each with the format it writes. `next` asks for runtime evidence only while one is offered, and `perf check` names a benchmark target only when one is | Ask for runtime evidence, or name a setup target, from the index or a stack name alone |
+| Evidence ingest | `evidence/add.py`: `ingest_evidence(session, repo, data, ...)`, or `prepare_evidence(...)` before the store opens and `store_evidence(...)` inside it; `EvidenceRefusedError` | How an evidence file (a v1 document, a profile, benchmark results) is checked, refused, converted, joined to the index and stored as a run, and the measured-function refresh that follows. `repowise evidence add` is a thin caller | Read, convert or store an evidence file outside these functions. A server that receives an uploaded file calls `ingest_evidence` |
+| Measured and ranked functions | `evidence/hotness.py`: `derive_hotness(runs, costs, current, origins, ...)`, `hotness_rules(config)`, `rebuild_symbol_hotness`, `refresh_symbol_hotness` | Which production functions the stored profile runs measured and ranked, by self time (a function's own body and the libraries it calls, never time blocked in a wait), with thresholds from the `evidence.*` settings. Writes the `symbol_hotness` and `workload_hotness` read models | Rank functions from stored cost rows, or apply thresholds of their own. Read the stored rows |
+| Change record shape | `changes/record.py`: `change_record(row)`, `in_toto_statement(record)`, `provenance_block(...)`, `SCHEMA_VERSION`, `PREDICATE_TYPE` | The one versioned JSON shape every surface serves, and its in-toto wrapper | Build a change dict of their own for a CLI, REST or MCP surface |
+| Change reconstruction and identity | `changes/reconstruct.py`: `reconstruct_changes(...)`, `change_identity(...)`, `change_title(...)`; `changes/store.py`: `refresh_changes(...)` | Which commits form a change, its id (PR or MR number, Gerrit `Change-Id`, merge or commit sha) and title, and how the stored window is rebuilt or extended | Group commits into changes or derive a change id themselves |
+| Change metadata | `changes/source.py`: `ChangeMetadataSource`, `GitChangeMetadata`, `resolve_source()` on `SeamRegistry("change-metadata")` | Reviewers, approvals, labels and linked issues | Read trailers or call a forge for these fields outside the seam |
+| Change evidence checklist and its wording | `changes/evidence.py`: `build_change_evidence(bundle, inputs, ...)`, `item_line`, `line_text`; inputs gathered in `changes/collect.py` | Every checklist item's status, basis and the sentence each surface prints | Decide an item's status or word a line locally. A caller that gathers its own inputs still calls the builder and the wording |
+| Change outcome links | `changes/outcomes.py`: `outcome_links(...)`, `GitRevertOutcomes`, `GitReferenceOutcomes`, `file_fix_rate(...)`; reverts matched by `analysis/decisions/reverts.py` | Which later commits revert a change or name it as a fix's cause | Write another revert or "caused by" pattern |
+| Commit provenance | `attribution.py`: `attribution_enabled(path)`, `commit_label(...)`, `attribution_share(...)`; `changes/store.change_provenance` rolls it up per change | A commit's label (agent, human-attested, unknown) and the agent share with its coverage floor | Count agent commits or compute a share themselves |
+| Report period | `changes/period.py`: `PeriodRequest`, `period_evidence(...)`, `DEFAULT_WINDOW_DAYS` | A change report's start and end, and how missing checklists are built in it | Pick a default window of their own |
+| Repo report | `report/first_look/`: `write.write_first_look(session, repository_id, repo_root, ...)` (the one path init, the CLI and the server write it through), `collect.collect_first_look(session, repository_id, repo_root)`, `text.template_prose(report)` (the template text, one table), `store.write_report_file` / `store_report` / `load_report`, `staleness.staleness(...)`, `prompts.render_item_prompt(...)`; sections on `SeamRegistry("first-look-section")` | Which findings the report lists, in which order, its "Do these first" three, and each item's id, link and prompt. Sections read the rows `repowise next` reads (`load_repo_facts` and the action rules), the performance read model, the Fix-first queue and stored origins | Pick report items from a store directly, word a report item's prompt outside `core/agent_prompts`, or keep a second sentence table for report text (renderers and the web page print `report.prose`) |
+| Suspects ranking | `suspects/index.py`: `find_suspects(session, repo_id, path, symptom, ...)`; fusion in `suspects/rank.py`; signals on `SeamRegistry("suspect-signal")` in `suspects/signals.py` | The candidate window, the signals and their fused order | Rank changes against a symptom outside `find_suspects`. CLI, REST, MCP and chat all call it |
+| Recent changes per file (MCP) | `server/mcp_server/_changes.py`: `file_changes(...)`, `FILE_CHANGES_CAP` | The recent Change Records a file card lists | Query changes per file again for another MCP block |
+
+## Adding to an owner
+
+When an owner is missing a case, extend the owner. Do not copy its logic
+next to your call site with the extra case added: that copy is the next drift
+bug.
+
+- **Look first.** Search the codebase for the concept (a Repowise
+  `search_codebase` or `get_answer` call, then grep), and check the table
+  above. A module docstring that says "single home" or "the one owner" is the
+  owner.
+- **Extend in place.** Add the case, a parameter or a small query function to
+  the owner module, with a test next to its existing tests. A language-specific
+  convention usually belongs as data on its `LanguageSpec`, not as code.
+- **Keep owners import-light.** Owners are imported from ingestion, analysis,
+  the server and the CLI. `git_sha.py` and `ids.py` import nothing from the
+  package; `build_units/__init__.py` exposes only the model, so a reader of
+  stored units does not load the resolvers. A new dependency in an owner is a
+  new dependency for every caller.
+- **Move callers, then delete the copy.** If you find a second copy while
+  extending an owner, route its callers through the owner in the same change
+  when it is small, or file an issue and add it to the list below.
+- **New concept, new owner.** If nothing owns the concept yet, put it in one
+  module with a docstring that says it is the owner, and add a row here.
+
+## Planned consolidations
+
+These concepts are still decided in more than one place. Each is a
+self-contained piece of work; the linked issues describe the copies and the
+expected behaviour.
+
+| Concept | Where the copies are | Target owner | Issue |
+|---|---|---|---|
+| PageRank percentile | The REST Files table, the REST file page, the MCP graph utilities (`server/mcp_server/_graph_utils.percentile_rank`) and `get_context` signals each compute it, with different formulas | One percentile function used by REST and MCP | [#5745](https://github.com/repowise-dev/repowise/issues/5745), [#5774](https://github.com/repowise-dev/repowise/pull/5774) |
+| Glob matching for user-written patterns | Generate `path_globs` (`generation/page_selection.py`) and workspace excludes use `fnmatch`, where `*` crosses `/`; everything else uses pathspec | pathspec through `analysis/health/config._compile_glob` | [#5779](https://github.com/repowise-dev/repowise/issues/5779) |
+| Per-file size caps | The traverser, change health, diff risk and the MCP file preview each define their own byte limit | The traverser's source ceiling, imported | [#5780](https://github.com/repowise-dev/repowise/issues/5780) |
+| Package of a file | `ingestion/package_roots.py` `module_for` and `owning_package` answer it from manifest roots, beside the build-unit index | `BuildUnitIndex.units_owning` | |
+| Test status from paths | Analysis and MCP call sites re-derive test status from the path where a stored `is_test` flag exists | The stored flag, with `test_paths` as the path fallback | [#3235](https://github.com/repowise-dev/repowise/issues/3235), [#3236](https://github.com/repowise-dev/repowise/issues/3236) |
+| Git runner and log parsing | Many modules call `subprocess` or GitPython directly, each with its own `--format` dialect, merge and rename flags | `analysis/git_cli.run_git` (stdin closed, UTF-8, timeout), moved onto lane by lane | [#3919](https://github.com/repowise-dev/repowise/issues/3919) |
+| Entry points | `entry_candidacy.py` decides candidacy and `generation/entry_points.py` orders, while execution flows, KG curation and a SQL ranking keep their own notions | `entry_candidacy` decides, `entry_points` orders | |
+| Token estimate | `len(text) // 4` is restated in several modules, and savings rows carry two estimator tags | `distill/budget.estimate_tokens` and one tag constant | |
+| Edge-type subsets | `{imports, type_use}`, heritage `{extends, implements}` and negated lists are typed locally in several modules | Named subsets in `ingestion/models.py` | |
+| UI formatting helpers | Compact numbers, relative time, ages and `basename` are reimplemented across `packages/ui` and the VS Code webview | `packages/ui/src/lib/format.ts` | [#5784](https://github.com/repowise-dev/repowise/issues/5784) |

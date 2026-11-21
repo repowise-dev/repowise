@@ -1,14 +1,16 @@
 ---
-description: Work with architectural decisions — list, inspect health, add, or confirm auto-proposed decisions.
+description: Work with architectural decisions; list, check health, record, pin, or put background records in force.
 ---
 
 # Repowise Decisions
 
-Repowise captures architectural decisions (the *why* behind the code) from
-several sources and tracks them for staleness and conflicts. This command drives
-the `repowise decision` group. Sources are individually switchable — run
-`repowise decision source list` to see which are on; transcript mining is off
-unless the repository turns it on.
+Repowise keeps architectural decisions (the *why* behind the code) next to
+the files they govern and tracks them for staleness. A decision an agent
+records comes into force when its commit merges; records mined from history
+are background until someone puts them in force. This command drives the
+`repowise decision` group. `repowise config list --area decisions` prints
+the repository's mode (`decisions.mode`: `full`, `read_only` or `off`) and
+every switch, with where each value came from.
 
 ## Steps
 
@@ -26,7 +28,7 @@ unless the repository turns it on.
 - **show** — `repowise decision show <id>` — full record: rationale, evidence
   spans, status, and the supersession lineage.
 - **add** — an agent records a choice it reasoned out with
-  `repowise decision add --agent <slug> --title T --decision D --rationale R --affects <path> --evidence-commit <sha>`
+  `repowise decision add --agent <slug> --decision D --rationale R --affects <path> --evidence-commit <sha>`
   (e.g. `claude_code`, plus `--session <id>` if known), so the record is the
   agent's, not a person's. `--evidence-commit` ties it to the commit the choice
   was made in; an agent's record is accepted only with evidence, from this or
@@ -53,23 +55,35 @@ unless the repository turns it on.
   puts records in force, signed as the agent (plus `--session <id>`
   if known); the acceptance is recorded as the agent's, not a person's.
   `--decision`, `--reason`, `--scope <path>` and `--evidence <commit|file|link>`
-  fill the blockers. The unsigned form is a person's. A repository that
-  ran `repowise decision config agent-acceptance --off` refuses it; then leave
-  acceptance to a person. `confirm` refuses a decision that is already
+  fill the blockers. The unsigned form is a person's. A repository with
+  `decisions.agent_acceptance` set to false refuses it; then leave acceptance
+  to a person. `confirm` refuses a decision that is already
   accepted; renew that one with `reaffirm`.
 - **reaffirm** — `repowise decision reaffirm <id>...` — after re-reading a
   `needs_review` decision that still holds, renew it so it counts as current
   from now. Takes `--reason`, `--evidence`, `--agent <slug>` and `--preview`.
-  A candidate is refused; accept it with `confirm`.
-- **merge** — `repowise decision merge <id> <into-id>` — fold a duplicate
-  candidate into an accepted decision instead of accepting it twice. The target
-  must already be accepted: confirm it first, or merge the other way.
-  `--preview` shows the result without writing.
-- **deprecate / dismiss** — `repowise decision deprecate <id> --reason ...`
+  A background record is refused; put it in force with `confirm`.
+- **merge**: `repowise decision merge <id> <into-id>` folds a duplicate
+  background record into a decision in force instead of accepting it twice.
+  The target must already be in force: confirm it first, or merge the other
+  way. `--preview` shows the result without writing.
+- **deprecate / dismiss**: `repowise decision deprecate <id> --reason ...`
   (optionally `--superseded-by <id>`, `--preview`) or
   `repowise decision dismiss <id> --reason ...`. An agent passes
   `--agent <slug>` to every review command, and the signer is recorded for
-  candidates too.
+  background records too. A pinned decision refuses both from an agent; a
+  person passes `--force`.
+- **pin / unpin**: `repowise decision pin <id>` holds a decision in force as
+  law (listed by name in CLAUDE.md; agents ask a person before retiring it);
+  `repowise decision unpin <id>` releases it. Run them when the user asks,
+  with `--agent <slug>`.
+- **status**: `repowise decision status` shows what is in force and pinned,
+  what came into force in the last seven days and who signed, and what
+  capture did.
+- **mode**: `repowise config set decisions.mode off|read_only|full` when the
+  user asks to turn decisions off or make them read-only; it resets the finer
+  decision switches too, so relay what moved and the undo commands it prints.
+  `repowise config explain <key>` says what any other decision switch does.
 
 ## Notes
 

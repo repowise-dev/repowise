@@ -11,7 +11,8 @@ from ...code_origin import code_origin
 from ..languages.php_same_namespace import blank_php_comments
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"vendor", "node_modules", ".git", "storage", "bootstrap"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"storage", "bootstrap"}
 
 # call_user_func(['Foo', 'method']) / call_user_func('Foo::method')
 _CALL_USER_FUNC_RE = re.compile(

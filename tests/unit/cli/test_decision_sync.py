@@ -818,3 +818,46 @@ class TestParsePull:
 )
 def test_the_update_line_names_only_what_moved(pushed, got, problem, line):
     assert decision_sync_cmd._sync_line(pushed, got, problem) == line
+
+
+# ---------------------------------------------------------------------------
+# decisions.mode
+# ---------------------------------------------------------------------------
+
+
+class TestMode:
+    def test_off_refuses_both_directions_without_the_network(self, repo, monkeypatch):
+        _no_network(monkeypatch)
+        _sign_in()
+        _set_config(repo, "decisions:\n  mode: 'off'\n  sync: true\n")
+
+        assert json.loads(_cli(repo, "push").output)["error"] == "decisions_off"
+        assert json.loads(_cli(repo, "pull").output)["error"] == "decisions_off"
+
+    def test_off_is_silent_during_update(self, repo, monkeypatch, capsys):
+        _no_network(monkeypatch)
+        _sign_in()
+        _set_config(repo, "decisions:\n  mode: 'off'\n  sync: true\n")
+        sync_on_update(repo)
+
+        assert capsys.readouterr().out == ""
+
+    def test_read_only_refuses_push(self, repo, monkeypatch):
+        _sign_in()
+        _set_config(repo, "decisions:\n  mode: read_only\n  sync: true\n")
+        hosted = _Hosted(monkeypatch)
+
+        payload = json.loads(_cli(repo, "push").output)
+
+        assert payload["error"] == "read_only"
+        assert hosted.posts == []
+
+    def test_read_only_pulls_and_sends_nothing_during_update(self, repo, monkeypatch, capsys):
+        _sign_in()
+        _set_config(repo, "decisions:\n  mode: read_only\n  sync: true\n")
+        hosted = _Hosted(monkeypatch, decisions=[_pulled()])
+        sync_on_update(repo)
+
+        assert hosted.posts == []
+        assert "received 1" in capsys.readouterr().out
+        assert _rows(repo, DecisionRecord, id=HOSTED)

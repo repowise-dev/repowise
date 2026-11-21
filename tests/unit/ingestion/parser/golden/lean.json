@@ -58,7 +58,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import Plain.Local",
@@ -70,7 +71,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "open scoped BigOperators",
@@ -82,7 +84,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       }
     ],
     "exports": [],

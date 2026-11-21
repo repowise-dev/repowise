@@ -11,6 +11,7 @@ from repowise.core.persistence.models import WikiSymbol
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._budget import register_post_shed
+from repowise.server.mcp_server._helpers import no_source_field, serves_no_source
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._references import (
@@ -50,6 +51,7 @@ async def _render_ambiguous(
     read that fetches them.
     """
     repo_root = Path(str(ctx.path))
+    no_source = serves_no_source()
     text_cache: dict[str, str | None] = {}
     candidates: list[dict] = []
     not_rendered: list[dict] = []
@@ -58,7 +60,9 @@ async def _render_ambiguous(
 
     for i, row in enumerate(rows):
         if row.file_path not in text_cache:
-            text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
+            text_cache[row.file_path] = (
+                None if no_source else _read_file_text(repo_root, row.file_path)
+            )
         text = text_cache[row.file_path]
 
         entry: dict[str, Any] = {
@@ -69,6 +73,10 @@ async def _render_ambiguous(
             "qualified_name": row.qualified_name,
             "signature": row.signature,
         }
+        if text is None and no_source:
+            entry.update({"start_line": row.start_line, "end_line": row.end_line})
+            candidates.append(entry)
+            continue
         if text is None:
             entry["note"] = "source file could not be read"
             not_rendered.append(entry)
@@ -110,8 +118,13 @@ async def _render_ambiguous(
         "candidates": candidates,
         "note": (
             f"{len(rows)} symbols match this id (overloads, re-exports, or "
-            "conditional definitions). All candidate bodies are included — "
-            "none was silently chosen; pick by signature and line range."
+            "conditional definitions). "
+            + (
+                "Candidate bodies are not included here; "
+                if no_source
+                else "All candidate bodies are included — none was silently chosen; "
+            )
+            + "pick by signature and line range."
         ),
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -119,6 +132,8 @@ async def _render_ambiguous(
             targets=sorted({r.file_path for r in rows}),
         ),
     }
+    if no_source:
+        response.update(no_source_field())
     _finish_ambiguous(response, whole_bodies, not_rendered, text_cache)
     return response
 
@@ -140,9 +155,18 @@ def _finish_ambiguous(
         )
 
     from repowise.server.mcp_server._savings import declare_replaced
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import note_served, read_tokens
 
-    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
+    # Only a file with a rendered body was not opened; a fetch_with reference
+    # still sends the agent to the file.
+    rendered = {c["file"] for c in response.get("candidates", ()) if "source" in c}
+    full_tokens = 0
+    for path, text in text_cache.items():
+        if text:
+            tokens = read_tokens(text)
+            if path in rendered:
+                note_served(path, tokens)
+            full_tokens += tokens
     if full_tokens:
         declare_replaced(response, full_tokens)
 

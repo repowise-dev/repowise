@@ -15,7 +15,7 @@ from click.testing import CliRunner
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.main import cli
-from repowise.core.persistence.models import DecisionCandidateMeta
+from repowise.core.persistence.models import DecisionCandidateMeta, GitMetadata
 
 from .test_decision_cmd import _REPO_ID, _seed_wiki_db
 
@@ -113,3 +113,59 @@ def test_the_table_says_which_rows_are_acceptable(review_repo: Path) -> None:
     unscoped = next(line for line in lines if "aaaaaaaa" in line)
     assert "yes" in acceptable and "no scope" not in acceptable
     assert "no scope" in unscoped and "yes" not in unscoped
+
+
+def test_offset_pages_the_list(review_repo: Path) -> None:
+    """The whole-queue prompt pages with --offset, so each page starts where the last left."""
+    first = _candidates(review_repo, "--limit", "1")["candidates"]
+    second = _candidates(review_repo, "--limit", "1", "--offset", "1")["candidates"]
+    past_end = _candidates(review_repo, "--offset", "2")
+
+    assert [row["title"] for row in first + second] == ["Acceptable", "Unscoped"]
+    assert past_end == {"candidates": [], "count": 0}
+
+
+def _add_git(repo: Path, paths: list[str]) -> None:
+    async def _build() -> None:
+        db_path = repo / ".repowise" / "wiki.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            for path in paths:
+                session.add(GitMetadata(repository_id=_REPO_ID, file_path=path))
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+def test_background_pages_only_what_discovery_checks(tmp_path: Path) -> None:
+    """The list the whole-queue prompt pages: no agreement, no agent's pending record,
+    no record without a production file."""
+    _seed_wiki_db(
+        tmp_path,
+        [
+            {"id": "a" * 32, "title": "Agreement", "status": "proposed", "kind": "agreement"},
+            {"id": "b" * 32, "title": "Pending", "status": "proposed", "source": "agent"},
+            {"id": "c" * 32, "title": "Test only", "status": "proposed",
+             "affected_files": ["tests/test_app.py"]},
+            {"id": "d" * 32, "title": "First", "status": "proposed"},
+            {"id": "e" * 32, "title": "Second", "status": "proposed"},
+        ],
+    )
+    _add_git(tmp_path, ["src/app.py", "tests/test_app.py"])
+
+    first = _candidates(tmp_path, "--background", "--limit", "1")["candidates"]
+    second = _candidates(tmp_path, "--background", "--limit", "1", "--offset", "1")["candidates"]
+    past_end = _candidates(tmp_path, "--background", "--offset", "2")
+
+    assert [row["title"] for row in first + second] == ["First", "Second"]
+    assert past_end == {"candidates": [], "count": 0}
+
+
+def test_background_refuses_another_state(review_repo: Path) -> None:
+    result = CliRunner().invoke(
+        cli, ["decision", "candidates", str(review_repo), "--background", "--state", "all"]
+    )
+
+    assert result.exit_code != 0 and "--background" in result.output

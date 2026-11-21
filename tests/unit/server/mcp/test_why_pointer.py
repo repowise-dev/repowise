@@ -15,8 +15,13 @@ from sqlalchemy import select
 from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import accept_decision
 from repowise.core.persistence.models import DecisionRecord
+from repowise.core.registry.instructions import (
+    CHECK_CLAUSES,
+    TOOL_LINES,
+    WORKSPACE_TOOL_LINES,
+    server_instructions,
+)
 from repowise.server.mcp_server import _why_pointer
-from repowise.server.mcp_server._server import _WORKSPACE_TOOL_LINES, _instructions
 from repowise.server.mcp_server._why_pointer import (
     _MAX_LINE_CHARS,
     decisions_line,
@@ -145,7 +150,8 @@ async def test_long_area_names_keep_the_line_bounded(session, factory, repo_id):
 
 def test_instructions_with_the_longest_repo_line_fit_the_cap():
     longest = "x" * _MAX_LINE_CHARS
-    text = _instructions(list(_WORKSPACE_TOOL_LINES), longest)
+    served = [*TOOL_LINES, *CHECK_CLAUSES, *WORKSPACE_TOOL_LINES]
+    text = server_instructions(served, repo_line=longest, workspace=True)
     assert longest in text
     assert len(text) < _MAX_INSTRUCTIONS_CHARS
 
@@ -175,4 +181,17 @@ def test_the_startup_line_is_none_for_an_unreadable_store(tmp_path):
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "wiki.db").write_bytes(b"not a database")
 
+    assert decisions_line(str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_no_pointer_when_decisions_are_off(session, factory, repo_id, tmp_path):
+    await _accept(session, repo_id, "Tokens expire after one hour", [_FILE])
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: 'off'\n", encoding="utf-8"
+    )
+    ctx = SimpleNamespace(session_factory=factory, alias=None, path=tmp_path)
+
+    assert await why_pointer(ctx, [_FILE]) is None
     assert decisions_line(str(tmp_path)) is None

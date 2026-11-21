@@ -425,6 +425,25 @@ def test_assemble_repo_overview_circular_dep_count(
     assert ctx.circular_dependency_count == 1
 
 
+def test_assemble_repo_overview_names_the_code_language_over_docs(
+    sample_config, sample_repo_structure
+):
+    """A Python project with more Markdown files than Python is still a Python project."""
+    assembler = ContextAssembler(sample_config)
+    docs_heavy = dataclasses.replace(
+        sample_repo_structure,
+        root_language_distribution={"markdown": 0.5, "python": 0.3, "yaml": 0.2},
+    )
+    ctx = assembler.assemble_repo_overview(docs_heavy, {}, [], {})
+    assert ctx.language_distribution == {"python": 0.3}
+
+    docs_only = dataclasses.replace(
+        sample_repo_structure, root_language_distribution={"markdown": 1.0}
+    )
+    ctx = assembler.assemble_repo_overview(docs_only, {}, [], {})
+    assert ctx.language_distribution == {"markdown": 1.0}
+
+
 # ---------------------------------------------------------------------------
 # assemble_api_contract
 # ---------------------------------------------------------------------------

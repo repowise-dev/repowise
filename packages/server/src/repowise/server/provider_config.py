@@ -244,7 +244,11 @@ def _migrate_repo_selection(repo_id: str | None, repo_path: str | Path | None) -
 
 
 def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any]) -> None:
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+    from repowise.core.repo_config import (
+        carry_config_fingerprints,
+        config_dependency_fingerprints,
+        config_fingerprint,
+    )
 
     before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
     base_url = validate_base_url(selection.get("base_url"))
@@ -256,38 +260,7 @@ def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any
     )
     if base_url:
         trust_base_url(repo_path, base_url)
-    _carry_fingerprints(repo_path, before)
-
-
-def _carry_fingerprints(repo_path: str | Path, before: tuple[str, dict[str, str]]) -> None:
-    """Move state.json's config fingerprints past the migration's own write.
-
-    Only a fingerprint that still matched the pre-migration config moves, so a
-    real config change waiting for the next update is still seen.
-    """
-    from repowise.core.fsutils import atomic_write_text
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
-
-    state_path = Path(repo_path) / ".repowise" / "state.json"
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(state, dict):
-        return
-    old_fp, old_deps = before
-    changed = False
-    if state.get("config_fingerprint") == old_fp:
-        state["config_fingerprint"] = config_fingerprint(repo_path)
-        changed = True
-    stored = state.get("config_dependency_fingerprints")
-    if isinstance(stored, dict):
-        for bucket, value in config_dependency_fingerprints(repo_path).items():
-            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
-                stored[bucket] = value
-                changed = True
-    if changed:
-        atomic_write_text(state_path, json.dumps(state, indent=2))
+    carry_config_fingerprints(repo_path, before)
 
 
 def resolve_for_repo(
@@ -545,7 +518,9 @@ def set_api_key(
     key is *also* mirrored into that repo's ``.repowise/.env`` under the
     provider's canonical env var, so a later ``repowise`` CLI run in that repo
     (which reads ``.env``, not the server store) picks up a key added from the
-    web UI. A ``None`` key removes it from both places.
+    web UI. A ``None`` key removes it from both places. A string key is
+    stripped first, and one that is empty after stripping is rejected, so a
+    blank paste cannot silently replace a working key.
 
     Writing ``.env`` is a deliberately OSS-server-only step: a hosted
     deployment resolves keys from its own vault, so it never passes
@@ -559,6 +534,12 @@ def set_api_key(
         # Reject before writing anything so a bad value can't inject extra env
         # lines nor leave a partial store update. A real key has no newline.
         raise ValueError("API key must not contain a newline")
+    if key is not None:
+        # Every reader strips keys, so a blank value would read as "no key":
+        # reject it rather than let it overwrite the stored one.
+        key = key.strip()
+        if not key:
+            raise ValueError("API key must not be empty")
     def change(config: dict[str, Any]) -> None:
         keys = config.setdefault("keys", {})
         if key:

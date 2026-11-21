@@ -317,7 +317,7 @@ export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new S
     })),
     blocks,
     bands: shapeBands(collectFlows(reach, blocks)),
-    testsNotDrawn: reach.tests.length,
+    testsNotDrawn: reach.testsTotal,
     changedTestsNotDrawn: reach.changed.length - changed.length,
   };
 }

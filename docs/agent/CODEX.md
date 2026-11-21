@@ -6,7 +6,10 @@ Repowise supports Codex in three separate ways:
 - The `codex_cli` LLM provider for wiki generation through your authenticated Codex CLI subscription.
 - A local Codex plugin with bundled MCP, hooks, and Repowise skills.
 
-These features use project-local files. `repowise init --codex` writes under the repository, not to global `~/.codex/config.toml`.
+These features use project-local files. `repowise init --codex` writes under the repository, not to the global `config.toml` in `$CODEX_HOME` (default `~/.codex`).
+
+Codex loads the project `.codex/config.toml` only for a trusted project: run `codex` once in the repo and trust the folder, or use `codex exec --trust`.
+Codex also asks you to review the repowise hooks once before it runs them.
 
 For a short smoke walkthrough, see [examples/codex/](../../examples/codex/).
 
@@ -37,11 +40,16 @@ Repowise merges this server into `.codex/config.toml`:
 command = "repowise"
 args = ["mcp"]
 cwd = "/absolute/path/to/repo"
-startup_timeout_sec = 20
+required = true
+startup_timeout_sec = 60
 
 [features]
 hooks = true
 ```
+
+`required = true` makes Codex wait for the server before the first turn. Without it the first turn can start while the server is still booting, before the Repowise tools are in the tool catalog. The cost is that Codex does not start when `repowise` cannot be launched; `repowise doctor` reports that case with the fix. `startup_timeout_sec` is the ceiling for a slow cold start; a healthy server answers in a few seconds.
+
+`repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table.
 
 The MCP server uses `repowise mcp` without a path. In no-path mode, Repowise walks upward from the current directory to the nearest initialized `.repowise` repository.
 
@@ -123,7 +131,7 @@ The plugin bundles Repowise MCP, lifecycle hooks, and Codex-neutral skills for e
 
 ## Slash commands
 
-The plugin does not carry these, and cannot: a Codex plugin manifest has no slot for commands. Codex reads slash commands from `~/.codex/prompts/`, which is global and which only the CLI can write, so Repowise installs them there:
+The plugin does not carry these, and cannot: a Codex plugin manifest has no slot for commands. Codex reads slash commands from `$CODEX_HOME/prompts/` (default `~/.codex/prompts/`), which is global and which only the CLI can write, so Repowise installs them there:
 
 ```bash
 repowise agents add --target=codex

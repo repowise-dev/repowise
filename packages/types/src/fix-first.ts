@@ -37,6 +37,7 @@ export type FixExclusion =
   | "history_only"
   | "vendored"
   | "docs_example"
+  | "data"
   | "deprecated"
   | "gated_off"
   | "cold_path"

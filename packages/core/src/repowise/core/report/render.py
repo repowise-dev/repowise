@@ -132,17 +132,24 @@ ul.details { margin: .25rem 0 0; padding-left: 1.1rem; color: var(--muted); }
 """
 
 
-def render_html(document: dict[str, Any]) -> str:
-    e = html.escape
-    gen = document["generator"]
-    title = _title(document)
-    out = [
+def html_page(title: str, css: str, body: list[str]) -> str:
+    """One self-contained page: inline *css*, no scripts, every fetch blocked."""
+    head = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         "<meta http-equiv=\"Content-Security-Policy\" "
         "content=\"default-src 'none'; style-src 'unsafe-inline'\">",
-        f"<title>{e(title)}</title><style>{_CSS}</style></head><body>",
+        f"<title>{html.escape(title)}</title><style>{css}</style></head><body>",
+    ]
+    return "\n".join([*head, *body, "</body></html>"]) + "\n"
+
+
+def render_html(document: dict[str, Any]) -> str:
+    e = html.escape
+    gen = document["generator"]
+    title = _title(document)
+    out = [
         f"<h1>{e(title)}</h1>",
         f'<p class="notice">{e(document["notice"])}</p>',
         f'<p class="muted">Generated {e(document["generated_at"])} by {e(gen["name"])} '
@@ -179,8 +186,7 @@ def render_html(document: dict[str, Any]) -> str:
         for method in dict.fromkeys(c["method"] for c in section["checks"]):
             out.append(f'<p class="method">Method: {e(method)}.</p>')
         out.append("</section>")
-    out.append("</body></html>")
-    return "\n".join(out) + "\n"
+    return html_page(title, _CSS, out)
 
 
 _FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
@@ -233,9 +239,13 @@ report_renderers.register("markdown", render_markdown)
 report_renderers.register("html", render_html)
 report_renderers.register("csv", render_csv)
 
+# The first-look renderers register themselves on this seam. Imported last, so
+# every reader of ``report_renderers`` sees them.
+from repowise.core.report.first_look import render as _first_look_render  # noqa: E402, F401
 
 __all__ = [
     "Renderer",
+    "html_page",
     "render_csv",
     "render_html",
     "render_json",

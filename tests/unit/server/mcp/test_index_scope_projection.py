@@ -87,8 +87,10 @@ def test_the_digest_keeps_what_changes_how_an_answer_reads() -> None:
     assert compact["run_mode"] == "standard"
     assert compact["content_provenance"] == "model"
     assert compact["git_tier"] == "full"
-    assert compact["projection"] == "compact"
-    # Says it is not the whole thing; the call for the rest is documented, not repeated.
+    # The same on every response of a session and acted on by no agent, so the
+    # version, projection name and fingerprint stay on the whole object.
+    assert not {"version", "projection", "fingerprint"} & set(compact)
+    # The call for the rest is documented, not repeated.
     assert "full" not in compact
 
 
@@ -205,7 +207,7 @@ def test_a_changed_scope_fingerprints_differently() -> None:
 def test_a_routine_response_carries_the_digest(tmp_path: Path) -> None:
     out = _meta.build_meta(repository=_write_state(tmp_path, _FULL_STATE))
 
-    assert out["index_scope"]["projection"] == "compact"
+    assert out["index_scope"]["status"] == "partial"
     assert "git_history_coverage" not in out["index_scope"]
 
 
@@ -346,18 +348,15 @@ def test_a_sound_index_carries_no_degraded_names() -> None:
     )
 
 
-# --- the fingerprint has to be on both shapes ------------------------------
+# --- the fingerprint stays on the whole object ------------------------------
 
 
-def test_the_held_copy_carries_the_fingerprint_too(tmp_path: Path) -> None:
-    """Checking a held copy needs the fingerprint on the copy, not only the
-    digest that would be compared against it."""
+def test_the_whole_object_carries_the_fingerprint(tmp_path: Path) -> None:
     repository = _write_state(tmp_path, _FULL_STATE)
 
-    compact = _meta.build_meta(repository=repository)["index_scope"]
     full = _meta.build_meta_with_full_scope(repository=repository)["index_scope"]
 
-    assert full["fingerprint"] == compact["fingerprint"]
+    assert full["fingerprint"] == index_scope_fingerprint(resolve_index_scope(_FULL_STATE))
 
 
 def test_the_fingerprint_refuses_what_it_cannot_canonicalise() -> None:
@@ -388,8 +387,8 @@ def test_the_window_opens_without_a_restart(
 ) -> None:
     """A client spawns this server; it cannot be told to start again."""
     repository = _write_state(tmp_path, _FULL_STATE)
-    assert _meta.build_meta(repository=repository)["index_scope"]["projection"]
+    assert "git_history_coverage" not in _meta.build_meta(repository=repository)["index_scope"]
 
     monkeypatch.setenv(INDEX_SCOPE_ENV, "full")
 
-    assert "projection" not in _meta.build_meta(repository=repository)["index_scope"]
+    assert "git_history_coverage" in _meta.build_meta(repository=repository)["index_scope"]

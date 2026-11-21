@@ -1,7 +1,8 @@
 """Go ``go_swallow``: discards the call's contract makes deliberate are not findings.
 
 ``strconv`` parsers return the zero value on failure, which the caller takes as
-its default; ``_, _ = w.Write(b)`` blanks every result of a write on purpose.
+its default; ``_, _ = w.Write(b)`` blanks every result of a write on purpose;
+``strings.Cut`` and ``runtime.Caller`` end in a bool, so a blank there drops no error.
 Other discarded errors, and a write whose byte count is kept, stay findings.
 """
 
@@ -29,6 +30,14 @@ def _kinds(body: str) -> list[str]:
         "_, _ = self.guiIO.newCmdWriterFn().Write(out.Bytes())",
         '_, _ = fmt.Fprintf(w, "%s\\n", name)',
         "_, _ = io.WriteString(w, s)",
+        # The last result is a bool, not an error.
+        'before, after, _ := strings.Cut(s, "=")',
+        "before, after, _ := bytes.Cut(b, sep)",
+        'rest, _ := strings.CutPrefix(s, "v")',
+        'rest, _ := strings.CutSuffix(s, ".go")',
+        "rest, _ := bytes.CutPrefix(b, p)",
+        "rest, _ := bytes.CutSuffix(b, p)",
+        "_, file, line, _ := runtime.Caller(0)",
     ],
 )
 def test_deliberate_discard_is_not_swallow(body: str) -> None:
@@ -43,6 +52,10 @@ def test_deliberate_discard_is_not_swallow(body: str) -> None:
         "_, _ = io.Copy(dst, src)",
         "_, _ = db.Exec(q)",
         "n, _ := strings.NewReader(s).Read(buf)",
+        "x, _ := doThing()",
+        # Same method names on another receiver keep the error slot.
+        "v, _ := parser.Cut(s)",
+        "pc, _ := tracer.Caller(0)",
     ],
 )
 def test_other_discards_stay_findings(body: str) -> None:

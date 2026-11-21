@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select
 
 from repowise.core.attribution import (
     AGENT,
+    COVERAGE_FLOOR,
     HUMAN_ATTESTED,
     attribution_enabled,
     attribution_share,
@@ -55,14 +56,17 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _row_provenance(row: Any) -> dict[str, Any] | None:
-    """``{label, coverage}``: the compact form for list rows."""
+    """``{label, coverage}``: the compact form for list rows.
+
+    ``None`` below :data:`COVERAGE_FLOOR`, where the shares are withheld too:
+    the label would be a guess repeated on every row.
+    """
     if row.provenance is None or row.provenance_known is None:
         return None
     commits = len(json.loads(row.commit_shas_json or "[]"))
-    return {
-        "label": row.provenance,
-        "coverage": round(row.provenance_known / commits, 4) if commits else None,
-    }
+    if not commits or row.provenance_known / commits < COVERAGE_FLOOR:
+        return None
+    return {"label": row.provenance, "coverage": round(row.provenance_known / commits, 4)}
 
 
 def change_row(row: Any, attribution: bool) -> dict[str, Any]:

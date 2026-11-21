@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from repowise.core.persistence.models import (
+    CoverageFile,
     DeadCodeFinding,
     GitMetadata,
     GraphEdge,
@@ -41,6 +42,7 @@ FILE_SCOPED = [
     (HealthFileMetric, HealthFileMetric.file_path),
     (HealthFinding, HealthFinding.file_path),
     (GitMetadata, GitMetadata.file_path),
+    (CoverageFile, CoverageFile.file_path),
 ]
 
 
@@ -196,9 +198,7 @@ async def test_mass_deletion_is_refused_not_applied(async_session, repo_with_kep
     """A prune that would take most of a table reads as a broken run, and is refused."""
     repo = await insert_repo(async_session)
     for i in range(40):
-        async_session.add(
-            GitMetadata(repository_id=repo.id, file_path=f"src/module_{i}.js")
-        )
+        async_session.add(GitMetadata(repository_id=repo.id, file_path=f"src/module_{i}.js"))
     await async_session.flush()
 
     pruned, refusals = await prune_deleted_file_rows(
@@ -235,9 +235,7 @@ async def test_prune_is_scoped_to_one_repo(async_session, repo_with_kept_file):
     await _seed(async_session, repo_a.id)
     await _seed(async_session, repo_b.id)
 
-    await prune_deleted_file_rows(
-        async_session, repo_a.id, repo_with_kept_file, live_hint={KEPT}
-    )
+    await prune_deleted_file_rows(async_session, repo_a.id, repo_with_kept_file, live_hint={KEPT})
     await async_session.commit()
 
     assert await _paths(async_session, GitMetadata, GitMetadata.file_path, repo_b.id) == {
@@ -343,9 +341,9 @@ async def test_function_blame_of_a_deleted_file_is_pruned(async_session, repo_wi
     await prune_deleted_file_rows(async_session, repo.id, repo_with_kept_file, live_hint={KEPT})
     await async_session.commit()
 
-    assert await _paths(
-        async_session, GitFunctionBlame, GitFunctionBlame.file_path, repo.id
-    ) == {KEPT}
+    assert await _paths(async_session, GitFunctionBlame, GitFunctionBlame.file_path, repo.id) == {
+        KEPT
+    }
 
 
 async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_session):
@@ -357,7 +355,13 @@ async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_sessio
     from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
 
     repo = await insert_repo(async_session)
-    for node_id in ("external:gone", "external:kept", "external:targeted", "framework:anchor", KEPT):
+    for node_id in (
+        "external:gone",
+        "external:kept",
+        "external:targeted",
+        "framework:anchor",
+        KEPT,
+    ):
         async_session.add(GraphNode(repository_id=repo.id, node_id=node_id, node_type="file"))
         async_session.add(GraphMetric(repository_id=repo.id, node_id=node_id))
     # A file that failed to parse keeps its stored edge, and with it the target.

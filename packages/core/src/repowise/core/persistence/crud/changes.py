@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import Connection, and_, delete, exists, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Change, GitCommit
+from repowise.core.git_sha import is_sha_prefix
+
+from ...analysis.history.delta import DeltaStamp
+from ..models import (
+    Change,
+    ChangeCommit,
+    ChangeFile,
+    GitCommit,
+    GitCommitHealthDelta,
+    GitMetadata,
+    _new_uuid,
+)
 from ..sql import LIKE_ESCAPE, escape_like
 from ._shared import _BATCH_SIZE, _batch_upsert_keyed, _row_inserter, _row_updater
-from .history import author_clause
+from .history import author_clause, current_delta_clause
 
 _update_change = _row_updater("change_id")
+
+#: How much of an id a change listing prints; ``find_changes`` reads that back.
+LISTED_ID_CHARS = 19
 
 #: The one JSON layout ``changes.evidence_json`` is written in. The attention
 #: filter below matches text in this layout, so both read it from here.
@@ -42,10 +56,109 @@ async def upsert_changes(session: AsyncSession, repository_id: str, rows: list[d
         insert_fn=_row_inserter(Change, repository_id),
         batch_size=_BATCH_SIZE,
     )
+    await _link_changes(
+        session,
+        repository_id,
+        [
+            (row["change_id"], row.get("commit_shas_json", "[]"), row.get("files_json", "[]"))
+            for row in rows
+            if row.get("change_id")
+        ],
+    )
+
+
+def _loads_list(raw: str | None) -> list:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _link_rows(rows: Iterable[Sequence[Any]]) -> tuple[list[dict], list[dict]]:
+    """The ``change_commits`` and ``change_files`` rows of
+    ``(repository_id, change_id, commit_shas_json, files_json)`` rows."""
+    commits: list[dict] = []
+    files: list[dict] = []
+    for repository_id, change_id, commit_shas_json, files_json in rows:
+        base = {"repository_id": repository_id, "change_id": change_id}
+        for sha in dict.fromkeys(str(s) for s in _loads_list(commit_shas_json)):
+            commits.append({"id": _new_uuid(), **base, "sha": sha})
+        paths = (f.get("path") for f in _loads_list(files_json) if isinstance(f, dict))
+        for path in dict.fromkeys(p for p in paths if p):
+            files.append({"id": _new_uuid(), **base, "file_path": path})
+    return commits, files
+
+
+async def _link_changes(
+    session: AsyncSession, repository_id: str, rows: Sequence[tuple[str, str, str]]
+) -> None:
+    """Replace the commit and path rows of ``(change_id, commit_shas_json, files_json)``."""
+    for start in range(0, len(rows), _BATCH_SIZE):
+        chunk = rows[start : start + _BATCH_SIZE]
+        ids = [change_id for change_id, _, _ in chunk]
+        for model in (ChangeCommit, ChangeFile):
+            await session.execute(
+                delete(model).where(model.repository_id == repository_id, model.change_id.in_(ids))
+            )
+        commits, files = _link_rows((repository_id, *row) for row in chunk)
+        if commits:
+            await session.execute(insert(ChangeCommit), commits)
+        if files:
+            await session.execute(insert(ChangeFile), files)
+    await session.flush()
+
+
+def link_unlinked_changes(connection: Connection, repository_id: str | None = None) -> int:
+    """Link stored changes that have no commit or path rows; how many got commits.
+
+    For changes stored before the link tables existed: Alembic runs it in the
+    tables' migration, the SQLite reconciler when it creates them, and a
+    refresh for *repository_id* as a repair. Reads keyset pages of
+    :data:`_BATCH_SIZE` on ``changes.id``, so memory stays flat on a large
+    store. Sync, so all three can run it.
+    """
+    linked = 0
+    last_id = ""
+    while True:
+        query = (
+            select(
+                Change.id,
+                Change.repository_id,
+                Change.change_id,
+                Change.commit_shas_json,
+                Change.files_json,
+            )
+            .where(
+                Change.id > last_id,
+                *(
+                    ~exists().where(
+                        model.repository_id == Change.repository_id,
+                        model.change_id == Change.change_id,
+                    )
+                    for model in (ChangeCommit, ChangeFile)
+                ),
+            )
+            .order_by(Change.id)
+            .limit(_BATCH_SIZE)
+        )
+        if repository_id is not None:
+            query = query.where(Change.repository_id == repository_id)
+        page = connection.execute(query).all()
+        if not page:
+            return linked
+        last_id = page[-1].id
+        commits, files = _link_rows(row[1:] for row in page)
+        if commits:
+            connection.execute(insert(ChangeCommit), commits)
+        if files:
+            connection.execute(insert(ChangeFile), files)
+        linked += len({(c["repository_id"], c["change_id"]) for c in commits})
 
 
 async def delete_changes(session: AsyncSession, repository_id: str) -> None:
-    await session.execute(delete(Change).where(Change.repository_id == repository_id))
+    for model in (ChangeCommit, ChangeFile, Change):
+        await session.execute(delete(model).where(model.repository_id == repository_id))
     await session.flush()
 
 
@@ -75,10 +188,16 @@ class ChangeFilter:
 
     *since* is inclusive and *until* exclusive, on ``merged_at``. *attention*
     keeps changes whose kept checklist may flag attention (a prefilter; the
-    caller confirms on the parsed evidence). *change_ids* keeps only those.
+    caller confirms on the parsed evidence). *change_ids* keeps only those; it
+    binds one parameter per id, so it is for short explicit lists.
     *author* matches the author email (any case) or exact name; *area* keeps
     changes with a stored file at or under that path (a floor: a record stores
     at most ``MAX_STORED_FILES`` files).
+
+    *delta* (a ``DELTA_FILTERS`` value, judged under *stamp*, the current
+    analyzer) and *touches_hotspot* judge a change's rollup in SQL, over the
+    change's stored commits and paths; they match
+    :func:`repowise.core.analysis.history.rollup_deltas` and ``matches_delta``.
     """
 
     category: str | None = None
@@ -90,6 +209,49 @@ class ChangeFilter:
     change_ids: Sequence[str] | None = None
     author: str | None = None
     area: str | None = None
+    delta: str | None = None
+    touches_hotspot: bool = False
+    stamp: DeltaStamp | None = None
+
+
+def _delta_clause(repository_id: str, wanted: str, stamp: DeltaStamp | None) -> Any:
+    """Changes whose commits' current-stamp deltas, summed, read as *wanted*.
+
+    A change none of whose commits was scanned has no group, so it passes no
+    delta filter, as its rollup is ``None``.
+    """
+    better = func.sum(GitCommitHealthDelta.resolved_count + GitCommitHealthDelta.improved_count)
+    worse = func.sum(GitCommitHealthDelta.introduced_count + GitCommitHealthDelta.worsened_count)
+    condition = {
+        "improved": better > 0,
+        "worsened": worse > 0,
+        "mixed": and_(better > 0, worse > 0),
+        "neutral": and_(better == 0, worse == 0),
+    }[wanted]
+    matching = (
+        select(ChangeCommit.change_id)
+        .join(
+            GitCommitHealthDelta,
+            and_(
+                GitCommitHealthDelta.repository_id == ChangeCommit.repository_id,
+                GitCommitHealthDelta.sha == ChangeCommit.sha,
+            ),
+        )
+        .where(ChangeCommit.repository_id == repository_id, current_delta_clause(stamp))
+        .group_by(ChangeCommit.change_id)
+        .having(condition)
+    )
+    return Change.change_id.in_(matching)
+
+
+def _touches_hotspot_clause() -> Any:
+    return exists().where(
+        ChangeFile.repository_id == Change.repository_id,
+        ChangeFile.change_id == Change.change_id,
+        GitMetadata.repository_id == ChangeFile.repository_id,
+        GitMetadata.file_path == ChangeFile.file_path,
+        GitMetadata.is_hotspot.is_(True),
+    )
 
 
 def _files_json_area(area: str) -> Any:
@@ -133,6 +295,10 @@ def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
     if where.shape:
         clauses.append(Change.shape == where.shape)
     clauses.extend(_who_and_where(where))
+    if where.delta:
+        clauses.append(_delta_clause(repository_id, where.delta, where.stamp))
+    if where.touches_hotspot:
+        clauses.append(_touches_hotspot_clause())
     if where.q:
         like = f"%{escape_like(where.q)}%"
         clauses.append(
@@ -165,6 +331,23 @@ async def list_changes(
         .offset(offset)
     )
     return list(rows.scalars().all()), int(total)
+
+
+async def get_changes_by_ids(
+    session: AsyncSession, repository_id: str, change_ids: Sequence[str]
+) -> list[Change]:
+    """The stored changes among *change_ids*, in that order, read in chunks;
+    an id with no change (deleted meanwhile) drops out."""
+    found: dict[str, Change] = {}
+    for start in range(0, len(change_ids), _BATCH_SIZE):
+        rows = await session.execute(
+            select(Change).where(
+                Change.repository_id == repository_id,
+                Change.change_id.in_(change_ids[start : start + _BATCH_SIZE]),
+            )
+        )
+        found.update({row.change_id: row for row in rows.scalars()})
+    return [found[cid] for cid in change_ids if cid in found]
 
 
 async def list_attention_candidates(
@@ -254,8 +437,9 @@ async def find_changes(
 ) -> list[Change]:
     """Changes *ref* names, newest first: the one with that id, else the one
     with that forge ref (``#12``, ``!7``, as listings print it), else up to
-    *limit* that landed a commit starting with *ref* (7+ hex). More than one
-    means a short sha is ambiguous.
+    *limit* whose id starts with *ref* (a listed id, cut at
+    :data:`LISTED_ID_CHARS`), else up to *limit* that landed a commit starting
+    with *ref* (7+ hex). More than one means a short ref is ambiguous.
     """
     row = (
         await session.execute(
@@ -274,7 +458,19 @@ async def find_changes(
     ).scalar_one_or_none()
     if by_forge_ref is not None:
         return [by_forge_ref]
-    if len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
+    if len(ref) >= LISTED_ID_CHARS and "-" in ref:
+        # A long id as `changes list` prints it, cut short (``commit-0123456789ab``).
+        rows = await session.execute(
+            select(Change)
+            .where(
+                Change.repository_id == repository_id,
+                Change.change_id.like(f"{escape_like(ref)}%", escape=LIKE_ESCAPE),
+            )
+            .order_by(Change.merged_at.desc().nulls_last())
+            .limit(limit)
+        )
+        return list(rows.scalars().all())
+    if not is_sha_prefix(ref.lower()):
         return []
     sha = escape_like(ref.lower())
     rows = await session.execute(

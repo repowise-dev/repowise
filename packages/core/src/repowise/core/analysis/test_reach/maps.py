@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.test_paths import is_test_related_path, is_test_support_module
 
 from .hubs import call_hub_files
 from .model import UNRELIABLE_CALL_ORIGINS
@@ -47,6 +47,19 @@ LEGACY_CONFTEST_HINT = "pytest_conftest"
 
 def is_legacy_conftest_hint(edge_type: str | None, hint_source: str | None) -> bool:
     return edge_type == "dynamic_uses" and hint_source == LEGACY_CONFTEST_HINT
+
+
+#: Sources whose ``type_only`` imports never run: a Python import under
+#: ``if TYPE_CHECKING:``, or any import in a stub. A TypeScript ``import type``
+#: stays, since a type-checking runner (ts-jest) compiles it with the test.
+NEVER_RUN_SUFFIXES = (".py", ".pyi")
+
+
+def never_runs(source: str, type_only: Any) -> bool:
+    """Whether the dependency edge from *source* is never executed, so no test reaches
+    through it. On a package ``__init__.py`` such an edge would otherwise reach every
+    module under the package (:meth:`ImportGraph.with_package_inits`)."""
+    return bool(type_only) and source.endswith(NEVER_RUN_SUFFIXES)
 
 
 @dataclass(frozen=True)
@@ -178,7 +191,7 @@ def build_walk_maps(graph: Any) -> WalkMaps:
         for node, attrs in graph.nodes(data=True):
             if attrs.get("node_type") == "file":
                 files.add(node)
-                if attrs.get("is_test"):
+                if attrs.get("is_test") and not is_test_support_module(node):
                     tests.add(node)
         for source, target, attrs in graph.edges(data=True):
             edge_type = attrs.get("edge_type")
@@ -189,8 +202,10 @@ def build_walk_maps(graph: Any) -> WalkMaps:
                 and attrs.get("resolution_origin") not in UNRELIABLE_CALL_ORIGINS
             ):
                 callers.setdefault(target, set()).add(source)
-            if edge_type in FILE_DEPENDENCY_EDGE_TYPES and not is_legacy_conftest_hint(
-                edge_type, attrs.get("hint_source")
+            if (
+                edge_type in FILE_DEPENDENCY_EDGE_TYPES
+                and not is_legacy_conftest_hint(edge_type, attrs.get("hint_source"))
+                and not never_runs(source, attrs.get("type_only"))
             ):
                 importers.setdefault(target, set()).add(source)
     # Sorted, so a bounded walk does not depend on the order edges were added in.

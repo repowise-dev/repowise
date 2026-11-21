@@ -15,6 +15,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.change_risk.features import revspec_head
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server import _state
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
@@ -22,12 +23,14 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._call_tasks import ends_call_tasks, start_call_task
 from repowise.server.mcp_server._checkout import caller_revspec
 from repowise.server.mcp_server._helpers import (
+    NO_GIT_REASON,
     _unsupported_repo_all,
     attach_ignored_arguments,
 )
 from repowise.server.mcp_server._meta import full_meta
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+from repowise.server.mcp_server._savings.interaction import note_stage_ms
 from repowise.server.mcp_server._why_pointer import attach_why_pointer
 
 from . import cache as _cache
@@ -85,36 +88,59 @@ async def _score_guarded(
     revspec: str | None, score: Any, *args: Any, **kwargs: Any
 ) -> tuple[Any, dict | None]:
     """Run a git-reading *score* off the loop: ``(result, None)``, or ``(None, error reply)``."""
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
     try:
         result = await asyncio.to_thread(score, *args, **kwargs)
     except ValueError as exc:
-        return None, {"error": str(exc)}
+        return None, error_reply("invalid_args", {"error": str(exc)})
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").partition("\nUse '--' to separate paths from revisions")[0]
+        stderr = exc.stderr or ""
+        detail = stderr.partition("\nUse '--' to separate paths from revisions")[0]
         detail = detail.strip() or str(exc)
-        return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        # A revspec that does not resolve is the caller's to fix; any other git
+        # failure (not a repository, dubious ownership, a corrupt or shallow
+        # clone) is git unable to read this repository.
+        bad_rev = any(marker in stderr for marker in _BAD_REVISION)
+        reason = "invalid_args" if bad_rev else "git_unavailable"
+        return None, error_reply(
+            reason, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        )
     except subprocess.TimeoutExpired:
-        return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        return None, error_reply(
+            "timeout", {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        )
     except FileNotFoundError:
         # Scoring spawns git from several readers, so the missing binary is
         # named once here. Any other missing file is a real bug: re-raise.
         if shutil.which("git") is not None:
             raise
-        return None, {
-            "error": "git was not found on PATH; change risk reads the repository history."
-        }
+        return None, error_reply(
+            "git_unavailable",
+            {"error": "git was not found on PATH; change risk reads the repository history."},
+        )
     return result, None
+
+
+#: git's stderr for a revision that does not resolve. English only: under a
+#: localized git a bad revspec is filed as ``git_unavailable``, never ``other``.
+_BAD_REVISION = ("unknown revision", "bad revision", "invalid revision", "bad object")
 
 
 @contextlib.contextmanager
 def _timed(timings: dict[str, int] | None, block: str):
-    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms."""
+    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms.
+
+    Also noted on the call in flight, so the ``mcp_tool_call`` event carries it.
+    """
     started = time.perf_counter()
     try:
         yield
     finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
         if timings is not None:
-            timings[block] = round((time.perf_counter() - started) * 1000)
+            timings[block] = round(elapsed_ms)
+        note_stage_ms(block, elapsed_ms)
 
 
 async def _score_beside_selection(
@@ -346,8 +372,8 @@ async def get_change_risk(
         revspec: commit or ``base..head``. Omit for uncommitted work, or
             ``HEAD`` when the tree is clean.
         per_commit: with a range, one compact row per commit (up to 30).
-        include: ``"findings"``, ``"diagnostics"``, ``"scales"``,
-            ``"evidence"``, ``"tests"`` (why each runs).
+        include: ``"findings"`` (with changed symbols), ``"diagnostics"``,
+            ``"scales"``, ``"tests"`` (why each runs).
         finding_id: expand one ``health_delta`` finding.
         extensions: file suffixes to count, e.g. ``[".py"]``.
         exclude_patterns, include_paths: gitignore-style paths to omit, keep
@@ -358,6 +384,10 @@ async def get_change_risk(
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
     ctx = await _pkg._resolve_repo_context(repo)
+    if not _state.git_available():
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply("git_unavailable", {"error": NO_GIT_REASON})
     revspec, refused = caller_revspec(revspec)
     if refused is not None:
         return refused

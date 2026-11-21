@@ -39,7 +39,13 @@ def test_too_few_heads_open_the_widest_into_its_top_layer():
     pages = [_page("src", "1"), *(_page(f"src/m{i}", f"1.{i + 1}") for i in range(5))]
     pages.append(_page("src/m0/deep", "1.1.1"))
     heads = _key_module_heads(pages)
-    assert [h.target_path for h in heads] == [f"src/m{i}" for i in range(5)]
+    assert [h.target_path for h in heads] == ["src"] + [f"src/m{i}" for i in range(5)]
+
+
+def test_an_opened_main_package_stays_a_key_module():
+    # A small repo: the main package and one subpackage, nothing else.
+    pages = [_page("src/flask", "3"), _page("src/flask/json", "3.1")]
+    assert [h.target_path for h in _key_module_heads(pages)] == ["src/flask", "src/flask/json"]
 
 
 def test_key_modules_stop_at_the_cap():
@@ -86,7 +92,7 @@ def test_commands_name_a_package_only_for_tasks_the_root_lacks(tmp_path):
 
 def test_twin_module_pages_do_not_stall_the_widening():
     pages = [_page("src", "1"), _page("src", "2"), _page("src/a", "1.1")]
-    assert [h.target_path for h in _key_module_heads(pages)] == ["src/a"]
+    assert [h.target_path for h in _key_module_heads(pages)] == ["src", "src/a"]
 
 
 def test_a_repo_summary_is_its_first_sentence_not_its_heading():
@@ -95,6 +101,8 @@ def test_a_repo_summary_is_its_first_sentence_not_its_heading():
     essay = "## Project Summary\n\nRepowise indexes code. It also answers questions.\n\n## More"
     assert _lead_sentence(essay) == "Repowise indexes code."
     assert _lead_sentence("# Only a heading") == ""
+    stats = "# Overview: x\n\n**Files:** 3 | **Lines:** 9\n\n## Project Summary\n\n`x` is small. More."
+    assert _lead_sentence(stats) == "`x` is small."
     long = _lead_sentence("word " * 100)
     assert len(long) <= 140 and long.endswith("…")
 

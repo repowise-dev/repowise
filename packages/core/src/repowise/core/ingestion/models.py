@@ -42,6 +42,7 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "perl",
     "cobol",
     "gdscript",
     "vbnet",
@@ -323,6 +324,9 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: the ``(start_line, end_line)`` of each function whose body holds
+    # the statement, the only code its names are bound for. None: file-wide.
+    scopes: tuple[tuple[int, int], ...] | None = None
 
     @property
     def local_names(self) -> list[str]:
@@ -385,6 +389,7 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    start_byte: int = field(default=0, compare=False)  # 0-indexed start byte offset of the call node in the source file
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
     # and cpp has none -- a scoped call must stay on the free-call path. Java
@@ -508,6 +513,8 @@ EdgeType = Literal[
     # that something holds a handle to it, which is enough to make deleting it
     # unsafe.
     "references",
+    # A document links to or names a repository file; source is always a Markdown node.
+    "documents",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
@@ -551,6 +558,10 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # 0.50 — Python: the name is imported only inside another function of
+    # this file, so here it is a local or a global that import never binds.
+    # The one such import is read as a guess.
+    "import_elsewhere",
     # The four below reach the same scopes as their untyped twins, but through
     # a receiver whose type was read off its declaration rather than written at
     # the call. They share their twin's confidence deliberately: the inferred
@@ -624,6 +635,12 @@ CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 # look like an import of its own subject.
 TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 
+# Prose pointing at code: a document naming a file says nothing about what the file depends on.
+DOCUMENTATION_EDGE_TYPES: frozenset[str] = frozenset({"documents"})
+
+# Edges that are not code at all: history and prose.
+NON_CODE_EDGE_TYPES: frozenset[str] = TEMPORAL_EDGE_TYPES | DOCUMENTATION_EDGE_TYPES
+
 # Edge types that are *not* code dependencies, and so must be excluded by any
 # consumer answering "what depends on this?" about FILES.
 #
@@ -633,8 +650,8 @@ TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 # ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
 # back to a file. Drop ``defines`` and a caller can no longer walk from a file
 # to the functions it declares, so anything traversing the graph wants
-# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
-NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+# ``NON_CODE_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | NON_CODE_EDGE_TYPES
 
 # ---------------------------------------------------------------------------
 # The named views. Ask for the one that matches your question.

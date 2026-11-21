@@ -1262,7 +1262,7 @@ def test_lean_tool_surface_skips_tool_search_recommendation(
     ClaudeCodeSetup().register_client(console, tmp_path)
 
     assert calls == []
-    assert "Lean MCP tool surface configured" in output.getvalue()
+    assert "Small MCP tool surface configured" in output.getvalue()
 
 
 def test_uses_lean_tool_surface_shapes(tmp_path: Path) -> None:

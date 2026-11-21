@@ -42,13 +42,6 @@ class FakeExtractor:
         return self.output
 
 
-@pytest.fixture
-def extractor_registry(monkeypatch):
-    monkeypatch.setattr(document_extractors, "_impls", {})
-    monkeypatch.setattr(document_extractors, "_chosen", None)
-    monkeypatch.setattr(plugins, "load_plugins", lambda: [])
-
-
 def _register(name: str, extractor: FakeExtractor) -> None:
     document_extractors.register(name, extractor)
 
@@ -406,11 +399,12 @@ async def test_extracted_markdown_over_ceiling_is_skipped_and_not_cached(
     assert [fi.path for fi in file_infos] == ["main.py"]
     assert "spec.xyz" not in source_map
     # The size reported is the Markdown's, which is what broke the limit.
-    assert SkippedSourceFile("spec.xyz", 2048, "extracted_over_max_size") in (
+    ceiling_kb = _SOURCE_MAX_FILE_SIZE_BYTES // 1024
+    assert SkippedSourceFile("spec.xyz", ceiling_kb, "extracted_over_max_size") in (
         stats.skipped_source_files
     )
     assert any(
-        "Not indexed: spec.xyz (2,048 KB, extracted Markdown over the 2,048 KB limit)" in line
+        f"Not indexed: spec.xyz ({ceiling_kb:,} KB, extracted Markdown over the {ceiling_kb:,} KB limit)" in line
         for line in progress.messages
     )
     document_cache = tmp_path / ".repowise" / "document-cache"

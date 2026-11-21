@@ -124,3 +124,12 @@ export function resolveFileTab(
   const match = tabs.find((t) => t.id === requested);
   return match ? match.id : "overview";
 }
+
+/** Narrow a `?line=` value to a 1-based line number. Anything that is not a
+ *  plain positive integer is ignored rather than guessed at. Server-safe for
+ *  the same reason as `asFilePageTab`. */
+export function asLineNumber(value: string | string[] | undefined): number | undefined {
+  if (typeof value !== "string" || !/^\d{1,7}$/.test(value)) return undefined;
+  const line = Number(value);
+  return line >= 1 ? line : undefined;
+}

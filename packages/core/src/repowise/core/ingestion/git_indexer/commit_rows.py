@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ._constants import classify_commit_category, is_fix_commit
-from .identity import author_identity_key
+from .identity import build_identity_resolver
 
 # Commit subjects are a headline (`%s`); cap defensively against a pathological
 # single-line subject so one row can't bloat the table.
@@ -47,18 +47,22 @@ def author_experience_by_sha(commits: Iterable[Mapping[str, Any]]) -> dict[str, 
 
     Walks *commits* oldest→newest (by ``ts``) and returns, per sha, the running
     tally for that author BEFORE the commit. Ties on the same timestamp are
-    ordered as-given, which is fine for a count. Identities are folded through
-    :func:`_author_key`, so ``noreply`` variants of one person share a tally.
+    ordered as-given, which is fine for a count. Authors are merged into people
+    by the identity resolver built over *commits*, so one person's noreply and
+    real emails, or two names on one email, share a tally.
 
     The count is only ever "prior commits **within this set**". Callers that
     persist it must therefore hand over the whole history they hold, not a
     trailing batch — a batch-local tally restarts every author at zero.
     """
     ordered = sorted(commits, key=lambda c: c.get("ts", 0) or 0)
+    resolve = build_identity_resolver(
+        (c.get("author_name", ""), c.get("author_email", "")) for c in ordered
+    )
     exp_by_sha: dict[str, int] = {}
     tally: dict[str, int] = {}
     for c in ordered:
-        key = author_identity_key(c.get("author_name", ""), c.get("author_email", ""))
+        key = resolve(c.get("author_name", ""), c.get("author_email", ""))
         exp_by_sha[c["sha"]] = tally.get(key, 0)
         tally[key] = tally.get(key, 0) + 1
     return exp_by_sha

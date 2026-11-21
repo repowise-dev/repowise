@@ -56,6 +56,7 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
 
     run.timings.start("decisions.rescan")
     _rescan_inline_markers(opts, run, docs, policy, provider)
+    _rescan_adrs(opts, run, docs, policy, provider)
     run.timings.stop("decisions.rescan")
 
     run.timings.start("decisions.sessions")
@@ -309,6 +310,35 @@ def _rescan_inline_markers(
         _skipped(opts, run, "Decision re-scan", "Decision re-scan skipped", exc)
 
 
+def _rescan_adrs(
+    opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any, provider: Any
+) -> None:
+    """Re-read the ADRs this update added or changed; init is the only other ADR pass.
+
+    Ceiling: a deleted ADR leaves its record in place.
+    """
+    try:
+        from repowise.core.analysis.decision_extractor import DecisionExtractor
+
+        changed_paths = [fd.path for fd in run.file_diffs if fd.status in ("added", "modified")]
+        if not changed_paths or not policy.source_enabled("adr"):
+            return
+        extractor = DecisionExtractor(
+            repo_path=run.repo_path,
+            provider=provider,
+            graph=run.graph_builder.graph(),
+            git_meta_map=run.git_meta_map,
+            policy=policy,
+        )
+        with docs.cost_tracker.record_as("decision_extraction"):
+            found = run_async(extractor.rescan_adrs(changed_paths))
+        docs.new_decision_markers.extend(found)
+        if found and opts.verbose:
+            console.print(f"ADR decisions re-read: [green]{len(found)}[/green]")
+    except Exception as exc:
+        _skipped(opts, run, "ADR re-scan", "ADR re-scan skipped", exc)
+
+
 def _skipped(opts: UpdateOptions, run: UpdateRun, label: str, verbose_label: str, exc) -> None:
     """Record a best-effort pass that failed, and say so under ``--verbose``."""
     run.degraded.append(f"{label}: {exc}")
@@ -325,7 +355,7 @@ def _run_session_passes(
     # Second: the mining pass is what fills discovery's queue.
     _discover_session_decisions(opts, run, docs, policy, indexed_files)
     _apply_injection_feedback(opts, run, policy)
-    _classify_hook_efficacy(opts, run, policy)
+    _classify_hook_efficacy(opts, run)
 
 
 def _mine_session_decisions(
@@ -423,17 +453,26 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
     return res
 
 
-def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Classify hook firings by what the agent did next (reads transcripts)."""
-    # The session lane is the privacy boundary for reading transcripts, so this
-    # fails closed; `repowise hook backfill` fills the columns on demand.
-    try:
-        from repowise.core.sessions.efficacy import ingest_transcript_efficacy
+def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Classify hook firings by what the agent did next (reads transcripts).
 
-        if policy.source_enabled("session"):
-            classified = ingest_transcript_efficacy(
-                run.repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
-            )
+    ``hooks.measure`` is the privacy boundary for reading transcripts on
+    update, off by default, so this fails closed; ``repowise hook backfill``
+    fills the columns on demand either way. When on, it runs only while the
+    ledger holds a recent firing still waiting to be judged.
+    """
+    try:
+        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+        from repowise.core.sessions.efficacy import (
+            has_unsettled_firings,
+            ingest_transcript_efficacy,
+        )
+
+        if not hook_flag_enabled(run.repo_path, "measure"):
+            return
+        since = time.time() - _EFFICACY_LOOKBACK_SECONDS
+        if has_unsettled_firings(run.repo_path, since=since):
+            classified = ingest_transcript_efficacy(run.repo_path, since=since)
             if opts.verbose and classified:
                 console.print(f"Hook firings classified: [green]{sum(classified.values())}[/green]")
     except Exception as exc:

@@ -75,7 +75,7 @@ def _same_path(left: Path, right: Path) -> bool:
         return left == right
 
 
-def find_workspace_root(start: Path | None = None) -> Path | None:
+def find_workspace_root(start: Path | None = None, *, any_repo: bool = False) -> Path | None:
     """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
 
     Returns the directory containing the file, or ``None`` if not found.
@@ -83,7 +83,7 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
     """
     from repowise.core.workspace.config import find_workspace_root as _find
 
-    return _find(start)
+    return _find(start, any_repo=any_repo)
 
 
 def get_repowise_dir(repo_path: Path) -> Path:

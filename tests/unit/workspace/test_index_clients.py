@@ -31,6 +31,7 @@ from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, 
 from repowise.core.workspace.extractors.http.index_clients import extract_consumers
 from repowise.core.workspace.extractors.http.js_clients import JsClientsDialect
 from repowise.core.workspace.extractors.http.wrappers import confirm_wrappers
+from repowise.core.workspace.origins import ContractOrigin
 from repowise.core.workspace.repo_index import IndexedSymbol
 
 from ._repo_index import make_repo_index
@@ -156,6 +157,54 @@ class TestClassMethodWrapper:
         assert all(c.meta[EXTRACTION_LAYER_KEY] == "index" for c in contracts)
         assert LAYER_INDEX == "index"
 
+
+class TestWrapperBodiesAndStaticFields:
+    """A wrapper's own request names no route; a static method reads static fields."""
+
+    def test_a_wrappers_inner_call_is_no_route(self):
+        source = (
+            "async function baseFetch(url: string, init?: RequestInit) {\n"
+            "  return fetch(url, init);\n"
+            "}\n"
+            "export async function apiFetch(endpoint: string) {\n"
+            "  return baseFetch(`/api/v1${endpoint}`);\n"
+            "}\n"
+            "export const apiGet = (endpoint: string) => fetch(`/api/v2${endpoint}`);\n"
+            "export function getUser(id: string) { return fetch(`/users/${id}`); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/users/{param}"}
+
+    def test_this_in_a_static_method_is_the_class(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static getUsers() {\n"
+            "    return fetch(this.BASE + '/users');\n"
+            "  }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/api/users"}
+
+    def test_a_static_field_read_through_the_class_name(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static get() {\n"
+            "    return fetch(Api.BASE + '/x');\n"
+            "  }\n"
+            "  list() { return fetch(`${Api.BASE}/items`); }\n"
+            "}\n"
+            "export function top() { return fetch(Api.BASE + '/top'); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {
+            "http::GET::/api/x",
+            "http::GET::/api/items",
+            "http::GET::/api/top",
+        }
+
     def test_the_regex_dialect_alone_cannot_see_these(self):
         """Fails before this change: the generic type argument breaks the regex.
 
@@ -200,12 +249,17 @@ class TestModuleLevelHelper:
             "http::GET::/snapshots/{param}/commits",
         }
 
-    def test_regex_dialect_yields_nothing_here(self):
-        """Fails before this change: this file's yield was 0."""
+    def test_regex_dialect_reads_the_type_argument_too(self):
+        """The text dialect reads ``publicFetch<T>(...)`` by name, which is how a
+        wrapper imported from another file is seen at all; the index layer
+        supersedes its rows wherever both read a call."""
         ctx = ScanContext(
             "frontend", "src/lib/api/public-client.ts", ".ts", PUBLIC_CLIENT_TS, {}
         )
-        assert JsClientsDialect().extract(ctx) == []
+        assert _ids(JsClientsDialect().extract(ctx)) == {
+            "http::GET::/snapshots/{param}/overview",
+            "http::GET::/snapshots/{param}/commits",
+        }
 
 
 # Named exactly like an HTTP wrapper, reaches no sink. `_HTTP_NAME_RE` matches
@@ -802,6 +856,80 @@ class TestBoundClientReceiver:
         assert unresolved == 0
 
 
+class TestImportedClientClasses:
+    """``from httpx import AsyncClient`` binds as surely as ``httpx.AsyncClient``."""
+
+    @pytest.mark.parametrize(
+        ("imports", "ctor"),
+        [
+            ("from httpx import AsyncClient", "AsyncClient()"),
+            ("from httpx import Client as Http", "Http()"),
+            ("from httpx import (\n    AsyncClient,\n    Timeout,\n)", "AsyncClient()"),
+            ("from aiohttp import ClientSession", "ClientSession()"),
+            ("from requests import Session", "Session()"),
+        ],
+    )
+    def test_an_imported_class_binds(self, imports: str, ctor: str):
+        source = f"{imports}\n\ndef f():\n    c = {ctor}\n    c.get('/things')\n"
+        assert _ids(_run_py(source)[0]) == {"http::GET::/things"}
+
+    def test_a_session_from_another_library_stays_unbound(self):
+        source = (
+            "from sqlalchemy.orm import Session\n\n"
+            "def f(engine):\n    s = Session(engine)\n    s.get('/things')\n"
+        )
+        assert _run_py(source) == ([], 0)
+
+    def test_a_name_imported_from_two_modules_stays_unbound(self):
+        source = (
+            "from requests import Session\nfrom sqlalchemy.orm import Session\n\n"
+            "def f(engine):\n    s = Session(engine)\n    s.get('/things')\n"
+        )
+        assert _run_py(source) == ([], 0)
+
+
+class TestInstanceBase:
+    """``base_url=`` on the constructor is the host every relative call goes to."""
+
+    def test_a_relative_path_joins_the_base(self):
+        source = (
+            "import httpx\n\n"
+            "async def f():\n"
+            "    async with httpx.AsyncClient(base_url='http://users:8000/api') as c:\n"
+            "        await c.get('users/1')\n"
+        )
+        (contract,) = _run_py(source)[0]
+        assert contract.contract_id == "http::GET::/api/users/1"
+        assert contract.origin == ContractOrigin.INSTANCE_BASE
+
+    def test_an_environment_base_is_kept_as_a_token(self):
+        source = (
+            "import os\nimport httpx\n\n"
+            "def f():\n"
+            "    c = httpx.Client(base_url=os.environ.get('USERS_URL'))\n"
+            "    c.post('/api/users')\n"
+        )
+        contracts, unresolved = _run_py(source)
+        assert _ids(contracts) == {"http::POST::/api/users"}
+        assert contracts[0].origin == ContractOrigin.INSTANCE_BASE
+        assert unresolved == 0
+
+    def test_an_absolute_url_ignores_the_base(self):
+        source = (
+            "import httpx\n\n"
+            "def f():\n"
+            "    c = httpx.Client(base_url='http://users')\n"
+            "    c.get('http://billing/invoices')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::GET::/invoices"}
+
+    def test_a_client_with_no_base_keeps_its_rooted_only_rule(self):
+        source = "import httpx\n\ndef f():\n    c = httpx.Client()\n    c.get('users')\n"
+        contracts, unresolved = _run_py(source)
+        assert contracts == []
+        assert unresolved == 1
+
+
 class TestBindingIsRequired:
     """A receiver is a client because the file constructs one, never by name."""
 
@@ -1038,3 +1166,28 @@ export async function removeProviderKey(providerId: string, repoId?: string) {
         from repowise.core.workspace.extractors.http.dialect import method_from_callee
 
         assert method_from_callee("fetchJSON") == "GET"
+
+
+ANALYTICS_TS = """\
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export class Analytics {
+  private baseUrl = `${API_BASE_URL}/api/analytics/ai-interview`;
+
+  private async makeRequest<T>(endpoint: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`);
+    return response.json();
+  }
+
+  async getOverview(userId: string) {
+    return this.makeRequest<Overview>(`/overview/${userId}`);
+  }
+}
+"""
+
+
+class TestWrapperBase:
+    def test_the_wrapper_prefix_composes_onto_its_calls(self):
+        contracts, _u, _c = _run(ANALYTICS_TS, "src/lib/api/analytics.ts")
+        assert "http::GET::/api/analytics/ai-interview/overview/{param}" in _ids(contracts)
+        assert "http::GET::/overview/{param}" not in _ids(contracts)

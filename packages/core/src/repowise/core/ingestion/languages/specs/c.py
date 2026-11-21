@@ -32,6 +32,19 @@ TEST_SUPPORT_STEM_SUFFIXES: tuple[str, ...] = (
     "_test_impl",
 )
 
+#: CMake and Bazel build files. Build config, never package roots: every CMake
+#: subdirectory carries a ``CMakeLists.txt`` and every Bazel package a
+#: ``BUILD``, so their presence says nothing about where a distributable unit
+#: starts. Exported for cpp.
+BUILD_CONFIG_MANIFESTS: tuple[str, ...] = (
+    "CMakeLists.txt",
+    "BUILD",
+    "BUILD.bazel",
+    "MODULE.bazel",
+    "WORKSPACE",
+    "WORKSPACE.bazel",
+)
+
 SPEC = LanguageSpec(
     tag="c",
     display_name="C",
@@ -48,6 +61,8 @@ SPEC = LanguageSpec(
     scm_file="c.scm",
     heritage_node_types=frozenset(),
     entry_point_patterns=("main.c",),
+    manifest_files=BUILD_CONFIG_MANIFESTS,
+    build_config_manifests=BUILD_CONFIG_MANIFESTS,
     builtin_calls=frozenset(
         {
             "printf",

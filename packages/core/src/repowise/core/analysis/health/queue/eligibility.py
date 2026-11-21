@@ -21,9 +21,9 @@ from repowise.core.code_origin import path_origin
 from repowise.core.test_paths import in_test_tree
 
 from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
-from ..perf.actionability import EXPECTED_REASONS
+from ..perf.actionability import EXPECTED_REASONS, NO_STRATEGY_FOR_MARKER
 from ..perf.causal import code_context
-from ..rows import detail_map, field
+from ..rows import detail_map, field, json_field
 from ..worth import (
     SIZE_MARKERS,
     LowPriority,
@@ -33,6 +33,7 @@ from ..worth import (
     execution_role,
     large_function,
     lead_reason,
+    measured,
     measured_nloc,
     perf_facets,
     terminal_shaped,
@@ -50,6 +51,7 @@ Reason = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",
@@ -126,11 +128,13 @@ class Tally:
 # --- where the code lives ------------------------------------------------------
 
 #: Code origins that do not ship, by the reason each counts as. A build script
-#: is tooling to a reader choosing what to fix.
+#: is tooling to a reader choosing what to fix. ``data`` is code a data folder
+#: holds for the product to read by path, never a module anyone fixes.
 ORIGIN_EXCLUSION: dict[str, Reason] = {
     "test": "test",
     "vendored": "vendored",
     "docs_example": "docs_example",
+    "data": "data",
     "generated": "generated",
     "tooling": "tooling",
     "build": "tooling",
@@ -411,7 +415,7 @@ DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
 DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
 DEFAULT_QUEUE_PROOFS = frozenset({"proven"})
 """What the performance queue holds when a caller names no filter: production
-work with a strategy whose cost is measured.
+work with a strategy whose loop size is known.
 
 Test, tooling and unclassified code, ``expected`` repetition, causes with no
 supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)
@@ -439,6 +443,22 @@ QUEUE_ROLES = frozenset(EXECUTION_ROLES) - COLD_ROLES
 proven growth. ``unknown`` is no evidence either way, so it stays."""
 
 
+def observation(item: Any) -> bool:
+    """Whether a cause's marker has no fix strategy at all, so it is an
+    observation: kept in the performance inventory, never a unit of any queue.
+
+    Unlike a cause waiting on a proof (``no_strategy``), no fact about the code
+    would give it a strategy, so counting it as queue work left out says
+    something false. Reads an opportunity, an ORM row or a plain row.
+    """
+    if field(item, "actionability_state") != "investigate":
+        return False
+    prerequisites = json_field(item, "prerequisites", None)
+    if prerequisites is None:
+        prerequisites = detail_map(item).get("prerequisites") or ()
+    return NO_STRATEGY_FOR_MARKER in prerequisites
+
+
 def perf_strategy_verdict(
     item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
 ) -> Verdict:
@@ -463,12 +483,13 @@ def perf_strategy_verdict(
 def _role_reason(item: Any) -> Reason | None:
     """Why the role running *item*'s loop keeps it out, or ``None``.
 
-    A loop only startup, a CLI, tooling or tests run is paid once per process.
+    A loop only startup, a CLI, tooling or tests run is paid once per process,
+    unless a leading workload measured it: the role is a guess, the run is not.
     A scheduled job's loop matters only once it is shown to grow with the data.
     """
     role = execution_role(item)
     if role in COLD_ROLES:
-        return "cold_role"
+        return None if measured(perf_facets(item)) else "cold_role"
     if role == "scheduled_job" and perf_facets(item).get("loop_magnitude") != "grows_with_data":
         return "background_unproven"
     return None
@@ -508,8 +529,14 @@ def _unconfirmed(item: Any) -> bool:
     Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
-    with no known role, an entry point must reach it. Only a ``plan_ready``
-    cause qualifies.
+    with no known role, an entry point or a leading workload's run must reach
+    it (a unit-test run reaches everything it imports). Only a ``plan_ready``
+    cause qualifies, and never one whose role or name is cold: a run that
+    merely ranks it keeps such a cause in the queue (:func:`_role_reason`,
+    ``actionability.expected_reason``), it does not make it the work to lead
+    with. A leading workload that measured its loop owner above the lead bar
+    (``confirmed`` ``measured``) does: the role and the name were guesses
+    that the run's cost answers. A unit-test run never does.
     """
     # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
     # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
@@ -521,7 +548,11 @@ def _unconfirmed(item: Any) -> bool:
         return True
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
         return True
-    return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
+    cold = execution_role(item) in COLD_ROLES or facets.get("measured_overrides")
+    if cold and facets.get("confirmed") != "measured":
+        return True
+    reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
+    return execution_role(item) == "unknown" and not reached
 
 
 def perf_confident_verdict(
@@ -540,10 +571,13 @@ def perf_confident_verdict(
 
 
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
-    """The performance default queue's size and what it leaves out, by reason."""
+    """The performance default queue's size and what it leaves out, by reason.
+    An :func:`observation` is no unit of the queue, so it is not counted."""
     tally = Tally(DEFAULT_QUEUE_EXCLUSIONS)
     queued = 0
     for item in items:
+        if observation(item):
+            continue
         if not tally.add(perf_queue_verdict(item)):
             queued += 1
     return {"total": queued, "excluded": tally.excluded}
@@ -617,6 +651,7 @@ __all__ = [
     "dead_spans",
     "dead_target",
     "finding_verdict",
+    "observation",
     "path_verdict",
     "perf_confident_verdict",
     "perf_fix_verdict",

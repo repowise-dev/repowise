@@ -18,6 +18,8 @@ from repowise.server.mcp_server._test_selection import APART_KEYS, apart_sentenc
 
 #: :data:`APART_KEYS` as the directive names them.
 APART_FIELDS = tuple(f"tests_{key}" for key in APART_KEYS)
+#: Selected tests that run with every subset, counted apart from ``tests_to_run``.
+ALWAYS_RUN_FIELD = "tests_always_run_total"
 
 _WORKSPACE_FAMILIES = (
     "will_break_consumers",
@@ -135,6 +137,8 @@ def tests_summary(
     """Summary sentences for the run list and, on request, the typed recommendations."""
     suffix = f" {run_total} test(s) to run, {basis}." if run_total else ""
     suffix += apart_sentence(*(tests_fields.get(k, 0) for k in APART_FIELDS), APART_FIELDS)
+    if always := tests_fields.get(ALWAYS_RUN_FIELD):
+        suffix += f" {always} more run with every subset, not listed ({ALWAYS_RUN_FIELD})."
     if tests_fields.get("tests_run_all"):
         suffix += " Every test must run (tests_run_all_reasons)."
     recommendations_total = len(test_impact.get("recommendations") or [])

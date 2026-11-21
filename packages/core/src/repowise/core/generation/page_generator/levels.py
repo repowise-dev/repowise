@@ -18,7 +18,7 @@ import structlog
 from repowise.core.ids import is_external
 from repowise.core.ingestion.package_roots import package_roots_from_paths
 
-from ...analysis.public_api import compute_public_api
+from ...analysis.public_api import _Resolver, compute_public_api
 from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
@@ -60,11 +60,16 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     # ---- Level 1: symbol_spotlight (allow-set filtered) ----
     parsed_by_path: dict[str, Any] = {p.file_info.path: p for p in run.parsed_files}
     top_symbols: list[tuple[Any, Any]] = []
+    chosen_ids = getattr(run.selection, "spotlight_symbol_ids", None) or {}
     for file_path, sym_name in run.selection.symbol_spotlights:
         pf = parsed_by_path.get(file_path)
         if pf is None:
             continue
-        sym = next((s for s in pf.symbols if s.name == sym_name), None)
+        # A file can declare the name more than once, so prefer the symbol that
+        # won the ranking over whichever comes first in the file.
+        same_name = [s for s in pf.symbols if s.name == sym_name]
+        chosen_id = chosen_ids.get((file_path, sym_name))
+        sym = next((s for s in same_name if s.id == chosen_id), None) or next(iter(same_name), None)
         if sym is not None:
             top_symbols.append((sym, pf))
 
@@ -316,13 +321,40 @@ def _part_rows(run: _GenerationRun, rollup: Any, heads: set[str]) -> list[dict]:
     return rows
 
 
-def _is_empty_module(file_contexts: list[Any], has_parts: bool) -> bool:
+def _is_empty_module(file_has_material: list[bool], has_parts: bool) -> bool:
     """Nothing to write about: no parts, and no file defines or imports anything.
 
     A 0-byte ``__init__.py`` grouped on its own got a page of sentences saying
     there was nothing to say. Any symbol or import keeps the page.
     """
-    return not has_parts and all(not fc.symbols and not fc.dependencies for fc in file_contexts)
+    return not has_parts and not any(file_has_material)
+
+
+def _group_material(group: Any) -> Any:
+    # A chapter's prose is about its whole subsystem, while ``file_paths`` is
+    # the narrower, disjoint claim on who documents what. They are the same
+    # list for every leaf.
+    return getattr(group, "context_paths", ()) or group.file_paths
+
+
+def _has_parts(group: Any, groups: list[Any], heads: set[str]) -> bool:
+    return bool(getattr(group, "is_rollup", False)) or bool(_part_pages(group, groups, heads))
+
+
+def written_module_groups(groups: list[Any], file_has_material: dict[str, bool]) -> list[Any]:
+    """The groups level 4 writes a page for, by the rules :func:`build_level4_coros` applies.
+
+    *file_has_material* maps every file that gets a code context to whether it
+    defines or imports anything. The generation plan counts module pages with
+    this, so the plan and the run skip the same groups.
+    """
+    heads = _heads(groups)
+    written = []
+    for mg in groups:
+        flags = [file_has_material[fp] for fp in _group_material(mg) if fp in file_has_material]
+        if flags and not _is_empty_module(flags, _has_parts(mg, groups, heads)):
+            written.append(mg)
+    return written
 
 
 def module_waves(groups: list[Any]) -> list[list[Any]]:
@@ -350,19 +382,28 @@ def _execution_flows(graph_builder: Any) -> list[Any]:
         return []
 
 
+def _repo_indexes(run: _GenerationRun) -> tuple[dict[str, Any], set[str], _Resolver, dict]:
+    """The whole-repo lookups every module page reads, built once per call, not per page."""
+    from ..context.graph_intelligence import build_symbol_index
+
+    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
+    return (
+        parsed_by_path,
+        package_roots_from_paths(set(parsed_by_path)),
+        _Resolver(parsed_by_path),
+        build_symbol_index(run.graph),
+    )
+
+
 def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> list[tuple[str, Any]]:
     """Level 4 (module_page) for *groups* (default: every selected group), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
-    package_roots = package_roots_from_paths(set(parsed_by_path))
+    parsed_by_path, package_roots, api_resolver, symbol_index = _repo_indexes(run)
     flows = _execution_flows(run.graph_builder)
     heads = _heads(run.sel_module_groups)
     for mg in run.sel_module_groups if groups is None else groups:
-        # Read from the wider set: a chapter's prose is about its whole
-        # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
-        # documents what. They are the same list for every leaf.
-        material = getattr(mg, "context_paths", ()) or mg.file_paths
+        material = _group_material(mg)
         fcs = [run.file_page_contexts[fp] for fp in material if fp in run.file_page_contexts]
         if not fcs:
             # A concept group whose files all failed to build a context. The
@@ -380,7 +421,7 @@ def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> 
             continue
         is_rollup = bool(getattr(mg, "is_rollup", False))
         parts = _part_rows(run, mg, heads)
-        if _is_empty_module(fcs, is_rollup or bool(parts)):
+        if _is_empty_module([bool(fc.symbols or fc.dependencies) for fc in fcs], is_rollup or bool(parts)):
             log.info("module_page.skipped_empty", target_path=mg.key, members=len(material))
             continue
         coros.append(
@@ -422,10 +463,13 @@ def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> 
                         {"path": path, "files": count}
                         for path, count in package_file_counts(mg.file_paths, mg.packages)
                     ],
-                    public_api=compute_public_api(material, parsed_by_path, package_roots),
+                    public_api=compute_public_api(
+                        material, parsed_by_path, package_roots, resolver=api_resolver
+                    ),
                     parsed_files=parsed_by_path,
                     source_map=run.source_map,
                     execution_flows=flows,
+                    symbol_index=symbol_index,
                 ),
             )
         )
