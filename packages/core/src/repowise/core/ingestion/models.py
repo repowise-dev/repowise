@@ -558,6 +558,10 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # 0.50 — Python: the name is imported only inside another function of
+    # this file, so here it is a local or a global that import never binds.
+    # The one such import is read as a guess.
+    "import_elsewhere",
     # The four below reach the same scopes as their untyped twins, but through
     # a receiver whose type was read off its declaration rather than written at
     # the call. They share their twin's confidence deliberately: the inferred

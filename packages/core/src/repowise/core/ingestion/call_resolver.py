@@ -113,6 +113,7 @@ from .return_types import (
     declared_return_type,
     normalize_return_type,
     signature_parameter_count,
+    signature_parameters,
 )
 from .symbol_identity import id_segment_name, module_symbol_id, outer_scope, same_parameters
 from .type_names import (
@@ -215,6 +216,13 @@ def _imports_a_library(imp: Import) -> bool:
     if classify_jvm_import(imp.module_path, kotlin=True) is None:
         return False
     return not imp.resolved_file or imp.resolved_file.startswith(_EXTERNAL_PREFIX)
+
+
+def _guessed(hit: ResolvedCall | None) -> ResolvedCall | None:
+    """*hit* read through an import another function makes: a guess, not a binding."""
+    if hit is None:
+        return None
+    return ResolvedCall(hit.caller_id, hit.callee_id, 0.50, hit.line, "import_elsewhere")
 
 
 def _is_kotlin_alias(sym: Symbol | None) -> bool:
@@ -499,8 +507,8 @@ class CallResolver(
         self._import_bindings: dict[str, dict[str, NamedBinding]] = import_maps.import_bindings
         # Module alias mapping: {file_path: {alias: source_file}}
         self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
-        # Names only a function-body import binds: {file_path: {name: spans}}
-        self._local_import_scopes = import_maps.local_scopes
+        # Scope-aware reads of a name only function-body imports bind.
+        self._import_maps = import_maps
 
         # Lazy per-file merged views of every imported file's symbol and
         # method tables, merged in sorted import order with first-wins so
@@ -1775,10 +1783,16 @@ class CallResolver(
                 return hit
 
         # Tier 2: import-scoped. A name only other functions import is unbound
-        # here, unless a module-level star import brings it.
-        if not self._import_binds_at(file_path, call.line, target_name):
-            return self._module_star_import_call(file_path, call, caller_id)
-        binding = self._import_bindings.get(file_path, {}).get(target_name)
+        # here: a module-level star import brings it, else that import's
+        # binding is read as a guess.
+        local = self._import_maps.local_binding(file_path, target_name, call.line)
+        if local is not None and local[1]:
+            return self._module_star_import_call(file_path, call, caller_id) or _guessed(
+                self._bound_import_call(call, caller_id, local[0])
+            )
+        binding = (
+            local[0] if local is not None else self._import_bindings.get(file_path, {}).get(target_name)
+        )
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
@@ -2330,32 +2344,43 @@ class CallResolver(
             hit = self._module_alias_call(file_path, held, call, caller_id)
             if hit is not None:
                 return self._body_typed_call(caller_id, hit.callee_id, "import", call.line)
-        if not self._import_binds_at(file_path, call.line, receiver_name):
-            return None
+        local = self._import_maps.local_binding(file_path, receiver_name, call.line)
+        if local is not None:
+            binding, guessed = local
+            # A parameter holds what its caller passes, never the module.
+            if binding is None or (
+                guessed and self._python_parameter_at(file_path, call.line, receiver_name)
+            ):
+                return None
+            module_file = binding.source_file if binding.is_module_alias else None
+            name_file = binding.source_file
+        else:
+            guessed = False
+            module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
+            name_file = self._import_names.get(file_path, {}).get(receiver_name)
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
-        module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            return self._module_alias_call(file_path, module_file, call, caller_id)
+            hit = self._module_alias_call(file_path, module_file, call, caller_id)
+            return _guessed(hit) if guessed else hit
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
-        name_to_file = self._import_names.get(file_path, {})
-        if receiver_name not in name_to_file:
+        if name_file is None:
             return None
-        published = self._published_by(name_to_file[receiver_name], receiver_name, call.target_name)
+        published = self._published_by(name_file, receiver_name, call.target_name)
         if published is None:
             return None
-        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        hit = ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        return _guessed(hit) if guessed else hit
 
-    def _import_binds_at(self, file_path: str, line: int, name: str | None) -> bool:
-        """Whether *name* is imported at *line* of *file_path*.
-
-        A name only function-body imports bind is a local of those functions
-        and of what they nest, a lexical scope read off the line, since a
-        nested function is no symbol of its own. Elsewhere the name is a
-        parameter, another local or unbound.
-        """
-        spans = self._local_import_scopes.get(file_path, {}).get(name or "")
-        return spans is None or any(start <= line <= end for start, end in spans)
+    def _python_parameter_at(self, file_path: str, line: int, name: str | None) -> bool:
+        """Is *name* a parameter of a Python function whose span holds *line*?"""
+        parsed = self._parsed_files.get(file_path)
+        for symbol in parsed.symbols if parsed else ():
+            if symbol.kind in ("function", "method") and symbol.start_line <= line <= symbol.end_line:
+                for piece in signature_parameters(symbol.signature or "") or ():
+                    if re.split(r"[:=]", piece, maxsplit=1)[0].strip().lstrip("*") == name:
+                        return True
+        return False
 
     def _module_held_by_local(
         self, file_path: str, caller_id: str, receiver_name: str | None
