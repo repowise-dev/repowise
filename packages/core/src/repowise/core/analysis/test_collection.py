@@ -501,8 +501,8 @@ def _rewired_gap(
     """
     from .change_health.sources import read_blobs
     from .changed_lines import index_gap
-    from .import_drift import edges_may_differ, import_resolver, rewiring
-    from .test_selection import is_documentation, plan_gap
+    from .import_drift import edges_may_differ
+    from .test_selection import plan_gap
 
     out["index_gap"] = gap = index_gap(str(repo_path), out["indexed_commit"], change)
     if gap is None:
@@ -524,30 +524,38 @@ def _rewired_gap(
         or f"./{p}" in unread
         or edges_may_differ(p, blobs.get((old, f"./{p}")), blobs.get((new, f"./{p}")))
     ]
-    listed = sorted(gap)
-    flags = _are_blobs(repo_path, [(new, f"./{p}") for p in listed]) if rewired and indexed else None
-    if blobs is None or flags is None:
+    if blobs is None or not rewired or not indexed:
         return plan, rewired, {}, set()
-    present = {p for p, is_blob in zip(listed, flags, strict=True) if is_blob}
-    added = {p for p in present - set(indexed) if not is_documentation(p)}
+    readable = [p for p in rewired if f"./{p}" not in unread]
+    pairs = {p: (blobs.get((old, f"./{p}")), blobs.get((new, f"./{p}"))) for p in readable}
     try:
-        resolve = import_resolver(repo_path, (set(indexed) - set(gap)) | present)
-        rewirings = {
-            p: rewiring(
-                p,
-                blobs.get((old, f"./{p}")),
-                blobs.get((new, f"./{p}")),
-                resolve,
-                # A file added since can make an import or string that did not change resolve.
-                whole=bool(added),
-            )
-            for p in rewired
-            if f"./{p}" not in unread
-        }
+        rewirings, added = _rewirings(repo_path, new, gap, indexed, pairs)
     except Exception as exc:  # unsplit: every rewired file is walked
         log.debug("gap_rewiring_failed", error=str(exc))
         return plan, rewired, {}, set()
     return plan, rewired, rewirings, added
+
+
+def _rewirings(
+    repo_path, base: str, gap: Collection[str], indexed: Collection[str], pairs: Mapping
+) -> tuple[dict[str, Any], set[str]]:
+    """:func:`~.import_drift.rewiring` for each ``{path: (indexed text, base text)}``,
+    and the files added since the index; none when git cannot list the base."""
+    from .import_drift import import_resolver, rewiring
+    from .test_selection import is_documentation
+
+    listed = sorted(gap)
+    flags = _are_blobs(repo_path, [(base, f"./{p}") for p in listed])
+    if flags is None:
+        return {}, set()
+    present = {p for p, is_blob in zip(listed, flags, strict=True) if is_blob}
+    added = {p for p in present - set(indexed) if not is_documentation(p)}
+    resolve = import_resolver(repo_path, (set(indexed) - set(gap)) | present)
+    # A file added since can make an import or string that did not change resolve.
+    return {
+        p: rewiring(p, before, after, resolve, whole=bool(added))
+        for p, (before, after) in pairs.items()
+    }, added
 
 
 def _unread(repo_path, specs: list[tuple[str, str]], blobs: Mapping | None) -> set[str]:

@@ -197,18 +197,13 @@ def rewiring(
     language = _language(path)
     if before is None or after is None or language not in _IMPORT_WORD:
         return None
+    old = b"" if whole else before
     try:
-        added = _added_strings(path, language, b"" if whole else before, after)
-        new = _parsed_imports(path, language, after)
-        if added is None or new is None:
-            return None
-        old = () if whole else _parsed_imports(path, language, before) or ()
-        seen = {_import_key(i) for i in old}
-        targets: set[str] = set()
-        for imp in new:
-            if _import_key(imp) not in seen:
-                targets.update(resolve(imp, path, language))
-    except Exception:
+        added = _added_strings(path, language, old, after)
+        targets = _gained_targets(path, language, old, after, resolve)
+    except Exception:  # a reader that fails tells nothing: unknown, so the file stays
+        return None
+    if added is None or targets is None:
         return None
     names: set[str] = set()
     dirs: set[str] = set()
@@ -217,11 +212,19 @@ def rewiring(
         names |= words
         if may_name_dir or "/" in text or "{" in text:
             dirs |= words
-    return Rewiring(
-        imports=frozenset(t for t in targets if not t.startswith("external:")),
-        names=frozenset(names),
-        dirs=frozenset(dirs),
-    )
+    return Rewiring(imports=frozenset(targets), names=frozenset(names), dirs=frozenset(dirs))
+
+
+def _gained_targets(
+    path: str, language: str, before: bytes, after: bytes, resolve: Resolve
+) -> set[str] | None:
+    """The repository files the imports *after* has and *before* lacks resolve to."""
+    new = _parsed_imports(path, language, after)
+    if new is None:
+        return None
+    seen = {_import_key(i) for i in _parsed_imports(path, language, before) or ()}
+    targets = {t for imp in new if _import_key(imp) not in seen for t in resolve(imp, path, language)}
+    return {t for t in targets if not t.startswith("external:")}
 
 
 def _added_strings(
