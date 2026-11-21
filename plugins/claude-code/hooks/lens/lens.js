@@ -70,8 +70,11 @@ async function handleResponse(res) {
   if (res.status === 204) return void 0;
   return res.json();
 }
+function getFetch() {
+  return config.fetch ?? fetch;
+}
 function doFetch(url, init) {
-  return (config.fetch ?? fetch)(url, init);
+  return getFetch()(url, init);
 }
 function headersToRecord(headers) {
   const out = {};

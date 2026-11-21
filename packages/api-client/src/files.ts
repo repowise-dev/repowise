@@ -1,5 +1,5 @@
 import type { FileDetailResponse, FilesIndexResponse } from "@repowise-dev/types/files";
-import { apiGet, BASE_URL, buildHeaders } from "./client";
+import { apiGet, BASE_URL, buildHeaders, getFetch } from "./client";
 
 /** Slim per-file rows for the browsable Files index + treemap. */
 export async function getFilesIndex(repoId: string): Promise<FilesIndexResponse> {
@@ -30,7 +30,7 @@ export async function getFileContent(repoId: string, filePath: string): Promise<
     typeof window !== "undefined" ? window.location.href : "http://localhost",
   );
   url.searchParams.set("file_path", filePath);
-  const res = await fetch(url.toString(), { headers: buildHeaders() });
+  const res = await getFetch()(url.toString(), { headers: buildHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch file content (${res.status})`);
   return res.text();
 }
