@@ -20,7 +20,7 @@ import re
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Container
+from collections.abc import Callable, Container
 from pathlib import Path
 from typing import Any
 
@@ -348,10 +348,37 @@ def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
     return files, reasons
 
 
-# A line declaring something, for a regex query's definition rows.
-_DECLARATION_LINE = re.compile(
-    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*(?:{_DECL_WORDS})\b"
+# A declaration's head: its keywords (``const enum``, ``const fn``) and the
+# names it declares (``var x, y``, ``const { a, b }``, ``let Point { x, y }``,
+# ``let (a, b)``), past a ``mut`` or a Go receiver (``func (s *S) Name``), which
+# names a type it does not declare. ``let c = open_ro(p)`` heads at ``let c``.
+_DECLARATION_HEAD = re.compile(
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*"
+    rf"(?:(?:{_DECL_WORDS})\b(?:\s*\*\s*|\s+))+(?P<receiver>(?<=func\s)\([^)]*\)\s*)?(?:mut\s+)?"
+    # A pattern holding a default (``{ a = load() }``) is not read: the default is a use.
+    r"(?:(?:[\w$:]+\s*)?\{[^}=(]*\}|[\[(][^\])=(]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
+
+
+def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
+    """Whether a line declares what a regex query matched: a match starts
+    inside the declaration's head, outside a Go receiver, so a call on a
+    declaring line (``const x = f(1)``) is a match, not a definition of ``f``.
+    A keyword glued to a parenthesis (``type(obj)``) declares nothing."""
+
+    def check(line: str) -> bool:
+        head = _DECLARATION_HEAD.match(line)
+        if head is None:
+            return False
+        start, end = head.span("receiver")
+        for m in pattern.finditer(line):
+            if m.start() >= head.end():
+                return False
+            if not start <= m.start() < end:
+                return True
+        return False
+
+    return check
 
 
 def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -364,7 +391,7 @@ def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[
     needle = required_literal(pattern)
     files, reasons = _scan_files(root, needle)
     raw = needle.encode("utf-8") if needle else None
-    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw, per_line=True)
+    rows, scan_reasons = _scan(root, files, pattern, _declares(pattern), raw, per_line=True)
     return rows, reasons + scan_reasons
 
 
@@ -399,7 +426,7 @@ def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _hit_kinds(
-    rel: str, found: list[tuple[int, str]], definition: re.Pattern[str]
+    rel: str, found: list[tuple[int, str]], definition: Callable[[str], bool]
 ) -> list[tuple[int, str, str]]:
     """``(line number, line, kind)`` per hit in *rel*.
 
@@ -407,7 +434,7 @@ def _hit_kinds(
     """
     if is_doc_or_config_path(rel):
         return [(n, line, "match") for n, line in found]
-    return [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
+    return [(n, line, "definition" if definition(line) else "match") for n, line in found]
 
 
 def _line_row(rel: str, n: int, line: str, kind: str) -> dict[str, Any]:
@@ -417,7 +444,7 @@ def _line_row(rel: str, n: int, line: str, kind: str) -> dict[str, Any]:
 def _with_tails(
     rows: list[dict[str, Any]],
     tails: list[tuple[str, list[tuple[int, str]]]],
-    definition: re.Pattern[str],
+    definition: Callable[[str], bool],
     capped: int,
 ) -> tuple[list[dict[str, Any]], int]:
     """``(rows, files still cut)``: *rows* with each cut file's remaining lines
@@ -441,7 +468,7 @@ def scan_literal(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Matching lines in *files*, definitions first, and why they may not be all."""
     pattern = re.compile(rf"(?<![\w$]){re.escape(needle)}(?![\w$])" if word else re.escape(needle))
-    return _scan(root, files, pattern, _definition_re(needle, word), needle.encode("utf-8"))
+    return _scan(root, files, pattern, _definition_re(needle, word).search, needle.encode("utf-8"))
 
 
 def _unscanned(files: list[str]) -> str:
@@ -456,7 +483,7 @@ def _scan(
     root: Path,
     files: list[str],
     pattern: re.Pattern[str],
-    definition: re.Pattern[str],
+    definition: Callable[[str], bool],
     raw: bytes | None,
     *,
     per_line: bool = False,
@@ -499,7 +526,7 @@ class _ScanRun:
         self,
         root: Path,
         pattern: re.Pattern[str],
-        definition: re.Pattern[str],
+        definition: Callable[[str], bool],
         raw: bytes | None,
         per_line: bool = False,
     ) -> None:

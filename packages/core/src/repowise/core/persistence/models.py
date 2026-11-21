@@ -2076,6 +2076,9 @@ class HealthFinding(QueueVerdict, Base):
     # makes "the evidence for this opportunity" an indexed seek.
     opportunity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    # Why a person gave the current status (an ack or false positive needs
+    # one); ``None`` when no person gave a reason.
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -2154,6 +2157,9 @@ class RefactoringSuggestion(Base):
     # writer resolved it, "user" when a person did. Distinguishing them is what
     # lets a re-detected plan reopen without overriding a human decision.
     status_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Why a person gave the current status (an ack or false positive needs
+    # one); ``None`` when no person gave a reason.
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -2894,6 +2900,8 @@ class ActionState(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Why the person answered so; ``None`` when they gave no reason.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
@@ -2929,6 +2937,30 @@ class ReadSnapshot(Base):
         default=_now_utc,
         onupdate=_now_utc,
         server_default=func.now(),
+    )
+
+
+class StoredReport(Base):
+    """A report document as written, one row per kind and commit.
+
+    Unlike a read snapshot it is a record, not a cache: an index write leaves
+    it, and a rewrite at a new commit adds a row beside the old one. The
+    newest ``created_at`` per kind is the current report.
+    """
+
+    __tablename__ = "reports"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: The commit the report describes; ``""`` when the index held none.
+    commit_sha: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
 

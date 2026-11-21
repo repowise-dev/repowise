@@ -90,6 +90,7 @@ from ...read_snapshots import (
     refresh_snapshot,
     snapshot_key,
 )
+from ._notes import KEEP, next_note
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -579,7 +580,7 @@ async def get_action_states(session: AsyncSession, repo_id: str) -> dict[str, Ac
         .scalars()
         .all()
     )
-    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until) for r in rows}
+    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until, r.note) for r in rows}
 
 
 async def set_action_state(
@@ -590,8 +591,10 @@ async def set_action_state(
     state: str | None,
     fingerprint: str = "",
     until: datetime | None = None,
+    note: Any = KEEP,
 ) -> None:
-    """Record, replace, or (``state=None``) clear a person's answer to one action.
+    """Record, replace, or (``state=None``) clear a person's answer to one action,
+    with the *note* saying why (see :func:`._notes.next_note`).
 
     Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
     apply on every read, so writing one keeps the stored views.
@@ -615,9 +618,11 @@ async def set_action_state(
                 state=state,
                 fingerprint=fingerprint,
                 until=until,
+                note=None if note is KEEP else note,
             )
         )
     else:
+        row.note = next_note(row.state, state, row.note, note)
         row.state, row.fingerprint, row.until = state, fingerprint, until
 
 

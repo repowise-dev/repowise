@@ -940,7 +940,7 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from .persistence import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import resolve_repair_base
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
     if give_up is not None:
@@ -2168,7 +2168,7 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     flush_cost_tracker(docs.cost_tracker)
     _enrich_knowledge_graph(run, docs)
     _persist_docs(run, docs)
-    _rescore_after_persist(run)
+    _rescore_after_persist(run, docs)
 
     # The persist above only rescanned the changed files.
     if run.scanner_changed:
@@ -2334,7 +2334,7 @@ def _full_rescore_this_run(run: UpdateRun) -> bool:
     )
 
 
-def _rescore_after_persist(run: UpdateRun) -> None:
+def _rescore_after_persist(run: UpdateRun, docs: DocsPass) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
@@ -2351,7 +2351,9 @@ def _rescore_after_persist(run: UpdateRun) -> None:
                 run.exclude_patterns,
                 timings=run.timings,
             )
-    if rescored:
+    # Scored over git rows that did not land: not stamped, so the next update
+    # re-scores after the repair.
+    if rescored and "Git persist" not in docs.failed_steps:
         # No timestamp (git unavailable): keep the existing stamp.
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
