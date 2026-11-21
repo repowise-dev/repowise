@@ -637,7 +637,7 @@ class TestValidateProviderConfig:
     def test_ollama_on_its_default_endpoint_needs_no_base_url(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.setattr(
-            "repowise.cli.ui.provider_selection._detect_ollama_status", lambda: True
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: True
         )
 
         assert validate_provider_config("ollama") == []
@@ -645,7 +645,7 @@ class TestValidateProviderConfig:
     def test_ollama_not_answering_says_so_instead_of_asking_for_a_url(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.setattr(
-            "repowise.cli.ui.provider_selection._detect_ollama_status", lambda: False
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
         )
 
         warnings = validate_provider_config("ollama")
@@ -701,12 +701,12 @@ class TestValidateProviderConfig:
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "ollama")
         monkeypatch.setattr(
-            "repowise.cli.ui.provider_selection._detect_ollama_status", lambda: False
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
         )
 
         warnings = validate_provider_config()
         assert len(warnings) == 1
-        assert "Ollama" in warnings[0]
+        assert "not answering" in warnings[0]
         assert "OLLAMA_BASE_URL" in warnings[0]
 
     def test_unknown_provider(self, monkeypatch):

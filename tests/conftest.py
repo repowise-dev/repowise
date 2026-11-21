@@ -158,11 +158,11 @@ def _no_local_ollama_probe(monkeypatch):
     """No test reaches an Ollama on this machine: the probe answers "not running".
 
     Provider checks connect to localhost:11434, so a test would pass or fail by
-    whether the developer has Ollama up. Tests about a running Ollama patch it to True.
+    whether the developer has Ollama up. Tests about a running server patch it to True.
     """
     from repowise.cli.ui import provider_selection
 
-    monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "endpoint_answers", lambda _url: False)
 
 
 @pytest.fixture(scope="session", autouse=True)

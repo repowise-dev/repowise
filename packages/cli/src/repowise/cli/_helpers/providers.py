@@ -229,93 +229,80 @@ def validate_provider_config(
         List of warning messages for missing or invalid configuration.
         Empty list means all required config is present.
     """
-    from repowise.core.providers.llm.registry import repo_env_lookup
+    from repowise.core.providers.llm.registry import provider_required_envs, repo_env_lookup
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
-    warnings = []
     # The key init saves to .repowise/.env counts, as it does for resolution.
     getenv = repo_env_lookup(repo_path)
-
-    def _is_env_var_set(var_name: str) -> bool:
-        """Check if environment variable is set and non-empty."""
-        value = getenv(var_name)
-        return value is not None and value.strip() != ""
-
-    def _is_env_var_exists(var_name: str) -> bool:
-        """Check if environment variable exists (even if empty)."""
-        return var_name in os.environ
-
-    def _missing(name: str, env_vars: list[str]) -> str | None:
-        """The warning for *name* when none of its env vars is set, else ``None``."""
-        if any(_is_env_var_set(var) for var in env_vars):
-            return None
-        if name == "ollama":
-            # OLLAMA_BASE_URL is optional: Ollama has a default endpoint, so the
-            # question is whether anything answers there.
-            from repowise.cli.ui.provider_selection import (
-                _detect_ollama_status,
-                ollama_base_url,
-            )
-
-            if _detect_ollama_status():
-                return None
-            return (
-                f"Ollama is not answering at {ollama_base_url()}: start it with "
-                "'ollama serve', or set OLLAMA_BASE_URL"
-            )
-        return f"Provider '{name}' requires {' or '.join(env_vars)}"
-
     # Required environment variables per provider, read from the registry that
     # also drives resolution, so a provider added there is validated here without
     # a second edit. The agent-CLI providers need no env var; the check for them
     # is whether their CLI is installed.
-    from repowise.core.agents.identity import identity_for_provider
-    from repowise.core.providers.llm.registry import provider_required_envs
-    from repowise.core.providers.llm.specs import PROVIDER_SPECS
-
-    provider_env_vars = {
+    required = {
         name: list(provider_required_envs(name))
         for name in PROVIDER_SPECS
         if provider_required_envs(name)
     }
-
     if provider_name:
-        agent = identity_for_provider(provider_name)
-        if agent is not None:
-            if not agent.is_installed():
-                warnings.append(
-                    f"Provider '{provider_name}' requires the {agent.display_name} CLI.\n"
-                    f"  Install:  {agent.install_hint}\n"
-                    f"  Setup:    {agent.login_hint}"
-                )
-            return warnings
+        return _validate_one_provider(provider_name, required, getenv)
+    return _validate_configured_providers(repo_path, required, getenv)
 
-        # Validate specific provider
-        if provider_name not in PROVIDER_SPECS:
-            warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
-            return warnings
-        if provider_name not in provider_env_vars:
-            return warnings
 
-        # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or
-        # GOOGLE_API_KEY), the same rule resolution applies.
-        missing = _missing(provider_name, provider_env_vars[provider_name])
+def _validate_one_provider(name: str, required: dict[str, list[str]], getenv: Any) -> list[str]:
+    """Warnings for the provider a command names."""
+    from repowise.core.agents.identity import identity_for_provider
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    agent = identity_for_provider(name)
+    if agent is not None:
+        if agent.is_installed():
+            return []
+        return [
+            f"Provider '{name}' requires the {agent.display_name} CLI.\n"
+            f"  Install:  {agent.install_hint}\n"
+            f"  Setup:    {agent.login_hint}"
+        ]
+    if name not in PROVIDER_SPECS:
+        return [f"Unknown provider '{name}' - cannot validate configuration"]
+    missing = _missing_setting(name, required.get(name, []), getenv)
+    return [missing] if missing else []
+
+
+def _validate_configured_providers(
+    repo_path: Path | None, required: dict[str, list[str]], getenv: Any
+) -> list[str]:
+    """Warnings for the configured provider, and any whose env var exists but is empty."""
+    from repowise.core.providers.llm.resolve import resolve_llm
+
+    configured = resolve_llm(repo_path, autodetect=False).provider
+    warnings = []
+    for name, env_vars in required.items():
+        if configured != name and not any(var in os.environ for var in env_vars):
+            continue
+        missing = _missing_setting(name, env_vars, getenv)
         if missing:
             warnings.append(missing)
-    else:
-        # Check all providers - warn about any that could be configured but are missing keys
-        from repowise.core.providers.llm.resolve import resolve_llm
-
-        configured = resolve_llm(repo_path, autodetect=False).provider
-        for name, env_vars in provider_env_vars.items():
-            if any(_is_env_var_set(var) for var in env_vars):
-                continue
-            # Only warn if this provider is explicitly requested OR
-            # if the env var exists but is invalid (empty)
-            env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
-            explicitly_requested = configured == name
-            if explicitly_requested or env_var_exists:
-                missing = _missing(name, env_vars)
-                if missing:
-                    warnings.append(missing)
-
     return warnings
+
+
+def _missing_setting(name: str, env_vars: list[str], getenv: Any) -> str | None:
+    """The warning for *name* when none of *env_vars* is set, else ``None``.
+
+    Any one of them satisfies it (GEMINI_API_KEY or GOOGLE_API_KEY), the same
+    rule resolution applies.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    if not env_vars or any((getenv(var) or "").strip() for var in env_vars):
+        return None
+    needs = " or ".join(env_vars)
+    default_url = PROVIDER_SPECS[name].default_base_url
+    if not default_url:
+        return f"Provider '{name}' requires {needs}"
+    # The base URL is optional for a server with a default endpoint: the
+    # question is whether anything answers there.
+    from repowise.cli.ui.provider_selection import endpoint_answers
+
+    if endpoint_answers(default_url):
+        return None
+    return f"Provider '{name}' is not answering at {default_url}: start it, or set {needs}"
