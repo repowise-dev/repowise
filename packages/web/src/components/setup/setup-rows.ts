@@ -444,7 +444,9 @@ function coverageRow(s: SetupResponse, o: DeriveOptions): SetupRow {
 function coverageState(s: SetupResponse, o: DeriveOptions): SetupRow {
   const stored = s.coverage.ingested_at;
   const report = (s.coverage.discovered ?? [])[0];
-  const command = `repowise coverage add ${report?.path ?? "<report>"}`;
+  // With no report on disk there is nothing to add yet: `coverage setup` prints the
+  // test command that writes one here, and the `coverage add` line for it.
+  const command = report ? `repowise coverage add ${report.path}` : "repowise coverage setup";
   const prompt: SetupPromptRow = {
     repoName: o.repoName,
     title: "Test coverage",
