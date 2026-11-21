@@ -29,8 +29,10 @@ def resolve_provider(
     default in ``provider_config.json`` > ``REPOWISE_PROVIDER`` /
     ``REPOWISE_MODEL`` > auto-detection from API keys.
     """
+    from repowise.core.providers.llm.inherited_pin import release_inherited_pin
     from repowise.core.providers.llm.resolve import resolve_llm
 
+    release_inherited_pin(repo_path)
     selection = resolve_llm(repo_path, provider=provider_name, model=model)
     if selection.provider is None:
         # Not fatal on every path: `init` catches this and renders a template

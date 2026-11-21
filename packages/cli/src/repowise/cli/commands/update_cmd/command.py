@@ -531,10 +531,13 @@ def _render_full_upgrade_dry_run(
 
     scope = resolve_index_scope(state, config)
 
-    planned_provider = (
-        provider_name or config.get("provider") or state.get("provider") or "auto-detect"
-    )
-    planned_model = model or config.get("model") or state.get("model") or "provider default"
+    from repowise.core.providers.llm.resolve import resolve_llm
+
+    # The names the run would resolve, not the ones the last index ran on: a
+    # repo that names no provider follows the default, which may have changed.
+    planned = resolve_llm(repo_path, provider=provider_name, model=model, autodetect=False)
+    planned_provider = planned.provider or "auto-detect"
+    planned_model = planned.model or "provider default"
     current_git_tier = scope["git_tier"].upper()
     recorded_pages = state.get("total_pages")
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"

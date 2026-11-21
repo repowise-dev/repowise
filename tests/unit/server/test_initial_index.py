@@ -305,6 +305,90 @@ async def test_execute_job_initial_index_writes_state_baseline(session_factory, 
     assert any("No LLM provider configured" in e["text"] for e in events)
 
 
+def _persist_first_index(repo_dir: Path, provider: str, model: str) -> tuple[dict, dict]:
+    """Run the first index's persist step; return (config.yaml, state.json)."""
+    from repowise.core.repo_config import load_repo_config
+    from repowise.server.job_state import _persist_initial_index_state
+
+    _persist_initial_index_state(
+        repo_dir,
+        llm_client=SimpleNamespace(provider_name=provider, model_name=model),
+        docs_mode="llm",
+        docs_skip_reason=None,
+        total_pages=3,
+        wiki_style="",
+        exclude_patterns=[],
+    )
+    state = json.loads((repo_dir / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    return load_repo_config(repo_dir), state
+
+
+@pytest.fixture
+def default_provider(monkeypatch):
+    """Set the Settings default (the suite isolates ``provider_config.json``)."""
+    from repowise.core.providers.llm.resolve import update_global_config
+
+    monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+    monkeypatch.delenv("REPOWISE_MODEL", raising=False)
+
+    def _set(provider: str, model: str) -> None:
+        update_global_config(
+            lambda config: config.update(active_provider=provider, active_model=model)
+        )
+
+    return _set
+
+
+def test_first_index_on_the_default_writes_no_provider(tmp_path, default_provider) -> None:
+    """#5709: the repo must keep following Settings, so nothing is copied down."""
+    from repowise.core.providers.llm.inherited_pin import PIN_REVIEWED_KEY
+    from repowise.core.providers.llm.resolve import resolve_llm
+    from repowise.core.repo_config import config_fingerprint
+
+    default_provider("openrouter", "or-model")
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    config, state = _persist_first_index(repo_dir, "openrouter", "or-model")
+
+    assert "provider" not in config and "model" not in config
+    # state.json still says what the index ran on.
+    assert (state["provider"], state["model"]) == ("openrouter", "or-model")
+    assert state[PIN_REVIEWED_KEY] is True
+    assert state["config_fingerprint"] == config_fingerprint(repo_dir)
+
+    default_provider("ollama", "qwen")
+
+    selection = resolve_llm(repo_dir)
+    assert (selection.provider, selection.model) == ("ollama", "qwen")
+
+
+def test_first_index_on_another_provider_writes_it(tmp_path, default_provider) -> None:
+    default_provider("openrouter", "or-model")
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    config, _ = _persist_first_index(repo_dir, "ollama", "qwen")
+
+    assert (config["provider"], config["model"]) == ("ollama", "qwen")
+
+
+def test_first_index_keeps_the_provider_config_yaml_already_names(
+    tmp_path, default_provider
+) -> None:
+    """A provider the repo chose before its first index is still there after it."""
+    default_provider("openrouter", "or-model")
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".repowise").mkdir(parents=True)
+    (repo_dir / ".repowise" / "config.yaml").write_text(
+        "provider: ollama\nmodel: qwen\nwiki_style: terse\n", encoding="utf-8"
+    )
+
+    config, _ = _persist_first_index(repo_dir, "ollama", "qwen")
+
+    assert config == {"provider": "ollama", "model": "qwen", "wiki_style": "terse"}
+
+
 # ---------------------------------------------------------------------------
 # Job event buffer
 # ---------------------------------------------------------------------------

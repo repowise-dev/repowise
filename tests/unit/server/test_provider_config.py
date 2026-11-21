@@ -241,6 +241,45 @@ def test_global_selection_used_when_repo_has_no_config(clean_env, tmp_path):
     assert (provider, model) == ("anthropic", "claude-sonnet-4-6")
 
 
+def test_a_default_an_earlier_index_copied_down_is_released(clean_env, tmp_path):
+    """#5709: such a repo follows the next change to the Settings default."""
+    import json
+
+    from repowise.core.repo_config import load_repo_config
+
+    repo = _make_repo(tmp_path / "repo", config="provider: anthropic\nmodel: claude-sonnet-4-6\n")
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"provider": "anthropic", "model": "claude-sonnet-4-6"}), encoding="utf-8"
+    )
+    pc.set_active_provider("anthropic", "claude-sonnet-4-6")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo))[0] == "anthropic"
+    assert "provider" not in load_repo_config(repo)
+
+    pc.set_active_provider("ollama", "qwen")
+
+    selection = pc.resolve_for_repo("r1", str(repo))
+    assert (selection.provider, selection.model) == ("ollama", "qwen")
+    assert selection.provider_source == "global"
+
+
+def test_a_provider_that_is_not_the_default_survives_a_default_change(clean_env, tmp_path):
+    import json
+
+    repo = _make_repo(tmp_path / "repo", config="provider: gemini\nmodel: g-1\n")
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"provider": "gemini", "model": "g-1"}), encoding="utf-8"
+    )
+    pc.set_active_provider("anthropic", "claude-sonnet-4-6")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo)) == ("gemini", "g-1")
+
+    pc.set_active_provider("gemini", "g-1")
+    pc.set_active_provider("ollama", "qwen")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo)) == ("gemini", "g-1")
+
+
 # ---------------------------------------------------------------------------
 # D6: set_api_key mirrors into the repo's .repowise/.env so the CLI sees it.
 # ---------------------------------------------------------------------------

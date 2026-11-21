@@ -283,6 +283,37 @@ def config_fingerprint(repo_path: Path | str) -> str:
     return h.hexdigest()
 
 
+def carry_config_fingerprints(repo_path: Path | str, before: tuple[str, dict[str, str]]) -> None:
+    """Move state.json's config fingerprints past a config.yaml write that changes nothing.
+
+    *before* is ``(config_fingerprint, config_dependency_fingerprints)`` read
+    ahead of the write. Only a fingerprint that still matched it moves, so a
+    real config change waiting for the next update is still seen.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = get_repowise_dir(repo_path) / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict):
+        return
+    old_fp, old_deps = before
+    changed = False
+    if state.get("config_fingerprint") == old_fp:
+        state["config_fingerprint"] = config_fingerprint(repo_path)
+        changed = True
+    stored = state.get("config_dependency_fingerprints")
+    if isinstance(stored, dict):
+        for bucket, value in config_dependency_fingerprints(repo_path).items():
+            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
+                stored[bucket] = value
+                changed = True
+    if changed:
+        atomic_write_text(state_path, json.dumps(state, indent=2))
+
+
 def health_rules_fingerprint(repo_path: Path | str) -> str:
     """:func:`config_fingerprint`, degraded to an empty string when unreadable.
 

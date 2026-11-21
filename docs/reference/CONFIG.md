@@ -1242,6 +1242,17 @@ model and base URL the same way; first match wins:
 
 - A model picked in the web UI is written to the repo's `config.yaml`, so the
   CLI uses it too.
+- A first index writes `provider` / `model` to the repo's `config.yaml` only
+  when they are not the default every repo shares (the global default, or
+  `REPOWISE_PROVIDER` / `REPOWISE_MODEL`): another provider or model named by
+  flag or picked at the prompt, or a provider found by its API key. A run on
+  the shared default writes neither, so the repo follows that default when it
+  changes. `state.json` records what each index ran on either way.
+- A repo indexed before this rule has the default of that day in its
+  `config.yaml`. While those lines still equal the current default they are
+  removed the next time the repo resolves a provider, once, and the repo
+  follows the default from then on. Lines that differ from it are kept as the
+  repo's own choice; delete them to follow the default.
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
   Page material is sized for a 16384-token window, since the server does not
