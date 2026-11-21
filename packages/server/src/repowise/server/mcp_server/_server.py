@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sqlite3
 import weakref
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, NoReturn
 
 import anyio
@@ -908,6 +910,8 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     enabled = _tool_selection.apply_tool_selection(mcp, repo_path=repo_path, override=tools)
     workspace = bool(_tool_selection._selected_surface and _tool_selection._selected_surface[0])
     repo_line = decisions_line(repo_path)
+    indexed = _has_index(repo_path, workspace=workspace)
+    root = None if workspace else _root_outside_cwd(repo_path)
 
     def text(served: Iterable[str], *, brief: bool = False) -> str:
         return server_instructions(
@@ -916,6 +920,8 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
             workspace=workspace,
             extra=_setup_extra(repo_path),
             brief=brief,
+            indexed=indexed,
+            root=root,
         )
 
     mcp._mcp_server.instructions = text(enabled)
@@ -929,6 +935,58 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
 
     _client_instructions = for_client
     return enabled
+
+
+def _has_index(repo_path: str | None, *, workspace: bool) -> bool | None:
+    """Whether the served repo (in a workspace, any member) holds an indexed
+    repository; ``None`` when that cannot be read, which keeps the no-index line.
+
+    Any repository row counts: a store whose one row names another path (an
+    index built elsewhere and moved here) is still served (``_default_repo``).
+    A read-only stdlib read, so the handshake never writes or waits on a lock.
+    """
+    if not repo_path or get_configured_db_url() is not None:
+        return None  # a configured store is not this directory's to judge
+    paths = [repo_path]
+    if workspace:
+        ws_root, ws_config, _alias = _detect_workspace(repo_path)
+        if ws_config is None:
+            return None
+        paths = [str(ws_root / entry.path) for entry in ws_config.repos]
+    for path in paths:
+        db = get_repo_db_path(path)
+        if not db.is_file():
+            continue
+        try:
+            with contextlib.closing(
+                sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.5)
+            ) as conn:
+                if conn.execute("SELECT 1 FROM repositories LIMIT 1").fetchone():
+                    return True
+        except sqlite3.Error:
+            return None
+    return False
+
+
+def _root_outside_cwd(repo_path: str | None) -> str | None:
+    """The served root when the server runs outside it, else ``None``.
+
+    Replies give repo-relative paths. An agent whose working directory is the
+    root (how hosts launch a project's servers) resolves them as they are; one
+    working from elsewhere needs the root named. A worktree served from its
+    main checkout's index answers for the worktree, so that is the root.
+    """
+    if not repo_path:
+        return None
+    from repowise.server.mcp_server import _checkout
+
+    caller = _checkout._server_caller
+    try:
+        root = Path(caller.caller if caller else repo_path).resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    return None if cwd.is_relative_to(root) else str(root)
 
 
 def _setup_extra(repo_path: str | None) -> list[str]:

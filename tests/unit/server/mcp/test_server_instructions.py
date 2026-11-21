@@ -54,7 +54,10 @@ def test_the_first_line_says_when_to_call() -> None:
 
 
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
-    text = mcp.instructions
+    # The boot text, sent before any selection, cannot know and keeps it.
+    from repowise.core.registry.instructions import server_instructions
+
+    text = server_instructions(None)
     assert "repowise init --yes" in text
     assert "do not run it yourself" in text
 
@@ -129,3 +132,96 @@ def test_the_decisions_line_is_dropped_without_get_why() -> None:
     line = "- 3 decisions govern files here: get_why(targets=[file]) first."
     assert line in server_instructions({"get_why"}, repo_line=line)
     assert "get_why" not in server_instructions({"get_answer", "get_risk"}, repo_line=line)
+
+
+def _index(repo: Any, *, rows: int = 1) -> None:
+    """A minimal store: the repositories table with *rows* rows."""
+    import sqlite3
+
+    (repo / ".repowise").mkdir(parents=True)
+    conn = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    with conn:
+        conn.execute("CREATE TABLE repositories (id TEXT PRIMARY KEY, local_path TEXT)")
+        for n in range(rows):
+            # A path from elsewhere: an index built in another directory still counts.
+            conn.execute("INSERT INTO repositories VALUES (?, ?)", (str(n), "/elsewhere"))
+    conn.close()
+
+
+def _serve(monkeypatch: Any, repo: Any, cwd: Any) -> str:
+    from repowise.server.mcp_server import _state, _tool_selection, create_mcp_server
+
+    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
+    monkeypatch.setattr(_state, "_force_single_repo", _state._force_single_repo)
+    monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
+    monkeypatch.chdir(cwd)
+    try:
+        return create_mcp_server(str(repo), workspace_mode=False).instructions
+    finally:
+        if _tool_selection._full_surface is not None:
+            mcp._tool_manager._tools = dict(_tool_selection._full_surface)
+        _tool_selection._selected_surface = None
+
+
+@pytest.mark.parametrize(("rows", "shown"), [(1, False), (0, True), (None, True)])
+def test_the_no_index_line_goes_out_only_without_an_index(
+    tmp_path: Any, monkeypatch: Any, rows: int | None, shown: bool
+) -> None:
+    from repowise.core.registry.instructions import NO_INDEX_LINE
+
+    if rows is not None:
+        _index(tmp_path, rows=rows)
+    assert (NO_INDEX_LINE in _serve(monkeypatch, tmp_path, tmp_path)) is shown
+
+
+def test_served_from_its_root_the_text_only_loses_the_no_index_line(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from repowise.core.registry.instructions import NO_INDEX_LINE
+
+    before = _serve(monkeypatch, tmp_path, tmp_path).splitlines()
+    _index(tmp_path)
+    text = _serve(monkeypatch, tmp_path, tmp_path)
+    assert NO_INDEX_LINE in before
+    assert text.splitlines() == [line for line in before if line != NO_INDEX_LINE]
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    assert _serve(monkeypatch, tmp_path, sub) == text
+
+
+def test_served_from_outside_its_root_the_text_names_the_root(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _index(repo)
+    text = _serve(monkeypatch, repo, tmp_path)
+    assert f"Paths in replies are relative to {repo.resolve()}." in text.splitlines()
+    assert len(text) < _MAX_INSTRUCTIONS_CHARS
+
+
+def test_a_worktree_served_from_its_main_checkout_is_its_own_root(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from pathlib import Path
+
+    from repowise.server.mcp_server import _checkout
+    from repowise.server.mcp_server._checkout import CallerCheckout
+
+    main, worktree = tmp_path / "main", tmp_path / "wt"
+    _index(main)
+    worktree.mkdir()
+    monkeypatch.setattr(_checkout, "_server_caller", CallerCheckout(Path(worktree), Path(main)))
+    assert "Paths in replies" not in _serve(monkeypatch, main, worktree)
+
+
+def test_a_workspace_has_an_index_when_any_member_does(tmp_path: Any, monkeypatch: Any) -> None:
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+    from repowise.server.mcp_server import _server
+
+    config = WorkspaceConfig(
+        repos=[RepoEntry(path="api", alias="api", is_primary=True), RepoEntry(path="web", alias="web")]
+    )
+    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (tmp_path, config, "api"))
+    assert _server._has_index(str(tmp_path), workspace=True) is False
+    _index(tmp_path / "web")
+    assert _server._has_index(str(tmp_path), workspace=True) is True

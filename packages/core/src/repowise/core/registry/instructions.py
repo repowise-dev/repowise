@@ -49,6 +49,8 @@ def server_instructions(
     workspace: bool = False,
     extra: Iterable[str] | None = None,
     brief: bool = False,
+    indexed: bool | None = None,
+    root: str | None = None,
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
@@ -60,7 +62,9 @@ def server_instructions(
     host that repeats the instructions under every tool it lists, where each
     tool's own description already says when to call it. *extra* is dropped
     there: a note printed under every tool reads as tool output, and agents
-    relay it to the user.
+    relay it to the user. *indexed* drops the no-index line when ``True``;
+    ``None`` (not known) keeps it. *root* names the directory reply paths are
+    relative to, for a server started outside the repository it serves.
     """
     if brief:
         return _HEAD
@@ -70,7 +74,10 @@ def server_instructions(
     clauses = [clause for name, clause in CHECK_CLAUSES.items() if name in names]
     if clauses:
         lines.append(f"- {', '.join(clauses)}.")
-    lines.append(NO_INDEX_LINE)
+    if indexed is not True:
+        lines.append(NO_INDEX_LINE)
+    if root:
+        lines.append(f"Paths in replies are relative to {root}.")
     if repo_line and "get_why" in names:
         lines.append(repo_line)
     if workspace:
