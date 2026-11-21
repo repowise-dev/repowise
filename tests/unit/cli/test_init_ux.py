@@ -20,6 +20,9 @@ from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.progress import RichProgressCallback
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, STAGE_INGESTION, emit_stage
 
+# Taken at import: tests/conftest.py stubs the probe for every test.
+_REAL_DETECT_OLLAMA = provider_selection._detect_ollama_status
+
 
 def _console() -> tuple[Console, StringIO]:
     buf = StringIO()
@@ -205,6 +208,7 @@ def test_an_unusable_ollama_url_is_rejected_rather_than_probing_localhost(
     localhost would report someone's typo'd remote box as ready and defer the
     failure to the first generation call."""
     monkeypatch.setenv("OLLAMA_BASE_URL", base_url)
+    monkeypatch.setattr(provider_selection, "_detect_ollama_status", _REAL_DETECT_OLLAMA)
     assert provider_selection._ollama_endpoint() is None
     # Must not raise, and must not claim the local daemon on this machine.
     assert provider_selection._detect_ollama_status() is False

@@ -153,6 +153,18 @@ def _no_real_editor_setup():
     mp.undo()
 
 
+@pytest.fixture(autouse=True)
+def _no_local_ollama_probe(monkeypatch):
+    """No test reaches an Ollama on this machine: the probe answers "not running".
+
+    Provider checks connect to localhost:11434, so a test would pass or fail by
+    whether the developer has Ollama up. Tests about a running Ollama patch it to True.
+    """
+    from repowise.cli.ui import provider_selection
+
+    monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_background_commit_health():
     """Keep updates and inits under test from leaving detached scanner processes behind."""

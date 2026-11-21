@@ -745,3 +745,18 @@ async def test_a_missing_ollama_model_stops_on_the_first_batch_with_the_pull_com
     assert _Store.calls == 1
     assert not warnings
     assert exc_info.value.message == str(missing)
+
+
+async def test_an_env_model_that_replaces_a_pin_says_so(monkeypatch, tmp_path: Path) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    cfg, _state, _changes = await _switch_embedder(
+        monkeypatch, tmp_path, "ollama", config="embedder: ollama\nembedding_model: embeddinggemma\n"
+    )
+
+    assert cfg["embedding_model"] == "nomic-embed-text"
+    assert warnings == [
+        "embedding_model in config.yaml changed from embeddinggemma to nomic-embed-text: "
+        "this run embedded with the model the environment names."
+    ]

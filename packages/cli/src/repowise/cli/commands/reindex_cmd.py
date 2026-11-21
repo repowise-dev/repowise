@@ -360,6 +360,12 @@ def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
             f"Removed embedding_model: {model} from config.yaml: it was pinned for "
             f"{pinned or 'no embedder'}, so this run did not use it."
         )
+    elif not changed and model and used and model != used:
+        # The environment outranks the pin, so the embed used another model.
+        warn(
+            f"embedding_model in config.yaml changed from {model} to {used}: "
+            "this run embedded with the model the environment names."
+        )
     # The embed this config change asks `update` for has just been done, but
     # only in full on a clean run. After a partial switch the stale fingerprint
     # makes `update` rebuild; a partial run with the same embedder changes no
