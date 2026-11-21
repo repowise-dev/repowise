@@ -449,7 +449,7 @@ With `changed_files`, the response leads with `directive`:
 | `tests_to_run_basis` | `measured` (coverage decided a file), `inferred` (graph or rule), `none` |
 | `tests_to_run_why` | Per listed file: changed file and evidence |
 | `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for; the list is what to run first |
-| `tests_broadcast_total`, `tests_import_closure_total`, `tests_always_run_total` | Tests left out of the list that still run (`always_run`: run with every subset, nothing links them to the change) |
+| `tests_broadcast_total`, `tests_import_closure_total`, `tests_build_unit_total`, `tests_always_run_total` | Tests left out of the list that still run (`always_run`: run with every subset, nothing links them to the change) |
 | `tests_status`, `tests_status_reason` | Failed selection; names nothing |
 | `tests_to_update` | Up to 3 test files to edit, `{path, reason}` |
 | `missing_tests`, `files_without_measured_tests` | Changed files with no measured test |
@@ -461,7 +461,7 @@ With `changed_files`, the response leads with `directive`:
 
 Notes:
 
-- **`tests_broadcast_total`:** run only because a conftest on a route keeps every test under it. **`tests_import_closure_total`:** reached only through imports over one file away, with no call path.
+- **`tests_broadcast_total`:** run only because a conftest on a route keeps every test under it. **`tests_import_closure_total`:** reached only through imports over one file away, with no call path. **`tests_build_unit_total`:** run because their build unit, or a unit depending on it, owns a changed file no test is known to reach.
 - **`tests_to_update`:** reasons in order `name_pair` (named for a changed file), `imports` (its own code imports one; conftest or setup reach does not count), `co_change`. Only tests the selection runs for a changed file and a runner collects. Edit, not run; a file can be in both lists.
 - **`missing_tests`:** absent when coverage is unavailable or stale, since empty would read as no gaps.
 - **`coverage`:** `{status, reason}` with no per-test map; with stored line coverage, `reason` is `no_per_test_map_aggregate_available` and `coverage.aggregate` gives file count and freshness. With a map, `coverage_analysis`, `test_analysis`, `test_inference_analysis` say if each source was available, stale, partial or degraded.
@@ -535,7 +535,7 @@ The `repowise impacted-tests` selection over every touched path, ignoring the sc
 | `status` | `selected`, `run_all`, `degraded`, or a nothing-selected reason |
 | `run_all`, `reasons`, `reasons_total` | No subset can be vouched for; up to 3 reasons |
 | `tests_to_run`, `total`, `truncated` | Max 10: first the tests that call an edited function directly (pytest node ids or JS/TS test files), then the rest in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec). A listed id stands for its file, and the list takes no more characters than the first ten files would. Tests that run with every subset are counted in `total` and `always_run_total`, never listed |
-| `broadcast_total`, `import_closure_total` | Left out of the list and `total`, still run (as in `get_risk`) |
+| `broadcast_total`, `import_closure_total`, `build_unit_total` | Left out of the list and `total`, still run (as in `get_risk`) |
 | `tests_to_run_kind` | `test_id` when a coverage node id is listed, else `test_file` |
 | `basis` | `measured`, `inferred` or `none`, as in `get_risk` |
 | `why`, `basis_by_file` | `include=["tests"]`: per-file reason and evidence |

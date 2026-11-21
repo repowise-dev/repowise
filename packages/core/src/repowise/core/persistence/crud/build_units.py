@@ -27,9 +27,11 @@ async def replace_build_units(
     One delete per table, then bulk inserts, so a file or unit the index no
     longer has (a deleted file, a removed workspace member) leaves no row.
     The stored rows of each of ``index.failed_ecosystems`` are kept instead
-    (:func:`_keep_failed`), so one broken reader never empties its ecosystem.
+    (:func:`_keep_failed`), so one broken reader never empties its ecosystem,
+    and written ``stale`` so a reader of the store knows they may be out of date.
     """
-    if index.failed_ecosystems:
+    failed = index.failed_ecosystems
+    if failed:
         index = _keep_failed(
             index, await _read(session, repository_id, index.failed_ecosystems)
         )
@@ -42,6 +44,7 @@ async def replace_build_units(
             "root": unit.root,
             "manifest": unit.manifest,
             "source": unit.source,
+            "stale": unit.ecosystem in failed,
         }
         for unit in index.units.values()
     ]
@@ -105,7 +108,11 @@ def _fallbacks_at(index: BuildUnitIndex, roots: set[str]) -> set[str]:
 
 
 async def load_build_units(session: AsyncSession, repository_id: str) -> BuildUnitIndex:
-    """The repository's stored units as a :class:`BuildUnitIndex`; empty when none are stored."""
+    """The repository's stored units as a :class:`BuildUnitIndex`; empty when none are stored.
+
+    Its ``failed_ecosystems`` are those holding a unit kept from an earlier run
+    because their reader failed in the latest one.
+    """
     return await _read(session, repository_id)
 
 
@@ -122,6 +129,19 @@ async def _read(
     )
     for unit_id, dep in await session.execute(_kept(dep_rows, BuildUnitDep, ecosystems)):
         deps.setdefault(unit_id, []).append(dep)
+    rows = (
+        await session.execute(
+            select(
+                BuildUnitRow.unit_id,
+                BuildUnitRow.ecosystem,
+                BuildUnitRow.name,
+                BuildUnitRow.root,
+                BuildUnitRow.manifest,
+                BuildUnitRow.source,
+                BuildUnitRow.stale,
+            ).where(unit_filter)
+        )
+    ).all()
     units = {
         row.unit_id: BuildUnit(
             id=row.unit_id,
@@ -132,16 +152,7 @@ async def _read(
             source=row.source,
             deps=tuple(sorted(deps.get(row.unit_id, ()))),
         )
-        for row in await session.execute(
-            select(
-                BuildUnitRow.unit_id,
-                BuildUnitRow.ecosystem,
-                BuildUnitRow.name,
-                BuildUnitRow.root,
-                BuildUnitRow.manifest,
-                BuildUnitRow.source,
-            ).where(unit_filter)
-        )
+        for row in rows
     }
     owners: dict[str, list[str]] = {}
     file_rows = select(BuildUnitFile.path, BuildUnitFile.unit_id).where(
@@ -149,7 +160,11 @@ async def _read(
     )
     for path, unit_id in await session.execute(_kept(file_rows, BuildUnitFile, ecosystems)):
         owners.setdefault(path, []).append(unit_id)
-    return BuildUnitIndex(units=units, file_owners={p: tuple(ids) for p, ids in owners.items()})
+    return BuildUnitIndex(
+        units=units,
+        file_owners={p: tuple(ids) for p, ids in owners.items()},
+        failed_ecosystems=frozenset(row.ecosystem for row in rows if row.stale),
+    )
 
 
 def _kept(stmt: Select, model: type, ecosystems: Collection[str] | None) -> Select:

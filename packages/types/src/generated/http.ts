@@ -858,6 +858,7 @@ export interface ChangeTestsBlock {
   always_run_total?: number | null;
   broadcast_total?: number | null;
   import_closure_total?: number | null;
+  build_unit_total?: number | null;
   summary: string;
   why?: Record<string, string> | null;
   basis_by_file?: Record<string, string> | null;

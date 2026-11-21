@@ -3406,6 +3406,11 @@ class BuildUnitRow(Base):
     manifest: Mapped[str] = mapped_column(Text, nullable=False)
     # The reader that produced the unit (``npm-workspace``, ``manifest-root``).
     source: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Kept from an earlier run because its ecosystem's reader failed in the
+    # latest one, so it may no longer match the manifests.
+    stale: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 

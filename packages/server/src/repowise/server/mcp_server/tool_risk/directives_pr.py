@@ -136,7 +136,7 @@ def tests_summary(
 ) -> str:
     """Summary sentences for the run list and, on request, the typed recommendations."""
     suffix = f" {run_total} test(s) to run, {basis}." if run_total else ""
-    suffix += apart_sentence(*(tests_fields.get(k, 0) for k in APART_FIELDS), APART_FIELDS)
+    suffix += apart_sentence([tests_fields.get(k, 0) for k in APART_FIELDS], APART_FIELDS)
     if always := tests_fields.get(ALWAYS_RUN_FIELD):
         suffix += f" {always} more run with every subset, not listed ({ALWAYS_RUN_FIELD})."
     if tests_fields.get("tests_run_all"):

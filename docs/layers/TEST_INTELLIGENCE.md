@@ -131,10 +131,13 @@ the plain range, and a single SHA is one commit; change risk follows the same ru
   session fixture, or a function no test covers keeps the graph's answer.
 - The graph also links tests to wiring no import states
   ([details](../architecture/test-intelligence.md#test-wiring-edges)).
-- The headline counts the tests the change reaches. Two groups run but are counted
+- The headline counts the tests the change reaches. Three groups run but are counted
   apart: `selected.broadcast` (a `conftest.py` autouse fixture, hook or module-level code
-  uses the change) and `selected.import_closure` (reached only through imports, more
-  than one file away, no call path).
+  uses the change), `selected.import_closure` (reached only through imports, more
+  than one file away, no call path) and `selected.build_unit` (no test is known to
+  reach a changed file, so the tests of its build unit and of the units depending on it
+  run; Go, .NET and Maven, see
+  [build units](../architecture/build-units.md#test-selection)).
 - `--format list` sends caveats to stderr; `--format args` prints runner arguments, or
   `:all` when any part is unknown. It reports, never gates: exit `0` either way, `2` only
   when the change or config cannot be read.

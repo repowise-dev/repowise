@@ -57,6 +57,12 @@ everything: a manifest or lockfile its ecosystem's tests, a production
 ``__init__.py`` the tests reaching the modules under it, an asset the tests
 reaching the code naming it or else its package's tests.
 
+Last before a full run, the build-unit tier (:mod:`.unit_scope`) answers a code
+file with no known test (rule 5's no test or only a filename guess, and rule 8's
+deleted file) and a build unit's own manifest (rule 2): the tests of its build
+units and of every unit depending on them, where the units can vouch for that.
+Those tests are counted apart (``build_unit``): no change reaches them.
+
 :func:`runner_args` renders a selection as arguments for one test runner; a
 full run renders as the :data:`RUN_ALL` sentinel. pytest and go reject it as a
 path; jest and vitest treat arguments as patterns and would match nothing, so
@@ -96,8 +102,10 @@ from ..test_runners import left_out as left_out
 from ..test_runners import resolve_runner as resolve_runner
 from ..test_runners import runner_args as runner_args
 from ..test_runners import runner_notes as runner_notes
+from .unit_scope import UNIT_VIA, UnitScope, unit_scopes
 
 if TYPE_CHECKING:
+    from ..build_units.model import BuildUnitIndex
     from .selection_scopes import Scope
 
 SHARED_TEST_DATA_REASON = "shared test data can change any test"
@@ -291,7 +299,8 @@ class Selection:
     only through its imports), ``conftest-broadcast`` (a test only a conftest
     keeping every test under it reaches), ``filename-pattern``, ``unknown``, ``none`` when
     nothing was asked (no index), or a scope's ``ecosystem``,
-    ``package-importers``, ``named-by``, ``fixture-readers`` or ``owner-package``.
+    ``package-importers``, ``named-by``, ``fixture-readers``, ``owner-package``, or
+    ``build-unit`` (the tests of its build units and their dependents).
     ``why`` says, per selected test file, what put it in: the changed file and evidence that
     reached it, or the reason it runs with every subset. ``known_tests`` are
     the checkout's runnable test files (empty when not read), so a selection
@@ -300,7 +309,9 @@ class Selection:
     ``__init__.py`` on a route to a changed file stands for every test under
     it to that file: they run, but a count of what the change reaches leaves
     them out. ``import_closure`` does the same for each test the change reaches
-    only through imports, mapped to its hops (:data:`IMPORT_CLOSURE_HOPS`).
+    only through imports, mapped to its hops (:data:`IMPORT_CLOSURE_HOPS`), and
+    ``build_unit`` for each test only the build-unit tier put in, mapped to the
+    changed file's unit that stands for it (:mod:`.unit_scope`).
     """
 
     run_all: bool
@@ -315,15 +326,17 @@ class Selection:
     known_tests: tuple[str, ...] = ()
     broadcast: Mapping[str, str] = field(default_factory=dict)
     import_closure: Mapping[str, int] = field(default_factory=dict)
+    build_unit: Mapping[str, str] = field(default_factory=dict)
 
     def reached_tests(self) -> list[str]:
         """:attr:`tests` without those counted apart, in order."""
         return [t for t in self.tests if not self.counted_apart(t)]
 
     def counted_apart(self, test: str) -> bool:
-        """Whether *test* (a file or node id) is in :attr:`broadcast` or :attr:`import_closure`."""
+        """Whether *test* (a file or node id) is in :attr:`broadcast`, :attr:`import_closure`
+        or :attr:`build_unit`."""
         path = test.split("::", 1)[0]
-        return path in self.broadcast or path in self.import_closure
+        return path in self.broadcast or path in self.import_closure or path in self.build_unit
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -338,6 +351,7 @@ class Selection:
             "why": dict(self.why),
             "broadcast": dict(self.broadcast),
             "import_closure": dict(self.import_closure),
+            "build_unit": dict(self.build_unit),
         }
 
 
@@ -648,6 +662,11 @@ class SelectionInput:
     scopes: Mapping[str, Scope] = field(default_factory=dict)
     # :func:`project_dirs` of the checkout; None when unknown, so names decide.
     project_dirs: Collection[str] | None = None
+    # The stored build units (:func:`~.test_collection.load_units`); None when
+    # unknown, so the build-unit tier answers nothing. *tracked* are the
+    # checkout's files, which can lift a build's dependency checks (``go.work``).
+    units: BuildUnitIndex | None = None
+    tracked: Collection[str] = ()
 
 
 @dataclass
@@ -658,6 +677,9 @@ class _Triage:
     basis: dict[str, str] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
     code: list[str] = field(default_factory=list)
+    # ``{path: its full-run reason}`` for a manifest or build file the build-unit
+    # tier may answer; it joins *run_all* when the tier cannot.
+    unit_candidates: dict[str, str] = field(default_factory=dict)
 
 
 def select_tests(inp: SelectionInput) -> Selection:
@@ -669,14 +691,22 @@ def select_tests(inp: SelectionInput) -> Selection:
     triage = _triage(
         [p for p in paths if p not in inp.scopes], inp.config, inp.doc_readers, inp.project_dirs
     )
+    # A manifest whose scope is its whole ecosystem asks its build units first.
+    wide = {p: f"{p} changed: {inp.scopes[p].why}." for p in scoped if _ecosystem_wide(inp.scopes[p])}
     triage.skipped = sorted([*triage.skipped, *unneeded])
     triage.basis.update(dict.fromkeys(unneeded, NO_TESTS_NEEDED))
     run_all = [*_empty_change_reasons(paths, inp.label), *triage.run_all]
+    evidence = _Evidence.of(inp, deleted)
+    per_file, file_reasons = _tests_per_file(triage.code, evidence)
+    tier = _unit_tier({**wide, **triage.unit_candidates, **evidence.unvouched}, inp)
+    # Where each declined path's reason went before the tier: a manifest's with the
+    # triggers, a code file's with the per-file reasons, which need an index.
+    run_all += [r for p, r in tier.reasons.items() if p in triage.unit_candidates]
+    file_reasons += [r for p, r in tier.reasons.items() if p in evidence.unvouched]
+    scoped = [p for p in scoped if p not in tier.answered]
     walks = bool(triage.code) or any(inp.scopes[p].routes for p in scoped)
     run_all += _index_reasons(inp, has_code=walks)
 
-    evidence = _Evidence.of(inp, deleted)
-    per_file, file_reasons = _tests_per_file(triage.code, evidence)
     traced = bool(triage.code and inp.gap and inp.gap.targets)
     gap_tests, route_reasons, gap_why = (
         _gap_route_tests(inp.gap.targets, paths, evidence) if traced else ([], [], {})
@@ -689,14 +719,16 @@ def select_tests(inp: SelectionInput) -> Selection:
         run_all += file_reasons + route_reasons
     basis = {**triage.basis, **{path: per_file[path][1] for path in triage.code}}
     basis.update({path: inp.scopes[path].basis for path in scoped})
+    basis.update(dict.fromkeys(tier.answered, UNIT_VIA))
 
     # The graph cannot say what these tests reach, so they always run.
-    always = _always_running(inp) if triage.code or scoped else {}
+    always = _always_running(inp) if triage.code or scoped or tier.answered else {}
     tests, test_files = _runnable(
         [
             *(t for path in triage.code for t in per_file[path][0]),
             *gap_tests,
             *in_scope,
+            *((t, t) for t in tier.tests),
             *((t, t) for t in always),
         ]
     )
@@ -704,12 +736,14 @@ def select_tests(inp: SelectionInput) -> Selection:
         inp, triage.skipped, always, traced
     )
     besides = {f for _, f in in_scope} | set(always)
+    build_unit = {t: u for t, u in tier.tests.items() if t not in evidence.reached | besides}
+    besides |= set(tier.tests)
     broadcast = _broadcast(evidence, test_files, besides)
     # A route through a file changed since the index was built may be shorter
     # than the index shows, so those tests stay in the headline.
     apart = besides | set(broadcast) | {f for _, f in gap_tests}
     closure = _import_closure(evidence, inp.tiers.get("test_hops") or {}, test_files, apart, paths)
-    why = {**scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always}
+    why = {**tier.why, **scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always}
     why.update(
         (t, f"{path} changed ({scope} is on its route and stands for every test under it)")
         for t, (path, scope) in broadcast.items()
@@ -719,7 +753,7 @@ def select_tests(inp: SelectionInput) -> Selection:
             why[t] += f"; {IMPORT_CLOSURE_VIA}: {hops} hops away, no call path to it"
     return Selection(
         run_all=bool(run_all),
-        reasons=tuple(run_all + evidence.notes + scope_notes + notes),
+        reasons=tuple(run_all + evidence.notes + scope_notes + tier.notes + notes),
         tests=tests,
         test_files=test_files,
         packages=_go_packages(triage.code, deleted, inp.go_test_dirs),
@@ -730,7 +764,50 @@ def select_tests(inp: SelectionInput) -> Selection:
         known_tests=tuple(inp.known_tests),
         broadcast={t: scope for t, (_, scope) in broadcast.items()},
         import_closure=closure,
+        build_unit=build_unit,
     )
+
+
+@dataclass(frozen=True)
+class _UnitTier:
+    """What the build-unit tier answered: ``{test: owning unit}``, why each runs,
+    the paths it answered, one note per path, and the reasons of those it could not."""
+
+    tests: dict[str, str] = field(default_factory=dict)
+    why: dict[str, str] = field(default_factory=dict)
+    answered: tuple[str, ...] = ()
+    notes: list[str] = field(default_factory=list)
+    reasons: dict[str, str] = field(default_factory=dict)
+
+
+def _unit_tier(candidates: Mapping[str, str], inp: SelectionInput) -> _UnitTier:
+    """The build-unit tier over *candidates* (``{path: its full-run reason}``).
+
+    A path its units vouch for runs their tests; any other keeps its reason,
+    with why the units could not vouch.
+    """
+    if not candidates:
+        return _UnitTier()
+    out = _UnitTier()
+    answered: list[str] = []
+    known = [t for t in inp.known_tests if t not in inp.deleted]
+    for path, scope in unit_scopes(sorted(candidates), inp.units, known, inp.tracked).items():
+        if not isinstance(scope, UnitScope):
+            out.reasons[path] = (
+                candidates[path]
+                if scope is None
+                else f"{candidates[path].rstrip('.')}; build units cannot vouch: {scope}."
+            )
+            continue
+        answered.append(path)
+        for test in scope.tests:
+            out.tests.setdefault(test, scope.owners[0])
+            out.why.setdefault(test, f"{path} changed ({UNIT_VIA}: {scope.why})")
+        out.notes.append(f"{path} changed: {scope.why}; {len(scope.tests)} test file(s) run for it.")
+    if len(out.notes) > _MAX_SCOPE_NOTES:
+        more = len(out.notes) - _MAX_SCOPE_NOTES
+        out.notes[_MAX_SCOPE_NOTES:] = [f"{more} more changed file(s) run their build units' tests."]
+    return replace(out, answered=tuple(answered))
 
 
 def _import_closure(
@@ -920,7 +997,10 @@ def _triage(
     out = _Triage()
     for path in paths:
         if why := full_run_reason(path, config.full_run_on, project_dirs):
-            out.run_all.append(f"{path} changed: {why}.")
+            if why in _UNIT_REASONS and not _configured_full_run(path, config):
+                out.unit_candidates[path] = f"{path} changed: {why}."
+            else:
+                out.run_all.append(f"{path} changed: {why}.")
             out.basis[path] = "full-run"
         elif is_documentation(path) and (reader := doc_readers.get(path)):
             out.run_all.append(
@@ -940,6 +1020,19 @@ def _triage(
         else:
             out.code.append(path)
     return out
+
+
+# The full-run reasons a build unit's own manifest gives; the tier may answer them.
+_UNIT_REASONS = frozenset({DEPENDENCIES_REASON, BUILD_CONFIG_REASON})
+
+
+def _ecosystem_wide(scope: Scope) -> bool:
+    """A manifest scope running its whole ecosystem, with no outside namer to trace."""
+    return scope.basis == "ecosystem" and scope.root == "." and not (scope.namers or scope.run_all)
+
+
+def _configured_full_run(path: str, config: TestSelectionConfig) -> bool:
+    return bool(config.full_run_on) and full_run_on_spec(config.full_run_on).match_file(path)
 
 
 def _scoped_tests(
@@ -1153,7 +1246,8 @@ def plan_gap(
 ) -> GapPlan:
     """Classify each file changed since the index was built, once.
 
-    Nothing is traced when a file in *change* already forces a full run.
+    Nothing is traced when a file in *change* already forces a full run; a
+    manifest or build file does not, as a scope or its build units may answer it.
 
     A full run is forced when there are more than :data:`MAX_INDEX_GAP` of them
     (documentation aside), or when one is configuration that decides how every
@@ -1182,7 +1276,10 @@ def plan_gap(
                 "run `repowise update` before selecting.",
             )
         )
-    if any(full_run_reason(p, config.full_run_on, project_dirs) for p in change):
+    # A manifest or build file may still get a scope or a build-unit answer, so
+    # only another reason makes the trace moot.
+    reasons = (full_run_reason(p, config.full_run_on, project_dirs) for p in change)
+    if any(why and why not in _UNIT_REASONS for why in reasons):
         return GapPlan()
     candidates = tuple(p for p, k in kinds.items() if k is not None and may_carry_edges(p))
     return GapPlan(
@@ -1265,6 +1362,8 @@ class _Evidence:
     # (changed file, scope on its route)}`` for those a route's scope expanded to.
     reached: set[str] = field(default_factory=set, compare=False)
     broadcast: dict[str, tuple[str, str]] = field(default_factory=dict, compare=False)
+    # ``{changed code file: why it has no test}``, which the build-unit tier may answer.
+    unvouched: dict[str, str] = field(default_factory=dict, compare=False)
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -1353,7 +1452,11 @@ def _file_tests(
     if path in ev.deleted and is_runnable_test(path):
         basis = "deleted-test"
     if not (route_only or tests or helpers or basis in _SELF_SUFFICIENT):
-        reasons.append(_no_test_reason(path, basis, ev))
+        reason = _no_test_reason(path, basis, ev)
+        if _unit_answerable(path, basis, ev):
+            ev.unvouched[path] = reason
+        else:
+            reasons.append(reason)
     return tests, basis, reasons
 
 
@@ -1494,6 +1597,12 @@ def _unfiled_reasons(path: str, tests: list[_TestRef]) -> list[str]:
         for test_id, test_file in tests
         if test_file is None
     ]
+
+
+def _unit_answerable(path: str, basis: str, ev: _Evidence) -> bool:
+    """Whether *path*'s missing test is one the build-unit tier may answer: none is
+    known (a filename guess at most), not that the known ones left the checkout."""
+    return path in ev.deleted or bool(ev.guesses(path)) or basis in ("unknown", "none")
 
 
 def _no_test_reason(path: str, basis: str, ev: _Evidence) -> str:

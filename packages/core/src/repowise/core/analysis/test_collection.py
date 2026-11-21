@@ -29,6 +29,7 @@ from typing import Any, NamedTuple
 
 import structlog
 
+from ..build_units.model import BuildUnitIndex
 from ..pytest_roots import PytestRoots
 from .function_hunks import FileFunctions
 from .test_selection import Selection, TestSelectionConfig, project_dirs
@@ -927,8 +928,30 @@ async def _test_importers(
     return parents, routes
 
 
-def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Selection:
-    """The run-all-or-subset decision over *result* (from :func:`collect`)."""
+async def load_units(session, repo_id: str) -> BuildUnitIndex | None:
+    """The stored build units for :func:`select`; ``None`` when none are stored.
+
+    An empty store means the units are unknown, not that there are none.
+    """
+    from ..persistence.crud.build_units import load_build_units
+
+    units = await load_build_units(session, repo_id)
+    return units if units.units else None
+
+
+def select(
+    change,
+    result: dict,
+    config,
+    checkout: Checkout,
+    plan: Plan,
+    units: BuildUnitIndex | None = None,
+) -> Selection:
+    """The run-all-or-subset decision over *result* (from :func:`collect`).
+
+    *units* (:func:`load_units`) let a file no test is known to reach run its
+    build units' tests instead of every test.
+    """
     from .test_selection import (
         SelectionInput,
         is_documentation,
@@ -971,6 +994,8 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             always_run_tests=result["always_run_tests"],
             scopes=plan.scopes,
             project_dirs=plan.project_dirs,
+            units=units,
+            tracked=tracked,
         )
     )
 
@@ -1010,8 +1035,9 @@ async def select_for_change(
         project_dirs=plan.project_dirs,
     )
     result["diff"] = change.label
+    units = await load_units(session, repo_id)
     _stop(cancelled)
-    return result, await asyncio.to_thread(select, change, result, config, checkout, plan)
+    return result, await asyncio.to_thread(select, change, result, config, checkout, plan, units)
 
 
 async def narrow_scopes(
