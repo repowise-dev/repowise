@@ -60,6 +60,7 @@ from repowise.core.analysis.actions.setup import SetupFacts
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
 from repowise.core.analysis.test_reachability import (
     any_tests_reaching,
     write_test_masks_snapshot,
@@ -292,6 +293,8 @@ async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[st
                         p.status == "open",
                         p.queue_eligible.is_(True),
                         p.file_path.in_(paths),
+                        # A regression is a static finding: only a static cause vouches.
+                        p.biomarker_type != MEASURED_HOTSPOT,
                     )
                 )
             ).all()

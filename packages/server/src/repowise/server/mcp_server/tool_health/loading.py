@@ -298,7 +298,7 @@ async def _read_perf_headline(
         covered_nloc=coverage.covered_nloc,
         include_unverified=req.include_unverified,
         # No runtime evidence on the agent surface (``without_sources``).
-        measured_only=False,
+        include_measured_hotspots=False,
     )
     return coverage, causes
 
@@ -368,7 +368,7 @@ async def _read_pillars(
         sort=req.performance_sort,
     )
     if performance.page is not None:
-        performance = replace(performance, page=_without_measured_only(performance.page))
+        performance = replace(performance, page=_without_measured_hotspots(performance.page))
     # Repository-wide, so a targeted call leaves it out.
     if "performance" in req.include_set and req.wants("performance_measured") and not pop.scoped:
         performance = replace(
@@ -533,7 +533,7 @@ async def _read_fix_first(
     return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full
 
 
-def _without_measured_only(page: Any) -> Any:
+def _without_measured_hotspots(page: Any) -> Any:
     """The queue page less the causes minted from a measurement alone
     (:func:`without_sources` says why). Ceiling: the page's total, facet and
     summary counts still include them; a count is no evidence to read."""

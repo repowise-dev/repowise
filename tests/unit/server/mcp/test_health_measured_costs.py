@@ -266,9 +266,10 @@ async def test_a_measured_only_cause_stays_off_the_agent_surface(setup_mcp, sess
         load_fix_first,
     )
     from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
-    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server import get_health, get_overview
 
     default = _size(await get_health())
+    overview = _size(await get_overview())
     performance = await get_health(include=["performance"], limit=50)
 
     await _seed(session, materialized, [_hot("src/app.py::decode", tier="lead_candidate")])
@@ -286,3 +287,6 @@ async def test_a_measured_only_cause_stays_off_the_agent_surface(setup_mcp, sess
     after = await get_health(include=["performance"], limit=50)
     assert minted not in json.dumps(after["performance_opportunities"])
     assert after["fix_first"] == performance["fix_first"]
+    shown = await get_overview()
+    assert _size(shown) == overview
+    assert minted not in json.dumps(shown)

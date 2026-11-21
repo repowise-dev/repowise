@@ -501,12 +501,19 @@ def measured_hotspots(
     """One :func:`_measured_hotspot` per function in *hot* that no static
     cause owns.
 
-    A static group whose member's loop owner is the function already carries
-    the measurement (:func:`_confirmed`), so the function gets no second item:
-    never both. *hot* is a leading workload's ``lead_candidate`` tier only,
+    A static group whose live member's loop owner is the function already
+    carries the measurement (:func:`_confirmed`, read off the same live
+    members as :func:`_read_live`), so the function gets no second item:
+    never both. Ceiling: a static cause with no fix strategy (an observation)
+    still owns it, so its measured cost shows as that observation's mark,
+    not as work. *hot* is a leading workload's ``lead_candidate`` tier only,
     so a unit-test run never mints one.
     """
-    owned = {f.details.get("role_owner") for members in groups.values() for f in members}
+    owned = {
+        f.details.get("role_owner")
+        for members in groups.values()
+        for f in ([m for m in members if not _inert(m)] or members)
+    }
     return [
         _measured_hotspot(symbol_id, measured[symbol_id])
         for symbol_id in sorted(hot - owned)

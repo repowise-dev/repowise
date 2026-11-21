@@ -521,8 +521,13 @@ class EditorFileDataFetcher:
         perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
 
         # The causes worth fixing now lead; production and every cause are context.
+        # Generated agent files carry no runtime evidence: a cause minted
+        # from a measurement alone is not counted here.
         performance_causes = await crud.performance_headline(
-            self._session, self._repo_id, covered_nloc=perf_coverage.covered_nloc
+            self._session,
+            self._repo_id,
+            covered_nloc=perf_coverage.covered_nloc,
+            include_measured_hotspots=False,
         )
 
         # The trend the snapshots record, or nothing: a repository indexed once

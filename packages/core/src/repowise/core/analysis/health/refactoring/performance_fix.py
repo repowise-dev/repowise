@@ -202,6 +202,9 @@ def _walks(iterates: object) -> str:
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
+#: Strategies sized by the work, not by the places that change: finding what a
+#: measured function repeats is reading and profiling before it is one edit.
+_MEASURED_EFFORT = {"reduce_measured_self_time": "M"}
 
 
 def edit_effort(sites: int) -> str:
@@ -358,7 +361,8 @@ def _suggestion(
         # Performance is a separate score dimension and its findings
         # intentionally carry zero defect-health impact.
         impact_delta=0.0,
-        effort_bucket=edit_effort(sites + (len(intro) + per_site > len(locations))),
+        effort_bucket=_MEASURED_EFFORT.get(fix.strategy)
+        or edit_effort(sites + (len(intro) + per_site > len(locations))),
         blast_radius={
             "files": sorted({item["file_path"] for item in opportunity.evidence}),
             "file_count": opportunity.affected_files_total,
