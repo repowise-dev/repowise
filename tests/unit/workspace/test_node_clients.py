@@ -391,3 +391,7 @@ def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> Non
     assert strip_leading_base_expr("${a}//${b}:${PORT}/x") == ("/x", "b")
     assert strip_leading_base_expr("${a}//${env.HOST ?? location.host}/x") == ("/x", "env.HOST")
     assert strip_leading_base_expr("${API}/users/${id}") == ("/users/${id}", "API")
+    # A placeholder that is only part of the host is not a whole base.
+    path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
+    assert path.startswith("//${tenant}")
+    assert strip_leading_base_expr("${a}//${b}") == ("/", "b")

@@ -141,9 +141,10 @@ def absolute_host(url: str) -> str | None:
 # at the start so interior expressions (real path params like ``/users/${id}``)
 # are untouched. A scheme placeholder may lead an authority that is one too,
 # ``${location.protocol}//${location.host}/users``: the whole base goes, and the
-# host's expression is the token, since it names the service.
+# host's expression is the token, since it names the service. Only a whole
+# host: ``${tenant}.example.com`` is not one.
 _LEADING_BASE_EXPR_RE = re.compile(
-    r"^\s*\$\{([^}]+)\}(?://\$\{([^}]+)\}(?::(?:\$\{[^}]+\}|\d+))?)?"
+    r"^\s*\$\{([^}]+)\}(?://\$\{([^}]+)\}(?::(?:\$\{[^}]+\}|\d+))?(?=/|$))?"
 )
 
 
