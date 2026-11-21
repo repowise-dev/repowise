@@ -28,14 +28,17 @@ _SBT_PROJECT_RE = re.compile(
     r'(?:project|Project)\b[^\n]*?\.in\(\s*file\(\s*"([^"]+)"\s*\)\s*\)',
     re.DOTALL,
 )
-# Match the start of a .dependsOn( call; the argument list is read balanced.
-_DEPENDS_ON_RE = re.compile(r'\.dependsOn\s*\(')
+# A dotted or infix dependsOn: an argument list is read balanced, a bare infix argument is captured.
+_DEPENDS_ON_RE = re.compile(r'\bdependsOn\b\s*(?:\(|(\w+))')
 # Strings first so a "//" inside one is not taken for a comment.
 _STRING_OR_COMMENT_RE = re.compile(
     r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|//[^\n]*|/\*[\s\S]*?\*/'
 )
-# A top-level val declaration ends the previous project's text.
-_VAL_DECL_RE = re.compile(r'^(?:lazy\s+)?val\s', re.MULTILINE)
+# A top-level val declaration, modifiers included, ends the previous project's text.
+_VAL_DECL_RE = re.compile(
+    r'^(?:(?:private|protected|final|implicit|override)(?:\[\w+\])?\s+)*(?:lazy\s+)?val\s',
+    re.MULTILINE,
+)
 _SEQ_ARG_RE = re.compile(r'(?:Seq|List|Vector)\s*\((.*)\)\s*$', re.DOTALL)
 _MILL_OBJECT_RE = re.compile(
     r'object\s+(\w+)\s+extends\s+([\w.]+(?:\s*with\s+[\w.]+)*)',
@@ -112,7 +115,8 @@ def _project_deps(project_text: str) -> tuple[str, ...]:
     """The project names every ``dependsOn`` call in *project_text* names, deduped in order."""
     deps: list[str] = []
     for call in _DEPENDS_ON_RE.finditer(project_text):
-        deps.extend(_parse_depends_on_args(_balanced_args(project_text, call.end())))
+        args = call.group(1) or _balanced_args(project_text, call.end())
+        deps.extend(_parse_depends_on_args(args))
     return tuple(dict.fromkeys(deps))
 
 

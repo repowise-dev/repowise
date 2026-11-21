@@ -960,6 +960,33 @@ def test_sbt_depends_on_of_unmatched_declaration_is_not_attributed(tmp_path):
     assert deps == ()
 
 
+def test_sbt_modifier_prefixed_declaration_ends_the_previous_project(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app"))\n'
+            'private lazy val util = project.in(file("util"))\n'
+            '  .dependsOn(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "util/src/main/scala/Util.scala": "package util; class Util {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {
+        "manifest:.": (),
+        "scala:core": (),
+        "scala:app": (),
+        "scala:util": ("scala:core",),
+    }
+
+
+def test_sbt_infix_depends_on(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path, 'lazy val app = project.in(file("app")) dependsOn core dependsOn (util)\n'
+    )
+    assert deps == ("scala:core", "scala:util")
+
+
 def test_sbt_commented_out_depends_on_adds_no_edge(tmp_path):
     deps = _sbt_app_deps(
         tmp_path,
