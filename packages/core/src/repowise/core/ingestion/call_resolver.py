@@ -1845,6 +1845,13 @@ class CallResolver(
         # a fallback for names no top-level symbol claims (class-scoped
         # bindings live there alone).
         language = self._language_of(file_path)
+        if language == "rust" and not call.receiver_name and not call.scope_name:
+            item = self._rust_block_item(file_path, call.line, call.target_name)
+            # Written bare: a chained ``a().f()`` reaches here without its receiver.
+            if item is not None and _called_bare_on_line(self._lines_of(file_path), call):
+                if item == caller_id and not self._is_bare_recursion(file_path, call, caller_id):
+                    return True, None
+                return True, ResolvedCall(caller_id, item, 0.95, call.line, "same_file")
         if language in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES or (
             language in _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES
             and call.target_name in self._file_top_level.get(file_path, {})
@@ -2705,6 +2712,17 @@ def _declaration_pattern(name: str) -> re.Pattern[str]:
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,
 # typically into ``::dup``.
 _MACRO_OPENING = re.compile(r"\b[A-Z][A-Z0-9_]+\s*\([^()]*$")
+
+
+def _called_bare_on_line(lines: list[str], call: CallSite) -> bool:
+    """Does *call*'s line call its name with no receiver or path before it?"""
+    if not 0 < call.line <= len(lines):
+        return False
+    text = lines[call.line - 1]
+    return any(
+        not text[: m.start()].rstrip().endswith((".", "::", "->"))
+        for m in _name_pattern(call.target_name, call=True).finditer(text)
+    )
 
 
 def _unqualified(before: str) -> bool:

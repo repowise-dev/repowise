@@ -235,3 +235,14 @@ class RustPathCallsMixin:
     def _rust_name_reused(self, module: str, name: str) -> bool:
         """Whether two ``mod name`` blocks of *module* sit in different parents."""
         return len({sym.parent_name for sym in self._rust_modules(module) if sym.name == name}) > 1
+
+    def _rust_block_item(self, file_path: str, line: int, name: str) -> str | None:
+        """The item *name* the innermost inline ``mod`` block holding *line* declares.
+
+        A bare name in a block names the block's own item first; the file's
+        top level is reached only through ``use super::...``.
+        """
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        if not enclosing or self._rust_name_reused(file_path, enclosing[-1]):
+            return None
+        return self._file_methods.get(file_path, {}).get((enclosing[-1], name))  # type: ignore[attr-defined]

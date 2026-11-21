@@ -542,6 +542,47 @@ def _java_object_is_unnamed(site_node: Node) -> bool:
     return field is None or field.type != "this"
 
 
+# Where a Rust token tree holds no code that runs.
+_RUST_NON_CODE_TOKEN_TREES = frozenset({"macro_definition", "attribute_item", "inner_attribute_item"})
+
+
+def _rust_token_call(name: Node, target_name: str) -> tuple[str, str | None] | None:
+    """``(target, receiver)`` of a call written as tokens in a Rust macro's arguments.
+
+    The name must be followed by a ``(...)`` group, not ``[...]``, ``!`` or
+    ``{...}``. Before it, nothing is a bare call, ``a::b::`` a path and
+    ``self.`` or ``x.`` a receiver. Any other shape (a chained receiver, a
+    turbofish) is dropped rather than read as a bare call, and so are a macro
+    definition's body, a template rather than code that runs, and an
+    attribute (``#[cfg(all(unix))]``), which calls nothing.
+    Ceiling: a tuple-struct pattern (``matches!(e, Kind(_))``) reads as a call.
+    """
+    group = name.next_sibling
+    if group is None or group.type != "token_tree" or group.child(0).type != "(":
+        return None
+    node = name.parent
+    while node is not None:
+        if node.type in _RUST_NON_CODE_TOKEN_TREES:
+            return None
+        node = node.parent
+    before = name.prev_sibling
+    if before is None or before.type not in (".", "::"):
+        return target_name, None
+    path: list[str] = []
+    word = before.prev_sibling
+    while word is not None and word.type in ("identifier", "self", "super", "crate"):
+        path.insert(0, (word.text or b"").decode())
+        joint = word.prev_sibling
+        if before.type == "." or joint is None or joint.type != "::":
+            if joint is not None and joint.type in (".", "::"):
+                return None  # a chained receiver or a turbofish
+            break
+        word = joint.prev_sibling
+    if not path:
+        return None
+    return target_name, "::".join(path)
+
+
 def _call_names(
     capture_dict: dict,
     site_node: Node,
@@ -571,6 +612,8 @@ def _call_names(
     # would call itself.
     if language == "elixir" and _elixir_call_is_definitional(site_node, src):
         return None
+    if language == "rust" and site_node.type == "identifier":
+        return _rust_token_call(site_node, target_name)
     receiver_name = None
     if receiver_nodes:
         receiver_name = (
