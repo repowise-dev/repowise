@@ -67,6 +67,7 @@ from .flow_entries import (
     declared_entries,
     doc_mentions,
     doc_sections,
+    file_paths,
     is_ui_path,
     line_reader,
     program_name,
@@ -586,10 +587,8 @@ def _code_file_count(graph: Any) -> int:
     """Production files in the graph: the size the page budget scales with."""
     return sum(
         1
-        for node, attrs in graph.nodes(data=True)
-        if attrs.get("node_type") == "file"
-        and not attrs.get("is_test")
-        and not is_excluded_node(graph, node)
+        for node in file_paths(graph)
+        if not graph.nodes[node].get("is_test") and not is_excluded_node(graph, node)
     )
 
 

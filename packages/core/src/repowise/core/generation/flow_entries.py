@@ -32,6 +32,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
 from repowise.core.fs_walk import walk_repo
 from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.support_paths import DOC_EXTENSIONS, is_support_path
@@ -280,7 +281,7 @@ def declared_entries(
     command is named after the script that reaches it; *program* is the fallback.
     """
     by_file = _symbols_by_file(graph)
-    inits = sorted(p for p in _file_paths(graph) if _production(p))
+    inits = sorted(p for p in file_paths(graph) if _production(p))
     out: dict[str, Entry] = {}
     for entry in (
         *_decorated_entries(graph, program, scripts or {}),
@@ -291,8 +292,13 @@ def declared_entries(
     return sorted(out.values(), key=lambda e: e.node)
 
 
-def _file_paths(graph: Any) -> list[str]:
-    return [n for n, a in graph.nodes(data=True) if a.get("node_type") == "file"]
+def file_paths(graph: Any) -> list[str]:
+    """Files the index parsed. A graph read back from SQL types import targets as files too."""
+    return [
+        n
+        for n, a in graph.nodes(data=True)
+        if a.get("node_type") == "file" and a.get("language") not in IMPORT_TARGET_LANGUAGES
+    ]
 
 
 def _read_text(path: Path) -> str:
