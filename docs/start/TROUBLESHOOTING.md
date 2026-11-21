@@ -75,6 +75,13 @@ stall it; change the limit with `REPOWISE_COMMIT_HEALTH_MAX_FILES` (`0` removes
 it), or turn the scan off with `REPOWISE_COMMIT_HEALTH_COMMITS=0`. An update on
 a `--mode fast` index does not run the scan.
 
+**Is the index finished when `repowise init` returns?** Yes. When init scans
+commit health (each repo of a workspace init, or a single-repo init whose index
+checkpoint failed), it spends at most 10 s per repo inline and starts no
+background process, so nothing writes `.repowise/wiki.db` after init exits and
+it is safe to archive or cache at once. The commits that budget leaves are
+scanned by the next `repowise update`.
+
 **An update of a very large repository takes as long as the first index.**
 Every update walks and reads the repository and runs global analysis. The
 graph itself is patched for body-only edits in Java, Python, JavaScript,
