@@ -441,3 +441,22 @@ def test_an_external_diff_or_forced_colour_cannot_hide_a_staged_secret(repo):
     _write(repo, "staged.py", f"AWS = '{KEY}'\n")
     _git(repo, "add", "staged.py")
     assert [f["kind"] for f in _staged_scan(repo).findings] == ["aws_access_key"]
+
+
+def test_a_sink_in_a_data_folders_code_is_low_in_the_gate(repo):
+    """The gate reads the origin with the repository root, as the indexed scan does."""
+    for i in range(4):
+        item = repo / "backend" / "data" / "problems" / f"p{i}"
+        item.mkdir(parents=True)
+        for n in range(12):
+            _write(item, f"case{n}.json", "{}\n")
+        for name in ("python.py", "Solution.java", "go.go"):
+            _write(item, name, "\n")
+    _write(repo / "backend" / "data" / "problems" / "p0", "python.py", "import os\nos.system(c)\n")
+    _write(repo, "run.py", "import os\nos.system(c)\n")
+    _commit(repo, "add")
+    found = {(f["file_path"], f["kind"], f["severity"]) for f in _scan(repo).findings}
+    assert found == {
+        ("backend/data/problems/p0/python.py", "os_system", "low"),
+        ("run.py", "os_system", "high"),
+    }

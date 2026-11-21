@@ -1276,7 +1276,7 @@ _GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
 #: The .NET SDK's pin file: runner config read on top of the registry's manifests.
 _DOTNET_SDK_PIN = "global.json"
 #: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
-_SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example"})
+_SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example", "data"})
 
 
 @cache
@@ -1330,20 +1330,21 @@ def _under(root: str, path: str) -> str | None:
 _PLAIN_NAME = "_"
 
 
-def _kept(path: str) -> bool:
+def _kept(path: str, repo_root: str | None = None) -> bool:
     """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample.
 
     The directory is judged too: a manifest's own origin is ``build``, which hides a
     ``testdata/`` or ``fixtures/`` directory around it. The manifest makes its directory
     a package root, which keeps a shipped ``test-utils/`` package production, as it
-    does for every file below one.
+    does for every file below one. *repo_root* lets the directory's origin read
+    the folders around it (a data folder, a docs site); without it the path decides.
     """
     if any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1]) or path_origin(path) in _SKIP_ORIGINS:
         return False
     directory = _dir(path)
     plain = _join(directory, _PLAIN_NAME)
     is_test = is_test_related_path(plain, package_root=lambda d: d == directory)
-    return code_origin(plain, is_test=is_test) not in _SKIP_ORIGINS
+    return code_origin(plain, is_test=is_test, repo_root=repo_root) not in _SKIP_ORIGINS
 
 
 def _stacks_of(name: str) -> set[str]:
@@ -1354,11 +1355,11 @@ def _stacks_of(name: str) -> set[str]:
     return found - {"dotnet"}
 
 
-def _roots_of(manifests: Iterable[str]) -> dict[str, set[str]]:
+def _roots_of(manifests: Iterable[str], repo_root: str | None = None) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for manifest in manifests:
         stacks = _stacks_of(posixpath.basename(manifest))
-        if stacks and _kept(manifest):
+        if stacks and _kept(manifest, repo_root):
             found.setdefault(_dir(manifest), set()).update(stacks)
     return found
 
@@ -1381,22 +1382,24 @@ class _Units:
     workspaces: frozenset[str] = frozenset()
 
 
-def _units(paths: list[str], units: BuildUnitIndex | None) -> _Units:
+def _units(
+    paths: list[str], units: BuildUnitIndex | None, repo_root: str | None = None
+) -> _Units:
     """The units of a listing: from the index when there is one, else every kept
     directory holding a registry package manifest."""
-    listed = _roots_of(paths)
+    listed = _roots_of(paths, repo_root)
     workspaces: set[str] = set()
     if units is None:
         roots = listed
     else:
-        roots = _roots_of(u.manifest for u in units.units.values())
+        roots = _roots_of((u.manifest for u in units.units.values()), repo_root)
         above = {a for root in roots for a in _ancestors(root)} - roots.keys()
         workspaces = above & listed.keys()
         roots.update({root: set(listed[root]) for root in workspaces})
     if any("/" not in p and _PIP_REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
-    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p)}
+    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p, repo_root)}
     has_projects = any(p.endswith(".csproj") and p.count("/") <= 2 for p in paths)
     for root in solutions or ({""} if has_projects else set()):
         roots.setdefault(root, set()).add("dotnet")
@@ -1483,7 +1486,10 @@ def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set
 
 
 def detect_stacks(
-    paths: Iterable[str], files: Mapping[str, str], units: BuildUnitIndex | None = None
+    paths: Iterable[str],
+    files: Mapping[str, str],
+    units: BuildUnitIndex | None = None,
+    repo_root: str | None = None,
 ) -> list[Stack]:
     """Every unit's stack, the root's first, then by depth; ``[UNKNOWN]`` when none.
 
@@ -1491,10 +1497,12 @@ def detect_stacks(
     text of the paths :func:`files_to_read` names (missing ones read as empty).
     *units* is the build-unit index, when the caller has one. A ``package.json``
     whose runner is unclear beside another stack is tooling and starts none.
+    *repo_root* is the checkout, when there is one: a manifest in a data folder
+    is known only from the folder's contents.
     """
     paths = sorted(set(paths))
     present = set(paths)
-    found = _units(paths, units)
+    found = _units(paths, units, repo_root)
     stacks: list[Stack] = []
     for root in sorted(found.roots, key=lambda r: (r.count("/") + bool(r), r)):
         texts = {r: text for p, text in files.items() if (r := _under(root, p)) is not None}
@@ -1521,11 +1529,13 @@ def detect_stacks(
     return stacks or [UNKNOWN]
 
 
-def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> list[str]:
+def files_to_read(
+    paths: Iterable[str], units: BuildUnitIndex | None = None, repo_root: str | None = None
+) -> list[str]:
     """The manifests and runner configs :func:`detect_stacks` reads, besides the listing."""
     paths = sorted(set(paths))
     present = set(paths)
-    roots = _units(paths, units).roots
+    roots = _units(paths, units, repo_root).roots
     names = sorted(_read_names())
     wanted = [path for root in sorted(roots) for n in names if (path := _join(root, n)) in present]
     wanted += [
@@ -1565,7 +1575,7 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
     ]
     index = units if units is not None and units.units else None
     files: dict[str, str] = {}
-    for path in files_to_read(paths, index):
+    for path in files_to_read(paths, index, str(root)):
         # A lockfile can run to megabytes; only its head says which Yarn wrote it.
         size = _YARN_LOCK_HEAD_CHARS if posixpath.basename(path) == _YARN_LOCK else -1
         try:
@@ -1573,7 +1583,7 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
                 files[path] = fh.read(size)
         except OSError:
             continue
-    return detect_stacks(paths, files, index)
+    return detect_stacks(paths, files, index, str(root))
 
 
 __all__ = [

@@ -443,6 +443,41 @@ def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
     assert result["_meta"]["omitted"]["refs"]
 
 
+def _oversized_context() -> dict:
+    return {
+        "targets": {f"src/f{i}.py": {"summary": "x" * 900} for i in range(60)},
+        "_meta": {},
+    }
+
+
+def test_a_bridged_call_with_an_include_gets_the_expanded_tier(wired):
+    """``repowise context --include ...`` is budgeted like the same MCP call."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        return _oversized_context()
+
+    default = tool_bridge.call_tool(repo, _tool, "get_context", arguments={"targets": ["a"]})
+    expanded = tool_bridge.call_tool(
+        repo, _tool, "get_context", arguments={"targets": ["a"], "include": ["source"]}
+    )
+
+    assert default["_meta"]["response_budget"]["tier"] == "default"
+    assert expanded["_meta"]["response_budget"]["tier"] == "expanded"
+    assert len(expanded["targets"]) > len(default["targets"])
+
+
+def test_a_bridged_call_without_arguments_stays_at_the_default_tier(wired):
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        return _oversized_context()
+
+    result = tool_bridge.call_tool(repo, _tool, "get_context")
+
+    assert result["_meta"]["response_budget"]["tier"] == "default"
+
+
 def test_publishing_tool_state_does_not_load_the_http_stack():
     """A CLI tool call wires state per process; FastAPI costs about half a second."""
     import subprocess

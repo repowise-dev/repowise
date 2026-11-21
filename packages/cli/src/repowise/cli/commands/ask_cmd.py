@@ -147,14 +147,18 @@ def ask_command(
         command="ask",
     )
 
+    arguments = {"question": question, "scope": scope}
+
     def _factory():
         from repowise.server.mcp_server.tool_answer import get_answer
 
-        return get_answer(question=question, scope=scope)
+        return get_answer(**arguments)
 
     # In a workspace the tool reads the other members' documents too, as it
     # does over MCP.
-    payload = _ta.run(repo_path, _factory, "get_answer", workspace_root=workspace_root)
+    payload = _ta.run(
+        repo_path, _factory, "get_answer", workspace_root=workspace_root, arguments=arguments
+    )
 
     if full:
         _ta.emit_full(payload)

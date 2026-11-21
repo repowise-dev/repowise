@@ -83,3 +83,22 @@ def test_an_end_left_out_is_not_counted_as_a_missed_call(tmp_path) -> None:
     assert contracts == []
     assert stats[NON_PRODUCTION_ENDS_STAT] == 1
     assert stats[UNRECOGNISED_CALL_FILES_STAT] == 0
+
+
+def test_a_data_folders_code_is_left_out_on_its_stored_origin(monkeypatch) -> None:
+    """Only a stored origin carries ``data``: the path alone reads production."""
+    import repowise.core.evidence.ingest as ingest
+
+    async def _stored(_session, _repo_id, paths):
+        return {p: "data" if "/data/" in p else "production" for p in paths}
+
+    monkeypatch.setattr(ingest, "load_origins", _stored)
+
+    class _Index:
+        repo_id = "r"
+        session = object()
+
+    contracts = [_end("backend/data/problems/p0/solution.js"), _end("frontend/lib/api/client.ts")]
+    kept, dropped = asyncio.run(_production_ends(contracts, _Index()))
+    assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
+    assert dropped == 1

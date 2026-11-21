@@ -25,7 +25,7 @@ from typing import Any, Literal, TypeVar
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.ingestion.symbol_identity import file_of_symbol, module_symbol_id
 
-UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
+UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique", "import_elsewhere"})
 # Not a test classifier: flows also leave out demos, examples, scripts and
 # benchmarks, which are no more product code than tests are.
 _NON_PRODUCT_FLOW_PATH_RE = re.compile(

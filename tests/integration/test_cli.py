@@ -817,7 +817,7 @@ class TestUpdateWorkingTree:
         """One watcher-style update. Mirrors ``_watch_single_repo``'s trigger,
         lock release included — in-process repeat runs need it."""
         from repowise.cli.commands.update_cmd.command import run_update
-        from repowise.cli.commands.watch_cmd import _release_own_update_lock
+        from repowise.core.update_lock import release_own_update_lock
 
         try:
             return run_update(
@@ -836,7 +836,7 @@ class TestUpdateWorkingTree:
             )
         finally:
             if release_lock:
-                _release_own_update_lock(repo)
+                release_own_update_lock(repo)
 
     def _page_status(self, repo, path):
         import sqlite3
