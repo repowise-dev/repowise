@@ -6,7 +6,10 @@ Repowise supports Codex in three separate ways:
 - The `codex_cli` LLM provider for wiki generation through your authenticated Codex CLI subscription.
 - A local Codex plugin with bundled MCP, hooks, and Repowise skills.
 
-These features use project-local files. `repowise init --codex` writes under the repository, not to global `~/.codex/config.toml`.
+These features use project-local files. `repowise init --codex` writes under the repository, not to the global `config.toml` in `$CODEX_HOME` (default `~/.codex`).
+
+Codex loads the project `.codex/config.toml` only for a trusted project: run `codex` once in the repo and trust the folder, or use `codex exec --trust`.
+Codex also asks you to review the repowise hooks once before it runs them.
 
 For a short smoke walkthrough, see [examples/codex/](../../examples/codex/).
 
@@ -128,7 +131,7 @@ The plugin bundles Repowise MCP, lifecycle hooks, and Codex-neutral skills for e
 
 ## Slash commands
 
-The plugin does not carry these, and cannot: a Codex plugin manifest has no slot for commands. Codex reads slash commands from `~/.codex/prompts/`, which is global and which only the CLI can write, so Repowise installs them there:
+The plugin does not carry these, and cannot: a Codex plugin manifest has no slot for commands. Codex reads slash commands from `$CODEX_HOME/prompts/` (default `~/.codex/prompts/`), which is global and which only the CLI can write, so Repowise installs them there:
 
 ```bash
 repowise agents add --target=codex

@@ -35,7 +35,7 @@ def codex_home() -> Path:
     path repowise reads or writes on the user's Codex side starts at it.
     """
     value = os.environ.get("CODEX_HOME", "").strip()
-    return Path(value).expanduser() if value else Path.home() / ".codex"
+    return Path(value).expanduser().resolve() if value else Path.home() / ".codex"
 
 
 _TOOL_CALL_RE = re.compile(r"tools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")

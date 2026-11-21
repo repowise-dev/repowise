@@ -2138,7 +2138,7 @@
         "claudeCode": "In Claude Code, run /mcp: repowise should be listed as connected. If it is not, restart Claude Code in this repo.",
         "cursor": "Open Cursor Settings, then MCP: repowise should have a green dot. Ask in Agent mode; Ask mode does not call tools.",
         "vscode": "Run MCP: List Servers from the Command Palette and start repowise. Ask in Copilot Chat's Agent mode.",
-        "codex": "Restart Codex so it reads ~/.codex/config.toml, then run /mcp to check repowise is listed.",
+        "codex": "Restart Codex in this repo and trust the folder so it reads .codex/config.toml, then run /mcp to check repowise is listed.",
         "generic": "Restart {name} in this repo so it loads the repowise tools.",
         "doctor": "Still nothing? Run <mono>repowise doctor</mono> in this repo to check the connection."
       },

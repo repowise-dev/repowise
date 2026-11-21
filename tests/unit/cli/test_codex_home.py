@@ -37,3 +37,17 @@ def test_sessions_are_read_from_codex_home(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("CODEX_HOME", str(home))
 
     assert CodexAdapter().discover(tmp_path) == [rollout]
+
+
+def test_detect_finds_codex_under_codex_home_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.agent_adapters.codex import CodexAdapter as CodexHookAdapter
+
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert not CodexHookAdapter().detect()
+
+    home.mkdir()
+    assert not (Path.home() / ".codex").exists()
+    assert CodexHookAdapter().detect()

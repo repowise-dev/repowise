@@ -1951,7 +1951,7 @@
         "claudeCode": "在 Claude Code 中运行 /mcp：repowise 应显示为已连接。如果没有，请在这个仓库中重启 Claude Code。",
         "cursor": "打开 Cursor 设置中的 MCP：repowise 应显示绿点。请在 Agent 模式下提问；Ask 模式不会调用工具。",
         "vscode": "在命令面板中运行 MCP: List Servers 并启动 repowise。请在 Copilot Chat 的 Agent 模式下提问。",
-        "codex": "重启 Codex 让它读取 ~/.codex/config.toml，然后运行 /mcp 确认 repowise 已列出。",
+        "codex": "在此仓库中重启 Codex 并信任该文件夹，让它读取 .codex/config.toml，然后运行 /mcp 确认 repowise 已列出。",
         "generic": "在这个仓库中重启 {name}，让它加载 repowise 工具。",
         "doctor": "仍然没有？在这个仓库中运行 <mono>repowise doctor</mono> 检查连接。"
       },

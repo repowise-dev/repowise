@@ -100,7 +100,9 @@ class CodexAdapter(AgentAdapter):
     replaces_tool_output: ClassVar[bool] = False
 
     def detect(self) -> bool:
-        return os.path.isdir(os.path.expanduser("~/.codex"))
+        from repowise.core.sessions.adapters.codex import codex_home
+
+        return codex_home().is_dir()
 
     def parse_hook_payload(self, raw: str) -> RewriteRequest | None:
         try:
