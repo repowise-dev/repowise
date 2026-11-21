@@ -1,5 +1,7 @@
 /** Slim chrome above the graph canvas: repo name plus live node/edge counts. */
 
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+
 export interface GraphHeaderProps {
   repoName: string;
   stats: { nodes: number; edges: number } | null;
@@ -20,13 +22,13 @@ export function GraphHeader({ repoName, stats }: GraphHeaderProps) {
         <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
           <span>
             <span className="font-medium text-[var(--color-text-secondary)]">
-              {stats.nodes.toLocaleString()}
+              {formatNumber(stats.nodes)}
             </span>{" "}
             nodes
           </span>
           <span>
             <span className="font-medium text-[var(--color-text-secondary)]">
-              {stats.edges.toLocaleString()}
+              {formatNumber(stats.edges)}
             </span>{" "}
             edges
           </span>

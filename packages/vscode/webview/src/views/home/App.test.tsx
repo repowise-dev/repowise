@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { formatRelativeTime } from "@repowise-dev/ui/lib/format";
 import type { HomeSummary } from "../../../../src/shared/webviewMessages";
 import type { WebviewHost } from "../../runtime/rpc";
-import { App } from "./App";
+import { App, timeAgo } from "./App";
 
 const SUMMARY: HomeSummary = {
   health: {
@@ -148,3 +149,32 @@ describe("Home sidebar", () => {
     expect(await screen.findByText(/No health data yet/)).toBeTruthy();
   });
 });
+
+describe("timeAgo", () => {
+  it("formats relative time using formatRelativeTime and handles invalid/empty", () => {
+    const now = Date.now();
+    // Fresh times (< 1 min) and future times return "just now"
+    expect(timeAgo(new Date(now - 3000).toISOString())).toBe("just now");
+    expect(timeAgo(new Date(now - 30000).toISOString())).toBe("just now");
+    expect(timeAgo(new Date(now - 55000).toISOString())).toBe("just now");
+    expect(timeAgo(new Date(now + 60000).toISOString())).toBe("just now");
+    expect(timeAgo(new Date(now - 120000).toISOString())).toBe("2m ago");
+
+    // 20 days ago matches formatRelativeTime ("2w ago")
+    const twentyDaysAgo = new Date(now - 20 * 86400 * 1000).toISOString();
+    expect(timeAgo(twentyDaysAgo)).toBe(formatRelativeTime(twentyDaysAgo));
+    expect(timeAgo(twentyDaysAgo)).toBe("2w ago");
+
+    // 45 days ago matches formatRelativeTime ("1mo ago")
+    const fortyFiveDaysAgo = new Date(now - 45 * 86400 * 1000).toISOString();
+    expect(timeAgo(fortyFiveDaysAgo)).toBe(formatRelativeTime(fortyFiveDaysAgo));
+    expect(timeAgo(fortyFiveDaysAgo)).toBe("1mo ago");
+
+    // Missing or invalid returns ""
+    expect(timeAgo("")).toBe("");
+    expect(timeAgo(null)).toBe("");
+    expect(timeAgo(undefined)).toBe("");
+    expect(timeAgo("invalid-date")).toBe("");
+  });
+});
+
