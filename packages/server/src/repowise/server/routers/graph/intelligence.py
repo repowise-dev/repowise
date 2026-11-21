@@ -97,12 +97,12 @@ async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -
 
 async def _file_percentiles(
     session: AsyncSession, repo_id: str, pagerank: float, betweenness: float
-) -> tuple[int, int]:
-    """Rank a pagerank and betweenness against every file node in the repo."""
+) -> tuple[float, float]:
+    """Rank a pagerank and betweenness against every file node in the repo (#5745)."""
     all_files = await crud.get_all_file_metrics(session, repo_id)
     return (
-        percentile_rank(pagerank, [n.pagerank or 0.0 for n in all_files]),
-        percentile_rank(betweenness, [n.betweenness or 0.0 for n in all_files]),
+        percentile_rank(pagerank, all_files, attr="pagerank"),
+        percentile_rank(betweenness, all_files, attr="betweenness"),
     )
 
 
