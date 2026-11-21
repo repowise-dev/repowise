@@ -199,7 +199,9 @@ def _codex_sighting(repo_root: Path, sessions_root: Path | None) -> _Sighting | 
     Sessions whose recorded cwd lies outside *repo_root* are skipped; a session
     with no recoverable cwd is kept (best-effort — better a model than nothing).
     """
-    root = sessions_root if sessions_root is not None else Path.home() / ".codex" / "sessions"
+    from repowise.core.codex_home import codex_home
+
+    root = sessions_root if sessions_root is not None else codex_home() / "sessions"
     if not root.is_dir():
         return None
     repo_prefix = str(repo_root).lower().rstrip("\\/")

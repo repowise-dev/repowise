@@ -135,7 +135,15 @@ def user_prompts_dir() -> Path:
     Global and flat. It is shared with every other tool the user has installed,
     which is why every file we put there is prefixed ``repowise-``.
     """
-    return Path.home() / ".codex" / "prompts"
+    return user_hooks_path().parent / "prompts"
+
+
+def _user_homes() -> list[Path]:
+    """Codex's home, then ``~/.codex`` when earlier releases may have written there."""
+    from repowise.core.codex_home import legacy_codex_home
+
+    legacy = legacy_codex_home()
+    return [user_hooks_path().parent, *([legacy] if legacy else [])]
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +781,7 @@ def _config_parse_refusal(repo_path: Path) -> str | None:
     return None
 
 
-def _user_hooks_leftover_reason() -> str | None:
+def _user_hooks_leftover_reason(path: Path | None = None) -> str | None:
     """Why ``~/.codex/hooks.json`` still has us in it, read from disk. None when clean.
 
     Scoped to **exactly what the remover removes**, which is the rewrite hook.
@@ -789,7 +797,7 @@ def _user_hooks_leftover_reason() -> str | None:
     """
     from repowise.cli.editor_integrations.codex_config import _is_rewrite_hook
 
-    path = user_hooks_path()
+    path = path or user_hooks_path()
     if not path.exists():
         return None
     try:
@@ -945,7 +953,7 @@ def write_prompts() -> list[FileWrite]:
     return writes
 
 
-def remove_prompts() -> list[FileWrite]:
+def remove_prompts(directory: Path | None = None) -> list[FileWrite]:
     """Delete the prompts repowise ships, and nothing else in that directory.
 
     Scoped to the **currently bundled names**, deliberately, and not to
@@ -958,7 +966,7 @@ def remove_prompts() -> list[FileWrite]:
     a file of ours is a wasted kilobyte, losing one of theirs is data loss. That is
     it is why :data:`PROMPT_PREFIX` documents itself as a namespace.
     """
-    directory = user_prompts_dir()
+    directory = directory or user_prompts_dir()
     if not directory.is_dir():
         return []
     removed: list[FileWrite] = []
@@ -1172,7 +1180,7 @@ class CodexTarget:
         answer: the setup path warns when it writes config for a CLI that is
         installed and signed out.
         """
-        return IDENTITY.is_installed() or (Path.home() / ".codex").is_dir()
+        return IDENTITY.is_installed() or user_hooks_path().parent.is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
@@ -1245,22 +1253,24 @@ class CodexTarget:
 
         result = WriteResult()
         if scope is Scope.USER:
-            removed = uninstall_codex_rewrite_hook()
-            # Asked of the file rather than inferred from the boolean, for the
-            # same reason Claude Code's user scope is: that return is False for
-            # "nothing of ours was here", "could not parse" and "the write
-            # failed" alike, and calling the last two not-found claims we looked
-            # and the file was clean.
-            leftover = _user_hooks_leftover_reason()
-            if leftover is not None:
-                result.record(user_hooks_path(), FileAction.KEPT, leftover)
-            else:
-                result.record(
-                    user_hooks_path(),
-                    FileAction.REMOVED if removed else FileAction.NOT_FOUND,
-                )
-            for deleted in remove_prompts():
-                result.record(deleted.path, deleted.action, deleted.reason)
+            for home in _user_homes():
+                hooks_path = home / "hooks.json"
+                removed = uninstall_codex_rewrite_hook(hooks_path)
+                # Asked of the file rather than inferred from the boolean, for the
+                # same reason Claude Code's user scope is: that return is False for
+                # "nothing of ours was here", "could not parse" and "the write
+                # failed" alike, and calling the last two not-found claims we looked
+                # and the file was clean.
+                leftover = _user_hooks_leftover_reason(hooks_path)
+                if leftover is not None:
+                    result.record(hooks_path, FileAction.KEPT, leftover)
+                else:
+                    result.record(
+                        hooks_path,
+                        FileAction.REMOVED if removed else FileAction.NOT_FOUND,
+                    )
+                for deleted in remove_prompts(home / "prompts"):
+                    result.record(deleted.path, deleted.action, deleted.reason)
             return result
 
         if repo_path is None:
@@ -1370,7 +1380,11 @@ class CodexTarget:
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         if scope is Scope.USER:
-            return [str(user_hooks_path()), str(user_prompts_dir())]
+            return [
+                str(path)
+                for home in _user_homes()
+                for path in (home / "hooks.json", home / "prompts")
+            ]
         repo = repo_path or Path.cwd()
         return [
             str(project_config_path(repo)),
