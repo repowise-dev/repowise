@@ -799,7 +799,10 @@ def _trim_files(
     The rows arrive ranked (PageRank, then path) from the card builder, so
     the tail is the cheapest loss, as with symbols. Compact JSON is additive,
     so the target's size with a file list ``F`` is its size with no files
-    plus each kept row's cost plus the commas.
+    plus each kept row's cost plus the commas. Past the floor the first row
+    that busts the share ends the list: skipping it for a shorter later row
+    would keep a non-prefix, so the ranked order would no longer decide
+    what stays.
     """
     docs = tgt["docs"]
     costs = [len(json.dumps(row, separators=(",", ":"), default=str)) for row in rows]
@@ -811,6 +814,12 @@ def _trim_files(
         if len(kept) < floor or base + used + row_cost + len(kept) <= share:
             kept.append(row)
             used += row_cost
+        else:
+            # Past the floor the first row that busts the share ends the
+            # list: skipping it for a shorter later row would keep a
+            # non-prefix, so the ranked order would no longer decide
+            # what stays.
+            break
     docs["files"] = kept
     if len(kept) == len(rows):
         return

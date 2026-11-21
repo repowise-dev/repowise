@@ -398,6 +398,51 @@ def test_truncate_stage_2a_keeps_target_that_fits_after_file_trim():
         assert docs["files_reduced_reason"] == "response_budget"
 
 
+def test_truncate_file_trim_stops_at_first_row_over_share():
+    """File trimming keeps a prefix: it stops at the first row over the share.
+
+    Five rows, floor three: the fourth row is too large to fit once the
+    floor is met, but the fifth row is tiny and would fit in the room the
+    fourth leaves. The old loop skipped the fourth and kept the fifth, so
+    the kept list was not a prefix of the ranked rows; the fix breaks at
+    the fourth row instead. The share leaves headroom for the counts fields
+    the trim writes after the loop, so the tail-shed loop cannot pop the
+    tail row back off and hide the difference.
+    """
+    name = "pkg/mod"
+    target = _module_target(name, 5, summary_len=100, n_symbols=0)
+    rows = target["docs"]["files"]
+    rows[3]["description"] = "d" * 600
+    rows[4]["description"] = "tiny"
+    costs = [len(json.dumps(row, separators=(",", ":"), default=str)) for row in rows]
+    probe = copy.deepcopy(target)
+    probe["docs"]["files"] = []
+    base = len(json.dumps(probe, separators=(",", ":"), default=str))
+    share = base + 200 + sum(costs[:3]) + costs[4] + 3
+    assert costs[3] > 200 + costs[4]  # the large row really does not fit
+    envelope = {
+        "targets": {name: target},
+        "truncated": False,
+        "dropped_targets": [],
+        "dropped_symbols": {},
+    }
+    overhead = len(json.dumps(envelope, separators=(",", ":"), default=str)) - len(
+        json.dumps(target, separators=(",", ":"), default=str)
+    )
+    out = truncate_to_budget(
+        {"targets": {name: target}}, char_budget=overhead + share, record_counts=True
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert [row["path"] for row in docs["files"]] == [row["path"] for row in rows[:3]]
+    assert docs["files_total"] == 5
+    assert docs["files_emitted"] == 3
+    assert docs["files_omitted"] == 2
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert out["truncated"] is True
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= overhead + share
+
+
 # ---------------------------------------------------------------------------
 # fit_to_budget — the block-shedding ceiling
 # ---------------------------------------------------------------------------
