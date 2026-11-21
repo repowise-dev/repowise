@@ -1505,8 +1505,8 @@ def detect_stacks(
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
-                    if (lock := _governing_yarn_lock(root, present)) in files:
-                        texts = {**texts, _YARN_LOCK: files[lock]}
+                if stack == "node" and (lock := _governing_yarn_lock(root, present)) in files:
+                    texts = {**texts, _YARN_LOCK: files[lock]}
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
                 # The repository root keeps its guess when pip's own spelling names its requirements.
