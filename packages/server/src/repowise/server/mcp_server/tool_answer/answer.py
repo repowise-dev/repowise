@@ -93,6 +93,7 @@ from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
+from repowise.server.mcp_server._answer_pipeline import in_scope
 from repowise.server.mcp_server._answer_pipeline import (
     retrieval_legs as _retrieval_legs,
 )
@@ -378,12 +379,9 @@ async def _run_retrieval_pipeline(
     except Exception:
         _log.warning("get_answer: issue file lookup failed", exc_info=True)
     else:
-        def _in_scope(paths: list[str]) -> list[str]:
-            return [p for p in paths if not scope or p.startswith(scope)]
-
-        if traced := _in_scope(issue.traced):
+        if traced := [p for p in issue.traced if in_scope(p, scope)]:
             hits = lead_with_files(hits, traced)
-        if named := _in_scope(issue.named):
+        if named := [p for p in issue.named if in_scope(p, scope)]:
             hits = place_named_files(hits, named)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
@@ -392,6 +390,11 @@ async def _run_retrieval_pipeline(
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
         hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
+    # Hydration drops out-of-scope hits, but graph expansion, anchoring and
+    # flow paths add files after it. A scoped caller asked about the scope, so
+    # none of them may reach the answer, citations or candidates.
+    if scope:
+        hits = [h for h in hits if in_scope(h.get("target_path") or scope, scope)]
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -554,7 +557,13 @@ def _agreement(hits: list[dict]) -> bool:
 
 
 async def _pre_synthesis_reply(
-    ask: _Ask, retrieved: _Retrieved, agreement_dominant: bool, graph_callers, neighbors
+    ask: _Ask,
+    retrieved: _Retrieved,
+    agreement_dominant: bool,
+    graph_callers,
+    neighbors,
+    *,
+    scope: str | None = None,
 ) -> dict | None:
     """The qualified-miss, answer-by-union or no-hits reply, before any page is read."""
     hits = retrieved.hits
@@ -588,9 +597,15 @@ async def _pre_synthesis_reply(
     # Another workspace repo's documents can answer what this repo's code does
     # not (a ticket asked about by its key): synthesis reads their lines.
     if not hits and not retrieved.other_repo_lines:
+        # Same length as the unscoped line for a typical scope: names what was
+        # searched, and that widening the scope is the first thing to try.
+        lead = (
+            f"No wiki hits under {scope}/ for this question. Widen the scope or rephrase. "
+            if scope
+            else "No wiki hits for this question. Rephrase around the code concept. "
+        )
         return _no_answer_payload(
-            "No wiki hits for this question. Rephrase around the code "
-            "concept. " + _NO_HITS_RECOVERY_HINT,
+            lead + _NO_HITS_RECOVERY_HINT,
             repository=ask.repository,
             t0=ask.t0,
         )
@@ -937,7 +952,7 @@ async def get_answer(
     # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
     early = await _pre_synthesis_reply(
-        ask, retrieved, agreement_dominant, graph_callers, _neighbors
+        ask, retrieved, agreement_dominant, graph_callers, _neighbors, scope=normalized_scope
     )
     if early is not None:
         clock.log("early", "prepare")

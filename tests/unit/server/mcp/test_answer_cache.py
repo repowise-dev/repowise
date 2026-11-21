@@ -270,8 +270,10 @@ async def test_distinct_scopes_never_cross_contaminate(setup_mcp, factory, monke
     provider = _Provider("Scoped answer (src/auth/service.py).")
     _patch_provider(monkeypatch, answer_mod, provider)
 
+    # Both scopes hold the retrieved files: a scope that holds none of them
+    # never reaches synthesis, so it would not exercise the cache identity.
     await get_answer(QUESTION, scope="src/auth")
-    await get_answer(QUESTION, scope="src/billing")
+    await get_answer(QUESTION, scope="src")
 
     assert provider.calls == 2
     assert len(await _cache_rows(factory)) == 2

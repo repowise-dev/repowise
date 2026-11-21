@@ -49,13 +49,18 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
     return meta
 
 
+def in_scope(path: str, scope: str | None) -> bool:
+    """Whether *path* is under the caller's ``scope`` (a plain path prefix)."""
+    return not scope or path.startswith(scope)
+
+
 def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
     """Copy *meta* onto *hit*; False when the hit is tombstoned or out of scope."""
     # Tombstoned pages describe deleted or renamed files.
     if meta.get("freshness") == "tombstone":
         return False
     target_path = meta.get("target_path", "")
-    if scope and target_path and not target_path.startswith(scope):
+    if target_path and not in_scope(target_path, scope):
         return False
     hit["target_path"] = target_path
     hit["summary"] = meta.get("summary", "")

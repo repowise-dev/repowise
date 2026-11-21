@@ -41,6 +41,7 @@ from repowise.server.mcp_server._answer_pipeline.hydrate import (
     _PAGERANK_BIAS_MAX,
     apply_pagerank_bias,
     hydrate_hits,
+    in_scope,
 )
 from repowise.server.mcp_server._answer_pipeline.leg_record import (
     _LEG_RECORD,
@@ -411,6 +412,7 @@ __all__ = [
     "filename_backed_pages",
     "hybrid_retrieve",
     "hydrate_hits",
+    "in_scope",
     "is_subsystem_query",
     "leg_ranks",
     "question_vector",
