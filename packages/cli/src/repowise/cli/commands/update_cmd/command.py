@@ -887,9 +887,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
-    elif isinstance(run.state.get("pending_repair"), dict):
+    else:
+        from repowise.core.pipeline.incremental.repair import unchecked_repair_marker
+
         # Another base re-covers none of the marker's range: keep it.
-        run.unchecked_repair = run.state["pending_repair"]
+        run.unchecked_repair = unchecked_repair_marker(run.state, run.base_ref, None)
 
     _verify_sync_base(run)
 
