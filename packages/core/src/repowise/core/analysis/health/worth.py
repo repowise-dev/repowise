@@ -404,16 +404,6 @@ def measured(facets: Mapping[str, Any]) -> bool:
     return bool(facets.get("measured"))
 
 
-def run_answers_cold(facets: Mapping[str, Any]) -> bool:
-    """Whether a leading workload's run settles the guess that a cause's loop
-    runs once per process (a cold role or a cold name): it measured the loop
-    owner above the lead bar (``confirmed`` ``measured``), or it ranked it and
-    query counts show the statements grow with the items (``query_count``,
-    which takes precedence in ``confirmed``). A unit-test run never does."""
-    confirmed = facets.get("confirmed")
-    return confirmed == "measured" or (confirmed == "query_count" and measured(facets))
-
-
 def lead_reason(marker: str | None, facets: Mapping[str, Any]) -> LowPriority | None:
     """Why a performance cause may not lead, or ``None`` when it may.
 
@@ -478,7 +468,6 @@ __all__ = [
     "measured",
     "measured_nloc",
     "perf_facets",
-    "run_answers_cold",
     "terminal_shaped",
     "worst_after",
     "worth_size",

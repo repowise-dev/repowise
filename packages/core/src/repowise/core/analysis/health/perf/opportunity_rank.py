@@ -22,7 +22,7 @@ from typing import Any, Literal, get_args
 
 from ...execution_roles import COLD_ROLES
 from ..rank_common import top_factors, weakest
-from ..worth import lead_reason, run_answers_cold
+from ..worth import lead_reason
 from .cold_paths import is_cold_path
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
@@ -330,7 +330,7 @@ def evidence_tier(facets: Mapping[str, Any]) -> int:
     against its cold name (``measured_overrides``) is kept, never led, unless
     a leading workload measured it above the lead bar (``confirmed``
     ``measured``): both stay among the rest, in static order."""
-    if facets.get("measured_overrides") and not run_answers_cold(facets):
+    if facets.get("measured_overrides") and facets.get("confirmed") != "measured":
         return 2
     state = evidence_state(facets)
     if state == "confirmed":
