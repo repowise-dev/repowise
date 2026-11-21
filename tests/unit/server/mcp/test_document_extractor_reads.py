@@ -226,7 +226,7 @@ def test_symlink_routing_uses_indexed_path(
 
     target = tmp_path / ("implementation.py" if document_alias else "implementation.xyz")
     alias = tmp_path / ("alias.xyz" if document_alias else "alias.py")
-    target.write_text("VALUE = 1\n")
+    target.write_bytes(b"VALUE = 1\n")
     alias.symlink_to(target.name)
     files = {info.path: info for info in FileTraverser(tmp_path).traverse()}
     assert files[alias.name].language == ("markdown" if document_alias else "python")
@@ -259,7 +259,7 @@ def test_symlink_routing_uses_indexed_path(
 async def test_skeleton_reader_skips_extracted_documents(tmp_path, extractor_registry, symlink):
     document = tmp_path / "spec.xyz"
     if symlink:
-        (tmp_path / "implementation.py").write_text("VALUE = 1\n")
+        (tmp_path / "implementation.py").write_bytes(b"VALUE = 1\n")
         document.symlink_to("implementation.py")
     else:
         document.write_bytes(b"\x00binary source")
