@@ -93,7 +93,8 @@ async def upsert_repository(
     repo = result.scalar_one_or_none()
     relocated = False
     if repo is None:
-        repo = await _relocated_row(session, local_path)
+        # A write must not split the store when git cannot answer.
+        repo = await _relocated_row(session, local_path, adopt_undecided=True)
         relocated = repo is not None
 
     stamping = repo is None or stamp_head or head_commit is not None
@@ -264,7 +265,9 @@ _REJECTED_ROWS: dict[tuple[str, str, str, str], float] = {}
 _REJECTION_TTL_S = 60.0
 
 
-async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
+async def _relocated_row(
+    session: AsyncSession, local_path: str, *, adopt_undecided: bool = False
+) -> Repository | None:
     """The single row of ``local_path``'s own store, re-pointed at ``local_path``.
 
     A repo moved, renamed or copied together with its ``.repowise`` keeps the
@@ -273,7 +276,9 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     lives in ``local_path`` and holds exactly one row is re-pointed, and only
     when that row is this checkout's (see :func:`_same_checkout`). Any other
     store (a configured or shared database, a server registry) keeps one row
-    per path.
+    per path. When git could not run, ``adopt_undecided`` decides: a write
+    (``upsert_repository``) adopts instead of adding a second row, a read
+    reports the repo unindexed for that call and asks again next time.
     """
     store_dir = _store_dir(session)
     if store_dir is None or not _same_dir(store_dir, local_path):
@@ -289,10 +294,11 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     if rejected_at is not None and time.monotonic() - rejected_at < _REJECTION_TTL_S:
         return None
     same = await asyncio.to_thread(_same_checkout, repo, local_path)
-    if not same:
-        if same is False:
-            # Only git's own answer is remembered; a failed git call is retried.
-            _REJECTED_ROWS[key] = time.monotonic()
+    if same is False:
+        # Only git's own answer is remembered; a failed git call is retried.
+        _REJECTED_ROWS[key] = time.monotonic()
+        return None
+    if same is None and not adopt_undecided:
         return None
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path

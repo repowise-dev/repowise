@@ -273,3 +273,25 @@ async def test_a_rejection_expires_for_a_commit_fetched_without_moving_head(
 
     monkeypatch.setattr(repository, "_REJECTION_TTL_S", 0.0)
     assert await _lookup(here) == repo_id
+
+
+async def test_an_upsert_keeps_one_row_when_git_cannot_answer(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    built.rename(tmp_path / "gone")
+    (here / "a.py").write_text("# next\n")
+    _git(here, "commit", "-qam", "next")
+    monkeypatch.setattr(repository, "_has_commit", lambda *_a: None)
+
+    engine = create_engine(get_db_url_for_repo(here))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await upsert_repository(session, name=here.name, local_path=str(here))
+    finally:
+        await engine.dispose()
+
+    assert _rows(here) == [(repo_id, str(here))]
