@@ -932,7 +932,8 @@ history) or `tests.*` config. Full runs: [CI](../start/CI.md#selecting-the-tests
 
 <details><summary>JSON fields and run order</summary>
 
-- `indexed_commit`, `map_current`; per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
+- `indexed_commit`, `map_current` (map measured at the change's base or head), `matched_by_file` (changed files whose
+  covering tests are matched by file, not by changed line, [why](../architecture/test-intelligence.md#matching-changed-lines)); per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
   `test-package`, `conftest`, `helper-importers`, `deleted-test`, `coverage`, `changed-test`, `call-graph`,
   `import-graph`, `filename-pattern`, `unknown`, `none` (no index).
 - Per-test `selected.why`: first changed file and evidence, or why it always runs.
