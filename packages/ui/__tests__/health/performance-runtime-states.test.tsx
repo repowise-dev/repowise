@@ -96,7 +96,7 @@ describe("Drawer: runs that measured it", () => {
         adapter={adapter({
           ...evidenceAdapter(),
           getPerformanceOpportunities: async () => hotspotPage(),
-          getPerformanceOpportunityDetail: undefined,
+          getPerformanceOpportunity: undefined,
           getMeasuredFunctions,
         })}
       />,
@@ -116,7 +116,7 @@ describe("Drawer: runs that measured it", () => {
         adapter={adapter({
           ...evidenceAdapter(),
           getPerformanceOpportunities: async () => hotspotPage(),
-          getPerformanceOpportunityDetail: undefined,
+          getPerformanceOpportunity: undefined,
           getMeasuredFunctions,
         })}
       />,

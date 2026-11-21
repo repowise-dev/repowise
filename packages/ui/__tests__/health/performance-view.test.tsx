@@ -820,7 +820,7 @@ describe("PerformanceView measured hotspot drawer", () => {
       <PerformanceView
         adapter={adapter({
           getPerformanceOpportunities: async () => one,
-          getPerformanceOpportunityDetail: undefined,
+          getPerformanceOpportunity: undefined,
           getMeasuredFunctions: undefined,
         })}
       />,
