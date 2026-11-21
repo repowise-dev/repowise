@@ -21,6 +21,7 @@ from repowise.core.build_units.adapters import (
     pascal,
     php,
     python,
+    scala,
     swift,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
@@ -42,6 +43,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("maven", maven.units),
     ("php", php.units),
     ("python", python.units),
+    ("scala", scala.units),
     ("dart", dart.units),
     ("swift", swift.units),
     ("pascal", pascal.units),
