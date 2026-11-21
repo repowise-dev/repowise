@@ -58,6 +58,33 @@ int get topGetter => 1;
         assert ("topFn", "function") in kinds
         assert ("topGetter", "function") in kinds
 
+    def test_constructors_become_symbols(self, parser: ASTParser) -> None:
+        # #5988 — plain, named, factory and const constructors are methods of
+        # the class, named ``A`` / ``A.named`` like the health layer names them.
+        src = b"""\
+class A {
+  A();
+  A.named() {
+    helper();
+  }
+  factory A.f() => A();
+  const A.c();
+  void m() {}
+}
+"""
+        result = parser.parse_file(_file(), src)
+        members = {
+            (s.name, s.kind, s.parent_name): s
+            for s in result.symbols
+            if s.kind == "method"
+        }
+        assert ("A", "method", "A") in members
+        assert ("A.named", "method", "A") in members
+        assert ("A.f", "method", "A") in members
+        assert ("A.c", "method", "A") in members
+        # The bodied constructor's range covers its sibling body.
+        assert members[("A.named", "method", "A")].end_line >= 4
+
     def test_methods_get_parents(self, parser: ASTParser) -> None:
         src = b"""\
 class Repo {

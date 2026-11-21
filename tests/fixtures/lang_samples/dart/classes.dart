@@ -7,6 +7,9 @@ class Cohesive {
   int total = 0;
   int count = 0;
 
+  Cohesive(this.total);
+  Cohesive.zero() : total = 0, count = 0;
+
   void add(int v) {
     total += v;
     count += 1;
