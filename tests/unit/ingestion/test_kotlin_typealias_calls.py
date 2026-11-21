@@ -74,10 +74,20 @@ def test_an_alias_of_no_repo_class_has_no_callee(calls: dict[str, set[str]], cal
 
 
 def test_the_alias_signature_carries_its_target(tmp_path: Path) -> None:
+    source = (
+        "package a\n\n"
+        "typealias Repo = DefaultRepository\n"
+        "typealias Repos = Holder<String>\n"
+        "typealias Handler = (String) -> Unit\n"
+        "actual typealias IOException = java.io.IOException\n"
+    )
     path = tmp_path / "A.kt"
-    path.write_text("package a\n\ntypealias Repos = Holder<String>\n")
+    path.write_text(source)
     (fi,) = FileTraverser(tmp_path).traverse()
     parsed = ASTParser().parse_file(fi, path.read_bytes())
 
-    (alias,) = [s for s in parsed.symbols if s.kind == "type_alias"]
-    assert alias.signature == "typealias Repos = Holder<String>"
+    signatures = {s.name: s.signature for s in parsed.symbols if s.kind == "type_alias"}
+    assert signatures["Repo"] == "typealias Repo = DefaultRepository"
+    assert signatures["Repos"] == "typealias Repos = Holder<String>"
+    assert signatures["Handler"] == "typealias Handler = (String) -> Unit"
+    assert signatures["IOException"] == "typealias IOException = java.io.IOException"
