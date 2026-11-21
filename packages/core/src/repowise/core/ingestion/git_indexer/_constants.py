@@ -356,7 +356,9 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v4: a per-file walk widens a file's names only through its own renames, not
 #: those of other files in the same commit. A shallow clone's cut commit
 #: credits no author and counts as neither churn nor a file's origin.
-GIT_HISTORY_VERSION: int = 4
+#: v5: one person counts once across names and emails (mailmap applied) in a
+#: file's owners, top authors, bus factor and blame owners (#6045).
+GIT_HISTORY_VERSION: int = 5
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
