@@ -137,6 +137,21 @@ class TestIsWatchablePath:
         assert watch_cmd.is_watchable_path(r"src\app.py") is True
         assert watch_cmd.is_watchable_path(r".claude\CLAUDE.md") is False
 
+    def test_extensionless_shebang_script_wakes_an_update(self, tmp_path) -> None:
+        # #5787: an indexed extensionless script's edit must wake the watcher.
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "tool").write_text(
+            "#!/usr/bin/env python3\nprint(1)\n", encoding="utf-8"
+        )
+
+        assert watch_cmd.is_watchable_path("bin/tool", tmp_path) is True
+
+    def test_extensionless_non_script_does_not_wake_an_update(self, tmp_path) -> None:
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "notes").write_text("just some text\n", encoding="utf-8")
+
+        assert watch_cmd.is_watchable_path("bin/notes", tmp_path) is False
+
 
 class TestSingleRepoTrigger:
     """What the debounced trigger actually runs."""
@@ -156,9 +171,7 @@ class TestSingleRepoTrigger:
             calls.append(kwargs)
             done.set()
 
-        monkeypatch.setattr(
-            "repowise.cli.commands.update_cmd.command.run_update", fake_run_update
-        )
+        monkeypatch.setattr("repowise.cli.commands.update_cmd.command.run_update", fake_run_update)
         monkeypatch.setattr(watch_cmd, "ensure_repowise_dir", lambda _p: None)
 
         started = threading.Event()
@@ -210,9 +223,7 @@ class TestSingleRepoTrigger:
         assert calls[0]["path"] == str(tmp_path)
         assert calls[0]["index_only"] is False
 
-    def test_index_only_is_passed_through(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
+    def test_index_only_is_passed_through(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         calls = self._fire(monkeypatch, tmp_path, index_only=True)
 
         assert calls[0]["index_only"] is True

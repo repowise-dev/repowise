@@ -2009,6 +2009,7 @@ def is_candidate_source_path(
     cache: dict[Path, bool] | None = None,
     extra_exclude_patterns: Sequence[str] | None = None,
     extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
+    source: bytes | None = None,
 ) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
@@ -2018,13 +2019,19 @@ def is_candidate_source_path(
     "will be indexed"; :class:`FileTraverser` still applies the full test.
     The only disk access is the output-directory listing of
     :func:`in_blocked_dir`, given *repo_root* (and memoized in *cache* when
-    given).
+    given), plus one first-line read for an extensionless path (see below).
 
     It serves the change sources that only see a path: the working-tree diff
     and the file watcher.
 
-    Extensionless scripts are still rejected because deciding whether they
-    have a supported shebang would require reading them.
+    Extensionless paths are decided by their shebang, the same signal
+    :class:`FileTraverser` indexes them by (#5787): a supported shebang in
+    the first line counts, anything else stays out. The bytes come from
+    *source* when the caller already holds them — a deleted file's committed
+    blob — else the first line is read from disk under *repo_root*; with
+    neither, there is nothing to decide from and the answer is ``False``.
+    Extensioned paths are still decided from the path alone, with no read,
+    and blocked dirs and ignore rules are unchanged.
     """
     posix = rel_path.replace("\\", "/")
     parts = Path(posix).parts
@@ -2052,7 +2059,20 @@ def is_candidate_source_path(
         return True
     from .document_extractors import document_extractor_claims
 
-    return suffix in document_extractor_claims()
+    if suffix in document_extractor_claims():
+        return True
+    if suffix:
+        return False
+    # Extensionless: the traverser indexes these from their shebang, so a
+    # path-only filter would drop every edit to an indexed script
+    # (``bin/tool``). Only the first line is read; the caller-supplied bytes
+    # win, so a file already deleted from disk still answers from what it
+    # was. Without bytes or a root to read from, the answer stays ``False``.
+    if source is not None:
+        return _detect_by_shebang(Path(posix), source) != "unknown"
+    if repo_root is None:
+        return False
+    return _detect_by_shebang(repo_root / posix) != "unknown"
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
