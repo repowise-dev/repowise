@@ -420,7 +420,8 @@ def _single_repo_form(tool: Any) -> Any:
     # The entry line and any deeper-indented lines that continue it.
     description = re.sub(r"\n( +)repo: .*(?:\n\1 +\S.*)*", "", tool.description or "")
     # An Args block whose only entry was repo goes with it.
-    description = re.sub(r"\n+Args:\s*$", "", description)
+    # The heading may be indented: before 3.13 a docstring keeps its indent.
+    description = re.sub(r"\n\s*Args:\s*$", "", description)
     return tool.model_copy(update={"parameters": parameters, "description": description})
 
 
