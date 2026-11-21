@@ -159,6 +159,106 @@ describe("change risk artifact", () => {
     expect(screen.queryByText("1 to run")).not.toBeInTheDocument();
   });
 
+  it("shows each changed file's score on both sides, and the average", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          ...data,
+          health_delta: {
+            ...data.health_delta!,
+            score_basis: "structure_only",
+            files: [
+              {
+                path: "src/app.py",
+                base_score: 6.2,
+                head_score: 4.9,
+                base_structure: 3.8,
+                head_structure: 5.1,
+                nloc_base: 120,
+                nloc_head: 132,
+              },
+              {
+                path: "src/old.py",
+                base_score: 7.4,
+                head_score: null,
+                base_structure: 2.6,
+                head_structure: null,
+                nloc_base: 40,
+                nloc_head: null,
+                moved_to: ["src/new.py"],
+              },
+              {
+                path: "src/new.py",
+                base_score: null,
+                head_score: 7.4,
+                base_structure: null,
+                head_structure: 2.6,
+                nloc_base: null,
+                nloc_head: 40,
+              },
+            ],
+            files_total: 3,
+            score_change: {
+              base: 6.2,
+              head: 4.9,
+              delta: -1.3,
+              structure_delta: 1.3,
+              weighting: "base_nloc",
+              files_compared: 3,
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Health")).toBeInTheDocument();
+    expect(screen.getByText("6.2 to 4.9")).toBeInTheDocument();
+    expect(screen.getByText("Files by score change")).toBeInTheDocument();
+    expect(screen.getByText("src/app.py")).toBeInTheDocument();
+    expect(screen.getByText("6.2 → 4.9")).toBeInTheDocument();
+    // A deleted file keeps its base score and says where its code went.
+    expect(screen.getByText("deleted → src/new.py")).toBeInTheDocument();
+    expect(screen.getByText("new, 7.4")).toBeInTheDocument();
+  });
+
+  it("says how many of the changed files were scored when the list is capped", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          ...data,
+          health_delta: {
+            ...data.health_delta!,
+            files: [
+              {
+                path: "src/app.py",
+                base_score: 6.2,
+                head_score: 4.9,
+                base_structure: 3.8,
+                head_structure: 5.1,
+                nloc_base: 120,
+                nloc_head: 132,
+              },
+            ],
+            files_total: 14,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Files scored")).toBeInTheDocument();
+    expect(screen.getByText("1 of 14")).toBeInTheDocument();
+    // No average was produced, so the context row stays empty.
+    expect(screen.queryByText("Health")).toBeNull();
+  });
+
+  it("renders an older server's delta with no per-file scores unchanged", () => {
+    render(<RiskReportRenderer data={data} />);
+
+    expect(screen.getByText("More detail")).toBeInTheDocument();
+    expect(screen.queryByText("Files by score change")).toBeNull();
+    expect(screen.queryByText("Health")).toBeNull();
+  });
+
   it("reports an error with an alert role", () => {
     render(<RiskReportRenderer data={{ error: "Could not read change 'nope'." }} />);
 
