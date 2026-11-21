@@ -435,7 +435,7 @@ def coverage_setup(repo: str | None, fmt: str) -> None:
     """
     from repowise.cli.commands.evidence_cmd import _print_setup
 
-    _print_setup(repo, fmt, coverage_only=True)
+    _print_setup(repo, fmt, coverage_only=True, command="coverage")
 
 
 @coverage_group.command("status")

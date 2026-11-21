@@ -50,10 +50,11 @@ from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
 
 
-def _resolve_repo(path: str | None, notices: Any) -> Path:
+def _resolve_repo(path: str | None, notices: Any, command: str = "evidence") -> Path:
     """The repository to ingest into (workspace-aware, like ``coverage``)."""
     target = resolve_command_target(path=path)
-    return target.narrow(notices, command="evidence", repo_option=False)
+    return target.narrow(notices, command=command, repo_option=False)
+
 
 
 @click.group("evidence")
@@ -447,7 +448,7 @@ def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: s
     """
     if ci is not None and not write:
         raise click.UsageError("--ci names the file --write writes; add --write.")
-    _print_setup(repo, fmt, write=write, ci=ci)
+    _print_setup(repo, fmt, write=write, ci=ci, command="evidence")
 
 
 def _print_setup(
@@ -457,6 +458,7 @@ def _print_setup(
     coverage_only: bool = False,
     write: bool = False,
     ci: str | None = None,
+    command: str
 ) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
     from repowise.core.evidence.ci_snippet import detect_ci
@@ -465,7 +467,7 @@ def _print_setup(
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
-    repo_path = _resolve_repo(repo, notices)
+    repo_path = _resolve_repo(repo, notices, command)
     if write:
         ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
