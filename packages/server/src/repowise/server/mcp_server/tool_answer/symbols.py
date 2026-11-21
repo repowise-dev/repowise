@@ -387,6 +387,8 @@ class _TopicGuard:
         self.topic_stems = _text_stems(question) - named
         self.about_tests = _is_test_query(question)
         self._scans: dict[str, tuple[list[dict], bool, list[str]]] = {}
+        #: Test defs trusted on their own name alone (``_names_a_test_type``).
+        self.test_named: set[int] = set()
 
     async def _scan(self, token: str) -> tuple[list[dict], bool, list[str]]:
         """Every line writing *token*, scanned at most once per question."""
@@ -421,13 +423,37 @@ class _TopicGuard:
             return True
         # Before the count: a name only tests write counts zero production files.
         if is_test_related_path(row.file_path) and not self.about_tests:
-            return False
+            if not await self._names_a_test_type(token):
+                return False
+            self.test_named.add(id(row))
+            return True
         files = len({r["path"] for r in await self.lines(token)})
         if (files or self.about_tests) and files <= _SPECIFIC_TOKEN_MAX_FILES:
             return True
         stem = row.file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         owner = f"{stem} {row.parent_name or ''} {row.name or ''}"
         return bool(self.topic_stems & _text_stems(owner))
+
+    async def _names_a_test_type(self, token: str) -> bool:
+        """A test's own name the question writes, so it means that test's def.
+
+        A test-shaped name (``test_named``, ``DetailViewTest``), or a class name
+        of three or more humps (``IncompleteCategoryFormWithFields``) no
+        production line writes. A snake or one-hump name stays out: a fixture
+        shares those with the production local it stands in for.
+        """
+        if _TEST_NAME_RE.search(token):
+            return True
+        return (
+            token[:1].isupper()
+            and "_" not in token
+            and _looks_like_code_name(token)
+            and not await self.lines(token)
+        )
+
+
+# A name written the way test runners collect tests.
+_TEST_NAME_RE = re.compile(r"^(?:test_|Test[A-Z])|[a-z0-9](?:Test|Tests|TestCase)$")
 
 
 # A source line that is all comment, or opens a docstring. A bare ``*`` is left
@@ -540,6 +566,14 @@ async def _trusted_over_topic(
         ]
         if trusted:
             kept[name] = trusted
+    # A test's own name anchors only when no production def the question names
+    # will: beside one, the test is an example of it, not the subject.
+    if any(len(cs) == 1 and id(cs[0]) not in guard.test_named for cs in kept.values()):
+        kept = {
+            name: rest
+            for name, cs in kept.items()
+            if (rest := [c for c in cs if id(c) not in guard.test_named])
+        }
     return kept
 
 

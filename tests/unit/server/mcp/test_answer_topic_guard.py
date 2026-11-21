@@ -291,6 +291,71 @@ async def test_a_name_only_tests_write_does_not_anchor_a_fixture(tmp_path):
     assert not any(h.get("_anchor_symbols") for h in out)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "question"),
+    [
+        (
+            "IncompleteCategoryFormWithFields",
+            "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        ),
+        ("DetailViewTest", "How does DetailViewTest resolve the template name?"),
+        ("test_named", "What does test_named depend on in its setup?"),
+    ],
+)
+async def test_a_test_class_the_question_names_anchors_its_file(tmp_path, name, question):
+    # The question writes the test's own name; nothing in production could be meant.
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", f"class {name}:\n    url = None\n")
+    row = _Sym(name, "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {name},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question=question,
+    )
+    assert out[0]["target_path"] == "tests/forms/tests.py"
+
+
+@pytest.mark.asyncio
+async def test_a_test_class_sharing_a_production_name_does_not_anchor(tmp_path):
+    _write(tmp_path, "core/forms.py", "x = IncompleteCategoryForm()\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryForm:\n    pass\n")
+    row = _Sym("IncompleteCategoryForm", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {"IncompleteCategoryForm"},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does IncompleteCategoryForm validate a missing url?",
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
+
+
+@pytest.mark.asyncio
+async def test_a_named_production_def_keeps_the_lead_over_a_named_test(tmp_path):
+    # The test is an example of the mixin the question also names.
+    _write(tmp_path, "views/detail.py", "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    rows = [
+        _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class"),
+        _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class"),
+    ]
+    out, _ = await _anchor_symbol_hits(
+        _Session(rows),
+        "r",
+        {"SingleObjectMixin", "DetailViewTest"},
+        [{"target_path": "views/base.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does DetailViewTest show SingleObjectMixin resolving the object?",
+    )
+    anchored = [h["target_path"] for h in out if h.get("_anchor_symbols")]
+    assert anchored == ["views/detail.py"]
+
+
 # --- a file the index left out on size --------------------------------------
 
 _BIG_VIEW = "App/Sources/Main/MainView.swift"
