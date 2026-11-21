@@ -756,3 +756,7 @@ def test_claude_config_dir_moves_every_claude_code_file(
     assert claude_code.user_mcp_config_path() == custom / ".claude.json"
     assert claude_code.settings_path() == custom / "settings.json"
     assert _claude_json_entries(repo)
+    # The plugin record and the "is Claude Code here" check follow it too.
+    assert claude_code.plugin_manifest_path() == custom / "plugins" / "installed_plugins.json"
+    assert not (home / ".claude").exists()
+    assert claude_code.ClaudeCodeTarget().is_present()
