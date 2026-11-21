@@ -22,7 +22,8 @@ responses carry a `stale_warning` when a file they served has changed.
 ## 1. Post-Commit Git Hook (Recommended)
 
 Runs `repowise update` in the background after every local commit. Your
-terminal is never blocked.
+terminal is never blocked. This hook is what updates the index; the agent
+hooks check freshness and flag stale results, and do not update it.
 
 `repowise init` installs the hook by default (interactive runs ask first;
 `--no-hook` skips it). To manage it yourself:
