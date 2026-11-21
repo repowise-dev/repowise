@@ -1506,6 +1506,12 @@ def _runs_python(root: str, found: _Units, paths: list[str], files: Mapping[str,
     return _has_pytest_suite(names, rel, {r: t for p, t in files.items() if (r := _under(root, p)) is not None})
 
 
+def _collects_tests(paths: list[str], files: Mapping[str, str]) -> bool:
+    """Whether a pytest run over *paths* finds a test file by its ``python_files`` names."""
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    return any(p.endswith(".py") and roots.may_collect_name(p) for p in paths)
+
+
 def _nested(root: str, runs: Iterable[str]) -> tuple[str, ...]:
     """The outermost of the unit roots *runs* below *root*, relative to it."""
     below = sorted(r for other in runs if (r := _under(root, other)))
@@ -1545,6 +1551,8 @@ def detect_stacks(
                     # A nested unit that runs its own tests is not this unit's to collect or cover.
                     nested = _nested(root, python_runs)
                     rel = [p for p in rel if not any(p.startswith(f"{n}/") for n in nested)]
+                    if nested and not _collects_tests(rel, texts):
+                        continue  # its only tests were the nested units'; the run would collect none
                     build = partial(_python, nested=nested)
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":

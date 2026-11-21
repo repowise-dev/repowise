@@ -528,7 +528,7 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
     assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
 
-@pytest.mark.parametrize("name", ["enterprise", "enterprise edition"])
+@pytest.mark.parametrize("name", ["enterprise", "enterprise edition", "enterprise(ee)&x@2"])
 def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path, name: str) -> None:
     # The nested unit's conftest imports what only its own install brings.
     _python(tmp_path)

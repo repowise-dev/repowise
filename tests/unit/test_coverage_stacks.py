@@ -942,6 +942,12 @@ def test_a_named_tests_directory_needs_no_ignore():
     assert found[""].test.startswith("pytest tests --cov=app ") and found[""].test_ignores == ()
 
 
+def test_a_root_whose_only_tests_are_a_nested_units_prints_no_run():
+    # A root pytest.ini marks a suite, but every test sits in the nested unit.
+    tree = {**{p: t for p, t in _NESTED.items() if p != "tests/test_app.py"}, "pytest.ini": "[pytest]\n"}
+    assert set(_python_by_root(tree)) == {"enterprise"}
+
+
 def test_a_workspace_member_the_root_runs_is_not_ignored():
     tree = {**_NESTED, "pyproject.toml": '[project]\nname = "app"\n[tool.uv.workspace]\nmembers = ["enterprise"]\n',
             "uv.lock": ""}

@@ -458,9 +458,11 @@ def _python_targets(
         # a file option's value such as ``--cov-config .coveragerc`` is neither):
         # then they pick what runs. The plugin keeps the failed count for the
         # profile (``n``). A nested unit that runs its own tests stays ignored
-        # either way; its directory may hold a space, which the quoted recipe keeps.
+        # either way: inside the recipe's double quotes only a quote, ``$``, a
+        # backtick or a backslash in its name would break the shell. Ceiling: a
+        # directory holding one of those is not ignored by the profile.
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
-        ignores = [f"--ignore={p}" for p in stack.test_ignores if _SAFE_PATH.fullmatch(p.replace(" ", "_"))]
+        ignores = [f"--ignore={p}" for p in stack.test_ignores if not re.search(r"[\"'$`\\]", p)]
         tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
             "a=sys.argv[1:];"
