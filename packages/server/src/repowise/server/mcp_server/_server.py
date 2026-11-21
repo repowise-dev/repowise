@@ -833,9 +833,10 @@ class _RepowiseMCP(FastMCP):
         from repowise.server.mcp_server._tool_selection import (
             mark_always_loaded,
             session_tool_names,
+            single_repo_schemas,
         )
 
-        tools = mark_always_loaded(await super().list_tools())
+        tools = single_repo_schemas(mark_always_loaded(await super().list_tools()))
         client = self._client_slug()
         if client is not None:
             names = session_tool_names(client)
@@ -887,6 +888,11 @@ mcp = _RepowiseMCP(
 #: the boot selection; None (no selection yet) sends the boot text to all.
 _client_instructions: Callable[[str], str] | None = None
 
+#: Clients that repeat the instructions under every tool they list (Codex
+#: appends them to each tool it discovers), so a full text is paid once per
+#: tool. They get the brief text: the first line and the setup line.
+_PER_TOOL_INSTRUCTION_CLIENTS = frozenset({"codex"})
+
 
 def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set[str]:
     """Trim *mcp* to the selected surface and set the instructions it sends.
@@ -902,16 +908,23 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     workspace = bool(_tool_selection._selected_surface and _tool_selection._selected_surface[0])
     repo_line = decisions_line(repo_path)
 
-    def text(served: Iterable[str]) -> str:
+    def text(served: Iterable[str], *, brief: bool = False) -> str:
         return server_instructions(
-            served, repo_line=repo_line, workspace=workspace, extra=_setup_extra(repo_path)
+            served,
+            repo_line=repo_line,
+            workspace=workspace,
+            extra=_setup_extra(repo_path),
+            brief=brief,
         )
 
     mcp._mcp_server.instructions = text(enabled)
 
     def for_client(client: str) -> str:
         listed = _tool_selection.session_tool_names(client)
-        return text(enabled if listed is None else listed)
+        return text(
+            enabled if listed is None else listed,
+            brief=client in _PER_TOOL_INSTRUCTION_CLIENTS,
+        )
 
     _client_instructions = for_client
     return enabled

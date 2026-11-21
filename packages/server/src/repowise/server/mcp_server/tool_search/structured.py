@@ -345,32 +345,48 @@ def _exact_match_note(
     fuzzy_omitted: int,
     has_results: bool,
     grep_hint: str | None,
+    filtered: tuple[str, list[str]] | None = None,
 ) -> str | None:
-    """The note qualifying an identifier query's results, if one is owed."""
+    """The note qualifying an identifier query's results, if one is owed.
+
+    *filtered* is the call's filter and the named symbols it removed: those
+    are indexed, so the note says the filter hid them rather than doubt the
+    spelling.
+    """
+    hidden = filtered[1] if filtered else []
+    notes = []
+    if hidden:
+        shown = ", ".join(repr(c) for c in hidden[:3])
+        verb, them = ("is", "it") if len(hidden) == 1 else ("are", "them")
+        notes.append(
+            f"{shown} {verb} indexed but not as {filtered[0]}; drop that filter to see {them}."
+        )
+        candidates = [c for c in candidates if c not in hidden]
+        missing = [c for c in missing if c not in hidden]
     if missing:
         shown = ", ".join(repr(c) for c in missing[:3])
         # An empty window's grep_hint already carries the sweep advice.
         pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
         sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
-        return (
+        notes.append(
             f"No indexed symbol is named {shown}, so no symbol is returned "
             f"for it.{pages} Recheck the spelling, or search a shorter part "
             f"of the name.{sweep}"
         )
-    if not exact:
+    elif not exact and candidates:
         shown = ", ".join(repr(c) for c in candidates[:3])
-        return (
+        notes.append(
             f"No indexed symbol exactly matches {shown}. The results are "
             "fuzzy neighbours ranked by token overlap — confirm a hit names "
             "what you meant before relying on it. If you expected an exact "
             "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
         )
-    if fuzzy_omitted:
-        return (
+    elif fuzzy_omitted and not hidden:
+        notes.append(
             f"{fuzzy_omitted} other symbols contain this name; search a "
             "longer or partial name to list them."
         )
-    return None
+    return " ".join(notes) or None
 
 
 def _match_named(
@@ -390,12 +406,31 @@ def _match_named(
     return exact, missing
 
 
+def _filtered_names(
+    plan: _SearchPlan, pools: _Pools, candidates: list[str]
+) -> tuple[str, list[str]] | None:
+    """The call's kind filter and the named symbols it removed: indexed names
+    no returned symbol matches. None without a filter or such a name."""
+    label = ", ".join(
+        f"{arg}={value}"
+        for arg, value in (("kind", plan.kind), ("symbol_kind", plan.symbol_kind))
+        if value
+    )
+    if not label or plan.names is None:
+        return None
+    hidden = [
+        c for c in candidates if c in plan.names and not _has_exact_symbol([c], pools.symbols)
+    ]
+    return (label, hidden) if hidden else None
+
+
 def _attach_match_notes(
     response: dict,
     candidates: list[str],
     exact: bool,
     missing: list[str],
     grep_hint: str | None,
+    filtered: tuple[str, list[str]] | None = None,
 ) -> None:
     """Exact-match flag, its note, and the grep fallback for an empty window."""
     results = response["results"]
@@ -409,6 +444,7 @@ def _attach_match_notes(
             response.get("fuzzy_omitted", 0),
             bool(results),
             grep_hint,
+            filtered,
         )
         if note:
             response["note"] = note
@@ -471,7 +507,9 @@ async def _structured_search(
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
-    _attach_match_notes(response, candidates, exact, missing, grep_hint)
+    _attach_match_notes(
+        response, candidates, exact, missing, grep_hint, _filtered_names(plan, pools, candidates)
+    )
     # Symbol mode ranks every candidate, so its pool can tell one definition
     # from two; hybrid fetches a window and cannot.
     if plan.mode == "symbol" and repository is not None and response.get("exact_match"):

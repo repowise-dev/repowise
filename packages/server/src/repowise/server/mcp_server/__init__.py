@@ -444,7 +444,7 @@ def _register_tools() -> None:
     load_plugins()  # plugin tools register before the surface is attached
 
 
-def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
+def tool_definitions(names: Iterable[str], *, workspace: bool = True) -> list[dict[str, Any]]:
     """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
 
     Built from the tool registry with the server's own wrapping and schema
@@ -452,11 +452,14 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
     server lists them; a name with no registered tool is skipped. The
     ``mcp.always_load`` hint is a per-repository setting, so it is not here;
     a server that honours it adds it per session (``mark_always_loaded``).
+    ``workspace=False`` lists them as a single-repo server does, with no
+    ``repo="all"`` offer.
     """
     from mcp.server.fastmcp.tools import Tool
     from mcp.types import Tool as MCPTool
 
     from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import without_repo_all
 
     _register_tools()
     wanted = set(names)
@@ -469,7 +472,7 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
             )
             _slim_tool(tool)
             tools[entry.name] = tool
-    return [
+    listed = [
         MCPTool(
             name=tool.name,
             title=tool.title,
@@ -479,9 +482,12 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
             annotations=tool.annotations,
             icons=tool.icons,
             _meta=tool.meta,
-        ).model_dump(by_alias=True, mode="json", exclude_none=True)
+        )
         for _, tool in sorted(tools.items())
     ]
+    if not workspace:
+        listed = [without_repo_all(tool) for tool in listed]
+    return [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in listed]
 
 
 def ensure_full_surface() -> Any:

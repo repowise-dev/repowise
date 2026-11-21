@@ -10,6 +10,7 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server import tool_search as _pkg
 from repowise.server.mcp_server._answer_pipeline.leg_record import (
     begin_leg_record,
@@ -86,6 +87,20 @@ def _query_from_pattern(query: str, pattern: str | None, ignored: list[dict[str,
             {"argument": "pattern", "values": [pattern], "valid": [], "superseded_by": "query"}
         )
     return query
+
+
+#: The most results one call returns. A larger ``limit`` is cut to it and
+#: reported: past it the rows are the long ranked tail, and the response
+#: budget would shed them anyway, at several times the bytes.
+MAX_LIMIT = 20
+
+
+def _clamp_limit(limit: int, ignored: list[dict[str, Any]]) -> int:
+    """*limit* capped at :data:`MAX_LIMIT`; a cut is reported in *ignored*."""
+    if limit <= MAX_LIMIT:
+        return limit
+    ignored.append({"argument": "limit", "values": [limit], "clamped_to": MAX_LIMIT})
+    return MAX_LIMIT
 
 
 def _resolve_kind_and_mode(
@@ -228,7 +243,7 @@ async def search_codebase(
 
     Args:
         query: Identifier, `a|b` alternation, regex, path, or natural language.
-        limit: Max results.
+        limit: Max results, up to 20.
         mode: auto | symbol | path | concept | hybrid.
         kind: implementation | test | config | doc.
         symbol_kind: function | class | method | ...
@@ -250,6 +265,10 @@ async def search_codebase(
             },
         )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    limit = _clamp_limit(limit, ignored)
+    if repo == "all" and _state._registry is None:
+        # One repository: "all" is that repository, so take the single-repo path.
+        repo = None
     begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.

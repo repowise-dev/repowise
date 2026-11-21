@@ -35,6 +35,16 @@ async def test_search_codebase(setup_mcp):
     assert len(result["results"]) >= 1
 
 
+def _federate_one_repo(monkeypatch):
+    """Keep ``repo="all"`` on the fan-out path over the one fixture repo, which
+    a single-repo server otherwise serves as a plain search."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search import tool
+
+    monkeypatch.setattr(tool, "_state", SimpleNamespace(_registry=object()))
+
+
 def _mk_result(page_id, title, page_type, target_path, score):
     from repowise.core.persistence.search import SearchResult
 
@@ -1171,10 +1181,13 @@ class TestEmptyConceptRecoveryHint:
         assert "grep_hint" not in result
 
     @pytest.mark.asyncio
-    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+    async def test_empty_federated_concept_query_carries_recovery_hint(
+        self, setup_mcp, monkeypatch
+    ):
         from repowise.server.mcp_server import search_codebase
         from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
 
+        _federate_one_repo(monkeypatch)
         result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
         assert result["results"] == []
         assert result["hint"] == NO_HITS_RECOVERY_HINT
@@ -2059,9 +2072,10 @@ class TestPathlessPagesInCodeLocationModes:
         assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
-    async def test_federated_rows_carry_path(self, setup_mcp):
+    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
         from repowise.server.mcp_server import search_codebase
 
+        _federate_one_repo(monkeypatch)
         await self._seed()
         res = await search_codebase("listing releases in order", mode="concept", repo="all")
         by_type = {r["page_type"]: r for r in res["results"]}
@@ -2511,3 +2525,41 @@ def test_a_path_query_naming_one_directory_names_its_files_call():
     assert _named_directory("jsx", paths) == "src/jsx"
     assert _named_directory("url.ts", paths) is None
     assert _named_directory("src/*", paths) is None
+
+
+@pytest.mark.asyncio
+async def test_a_kind_filter_that_removes_a_named_symbol_says_so(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    res = await search_codebase("AuthService", kind="test", mode="symbol")
+    assert not [r for r in res["results"] if r.get("type") == "symbol"]
+    assert "'AuthService' is indexed but not as kind=test" in res["note"]
+    assert "Recheck the spelling" not in res["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_limit_past_the_cap_is_cut_and_reported(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+    from repowise.server.mcp_server.tool_search.tool import MAX_LIMIT
+
+    res = await search_codebase("AuthService", limit=MAX_LIMIT + 80)
+    assert res["ignored_arguments"] == [
+        {"argument": "limit", "values": [MAX_LIMIT + 80], "clamped_to": MAX_LIMIT}
+    ]
+    assert "ignored_arguments" not in await search_codebase("AuthService", limit=MAX_LIMIT)
+
+
+@pytest.mark.asyncio
+async def test_repo_all_on_a_single_repo_server_searches_that_repo(setup_mcp):
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import search_codebase
+
+    await mcp_mod._vector_store.embed_and_upsert(
+        "file_page:src/auth/service.py",
+        "Auth Service — Main authentication service class",
+        {"title": "Auth Service", "page_type": "file_page", "target_path": "src/auth/service.py"},
+    )
+    every = await search_codebase("authentication service", repo="all")
+    one = await search_codebase("authentication service")
+    assert every["results"] == one["results"]
+    assert not [r for r in every["results"] if "repo" in r]
