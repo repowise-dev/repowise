@@ -92,7 +92,7 @@ def _python(root: Path, *, scripts: str = 'app = "app.cli:main"\n', extra: str =
 
 
 def _targets(root: Path, inputs: RuntimeInputs | None = None, commit: str | None = SHA) -> list[dict]:
-    (stack,) = detect_repo_stacks(root)
+    (stack,) = [s for s in detect_repo_stacks(root) if not s.root]
     return runtime_targets(stack, root, inputs or RuntimeInputs(), commit)
 
 
@@ -524,6 +524,24 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
     code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
 
     assert stack.test.startswith("pytest tests/unit ") and stack.test_paths == ("tests/unit",)
+    assert code == 0
+    assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
+
+
+@pytest.mark.parametrize("name", ["enterprise", "enterprise edition", "enterprise(ee)&x@2"])
+def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path, name: str) -> None:
+    # The nested unit's conftest imports what only its own install brings.
+    _python(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+    nested = tmp_path / name
+    (nested / "tests").mkdir(parents=True)
+    (nested / "pyproject.toml").write_text('[project]\nname = "enterprise"\n')
+    (nested / "tests" / "conftest.py").write_text("import missing_enterprise_server\n")
+    (nested / "tests" / "test_e.py").write_text("def test_e():\n    pass\n")
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
     assert code == 0
     assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
