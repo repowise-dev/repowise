@@ -279,15 +279,16 @@ def rebase_test_entries(
 
     *base* is the repo-relative directory the report was read from. A runner in a
     package below the repository root names test files from where it ran and writes
-    its report there (Vitest, which has no option to prefix them); a path the index
-    holds as given is kept.
+    its report there (Vitest, which has no option to prefix them). The joined path wins
+    when the index holds it, even beside a root file of the same name; a path that is
+    already repo-relative (``web/src/x.test.ts``) joins to none and is kept.
     """
     if doc.kind != "test_timing" or not base:
         return doc
     entries = []
     for entry in doc.entries:
         path = entry.get("test_file")
-        moved = f"{base}/{path}" if path and path not in files else None
+        moved = f"{base}/{path}" if path else None
         test_id = entry["test_id"]
         # The id names the file first (``path::name``); one that does not is left whole.
         if moved in files and test_id.startswith(f"{path}::"):

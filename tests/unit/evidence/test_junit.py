@@ -287,9 +287,11 @@ def test_a_unit_below_the_root_names_its_tests_from_the_reports_directory() -> N
     assert (entry["test_file"], entry["location"]["path"]) == ("web/src/cart.test.ts",) * 2
 
 
-def test_a_path_the_index_holds_as_given_is_kept() -> None:
+def test_the_reports_directory_wins_over_a_root_file_of_the_same_name() -> None:
     files = {"src/cart.test.ts", "web/src/cart.test.ts"}
-    assert rebase_test_entries(_doc(VITEST), files, "web").entries[0]["test_file"] == "src/cart.test.ts"
+    assert rebase_test_entries(_doc(VITEST), files, "web").entries[0]["test_file"] == "web/src/cart.test.ts"
+    # Only the root file: the path is kept as given.
+    assert rebase_test_entries(_doc(VITEST), {"src/cart.test.ts"}, "web").entries[0]["test_file"] == "src/cart.test.ts"
     # Neither path indexed: nothing to rebase onto.
     assert rebase_test_entries(_doc(VITEST), set(), "web").entries[0]["test_file"] == "src/cart.test.ts"
 
