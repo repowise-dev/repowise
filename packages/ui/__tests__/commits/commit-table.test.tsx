@@ -43,6 +43,8 @@ describe("commit table empty states", () => {
       subsystems_changed: 1,
       entropy: 0,
       is_fix: false,
+      change_risk_score: 2.4,
+      change_risk_level: "low",
       risk_percentile: 50,
       review_priority: "moderate",
     };

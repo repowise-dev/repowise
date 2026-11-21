@@ -18,10 +18,16 @@ The ratio itself moves with the platform: the costliest gated dialect
 one machine and up to 0.48 on a CI runner, while a heavy dialect with its
 gate removed measures 1.8 to 3.0. The budget sits between the two bands, so
 a dropped gate still fails and a busy runner does not.
+
+A shared runner can still stall one side for a whole measurement, so each
+side is warmed up first, garbage collection is held off while timing, and a
+dialect fails only when it is over budget in every one of a few independent
+measurements. A dropped gate is over budget in all of them.
 """
 
 from __future__ import annotations
 
+import gc
 import re
 import time
 from pathlib import Path
@@ -36,6 +42,8 @@ _ROOT = Path(__file__).resolve().parents[3] / "packages"
 _SAMPLES = (("core/src/repowise/core", "*.py", ".py"), ("ui/src", "*.tsx", ".tsx"))
 _PER_SAMPLE = 40
 _ROUNDS = 5
+#: Independent measurements; a dialect fails only when every one is over budget.
+_ATTEMPTS = 3
 #: A dialect may cost at most this share of the reference scan.
 _BUDGET = 0.6
 
@@ -74,6 +82,27 @@ def _timed(run) -> float:
     return time.perf_counter() - start
 
 
+def _best_rounds(run, reference) -> tuple[float, float]:
+    """The best round of *run* and of *reference*, warmed up and interleaved.
+
+    Interleaved, so a stall on a busy worker hits both sides of one round.
+    Collection is held off so a pause lands on neither side.
+    """
+    run()
+    reference()
+    spent = ref = float("inf")
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(_ROUNDS):
+            ref = min(ref, _timed(reference))
+            spent = min(spent, _timed(run))
+    finally:
+        if enabled:
+            gc.enable()
+    return spent, ref
+
+
 @pytest.fixture(scope="module")
 def texts() -> dict[str, list[str]]:
     found = _texts()
@@ -106,12 +135,10 @@ def test_a_dialect_costs_less_than_an_ungated_scan(dialect, texts) -> None:
             for i, text in enumerate(files):
                 run_dialect(dialect, ScanContext("svc", f"src/f{i}{suffix}", suffix, text))
 
-        # Interleaved, so a stall on a busy worker hits both sides of one round,
-        # and the best round of each is compared.
-        spent = ref = float("inf")
-        for _ in range(_ROUNDS):
-            ref = min(ref, _timed(reference))
-            spent = min(spent, _timed(run))
+        for _ in range(_ATTEMPTS):
+            spent, ref = _best_rounds(run, reference)
+            if spent <= _BUDGET * ref:
+                break
         assert spent <= _BUDGET * ref, (
             f"{dialect.name} took {spent * 1e3:.1f} ms on {suffix} where an ungated scan of the "
             f"same {len(files)} files took {ref * 1e3:.1f} ms: check its `requires` gate"

@@ -162,16 +162,18 @@ def _capture_prompt(repo_path: Path, session_id: str, sha: str, message: str) ->
     if _already_recorded(repo_path, sha):
         return None
 
-    from .read_state import _load_session_state, _save_session_state
+    from .read_state import _load_shared_state, _save_shared_state
 
-    state = _load_session_state(repo_path, session_id)
+    # One ask per session, subagents included, is the whole cost control on a
+    # hook nobody can decline, so it lives in the state every window shares.
+    state = _load_shared_state(repo_path, session_id)
     if state.get("capture_prompted"):
         return None
 
     from .command import _claim_emission
 
-    # Both hooks fire on one tool event, and the session state is a
-    # read-modify-write of a file the Read surfaces also own. Claiming first
+    # Both hooks fire on one tool event, and the shared state is a
+    # read-modify-write of a file the Edit surface also owns. Claiming first
     # means the loser writes nothing: it neither clobbers that file nor spends
     # the session's one ask on a prompt it will not return.
     if not _claim_emission("decision-capture", f"{session_id}{chr(0)}{sha}"):
@@ -179,7 +181,7 @@ def _capture_prompt(repo_path: Path, session_id: str, sha: str, message: str) ->
     # Claimed rather than confirmed: a session that saw the prompt and ignored
     # it has still had its ask, and re-asking is the tax.
     state["capture_prompted"] = True
-    if not _save_session_state(repo_path, state):
+    if not _save_shared_state(repo_path, state):
         return None
     return _PROMPT.format(sha=sha[:8])
 

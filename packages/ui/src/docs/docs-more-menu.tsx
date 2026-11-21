@@ -23,6 +23,13 @@ export interface DocsMenuItem {
   /** A link to the view on screen: marked `aria-current="page"`, and the
    *  trigger reads as active so the way back is visible from the bar. */
   current?: boolean;
+  /** A second, quieter line under the label, e.g. why the item opens a step first. */
+  description?: string;
+  /**
+   * Hand focus back to the trigger on select. For an action that finishes in
+   * place (a copy), not one that opens a dialog of its own.
+   */
+  restoresFocus?: boolean;
 }
 
 /** Router-aware anchor for in-app link items (Next's `Link`, say). */
@@ -83,7 +90,16 @@ function ItemContent({ item }: { item: DocsMenuItem }) {
   return (
     <>
       {Icon ? <Icon aria-hidden className="h-3.5 w-3.5 shrink-0" /> : null}
-      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      {item.description ? (
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{item.label}</span>
+          <span className="block whitespace-normal text-2xs text-[var(--color-text-tertiary)]">
+            {item.description}
+          </span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      )}
     </>
   );
 }
@@ -139,7 +155,7 @@ function MenuItem({
       disabled={item.disabled}
       className={itemClass(item)}
       onClick={() => {
-        close(true);
+        close(!item.restoresFocus);
         item.onSelect?.();
       }}
     >
@@ -161,6 +177,7 @@ export function DocsMoreMenu({
   groups,
   label = "More",
   busy = false,
+  iconOnly = false,
   LinkComponent,
 }: {
   groups: DocsMenuGroup[];
@@ -170,6 +187,11 @@ export function DocsMoreMenu({
   label?: string;
   /** Shows a spinner on the trigger while a menu action runs (an export). */
   busy?: boolean;
+  /**
+   * A quiet icon-only trigger at every width, for a per-row menu; `label`
+   * is then only its accessible name.
+   */
+  iconOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // Set when an item ran an action: that action may open a dialog, and the
@@ -192,12 +214,15 @@ export function DocsMoreMenu({
           aria-expanded={open}
           aria-label={label}
           className={cn(
-            "flex h-7 shrink-0 items-center gap-1.5 rounded-md border bg-[var(--color-bg-elevated)] px-2 text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] sm:px-2.5",
-            // A view inside the menu is on screen: the trigger takes the
-            // active-tab look, so the bar still says where the reader is.
-            current
-              ? "border-[var(--color-border-hover)] bg-[var(--color-bg-surface)] font-medium text-[var(--color-text-primary)] shadow-sm"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)]",
+            "flex h-7 shrink-0 items-center gap-1.5 rounded-md border text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
+            iconOnly
+              ? // 28px beside the row's text, a 40px touch target on phones.
+                "w-7 justify-center max-sm:h-10 max-sm:w-10 border-transparent text-[var(--color-text-secondary)] hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] aria-expanded:border-[var(--color-border-default)] aria-expanded:bg-[var(--color-bg-elevated)]"
+              : // A view inside the menu is on screen: the trigger takes the
+                // active-tab look, so the bar still says where the reader is.
+                current
+                ? "border-[var(--color-border-hover)] bg-[var(--color-bg-surface)] px-2 font-medium text-[var(--color-text-primary)] shadow-sm sm:px-2.5"
+                : "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 text-[var(--color-text-secondary)] sm:px-2.5",
           )}
         >
           {busy ? (
@@ -205,7 +230,7 @@ export function DocsMoreMenu({
           ) : (
             <MoreHorizontal aria-hidden className="h-3.5 w-3.5" />
           )}
-          <span className="hidden sm:inline">{label}</span>
+          {iconOnly ? null : <span className="hidden sm:inline">{label}</span>}
         </button>
       </PopoverTrigger>
       <PopoverContent

@@ -684,6 +684,7 @@ async def test_preflight_probe_failure_and_file_count_failure(
     assert resp.json() == {
         "provider": {
             "ok": False,
+            "configured": True,
             "name": "mock",
             "model": "claude-sonnet-4-6",
             "error": "401 bad key",
@@ -701,6 +702,39 @@ async def test_preflight_probe_failure_and_file_count_failure(
         },
     }
     assert cost.call_args.args[1:] == ("mock", "claude-sonnet-4-6")
+
+
+@pytest.mark.asyncio
+async def test_preflight_tells_no_provider_from_one_that_fails_to_load(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    """No provider chosen reads as not configured (the index runs without a
+    model); a chosen provider that fails to build stays configured."""
+    from types import SimpleNamespace
+
+    from repowise.server.provider_config import NoProviderConfiguredError
+
+    repo = await create_test_repo(client, tmp_path)
+    cases = [
+        (NoProviderConfiguredError("No active provider configured."), None, False),
+        (RuntimeError("bad base URL"), "openai", True),
+    ]
+    for error, chosen, configured in cases:
+        with (
+            patch(
+                "repowise.server.provider_config.get_chat_provider_instance",
+                side_effect=error,
+            ),
+            patch(
+                "repowise.server.provider_config.resolve_for_repo",
+                return_value=SimpleNamespace(provider=chosen),
+            ),
+        ):
+            resp = await client.post(f"/api/repos/{repo['id']}/preflight")
+        provider = resp.json()["provider"]
+        assert provider["ok"] is False
+        assert provider["name"] is None
+        assert provider["configured"] is configured
 
 
 # ---------------------------------------------------------------------------

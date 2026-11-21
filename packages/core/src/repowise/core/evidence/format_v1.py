@@ -13,6 +13,10 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
       "unit": "samples",                  # profile: the unit of every value
       "total": 5300,                      # profile, optional: the whole run's value
       "explained": 580,                   # profile, optional: value with a repo frame on the stack
+      "repo_self": 310,                   # profile, optional: value in production repo code itself
+      "waits": 900,                       # profile, optional: value blocked waiting
+      "libraries": 120,                   # profile, optional: value in dependencies
+      "total_samples": 5300,              # profile, optional: samples in the whole run, any unit
       "skipped": {"outside_repo": 812},   # optional: entries the converter dropped, by reason
       "symbols": [{"path": "src/app/cli.py", "function": "build", "line": 40,
                    "self": 12, "total": 410}]
@@ -22,7 +26,15 @@ The entry list is named by the kind: ``symbols`` (profile), ``benchmarks``,
 ``tests`` (test_timing) or ``queries`` (query_count). A code location is
 ``path`` (repo-relative POSIX), ``function`` (the qualified name, or the
 symbol's id after its file as a test runner names it: ``TestCache::test_get``)
-and ``line`` (where the function starts). ``"exact": true`` says ``function``
+and ``line`` (where the function starts). A profile entry's ``self`` is what
+the function costs: its own time and the built-ins and libraries it called,
+never time spent waiting; ``total`` adds its callees in the repo.
+A test entry with no ``path`` may carry ``classname``, the dotted name a
+JUnit report gives it (``tests.unit.test_x.TestC``): ingest places it on the
+indexed file that name leads to. ``"first_in_class": true`` marks the first
+test a run reports for its class, whose time may include fixtures the whole
+class shares.
+``"exact": true`` says ``function``
 is the symbol's own name, so it never falls back to a bare-name match (a
 benchmark named by its node id). Paths are repo-relative, and the
 document carries no labels, environment variables or command lines: only
@@ -91,6 +103,12 @@ class EvidenceDocument:
     unit: str | None
     total: float | None
     explained: float | None
+    #: The run's split (``profile_convert``): production repo code itself, waits, libraries.
+    repo_self: float | None
+    waits: float | None
+    libraries: float | None
+    #: Samples in the whole run, whatever the unit; ``None`` when not counted.
+    total_samples: int | None
     #: One dict per valid entry, in document order (see ``_ENTRY_READERS``).
     entries: tuple[dict[str, Any], ...]
     #: Entries not read, by reason: the converter's own counts plus this file's.
@@ -122,6 +140,10 @@ def parse_evidence(text: str) -> EvidenceDocument:
         unit=unit,
         total=_amount(data.get("total")),
         explained=_amount(data.get("explained")),
+        repo_self=_amount(data.get("repo_self")),
+        waits=_amount(data.get("waits")),
+        libraries=_amount(data.get("libraries")),
+        total_samples=_count(data.get("total_samples")),
         entries=tuple(entries),
         skipped=dict(skipped),
     )
@@ -342,30 +364,39 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
         return None, "no_value"
     where, _ = _location(raw)
     test_file, _ = repo_relative_path(raw.get("path"))
+    classname, _ = _name(raw.get("classname")) if test_file is None else (None, None)
     return {
         "test_id": test_id,
         "test_file": test_file,
         "location": where,
         "duration_s": duration,
         "outcome": outcome,
+        "classname": classname,
+        "first_in_class": raw["first_in_class"] if isinstance(raw.get("first_in_class"), bool) else None,
     }, None
 
 
-def _query_scope(raw: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
-    """``((kind, id), None)`` for the test or request a count belongs to."""
+def _query_scope(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, str, int | None] | None, str | None]:
+    """``((kind, id, items), None)`` for the test or request a count belongs to.
+
+    ``items`` is how many items the scope ran over (the input size), when the
+    run says; it is what lets two scopes show a count growing or staying flat.
+    """
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
     scope_kind = _member(scope.get("kind"), QUERY_SCOPES)
     scope_id, reason = _name(scope.get("id"))
     if scope_kind is None or scope_id is None:
         return None, "no_scope" if reason in (None, "no_name") else reason
-    return (scope_kind, scope_id), None
+    return (scope_kind, scope_id, _count(scope.get("items"))), None
 
 
 def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     scope, reason = _query_scope(raw)
     if scope is None:
         return None, reason
-    scope_kind, scope_id = scope
+    scope_kind, scope_id, items = scope
     site, reason = _location(raw.get("site"))
     if site is None:
         return None, reason
@@ -378,6 +409,7 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
     return {
         "scope_kind": scope_kind,
         "scope_id": scope_id,
+        "scope_items": items,
         **site,
         "statement_fp": fp,
         "query_count": count,

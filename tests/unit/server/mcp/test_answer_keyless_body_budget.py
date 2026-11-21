@@ -154,8 +154,21 @@ def test_keyless_evidence_is_the_default_shape(tmp_path: Path) -> None:
     )
     default = project_answer_payload(copy.deepcopy(raw), question="q", repo_root=tmp_path)
 
-    assert served["_meta"].pop("ignored_arguments") == {"include": ["evidence"]}
+    assert served["_meta"].pop("ignored_arguments") == [
+        {"argument": "include", "values": ["evidence"], "requires": "an LLM provider; Read candidate_files"}
+    ]
     assert json.dumps(served, sort_keys=True) == json.dumps(default, sort_keys=True)
+
+
+def test_keyless_evidence_and_a_typo_are_named_apart(tmp_path: Path) -> None:
+    served = project_answer_payload(
+        _raw(tmp_path), question="q", include=["evidense", "evidence"], repo_root=tmp_path
+    )
+
+    assert served["_meta"]["ignored_arguments"] == [
+        {"argument": "include", "values": ["evidense"], "valid": ["diagnostics", "evidence"]},
+        {"argument": "include", "values": ["evidence"], "requires": "an LLM provider; Read candidate_files"},
+    ]
 
 
 def test_a_form_feed_inside_a_body_does_not_shift_its_lines(tmp_path: Path) -> None:

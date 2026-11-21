@@ -86,12 +86,26 @@ def select_filter(
     return chosen
 
 
+# A leading ``cd <dir> &&`` (or ``;``, or cmd.exe's ``&``): the shape agents use
+# to run a command somewhere else. The matchers anchor at the start of the
+# command, so the segment after it is the one to match. cmd.exe's
+# ``cd /d <dir>`` (change drive too) is the same shape with a switch, and its
+# cd takes an unquoted path with spaces up to the separator.
+_CD_PREFIX_RE = re.compile(
+    r"""^cd\s+(?:/d\s+)?(?:"[^"]*"|'[^']*'|[^\s;&|][^;&|]*?)\s*(?:&&?|;)\s*"""
+)
+
+
 def _by_command(command: str, candidates: list[OutputFilter]) -> OutputFilter | None:
     normalized = normalize_command(command) if command else ""
-    if normalized:
+    while normalized:
         for f in candidates:
             if f.matches_command(normalized):
                 return f
+        stripped = _CD_PREFIX_RE.sub("", normalized, count=1)
+        if stripped == normalized:
+            break
+        normalized = normalize_command(stripped)
     return None
 
 

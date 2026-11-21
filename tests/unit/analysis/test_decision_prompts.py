@@ -44,5 +44,16 @@ def test_the_rationale_field_is_asked_for_verbatim(prompt: str) -> None:
     assert "infer" not in line
 
 
+@pytest.mark.parametrize("prompt", [GIT_ARCHAEOLOGY_PROMPT, PR_BODY_MINING_PROMPT])
+def test_both_commit_prompts_say_a_subject_or_changelog_line_is_not_a_decision(
+    prompt: str,
+) -> None:
+    flat = " ".join(prompt.split())
+    assert "A commit subject line" in flat
+    assert "no rule or choice the code keeps following" in flat
+    # Still a template with only its own placeholder.
+    assert prompt.format(commits_block="", bodies_block="")
+
+
 def test_the_system_prompt_forbids_rewording_the_rationale() -> None:
     assert "decision and rationale fields word for word" in _SYSTEM_PROMPT

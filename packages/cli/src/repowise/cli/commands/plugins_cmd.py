@@ -20,6 +20,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",
     "repowise.core.pipeline.index_persistence",
+    "repowise.core.report.first_look.sections",
     "repowise.core.report.sections",
     "repowise.core.report.render",
     "repowise.core.suspects",

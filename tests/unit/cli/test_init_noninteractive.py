@@ -22,6 +22,11 @@ from repowise.cli.helpers import NO_SAVE_KEY_ENV, save_config
 from repowise.cli.main import cli
 
 
+def _a_source_file(root) -> None:
+    """init stops on a folder with nothing to index, so give it one file."""
+    (root / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+
+
 class TestInteractiveGate:
     """The questionnaire gate: --resume must skip it (issue #2098)."""
 
@@ -194,6 +199,7 @@ class TestDocsFlag:
             "REPOWISE_PROVIDER",
         ):
             monkeypatch.delenv(var, raising=False)
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "deterministic", "--yes"])
         assert result.exit_code == 0, result.output
 
@@ -226,6 +232,7 @@ class TestProseFlag:
 
     def test_no_prose_needs_no_key(self, runner, tmp_path, keyless_env):
         """`--no-prose` is the current spelling of --index-only: a free wiki."""
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
         assert result.exit_code == 0, result.output
 
@@ -253,6 +260,7 @@ class TestProseFlag:
             "repowise.core.providers.llm.registry",
         ):
             monkeypatch.setattr(f"{module}.get_provider", factory)
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
         assert result.exit_code == 0, result.output
         factory.assert_not_called()
@@ -261,6 +269,7 @@ class TestProseFlag:
 
     def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
         """The deprecated alias still works and says so."""
+        _a_source_file(tmp_path)
         result = runner.invoke(cli, ["init", str(tmp_path), "--index-only", "--yes"])
         assert result.exit_code == 0, result.output
         assert "deprecated" in result.output.lower()
@@ -438,3 +447,19 @@ class TestAdvancedExcludeMergesWithFlag:
     def test_no_flag_uses_typed_patterns(self, tmp_path):
         got = self._exclude_patterns(tmp_path, [], ("build/",))
         assert got == ["build/"]
+
+
+def test_an_empty_folder_stops_before_anything_is_wired(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
+    assert result.exit_code != 0
+    assert "No source files to index" in result.output
+    assert "repowise init <path>" in result.output
+
+
+def test_a_folder_without_git_says_what_is_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    _a_source_file(tmp_path)
+    result = CliRunner().invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "No git commits here" in result.output

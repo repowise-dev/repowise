@@ -37,11 +37,16 @@ Repowise merges this server into `.codex/config.toml`:
 command = "repowise"
 args = ["mcp"]
 cwd = "/absolute/path/to/repo"
-startup_timeout_sec = 20
+required = true
+startup_timeout_sec = 60
 
 [features]
 hooks = true
 ```
+
+`required = true` makes Codex wait for the server before the first turn. Without it the first turn can start while the server is still booting, before the Repowise tools are in the tool catalog. The cost is that Codex does not start when `repowise` cannot be launched; `repowise doctor` reports that case with the fix. `startup_timeout_sec` is the ceiling for a slow cold start; a healthy server answers in a few seconds.
+
+`repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table.
 
 The MCP server uses `repowise mcp` without a path. In no-path mode, Repowise walks upward from the current directory to the nearest initialized `.repowise` repository.
 

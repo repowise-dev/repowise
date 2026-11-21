@@ -18,6 +18,10 @@ import type {
   WorkspaceTestImpactResponse,
   ExtractionDiagnostics,
 } from "./types";
+import type { WorkspaceSetupRepo, WorkspaceSetupResponse } from "@repowise-dev/types/generated/http";
+import type { AgentPromptFlavor } from "@repowise-dev/types/agent-prompts";
+
+export type { WorkspaceSetupRepo, WorkspaceSetupResponse };
 
 export async function getWorkspace(
   fetchOptions?: RequestInit,
@@ -280,3 +284,12 @@ export async function removeWorkspaceRepo(
   );
 }
 
+
+/**
+ * Setup across the workspace: one row per member (index, agent calls, sync,
+ * coverage, evidence) and, while steps are left, the workspace form of the
+ * finish-setup prompt, worded for `flavor`.
+ */
+export async function getWorkspaceSetup(opts: { flavor?: AgentPromptFlavor } = {}): Promise<WorkspaceSetupResponse> {
+  return apiGet<WorkspaceSetupResponse>("/api/workspace/setup", opts.flavor ? { flavor: opts.flavor } : undefined);
+}

@@ -61,8 +61,8 @@ export interface NextActionsProps {
 
 export interface NextActionsCopy {
   title: string;
-  /** The folded heading, which carries the count. */
-  titleCount: (count: number) => string;
+  /** The folded heading, which carries the work count and any setup steps. */
+  titleCount: (count: number, setup: number) => string;
   timeFrame: string;
   week: string;
   weekHint: string;
@@ -98,7 +98,8 @@ export interface NextActionsCopy {
 
 export const NEXT_ACTIONS_COPY: NextActionsCopy = {
   title: "Do next",
-  titleCount: (count) => `Do next · ${count.toLocaleString("en-US")}`,
+  titleCount: (count, setup) =>
+    `Do next · ${formatNumber(count)}${setup ? ` · ${plural(setup, "setup step")}` : ""}`,
   timeFrame: "Time frame",
   week: "This week",
   weekHint: "What the last 7 days of commits changed",
@@ -169,7 +170,7 @@ export function renderActionTitle(title: string): ReactNode {
 
 // en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return `${formatNumber(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -183,6 +184,9 @@ function anchorDay(iso: string | null): string | null {
 
 const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
   (h.by_tier.act_now ?? 0) + (h.by_tier.plan ?? 0);
+
+/** The `improve_signal` rows: setup steps, counted beside the work, never in it. */
+const setupIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) => h.by_tier.improve_signal ?? 0;
 
 /**
  * The sentence for a view that carries no `summary` (a server that predates
@@ -198,17 +202,20 @@ function fallbackSummary(data: ActionsResponse, horizon: ActionHorizonKey): stri
         : "this week"
       : "this quarter";
   const work = workIn(data.horizons[horizon]);
+  const steps = setupIn(data.horizons[horizon]);
   if (work === 0) {
+    const setup = steps ? ` ${plural(steps, "setup step")} to finish.` : "";
     const other = workIn(data.horizons[horizon === "week" ? "quarter" : "week"]);
-    if (other === 0) return `Nothing stands out ${window}.`;
+    if (other === 0) return `Nothing stands out ${window}.${setup}`;
     const tail =
       horizon === "week"
         ? `${other === 1 ? "is" : "are"} worth planning this quarter`
         : "came up this week";
-    return `Nothing needs you ${window}. ${plural(other, "thing")} ${tail}.`;
+    return `Nothing needs you ${window}. ${plural(other, "thing")} ${tail}.${setup}`;
   }
   const now = data.horizons[horizon].by_tier.act_now ?? 0;
-  return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
+  const setup = steps ? ` · ${plural(steps, "setup step")}` : "";
+  return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}${setup}.`;
 }
 
 export function NextActions({
@@ -229,6 +236,10 @@ export function NextActions({
   // Counts come from `data` alone, like the sentence, so the two agree; both
   // move when the host passes the re-read view after an answer.
   const work = (key: ActionHorizonKey) => (data ? workIn(data.horizons[key]) : 0);
+  const setup = (key: ActionHorizonKey) => (data ? setupIn(data.horizons[key]) : 0);
+  // A tab's figure is the work, then "+ N" setup steps, so it matches the list under it.
+  const tabCount = (key: ActionHorizonKey) =>
+    setup(key) ? `${work(key)} + ${setup(key)}` : String(work(key));
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
@@ -282,8 +293,8 @@ export function NextActions({
       label={c.timeFrame}
       value={horizon}
       options={[
-        { value: "week", label: c.week, count: String(work("week")), hint: c.weekHint },
-        { value: "quarter", label: c.quarter, count: String(work("quarter")), hint: c.quarterHint },
+        { value: "week", label: c.week, count: tabCount("week"), hint: c.weekHint },
+        { value: "quarter", label: c.quarter, count: tabCount("quarter"), hint: c.quarterHint },
       ]}
       onChange={(v) => {
         setHorizon(v);
@@ -294,7 +305,7 @@ export function NextActions({
 
   return (
     <OverviewSection
-      title={defaultOpen ? c.title : c.titleCount(work(horizon))}
+      title={defaultOpen ? c.title : c.titleCount(work(horizon), setup(horizon))}
       description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
       // A folded section has no header action slot, so the time frame sits
       // under the summary, above the list it filters, and the toggle carries

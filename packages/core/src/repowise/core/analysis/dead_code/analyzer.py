@@ -325,8 +325,9 @@ class DeadCodeAnalyzer:
         cfg = config or {}
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
         # Machine output known only by its content (a webpack chunk, a minified
-        # bundle) joins the whitelist, which every pass already honours.
-        whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
+        # bundle) and code a data folder holds join the whitelist, which every
+        # pass already honours.
+        whitelist = set(cfg.get("whitelist", [])) | self._unjudged_by_origin()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
         # The settle passes rescan every file's text; an unchanged file's
@@ -793,17 +794,21 @@ class DeadCodeAnalyzer:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _content_machine_output(self) -> set[str]:
-        """Files ``code_origin`` reads as generated or vendored from their bytes.
+    def _unjudged_by_origin(self) -> set[str]:
+        """Files ``code_origin`` reads as generated, vendored or data.
 
-        The path-only rules are asked per candidate by ``never_flag_path``.
-        ``is_test=False`` skips the test-path check, which cannot change
-        either answer and is half the cost.
+        Generated and vendored are read from the file's bytes; the path-only
+        rules are asked per candidate by ``never_flag_path``. Data is code a
+        content folder holds for the product to read by path, which no import
+        reaches. ``is_test=False`` skips the test-path check, half the cost: a
+        test file is never judged anyway, so whether it reads as test or as
+        data here changes nothing.
         """
         return {
             path
             for path, data in self._source_map.items()
-            if code_origin(path, data, is_test=False) in ("generated", "vendored")
+            if code_origin(path, data, is_test=False, repo_root=self._repo_root)
+            in ("generated", "vendored", "data")
         }
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:

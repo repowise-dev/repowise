@@ -64,7 +64,8 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     indexed last, breaking workspace mode.
 
     If ``repo_path`` lives inside a workspace (``.repowise-workspace.yaml`` in
-    any ancestor), return the workspace root instead so the MCP server is
+    any ancestor) and is not a git repo of its own outside the workspace's
+    members, return the workspace root instead so the MCP server is
     invoked in workspace mode and ``repo="<alias>"`` queries work across all
     repos. Otherwise fall back to the per-repo path, preserving single-repo
     behavior.
@@ -251,14 +252,9 @@ def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
 
 def _is_our_entry(entry: dict) -> bool:
     """``repowise mcp ...`` under a bare or pinned ``repowise`` command: the shape init writes."""
-    import re
+    from repowise.cli.agent_targets.formats.server_entry import launches_repowise
 
-    command = entry.get("command")
-    args = entry.get("args")
-    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
-        return False
-    name = re.split(r"[\\/]", command)[-1].lower()
-    return name in ("repowise", "repowise.exe")
+    return isinstance(entry.get("command"), str) and launches_repowise(entry)
 
 
 def migrate_claude_code_mcp_entry() -> None:

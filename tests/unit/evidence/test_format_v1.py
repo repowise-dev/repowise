@@ -27,6 +27,7 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
             tool={"name": "pyinstrument", "version": "4.6.2"},
             total=5300,
             explained=580,
+            total_samples=5300,
             skipped={"outside_repo": 812, "vendored": 3},
             symbols=[
                 {"path": "src/app/cli.py", "function": "build", "line": 40, "self": 12,
@@ -38,6 +39,8 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
     assert (doc.kind, doc.commit_sha, doc.dirty) == ("profile", SHA, False)
     assert (doc.tool_name, doc.tool_version) == ("pyinstrument", "4.6.2")
     assert (doc.value_kind, doc.unit, doc.total, doc.explained) == ("wall", "samples", 5300, 580)
+    assert doc.total_samples == 5300
+    assert parse_evidence(_doc(symbols=[], total_samples=-1)).total_samples is None
     assert doc.skipped == {"outside_repo": 812, "vendored": 3}
     assert doc.units_total == 817
     first, second = doc.entries
@@ -171,6 +174,18 @@ def test_query_counts_refuse_statement_text() -> None:
                                                                          None)
     assert doc.skipped == {"statement_not_digest": 1, "no_scope": 1, "absolute_path": 1}
     assert doc.unit == "count"
+
+
+def test_a_query_scope_may_say_how_many_items_it_ran_over() -> None:
+    site = {"path": "src/orders/repo.py", "function": "OrderRepo.load_items", "line": 44}
+    entries = [
+        {"scope": {"kind": "test", "id": f"t{n}", "items": n}, "site": site,
+         "statement_fp": "9f2c1a0b", "count": 3}
+        for n in (10, -1)
+    ]
+    doc = parse_evidence(_doc("query_count", queries=entries))
+    # A size that is not a count is unknown, never zero; the count itself stays.
+    assert [e["scope_items"] for e in doc.entries] == [10, None]
 
 
 def test_fields_outside_the_format_are_never_read() -> None:

@@ -64,7 +64,13 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
+from ..formats.server_entry import (
+    RENAME_HINT,
+    RemoteServerEntryError,
+    ServerSpec,
+    agents_remove_command,
+    read_servers,
+)
 from ..types import (
     Capability,
     DoctorReport,
@@ -76,6 +82,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -795,6 +802,26 @@ class OpenCodeTarget:
         return [
             str(config_path(scope, repo)),
             str(instructions_path(scope, repo)),
+        ]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``mcp`` in every OpenCode config, user and project, both spellings.
+
+        A ``.jsonc`` file with comments reads as empty, so a copy there goes
+        uncounted rather than guessed at.
+        """
+        scopes: list[tuple[Scope, Path | None]] = [(Scope.USER, None)]
+        if repo_path is not None:
+            scopes.append((Scope.PROJECT, repo_path))
+        return [
+            ServerMap(
+                path,
+                scope,
+                read_servers(path, "mcp"),
+                remove_command=agents_remove_command(ID, scope.value),
+            )
+            for scope, repo in scopes
+            for path in config_paths(scope, repo)
         ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:

@@ -90,16 +90,15 @@ def _project_result(item: dict, *, multi: bool) -> dict:
     ==========  ==============================================================
     page        ``score`` (from ``relevance_score``), ``title``, ``page_type``,
                 ``path`` (``target_path`` for a pathless page), ``snippet``
-    symbol      ``score``, ``name``, ``qualified_name``, ``kind``, ``path``,
-                ``line`` (from ``start_line``), and
-                ``symbol_id`` — the id ``repowise symbol`` takes, without
+    symbol      ``name``, ``kind``, ``path``, ``line`` (from ``start_line``),
+                and ``symbol_id`` — the id ``repowise symbol`` takes, without
                 which a symbol hit cannot be followed anywhere
     file        ``score``, ``title``, ``path``
     ==========  ==============================================================
 
-    Dropped: ``page_id``, ``sources``, ``confidence_score``, ``end_line``,
-    ``signature``, ``language`` and ``next`` — call envelope and ranking
-    internals, all of them in ``--full``.
+    A symbol row has no ``score``: the tool ranks symbol rows by order and
+    serves none. Dropped: ``page_id``, ``sources``, ``confidence_score``,
+    ``end_line``, ``signature`` and ``source``, all of them in ``--full``.
 
     ``type`` is emitted on every row although the old payload had none. It was
     unambiguous when every row in a response was a page; ``hybrid`` interleaves
@@ -107,13 +106,14 @@ def _project_result(item: dict, *, multi: bool) -> dict:
     a row even has.
     """
     kind = _result_kind(item)
-    score = item.get("relevance_score") if kind == "page" else item.get("score")
-    out: dict = {"type": kind, "score": round(float(score or 0.0), 6)}
+    out: dict = {"type": kind}
+    if kind != "symbol":
+        score = item.get("relevance_score") if kind == "page" else item.get("score")
+        out["score"] = round(float(score or 0.0), 6)
     if kind == "symbol":
         out.update(
             {
                 "name": item.get("name") or "",
-                "qualified_name": item.get("qualified_name") or "",
                 "kind": item.get("kind") or "",
                 "path": item.get("path") or "",
                 "line": item.get("start_line"),
@@ -186,7 +186,7 @@ def project(payload: dict, query: str, *, multi: bool) -> dict:
     help="Search mode. auto (default) routes on the query's shape; fulltext/semantic "
     "both run the tool's fused concept search.",
 )
-@click.option("--limit", type=int, default=10, help="Max results.")
+@click.option("--limit", type=int, default=5, help="Max results (the search_codebase default).")
 @click.option(
     "--repo",
     "repo_alias",
@@ -296,14 +296,18 @@ def search_command(
 def _run_search(repo_path, query: str, limit: int, tool_mode: str) -> dict:
     """One ``search_codebase`` call against one repo."""
 
+    arguments = {"query": query, "limit": limit, "mode": tool_mode}
+
     def _factory():
         from repowise.server.mcp_server.tool_search import search_codebase
 
-        return search_codebase(query=query, limit=limit, mode=tool_mode)
+        return search_codebase(**arguments)
 
     # Symbol and path search are SQL lookups: neither reads the vector store.
     reads_vectors = tool_mode not in ("symbol", "path")
-    return _ta.run(repo_path, _factory, "search_codebase", reads_vectors=reads_vectors)
+    return _ta.run(
+        repo_path, _factory, "search_codebase", reads_vectors=reads_vectors, arguments=arguments
+    )
 
 
 def _warn_if_lexical_only(payload: dict, requested: str, notices, repo_path=None) -> None:
@@ -629,7 +633,7 @@ def _symbol_table(rows: list[dict], query: str, *, multi: bool) -> Table:
     table.add_column("Name", style="cyan")
     if multi:
         table.add_column("Repo", style="magenta")
-    table.add_column("Qualified Name")
+    table.add_column("Symbol ID")
     table.add_column("Kind")
     table.add_column("File")
     table.add_column("Line", justify="right")
@@ -640,7 +644,7 @@ def _symbol_table(rows: list[dict], query: str, *, multi: bool) -> Table:
         if multi:
             cells.append(str(row.get("repo", "")))
         cells += [
-            str(row.get("qualified_name") or ""),
+            str(row.get("symbol_id") or ""),
             str(row.get("kind") or ""),
             str(row.get("path") or ""),
             "" if row.get("line") is None else str(row["line"]),

@@ -467,8 +467,8 @@ async def get_risk(
     Args:
         targets: file paths; defaults to changed_files.
         changed_files: PR-changed files for PR mode.
-        include: "graph", "churn", "owners", "scales" (units, calibration),
-            "changes"; with changed_files only: "tests" (typed test rows), "blast".
+        include: "graph", "owners"; with changed_files only: "tests" (typed
+            test rows), "blast".
         repo: usually omitted.
     """
     if repo == "all":

@@ -53,7 +53,8 @@ All of the following ship in `pip install repowise` today, free for internal use
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
-  risk, dead code and the PR bot make no model calls at all, and the whole wiki
+  risk, dead code and the PR bot's checks make no model calls at all (AI review
+  on pull requests is opt-in), and the whole wiki
   renders from code structure with no API key (`repowise init --no-prose`).
   Model-written prose is opt-in, priced before you confirm it, and runs on your
   own key or fully offline through Ollama. Six of the seven decision sources are
@@ -62,10 +63,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
   `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
-  Measured at **−31.6 % of the agent's own output tokens** against a bare agent
-  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
-  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
-  the sample sizes, all three agent harnesses, and the rows where we lose.
+  Across five models the agent opens **up to 99% fewer files**, writes **up to
+  51% less** and answers **up to 47% faster** (Sonnet 4.6, 71 of 72 answers
+  right), and every model opens fewer files. Side by side with four other context
+  tools, repowise cuts the agent's output by **31.6%** (43 questions,
+  p < 0.0001), the most of the five, in 3.8 tool calls where the bare agent
+  needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample sizes and
+  the method.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -141,7 +145,7 @@ would not survive a technical evaluation. Full ladder:
 **Languages are never gated.** Every one of them ships in the AGPL distribution,
 including the ones still climbing. COBOL now ships at the Good tier; remaining
 work is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
-or framework that is not there, §5.5 covers having it built and maintained by us
+or framework that is not there, §5.4 covers having it built and maintained by us
 as a commercial line item, and the result still ships to everyone under AGPL.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
@@ -160,7 +164,7 @@ worth calling out. For **.NET**, as one example:
 The same depth exists for the other Full-tier languages. The language pipeline is
 modular by design; adding or deepening a language touches per-language subpackages,
 not the parser core, which is what makes the **custom language / framework
-extensions** in §5.5 a tractable commercial offering.
+extensions** in §5.4 a tractable commercial offering.
 
 ---
 
@@ -190,7 +194,6 @@ the items that matter most to you can be prioritized.
 | Package usage with CycloneDX 1.6 usage export | ✅ | ✅ |
 | Scoped tokens for REST, MCP HTTP and webhooks; plugin seams | ✅ | ✅ |
 | Central policy management, org-wide enforcement, approvals and policy audit | — | ✅ *(planned)* |
-| Foresight: learned fix localization, forgotten files, tests to update, learned health | — | ✅ *(waitlist, [FORESIGHT.md](FORESIGHT.md))* |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
@@ -346,16 +349,9 @@ presentation and policy layer is what's rolling out commercially.
   organisation-wide enforcement across repositories, approval workflows and a
   policy audit trail.
 
-### 5.4 Foresight *(waitlist)*
+<a id="55-enterprise-operations"></a>
 
-Learned models, trained on years of public open-source history, that read the
-index to predict what a piece of work will need: the files and functions a fix
-will touch, the file a change forgot, the tests to update, and a health signal
-with learned weights. No LLM, CPU only, local inference, so it runs self-hosted or
-air-gapped, and it never trains on customer code. Measured results and the
-waitlist: [FORESIGHT.md](FORESIGHT.md).
-
-### 5.5 Enterprise Operations
+### 5.4 Enterprise Operations
 
 - **Role-based access control** *(planned)*: repo-, module-, and decision-level
   permissions; SCIM group mapping.

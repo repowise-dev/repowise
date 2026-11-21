@@ -1,68 +1,86 @@
 # Benchmarks
 
-Repowise reads a codebase once, on your machine, and answers questions about it
-for developers and their AI coding agents. This page shows how well it does
-that, measured on public code against answer keys we did not write. Every
-sample is published in
-**[repowise-bench](https://github.com/repowise-dev/repowise-bench)**, so anyone
-can rerun it.
+Repowise reads a codebase once, on your machine, and gives developers and their
+AI coding agents the answers they would otherwise dig for. Measured on public
+code, against answer keys we did not write, with every sample published in
+**[repowise-bench](https://github.com/repowise-dev/repowise-bench)**.
 
-## The results in one minute
-
-| | Result | What it means |
-|---|---|---|
-| **Half the work for your agent** | **3.8 tool calls instead of 7.2**, **3.0 files opened instead of 7.2**, **31.6% less** output | An AI agent with repowise reaches the same answer with about half the searching and reading. That is the largest saving of the five context tools we tested. [Details](#2-what-changes-in-a-real-agent-loop) |
-| **Points at the right code** | **88%** of the files a real fix needed, against **61%** for the next tool | Before an agent edits, it has to find the right files. Repowise finds most of them in one call. [Details](#1-finding-the-right-files) |
-| **Up to 99% less noise** | `npm ci` **99.5%**, `git log` **89%**, `git diff` **86%**, test runs **61%** smaller | Command output is trimmed before the agent reads it, and every error line is kept. [Details](#4-command-output-compression) |
-| **Finds the code that will break** | **2.3x** as many later-buggy files as CodeScene, in the same review budget | Its health score flags the files that go on to need bug fixes, across 21 open-source projects. [Details](#5-code-health-predicts-defects) |
-| **A map the compiler agrees with** | **93.8% to 99.8%** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
-| **Knows which tests matter** | **97.5%** correct on which tests to run for a change, with no coverage run | Teams can run the tests a change touches instead of the whole suite. [Details](#test-intelligence) |
-| **Runs on a laptop at any size** | **15 million lines** (dotnet/runtime) indexed on one laptop, with no API key | Updates after that take seconds. Building the map uses **10x less memory** than the next tool. [Details](#scale) |
-
-### Words used on this page
-
-| Term | Plain meaning |
+| Result | What it means |
 |---|---|
-| Agent | An AI coding assistant such as Claude Code, Codex or Cursor |
-| Call graph | A map of which function calls which. It is how a tool can say what breaks when code changes |
-| Precision | Of the things a tool reports, the share that are correct |
-| Recall | Of everything that is really there, the share the tool found |
-| Held out, sealed | Test cases set aside before any tuning, so they show what you will see on your own code |
-| p-value | The chance a difference this size is luck. Below 0.05 is the usual bar, and most results here are far below it |
+| **Up to 99% fewer files opened** | Sonnet 4.6 went from 3.28 files per question to 0.00, wrote 51% less, answered 47% faster and made 28% fewer tool calls, with 71 of 72 answers right. Every model we tested opened fewer files, and Opus 5.5 kept all 48 answers right. [Details](#per-model-agent-loop) |
+| **31.6% less output** | Side by side with four other context tools, repowise saved the agent the most work: 3.8 tool calls instead of 7.2. [Details](#2-what-changes-in-a-real-agent-loop) |
+| **88% of the right files** | Found in one call for a real bug fix, on cases sealed until the final run. The next tool finds 61%. [Details](#1-finding-the-right-files) |
+| **2.3x the later bugs** | Its health score finds 2.3 times as many files that later need bug fixes as CodeScene, in the same review budget, across 21 projects. [Details](#5-code-health-predicts-defects) |
+| **Up to 99.5% less noise** | Test, install and git output trimmed before the agent reads it, with every error line kept. [Details](#4-command-output-compression) |
+| **15 million lines on a laptop** | dotnet/runtime indexed on one laptop with no API key, building the map with 10x less memory than the next tool. [Details](#scale) |
 
-### One index, the work of several tools
+Also measured: **93.8% to 99.8%** of the calls it draws are confirmed by the
+language's own compiler ([by language](#accuracy-by-language)), and **97.5%**
+correct on which tests to run for a change ([tests](#test-intelligence)).
 
-one local index, and most of it needs no model key.
+---
 
-| Category | Tools teams use today | What repowise does | Evidence |
-|---|---|---|---|
-| Code health | CodeScene, SonarQube maintainability rating | 53 detectors score every file on defect risk, maintainability and performance, then rank what to fix first | [Measured](#5-code-health-predicts-defects): 2.3x CodeScene's recall of later defects at a fixed review budget |
-| Code graph and search for agents | Sourcegraph, CodeGraph, Serena | Call graph, hybrid search and answers served to agents over MCP | [Measured](#1-finding-the-right-files): retrieval, agent loop and graph accuracy against CodeGraph and Serena |
-| Change risk and test impact | Codecov gates, test-impact tools | Where a change ranks among the repository's recent commits, which tests to run, coverage gates, all in the GitHub Action | [Measured](#test-intelligence): test selection precision |
-| Dead code | Knip, vulture, ts-prune | Unreachable files, unused exports and unused packages, each with a confidence tier and its evidence, across languages | Capability |
-| Documentation | DeepWiki, Swimm | A generated wiki per module and file (needs a model key), plus checks that flag docs the code no longer supports (no key) | Capability |
-| Decision records | ADR files kept by hand | Finds decisions in ADRs, comments, commits and PR bodies, ties each to the code it governs, flags stale ones | Capability |
-| Multi-repo contracts | Contract tests, hand-kept API catalogs | Matches HTTP, gRPC, message-topic and data contracts between repositories in a workspace, and flags breaking changes | Capability |
+<a id="per-model-agent-loop"></a>
+<a id="agent-loop"></a>
 
-Repowise complements a security scanner such as Semgrep and an AI code reviewer
-such as CodeRabbit. In open source, the pull-request surface is the GitHub
-Action (gates, annotations, SARIF, GitLab Code Quality); the PR comment bot is a
-separate free hosted GitHub App.
+## Up to 99% fewer files opened, on every model
+
+**What we asked.** We gave an AI coding agent 24 questions about real code, the
+kind a developer asks before changing it: where something lives, how a request
+flows, what breaks if a function changes. Each question ran with repowise and
+without it, on five models in Claude Code, over three codebases (Python, Go and
+Rust) created after every model's training cutoff.
+
+**What we found.** Every model opened fewer files with repowise. At the current
+build, Sonnet 4.6 answered in all 72 runs without opening a source file, wrote
+51% less and was 47% faster. Opus 5.5 got all 48 answers right.
+
+### Sonnet 4.6, current build
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 3.28 | **0.00** | **-100%** |
+| Output tokens | 2,298 | **1,120** | **-51.2%** |
+| Wall clock | 45 s | **24 s** | **-47.2%** |
+| Tool calls | 6.5 | **4.7** | **-28%** |
+| Answers right | 70 of 72 | **71 of 72** | |
+
+### Opus 5.5
+
+| Per question | Without repowise | With repowise | Change |
+|---|---:|---:|---:|
+| Files opened | 2.25 | **0.38** | **-83%** |
+| Answers right | 48 of 48 | **48 of 48** | |
+
+### Every model
+
+| Model | Files opened | Output tokens | Tool calls | Wrote less on | Answers right, without / with |
+|---|---:|---:|---:|---:|---:|
+| **Sonnet 4.6** | 3.3 to **0.0** (**-100%**) | **-51.2%** | 6.5 to **4.7** | **19 of 24** | 70 / **71** of 72 |
+| Sonnet 4.6, first build | 3.5 to **0.0** (**-99%**) | **-51.2%** | 7.1 to **5.3** | 18 of 24 | 70 / 67 of 72 |
+| Haiku 4.5 | 3.7 to **0.3** (**-91%**) | -5.3% | 9.0 to 9.7 | 14 of 24 | 70 / 69 of 72 |
+| Opus 5.5 | 2.2 to **0.4** (**-83%**) | -14.1% | 5.1 to **4.2** | **20 of 24** | 48 / **48** of 48 |
+| Opus 4.8 | 2.1 to **0.4** (**-83%**) | -14.5% | 5.2 to **4.8** | 12 of 24 | 47 / 46 of 48 |
+| Sonnet 5.5 | 1.5 to **0.9** (**-40%**) | -9.6% | 4.2 to **4.0** | **19 of 24** | 46 / **48** of 48 |
+
+Files opened fall on every model, in every language and on every kind of
+question. Intervals, wall clock and per-language slices are in
+[How we measure](#method-agent-loop).
 
 ---
 
 <a id="2-what-changes-in-a-real-agent-loop"></a>
 
-## Half the work in a real agent loop
+## 31.6% less output, side by side with other context tools
 
-**What we asked.** Give an AI agent real questions about a large codebase
-(`django/django`), once with no tool and once with each context tool. Does the
-tool save it work, and does the answer stay as good?
+**What we asked.** The same real questions about `django/django`, once with no
+tool and once with each of five context tools. Which one saves the agent the
+most work?
 
-**What we found.** With repowise the agent made **3.8 tool calls instead of
-7.2**, opened **3.0 files instead of 7.2**, and wrote **31.6% less**. Answer
-quality did not change. The saving grows on harder questions (34.3%), and on a
-small local model it reaches **47.9% less output and 41.5% less time**.
+**What we found.** Repowise. The agent made **3.8 tool calls instead of 7.2**,
+opened **3.0 files instead of 7.2** and wrote **31.6% less**, with answers just
+as good. The saving grows on harder questions (34.3%), and on a small local
+model it reaches **47.9% less output and 41.5% less time**.
 
 <div align="center">
 <picture>
@@ -80,51 +98,23 @@ small local model it reaches **47.9% less output and 41.5% less time**.
 | code-review-graph | 43 / 43 | 1,710 | -6.0% | 7.2 | 26 of 43 | 0.046 |
 | *bare agent (control)* | 0 / 44 | 1,828 | baseline | 7.2 | n/a | n/a |
 
-Same prompt for every tool, each tool's full advertised surface, a fresh index on
-the same pinned commit. Codex (`gpt-5.6-sol`), August 2026, the 43 questions all
-six arms completed. After correcting for five simultaneous comparisons, three of
-the five reductions remain clearly significant, repowise's among them.
-
-**On a local model.** With `qwen3:8b` under Ollama (15 questions), repowise cuts
-output by 40.8% and wall clock by 27.5%. With only its local tools switched on
-(`get_answer` off), the cut is 47.9% in output and 41.5% in wall clock, at about
-the same answer quality as the bare agent.
-
-<details>
-<summary><b>Method</b></summary>
-
-- **Work saved; quality unchanged.** No tool measurably changes answer
-  quality: blind-judge scores sit within 0.04 to 0.25 points of the bare agent
-  on a 10-point scale, inside the 0.69-point rerun noise.
-- **Output tokens, not dollars.** Prompt caching makes whichever arm runs first
-  look cheaper; output tokens are never cached, so those are what we publish.
-- **Claude Code** (`claude-sonnet-5`, 15 questions, one run): output down
-  15.9% (p = 0.035) when the agent calls repowise. Claude Code loads tool
-  schemas on demand, so how often the agent reaches for a tool varies by run.
-
-Raw data, every cell including failures:
-**[rung9](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung9)**
-(Codex) and
-**[rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
-(15-question runs). Per-tool setup notes:
-[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head).
-
-</details>
+Codex (`gpt-5.6-sol`), August 2026. With `qwen3:8b` under Ollama, repowise cuts
+output by 40.8% with every tool on and by 47.9% with its local tools only.
+[Method](#method-side-by-side).
 
 ---
 
 <a id="1-finding-the-right-files"></a>
 
-## Pointing the agent at the right files
+## 88% of the right files, in one call
 
 **What we asked.** For a real bug, the benchmark (ContextBench) lists the files
 the fix actually changed. Does the tool return them?
 
 **What we found.** Repowise's answer tool found **88% of the needed files**. The
 next best tool found 61%. Case by case it won 19 times and lost once. No AI judge
-is involved: a file is either in the answer or it is not. The 112 cases were
-split before any work started, and every figure below comes from the 42 that
-stayed sealed until the final run (August 2026).
+is involved, and every figure comes from 42 cases that stayed sealed until the
+final run (August 2026).
 
 <div align="center">
 <picture>
@@ -142,64 +132,8 @@ stayed sealed until the final run (August 2026).
 | code-review-graph | 0.445 | 42 | **0.240** | 5.4 |
 | cocoindex | 0.361 | 41 | 0.092 | 7.1 |
 
-Per instance against CodeGraph: `get_answer` **19 wins, 1 loss, 22 ties, sign
-test p = 0.00004**; `search_codebase` 13 wins, 3 losses, 26 ties, p = 0.021.
-
-The two repowise tools have different profiles. `get_answer` finds the most,
-from about 19 files. `search_codebase` finds 0.742 from 8.2 files, the best
-coverage per file served in the table. code-review-graph returns the fewest
-files and so leads precision.
-
-<details>
-<summary><b>Method</b></summary>
-
-**The sealed half confirms it.** Overfitting makes the unseen half score worse.
-Ours scores better on it, and CodeGraph, which nobody tuned against either
-half, scores the same on both, so the halves are equally hard.
-
-| | Other half (n=70) | **Sealed half (n=42)** |
-|---|---:|---:|
-| repowise (`get_answer`) | 0.810 | **0.876** |
-| repowise (`search_codebase`) | 0.684 | 0.742 |
-| CodeGraph | 0.6093 | 0.6095 |
-
-File coverage compares returned paths with the gold files and nothing else.
-cocoindex's n is 41 because one instance returned no answer. Its placing was
-[pre-registered before its index existed](https://github.com/repowise-dev/repowise-bench/tree/master/configs).
-This measures retrieval; the next section measures the agent loop.
-
-Raw cells:
-**[rung8](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung8)**.
-
-</details>
-
----
-
-<a id="4-command-output-compression"></a>
-<a id="command-output-compression"></a>
-
-## Up to 99% less command noise
-
-**What we asked.** When an agent runs tests, installs or git commands, how much of
-what it reads is noise?
-
-**What we found.** Most of it. `repowise distill` trims output before the agent
-reads it, keeps every error line, and restores anything it cut with
-`repowise expand`.
-
-| Command | Before | After | Saved |
-|---|---:|---:|---|
-| `npm ci` (1,344 packages) | full log | trimmed | **99.5%** |
-| `git log -50` | 3,064 tokens | 331 | **89%** |
-| `git diff` (30 commits of history) | 62,833 tokens | 8,635 | **86%** |
-| `terraform plan` | full log | trimmed | **80.2%** |
-| `pytest -q` (11 failures) | 3,374 tokens | 1,317 | **61%**, all 11 `FAILED` lines kept |
-| `git status` (clean) | 83 tokens | 83 | 0%, already small, passed through |
-
-Across the core filters the median saving is at least 60% on test, build and lint
-output, with no error line lost, checked in CI on every change. Small output
-passes through untouched, so distill never makes anything bigger.
-Guide: [docs/agent/DISTILL.md](agent/DISTILL.md).
+Against CodeGraph, `get_answer` **won 19, lost 1, tied 22, sign test p = 0.00004**.
+`search_codebase` gives the best coverage per file served. [Method](#method-retrieval).
 
 ---
 
@@ -208,19 +142,15 @@ Guide: [docs/agent/DISTILL.md](agent/DISTILL.md).
 
 ## Code health that predicts bugs
 
-**What we asked.** A health score is only useful if the files it flags are the
-files that later break. We scored each file at a past commit and counted the bug
-fixes it received over the next six months. Nothing after the scoring commit
-feeds the score.
+**What we asked.** Do the files a health score flags turn out to be the files
+that later need bug fixes? Each file was scored at a past commit, and its bug
+fixes over the next six months were counted.
 
 **What we found.** Across **21 projects, 9 languages and 2,826 files**, the score
-separates buggy from clean files well (**ROC AUC 0.737**, 95% CI 0.683 to 0.787).
-It beats recent churn by +0.100 and past bugs by +0.117 (DeLong p < 1e-9), and
-holds at 0.76 to 0.78 on PROMISE/jEdit, a dataset it never saw.
-
-**Against CodeScene**, the closest commercial product, on the same **2,770 files**
-with the same bug labels: ranking by repowise finds **2.3x the later-buggy files**
-within the same review budget (the top 20% of lines).
+separates buggy from clean files well (**ROC AUC 0.737**), and beats recent churn
+and past bugs as predictors (DeLong p < 1e-9). Against **CodeScene** on the same
+**2,770 files**, ranking by repowise finds **2.3x the later-buggy files** in the
+same review budget.
 
 | Paired test | repowise | CodeScene | |
 |---|---:|---:|---|
@@ -228,28 +158,31 @@ within the same review budget (the top 20% of lines).
 | Effort-aware ranking (Popt) | **0.607** | 0.462 | p = 0.003 |
 | Defect density, size-normalized | **2.18x** | 0.56x | p = 0.003 |
 | Discrimination (ROC AUC) | 0.731 | 0.705 | p = 0.054 |
-| Precision at a 20%-of-lines review budget | 0.580 | **0.636** | p = 0.64, a tie |
+| Precision at a 20%-of-lines review budget | 0.580 | **0.636** | p = 0.64 |
 
-CodeScene flags about 27 files where we flag 132: a shorter list at a similar
-precision, for a team that wants to work through it quickly.
+[Method](#method-health).
 
-<details>
-<summary><b>Method</b></summary>
+---
 
-**What the score adds over file size.** File size alone discriminates about as
-well (AUC 0.742). The score's advantage is effort-aware ranking, Popt +0.134
-(95% CI +0.080 to +0.198), and that it says why a file is at risk.
+<a id="4-command-output-compression"></a>
+<a id="command-output-compression"></a>
 
-**Weights are fitted, not hand-set:** a size-controlled logistic fit on files
-scored before their bug window, so a detector earns weight only for defect lift
-beyond being large. Of the 53 detectors, 25 move the defect score; the others
-feed the maintainability or performance score, or are advisory.
+## Up to 99.5% less command noise
 
-Reports:
-**[BENCHMARK\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)** ·
-**[COMPARISON\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)**
+`repowise distill` trims test, install and git output before the agent reads it,
+keeps every error line, and restores anything it cut with `repowise expand`.
 
-</details>
+| Command | Before | After | Saved |
+|---|---:|---:|---|
+| `npm ci` (1,344 packages) | full log | trimmed | **99.5%** |
+| `git log -50` | 3,064 tokens | 331 | **89%** |
+| `git diff` (30 commits of history) | 62,833 tokens | 8,635 | **86%** |
+| `terraform plan` | full log | trimmed | **80.2%** |
+| `pytest -q` (11 failures) | 3,374 tokens | 1,317 | **61%**, all 11 `FAILED` lines kept |
+
+The median saving on test, build and lint output is at least 60%, with no error
+line lost, checked in CI on every change. Small output passes through untouched.
+Guide: [docs/agent/DISTILL.md](agent/DISTILL.md).
 
 ---
 
@@ -258,19 +191,11 @@ Reports:
 
 ## Call graph accuracy by language
 
-**What we asked.** When repowise says "function A calls function B", is that true?
-The judge is each language's own compiler, which resolves every call exactly.
-Measured October 2026 on repowise main, each repository freshly indexed, every
-row published.
-
-**What we found.** Precision is **0.938 to 0.998** on Go,
-TypeScript, Dart, C and Python, **0.898 to 1.000** on Java, and
-**0.780 to 0.975** on Kotlin, C#, C++ and Rust, where Polly (0.780) is the
-one row under 0.84. Applications are
-in the table: a Spring Boot service (eclipse-hawkbit), an ASP.NET Core shop
-(eShopOnWeb) and a C++ build tool (ninja). Held-out repositories read close to
-the dev ones: none sits more than 0.04 below its language's lowest dev row, and
-git and dart_style read above theirs.
+When repowise says "function A calls function B", the language's own compiler
+checks it. Precision is **0.938 to 0.998** on Go, TypeScript, Dart, C and
+Python, **0.898 to 1.000** on Java, and **0.780 to 0.975** on Kotlin, C#, C++
+and Rust. Held-out repositories, never used to pick a fix, read as well as the
+ones accuracy work is developed against. Measured October 2026 on repowise main.
 
 | Language | Repository | Set | Answer key | Precision | Recall | Edges |
 |---|---|---|---|---:|---:|---:|
@@ -308,36 +233,8 @@ git and dart_style read above theirs.
 | Rust | ripgrep | dev | rust-analyzer | **0.863** | 0.546 | 4,567 |
 | Apex | 7 public Salesforce repositories | dev | census of literal references, 90 hand-graded edges | **90/90** | 0.999 | 40,907 |
 
-**Held out means never tuned on.** Dev repositories are the ones accuracy work
-is developed against. Held-out repositories are chosen in advance and never used
-to pick a fix, so they are the fairest read of what you will see on your own
-code.
-
-**How it is scored.** An edge matches when the caller and the callee land on
-the same declaration line the compiler names. Python's reference is jedi, the
-standard static analyser, and it follows re-exports and type stubs to the real
-definition. Where clang or Roslyn's index cannot tell which overload an
-unresolved call names, that call is left ungraded, and Java's reference places
-Lombok-generated members where javac does. Apex has no public compiler index, so
-its recall is read against a census of literal `new X(` and `X.m(` references
-and its precision from 30 hand-graded edges on each of three repositories. Every
-cell carries a 95% confidence interval in the published artifacts.
-
-**Recall is a deliberate choice.** The graph declines to guess a call it cannot
-prove, such as dynamic and interface dispatch, rather than draw several edges
-where one is right. Recall also depends on how many entry points a codebase has,
-so compare it within a language.
-
-**Reading the lower rows.** Polly (0.780) defines many overloads of each
-policy method, so much of what remains is the choice between overloads of the
-right method. fmt (0.858) is the same choice in C++, among templates and
-overloads that take the same number of arguments. ripgrep (0.863) spans ten
-crates in which many unrelated types share method names.
-
-Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
-scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0,
-kotlinc 2.4.21. Per-repository scores, confidence intervals and the scoring
-code: **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)**.
+The graph declines to guess a call it cannot prove, such as dynamic dispatch,
+instead of drawing several edges where one is right. [Method](#method-graph).
 
 ---
 
@@ -347,10 +244,9 @@ code: **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/grap
 
 ## Call graph against four other tools
 
-The same compiler check, run on every tool. The answer key is the **Go team's own
-call graph** (`golang.org/x/tools`, RTA, over the fully type-checked program) and,
-on TypeScript, **`tsc`'s own resolution** of every call site. Each cell is
-precision / recall.
+The same compiler check, run on every tool: the **Go team's own call graph**
+(`golang.org/x/tools`, RTA) and, on TypeScript, **`tsc`'s own resolution** of
+every call site. Each cell is precision / recall.
 
 | Cell | repowise | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 | Graphify 0.9.31 | code-review-graph 2.3.7 |
 |---|---|---|---|---|---|
@@ -365,40 +261,8 @@ precision / recall.
 > **In all seven cells, no tool that finds as much of the call graph as we do
 > gets more of it right.**
 
-Every tool more precise than us finds less of the graph, and every tool that
-finds more is less precise. Repowise leads recall outright on both TypeScript
-cells and on gitleaks without tests.
-
-<details>
-<summary><b>Method</b></summary>
-
-**Two methods agree.** On Go, a hand-graded audit read 29/30 for us and 29/30
-for CodeGraph; the compiler, over about 1,600 edges on the same repository, read
-97.6% and 97.2%. A person reading source and a type checker land within about a
-point on both tools.
-
-**Where recall goes.** On syft without tests, 44% of missed edges are dynamic
-dispatch and a further 39% dispatch with a closure at one end. Interface
-dispatch averages 6.5 possible targets per call site there, so matching a
-higher-recall tool means emitting six edges where one is right.
-
-**Recall varies by entry points.** It runs from 0.03 to 0.97 across rows, driven
-by how many entry points the compiler had (4 on gitleaks, 268 on syft with
-tests), so compare recall within a row.
-
-- Edges the compiler cannot judge are charged to nobody (16% to 46% of a tool's
-  output on TypeScript, where the pinned corpus installs no dependencies, so
-  TypeScript is scored without tests).
-- A library has no `main`, so cobra is analysed through its test binaries.
-- Graphify tags 93% of its call edges `INFERRED` and we score all of them;
-  code-review-graph is scored on resolved rows only.
-- Competitor columns are August 2026 runs at the pinned versions above; the
-  repowise column is October 2026 main.
-
-Full method, per-cell artifacts and the pre-registration:
-**[graph/experiments/g4-oracle-anchored](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)**.
-
-</details>
+Repowise leads recall outright on both TypeScript cells and on gitleaks without
+tests. [Method](#method-graph).
 
 ---
 
@@ -407,18 +271,15 @@ Full method, per-cell artifacts and the pre-registration:
 ## Which tests cover a change
 
 Repowise links tests to the code they exercise from the call graph, with no
-coverage run needed. We checked those links against real per-test coverage on
-this repository, over a slice with complete per-test attribution (37 test files,
-159 production files).
+coverage run. Checked against real per-test coverage on this repository (37 test
+files, 159 production files):
 
 | Question | Precision | Sample |
 |---|---:|---|
 | Which tests reach this file | **95.7%** | 44 of 46 claims |
 | Which tests to run for a change | **97.5%** | 47 targets, all answered |
 
-Inferred answers are file-level; measured coverage, when you ingest it, is
-line-level, and repowise labels which kind each answer is. Details:
-[Test intelligence](layers/TEST_INTELLIGENCE.md#accuracy-and-limits).
+Details: [Test intelligence](layers/TEST_INTELLIGENCE.md#accuracy-and-limits).
 
 ---
 
@@ -436,23 +297,16 @@ October 2026.
 | elastic/elasticsearch v8.19.22 | 34,315 | 4.0M | 52 min | 7.8 GiB | 4.2 GiB |
 | dotnet/runtime v8.0.31 | **58,924** | **15.0M** | **120 min** | **11.7 GiB** | 7.7 GiB |
 
-Lines of code are non-blank lines in tracked source files (C#, IL, C, C++, Java,
-TypeScript, JavaScript, Python, shell, assembly and similar), with data, markup and
-docs left out. Peak memory is the whole process tree, one run per repository.
-
-The first index is a one-time cost: it builds the call graph, git history, health,
-tests, dead code and docs together. After that, each update re-analyses only what
-changed. On aspnetcore, an update with no changes takes about 4 seconds.
-
----
+The first index builds the call graph, git history, health, tests, dead code and
+docs together, once. After that, each update re-analyses only what changed: on
+aspnetcore, an update with no changes takes about 4 seconds.
 
 <a id="6-indexing-time-the-row-we-lose"></a>
 <a id="what-it-costs-to-run"></a>
 
-## What it costs to run
+### What it costs to run
 
-Building the call graph, 35 repositories, five tools: 175 cells, none failed,
-three timed runs each after a discarded warmup, nothing restored from cache.
+Building the call graph, 35 repositories, five tools: 175 cells, none failed.
 
 | Tool | Median build | Median peak memory | Fastest on |
 |---|---:|---:|---:|
@@ -463,18 +317,223 @@ three timed runs each after a discarded warmup, nothing restored from cache.
 | Graphify | 12.23 s | 860 MB | 0 |
 
 **Memory: lowest on 35 of 35 repositories**, about 10x below CodeGraph and 5x
-below the next-lowest tool. The
-gap widens with size: 64 MB against CodeGraph's 749 MB under 1,000 files, 152 MB
-against 1,164 MB above, which leaves more room for the rest of a CI job. Speed
-is level with CodeGraph: we lead under 1,000 files and
-it leads above, where we do more resolution work per file.
+below the next-lowest tool, which leaves more room for the rest of a CI job.
+Speed is level with CodeGraph. The full-index build times are in
+[How we measure](#method-build).
 
-<details>
-<summary><b>Building the whole index</b></summary>
+---
 
-A full `repowise init` builds five layers, not one, so it takes longer than a
-graph-only tool: a graph-only tool builds in 16 to 45 seconds, repowise builds
-five layers in about 6 minutes without prose. On `django/django`:
+## How we measure
+
+- **Pre-register before running**, as its own commit, so a good result cannot
+  become a different question afterwards.
+- **Seal a held-out set**, split before any work begins and evaluated once.
+- **Show precision and recall together**, and files served beside coverage.
+- **Prove a tool was running before recording a zero.**
+- **Use code the models have not seen**: repositories created after every
+  tested model's training cutoff.
+- **Use answer keys we did not write**: compilers, published benchmarks and
+  real defect history.
+- **Publish output tokens, not dollars.** Prompt caching makes whichever arm runs
+  first look cheaper. Output tokens are never cached.
+
+The method end to end:
+**[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)**.
+
+### Words used on this page
+
+| Term | Plain meaning |
+|---|---|
+| Agent | An AI coding assistant such as Claude Code, Codex or Cursor |
+| Call graph | A map of which function calls which. It is how a tool can say what breaks when code changes |
+| Precision | Of the things a tool reports, the share that are correct |
+| Recall | Of everything that is really there, the share the tool found |
+| Held out, sealed | Test cases set aside before any tuning, so they show what you will see on your own code |
+| Files opened | Distinct source files the agent read while answering, by opening them or printing them in a shell |
+| Output tokens | The text the agent writes while it works: its reasoning, its tool requests and its answer. A token is about three quarters of a word |
+| p-value | The chance a difference this size is luck. Below 0.05 is the usual bar, and most results here are far below it |
+
+<a id="method-agent-loop"></a>
+
+### Per-model agent loop
+
+- **Pre-registered.** Questions, gold answers, both setups, metrics and the
+  analysis were committed before the first graded run. Six dated amendments are
+  in the published pre-registration: A1 set the 24-question grid by a fixed rule,
+  A2 the model order and concurrency, A3 and A4 the rows not run, A5 one gold
+  regex (LEV-02 accepts `Settings::half_life` written without parentheses),
+  applied to both sides for every model, and A6 the Sonnet 4.6 rerun at the
+  current build.
+- **Unseen code.** thruwire/foreman (Python, 16.3k lines),
+  okf-memory/okf-agent-memory (Go, 27.4k) and elstongun/leviathan (Rust, 16.9k),
+  at pinned commits, all created after every tested model's training cutoff.
+  Asked about them with no tools, the models named 0 of 21 distinctive
+  identifiers.
+- **Deterministic grading, no judge.** Each question has gold regexes, each
+  verified at a cited line of the code. An answer is right when every regex
+  matches its final answer section.
+- **Fresh sessions.** Claude Code 2.1.288 headless, model default effort, a new
+  session per run, project settings only, read-only permissions, 60 turns and
+  900 s per run. Which side runs first is drawn from a fixed seed.
+- **The two sides.** Without: built-in tools only, no MCP server. With: the same
+  built-ins plus `get_answer`, `get_context`, `search_codebase` and `get_symbol`
+  from a keyless index (`repowise init --no-prose`), with `mcp.always_load: true`
+  and one prompt sentence naming those tools. The first build is repowise at
+  `061b2bc79`. The current build (A6) is `a5ee180fb`, with indexes rebuilt at
+  that commit, three runs per side.
+- **Sample.** Haiku 4.5 and Sonnet 4.6: 3 runs per side, 72 pairs. Opus 4.8,
+  Sonnet 5.5 and Opus 5.5: 2 runs per side, 48 pairs (A4). 576 graded sessions
+  in the first grid, plus 144 in the A6 rerun.
+- **Total tokens.** Input, cache and output were also recorded. No model shows a
+  significant difference in the total, and every 95% interval spans zero.
+- **Rows not run.** Fable 5.1 and Opus 4.6 (subscription capacity, A4), and a
+  `gpt-5.6-terra` row, whose CLI did not expose the repowise server's tools to
+  the model (A3).
+
+Change is the mean paired difference per question as a share of the
+without-repowise mean, with a 95% bootstrap interval over questions.
+
+| Model | Runs per side | Output tokens, without / with | Change [95% CI] | Wall clock (s), without / with |
+|---|---:|---:|---:|---:|
+| Sonnet 4.6 | 72 | 2,298 / 1,120 | -51.2% [-74.2, -29.3] | 45 / 24, -47.2% [-69.0, -26.2] |
+| Sonnet 4.6, first build | 72 | 2,348 / 1,146 | -51.2% [-73.8, -29.0] | 45 / 24, -47.1% [-68.9, -25.6] |
+| Haiku 4.5 | 72 | 2,907 / 2,754 | -5.3% [-15.9, +4.9] | 30 / 29 |
+| Opus 5.5 | 48 | 1,617 / 1,388 | -14.1% [-22.7, -7.0] | 18 / 17 |
+| Opus 4.8 | 48 | 1,676 / 1,432 | -14.5% [-42.3, +5.7] | 22 / 22 |
+| Sonnet 5.5 | 48 | 1,388 / 1,254 | -9.6% [-15.5, -3.5] | 12 / 11 |
+
+Opus 5.5 by language and by kind of question:
+
+| Slice | Files opened, without / with | Output tokens change [95% CI] | Wrote less on | Answers right |
+|---|---:|---:|---:|---:|
+| Python (foreman) | 3.3 / 0.5 | **-21.1%** [-35.2, -8.8] | 7 of 8 | 16 / 16 of 16 |
+| Go (okf-agent-memory) | 2.1 / 0.1 | **-14.4%** [-25.4, -4.7] | 7 of 8 | 16 / 16 of 16 |
+| Rust (leviathan) | 1.4 / 0.5 | -3.5% [-11.1, +4.6] | 6 of 8 | 16 / 16 of 16 |
+| Locate | 1.3 / 0.3 | **-16.2%** [-31.0, -3.1] | 7 of 9 | 18 / 18 of 18 |
+| Flow | 3.3 / 0.6 | -10.6% [-23.7, +0.2] | 7 of 9 | 18 / 18 of 18 |
+| Impact | 2.1 / 0.1 | **-20.5%** [-29.6, -12.4] | 6 of 6 | 12 / 12 of 12 |
+
+Across all five models, output falls on Python (-12.5% to -53.8%) and on Go
+(-8.9% to -63.2%). Every slice for every model is in
+[RESULTS.md](https://github.com/repowise-dev/repowise-bench/blob/master/results/per_model_2026_11/RESULTS.md).
+Raw data, every session, transcript and graded answer:
+**[results/per\_model\_2026\_11](https://github.com/repowise-dev/repowise-bench/tree/master/results/per_model_2026_11)**.
+
+<a id="method-side-by-side"></a>
+
+### Side by side with other context tools
+
+- **Same setup for every tool.** Same prompt, each tool's full advertised
+  surface, a fresh index on the same pinned commit. Codex (`gpt-5.6-sol`),
+  August 2026, the 43 questions all six arms completed. After correcting for five
+  simultaneous comparisons, repowise's reduction remains clearly significant.
+- **Work saved, quality unchanged.** Blind-judge scores sit within 0.04 to 0.25
+  points of the bare agent on a 10-point scale, inside the 0.69-point rerun noise.
+- **Local model.** `qwen3:8b` under Ollama, 15 questions: output -40.8% and wall
+  clock -27.5% with every tool on; -47.9% and -41.5% with only the local tools
+  (`get_answer` off), at about the same answer quality as the bare agent.
+- **Claude Code** (`claude-sonnet-5`, 15 questions, one run): output down 15.9%
+  (p = 0.035) when the agent calls repowise.
+
+Raw data, every cell:
+**[rung9](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung9)**
+(Codex) and
+**[rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
+(15-question runs). Per-tool setup notes:
+[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head).
+
+<a id="method-retrieval"></a>
+
+### Finding the right files
+
+The 112 ContextBench cases were split before any work started. Overfitting makes
+the unseen half score worse. Ours scores better on it, and CodeGraph, which
+nobody tuned against either half, scores the same on both, so the halves are
+equally hard.
+
+| | Other half (n=70) | **Sealed half (n=42)** |
+|---|---:|---:|
+| repowise (`get_answer`) | 0.810 | **0.876** |
+| repowise (`search_codebase`) | 0.684 | 0.742 |
+| CodeGraph | 0.6093 | 0.6095 |
+
+File coverage compares returned paths with the gold files and nothing else.
+`get_answer` finds the most from about 19 files; `search_codebase` finds 0.742
+from 8.2. Against CodeGraph, `search_codebase` won 13, lost 3, tied 26
+(p = 0.021). cocoindex's n is 41 because one instance returned no answer; its
+placing was
+[pre-registered before its index existed](https://github.com/repowise-dev/repowise-bench/tree/master/configs).
+Raw cells:
+**[rung8](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung8)**.
+
+<a id="method-health"></a>
+
+### Code health
+
+The score's 95% CI is 0.683 to 0.787. It beats recent churn by +0.100 AUC and
+past bugs by +0.117, and holds at 0.76 to 0.78 on PROMISE/jEdit, a dataset it
+never saw. File size alone discriminates about as well (AUC 0.742); the score's
+advantage is effort-aware ranking, Popt +0.134 (95% CI +0.080 to +0.198), and
+that it says why a file is at risk.
+
+Weights are fitted, not hand-set: a size-controlled logistic fit on files scored
+before their bug window, so a detector earns weight only for defect lift beyond
+being large. Of the 53 detectors, 25 move the defect score; the others feed the
+maintainability or performance score, or are advisory. CodeScene flags about 27
+files where repowise flags 132.
+
+Reports:
+**[BENCHMARK\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)** ·
+**[COMPARISON\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)**
+
+<a id="method-graph"></a>
+
+### Call graph
+
+- **Scoring.** An edge matches when the caller and the callee land on the same
+  declaration line the compiler names. Python's reference is jedi, which follows
+  re-exports and type stubs to the real definition. Where clang or Roslyn's index
+  cannot tell which overload an unresolved call names, that call is left
+  ungraded, and Java's reference places Lombok-generated members where javac
+  does. Apex has no public compiler index, so its recall is read against a census
+  of literal `new X(` and `X.m(` references and its precision from 30
+  hand-graded edges on each of three repositories. Every cell carries a 95%
+  confidence interval in the published artifacts.
+- **Held out means never tuned on.** Held-out repositories are chosen in advance
+  and never used to pick a fix. None sits more than 0.04 below its language's
+  lowest dev row.
+- **Recall depends on entry points** (4 on gitleaks, 268 on syft with tests), so
+  compare it within a language or a row. On syft without tests, 44% of missed
+  edges are dynamic dispatch, at 6.5 possible targets per call site.
+- **Two methods agree.** On Go, a hand-graded audit read 29/30 for repowise and
+  29/30 for CodeGraph; the compiler, over about 1,600 edges on the same
+  repository, read 97.6% and 97.2%.
+- **Four-tool check.** Edges the compiler cannot judge are charged to nobody.
+  TypeScript is scored without tests because the pinned corpus installs no
+  dependencies. cobra, a library, is analysed through its test binaries.
+  Graphify tags 93% of its call edges `INFERRED` and all are scored;
+  code-review-graph is scored on resolved rows only. Competitor columns are
+  August 2026 runs at the pinned versions; the repowise column is October 2026
+  main.
+
+Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
+scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0,
+kotlinc 2.4.21. Per-repository scores and the scoring code:
+**[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** ·
+four-tool method and pre-registration:
+**[g4-oracle-anchored](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)**.
+
+<a id="method-build"></a>
+
+### Build cost and the full index
+
+Graph build: three timed runs per cell after a discarded warmup, nothing
+restored from cache. Repowise's graph is built in memory while CodeGraph writes a
+SQLite index; memory is read from a subprocess arm so peak RSS is measured the
+same way for every tool. Repowise leads speed under 1,000 files and CodeGraph
+above, where repowise does more resolution work per file.
+
+A full `repowise init` builds five layers, not one. On `django/django`:
 
 | Tool | Index time | What it builds |
 |---|---:|---|
@@ -486,70 +545,30 @@ five layers in about 6 minutes without prose. On `django/django`:
 
 The call graph itself takes about 3 seconds. The rest builds a 90,477-edge graph
 with communities and flow tracing, git history across 2,630 files, 3,392 wiki
-pages embedded for search, architectural decisions, and 5,317 health findings.
-Updates after the first index are incremental.
-
-The graph table is construction only and the index table is a full
-`repowise init`, so the two are not comparable with each other. Our graph is
-built in memory, while CodeGraph writes a SQLite index; our memory figures come
-from a subprocess arm built so peak RSS is read the same way as every
-competitor's. Single machine and OS. A fitted build-cost curve for all five
-tools across a 12x size range is in
-[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head#the-result-nobody-in-the-field-had-published-a-build-cost-curve).
-
-Per-repository tables:
-**[graph/experiments/g6-build-cost](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g6-build-cost)**.
-
-</details>
-
----
+pages embedded for search, architectural decisions and 5,317 health findings.
+Updates after the first index are incremental. Per-repository tables:
+**[g6-build-cost](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g6-build-cost)**.
 
 <a id="3-loading-one-commits-context-the-easy-number"></a>
 <a id="loading-one-commits-context-the-easy-number"></a>
 
-## Loading a commit's context
+### Loading a commit's context
 
-How many tokens an agent reads to take in one commit, over the 30 most recent
-non-merge commits of `pallets/flask`, counted with `tiktoken` (`cl100k_base`):
-
-| Strategy | Tokens per commit |
-|---|---:|
-| Full contents of every changed file | 13,984 |
-| **`get_context` on the changed files** | **2,586** |
-| `git diff` only | 1,412 |
-
-`get_context` is 5.4x smaller than reading the changed files and returns every
-symbol in each file with its signature and location, which the raw diff does
+Over the 30 most recent non-merge commits of `pallets/flask` (`tiktoken`,
+`cl100k_base`), `get_context` on the changed files costs 2,586 tokens per
+commit, 5.4x less than reading the changed files in full (13,984), and returns
+every symbol with its signature and location, which the raw diff (1,412) does
 not.
 
----
-
-## How we measure
-
-- **Pre-register before running**, as its own commit, so a good result cannot
-  become a different question afterwards.
-- **Seal a held-out set**, split before any work begins and evaluated once.
-- **Show precision and recall together**, and files served beside coverage.
-- **Prove a tool was running before recording a zero.**
-- **Use answer keys we did not write**: compilers, published benchmarks and
-  real defect history.
-
-Retrieval and the agent loop are measured on Python and Go; graph accuracy on
-ten languages against their compilers (jedi for Python). The method end to
-end:
-**[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)**.
-
-## Where the depth is
-
-The evidence is in **[repowise-bench](https://github.com/repowise-dev/repowise-bench)**:
-every graded cell, every pre-registration, and what each run cost.
+### Where the depth is
 
 | Start here | For |
 |---|---|
-| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | Graph accuracy: per-language compiler scores, the five-tool comparison, build cost |
-| **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Retrieval and agent-loop results and per-tool setup notes |
-| **[health-defect](https://github.com/repowise-dev/repowise-bench/tree/master/health-defect)** | The defect-prediction study and the CodeScene comparison |
+| **[results/per\_model\_2026\_11](https://github.com/repowise-dev/repowise-bench/tree/master/results/per_model_2026_11)** | The per-model agent loop: every session, transcript and graded answer, and the harness |
+| **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Retrieval and side-by-side agent-loop results, per-tool setup notes |
 | **[results/bakeoff\_2026\_08](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08)** | Every graded cell and every verbatim response |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | Graph accuracy, the four-tool comparison, build cost |
+| **[health-defect](https://github.com/repowise-dev/repowise-bench/tree/master/health-defect)** | The defect-prediction study and the CodeScene comparison |
 | **[repro/README.md](https://github.com/repowise-dev/repowise-bench/blob/master/repro/README.md)** | Per claim: what it costs to reproduce |
 
 Want your tool in the field? Adding a competitor is a YAML block. See
@@ -560,7 +579,9 @@ code-review-graph 2.3.7, cocoindex as of 2026-08-09, codebase-memory-mcp 0.10.8.
 
 ## See also
 
-- [The intelligence layers](layers/INTELLIGENCE_LAYERS.md)
+- [What repowise replaces](layers/INTELLIGENCE_LAYERS.md): one index doing the
+  work of a code health tool, an agent code graph, test impact, dead code, docs,
+  decision records and multi-repo contracts
 - [Code health](layers/CODE_HEALTH.md)
 - [Test intelligence](layers/TEST_INTELLIGENCE.md)
 - [MCP tool reference](agent/MCP_TOOLS.md)

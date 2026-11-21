@@ -75,9 +75,12 @@ def extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[
             if is_from_import:
                 bindings.append(NamedBinding(local_name=bare, exported_name=bare, source_file=None))
             else:
+                # ``import pkg.mod`` binds ``pkg``, never ``mod``: the module is
+                # reached as ``pkg.mod``, the receiver a call names, so that is
+                # the key. The bare ``mod`` stays free for a local or parameter.
                 bindings.append(
                     NamedBinding(
-                        local_name=bare,
+                        local_name=text,
                         exported_name=None,
                         source_file=None,
                         is_module_alias=True,
@@ -135,6 +138,7 @@ def expand_bare_relative_imports(imports: list[Import]) -> list[Import]:
                     bindings=[binding],
                     type_only=imp.type_only,
                     deferred=imp.deferred,
+                    scopes=imp.scopes,
                 )
             )
     return out

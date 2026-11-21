@@ -135,7 +135,8 @@ def project(payload: dict) -> dict:
                         tool substitutes when nothing governs the
                         path: git_archaeology (summary plus the head
                         of each of its three layers), code_rationale
-                        and target_context
+                        (head, with the tool's total) and
+                        target_context
     dashboard kept      summary, counts, and the head of each of
                         stale_decisions / proposed_awaiting_review /
                         ungoverned_hotspots / conflicts /
@@ -244,6 +245,10 @@ def project(payload: dict) -> dict:
             )
             for entry in _capped(payload["code_rationale"])
         ]
+        # The tool caps the list itself, so its own total is the real count.
+        total = max(payload.get("code_rationale_total") or 0, len(payload["code_rationale"]))
+        if total > len(out["code_rationale"]):
+            out["code_rationale_total"] = total
     if payload.get("target_context"):
         out["target_context"] = {
             target: _project_target_entry(entry)
@@ -300,7 +305,9 @@ def why_command(
     decisions, origin story and alignment score), or omitted for the decision
     health dashboard — or for repeatable --target paths, when named. A path
     leads with the decisions in force and the background records beside them;
-    --full adds its origin story and git history.
+    when there are none, it falls back to the path's git history and the
+    rationale comments in its source. --full adds the origin story and git
+    history to any path.
     """
     fmt = _ta.resolve_format_for(fmt, full)
     repo_path = _ta.resolve_indexed_repo(
@@ -311,15 +318,26 @@ def why_command(
         command="why",
     )
 
-    def _factory():
-        from repowise.server.mcp_server.tool_why import get_why
+    def _run(history: bool) -> dict:
+        arguments = {
+            "query": query,
+            "targets": list(targets) or None,
+            "include": ["history"] if history else None,
+        }
 
-        # --full is the whole answer, so it asks for the history too.
-        return get_why(
-            query=query, targets=list(targets) or None, include=["history"] if full else None
-        )
+        def _factory():
+            from repowise.server.mcp_server.tool_why import get_why
 
-    payload = _ta.run(repo_path, _factory, "get_why")
+            return get_why(**arguments)
+
+        return _ta.run(repo_path, _factory, "get_why", arguments=arguments)
+
+    # --full is the whole answer, so it asks for the history too.
+    payload = _run(full)
+    if not full and _only_points_at_history(payload):
+        # Nothing governs the path, so the default answer is a bare pointer.
+        # Fall back to its git history and rationale comments, as documented.
+        payload = _run(True)
 
     if full:
         _ta.emit_full(payload)
@@ -331,6 +349,17 @@ def why_command(
         return
     _render(projected)
     _ta.print_index_note(payload, fmt)
+
+
+def _only_points_at_history(payload: dict) -> bool:
+    """Whether a path answer holds no record, only the pointer to its history."""
+    return (
+        payload.get("mode") == "path"
+        and bool(payload.get("more"))
+        and not payload.get("decisions")
+        and not payload.get("candidates")
+        and not payload.get("target_context")
+    )
 
 
 def _render(projected: dict) -> None:
@@ -402,6 +431,10 @@ def _render(projected: dict) -> None:
             where = f":{lines[0]}" if lines else ""
             console.print(f"  [cyan]{entry.get('path', '')}{where}[/cyan]")
             console.print(f"    [dim]{entry.get('comment', '')}[/dim]")
+        if projected.get("code_rationale_total"):
+            console.print(
+                f"  [dim]{len(rationale)} of {projected['code_rationale_total']} shown.[/dim]"
+            )
 
     for target, entry in (projected.get("target_context") or {}).items():
         console.print(f"\n[bold]Target[/bold] [cyan]{target}[/cyan]")

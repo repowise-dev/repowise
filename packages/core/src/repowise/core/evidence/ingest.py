@@ -13,12 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from repowise.core.ingestion.symbol_identity import local_symbol_id
+from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
 
@@ -54,6 +55,8 @@ class RunProvenance:
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
+    #: Tests that failed in the profiled suite, as the profile reports it; None when not said.
+    tests_failed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -182,7 +185,9 @@ def _join(
     optional = kind in ("benchmark", "test_timing")
     location = entry.get("location") if optional else entry
     if location is None:
-        return _ROW_BUILDERS[kind](entry, None), None, None
+        # A test named by a classname no indexed file matched (place_test_entries).
+        reason = "unplaced" if entry.get("classname") else None
+        return _ROW_BUILDERS[kind](entry, None), reason, None
     path = location["path"]
     origin = origins.get(path)
     if origin in _UNMAINTAINED:
@@ -231,6 +236,7 @@ def _test_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]
         "symbol_id": symbol_id,
         "duration_s": entry["duration_s"],
         "outcome": entry["outcome"],
+        "first_in_class": entry["first_in_class"],
     }
 
 
@@ -238,6 +244,7 @@ def _query_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any
     return {
         "scope_kind": entry["scope_kind"],
         "scope_id": entry["scope_id"],
+        "scope_items": entry["scope_items"],
         "site_symbol_id": symbol_id,
         "statement_fp": entry["statement_fp"],
         "site_line": entry["line"],
@@ -265,19 +272,86 @@ _ROW_KEY = {
 }
 
 
+def rebase_test_entries(
+    doc: EvidenceDocument, files: Collection[str], base: str
+) -> EvidenceDocument:
+    """*doc* with each test file the index does not hold read from *base*, when the index holds that.
+
+    *base* is the repo-relative directory the report was read from. A runner in a
+    package below the repository root names test files from where it ran and writes
+    its report there (Vitest, which has no option to prefix them). The joined path wins
+    when the index holds it, even beside a root file of the same name; a path that is
+    already repo-relative (``web/src/x.test.ts``) joins to none and is kept.
+    """
+    if doc.kind != "test_timing" or not base:
+        return doc
+    entries = []
+    for entry in doc.entries:
+        path = entry.get("test_file")
+        moved = f"{base}/{path}" if path else None
+        test_id = entry["test_id"]
+        # The id names the file first (``path::name``); one that does not is left whole.
+        if moved in files and test_id.startswith(f"{path}::"):
+            location = entry.get("location")
+            entry = {
+                **entry,
+                "test_id": moved + test_id[len(path) :],
+                "test_file": moved,
+                "location": {**location, "path": moved} if location else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
+
+
+def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
+    """*doc* with each test named only by a dotted ``classname`` placed on its file.
+
+    A JUnit report that does not say a test's file names its class
+    (``tests.unit.test_x.TestC``, ``com.acme.CartTest``); the indexed file
+    that name leads to (:func:`~repowise.core.test_paths.dotted_name_file`,
+    one of *files* or none) gives the test its ``path::qualname`` id and its
+    function. A name that leads to no file, or to two, stays unplaced.
+    """
+    if doc.kind != "test_timing" or not any(e.get("classname") for e in doc.entries):
+        return doc
+    by_stem = files_by_stem(files)
+    entries = []
+    for entry in doc.entries:
+        classname = entry.get("classname")
+        found = dotted_name_file(classname, by_stem) if classname else None
+        if found is not None:
+            path, rest = found
+            name = entry["test_id"].removeprefix(f"{classname}::")
+            test_id = f"{path}::{'::'.join((*rest, name))}"
+            function = nodeid_function(test_id)
+            entry = {
+                **entry,
+                "test_id": test_id,
+                "test_file": path,
+                "classname": None,
+                "location": {"path": path, "function": function, "line": None, "exact": True}
+                if function
+                else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
+
+
 def cap_rows(
     kind: str, rows: list[dict[str, Any]], caps: EvidenceCaps
 ) -> tuple[list[dict[str, Any]], int]:
     """The rows kept under the cap, and how many were dropped.
 
-    A profile keeps its costliest symbols (inclusive, then self, then id, so
-    the cut is stable); other kinds keep the document's order.
+    A profile keeps its costliest symbols (self, the cost waits excluded,
+    then inclusive, then id, so the cut is stable): a leaf that does the work
+    outlives the frames that only call it. Other kinds keep the document's
+    order.
     """
     if kind == "profile":
         limit = caps.max_symbols_per_run
         rows = sorted(
             rows,
-            key=lambda r: (-(r["total_value"] or 0.0), -(r["self_value"] or 0.0), r["symbol_id"]),
+            key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
         )
     else:
         limit = caps.max_rows_per_run
@@ -285,10 +359,15 @@ def cap_rows(
 
 
 def run_key(
-    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+    text: str,
+    provenance: RunProvenance,
+    kind: str,
+    index_commit: str | None = None,
+    report_dir: str = "",
 ) -> str:
     """One measurement's identity: its content, everything the run row records,
-    and the index it was joined against (a later index joins it afresh)."""
+    the index it was joined against (a later index joins it afresh), and the
+    directory its test paths were read from (:func:`rebase_test_entries`)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
@@ -299,6 +378,10 @@ def run_key(
         provenance.checkout_root,
         str(provenance.dirty),
         provenance.source,
+        # Only when known, so a run that never reports it keeps its key.
+        *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
+        # Only test paths are read from it (rebase_test_entries), so other kinds keep their key.
+        *((f"report_dir={report_dir}",) if report_dir and kind == "test_timing" else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -314,8 +397,9 @@ def run_fields(
     key: str,
     truncated: int,
     mapping_partial: bool,
+    unlisted: int | None = None,
 ) -> dict[str, Any]:
-    """The ``evidence_runs`` row for one ingest."""
+    """The ``evidence_runs`` row for one ingest; *unlisted* from :func:`unlisted_count`."""
     skipped = Counter(doc.skipped) + joined.skipped
     outside = skipped.get("outside_repo", 0)
     return {
@@ -343,8 +427,21 @@ def run_fields(
         "unmatched_sample_json": json.dumps(joined.unmatched_sample),
         "total_value": doc.total,
         "explained_value": doc.explained,
+        "repo_self_value": doc.repo_self,
+        "wait_value": doc.waits,
+        "library_value": doc.libraries,
+        "total_samples": doc.total_samples,
+        "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
+        "tests_failed": provenance.tests_failed,
     }
+
+
+def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]) -> int:
+    """Profile rows outside production code: counted before a cap drops any, never listed."""
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+
+    return sum(origins.get(file_of_symbol(row["symbol_id"])) != "production" for row in rows)
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
@@ -413,6 +510,35 @@ async def load_origins(
     return {path: stored.get(path) or path_origin(path) for path in wanted}
 
 
+async def stamp_bodies(
+    session: Any,
+    repository_id: str,
+    rows: Iterable[dict[str, Any]],
+    *,
+    index_at_measured_commit: bool,
+) -> None:
+    """Give each profile row its function's lineage and, when the index is at
+    the commit measured, its body digest (``function_facts``).
+
+    The digest is what tells a later index whether the measured body is still
+    the one indexed. Joined at another commit, the indexed body may not be the
+    one measured, so none is stored and the row reads stale once HEAD moves.
+    """
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+    from repowise.core.persistence.crud import stored_bodies
+
+    rows = list(rows)
+    paths = {file_of_symbol(row["symbol_id"]) for row in rows}
+    bodies = {b.symbol_id: b for b in await stored_bodies(session, repository_id, paths)}
+    for row in rows:
+        body = bodies.get(row["symbol_id"])
+        if body is None:
+            continue
+        row["lineage_id"] = body.lineage_id
+        if index_at_measured_commit:
+            row["body_digest"] = body.digest
+
+
 def uncommitted_paths(checkout_root: str | Path) -> frozenset[str] | None:
     """Tracked files under *checkout_root* that differ from its HEAD, repo-relative.
 
@@ -445,9 +571,13 @@ __all__ = [
     "join_entries",
     "load_origins",
     "load_symbols",
+    "place_test_entries",
+    "rebase_test_entries",
     "resolve_location",
     "run_fields",
     "run_key",
+    "stamp_bodies",
     "symbol_lookup",
     "uncommitted_paths",
+    "unlisted_count",
 ]

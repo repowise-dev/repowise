@@ -13,7 +13,7 @@ By hand: the [Quickstart](start/QUICKSTART.md) gets you indexed and connected to
 your agent in under five minutes, with no API key.
 
 <div align="center">
-  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools (all ten on Claude Code, five by default on other clients)" width="100%" />
 </div>
 
 For a map of every layer and how they feed each other, read
@@ -120,8 +120,7 @@ For a map of every layer and how they feed each other, read
 | [business/EVALUATION.md](business/EVALUATION.md) | Try it on your own code in an afternoon, offline, from index to evidence packs |
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
-| [business/FORESIGHT.md](business/FORESIGHT.md) | Foresight: learned models that predict where a fix goes and what a change forgot, coming to hosted and enterprise |
-| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method |
 | [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
 | [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |
 

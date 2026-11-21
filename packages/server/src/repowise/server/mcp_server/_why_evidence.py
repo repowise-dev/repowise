@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from repowise.core.git_sha import is_full_sha, is_sha_prefix
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._references import (
     _content_id,
     _path_identity,
@@ -425,7 +426,7 @@ def _resolved_commits(
     visit(result)
     resolved = {candidate: candidate for candidate in candidates if is_full_sha(candidate)}
     prefixes = sorted(candidates - resolved.keys())
-    if not prefixes or repo_root is None:
+    if not prefixes or repo_root is None or not _state.git_available():
         return resolved
     root = Path(repo_root)
     try:
@@ -644,6 +645,8 @@ async def annotate_response_evidence_async(
         record_list,
         resolved_commits=resolved,
     )
+    if repo_root is None:
+        return annotated
     persisted = await asyncio.to_thread(
         _persist_evidence_references, annotated, repo_root
     )

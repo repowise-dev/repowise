@@ -4,7 +4,8 @@
 stacks name (:mod:`repowise.core.test_runners.stacks`), the command that
 writes a report repowise reads, what that command needs first, where the
 report lands, and the exact ``repowise`` line that ingests it, then the
-runtime targets worth profiling (:mod:`.runtime_setup`). A report already on
+runtime targets worth profiling (:mod:`.runtime_setup`) and the JUnit XML
+report its tests can write for test timings. A report already on
 disk comes first. ``next_call`` is the sequence of steps an agent runs next,
 each with the directory it runs in. Nothing is written.
 """
@@ -20,11 +21,26 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
-from .runtime_setup import CLASS_ORDER, EVIDENCE_STATUS_COMMAND, RuntimeInputs, runtime_targets
+from .ci_snippet import ci_snippet
+from .runtime_setup import (
+    ARGS_PLACEHOLDER,
+    CLASS_ORDER,
+    EVIDENCE_STATUS_COMMAND,
+    RuntimeInputs,
+    evidence_ingest_line,
+    is_offered,
+    offered_targets,
+    runtime_targets,
+    timed_target,
+)
 
 #: Builds the index evidence joins to; no model calls, no API key.
 INIT_COMMAND = "repowise init --yes --no-prose"
-SETUP_COMMAND = "repowise evidence setup --format json"
+#: What a person runs; ``SETUP_COMMAND`` is the same plan as JSON for an agent.
+EVIDENCE_SETUP = "repowise evidence setup"
+SETUP_COMMAND = f"{EVIDENCE_SETUP} --format json"
+#: The coverage part of the plan alone.
+COVERAGE_SETUP = "repowise coverage setup"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
 #: Says what is wrong with an index that exists but cannot be read.
 DOCTOR_COMMAND = "repowise doctor"
@@ -158,16 +174,21 @@ def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str
 def _runtime_call(
     repo_root: Path, units: Sequence[dict[str, Any]], done: Collection[str]
 ) -> dict[str, Any] | None:
-    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it."""
+    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it.
+
+    A target with a ``reason`` (an entry point waiting for its arguments) is the agent's to finish, never a step.
+    """
     targets = [
-        t for u in units for t in u.get("runtime", ()) if t["ingest"] and t["workload"] not in done
+        t for u in units for t in u.get("runtime", ())
+        if t["ingest"] and t["reason"] is None and t["workload"] not in done
     ]
     if not targets:
         return None
     best = min(targets, key=lambda t: CLASS_ORDER.index(t["class"]))
     cwd = {"cwd": best["cwd"]}
     return {
-        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile.",
+        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile."
+        + (f" {best['note']}" if best.get("note") else ""),
         "steps": [
             *({**cwd, "run": p} for p in best["prerequisites"]),
             {**cwd, "run": best["command"]},
@@ -188,6 +209,8 @@ def evidence_setup(
     coverage_only: bool = False,
     index_error: str | None = None,
     index_fix: str = DOCTOR_COMMAND,
+    ci: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -204,6 +227,9 @@ def evidence_setup(
     *index_error* is why an index that exists could not be read: the plan
     then sends the agent to *index_fix* (``repowise doctor`` unless the
     error names another), never to a fresh ``init``.
+    With *ci* (``github`` or ``gitlab``), ``ci`` holds the CI file that runs
+    each unit's tests with coverage on pushes to *branch*
+    (:func:`~.ci_snippet.ci_snippet`); the caller writes it.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -216,10 +242,21 @@ def evidence_setup(
     planned = [_coverage_unit(s, found[id(s)], _measures(root, found[id(s)], head)) for s in stacks]
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
+        for stack, unit in zip(stacks, planned, strict=True):
+            unit["test_timings"] = _test_timings(stack, head)
     covered = head is not None and coverage_commit == head
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
+    done = _measured_at(runtime, head)
+    next_call = _with_optional(
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done),
+        _optional_entry_points(planned, done),
+    )
     if next_call is not None:
         reason = None
+    elif indexed and covered and not coverage_only and not _offers_runtime(planned):
+        reason = (
+            "Coverage at this commit is ingested. No unit has an entry point, benchmark "
+            "or test suite repowise can profile, so there is nothing left to run."
+        )
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
@@ -230,13 +267,124 @@ def evidence_setup(
             "steps": [_step(root, "", index_fix)],
         }
         reason = f"The index could not be read: {index_error}"
-    return {
+    plan = {
         "repo": str(root),
         "indexed": indexed,
         "commit": head,
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+    if ci is not None:
+        plan["ci"] = ci_snippet(stacks, ci, branch)
+    return plan
+
+
+def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
+    """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
+
+    ``flag`` is what to add to the unit's own test command (None: the runner
+    writes the report by default); ``env`` is what that command needs in its
+    environment for the report (None: nothing). Test timings are never a step of
+    ``next_call``: they rank tests, they never decide anything.
+    """
+    if not stack.junit_report:
+        return None
+    report = _joined(stack.root, stack.junit_report)
+    workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
+    return {
+        "flag": stack.junit_flag or None,
+        "env": stack.junit_vars() or None,
+        "report": report,
+        "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
+    }
+
+
+def _offers_runtime(planned: Sequence[dict[str, Any]]) -> bool:
+    """Whether any unit lists a runtime target with an ingest line (:func:`offered_targets`)."""
+    return any(is_offered(t) for u in planned for t in u.get("runtime", ()))
+
+
+def runtime_offer(
+    repo_root: str | Path,
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+    head: str | None,
+) -> list[dict[str, Any]]:
+    """:func:`~.runtime_setup.offered_targets` for the checkout at *repo_root*:
+    the runtime targets its plan prints an ingest line for. Blocking reads."""
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    return offered_targets(stacks, root, runtime, head, _go_mains(root, stacks))
+
+
+async def load_runtime_offer(
+    session: Any, repository_id: str, repo_root: str | Path | None, head: str | None
+) -> list[dict[str, Any]] | None:
+    """:func:`runtime_offer` from the stored build units and runtime inputs;
+    None when *repo_root* is not a checkout on this machine."""
+    import asyncio
+
+    from ..persistence.crud.build_units import load_build_units
+    from .runtime_setup import load_runtime_inputs
+
+    root = Path(repo_root) if repo_root else None
+    if root is None or not root.is_dir():
+        return None
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(runtime_offer, root, units=units, runtime=runtime, head=head)
+
+
+def offered_classes(offer: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """The workload classes in *offer*, in :data:`~.runtime_setup.CLASS_ORDER`."""
+    found = {t["class"] for t in offer}
+    return tuple(c for c in CLASS_ORDER if c in found)
+
+
+def _with_optional(
+    next_call: dict[str, Any] | None, optional: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """*next_call* carrying *optional* under ``optional``.
+
+    With no step left, the call is still there, with no steps, so an agent
+    that stops at a null ``next_call`` never stops before the entry points.
+    """
+    if optional is None:
+        return next_call
+    if next_call is None:
+        next_call = {"purpose": "Only entry points waiting for their arguments are left.", "steps": []}
+    return {**next_call, "optional": optional}
+
+
+def _optional_entry_points(
+    planned: Sequence[dict[str, Any]], done: Collection[str]
+) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments, or servers waiting for requests,
+    not measured here, by workload.
+
+    Never a step, so named here. An entry point counts as measured once any
+    run of it is stored at this commit (``app`` or ``app build``), but not one
+    stored under the unfilled name (``app <args>``). Only names,
+    so the default answer stays small; each target's command and ingest line
+    are in ``units[].runtime``.
+    """
+    workloads = [
+        t["workload"] for u in planned for t in u.get("runtime", ())
+        if t["class"] == "entry_point" and t["command"] and t["ingest"] and t["reason"]
+        and not any(
+            (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
+            for d in done
+        )
+    ]
+    if not workloads:
+        return None
+    return {
+        "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
+        "representative run, or send a server representative requests while it runs, then run "
+        "each command and its ingest line.",
+        "workloads": workloads,
     }
 
 
@@ -282,6 +430,33 @@ def _next_call(
     )
 
 
+def timed_targets(
+    repo_root: str | Path,
+    paths: Iterable[str],
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+) -> dict[str, dict[str, Any]]:
+    """For each repo-relative path in *paths*, the workload ``perf measure``
+    times for a change there (:func:`~.runtime_setup.timed_target`); a path
+    with none is left out. One stack detection for all of them. Blocking reads.
+    """
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    mains = _go_mains(root, stacks)
+    out: dict[str, dict[str, Any]] = {}
+    # Files of one language in one directory share a unit, so its targets are read once.
+    seen: dict[tuple[str, str], dict[str, Any] | None] = {}
+    for path in paths:
+        key = (posixpath.splitext(path)[1], posixpath.dirname(path))
+        if key not in seen:
+            seen[key] = timed_target(stacks, root, runtime, path, mains)
+        target = seen[key]
+        if target:
+            out[path] = target
+    return out
+
+
 def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     """Go ``package main`` directories, read only when a unit is Go."""
     if not any(s.language == "go" for s in stacks):
@@ -292,11 +467,17 @@ def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
 
 
 __all__ = [
+    "COVERAGE_SETUP",
     "COVERAGE_STATUS_COMMAND",
     "DOCTOR_COMMAND",
+    "EVIDENCE_SETUP",
     "INIT_COMMAND",
     "SETUP_COMMAND",
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "load_runtime_offer",
+    "offered_classes",
+    "runtime_offer",
+    "timed_targets",
 ]

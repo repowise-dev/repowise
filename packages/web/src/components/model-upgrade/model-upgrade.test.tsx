@@ -129,6 +129,22 @@ describe("ways in to the model sheet", () => {
 
     expect(await screen.findByText("Write this documentation with a model")).toBeTruthy();
   });
+
+  it("the chat no-provider state says the agent still works, and names a model found here", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderFresh(
+      <NoProviderReason
+        message="noProvider"
+        onAddModel={vi.fn()}
+        ready={{ source: "Uses Ollama on this machine", prompt: "Write the docs." }}
+      />,
+    );
+    expect(screen.getByText(/Your agent can still ask the index without one/)).toBeTruthy();
+    expect(screen.getByText("A model is ready. Uses Ollama on this machine.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs."));
+  });
 });
 
 describe("writing the docs", () => {
