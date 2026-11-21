@@ -1265,6 +1265,19 @@ def _dclgen_language(abs_path: Path, source: bytes | None = None) -> LanguageTag
     return "cobol" if head is not None and is_cobol_dclgen(head) else None
 
 
+# tcltest's suite files are ``*.test``, an extension other test tools share
+# (LLVM lit), so a file is Tcl only when it loads tcltest.
+_TCLTEST_MARKERS = (b"package require tcltest", b"package require -exact tcltest", b"::tcltest::")
+
+
+def _tcltest_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``tcl`` for a ``.test`` file written for tcltest, else ``None``."""
+    if abs_path.suffix.lower() != ".test":
+        return None
+    head = _head(abs_path, source, 8192)
+    return "tcl" if head is not None and any(m in head for m in _TCLTEST_MARKERS) else None
+
+
 def _content_language(
     abs_path: Path, language: LanguageTag | None, source: bytes | None = None
 ) -> LanguageTag | None:
@@ -1277,7 +1290,7 @@ def _content_language(
         if abs_path.suffix.lower() == ".inc":
             return _cpp_inc_language(abs_path, source)
         return _objc_header_language(abs_path, source) or language
-    return language or _dclgen_language(abs_path, source)
+    return language or _dclgen_language(abs_path, source) or _tcltest_language(abs_path, source)
 
 
 def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag:

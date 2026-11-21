@@ -215,6 +215,8 @@ _PARTIAL = {
     "shell",
     # use Foo::Bar by @INC-style suffix match; require "x.pl" by path.
     "perl",
+    # source $dir/x.tcl by anchor-strip + unique suffix; package require by provide.
+    "tcl",
     # <script src>/<link href> as document-/root-relative asset paths. Partial
     # rather than full because template dialects (Django, Jinja, Go templates,
     # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.

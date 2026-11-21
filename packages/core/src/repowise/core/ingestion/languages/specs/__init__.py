@@ -68,6 +68,7 @@ from .soql import SPEC as _SOQL
 from .sql import SPEC as _SQL
 from .svelte import SPEC as _SVELTE
 from .swift import SPEC as _SWIFT
+from .tcl import SPEC as _TCL
 from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
@@ -122,6 +123,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _VBNET,
     _APEX,
     _PERL,
+    _TCL,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

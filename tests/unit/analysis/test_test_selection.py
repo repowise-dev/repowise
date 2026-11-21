@@ -1232,3 +1232,10 @@ def test_a_module_level_change_keeps_the_graph_tests_beside_coverage() -> None:
 def test_function_coverage_still_runs_the_tests_every_subset_runs() -> None:
     selection = _select(["src/a.py"], _function_tiers(), unplaced_tests=["tests/test_z.py"])
     assert set(selection.test_files) == {"tests/test_a.py", "tests/test_z.py"}
+
+
+def test_tcl_dot_test_files_are_collected_and_their_helpers_are_code() -> None:
+    assert is_runnable_test("tests/parser.test")
+    assert is_code_file("tests/helpers.tcl") and is_test_helper("tests/helpers.tcl")
+    assert not is_runnable_test("tests/all.tcl")
+    assert not is_runnable_test("tests/helpers.tcl")
