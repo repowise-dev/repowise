@@ -753,6 +753,9 @@ def _trim_symbols(
 
     Compact JSON is additive, so the target's size with a symbol list ``S`` is
     its size with no symbols plus each kept symbol's cost plus the commas.
+    Past the floor the first symbol that busts the share ends the list:
+    skipping it for a shorter later symbol would keep a non-prefix, so the
+    ranked order would no longer decide what stays.
     """
     docs = tgt["docs"]
     costs = [len(json.dumps(s, separators=(",", ":"), default=str)) for s in ordered]
@@ -764,6 +767,12 @@ def _trim_symbols(
         if len(kept) < floor or base + used + sym_cost + len(kept) <= share:
             kept.append(sym)
             used += sym_cost
+        else:
+            # Past the floor the first symbol that busts the share ends
+            # the list: skipping it for a shorter later symbol would keep
+            # a non-prefix, so the ranked order would no longer decide
+            # what stays.
+            break
     docs["symbols"] = kept
     if len(kept) == len(ordered):
         return

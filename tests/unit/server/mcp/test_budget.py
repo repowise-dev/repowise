@@ -443,6 +443,54 @@ def test_truncate_file_trim_stops_at_first_row_over_share():
     assert len(json.dumps(out, separators=(",", ":"), default=str)) <= overhead + share
 
 
+def test_truncate_symbol_trim_stops_at_first_row_over_share():
+    """Symbol trimming keeps a prefix: it stops at the first row over the share.
+
+    Five symbols, floor three: the fourth symbol is too large to fit once the
+    floor is met, but the fifth symbol is tiny and would fit in the room the
+    fourth leaves. The old loop skipped the fourth and kept the fifth, so
+    the kept list was not a prefix of the ranked symbols; the fix breaks at
+    the fourth symbol instead. Centrality pins the ranked order, since the
+    priority sort would otherwise push the large fourth symbol to the tail.
+    The share leaves headroom for the counts fields the trim writes after
+    the loop, so nothing after the trim sheds the tail symbol back off and
+    hides the difference.
+    """
+    name = "pkg/mod"
+    target = _module_target(name, 0, summary_len=100, n_symbols=5)
+    symbols = target["docs"]["symbols"]
+    for rank, sym in enumerate(symbols):
+        sym["pagerank"] = 0.5 - rank * 0.1
+    symbols[3]["docstring"] = "d" * 600
+    costs = [len(json.dumps(sym, separators=(",", ":"), default=str)) for sym in symbols]
+    probe = copy.deepcopy(target)
+    probe["docs"]["symbols"] = []
+    base = len(json.dumps(probe, separators=(",", ":"), default=str))
+    share = base + 200 + sum(costs[:3]) + costs[4] + 3
+    assert costs[3] > 200 + costs[4]  # the large symbol really does not fit
+    envelope = {
+        "targets": {name: target},
+        "truncated": False,
+        "dropped_targets": [],
+        "dropped_symbols": {},
+    }
+    overhead = len(json.dumps(envelope, separators=(",", ":"), default=str)) - len(
+        json.dumps(target, separators=(",", ":"), default=str)
+    )
+    out = truncate_to_budget(
+        {"targets": {name: target}}, char_budget=overhead + share, record_counts=True
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert [sym["name"] for sym in docs["symbols"]] == ["Sym0", "Sym1", "Sym2"]
+    assert docs["symbols_total"] == 5
+    assert docs["symbols_emitted"] == 3
+    assert docs["symbols_reduced_reason"] == "response_budget"
+    assert out["dropped_symbols"][name] == ["Sym3", "Sym4"]
+    assert out["truncated"] is True
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= overhead + share
+
+
 # ---------------------------------------------------------------------------
 # fit_to_budget — the block-shedding ceiling
 # ---------------------------------------------------------------------------
