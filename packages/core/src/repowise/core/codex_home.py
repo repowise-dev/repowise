@@ -23,4 +23,4 @@ def legacy_codex_home() -> Path | None:
     still has to clean it.
     """
     legacy = Path.home() / ".codex"
-    return legacy if codex_home() != legacy else None
+    return legacy if codex_home().resolve() != legacy.resolve() else None

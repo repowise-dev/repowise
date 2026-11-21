@@ -83,3 +83,13 @@ def test_without_codex_home_there_is_no_legacy_dir() -> None:
     from repowise.core.codex_home import legacy_codex_home
 
     assert legacy_codex_home() is None
+
+
+def test_codex_home_spelled_differently_from_dot_codex_is_not_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from repowise.core.codex_home import legacy_codex_home
+
+    monkeypatch.setenv("CODEX_HOME", str(Path.home() / "x" / ".." / ".codex"))
+
+    assert legacy_codex_home() is None
