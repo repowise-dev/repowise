@@ -175,6 +175,30 @@ class TestWorkspaceListStoreStates:
         assert "not indexed" in row_b
         assert "1/2 repos indexed" in result.output
 
+    def test_a_store_error_is_an_error_not_the_not_indexed_verdict(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A store that fails is not a store with no row.
+
+        ``_query_store_counts`` once wrapped the query in a bare
+        ``except Exception``, so an unreachable or corrupt store returned the
+        same ``None`` as a missing repository row — and under a configured
+        database ``None`` is the not-indexed verdict. A fully indexed member
+        would report "not indexed" during an outage, the misreport this file
+        exists to pin. A store error must surface as an error.
+        """
+        repo_a = tmp_path / "service-a"
+        repo_a.mkdir()
+        _write_workspace_config(tmp_path, repos=[{"path": "service-a", "alias": "service-a"}])
+
+        shared = _configure_shared_db(monkeypatch, tmp_path)
+        shared.write_bytes(b"this is not a sqlite database")
+
+        result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
+        assert result.exit_code != 0, result.output
+        assert "not indexed" not in result.output
+        assert "index store" in result.output
+
     def test_without_a_configured_database_the_local_directory_decides(
         self, runner, tmp_path, monkeypatch
     ):
