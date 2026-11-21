@@ -25,6 +25,7 @@ from repowise.core.analysis.finding_registry import (
     withheld_summary,
 )
 from repowise.core.analysis.health.rows import field
+from repowise.core.code_origin import path_origin
 from repowise.core.references import path_identity, stable_entity_id
 
 # The bands findings are tiered by, in one place: the tier descriptions quote
@@ -260,6 +261,23 @@ def is_safe(f: Any) -> bool:
         field(f, "file_path"),
         field(f, "safe_to_delete"),
         field(f, "kind"),
+    )
+
+
+def headline_unreachable(findings: list, origins: Mapping[str, str | None]) -> int:
+    """The unreachable files a headline counts: shipped code only.
+
+    Docs and example code stays listed for review (a docs build can include a
+    file by path), but a count of files nothing reaches is about the product.
+    *origins* is each file's stored ``code_origin``; a file without one falls
+    back on its path.
+    """
+    return sum(
+        1
+        for f in findings
+        if field(f, "kind") == "unreachable_file"
+        and (origins.get(field(f, "file_path")) or path_origin(field(f, "file_path")))
+        != "docs_example"
     )
 
 

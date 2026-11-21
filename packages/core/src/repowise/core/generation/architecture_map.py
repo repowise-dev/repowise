@@ -15,9 +15,11 @@ store. Structure alone picks them, so the same index always draws the same map:
   server; an entry point, an HTTP call to another box, or nothing depending on
   it makes it a way in; everything else is engine. A package only ways in
   import is a library of theirs: folded into its one consumer, or into one
-  shared box.
+  shared box. A library larger than its one consumer keeps its own box, so a
+  small tool that imports the main app never draws the app under its name.
 * Actors come from the entry points: one person for every human way in (a
-  terminal, an app), and one box per program that calls in. An entry point
+  terminal, an app, a web page the framework routes to), and one box per
+  program that calls in. An entry point
   that looks like an API but serves no route is a person's way in.
 * Arrows are the import and call graph rolled up to boxes, plus the runtime
   links no import expresses (actor to entry point, HTTP client to route). An
@@ -39,6 +41,7 @@ from repowise.core.analysis.c4.actors import actor_for, classify_entry_point
 from repowise.core.analysis.c4.containers import assign_containers
 from repowise.core.analysis.c4.labels import relation_label
 from repowise.core.analysis.c4.relations import BoxEdges, roll_up_edges
+from repowise.core.ingestion.framework_routes import next_app_router_file
 from repowise.core.ingestion.languages.registry import REGISTRY
 
 TIERS: tuple[str, ...] = ("actor", "surface", "shared", "service", "engine", "store")
@@ -62,6 +65,8 @@ _STORE_ID = "n_store"
 _PERSON_ID = "n_actor_user"
 # Kinds a person enters by, in the order that names the person when alone.
 _PERSON_KINDS = ("cli", "user", "developer")
+# App Router files that render a page a person opens.
+_PAGE_FILES = frozenset({"page", "layout"})
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,7 @@ def build_system_map(
     barrels = (set(barrels) & importing) - set(route_files)
     entries = _forward_entries(entry_points, barrels, edges)
     barrels -= {path for path, _ in entries}
+    entries += _routed_pages(files)
     edges = [e for e in edges if e[0] not in barrels]
     units, opened = _units(files, manifests, weights, barrels)
     store_of = {node: _STORE_ID for node in (stores or {})}
@@ -272,6 +278,22 @@ def _forward_entries(
     return out
 
 
+def _routed_pages(files: Iterable[str]) -> list[tuple[str, str]]:
+    """``(path, "user")`` per web page the framework loads by its file name.
+
+    The curated entry points name launchers only, so a web app entered through
+    its pages had no way in. Only ``page`` and ``layout``: an ``app/`` folder of
+    another framework holds ``middleware`` or ``error`` files too. Covers the
+    Next.js App Router; another file-routed framework needs its own predicate.
+    """
+    return [
+        (path, "user")
+        for path in sorted(files)
+        if next_app_router_file(path)
+        and path.rsplit("/", 1)[-1].split(".", 1)[0] in _PAGE_FILES
+    ]
+
+
 def _graph(units, edges, store_of, http_links) -> _Graph:
     file_to_unit = {f: u for u, members in units.items() for f in members}
     rolled = roll_up_edges(edges, file_to_unit, file_to_external=store_of)
@@ -340,8 +362,9 @@ def _tiers(units, kinds, graph: _Graph, route_files: Collection[str]) -> dict[st
 def _fold_libraries(units, kinds, tiers, graph: _Graph) -> tuple[dict[str, list[str]], str]:
     """Fold packages only the ways in import into them.
 
-    A library with one consuming way in joins that box; libraries shared by
-    several join one shared box. Returns the new units and the shared box key.
+    A library with one consuming way in joins that box, unless it is the
+    larger of the two; libraries shared by several join one shared box.
+    Returns the new units and the shared box key.
     """
     surfaces = {u for u, t in tiers.items() if t == "surface" and u in kinds}
     surfaces |= {u for u, t in tiers.items() if t == "surface" and u not in graph.has_in}
@@ -357,22 +380,36 @@ def _fold_libraries(units, kinds, tiers, graph: _Graph) -> tuple[dict[str, list[
         and importers[u]
         and (u, _STORE_ID) not in graph.rolled
     }
-    changed = True
-    while changed:
-        changed = False
-        for u in sorted(libs):
-            if importers[u] - libs - surfaces:
-                libs.discard(u)
-                changed = True
-    # Folding every part behind the ways in would leave a map with no engine.
-    if not libs or not set(tiers) - libs - surfaces:
-        return units, ""
+
+    def settle() -> None:
+        """Drop each library something other than a way in or library imports."""
+        changed = True
+        while changed:
+            changed = False
+            for u in sorted(libs):
+                if importers[u] - libs - surfaces:
+                    libs.discard(u)
+                    changed = True
 
     def roots(u: str, seen: frozenset[str] = frozenset()) -> set[str]:
         found = importers[u] & surfaces
         for lib in (importers[u] & libs) - seen - {u}:
             found |= roots(lib, seen | {u})
         return found
+
+    settle()
+    # A small consumer never absorbs a larger part it imports: a 20-file dev
+    # tool importing the main app would draw the whole app under its name. The
+    # larger part keeps its box and takes in the libraries only it imports.
+    while larger := {
+        u for u in libs if len(r := roots(u)) == 1 and len(units[u]) > len(units[min(r)])
+    }:
+        libs -= larger
+        surfaces |= larger
+        settle()
+    # Folding every part behind the ways in would leave a map with no engine.
+    if not libs or not set(tiers) - libs - surfaces:
+        return units, ""
 
     merged = {u: list(members) for u, members in units.items()}
     shared = [u for u in sorted(libs) if len(roots(u)) != 1]
@@ -504,7 +541,8 @@ def _unit_node(
     dirs = sorted({m.rsplit("/", 1)[0] for m in members if "/" in m})
     if len(dirs) > 1:
         facts.append("directories: " + ", ".join(dirs[:6]))
-    starts = [e for e in entry_points if e in members]
+    held = set(members)
+    starts = [e for e in entry_points if e in held]
     if starts:
         facts.append("entry points: " + ", ".join(starts[:3]))
     facts.append("files: " + ", ".join(m.rsplit("/", 1)[-1] for m in members[:8]))

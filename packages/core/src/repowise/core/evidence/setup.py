@@ -28,6 +28,8 @@ from .runtime_setup import (
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
     evidence_ingest_line,
+    is_offered,
+    offered_targets,
     runtime_targets,
     timed_target,
 )
@@ -250,6 +252,11 @@ def evidence_setup(
     )
     if next_call is not None:
         reason = None
+    elif indexed and covered and not coverage_only and not _offers_runtime(planned):
+        reason = (
+            "Coverage at this commit is ingested. No unit has an entry point, benchmark "
+            "or test suite repowise can profile, so there is nothing left to run."
+        )
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
@@ -277,7 +284,8 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
     """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
 
     ``flag`` is what to add to the unit's own test command (None: the runner
-    writes the report by default). Test timings are never a step of
+    writes the report by default); ``env`` is what that command needs in its
+    environment for the report (None: nothing). Test timings are never a step of
     ``next_call``: they rank tests, they never decide anything.
     """
     if not stack.junit_report:
@@ -286,9 +294,53 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
     workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
     return {
         "flag": stack.junit_flag or None,
+        "env": stack.junit_vars() or None,
         "report": report,
         "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
     }
+
+
+def _offers_runtime(planned: Sequence[dict[str, Any]]) -> bool:
+    """Whether any unit lists a runtime target with an ingest line (:func:`offered_targets`)."""
+    return any(is_offered(t) for u in planned for t in u.get("runtime", ()))
+
+
+def runtime_offer(
+    repo_root: str | Path,
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+    head: str | None,
+) -> list[dict[str, Any]]:
+    """:func:`~.runtime_setup.offered_targets` for the checkout at *repo_root*:
+    the runtime targets its plan prints an ingest line for. Blocking reads."""
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    return offered_targets(stacks, root, runtime, head, _go_mains(root, stacks))
+
+
+async def load_runtime_offer(
+    session: Any, repository_id: str, repo_root: str | Path | None, head: str | None
+) -> list[dict[str, Any]] | None:
+    """:func:`runtime_offer` from the stored build units and runtime inputs;
+    None when *repo_root* is not a checkout on this machine."""
+    import asyncio
+
+    from ..persistence.crud.build_units import load_build_units
+    from .runtime_setup import load_runtime_inputs
+
+    root = Path(repo_root) if repo_root else None
+    if root is None or not root.is_dir():
+        return None
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(runtime_offer, root, units=units, runtime=runtime, head=head)
+
+
+def offered_classes(offer: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """The workload classes in *offer*, in :data:`~.runtime_setup.CLASS_ORDER`."""
+    found = {t["class"] for t in offer}
+    return tuple(c for c in CLASS_ORDER if c in found)
 
 
 def _with_optional(
@@ -309,7 +361,8 @@ def _with_optional(
 def _optional_entry_points(
     planned: Sequence[dict[str, Any]], done: Collection[str]
 ) -> dict[str, Any] | None:
-    """Entry points waiting for their arguments and not measured here, by workload.
+    """Entry points waiting for their arguments, or servers waiting for requests,
+    not measured here, by workload.
 
     Never a step, so named here. An entry point counts as measured once any
     run of it is stored at this commit (``app`` or ``app build``), but not one
@@ -319,7 +372,7 @@ def _optional_entry_points(
     """
     workloads = [
         t["workload"] for u in planned for t in u.get("runtime", ())
-        if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+        if t["class"] == "entry_point" and t["command"] and t["ingest"] and t["reason"]
         and not any(
             (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
             for d in done
@@ -329,7 +382,8 @@ def _optional_entry_points(
         return None
     return {
         "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
-        "representative run, then run each command and its ingest line.",
+        "representative run, or send a server representative requests while it runs, then run "
+        "each command and its ingest line.",
         "workloads": workloads,
     }
 
@@ -422,5 +476,8 @@ __all__ = [
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "load_runtime_offer",
+    "offered_classes",
+    "runtime_offer",
     "timed_targets",
 ]

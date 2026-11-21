@@ -118,6 +118,27 @@ def test_repo_alias_implies_workspace(fake_workspace, chdir):
     assert target.repo_filter == "backend"
 
 
+def test_workspace_flag_reaches_the_workspace_from_a_non_member_repo(fake_workspace, chdir):
+    clone = fake_workspace / "clones" / "other"
+    (clone / ".git").mkdir(parents=True)
+    chdir(clone)
+    assert resolve_command_target().ws_root is None
+    target = resolve_command_target(workspace_flag=True)
+    assert target.mode == "workspace"
+    assert target.ws_root == fake_workspace
+
+
+def test_indexed_root_with_a_broken_workspace_config_names_no_workspace(tmp_path, chdir):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".repowise-workspace.yaml").write_text("repos: [", encoding="utf-8")
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    chdir(tmp_path)
+    target = resolve_command_target()
+    assert target.mode == "single"
+    assert target.ws_root is None
+
+
 def test_workspace_flag_raises_when_no_workspace(tmp_path, chdir):
     chdir(tmp_path)
     with pytest.raises(WorkspaceNotFound):
@@ -193,6 +214,28 @@ def test_plain_dir_stays_single(tmp_path, chdir):
     assert target.repo_path == plain
     assert target.ws_root is None
     assert target.auto_detected is False
+
+
+def test_nested_non_member_repo_is_its_own_target(fake_workspace, chdir):
+    """A git repo cloned under the workspace, but not one of its members,
+    is targeted itself even before it is indexed."""
+    clone = fake_workspace / "test-repos" / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "src").mkdir()
+
+    for cwd in (clone, clone / "src"):
+        chdir(cwd)
+        target = resolve_command_target()
+        assert target.mode == "single"
+        assert target.repo_path == cwd
+        assert target.ws_root is None
+
+    # Indexed, it stays single and names no upstream workspace either.
+    (clone / ".repowise").mkdir()
+    (clone / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    chdir(clone)
+    target = resolve_command_target()
+    assert (target.mode, target.ws_root) == ("single", None)
 
 
 # ---------------------------------------------------------------------------

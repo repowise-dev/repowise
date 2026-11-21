@@ -254,6 +254,10 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     ):
         is_stale = True
 
+    # A failed persist left a range to re-cover, even with HEAD unmoved.
+    if not is_stale and state.get("pending_repair") and stored_commit:
+        is_stale = True
+
     # A watched repo's changes are uncommitted by definition, so the
     # commit-to-commit staleness check above says "up to date" for exactly
     # the work the watcher woke up for.
@@ -411,6 +415,10 @@ def _write_repo_state(
         state["last_docs_commit"] = state["last_sync_commit"]
 
     state["last_sync_commit"] = new_head
+    if result.pending_repair is None:
+        state.pop("pending_repair", None)
+    else:
+        state["pending_repair"] = result.pending_repair
     if result.kg_state:
         state["knowledge_graph"] = result.kg_state
     if result.working_tree_paths is not None:

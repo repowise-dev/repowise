@@ -347,6 +347,7 @@ def test_base_includes_all_models():
         "coverage_ingests",
         "action_states",
         "read_snapshots",
+        "reports",
         "test_coverage_tests",
         "test_coverage_sources",
         "evidence_runs",

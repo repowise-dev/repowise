@@ -45,4 +45,5 @@ export * from "./runtime-evidence.js";
 export * from "./fix-first.js";
 export * from "./queue.js";
 export * from "./agent-prompts.js";
+export * from "./first-look.js";
 export * from "./serve-lock.js";

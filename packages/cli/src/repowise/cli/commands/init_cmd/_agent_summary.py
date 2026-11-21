@@ -94,6 +94,11 @@ def _spend(result: Any) -> dict[str, Any]:
     }
 
 
+def _report(first_look: Any) -> dict[str, Any] | None:
+    """The summary's ``report`` object; ``None`` when init wrote no repo report."""
+    return first_look.summary() if first_look is not None else None
+
+
 def next_fields(steps: Iterable[tuple[str, str]]) -> dict[str, list[str]]:
     """``next`` and ``long_running`` from the panel's steps.
 
@@ -120,6 +125,7 @@ def run_summary(run: InitRun, gaps: list[str]) -> dict[str, Any]:
         files_written=_relative(run.repo_path, run.files_written),
         findings=run.stood_out.as_summary() if run.stood_out is not None else None,
         first_prompt=run.first_prompt,
+        report=_report(getattr(run, "first_look", None)),
         **next_fields(run.next_steps),
         **_setup_fields(run.setup_outcome),
     )

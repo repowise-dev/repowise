@@ -60,6 +60,7 @@ from repowise.core.analysis.actions.setup import SetupFacts
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
 from repowise.core.analysis.test_reachability import (
     any_tests_reaching,
     write_test_masks_snapshot,
@@ -90,6 +91,7 @@ from ...read_snapshots import (
     refresh_snapshot,
     snapshot_key,
 )
+from ._notes import KEEP, next_note
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -291,6 +293,8 @@ async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[st
                         p.status == "open",
                         p.queue_eligible.is_(True),
                         p.file_path.in_(paths),
+                        # A regression is a static finding: only a static cause vouches.
+                        p.biomarker_type != MEASURED_HOTSPOT,
                     )
                 )
             ).all()
@@ -505,11 +509,24 @@ async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) ->
     runs, newest = await newest_evidence_run(session, repo_id, prefer_commit=head_sha)
     if newest is None:
         from repowise.core.evidence.runtime_setup import stored_target_classes
+        from repowise.core.evidence.setup import load_runtime_offer, offered_classes
 
-        # Only a repository with nothing stored is asked what it could run.
-        return build_runtime(
-            {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
+        from .refactoring_recommendations import repository_checkout
+
+        # Only a repository with nothing stored is asked what it could run:
+        # what ``evidence setup`` offers for its checkout, else the index's guess.
+        checkout = await repository_checkout(session, repo_id)
+        try:
+            offer = await load_runtime_offer(session, repo_id, checkout, head_sha)
+        except Exception as exc:  # a checkout that cannot be read costs only the precision
+            logger.warning("actions: runtime offer unavailable: %s", exc)
+            offer = None
+        targets = (
+            offered_classes(offer)
+            if offer is not None
+            else await stored_target_classes(session, repo_id)
         )
+        return build_runtime({"runs": 0, "targets": targets}, head_sha)
     return build_runtime(
         {"runs": runs, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
         head_sha,
@@ -566,7 +583,7 @@ async def get_action_states(session: AsyncSession, repo_id: str) -> dict[str, Ac
         .scalars()
         .all()
     )
-    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until) for r in rows}
+    return {r.action_id: ActionStateRecord(r.state, r.fingerprint, r.until, r.note) for r in rows}
 
 
 async def set_action_state(
@@ -577,8 +594,10 @@ async def set_action_state(
     state: str | None,
     fingerprint: str = "",
     until: datetime | None = None,
+    note: Any = KEEP,
 ) -> None:
-    """Record, replace, or (``state=None``) clear a person's answer to one action.
+    """Record, replace, or (``state=None``) clear a person's answer to one action,
+    with the *note* saying why (see :func:`._notes.next_note`).
 
     Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
     apply on every read, so writing one keeps the stored views.
@@ -602,9 +621,11 @@ async def set_action_state(
                 state=state,
                 fingerprint=fingerprint,
                 until=until,
+                note=None if note is KEEP else note,
             )
         )
     else:
+        row.note = next_note(row.state, state, row.note, note)
         row.state, row.fingerprint, row.until = state, fingerprint, until
 
 
@@ -719,13 +740,16 @@ async def load_actions_view(
     lookup: CrossRepoLookup | None = None,
     alias: str | None = None,
     setup: SetupFacts | None = None,
+    record: bool = True,
 ) -> dict[str, Any]:
     """The one entry point: the rules' output, the person's answers, and the ranked view.
 
     With *setup* (``setup_facts.load_setup_facts``) the live setup steps join
     the list, the view carries a ``setup`` block, and that block is stored in
     the checkout's ``.repowise/setup.json`` for the readers that cannot afford
-    this read (``analysis.actions.setup``).
+    this read (``analysis.actions.setup``). ``record=False`` leaves that store
+    to the caller, for a background read that must first check its answer is
+    still current.
 
     The rules' output is the stored snapshot while it is current, else built
     from the facts here. While a finding stored deletion-ready reads not safe
@@ -741,7 +765,7 @@ async def load_actions_view(
         states = {}
     when = now or datetime.now(UTC)
     view = await _ranked_view(session, repo_id, states, when, lookup, alias, setup)
-    if setup is not None and "setup" in view:
+    if record and setup is not None and "setup" in view:
         record_setup(setup.root, view["setup"])
     return view
 

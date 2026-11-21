@@ -87,6 +87,7 @@ function queue(items: FixItem[]): FixFirstQueue {
         history_only: 0,
         vendored: 0,
         docs_example: 0,
+        data: 0,
         deprecated: 0,
         gated_off: 0,
         cold_path: 0,

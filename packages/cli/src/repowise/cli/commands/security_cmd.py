@@ -581,7 +581,7 @@ def _print_findings(v: _Verdict) -> None:
     if not rows:
         return
     table = Table(show_edge=False, pad_edge=False)
-    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+    for column in ("Severity", "Kind", "Where", "Matched (secrets hidden)"):
         table.add_column(column)
     for f in rows:
         colour = _SEVERITY_COLOUR[f["severity"]]

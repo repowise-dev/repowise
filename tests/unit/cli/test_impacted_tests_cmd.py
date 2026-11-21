@@ -680,3 +680,22 @@ def test_outside_a_git_repository_reports_not_a_git_repository(tmp_path, fmt: st
         data = json.loads(result.stdout)
         assert data["error"] == "not_a_git_repository"
         assert "Not a git repository" in data["message"]
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

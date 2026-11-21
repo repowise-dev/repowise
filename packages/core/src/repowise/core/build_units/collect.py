@@ -70,9 +70,11 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     An ecosystem the repo does not use costs a cheap check. One whose index
     fails to build is skipped with one warning and named in
     ``failed_ecosystems``, and its roots are left to the manifest fallback.
-    A unit id produced twice keeps the first by root. A specific adapter's
-    unit wins over the fallback's at the same root. Only files in
-    ``ctx.path_set`` get an owner.
+    A unit id produced twice keeps the first by root. An unreferenced
+    fallback loses to a specific adapter's unit at the same root. A fallback
+    whose id a collected unit already names is kept, so a path dependency on
+    a dropped duplicate still links ``manifest:<root>`` when another adapter
+    holds that directory. Only files in ``ctx.path_set`` get an owner.
     """
     units: dict[str, BuildUnit] = {}
     listed: dict[str, list[str]] = {}
@@ -96,8 +98,9 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
         failed.add("manifest")
         fallback = []
     claimed = {unit.root for unit in units.values()}
+    referenced = {dep for unit in units.values() for dep in unit.deps}
     for unit, _files in fallback:
-        if unit.root not in claimed:
+        if unit.root not in claimed or unit.id in referenced:
             units[unit.id] = unit
 
     resolved = [

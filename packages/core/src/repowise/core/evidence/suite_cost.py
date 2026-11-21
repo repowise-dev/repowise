@@ -9,14 +9,17 @@ Test time per file is the summed duration of the timed tests that run it.
 ``measured`` when the per-test coverage map says which timed tests ran which
 file (``test_coverage_sources``); ``inferred`` from each function's nearest tests
 on the call graph (``function_facts.tests_json``) without it. Only production
-files (:mod:`repowise.core.code_origin`) are listed; others are counted.
+files (:mod:`repowise.core.code_origin`) are listed; others are counted. A file
+that every timed test reaching production code runs (a module the test setup
+imports) would show those tests' whole time, which says nothing of that file: it
+is counted, not listed, unless every listed file is one.
 Timing orders tests and files, it never gates anything.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -86,11 +89,17 @@ def _slow_test(row: Any, workloads: dict[str, str]) -> dict[str, Any]:
     }
 
 
+_Costs = dict[str, tuple[float, int, int]]
+#: Each file's timed tests, by the basis's key for a test.
+_Tied = dict[str, Collection[Any]]
+
+
 async def _measured_costs(
     session: AsyncSession, repository_id: str, timings: dict[str, Any]
-) -> dict[str, tuple[float, int, int]] | None:
-    """``{file: (seconds, timed tests, tests)}`` from the per-test map; None without one,
-    or when none of its test ids is a timed test's (an lcov ``TN:`` name, say)."""
+) -> tuple[_Costs, _Tied] | None:
+    """``{file: (seconds, timed tests, tests)}`` from the per-test map, and each file's
+    timed tests; None without a map, or when none of its test ids is a timed test's
+    (an lcov ``TN:`` name, say)."""
     from ..persistence.crud.analysis.coverage_map import get_per_test_map, source_test_numbers
 
     tmap = await get_per_test_map(session, repository_id)
@@ -103,17 +112,18 @@ async def _measured_costs(
     }
     if not seconds:
         return None
-    out = {}
+    out, tied = {}, {}
     for source, numbers in source_test_numbers(tmap).items():
-        timed = [seconds[n] for n in numbers if n in seconds]
-        out[source] = (sum(timed), len(timed), len(numbers))
-    return out
+        timed = tied[source] = [n for n in numbers if n in seconds]
+        out[source] = (sum(seconds[n] for n in timed), len(timed), len(numbers))
+    return out, tied
 
 
 async def _inferred_costs(
     session: AsyncSession, repository_id: str, timings: dict[str, Any], files: Iterable[str]
-) -> dict[str, tuple[float, int, int]]:
-    """``{file: (seconds, timed tests, tests)}`` from each function's nearest tests.
+) -> tuple[_Costs, _Tied]:
+    """``{file: (seconds, timed tests, tests)}`` from each function's nearest tests, and
+    each file's timed selectors.
 
     A test selector is a test function's symbol id, or for JS and TS a test
     file; a test's parametrizations share its symbol, so their times add up.
@@ -131,12 +141,12 @@ async def _inferred_costs(
     selectors: dict[str, set[str]] = defaultdict(set)
     for symbol, tests in (await tests_in_files(session, repository_id, files)).items():
         selectors[file_of_symbol(symbol)].update(t.selector for t in tests)
-    out = {}
+    out, tied = {}, {}
     for path, tests in selectors.items():
-        timed = [by_symbol.get(s, by_file.get(s)) for s in tests]
-        timed = [t for t in timed if t is not None]
-        out[path] = (sum(timed), len(timed), len(tests))
-    return out
+        timed = {s: t for s in tests if (t := by_symbol.get(s, by_file.get(s))) is not None}
+        tied[path] = timed.keys()
+        out[path] = (sum(timed.values()), len(timed), len(tests))
+    return out, tied
 
 
 async def _indexed_files(session: AsyncSession, repository_id: str) -> list[str]:
@@ -156,16 +166,24 @@ async def _file_costs(
     """Test time per production file, most first, with its basis."""
     from .ingest import load_origins
 
-    costs = await _measured_costs(session, repository_id, timings)
+    found = await _measured_costs(session, repository_id, timings)
     basis = "measured"
-    if costs is None:
+    if found is None:
         basis = "inferred"
         files = await _indexed_files(session, repository_id)
-        costs = await _inferred_costs(session, repository_id, timings, files)
+        found = await _inferred_costs(session, repository_id, timings, files)
+    costs, tied = found
     timed = {p: c for p, c in costs.items() if c[1]}
     origins = await load_origins(session, repository_id, timed)
+    production = [p for p in timed if origins[p] == "production"]
+    # The timed tests that run some production file: a test that runs only test
+    # helpers would otherwise keep a shared production file one short of all.
+    reaching = len(set().union(*(tied[p] for p in production)))
+    everywhere = {p for p in production if timed[p][1] == reaching}
+    if len(everywhere) == len(production):
+        everywhere = set()  # nothing else to show: the shared files are the answer
     listed = sorted(
-        (p for p in timed if origins[p] == "production"), key=lambda p: (-timed[p][0], p)
+        (p for p in production if p not in everywhere), key=lambda p: (-timed[p][0], p)
     )
     return {
         "basis": basis,
@@ -175,7 +193,9 @@ async def _file_costs(
         ],
         "files_total": len(listed),
         # Test, tooling, generated and other non-production files run by timed tests.
-        "not_production": len(timed) - len(listed),
+        "not_production": len(timed) - len(production),
+        # Production files every timed test runs, each costing the whole timed suite.
+        "every_test": len(everywhere),
     }
 
 

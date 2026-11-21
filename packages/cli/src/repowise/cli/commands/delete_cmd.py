@@ -63,7 +63,7 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
         db_path = repowise_dir / "wiki.db"
         if not db_path.exists():
             console.print("[yellow]Database not found.[/yellow]")
-            return
+            raise SystemExit(1)
 
     async def _run() -> None:
         from sqlalchemy import func, select
@@ -116,7 +116,7 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
                     f"[yellow]No repository in the database matches {repo_path}.[/yellow]"
                 )
                 await engine.dispose()
-                return
+                raise SystemExit(1)
             target_id = match[0]
 
         # If no repo_id given, let the user pick
@@ -147,14 +147,14 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
             except (ValueError, IndexError):
                 console.print("[red]Invalid selection.[/red]")
                 await engine.dispose()
-                return
+                raise SystemExit(1) from None
 
         # Find the target repo info
         target = next((r for r in repos if r[0] == target_id), None)
         if target is None:
             console.print(f"[red]Repository {target_id} not found.[/red]")
             await engine.dispose()
-            return
+            raise SystemExit(1)
 
         rid, name, lpath, pcount = target
         console.print(
@@ -176,10 +176,7 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
 
             await delete_repository(session, rid)
 
-        console.print(
-            f"[bold green]Deleted[/bold green] {name} — "
-            f"{len(page_ids)} pages removed."
-        )
+        console.print(f"[bold green]Deleted[/bold green] {name} — {len(page_ids)} pages removed.")
 
         await engine.dispose()
 

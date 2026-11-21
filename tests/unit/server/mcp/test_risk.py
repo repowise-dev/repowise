@@ -1149,6 +1149,46 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_a_secret_signal_carries_its_kind_only(setup_mcp, session):
+    import json
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.security_scan import masked_snippet
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    rows = [
+        ("hardcoded_secret", masked_snippet(f'API_KEY = "{value}"')),
+        ("pickle_loads", "pickle.loads(blob)"),
+    ]
+    for line, (kind, snippet) in enumerate(rows, start=1):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity="high",
+                snippet=snippet,
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    text = json.dumps(signals)
+    assert "API_KEY" not in text and "****" not in text
+    for at in range(len(value) - 2):
+        assert value[at : at + 3] not in text
+    assert signals == [
+        {"kind": "hardcoded_secret", "severity": "high"},
+        {"kind": "pickle_loads", "severity": "high", "snippet": "pickle.loads(blob)"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_risk_serves_the_blast_radius_on_request(setup_mcp):
     from repowise.server.mcp_server import get_risk
 

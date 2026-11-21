@@ -8,6 +8,8 @@ the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
 ``package main`` packages (:func:`~repowise.core.analysis.published_packages.go_main_packages`)
 and ``package.json`` ``bin`` files (:func:`~repowise.core.ingestion.always_run.own_code`).
+A Python web app's entry file that builds an ASGI app at module level is
+served under uvicorn, for the agent to drive with requests.
 Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchmark_function`
 accepts.
 
@@ -22,7 +24,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -204,7 +206,9 @@ async def stored_target_classes(session: Any, repository_id: str) -> tuple[str, 
     the full load takes 200 ms. Ceiling: an entry point found only on disk
     (a console script, a ``package.json`` bin) and a stack whose test runner
     detection fails are not read here, so this can say less than setup
-    prints, never more about which language runs.
+    prints; a test file in a unit setup finds no stack for can say more.
+    Read only without the checkout: with one, the actions loader reads what
+    setup offers (:func:`~.setup.load_runtime_offer`).
     """
     from sqlalchemy import or_, select
 
@@ -334,7 +338,8 @@ def _target(
     """One runtime target, JSON-ready.
 
     *timed* is the same workload without the profiler, for ``perf measure``;
-    it rides under ``timed`` until :func:`runtime_targets` drops it.
+    it rides under ``timed`` until :func:`runtime_targets` drops it, as
+    *input_format* rides under ``format`` for :func:`offered_targets`.
 
     ``ingest`` is None when the run cannot be read yet: no commit, or
     *input_format* (what the recipe writes) is not a registered profile
@@ -360,6 +365,7 @@ def _target(
         "ingest": ingest,
         "reason": reason,
         **({"timed": timed} if command and timed else {}),
+        **({"format": input_format} if ingest and input_format else {}),
         **({"note": note} if command and note else {}),
     }
 
@@ -439,17 +445,26 @@ def _python_targets(
             continue
         run = f"sys.argv=['{module}']+sys.argv[1:];import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
         out.append(profiled("entry_point", f"python -m {module}", run))
+    out += _served_apps(stack, repo_root, inputs, commit, roots)
     out = out[:PER_CLASS]
 
     if _declares_pytest_benchmark(repo_root, root):
         out.append(_pytest_benchmark(stack, repo_root, commit))
     if stack.test:
         # The paths the unit's coverage command runs (``tests/unit`` beside
-        # ``tests/integration``), so the profile never collects slower suites.
+        # ``tests/integration``), so the profile never collects slower suites,
+        # unless the arguments name tests of their own (a directory, a ``.py``
+        # file or a node id, not an option's value as in ``--ignore tests/slow``;
+        # a file option's value such as ``--cov-config .coveragerc`` is neither):
+        # then they pick what runs. The plugin keeps the failed count for the
+        # profile (``n``).
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
-        # The plugin keeps the failed count for the profile (``n``).
+        tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
-            f"import pytest;sys.exit(pytest.main({paths!r}+sys.argv[1:],plugins=[type('R',(),"
+            "a=sys.argv[1:];"
+            f"import pytest;sys.exit(pytest.main(([] if any({tests} and not (j and a[j-1] in "
+            f"{sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
+            f"else {paths!r})+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
         # A launcher outside uv whose installs do not bring pytest installs it here.
@@ -458,6 +473,74 @@ def _python_targets(
             if needs and not any(_PYTEST_WORD.search(n) for n in stack.requires) else []
         )
         out.append(profiled("unit_test", "python tests", run, extra))
+    return out
+
+
+#: pytest options whose value is the next word: a path after one is that option's, not one to run.
+_VALUE_OPTIONS = frozenset({"-k", "-m", "-p", "-c", "-o", "--ignore", "--ignore-glob", "--deselect",
+                            "--rootdir", "--confcutdir", "--basetemp", "--cov", "--junitxml"})
+#: A module-level ASGI application: ``app = FastAPI(...)`` or ``Starlette(...)``, annotated or not.
+_ASGI_APP = re.compile(
+    r"(?m)^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:fastapi\.|starlette\.applications\.)?(?:FastAPI|Starlette)\s*\("
+)
+_SERVE_REASON = (
+    "Send the requests of a representative workload to the server while it runs (your client, a "
+    "load tool or the app's own scripts), then stop it with Ctrl-C; an idle server measures only "
+    "its startup."
+)
+
+
+def _asgi_apps(
+    repo_root: Path, root: str, roots: Collection[str], entry_files: Sequence[str]
+) -> list[tuple[str, str]]:
+    """``(module, app)`` for each stored entry file of the unit that builds an ASGI app at module level.
+
+    Read from disk; the entry-point flag already names a web app's ``main.py``,
+    ``app.py``, ``server.py`` and ``asgi.py``. Ceiling: an app made by a
+    factory function (``create_app()``) or under another framework is not
+    found, and the server's own settings (host, port, reload) are uvicorn's
+    defaults.
+    """
+    found: list[tuple[str, str]] = []
+    for path in entry_files:
+        rel = _owned(root, roots, path)
+        if rel is None or not rel.endswith(".py") or rel.endswith("/__main__.py"):
+            continue
+        module = rel.removeprefix("src/").removesuffix(".py").replace("/", ".")
+        if not _MODULE.fullmatch(module):
+            continue
+        try:
+            text = (repo_root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Of several apps in one file, the one named ``app`` is the one served.
+        if names := _ASGI_APP.findall(text):
+            found.append((module, "app" if "app" in names else names[0]))
+    return found[:PER_CLASS]
+
+
+def _served_apps(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> list[dict[str, Any]]:
+    """Each module-level ASGI app of the unit, served by uvicorn under the profiler.
+
+    uvicorn imports the app by name and serves it until Ctrl-C (or SIGTERM),
+    then returns, so the profile is written as for any clean exit. The ingest
+    line stands; the reason keeps the target from leading ``next_call``, as an
+    entry point waiting for its arguments is kept.
+    """
+    root = stack.root
+    launcher, needs = _python_launcher(stack)
+    server = launcher.replace("--with pyinstrument", "--with pyinstrument --with uvicorn")
+    install = [f"{launcher} -m pip install uvicorn"] if needs else []
+    out: list[dict[str, Any]] = []
+    for module, app in _asgi_apps(repo_root, root, roots, inputs.entry_files):
+        workload, profile = _named(root, f"serve {module}:{app}", ".speedscope.json")
+        run = f"import uvicorn;uvicorn.run('{module}:{app}')"
+        target = _target("entry_point", workload, cwd=str(repo_root / root) if root else str(repo_root),
+                         command=_pyinstrument(server, _from(root, profile), run), profile=profile,
+                         commit=commit, input_format="speedscope", prerequisites=[*needs, *install])
+        out.append({**target, "reason": target["reason"] or _SERVE_REASON, "serves": True})
     return out
 
 
@@ -651,7 +734,41 @@ def runtime_targets(
     unit's. A unit whose root a shell could misread gets none.
     """
     found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
-    return [_awaiting_args({k: v for k, v in t.items() if k != "timed"}) for t in found]
+    return [{k: v for k, v in _awaiting_args(t).items() if k not in _INTERNAL} for t in found]
+
+
+#: Target keys for the callers in this package, never printed. ``serves``: a
+#: server, run with no arguments and driven by requests instead.
+_INTERNAL = frozenset({"timed", "format", "serves"})
+
+
+def offered_targets(
+    stacks: Sequence[Stack],
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    go_mains: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Every unit's runtime targets ``evidence setup`` prints an ingest line for.
+
+    The one answer to whether this repository has anything runtime to run:
+    the plan lists these targets, ``next`` asks for runtime evidence only
+    while there is one, and ``perf check`` names a benchmark target only when
+    one is here. Each keeps ``format``, what its command writes. An entry
+    point waiting for its arguments counts: the plan names it under
+    ``optional``.
+    """
+    roots = {s.root for s in stacks}
+    return [
+        t for stack in stacks
+        for t in _unit_targets(stack, repo_root, inputs, commit, go_mains, roots)
+        if is_offered(t)
+    ]
+
+
+def is_offered(target: Mapping[str, Any]) -> bool:
+    """Whether the plan offers *target*: it prints an ingest line for its run."""
+    return bool(target["ingest"])
 
 
 def _unit_targets(
@@ -681,7 +798,7 @@ def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
     Its ingest line names the workload per arguments (``app <args>``), so an
     ``init`` run and an ``update`` run of one program never share a history.
     """
-    if target["class"] != "entry_point" or not target["command"]:
+    if target["class"] != "entry_point" or not target["command"] or target.get("serves"):
         return target
     ingest = target["ingest"]
     if ingest:
@@ -745,7 +862,9 @@ __all__ = [
     "PROFILE_DIR",
     "RuntimeInputs",
     "evidence_ingest_line",
+    "is_offered",
     "load_runtime_inputs",
+    "offered_targets",
     "runtime_targets",
     "stored_target_classes",
     "timed_target",

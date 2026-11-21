@@ -78,6 +78,22 @@ def test_findings_come_from_the_run(no_probe):
     assert stood.decision_candidates == 14
 
 
+def test_docs_and_examples_stay_out_of_the_unreachable_headline(no_probe):
+    """Listed for review, never counted: the stored origin decides, the path backs it up."""
+    findings = [
+        _dead("src/legacy/old_report.py", False),
+        _dead("examples/demo/run.py", False),
+        _dead("website/snippets/sample.py", False),
+    ]
+    metrics = [SimpleNamespace(file_path="website/snippets/sample.py", code_origin="docs_example")]
+    result = _result(
+        dead_code_report=SimpleNamespace(findings=findings),
+        health_report=SimpleNamespace(kpis={}, metrics=metrics, findings=[]),
+    )
+    stood = reporting._stood_out(result, Path("/r"), reporting._top_hotspot(result))
+    assert stood.dead_unreachable == 1
+
+
 def test_unmeasured_findings_stay_none(no_probe):
     result = _result(health_report=None, dead_code_report=None, git_meta_map={})
     stood = reporting._stood_out(result, Path("/r"), reporting._top_hotspot(result))
@@ -217,6 +233,22 @@ def test_summary_carries_the_findings_restart_and_first_prompt(tmp_path):
     assert summary["next"] == ["repowise update --full", "repowise serve"]
     assert summary["long_running"] == ["repowise serve"]
     assert summary["first_prompt"] == run.first_prompt
+    assert summary["report"] is None  # init wrote no repo report
+
+
+def test_summary_names_the_repo_report_for_an_agent(tmp_path):
+    from repowise.cli.ui.finish_panel import FirstLook
+
+    run = SimpleNamespace(
+        repo_path=tmp_path, setup_outcome=None, mcp_repointed=False, result=_result(),
+        run_warnings=[], files_written=[], next_steps=[], stood_out=None, first_prompt=None,
+        first_look=FirstLook(".repowise/reports/repo-report.html", agent=True, open_items=7),
+    )
+    assert run_summary(run, [])["report"] == {
+        "open_items": 7,
+        "summary_command": "repowise report --format md",
+        "json_command": "repowise report --format json",
+    }
 
 
 def test_no_host_to_restart_means_no_restart(tmp_path):

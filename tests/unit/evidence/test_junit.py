@@ -7,9 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.evidence.add import EvidenceRefusedError, prepare_evidence
+from repowise.core.evidence.add import (
+    EvidenceRefusedError,
+    evidence_report_dir,
+    prepare_evidence,
+    prepare_evidence_files,
+)
 from repowise.core.evidence.format_v1 import EvidenceFormatError, parse_evidence
-from repowise.core.evidence.ingest import join_entries, place_test_entries
+from repowise.core.evidence.ingest import join_entries, place_test_entries, rebase_test_entries
 from repowise.core.evidence.profile_formats import detect_profile_format, junit
 
 # pytest --junitxml, default xunit2 family: no file attribute.
@@ -49,6 +54,18 @@ VITEST = b"""<testsuites name="vitest tests" tests="1">
 # jest-junit's default: a title, no file.
 JEST = b"""<testsuites name="jest tests"><testsuite name="cart">
 <testcase classname="cart adds an item" name="cart adds an item" time="0.004" />
+</testsuite></testsuites>
+"""
+
+
+# jest-junit as ``evidence setup`` runs it: the classname is the file, repo-relative
+# through the unit's path prefix.
+JEST_SETUP = b"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="3"><testsuite name="cart" tests="2">
+<testcase classname="web/src/cart.test.ts" name="cart adds an item" time="0.5" />
+<testcase classname="web/src/cart.test.ts" name="cart removes an item" time="0.1" />
+</testsuite><testsuite name="pay" tests="1">
+<testcase classname="web/src/pay.test.ts" name="pay charges" time="0.2" />
 </testsuite></testsuites>
 """
 
@@ -96,6 +113,19 @@ def test_a_path_classname_is_the_file() -> None:
 
     assert entry["test_id"] == "src/cart.test.ts::cart > adds an item"
     assert entry["test_file"] == "src/cart.test.ts"
+
+
+def test_jest_junit_as_setup_runs_it_names_each_file() -> None:
+    entries = _doc(JEST_SETUP).entries
+
+    assert [e["test_id"] for e in entries] == [
+        "web/src/cart.test.ts::cart adds an item",
+        "web/src/cart.test.ts::cart removes an item",
+        "web/src/pay.test.ts::pay charges",
+    ]
+    assert {e["test_file"] for e in entries} == {"web/src/cart.test.ts", "web/src/pay.test.ts"}
+    # Setup shared by a file runs in its first test.
+    assert [e["first_in_class"] for e in entries] == [True, False, True]
 
 
 def test_placing_joins_dotted_names_to_indexed_files() -> None:
@@ -231,7 +261,6 @@ def test_an_absolute_file_falls_back_to_the_classname() -> None:
 
 
 def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Path) -> None:
-    from repowise.core.evidence.add import prepare_evidence_files
 
     prepared = prepare_evidence_files(
         [
@@ -246,3 +275,48 @@ def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Pat
 
     assert prepared.format == "junit"
     assert len(prepared.doc.entries) == 3
+
+
+def test_a_unit_below_the_root_names_its_tests_from_the_reports_directory() -> None:
+    # Vitest in web/ names src/cart.test.ts and writes web/junit.xml.
+    files = {"web/src/cart.test.ts", "src/other.ts"}
+
+    (entry,) = rebase_test_entries(_doc(VITEST), files, "web").entries
+
+    assert entry["test_id"] == "web/src/cart.test.ts::cart > adds an item"
+    assert (entry["test_file"], entry["location"]["path"]) == ("web/src/cart.test.ts",) * 2
+
+
+def test_the_reports_directory_wins_over_a_root_file_of_the_same_name() -> None:
+    files = {"src/cart.test.ts", "web/src/cart.test.ts"}
+    assert rebase_test_entries(_doc(VITEST), files, "web").entries[0]["test_file"] == "web/src/cart.test.ts"
+    # Only the root file: the path is kept as given.
+    assert rebase_test_entries(_doc(VITEST), {"src/cart.test.ts"}, "web").entries[0]["test_file"] == "src/cart.test.ts"
+    # Neither path indexed: nothing to rebase onto.
+    assert rebase_test_entries(_doc(VITEST), set(), "web").entries[0]["test_file"] == "src/cart.test.ts"
+
+
+def test_the_report_directory_is_where_every_file_is(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    root_report, web_report = tmp_path / "junit.xml", web / "junit.xml"
+
+    assert evidence_report_dir([web_report], tmp_path) == "web"
+    assert evidence_report_dir([web_report, web / "b.xml"], tmp_path) == "web"
+    # The root, several directories, or outside the checkout: none.
+    assert evidence_report_dir([root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report, root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report], tmp_path / "other") == ""
+
+
+def test_the_report_directory_is_part_of_the_run_key() -> None:
+    from repowise.core.evidence.ingest import RunProvenance, run_key
+
+    provenance = RunProvenance(
+        workload_name="w", workload_class="unit_test", commit_sha="c", checkout_root="r", dirty=False
+    )
+    keys = {run_key("x", provenance, "test_timing", "c", d) for d in ("", "web", "api")}
+    assert len(keys) == 3
+    # Only test paths are read from the directory: a profile keeps one key.
+    assert run_key("x", provenance, "profile", "c", "web") == run_key("x", provenance, "profile", "c")
+    # A run read from the root keeps the key it always had.
+    assert run_key("x", provenance, "test_timing", "c") == run_key("x", provenance, "test_timing", "c", "")

@@ -182,6 +182,19 @@ class TestLanguageDetection:
         f.write_text("#!/usr/bin/env python3\nprint('hi')")
         assert _detect_language(f) == "python"
 
+    @pytest.mark.parametrize("name", ["backup.txt", "notes.rst", "settings.cfg"])
+    def test_shebang_in_a_data_or_doc_file_is_not_code(self, tmp_path: Path, name: str) -> None:
+        f = tmp_path / name
+        f.write_text("#!/usr/bin/env python3\ndef f():\n    pass\n")
+        assert _detect_language(f) == "unknown"
+
+    def test_shebang_txt_backup_is_not_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("#!/usr/bin/env python3\ndef f():\n    pass\n")
+        (tmp_path / "run").write_text("#!/usr/bin/env python3\nprint('hi')\n")
+        files = {info.path: info.language for info in FileTraverser(tmp_path).traverse()}
+        assert "a.txt" not in files
+        assert files["run"] == "python"
+
 
 class TestIncLanguageDetection:
     @pytest.mark.parametrize("suffix", [".inc", ".INC"])

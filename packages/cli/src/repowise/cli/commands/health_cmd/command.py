@@ -9,6 +9,7 @@ table, writes it back to the index.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ from repowise.core.analysis.health.counts import (
     project as project_counts,
 )
 from repowise.core.analysis.health.models import split_by_origin
-from repowise.core.analysis.health.ranking import deduction_by_path
+from repowise.core.analysis.health.ranking import deduction_by_path, scope_reason
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import (
     DEFAULT_SCOPE,
@@ -615,7 +616,8 @@ def _render_table(
     _render_performance_section(report, coverage, causes)
     measured = None if narrowed else _load_measured_costs(repo_path)
     _render_measured_costs(measured)
-    _render_files_table(metrics_sorted, _load_short_history(repo_path))
+    listed, left_out = _ranked_rows(metrics_sorted, narrowed)
+    _render_files_table(listed, _load_short_history(repo_path), left_out)
     _render_findings_table(findings)
     # Last, so it is the line a reader leaves with. A ranked view means runs
     # are stored; only without one is the store asked.
@@ -681,7 +683,30 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
-def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> None:
+def _ranked_rows(rows: list[Any], narrowed: bool) -> tuple[list[Any], Counter[str]]:
+    """``(rows the table ranks, count of the rest by reason)``, order kept.
+
+    Every row when the reader named files (``--file``/``--module``). Otherwise
+    the rows in Fix first's scope, the rule behind MCP's ``worst_files`` and the
+    "Worst" headline: tests, tooling, build, vendored, generated and docs
+    example files are left out by stored origin.
+    """
+    if narrowed:
+        return list(rows), Counter()
+    kept: list[Any] = []
+    left_out: Counter[str] = Counter()
+    for row in rows:
+        reason = scope_reason(row)
+        if reason is None:
+            kept.append(row)
+        else:
+            left_out[reason] += 1
+    return kept, left_out
+
+
+def _render_files_table(
+    metrics_sorted: list[Any], short_history: set[str], left_out: Counter[str] | None = None
+) -> None:
     from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
 
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
@@ -708,6 +733,9 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
             f"[dim]* Short history (under {HISTORY_MIN_COMMITS} commits): most history "
             "markers need more, so the score is mostly code shape.[/dim]"
         )
+    if left_out:
+        counts = ", ".join(f"{n} {r.replace('_', ' ')}" for r, n in sorted(left_out.items()))
+        console.print(f"[dim]Not ranked here: {counts}. --file or --module lists them.[/dim]")
 
 
 def _is_advisory(finding: Any) -> bool:

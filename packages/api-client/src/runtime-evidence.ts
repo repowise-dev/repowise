@@ -7,6 +7,7 @@ import type {
   EvidenceStatusResponse,
   MeasuredFunctionsResponse,
   MeasuredResponse,
+  SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 import { apiGet } from "./client";
 
@@ -23,6 +24,8 @@ export type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  SlowTest,
+  SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 
 /** The newest run of every workload, and whether anything is ranked. */
@@ -59,4 +62,12 @@ export async function getMeasuredFunctions(
     symbol_id: target.symbolId,
     file: target.file,
   });
+}
+
+/** The slowest timed tests and the test time per production file, from stored JUnit timings. */
+export async function getEvidenceTests(
+  repoId: string,
+  opts: { limit?: number } = {},
+): Promise<SuiteCostResponse> {
+  return apiGet<SuiteCostResponse>(`/api/repos/${repoId}/evidence/tests`, { limit: opts.limit });
 }

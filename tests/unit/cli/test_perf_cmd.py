@@ -252,8 +252,21 @@ def test_check_needs_one_mode_and_stored_exact_values(indexed) -> None:
     assert both.exit_code == 2 and json.loads(both.stdout)["error"] == "usage"
     empty = _check(root, "--save", "base", "--format", "json")
     assert empty.exit_code == 2 and json.loads(empty.stdout)["error"] == "no_exact_evidence"
+    # No Go benchmark here: nothing to gate, and no setup target that setup never prints.
+    message = json.loads(empty.stdout)["message"]
+    assert "nothing to gate" in message and "target" not in message
+    assert "repowise perf measure" in message
     missing = _check(root, "--against", "nope", "--format", "json")
     assert missing.exit_code == 2 and json.loads(missing.stdout)["error"] == "baseline"
+
+
+def test_check_names_the_go_benchmark_target_setup_prints(indexed) -> None:
+    root, _ = indexed
+    _go_bench_repo(root)
+    empty = _check(root, "--save", "base", "--format", "json")
+    assert empty.exit_code == 2
+    message = json.loads(empty.stdout)["message"]
+    assert "Go benchmark results target `repowise evidence setup` prints" in message
 
 
 def test_check_names_a_workload_the_baseline_lacks(indexed) -> None:
