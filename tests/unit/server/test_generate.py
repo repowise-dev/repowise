@@ -154,6 +154,19 @@ async def test_generate_endpoint_rejects_structural_page_id(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_generate_endpoint_rejects_model_free_page_id(client: AsyncClient) -> None:
+    """A model-free onboarding page is built from code, so naming it is a 400, not an empty plan."""
+    repo = await create_test_repo(client)
+    landscape = "onboarding:onboarding/active_landscape"
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/generate",
+        json={"selection": {"kind": "page_ids", "page_ids": [landscape, "onboarding:x"]}},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"].endswith(landscape)
+
+
+@pytest.mark.asyncio
 async def test_generate_endpoint_ranked_selection(client: AsyncClient, app) -> None:
     """A ranked coverage selection is carried into the job config."""
     repo = await create_test_repo(client)

@@ -89,31 +89,18 @@ def _ranked_coverage_pct(selection: dict, n_files: int) -> float:
     return min(1.0, max(0.0, top_n / max(1, n_files)))
 
 
-def _narrow_plan_to_model_written(plan: Any) -> Any:
-    """Drop structural pages from a resolved plan so generate writes only prose.
-
-    A structural page has no model to write it, so including it would only
-    re-render a template and inflate the count. Mirrors the CLI's
-    ``_narrow_to_model_written``.
-    """
-    from dataclasses import replace
-
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
-    from repowise.core.generation.scope import build_cost_plans
-
-    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
-    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
-    return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
-
-
 def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> Any:
     """Resolve a generate config + rehydrated repo into a :class:`ScopePlan`.
 
     The one place a ranked coverage seed is built (with ``repowise init``'s
     importance model), so the estimate and the job resolve the identical page
-    set. The plan is then narrowed to model-written types, as in the CLI.
+    set. The plan is then narrowed to model-written pages, as in the CLI.
     """
-    from repowise.core.generation.scope import build_ranked_seed, resolve_scope
+    from repowise.core.generation.scope import (
+        build_ranked_seed,
+        narrow_to_model_written,
+        resolve_scope,
+    )
 
     selection = config.get("selection") or {}
     ranked_seed: set[str] | None = None
@@ -135,7 +122,7 @@ def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> A
         deps=rehydrated.deps,
         ranked_seed=ranked_seed,
     )
-    return _narrow_plan_to_model_written(plan)
+    return narrow_to_model_written(plan, rehydrated.records)
 
 
 def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> Any:

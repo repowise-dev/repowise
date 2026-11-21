@@ -11,24 +11,41 @@ from .context import CheckContext, open_store
 
 
 async def _stale_page_counts(session: object, repo_id: str) -> dict[str, int]:
-    """Count stale pages by type without hydrating their rendered content."""
+    """Count stale pages by type without hydrating their rendered content.
+
+    A model-free page is filed under ``model_free``, not its type: no model writes one.
+    """
     from sqlalchemy import func, select
 
     from repowise.core.persistence.models import Page
 
+    from ..._page_freshness import stale_model_free_counts
+
+    stale = (Page.repository_id == repo_id, Page.freshness_status.in_(["stale", "expired"]))
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.page_type, func.count())
-        .where(
-            Page.repository_id == repo_id,
-            Page.freshness_status.in_(["stale", "expired"]),
-        )
-        .group_by(Page.page_type)
+        select(Page.page_type, func.count()).where(*stale).group_by(Page.page_type)
     )
-    return {str(page_type): int(count) for page_type, count in result.all()}
+    counts = {str(page_type): int(count) for page_type, count in result.all()}
+    for page_type, n in (await stale_model_free_counts(session, stale)).items():
+        counts[page_type] -= n
+        counts["model_free"] = counts.get("model_free", 0) + n
+    return counts
 
 
-def _stale_page_guidance(counts: dict[str, int]) -> str:
-    """Describe stale work by owner and name commands that can clear it."""
+# What `repowise update --full` does, by `stale_remedy`. A model wiki's text is
+# completed in `_stale_page_guidance`, only when a model-written page is stale.
+_STALE_REMEDY = {
+    "llm": "refreshes them",
+    "model": "writes the whole wiki with a model, and prices it first",
+    "code": "rebuilds them from code, with no model calls",
+}
+
+
+def _stale_page_guidance(counts: dict[str, int], remedy: str | None) -> str:
+    """Describe stale work by owner and name commands that can clear it.
+
+    ``remedy`` is ``stale_remedy``'s answer, or ``None`` to name no command.
+    """
     from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
     total = sum(counts.values())
@@ -38,7 +55,9 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
     structural = total - model_written
     categories = []
     if model_written:
-        categories.append(f"{model_written} model-written")
+        # Only a wiki a model wrote has pages a model wrote.
+        label = "model-written" if remedy == "llm" else "of a type a model writes"
+        categories.append(f"{model_written} {label}")
     if structural:
         categories.append(f"{structural} structural")
 
@@ -46,10 +65,11 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
         f"{total} stale ({', '.join(categories)}) — content no longer matches its "
         "current inputs or generation selection."
     )
-    detail += " `repowise update --full` refreshes them"
-    if model_written:
-        detail += ", pricing the model-written ones before it rewrites them"
-    detail += "."
+    if remedy:
+        detail += f" `repowise update --full` {_STALE_REMEDY[remedy]}"
+        if model_written and remedy == "llm":
+            detail += ", pricing the model-written ones before it rewrites them"
+        detail += "."
     return detail + " `--repair` only fixes store drift."
 
 
@@ -151,13 +171,17 @@ async def _read_stale_counts(repo_path: _DoctorPath) -> dict[str, int]:
 
 
 def _stale_pages_row(ctx: CheckContext) -> DoctorCheck:
-    """Sets ``ctx.stale_counts`` and ``ctx.stale_count`` for ``--repair``."""
+    """Sets ``ctx.stale_guidance`` for ``--repair``."""
     name, check_id = "Stale pages", "stale-pages"
     try:
-        ctx.stale_counts = run_async(_read_stale_counts(ctx.repo_path))
-        ctx.stale_count = sum(ctx.stale_counts.values())
-        if ctx.stale_count:
-            return _check(name, False, _stale_page_guidance(ctx.stale_counts), check_id=check_id)
+        counts = run_async(_read_stale_counts(ctx.repo_path))
+        if sum(counts.values()):
+            from ..._page_freshness import stale_remedy
+
+            # Without a readable state.json `update --full` stops; the state.json row names the fix.
+            remedy = stale_remedy(ctx.state, ctx.repo_path) if ctx.state_ok else None
+            ctx.stale_guidance = _stale_page_guidance(counts, remedy)
+            return _check(name, False, ctx.stale_guidance, check_id=check_id)
         return _check(name, True, "0 stale", check_id=check_id)
     except Exception:
         return _check(name, True, "Could not check", check_id=check_id, warn=True)

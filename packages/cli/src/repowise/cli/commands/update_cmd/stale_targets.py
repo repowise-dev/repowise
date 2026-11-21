@@ -30,7 +30,13 @@ def load_actionable_stale_targets(run: UpdateRun, opts: UpdateOptions) -> int:
     """
     from repowise.core.persistence import load_stale_update_targets
 
+    from .catch_up import UNCAPPED_CASCADE
+
     paths, page_ids = load_stale_update_targets(run.repo_path)
+    if opts.cascade_budget != UNCAPPED_CASCADE:
+        # A model-free onboarding page renders from every file's history: the
+        # catch-up of `update --full` pays for that, not every commit's update.
+        page_ids = {pid for pid in page_ids if not pid.startswith("onboarding:")}
     if not (paths or page_ids) or can_regenerate_pages(run, opts):
         run.stale_db_paths, run.stale_deterministic_ids = paths, page_ids
         return 0

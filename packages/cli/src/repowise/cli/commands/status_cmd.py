@@ -1222,10 +1222,14 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         )
 
     if stale_pages:
+        from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY, stale_remedy
         from repowise.cli.commands.update_cmd.catch_up import catch_up_command
 
+        remedy = (
+            WHOLE_WIKI_REMEDY if stale_remedy(state, repo_path) == "model" else "refreshes them"
+        )
         console.print(
-            f"[dim]{stale_pages} stale page(s): {catch_up_command(repo_path)} refreshes them.[/dim]"
+            f"[dim]{stale_pages} stale page(s): {catch_up_command(repo_path)} {remedy}.[/dim]"
         )
 
     if not has_db:

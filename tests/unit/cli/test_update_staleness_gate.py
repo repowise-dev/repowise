@@ -153,3 +153,51 @@ def test_planning_pages_records_the_commit_only_when_it_can_render(
     command._plan_pages(SimpleNamespace(cascade_budget=5, verbose=False), run)
     # Without a model the stale pages wait for an update at this commit that has one.
     assert run.state.get(command.STALE_PAGES_PLANNED_KEY) == ("abc123" if renders else None)
+
+
+def test_pages_planned_notice_warns_a_code_wiki_with_a_provider_of_the_model_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from repowise.cli.commands.update_cmd import commit_limit_notice, slot_notice
+    from repowise.core.providers.llm import resolve
+
+    monkeypatch.setattr(resolve, "resolve_llm", lambda path: SimpleNamespace(provider="mock"))
+    monkeypatch.setattr(command, "_surface_reindex_recommendation", lambda *a, **k: None)
+    monkeypatch.setattr(slot_notice, "surface_missing_slots", lambda *a, **k: None)
+    monkeypatch.setattr(commit_limit_notice, "surface_pinned_commit_limit", lambda *a, **k: None)
+    monkeypatch.setattr(command, "_emit_done", lambda run, outcome: outcome)
+    run = _run(tmp_path, wiki_rebuild=False)
+    run.state = {"docs_mode": "deterministic"}
+    run.stale_pages_planned = 3
+    rec = Console(record=True, width=300)
+    with patch.object(command, "console", rec):
+        command._already_up_to_date(SimpleNamespace(defer_docs=False, dry_run=True), run)
+    assert (
+        "or now with repowise update --full. "
+        "It writes the whole wiki with a model, and prices it first." in rec.export_text()
+    )
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["plain-update", "full-catch-up"])
+def test_a_model_free_page_waits_for_the_full_catch_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full: bool
+) -> None:
+    """Its render reads every file's history, so only `update --full`'s pass pays for it."""
+    from repowise.cli.commands.update_cmd import stale_targets
+    from repowise.cli.commands.update_cmd.catch_up import UNCAPPED_CASCADE
+
+    landscape = "onboarding:onboarding/active_landscape"
+    monkeypatch.setattr(
+        "repowise.core.persistence.load_stale_update_targets",
+        lambda _path: ([], {landscape, "scc_page:1"}),
+    )
+    monkeypatch.setattr(stale_targets, "can_regenerate_pages", lambda run, opts: True)
+    run = _run(tmp_path, wiki_rebuild=False)
+    opts = SimpleNamespace(cascade_budget=UNCAPPED_CASCADE if full else None)
+
+    assert stale_targets.load_actionable_stale_targets(run, opts) == 0
+    assert run.stale_deterministic_ids == ({landscape, "scc_page:1"} if full else {"scc_page:1"})

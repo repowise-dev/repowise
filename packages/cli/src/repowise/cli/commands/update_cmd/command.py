@@ -1154,12 +1154,17 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
     if run.stale_pages_planned:
+        from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY, stale_remedy
+
         from .catch_up import catch_up_command
 
+        model = stale_remedy(run.state, run.repo_path) == "model"
         console.print(
             f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
             "left stale refresh with the next commit, or now with "
-            f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
+            f"[bold]{catch_up_command(run.repo_path)}[/bold]."
+            + (f" It {WHOLE_WIKI_REMEDY}." if model else "")
+            + "[/dim]"
         )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1316,9 +1321,11 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
     import atexit
 
+    from repowise.core.update_lock import release_own_update_lock
+
     # The lock now owns the hook's suppression window; drop the queued marker.
     clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
+    atexit.register(release_own_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
     return None
 
@@ -1705,7 +1712,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         # A generation-config, renderer or upgrade rebuild re-renders the full page set.
         affected.regenerate = [pf.file_info.path for pf in run.parsed_files]
     if run.renderer_changed and not run.full_generation and not run.index_only:
-        # A model wiki: model-written levels are only marked stale, for an opt-in
+        # A model run: the levels a model writes are only marked stale, for an opt-in
         # `generate --stale`.
         from .deterministic import load_cascade_overflow_split
 
@@ -1714,9 +1721,16 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         if split and split[0]:
             from .catch_up import catch_up_command
 
+            # Only `--docs` brings a wiki built from code here, and it asks for a
+            # model, so `--full` after it writes the whole wiki with one.
+            pages, remedy = (
+                ("written by a model", "rewrite them")
+                if resolve_docs_mode(run.state) == "llm"
+                else ("of the types a model writes", "write the whole wiki with a model")
+            )
             console.print(
-                f"  {split[0]} pages written by a model are marked stale: run "
-                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to rewrite them "
+                f"  {split[0]} pages {pages} are marked stale: run "
+                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to {remedy} "
                 "(it estimates the cost first)."
             )
 
@@ -1724,10 +1738,18 @@ def _widen_for_full_render(run: UpdateRun) -> None:
 def _report_page_plan(run: UpdateRun) -> None:
     affected = run.affected
     if affected.stale_due_to_budget > 0:
+        from repowise.cli.commands._page_freshness import stale_remedy
+
         from .catch_up import catch_up_command
         from .deterministic import load_cascade_overflow_split
         from .reporting import render_cascade_budget_warning
 
+        # A docs run asks for a model, so it gets the renderer notice's remedy.
+        # shortcut: with no provider and no terminal the run then stops and `--full`
+        # stays a code rebuild; resolve the provider before the plan to tell them apart.
+        remedy = stale_remedy(run.state, run.repo_path)
+        if remedy == "code" and not run.index_only:
+            remedy = "model"
         # The detector puts the budget overflow first in decay_only.
         skipped = affected.decay_only[: affected.stale_due_to_budget]
         render_cascade_budget_warning(
@@ -1735,6 +1757,7 @@ def _report_page_plan(run: UpdateRun) -> None:
             affected.stale_due_to_budget,
             load_cascade_overflow_split(run.repo_path, skipped),
             catch_up_command(run.repo_path),
+            remedy,
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
