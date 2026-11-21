@@ -18,6 +18,7 @@ saving is the measured truncation, ``raw - delivered``, and nothing is inferred.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -31,6 +32,13 @@ logger = logging.getLogger(__name__)
 #: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
 _ESTIMATOR = "chars_per_token_floor_v2"
 _TOKEN_UNIT = "estimated_tokens"
+
+#: The host session this server runs under, when the host exports it to the
+#: servers it launches. Claude Code does; its hooks key the same session by the
+#: same id, which is what lets a file be credited once per session across both
+#: surfaces and a later Read cancel an MCP credit. Without it, the connection's
+#: own minted session keys the files and only same-connection calls dedupe.
+_HOST_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 
 
 def _outcome(result: Any) -> tuple[str, bool]:
@@ -160,7 +168,9 @@ def _record(interaction: Interaction, result: Any) -> bool:
     # So the tool call takes an unpriced event and starts a background scan
     # that prices the calls after it; the report counts priced and unpriced
     # tokens separately for exactly this reason.
-    pricing = resolve_pricing_snapshot(interaction.repo_root, allow_scan=False)
+    pricing = resolve_pricing_snapshot(
+        interaction.repo_root, allow_scan=False, agent=interaction.agent
+    )
     if pricing is None:
         warm_pricing_snapshot(interaction.repo_root)
 
@@ -187,10 +197,42 @@ def _record(interaction: Interaction, result: Any) -> bool:
         "pre_budget_input_tokens": interaction.pre_budget_input_tokens,
         "delivered_input_tokens": delivered,
         "omission_refs": _omission_refs(result),
+        **_files(interaction),
+        **_outcome_field(interaction.tool, result),
         "metadata": interaction.identity_metadata or None,
         **(pricing.as_payload() if pricing else {}),
     }
     return recorder.record_event(interaction.repo_root, payload)
+
+
+def _files(interaction: Interaction) -> dict[str, Any]:
+    """Files served in place of a Read, and the session that keys them. Never raises.
+
+    Paths and one Read's tokens each, already sized by the counterfactual, so
+    nothing here touches a file or the index. A failure costs the list only.
+    """
+    try:
+        return {
+            "avoided_files": tuple(interaction.avoided_files.items()),
+            "host_session_id": os.environ.get(_HOST_SESSION_ENV) or interaction.session_id,
+        }
+    except Exception:
+        return {}
+
+
+def _outcome_field(tool: str, result: Any) -> dict[str, Any]:
+    """What a check tool returned, read off the reply in hand. Never raises.
+
+    A failure costs the field only; the event is written without it.
+    """
+    try:
+        from .outcome import check_outcome
+
+        outcome = check_outcome(tool, result)
+    except Exception:
+        logger.debug("mcp check outcome failed for %s", tool, exc_info=True)
+        return {}
+    return {"outcome": outcome} if outcome is not None else {}
 
 
 def _now() -> str:

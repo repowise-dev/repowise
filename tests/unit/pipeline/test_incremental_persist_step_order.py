@@ -29,10 +29,12 @@ from tests.unit._persist_step_recorders import (
 HAPPY_ORDER = [
     "reconcile_full_index_scope",
     "tombstone_pages_outside_generation",
+    "restore_stored_complexity",
     "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
     "sweep_deselected_pages",
+    "sweep_deselected_flow_pages",
     "tombstone_candidates",
     "mark_tombstone_pages",
     "rebuild_page_tree",
@@ -118,7 +120,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert git_kwargs == {"keep_commit_health": True, "gone_paths": set()}
 
 
-async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(repo, monkeypatch):
+async def test_full_history_walk_skips_commit_capture_and_keeps_archaeology(repo, monkeypatch):
     rec = StepRecorder(monkeypatch)
     install_shared_steps(rec)
 
@@ -127,9 +129,9 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
     assert "persist_incremental_commits" not in rec.order
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
     assert git_kwargs == {"keep_commit_health": False, "gone_paths": set()}
+    # Nothing on this path re-mines git archaeology, so its records stay.
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == [
-        "code_comment",
-        "git_archaeology",
+        "code_comment"
     ]
 
 
@@ -183,6 +185,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
     assert rec.order == [
         "reconcile_full_index_scope",
         "tombstone_pages_outside_generation",
+        "restore_stored_complexity",
         "sweep_store_hygiene",
         "tombstone_candidates",
         "mark_tombstone_pages",
@@ -216,6 +219,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
             for step in (
                 "Config scope reconciliation",
                 "Generation scope reconciliation",
+                "Stored complexity restore",
                 "Retired page sweep",
                 "Tombstone marking",
                 "Page tree rebuild",
@@ -277,3 +281,26 @@ def test_deleted_paths_are_keyed_from_the_git_root(tmp_path: Path) -> None:
     )
 
     assert _deleted_paths(ctx) == {"pkg/gone.py", "pkg/old.py"}
+
+
+async def test_complexity_is_restored_outside_the_diffed_files(repo, monkeypatch):
+    # A traversal change persists every file, but partial health measured only the diff.
+    rec = StepRecorder(monkeypatch)
+    install_shared_steps(rec)
+
+    await persist_incremental_index(
+        repo,
+        graph_builder(),
+        dict(GIT_META),
+        dead_code_report(),
+        object(),
+        ["src/a.py", "src/b.py"],
+        file_diffs=file_diffs(),
+        parsed_files=parsed_files(),
+        log=lambda _msg: None,
+        degraded=[],
+        failed_steps=[],
+    )
+
+    [(args, _kwargs)] = rec.args_of("restore_stored_complexity")
+    assert args[-1] == ["src/a.py"]

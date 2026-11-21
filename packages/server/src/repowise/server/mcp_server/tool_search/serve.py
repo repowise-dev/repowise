@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Container
+from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.core.generation.structural_labels import is_structural_title
+from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
     Page,
+    WikiSymbol,
 )
 
 # Patchable names are read off the package at call time so patches reach them.
@@ -19,7 +24,7 @@ from repowise.server.mcp_server._budget import (
     register_post_enforce,
     register_post_shed,
 )
-from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, completeness_line
 from repowise.server.mcp_server._page_paths import (
     PAGELESS_FILE,
     add_row_paths,
@@ -27,9 +32,12 @@ from repowise.server.mcp_server._page_paths import (
 )
 from repowise.server.mcp_server._query_shape import (
     _embedded_identifiers,
+    _has_exact_symbol,
     _looks_like_exact_token,
 )
 from repowise.server.mcp_server._references import path_identity, symbol_identity
+from repowise.server.mcp_server._verify import verify_and_heal
+from repowise.server.mcp_server.tool_symbol.text import _number_lines, _read_file_text, _slice_text
 
 # Freshness tie-breaker, added (not multiplied) to a hit's fused relevance.
 # The RRF-fused score spaces adjacent ranks ~0.05 apart, so this stays under
@@ -37,6 +45,18 @@ from repowise.server.mcp_server._references import path_identity, symbol_identit
 # retrieval relevance. Recency itself scales it (0.5 for 90-day activity, 1.0
 # for 30-day).
 _FRESHNESS_TIEBREAK = 0.03
+
+_log = logging.getLogger("repowise.mcp.search")
+
+# Row keys ranking reads but no caller needs, by row ``type``.
+_UNSERVED_ROW_KEYS: dict[str | None, tuple[str, ...]] = {
+    "symbol": ("qualified_name", "language", "score", "next"),
+    "file": ("next",),
+}
+
+# A unique exact hit's body served inline, when the whole body is this short.
+# get_symbol on that hit is the usual next call; a longer body keeps it.
+_UNIQUE_BODY_LINES = 20
 
 
 def _attach_paths(output: list[dict], page_info: dict) -> None:
@@ -117,11 +137,18 @@ def _slim_served_rows(
 
     *languages* maps a row's ``repo`` alias (``None`` for a single-repo reply) to
     the language its titles were generated in.
+
+    A symbol row also loses ``qualified_name`` (the module path plus ``name``),
+    ``language`` (the file extension says it), ``score`` (the row order says
+    it) and the constant ``next``; a file row loses its constant ``next``.
+    Ranking reads all of them before this point.
     """
     add_row_paths(rows)
     _drop_derivable_page_ids(rows)
     fts_only = _pkg.semantic_search_state() is False
     for row in rows:
+        for key in _UNSERVED_ROW_KEYS.get(row.get("type"), ()):
+            row.pop(key, None)
         target = row.get("symbol_id") or row.get("path")
         if target and is_structural_title(
             (languages or {}).get(row.get("repo"), "en"),
@@ -133,6 +160,57 @@ def _slim_served_rows(
         if fts_only and row.get("sources") == ["fts"]:
             row.pop("sources", None)
     return rows
+
+
+def unique_exact_row(candidates: list[str], results: list[dict], pool: list[dict]) -> dict | None:
+    """The served symbol row the query's one identifier names, when *pool*
+    (every ranked symbol row, served or not) holds exactly one row naming it.
+
+    Two definitions of the name, overloads included, are ambiguous: no row.
+    """
+    if len(candidates) != 1:
+        return None
+    named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol(candidates, [s])]
+    if len(named) != 1 or not any(r is named[0] for r in results):
+        return None
+    return named[0]
+
+
+async def attach_unique_body(response: dict, row: dict, ctx, repository) -> None:
+    """Serve *row*'s live numbered body inline when it is whole and short.
+
+    The body replaces ``signature`` (its first lines say it) and the row's
+    lines become the live ones. Nothing is added for a body over
+    ``_UNIQUE_BODY_LINES`` lines, one the live file no longer locates, or an
+    unreadable file: the row then reads as before and get_symbol serves it.
+    """
+    try:
+        async with get_session(ctx.session_factory) as session:
+            res = await session.execute(
+                select(WikiSymbol).where(
+                    WikiSymbol.repository_id == repository.id,
+                    WikiSymbol.symbol_id == row.get("symbol_id"),
+                )
+            )
+            found = list(res.scalars().all())
+        if len(found) != 1:
+            return
+        symbol = found[0]
+        text = _read_file_text(Path(str(ctx.path)), symbol.file_path)
+        if text is None:
+            return
+        check = await verify_and_heal(ctx.session_factory, symbol, text)
+    except (SQLAlchemyError, OSError):
+        # The row keeps its signature; get_symbol still serves the body.
+        _log.warning("search_codebase: no inline body for %s", row.get("symbol_id"), exc_info=True)
+        return
+    if not check.verified or check.end_line - check.start_line + 1 > _UNIQUE_BODY_LINES:
+        return
+    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, 0)
+    row["start_line"], row["end_line"] = start, end
+    row.pop("signature", None)
+    row["source"] = _number_lines(source, start)
+    response.setdefault("_meta", {})["complete"] = completeness_line(bodies=1)
 
 
 def _serve_snippets(results: list[dict]) -> None:
@@ -246,6 +324,8 @@ def _result_paths(results: list[dict]) -> list[str]:
     """
     paths: list[str] = []
     for item in results:
+        if not isinstance(item, dict):
+            continue
         p = hit_file_path(item)
         if p:
             paths.append(p)

@@ -205,7 +205,8 @@ async def apply_decision_lifecycle(
     *,
     skip: Callable[[str, Exception], None] | None = None,
 ) -> None:
-    """Retire decisions whose commits were reverted or whose HEAD artifacts are gone.
+    """Retire decisions whose commits were reverted or whose HEAD artifacts are gone,
+    and put in force an agent's decisions whose commits landed on the default branch.
 
     Every run, whether or not it stored decisions. Each pass is best-effort: a
     failure goes to ``skip(step, exc)`` when given, else to the debug log.
@@ -230,3 +231,13 @@ async def apply_decision_lifecycle(
             skip("Decision HEAD artifact check", _artifact_err)
         else:
             logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
+    # After the revert pass, so a reverted record is retired rather than accepted.
+    try:
+        from repowise.core.analysis.decisions.merge_accept import accept_landed_decisions
+
+        await accept_landed_decisions(session, repo_id, repo_path)
+    except Exception as _landing_err:
+        if skip is not None:
+            skip("Decision landing check", _landing_err)
+        else:
+            logger.debug("decision_landing_check_skipped", error=str(_landing_err))

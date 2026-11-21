@@ -244,6 +244,20 @@ def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
     return _is_type_checking_flag(node.child_by_field_name("condition"), src)
 
 
+def python_import_scope(stmt_node: Node) -> tuple[tuple[int, int], ...] | None:
+    """The 1-based line span of the function a Python import sits in, else None.
+
+    An import in a function body binds its names as locals of that function
+    (and of functions nested in it), so the rest of the file never sees them.
+    """
+    node = stmt_node.parent
+    while node is not None:
+        if node.type == "function_definition":
+            return ((node.start_point[0] + 1, node.end_point[0] + 1),)
+        node = node.parent
+    return None
+
+
 def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool]:
     """``(type_only, deferred)`` for an import, from the statement and where it sits.
 

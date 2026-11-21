@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ...execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 # Wire vocabulary, mirrored in ``packages/types/src/refactoring.ts``.
 APPLIED = "applied"

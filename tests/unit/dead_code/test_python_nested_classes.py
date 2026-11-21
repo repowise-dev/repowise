@@ -235,3 +235,13 @@ NodeList: TypeAlias = list["NodeList"]
 """
     assert extract_python_local_refs(src_ann, frozenset(["NodeList"])) == frozenset()
 
+
+
+def test_pydantic_config_block_is_read_by_the_framework():
+    src = b"class Certificate(BaseModel):\n    id: str\n\n    class Config:\n        orm_mode = True\n"
+    assert ("Certificate", "Config") not in _unused_exports("app/models.py", src)
+
+
+def test_top_level_config_class_stays_reported():
+    src = b"class Config:\n    debug = False\n"
+    assert (None, "Config") in _unused_exports("app/settings.py", src)

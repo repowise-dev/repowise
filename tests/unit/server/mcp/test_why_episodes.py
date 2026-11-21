@@ -550,7 +550,7 @@ async def test_get_why_path_mode_serves_the_evidence_block(mcp_repo):
     from repowise.server.mcp_server import get_why
 
     _write(mcp_repo, _fix("s1", ("src/auth/service.py",), birth_commit=_head(mcp_repo)))
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
     assert result["mode"] == "path"
     assert [e["kind"] for e in result["episodes"]] == ["code_fix"]
     assert result["episodes"][0]["still_true"]
@@ -603,7 +603,7 @@ async def test_a_capped_body_is_banked_from_the_thread_that_attaches(mcp_repo):
         mcp_repo,
         _fix("s1", ("src/auth/service.py",), birth_commit=_head(mcp_repo), body="y" * 5000),
     )
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
     recorded = result["episodes"][0]["recorded"]
     assert recorded.startswith("[repowise#")
     assert result["_meta"]["omitted"]["refs"]

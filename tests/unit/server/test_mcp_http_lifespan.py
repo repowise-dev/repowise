@@ -189,3 +189,36 @@ async def test_cancelled_last_session_still_cleans_up_lifespan(
     assert mcp_mod._registry is None
     assert mcp_mod._workspace_root is None
     assert len(workspace.cancelled_tasks) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_session_ended_by_cancellation_still_runs_the_whole_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transport ends a session by cancelling its task group, and that
+    cancellation keeps landing on every await the teardown makes."""
+    import anyio
+
+    workspace = _install_workspace(tmp_path, monkeypatch)
+    entered = anyio.Event()
+
+    async def serve() -> None:
+        async with _server.mcp._mcp_server.lifespan(_server.mcp._mcp_server):
+            entered.set()
+            await anyio.sleep_forever()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(serve)
+        await entered.wait()
+        registry = workspace.registries[0]
+
+        async def close_after_a_yield() -> None:
+            await asyncio.sleep(0)  # a real close yields, as the engine dispose does
+            registry.closed = True
+
+        registry.close = close_after_a_yield
+        tg.cancel_scope.cancel()
+
+    assert registry.closed
+    assert mcp_mod._registry is None
+    assert len(workspace.cancelled_tasks) == 2

@@ -122,10 +122,16 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
 }
 
 
-def render_tool_table(*, keyless: bool = False) -> str:
-    """Markdown table of the tool rows, in the dict's curated order."""
+def render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None = None) -> str:
+    """Markdown table of the tool rows, in the dict's curated order.
+
+    ``listed``, when given, keeps only the rows for tools the reader's client
+    is shown.
+    """
     lines = ["| Tool | When and why |", "|------|--------------|"]
     for name, (signature, row) in TOOL_TABLE_ROWS.items():
+        if listed is not None and name not in listed:
+            continue
         if keyless and name in _KEYED_ONLY:
             row = row.replace(_KEYED_ONLY[name], "")
         lines.append(f"| `{signature}` | {row} |")

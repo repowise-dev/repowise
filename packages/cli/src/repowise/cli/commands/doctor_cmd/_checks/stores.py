@@ -11,6 +11,8 @@ from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, StoreDrift, open_store
+from .evidence import evidence_rows
+from .index_data import index_data_check
 
 _REPAIR = "repowise doctor --repair"
 
@@ -406,8 +408,15 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
 
 
 def store_checks(ctx: CheckContext) -> list[DoctorCheck]:
-    """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight."""
+    """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight.
+
+    The index-data and evidence rows run under ``--quick`` too: stamp reads,
+    row counts and two keyed reads.
+    """
     checks: list[DoctorCheck] = []
+    if ctx.db_ok and ctx.state_ok:
+        checks.append(index_data_check(ctx))
+        checks.extend(evidence_rows(ctx))
     if ctx.quick:
         return checks
     if ctx.db_ok and ctx.page_count > 0:

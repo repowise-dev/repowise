@@ -15,18 +15,18 @@ enrichment. All three are prompting, and this path has no model.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from repowise.cli.helpers import console, run_async
+from repowise.cli.helpers import console, resolve_max_file_pages, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
+from repowise.core.settings.model import flag
 
 
-def deterministic_embedder_name(cfg: dict) -> str:
+def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) -> str:
     """Resolve the embedder for a no-spend run, honouring only an explicit one.
 
     Same rule as ``init --index-only``: a hosted embedder is a real bill, and
@@ -37,13 +37,16 @@ def deterministic_embedder_name(cfg: dict) -> str:
     leaves full-text search working.
     """
     from repowise.cli.providers import resolve_embedder
+    from repowise.core.providers.llm.resolve import repo_getenv
 
-    chosen = cfg.get("embedder") or os.environ.get("REPOWISE_EMBEDDER", "").strip()
+    env_lookup = repo_getenv(repo_path)
+    # The variable beats the pin, as it does on every other path.
+    chosen = (env_lookup("REPOWISE_EMBEDDER") or "").strip() or cfg.get("embedder")
     if chosen:
         return str(chosen)
     # Nothing was chosen, so whatever resolve_embedder returns was inferred
     # from a key. Only the ones that cannot bill survive that.
-    resolved = resolve_embedder(None)
+    resolved = resolve_embedder(None, repo_path=repo_path)
     return resolved if resolved in ("mock", "ollama") else "mock"
 
 
@@ -178,9 +181,14 @@ def regenerate_deterministic_page_ids(
     unrelated module/overview/onboarding pages while the level ladder reaches
     the requested structural level.
     """
+    if any(pid.startswith("onboarding:") for pid in page_ids):
+        git_meta_map, page_ids = _with_repo_wide_git(
+            repo_path, git_meta_map, parsed_files, page_ids, degraded
+        )
     if not page_ids:
         return []
-    return _render_pages(
+    degraded_before = len(degraded)
+    pages = _render_pages(
         repo_path=repo_path,
         parsed_files=parsed_files,
         source_map=source_map,
@@ -198,6 +206,32 @@ def regenerate_deterministic_page_ids(
         vector_store=vector_store,
         stats_out=stats_out,
     )
+    onboarding = {pid for pid in page_ids if pid.startswith("onboarding:")}
+    if onboarding and len(degraded) == degraded_before:
+        from .catch_up import retire_unproduced
+
+        # An onboarding page whose gate fails is not yielded; no later run would yield it.
+        # shortcut: a page whose own render raises is dropped without a degraded
+        # entry, so it reads as not yielded too (as in the catch-up's generate path);
+        # upgrade when the generator reports the ids that failed.
+        retire_unproduced(repo_path, onboarding, pages)
+    return pages
+
+
+def _with_repo_wide_git(
+    repo_path: Path, git_meta_map: dict, parsed_files: list, page_ids: set[str], degraded: list[str]
+) -> tuple[dict, set[str]]:
+    """Every file's git row, for the onboarding pages that count history repo-wide.
+
+    An update indexes git for its changed files only. Without the stored rows the
+    page would be built from that slice. Unreadable: the onboarding pages stay
+    stale for the next run.
+    """
+    full = with_stored_git_meta(repo_path, git_meta_map, [pf.file_info.path for pf in parsed_files])
+    if full is not None:
+        return full, page_ids
+    degraded.append("Onboarding page refresh: stored git history unreadable")
+    return git_meta_map, {pid for pid in page_ids if not pid.startswith("onboarding:")}
 
 
 def _render_pages(
@@ -259,8 +293,9 @@ def _render_pages(
             file_pages_only=not complete_context,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
-            enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+            enable_onboarding=flag(cfg.get("enable_onboarding"), True),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
+            max_file_pages=resolve_max_file_pages(config=cfg),
         )
 
         # Only build a store when there is a real embedder to build it with.
@@ -271,7 +306,10 @@ def _render_pages(
         # way. It also keeps the lancedb import off the post-commit hook's
         # path, which is the one place in this command that avoids it.
         resolved_vector_store = vector_store
-        embedder_name = deterministic_embedder_name(cfg)
+        try:
+            embedder_name = deterministic_embedder_name(cfg, repo_path=repo_path)
+        except TypeError:
+            embedder_name = deterministic_embedder_name(cfg)
         if not embed_during_generation:
             resolved_vector_store = None
         elif resolved_vector_store is None and embedder_name != "mock":
@@ -527,17 +565,10 @@ def hydrate_symbol_complexity(repo_path: Path, parsed_files: list, paths: set[st
     """
     if not paths:
         return
+    from repowise.core.pipeline.persist import apply_stored_complexity
+
     stored = run_async(_load_symbol_complexity(repo_path))
-    if not stored:
-        return
-    for pf in parsed_files:
-        if pf.file_info.path not in paths:
-            continue
-        for sym in pf.symbols:
-            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
-            value = stored.get(sid)
-            if value:
-                sym.complexity_estimate = value
+    apply_stored_complexity([pf for pf in parsed_files if pf.file_info.path in paths], stored)
 
 
 async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
@@ -546,21 +577,14 @@ async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
-        from sqlalchemy import select as sa_select
-
         from repowise.core.persistence.crud import get_repository_by_path
-        from repowise.core.persistence.models import WikiSymbol
+        from repowise.core.pipeline.persist import stored_symbol_complexity
 
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return {}
-            rows = await session.execute(
-                sa_select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
-                    WikiSymbol.repository_id == repo.id
-                )
-            )
-            return {sid: int(value or 0) for sid, value in rows}
+            return await stored_symbol_complexity(session, repo.id)
     except Exception:
         return {}
     finally:
@@ -718,7 +742,13 @@ async def _load_cascade_overflow_split(
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
                     Page.page_type.in_(
-                        ["file_page", "module_page", "flow_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                        [
+                            "file_page",
+                            "module_page",
+                            "flow_page",
+                            "scc_page",
+                            *_REPO_WIDE_MODEL_TYPES,
+                        ]
                     ),
                     Page.freshness_status != "tombstone",
                 )

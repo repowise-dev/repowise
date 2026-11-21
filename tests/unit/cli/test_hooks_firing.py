@@ -186,19 +186,21 @@ def test_session_start_is_silent_without_the_rewrite_hook(home, monkeypatch) -> 
     assert session_start._distill_off_path_note() == ""
 
 
-def test_the_sentence_rides_on_the_freshness_line(home, repo, monkeypatch) -> None:
+def test_the_sentence_is_said_even_when_the_index_is_current(home, repo, monkeypatch) -> None:
     (repo / ".repowise" / "state.json").write_text(
         json.dumps({"last_sync_commit": "1" * 40}), encoding="utf-8"
     )
     monkeypatch.setattr(session_start, "_git_head", lambda _p: "1" * 40)
     monkeypatch.setattr(session_start, "_session_decision_block", lambda *_a: None)
+    monkeypatch.setattr(session_start, "_has_agent_block", lambda _p: True)
     _install_hooks(home, at=_NOW, rewrite=True)
     _off_path(monkeypatch, None)
     out = session_start._handle_claude_session_start(str(repo))
     assert out is not None
-    assert out.endswith("Codebase index is current (HEAD 11111111). " + session_start._DISTILL_OFF_PATH)
+    assert out.endswith("] " + session_start._DISTILL_OFF_PATH)
     _off_path(monkeypatch, "/usr/bin/repowise")
-    assert "distilling" not in session_start._handle_claude_session_start(str(repo))
+    # A current index with nothing else to say is silence, not a status line.
+    assert session_start._handle_claude_session_start(str(repo)) is None
 
 
 def test_an_unreadable_ledger_never_warns(home, repo) -> None:

@@ -56,6 +56,9 @@ class UpdateRun:
     base_ref: str = field(init=False, repr=False)
     defer_docs: bool = False
     head: str | None = None
+    # The repair marker this run could not check, so it keeps it (see
+    # ``unchecked_repair_marker``).
+    unchecked_repair: dict | None = None
     config: ConfigChanges = field(init=False, repr=False)
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""
@@ -76,6 +79,8 @@ class UpdateRun:
     stale_deterministic_ids: set[str] = field(default_factory=set)
     # Stale pages this mode cannot regenerate: left stale, reported, never a reason to run.
     stale_pages_deferred: int = 0
+    # Stale pages a run at this commit already planned around: left for the next commit.
+    stale_pages_planned: int = 0
     # Eligible files the index has no page for and no cap explains: render them.
     fill_file_pages: bool = False
     file_diffs: list = field(default_factory=list)
@@ -113,6 +118,23 @@ class UpdateRun:
         return bool(config and config.generation_changed) or self.wiki_rebuild
 
 
+def rework_pending(run: UpdateRun, *, defer_renderer: bool = False) -> bool:
+    """Whether a moved version stamp or a forced re-read owes work no commit explains.
+
+    The one list every shortcut checks (nothing to do, config only, working
+    tree only, dead code reuse); a new recompute stamp joins here once.
+    ``defer_renderer`` leaves a renderer change to a later run.
+    """
+    return bool(
+        run.analyzer_changed
+        or run.extraction_changed
+        or (run.renderer_changed and not defer_renderer)
+        or run.wiki_rebuild
+        or run.history_stale
+        or run.refresh_git
+    )
+
+
 @dataclass
 class DocsPass:
     """State of the model-backed half of a docs update."""
@@ -124,6 +146,9 @@ class DocsPass:
     session_decisions: list = field(default_factory=list)
     # Decision records touched by evolution, surfaced in the completion panel.
     decisions_evolved: int = 0
+    # Git archaeology was re-mined in full for a history-window change, so its
+    # earlier mined records may be replaced and the persist must not fail.
+    git_history_remined: bool = False
     decision_vector_store: Any = None
     prior_pages: dict = field(default_factory=dict)
     generated_pages: list = field(default_factory=list)

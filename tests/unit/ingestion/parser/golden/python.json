@@ -170,6 +170,7 @@
         "line": 26,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 460,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -186,6 +187,7 @@
         "line": 27,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 491,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -202,6 +204,7 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 522,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -218,6 +221,7 @@
         "line": 39,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 695,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -549,6 +553,7 @@
         "line": 23,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 519,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1239,7 +1244,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import subprocess",
@@ -1265,7 +1271,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import time",
@@ -1291,7 +1298,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import httpx",
@@ -1317,7 +1325,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import requests",
@@ -1343,7 +1352,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "from sqlalchemy import select",
@@ -1369,7 +1379,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -1397,6 +1408,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 595,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1413,6 +1425,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 603,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1429,6 +1442,7 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 724,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1445,6 +1459,7 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 840,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1461,6 +1476,7 @@
         "line": 35,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 954,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1477,6 +1493,7 @@
         "line": 46,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1193,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1493,6 +1510,7 @@
         "line": 47,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1252,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1509,6 +1527,7 @@
         "line": 52,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1446,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1529,6 +1548,7 @@
           "receiver_name": "session",
           "argument_count": 1
         },
+        "start_byte": 1457,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1545,6 +1565,7 @@
         "line": 53,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1512,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1561,6 +1582,7 @@
         "line": 58,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1631,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1577,6 +1599,7 @@
         "line": 63,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1749,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1593,6 +1616,7 @@
         "line": 68,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1825,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1613,6 +1637,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 1838,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1629,6 +1654,7 @@
         "line": 74,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1976,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1645,6 +1671,7 @@
         "line": 79,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2098,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1665,6 +1692,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 2228,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1945,7 +1973,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "from typing import overload",
@@ -1971,7 +2000,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import typing_extensions",
@@ -1997,7 +2027,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -2016,6 +2047,7 @@
         "line": 17,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 378,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2032,6 +2064,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 490,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

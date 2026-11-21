@@ -126,18 +126,20 @@ async def get_execution_flows(
             # Trace from a specific symbol
             node = await _entry_node(session, repo_id, entry_point, exclude_spec)
             if node is None:
-                from repowise.server.mcp_server._savings.interaction import note_error_reason
+                from repowise.server.mcp_server._savings.interaction import error_reply
 
-                note_error_reason("not_found")
-                return {
-                    "entry_point": entry_point,
-                    "error": f"Symbol not found: {entry_point!r}",
-                    "_meta": _build_meta(
-                        timing_ms=(time.perf_counter() - t0) * 1000,
-                        repository=repository,
-                        targets=None,
-                    ),
-                }
+                return error_reply(
+                    "not_found",
+                    {
+                        "entry_point": entry_point,
+                        "error": f"Symbol not found: {entry_point!r}",
+                        "_meta": _build_meta(
+                            timing_ms=(time.perf_counter() - t0) * 1000,
+                            repository=repository,
+                            targets=None,
+                        ),
+                    },
+                )
             entry_nodes = [(node, _ep_score(node))]
         else:
             # Top-N scored entry points from DB

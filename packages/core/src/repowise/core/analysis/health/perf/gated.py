@@ -45,7 +45,7 @@ LOCK_IO_KIND = "blocking_io_under_lock"
 # hand. A blocking call there is how the job is done, so it never becomes a
 # ``hot_path_sync_io`` finding however many callers it has. A CLI is product
 # code (``code_origin`` calls it production) and still fires.
-_NON_SERVING_ORIGINS = frozenset({"test", "tooling", "docs_example", "generated", "vendored"})
+_NON_SERVING_ORIGINS = frozenset({"test", "tooling", "docs_example", "generated", "vendored", "data"})
 
 
 def _may_serve_requests(path: str, origins: Mapping[str, str] | None) -> bool:

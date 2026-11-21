@@ -16,6 +16,7 @@ from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
+from ..symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -643,11 +644,13 @@ class ResolveMixin:
         progress: Any | None = None,
         scope: frozenset[str] | None = None,
         registrations: bool = True,
+        cpp_index: Any | None = None,
     ) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph.
 
         *registrations* also links registering decorators to what they
-        decorate, over every file.
+        decorate, over every file. *cpp_index* is the C/C++ workspace index
+        the build already made, so the call resolver does not make another.
         """
         from ..call_resolver import CallResolver
 
@@ -659,6 +662,8 @@ class ResolveMixin:
             heritage_parents=self._heritage_parents(),
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
+            cpp_index=cpp_index,
+            source_map=self._source_map,
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -833,7 +838,7 @@ class ResolveMixin:
         A mention, not a call: running the decorator does not run the function.
         """
         registrar_ids = {
-            f"{path}::{name}"
+            make_symbol_id(path, name)
             for path, parsed in self._parsed_files.items()
             for name in parsed.registrars
         }

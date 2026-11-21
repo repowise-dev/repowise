@@ -508,7 +508,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import java.util.List;",
@@ -534,7 +535,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import java.util.regex.Pattern;",
@@ -560,7 +562,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       },
       {
         "raw_statement": "import org.springframework.data.jpa.repository.JpaRepository;",
@@ -586,7 +589,8 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "scopes": null
       }
     ],
     "exports": [],
@@ -600,6 +604,7 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 789,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -618,6 +623,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 982,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -636,6 +642,7 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1151,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -652,6 +659,7 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1181,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -670,6 +678,7 @@
         "line": 42,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1509,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -688,6 +697,7 @@
         "line": 59,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2020,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -704,6 +714,7 @@
         "line": 64,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2155,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -722,6 +733,7 @@
         "line": 68,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2308,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -740,6 +752,7 @@
         "line": 70,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2409,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -762,6 +775,7 @@
           "receiver_name": "p",
           "argument_count": 1
         },
+        "start_byte": 2421,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

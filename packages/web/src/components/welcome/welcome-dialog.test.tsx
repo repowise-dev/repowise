@@ -2,15 +2,17 @@
 
 import React from "react";
 import { SWRConfig } from "swr";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupResponse } from "@/lib/api/setup";
 import type { WelcomeLens } from "@/lib/welcome-moment";
-import { WelcomeDialog } from "./welcome-dialog";
-import { showsHostedRow } from "./welcome-step-yours";
+import { FIRST_CALL_POLL_MS, WelcomeDialog } from "./welcome-dialog";
+import { showsHostedRow } from "./welcome-step-ask";
+import { TIPS_AFTER_MS } from "./welcome-step-agent";
 
 const mocks = vi.hoisted(() => ({
   connectSetupAgent: vi.fn(),
+  getRepoSetup: vi.fn(),
   setSetupHook: vi.fn(),
   getProviders: vi.fn(),
   openSheet: vi.fn(),
@@ -26,6 +28,7 @@ vi.mock("next/link", () => ({
 }));
 vi.mock("@/lib/api/setup", () => ({
   connectSetupAgent: mocks.connectSetupAgent,
+  getRepoSetup: mocks.getRepoSetup,
   setSetupHook: mocks.setSetupHook,
 }));
 vi.mock("@/lib/api/providers", () => ({ getProviders: mocks.getProviders }));
@@ -41,13 +44,14 @@ function setup(overrides: Partial<SetupResponse> = {}): SetupResponse {
     index: { state: "up_to_date" },
     agents_available: true,
     agents: [
-      { id: "claude-code", display_name: "Claude Code", installed: true, connected: true },
+      { id: "claude-code", display_name: "Claude Code", installed: true, connected: true, default_profile: "standard" },
       {
         id: "cursor",
         display_name: "Cursor",
         installed: true,
         connected: false,
         config_files: { repo: [".cursor/mcp.json"] },
+        default_profile: "core",
       },
     ],
     calls_available: true,
@@ -83,7 +87,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof WelcomeDialog>>
         years={9}
         lenses={LENSES}
         setup={setup()}
-        hotspotPath="scheduler/planner.py"
+        promptFacts={{ hotspot: "scheduler/planner.py" }}
         {...props}
       />
     </SWRConfig>,
@@ -114,7 +118,7 @@ describe("WelcomeDialog", () => {
     const steps = screen.getByRole("list", { name: "Tour steps" });
     expect(within(steps).getByText("Your agent").closest("li")?.getAttribute("aria-current")).toBe("step");
 
-    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
     expect(screen.getByText("Step 3 of 3")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Finish in Setup" }).getAttribute("href")).toBe(
       "/repos/r1/settings/setup",
@@ -164,11 +168,29 @@ describe("WelcomeDialog", () => {
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
+  it("tells a connected agent to ask one question, then says what to check after two minutes", () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog();
+      fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+      expect(screen.getByText("Connected. Restart it, then ask it one question about this repo.")).toBeTruthy();
+      expect(screen.queryByText("Not seeing it?")).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(TIPS_AFTER_MS);
+      });
+      expect(screen.getByText("Not seeing it?")).toBeTruthy();
+      expect(screen.getByText(/In Claude Code, run \/mcp/)).toBeTruthy();
+      expect(screen.getByText("repowise doctor")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks before turning sync off, and says what else goes", async () => {
     mocks.setSetupHook.mockResolvedValue({ ok: true, command: "repowise hook uninstall" });
     renderDialog();
     fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
-    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
 
     const toggle = screen.getByRole("switch", { name: "Keep the index in sync" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -181,12 +203,72 @@ describe("WelcomeDialog", () => {
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
   });
 
-  it("opens the model sheet from the plum box", () => {
+  it("says which agents are listed the core tools, and leaves the questions to step 3", () => {
     renderDialog();
     fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
-    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
-    fireEvent.click(screen.getByRole("button", { name: "Write the docs" }));
-    expect(mocks.openSheet).toHaveBeenCalled();
+    const core = screen.getAllByText(/Lists the core repowise tools by default/);
+    expect(core).toHaveLength(1);
+    expect(core[0]!.closest("li")?.textContent).toContain("Cursor");
+    expect(screen.queryByText(/Use Repowise to give me a tour/)).toBeNull();
+    expect(screen.getByText("Waiting for its first call. Ask it anything about this repo.")).toBeTruthy();
+  });
+
+  it("step 3 asks questions built from this repo, names the agent, and has no model block", () => {
+    renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
+    expect(screen.getByRole("heading", { name: "Now ask it something" })).toBeTruthy();
+    expect(screen.getByText(/Paste one into Claude Code/)).toBeTruthy();
+    expect(screen.getByText(/Use Repowise to give me a tour of orbit-api/)).toBeTruthy();
+    expect(screen.getByText(/Before I change scheduler\/planner.py, use Repowise/)).toBeTruthy();
+    expect(screen.queryByText(/riskiest/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Write the docs" })).toBeNull();
+    expect(screen.queryByText(/ranked evidence/)).toBeNull();
+    expect(screen.getByText("Change any of it later in Setup.")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Keep the index in sync" })).toBeTruthy();
+  });
+
+  it("checks again for the first call while step 2 waits, and stops once it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getRepoSetup.mockResolvedValue(
+        setup({
+          calls: { first_call_at: "2026-11-20T10:00:00Z" },
+          agents: [
+            {
+              id: "claude-code",
+              display_name: "Claude Code",
+              installed: true,
+              connected: true,
+              first_call_at: "2026-11-20T10:00:00Z",
+            },
+          ],
+        }),
+      );
+      renderDialog();
+      // Step 1 does not poll.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIRST_CALL_POLL_MS * 2);
+      });
+      expect(mocks.getRepoSetup).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+      expect(screen.getByText("Waiting for its first call")).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIRST_CALL_POLL_MS + 50);
+      });
+      expect(mocks.getRepoSetup).toHaveBeenCalledWith("r1");
+      expect(screen.getByText(/^First call /)).toBeTruthy();
+      expect(screen.queryByText(/Waiting for its first call/)).toBeNull();
+
+      const calls = mocks.getRepoSetup.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIRST_CALL_POLL_MS * 3);
+      });
+      expect(mocks.getRepoSetup.mock.calls.length).toBe(calls);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("moves on with Enter from the heading, but not from a control", () => {
@@ -233,12 +315,12 @@ describe("hosted row", () => {
   it("renders its link to hosted only when shown", () => {
     renderDialog({ setup: setup({ onboarding: { hints_enabled: false, signed_in: false } }) });
     fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
-    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
     expect(screen.queryByRole("link", { name: "See hosted" })).toBeNull();
     cleanup();
     renderDialog();
     fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
-    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: ask it" }));
     expect(screen.getByRole("link", { name: "See hosted" }).getAttribute("href")).toContain(
       "src=local_web_welcome",
     );

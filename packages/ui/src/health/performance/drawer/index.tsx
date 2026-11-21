@@ -26,6 +26,7 @@ import {
   WhyRankedSection,
 } from "./judgements";
 import { StatusNotices } from "./layout";
+import { MeasuredRunsSection } from "./measured-runs";
 import { PlanSection, useVerifiedPlan } from "./plan";
 
 /**
@@ -85,6 +86,7 @@ export default function OpportunityDrawer({
           <StatusNotices detail={detail} />
           <MapLink adapter={adapter} opportunity={current} />
           <FixSummary opportunity={current} />
+          <MeasuredRunsSection current={current} adapter={adapter} />
           <CodeSection opportunity={current} adapter={adapter} />
           {current.siblings && current.siblings.length > 0 ? (
             <SiblingsNote siblings={current.siblings} onSelect={onSelectById} />

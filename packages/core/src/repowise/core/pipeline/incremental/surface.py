@@ -7,9 +7,10 @@ resolve differently, and re-resolving just the edited file reproduces a full
 rebuild. This module classifies an edit by comparing the file's parse before
 and after, taken from the parse cache.
 
-A documentation file can also be added or removed: it gives the graph only
-its own file node, so the patch is exact as long as no other file could
-resolve to it (:func:`_path_set_change_reason`).
+A documentation file can also be added or removed: it gives the graph its
+own file node and ``documents`` edges every build re-derives for every doc,
+so the patch is exact as long as no other file could resolve to it
+(:func:`_path_set_change_reason`).
 
 An edit that does change what other files see (a source file added or
 removed, a changed surface) is planned as a *refreshing* patch in the
@@ -30,9 +31,11 @@ from typing import Any
 
 # Body-only patching is enabled only for languages covered by the resolver
 # convergence fixtures. Expand this set together with those fixtures.
-PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift"})
+PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp"})
 
-# Prose no parser extracts from and no build pass reads. ``.mdx`` is excluded
+# Prose no parser extracts from. Its only edges are ``documents`` links, which
+# the builder re-derives for every doc on every build and no resolver reads
+# back, so a doc edit cannot change how another file resolves. ``.mdx`` is excluded
 # because the TypeScript warmup reads its imports from disk. Config and data
 # files stay out: resolvers and warmups read manifests by name from disk
 # (package.json, tsconfig, pyproject, pubspec, ...). Upgrade path: admit a
@@ -41,8 +44,11 @@ _INERT_LANGUAGES = frozenset({"markdown", "asciidoc"})
 
 
 # Languages whose files may be added, removed or change their surface in a
-# patch. Each is covered by the patch-parity fixtures; expand together.
-SURFACE_PATCH_LANGUAGES = frozenset({"python", "typescript", "javascript"})
+# patch. Each is covered by the patch-parity fixtures; expand together. C/C++
+# resolution also follows includes transitively, which names cannot bound:
+# the build checks afterwards that no file's include reach moved
+# (:mod:`.include_reach`).
+SURFACE_PATCH_LANGUAGES = frozenset({"python", "typescript", "javascript", "c", "cpp"})
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,15 @@ class PatchPlan:
     or removed files), ``importers_of`` (files whose importers must be
     re-resolved) and ``module_imports_changed`` (edited files whose ``*`` or
     whole-module imports changed, so the names they pass on did).
+    ``include_only`` are the names among ``names`` that only C/C++ edits
+    touched: a file in another language reaches them only through a parsed
+    site that names them (the repo-wide name tiers), not through its text,
+    and only when the edit added or removed a symbol of that name
+    (``cross_names``). ``import_names`` are, per edited file, the names only
+    its own imports touched, which reach other files only if one imports it.
+    ``site_names`` are C/C++
+    namespaces an edit opened or closed, which reach only a C/C++ file whose
+    parsed sites name them.
     """
 
     eligible: bool
@@ -68,10 +83,18 @@ class PatchPlan:
     stems: frozenset[str] = frozenset()
     importers_of: tuple[str, ...] = ()
     module_imports_changed: tuple[str, ...] = ()
+    include_only: frozenset[str] = frozenset()
+    site_names: frozenset[str] = frozenset()
+    cross_names: frozenset[str] = frozenset()
+    import_names: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def is_inert(parsed: Any) -> bool:
-    """Whether *parsed* gives the graph nothing but its own file node."""
+    """Whether *parsed* gives other files nothing to resolve against.
+
+    Its file node plus ``documents`` out-edges, which every build re-derives
+    globally and no resolver reads back.
+    """
     return (
         parsed.file_info.language in _INERT_LANGUAGES
         and not parsed.file_info.path.lower().endswith(".mdx")
@@ -447,4 +470,8 @@ def plan_patch(
         stems=keys.stems,
         importers_of=keys.importers_of,
         module_imports_changed=keys.module_imports_changed,
+        include_only=keys.include_only,
+        site_names=keys.site_names,
+        cross_names=keys.cross_names,
+        import_names=keys.import_names,
     )

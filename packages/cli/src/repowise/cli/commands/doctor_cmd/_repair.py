@@ -1,4 +1,4 @@
-"""``repowise doctor --repair``: store drift, agent refresh, Claude Code re-registration."""
+"""``repowise doctor --repair``: settings, store drift, agents, Claude Code registration."""
 
 from __future__ import annotations
 
@@ -170,7 +170,12 @@ def _report_store_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
         if ctx.stale_count:
             console.print(f"[yellow]{_stale_page_guidance(ctx.stale_counts)}[/yellow]")
-    elif not ctx.registration_wedged and not ctx.agents_need_refresh:
+    elif not (
+        ctx.registration_wedged
+        or ctx.agents_need_refresh
+        or ctx.invalid_settings
+        or ctx.retired_settings
+    ):
         if ctx.stale_count:
             console.print(
                 f"[yellow]No store drift to repair. "
@@ -217,13 +222,52 @@ def _reregister_claude(repo_path: _DoctorPath) -> None:
         )
 
 
+def _reset_invalid_settings(ctx: CheckContext) -> None:
+    """Put each config.yaml value repowise ignores back to its default.
+
+    Only the file: an environment variable is the shell's to change. Each
+    reset says what moved and how to set the value again.
+    """
+    from repowise.core.settings.writers import reset_value
+
+    console.print("\n[bold]Resetting settings repowise could not use...[/bold]")
+    for key in ctx.invalid_settings:
+        try:
+            reset_value(ctx.repo_path, key)
+        except Exception as exc:
+            console.print(f"  [yellow]{key}: not reset ({exc})[/yellow]")
+            continue
+        console.print(
+            f"  [green]{key}[/green] is back to its default; "
+            f"set it again with 'repowise config set {key} <value>'"
+        )
+
+
+def _remove_retired_settings(ctx: CheckContext) -> None:
+    """Drop config.yaml keys repowise no longer reads; every other key is kept."""
+    from repowise.core.settings.writers import write_file_value
+
+    console.print("\n[bold]Removing settings repowise no longer reads...[/bold]")
+    for key in ctx.retired_settings:
+        try:
+            write_file_value(ctx.repo_path, key, None)
+        except Exception as exc:
+            console.print(f"  [yellow]{key}: not removed ({exc})[/yellow]")
+            continue
+        console.print(f"  [green]{key}[/green] removed from .repowise/config.yaml")
+
+
 def run_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
-    """Store drift first, then agent integrations, then the Claude Code entry.
+    """Invalid settings, then store drift, agent integrations and the Claude Code entry.
 
     *repo_ok* is the repo's overall health. When it is False, the
     "nothing to do" branch points at the failing rows instead of
     reporting the repo clean.
     """
+    if ctx.invalid_settings:
+        _reset_invalid_settings(ctx)
+    if ctx.retired_settings:
+        _remove_retired_settings(ctx)
     _report_store_repair(ctx, repo_ok=repo_ok)
     if ctx.agents_need_refresh:
         _refresh_agents(ctx.repo_path)

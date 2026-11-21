@@ -73,12 +73,43 @@ def cat_file_batch(
             pos = nl + 1
             if on_missing == "raise":
                 is_submodule = False
-                if ":" in spec:
+                if spec.startswith(":"):
+                    if len(spec) >= 3 and spec[1] in "0123" and spec[2] == ":":
+                        stage = spec[1]
+                        path = spec[3:]
+                    else:
+                        stage = None
+                        path = spec[1:]
+                    if path:
+                        try:
+                            chk = subprocess.run(
+                                ["git", "ls-files", "--stage", "--", path],
+                                cwd=repo_path,
+                                capture_output=True,
+                                timeout=5.0,
+                                text=True,
+                            )
+                            if chk.returncode == 0:
+                                for line in chk.stdout.splitlines():
+                                    f_parts = line.split()
+                                    if (
+                                        len(f_parts) >= 4
+                                        and f_parts[0] == "160000"
+                                        and (stage is None or f_parts[2] == stage)
+                                        and f_parts[3] == path
+                                    ):
+                                        is_submodule = True
+                                        break
+                        except (OSError, subprocess.SubprocessError) as exc:
+                            raise ValueError(
+                                f"git index lookup failed for {spec!r}: {exc}"
+                            ) from exc
+                elif ":" in spec:
                     rev, path = spec.split(":", 1)
                     if rev and path:
                         try:
                             chk = subprocess.run(
-                                ["git", "ls-tree", rev, path],
+                                ["git", "ls-tree", rev, "--", path],
                                 cwd=repo_path,
                                 capture_output=True,
                                 timeout=5.0,

@@ -82,7 +82,9 @@ async def persist_incremental_commits(
     with timed(timings, "persist.commits.changes"):
         from repowise.core.changes.store import reconcile_categories, refresh_changes
 
-        await refresh_changes(session, repo_id, repo_path, rebuild=False)
+        await refresh_changes(
+            session, repo_id, repo_path, rebuild=False, commit_limit=indexer.commit_limit
+        )
         try:
             await reconcile_categories(session, repo_id)
         except Exception as exc:

@@ -157,8 +157,8 @@ def refresh_history(
             kept.append(as_biomarker_result(stored))
 
         results = kept + fresh
-        scores, deductions = score_file(results)
-        rescored = attach_impacts(results, deductions)
+        scores, deductions = score_file(results, ctx.language)
+        rescored = attach_impacts(results, deductions, ctx.language)
         for finding in rescored:
             finding.file_path = path
         numbers = file_score_fields(_analysed(ctx.language, metric), scores, rescored)

@@ -159,7 +159,7 @@ int helper(int x) {
 }
 @end
 """,
-        {"pick": 6},
+        {"pick": 5},
     ),
 ]
 
@@ -303,7 +303,7 @@ _GO_CASES: list[tuple[str, str, dict[str, int]]] = [
         "\t\treturn 0\n"
         "\tdefault:\n\t\treturn -1\n"
         "\t}\n}\n",
-        {"pick": 4},
+        {"pick": 3},
     ),
 ]
 
@@ -346,7 +346,7 @@ def test_go_select_agrees_with_an_equivalent_switch() -> None:
         "\tdefault:\n\t\treturn -1\n"
         "\t}\n}\n"
     )
-    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 4
+    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -373,7 +373,7 @@ function pick(x: number): number {
   }
 }
 """,
-        {"pick": 4},
+        {"pick": 3},
     ),
 ]
 
@@ -415,7 +415,7 @@ public class A {
   }
 }
 """
-    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4
+    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -536,14 +536,15 @@ def test_php_complexity(source: str, expected: dict[str, int]) -> None:
 def test_php_name_nodes_count_only_in_php_calls() -> None:
     """The ``name`` identifier match is gated to PHP's call kinds.
 
-    No other mapped grammar has a ``name`` node or PHP's call node kinds, so
-    their assertion counting cannot change through that gate.
+    No other mapped grammar has a ``name`` node or PHP's method-call kinds, so
+    their assertion counting cannot change through that gate. Perl shares only
+    ``function_call_expression``, which reads no ``name`` field.
     """
     from repowise.core.analysis.health.complexity.assertions import _PHP_CALL_KINDS
     from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
     from repowise.core.ingestion.parser import _get_language, grammar_tag_for
 
-    php_only = _PHP_CALL_KINDS | {"name"}
+    php_only = (_PHP_CALL_KINDS - {"function_call_expression"}) | {"name"}
     for language in LANGUAGE_MAPS:
         if language == "php":
             continue

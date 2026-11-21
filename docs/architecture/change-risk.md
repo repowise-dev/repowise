@@ -136,7 +136,9 @@ in a process, so a long-running MCP server pays for it once per anchor.
 
 A changed file is grouped only when it has a file node in the index, is not a
 test file, and is in a language whose resolver can emit an import edge. Docs,
-config, data and test files are never grouped and never bridge two groups.
+config, data and test files neither join nor bridge groups;
+`documents` edges are also dropped from the edge query, so a doc linking two
+files never joins them.
 
 ## Branch overlap scan
 

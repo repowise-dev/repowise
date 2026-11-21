@@ -41,8 +41,8 @@ from repowise.core.persistence.models import (
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
 from repowise.server.mcp_server._directory import _git_rows_under
-from repowise.server.mcp_server._edit_sites import reference_edit_set
-from repowise.server.mcp_server._helpers import _decision_body
+from repowise.server.mcp_server._edit_sites import edit_set_block
+from repowise.server.mcp_server._helpers import _decision_body, no_source_field, serves_no_source
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
@@ -59,6 +59,7 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_layer_for_file,
     _find_tour_step_for_file,
 )
+from repowise.server.mcp_server.tool_context.measured import mark_measured_target
 from repowise.server.mcp_server.tool_context.resolution import ResolvedTarget, TargetQuery
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
@@ -222,10 +223,17 @@ async def _triage_section(card: CardState) -> None:
       omitted on files with no counted fixes.
     * ``decision_records``: titles only, pointing to ``get_why``; inlining
       rationale would bloat every cached response.
+    * ``measured``: one line when a stored profile run measured the symbol
+      or a function in the file (``measured.attach_measured``).
     """
     if card.dir_path is not None:
         await _directory_triage(card)
         return
+    resolved = card.resolved
+    # Read after the gather, for every card at once: attach_measured.
+    mark_measured_target(
+        card.data, resolved.target_type, resolved.file_path, resolved.symbol_node_id
+    )
     triage_path = card.git_path
     if not triage_path:
         return
@@ -265,7 +273,17 @@ async def _directory_triage(card: CardState) -> None:
         await _governing_decision_titles(card, card.dir_path or card.target)
 
 
+def _decisions_off(card: CardState) -> bool:
+    """Whether ``decisions.mode`` is off for the repository this card reads."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    root = card.query.repo_root or getattr(card.query.repository, "local_path", None)
+    return layer_mode(root) == "off"
+
+
 async def _governing_decision_titles(card: CardState, triage_path: str) -> None:
+    if _decisions_off(card):
+        return
     target = card.target
     governing: list[DecisionRecord] = []
     seen_ids: set[str] = set()
@@ -459,7 +477,7 @@ async def _decisions_section(card: CardState) -> None:
     acceptance row tells them apart, so a bare status filter would lose the
     withdrawn ones from the history lane.
     """
-    if not card.default_on("decisions"):
+    if not card.default_on("decisions") or _decisions_off(card):
         return
     res = await card.session.execute(
         select(DecisionRecord)
@@ -644,7 +662,8 @@ async def _call_graph_section(card: CardState) -> None:
 
 async def _references_section(card: CardState) -> None:
     """Reference edit set: every live site naming the symbol."""
-    if not card.wants("references"):
+    prose = card.wants("references+")
+    if not (prose or card.wants("references")):
         return
     resolved = card.resolved
     ref_node = resolved.graph_symbol
@@ -664,9 +683,11 @@ async def _references_section(card: CardState) -> None:
         )
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
-        card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector, wider=True
+        card.data["references"] = await edit_set_block(
+            card.session, card.repo_id, root, ref_node, card.query.collector, prose=prose
         )
+    elif ref_node is not None and serves_no_source():
+        card.data["references"] = no_source_field()
     else:
         card.data["references_note"] = "references require a symbol target in the graph"
 

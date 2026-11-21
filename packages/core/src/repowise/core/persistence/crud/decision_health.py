@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, status_rank
+from repowise.core.analysis.decisions.lifecycle import (
+    HISTORY_CURRENCIES,
+    RULE_DRIFTED,
+    status_rank,
+)
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.test_paths import is_test_related_path
 
@@ -140,7 +144,10 @@ class _Lanes:
 
         Callers truncate these lists and must not re-order them.
         """
-        self.stale.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
+        # A record whose rule drifted leads: that is a finding, churn a hint.
+        self.stale.sort(
+            key=lambda d: (d.rule_check != RULE_DRIFTED, -(d.staleness_score or 0.0), d.id)
+        )
         self.proposed.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
         # Retired by lane, history before tombstone. Not by ``updated_at``: it
         # moves on any write, so it does not say when a record was retired.

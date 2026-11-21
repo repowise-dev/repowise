@@ -131,7 +131,7 @@ repowise generate                        # every subsystem page still unwritten
 repowise generate --path src/api         # under a path prefix or glob
 repowise generate --stale                # pages whose code changed since writing
 repowise generate --all                  # rewrite the prose everywhere
-repowise update --full                   # the whole wiki at once
+repowise update --full                   # every stale page, or the whole wiki on a fast index
 ```
 
 `generate` writes the model-written pages and only those. Naming a structural
@@ -166,7 +166,8 @@ page stays as a tombstone for 30 days, a renamed file's as a redirect.
 
 `--cascade-budget N` caps how many pages a single update may regenerate from
 cascading changes. It is adaptive when unset, which is what you want except on a
-very large refactor commit.
+very large refactor commit. The pages it leaves stale are listed in the warning;
+`repowise update --full` refreshes all of them.
 
 Pages also carry a freshness status of `fresh`, `stale`, `expired` or `unknown`.
 Expiry by age takes priority, then a source-hash mismatch marks a page stale.

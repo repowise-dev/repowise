@@ -8,11 +8,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.analysis.changed_lines import shallow_roots
 
 from ._constants import _CODE_EXTENSIONS
+
+if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
 
 __all__ = [
     "_FIELD_SEP",
@@ -244,6 +247,8 @@ class GitIndexSummary:
     # (issue #730). None when git is unavailable or the repo has no commits.
     repo_totals: RepoTotals | None = None
     history_coverage: GitHistoryCoverage | None = None
+    # The window the commit walk used, so the change records read the same one.
+    commit_limit: int | None = None
 
 
 _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
@@ -523,13 +528,14 @@ def _lifetime_churn(
 _TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
 
 
-def count_people(repo: Any, rev: str) -> int:
-    """Humans who authored a non-merge commit reachable from *rev*.
+def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
+    """The shared people resolver over every non-merge author reachable from *rev*.
 
     One ``git log --no-merges`` pass reads each commit's mailmap-applied author
-    and its ``Co-authored-by`` trailers, and the shared people resolver folds
-    one person's several names and emails into one (trailers are evidence
-    only). Automation is not counted.
+    and its ``Co-authored-by`` trailers (evidence only, see
+    :func:`~repowise.core.analysis.owners.people_resolver`). The indexer keys
+    every per-file author figure on it, so one person who commits under two
+    names or a real and a noreply email is one author on every file.
     """
     from repowise.core.analysis.owners import people_resolver
 
@@ -548,10 +554,21 @@ def count_people(repo: Any, rev: str) -> int:
             if (m := _TRAILER_PERSON_RE.match(value))
         ]
         rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
-    return len(people_resolver(commit_rows=rows).people())
+    return people_resolver(commit_rows=rows)
 
 
-def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
+def count_people(repo: Any, rev: str) -> int:
+    """Humans who authored a non-merge commit reachable from *rev*.
+
+    The shared people resolver folds one person's several names and emails
+    into one. Automation is not counted.
+    """
+    return len(repo_people(repo, rev).people())
+
+
+def capture_repo_totals(
+    repo: Any, prior: RepoTotals | None = None, people: IdentityResolver | None = None
+) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
     *prior* is the last capture's own return value, read back from storage. It
@@ -576,6 +593,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
       histories) use the earliest root.
     - one ``git log --no-merges`` over author names and emails — the
       all-time count of people (see :func:`count_people`).
+
+    *people* is a :func:`repo_people` resolver the caller already built over
+    the same history; passing it skips the author walk.
 
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
@@ -619,7 +639,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         pass
 
     with contextlib.suppress(Exception):
-        totals.total_contributor_count = count_people(repo, rev)
+        totals.total_contributor_count = (
+            len(people.people()) if people is not None else count_people(repo, rev)
+        )
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
         repo, totals.total_commit_count, rev, head_sha, prior

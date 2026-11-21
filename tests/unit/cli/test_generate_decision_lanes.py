@@ -70,6 +70,7 @@ def test_generate_state_write_clears_the_lanes_that_ran(monkeypatch, tmp_path: P
     outcome = SimpleNamespace(
         total_pages=1,
         remaining_template_pages=0,
+        generated_pages=[],
         decision_lanes=DecisionLaneOutcome(found=2, still_pending=("comment",)),
     )
     monkeypatch.setattr(generate_command, "get_head_commit", lambda _p: None)

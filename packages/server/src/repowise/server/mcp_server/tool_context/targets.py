@@ -24,6 +24,7 @@ from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
@@ -40,9 +41,12 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     filter_dicts_by_key,
     filter_path_list,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
+from repowise.server.mcp_server._symbol_facts import shows_call_origin, symbol_card_facts
 from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
 from repowise.server.mcp_server.tool_context.files import files_section
@@ -149,7 +153,7 @@ async def _compact_symbol_rows(
             "line": s.start_line,
         }
         sid = symbol_identity(s.symbol_id)
-        if sid != f"{path}::{s.name}":
+        if sid != make_symbol_id(path, s.name):
             row["symbol_id"] = sid
         scored.append(
             ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
@@ -351,6 +355,9 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
 
 
 async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    if serves_no_source():
+        docs["file_preview"] = no_source_field(card.target)
+        return
     preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
@@ -485,6 +492,10 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
     if card.wants("full_doc"):
         await _symbol_documentation(card, sym, sym_page, docs)
     await _symbol_used_by(card, sym, docs)
+    # Opt in: get_symbol carries them by default; the card stays its default size.
+    sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
+    if card.wants("facts") and sym_node_id:
+        docs.update(await symbol_card_facts(card.session, card.repo_id, sym_node_id))
     # Candidates
     if len(sym_matches) > 1:
         docs["candidates"] = filter_dicts_by_key(
@@ -592,7 +603,12 @@ async def _symbol_user_files(
     row per file, unlike symbol-grained ``callers``.
     """
     res = await card.session.execute(
-        select(GraphEdge.source_node_id, GraphNode.file_path, GraphEdge.confidence)
+        select(
+            GraphEdge.source_node_id,
+            GraphNode.file_path,
+            GraphEdge.confidence,
+            GraphEdge.resolution_origin,
+        )
         .outerjoin(
             GraphNode,
             (GraphNode.repository_id == GraphEdge.repository_id)
@@ -612,8 +628,10 @@ async def _symbol_user_files(
     # by the confidence floor include=["callers"] serves (a recursive call is
     # not a user), so an empty list can say so.
     same_file_users: set[str] = set()
-    for source_node_id, file_path, confidence in res.all():
-        path = file_path or source_node_id.split("::", 1)[0]
+    for source_node_id, file_path, confidence, origin in res.all():
+        if not shows_call_origin(origin, sym.file_path):
+            continue
+        path = file_path or file_of_symbol(source_node_id)
         user_files.add(path)
         if (
             path == sym.file_path

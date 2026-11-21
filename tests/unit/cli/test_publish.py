@@ -332,19 +332,20 @@ class TestPostJson:
     def test_returns_status_and_body_on_a_refusal(self, monkeypatch):
         import httpx
 
-        def fake_post(url, **kwargs):
-            return httpx.Response(402, json={"detail": "limit"}, request=httpx.Request("POST", url))
+        def fake_request(method, url, **kwargs):
+            assert method == "POST"
+            return httpx.Response(402, json={"detail": "limit"}, request=httpx.Request(method, url))
 
-        monkeypatch.setattr(httpx, "post", fake_post)
+        monkeypatch.setattr(httpx, "request", fake_request)
         assert PlatformClient().post_json("repos/index", {}) == (402, {"detail": "limit"})
 
     def test_no_answer_is_zero(self, monkeypatch):
         import httpx
 
-        def boom(url, **kwargs):
+        def boom(method, url, **kwargs):
             raise httpx.ConnectError("offline")
 
-        monkeypatch.setattr(httpx, "post", boom)
+        monkeypatch.setattr(httpx, "request", boom)
         assert PlatformClient().post_json("repos/index", {}) == (0, {})
 
 

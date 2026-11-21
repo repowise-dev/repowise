@@ -537,7 +537,10 @@ def _markdown(v: _Verdict) -> str:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 def _emit_github(v: _Verdict) -> None:
@@ -578,7 +581,7 @@ def _print_findings(v: _Verdict) -> None:
     if not rows:
         return
     table = Table(show_edge=False, pad_edge=False)
-    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+    for column in ("Severity", "Kind", "Where", "Matched (secrets hidden)"):
         table.add_column(column)
     for f in rows:
         colour = _SEVERITY_COLOUR[f["severity"]]

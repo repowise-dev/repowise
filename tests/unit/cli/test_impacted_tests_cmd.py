@@ -257,6 +257,34 @@ def test_list_prints_one_test_per_line(repo) -> None:
     assert result.stdout == "tests/test_a.py\n"
 
 
+def test_list_says_run_everything_in_one_line_instead_of_a_partial_list(repo) -> None:
+    # src/a.py alone would list tests/test_a.py; the Dockerfile makes it a full run.
+    _write(repo, {"src/a.py": "A = 2\n", "Dockerfile": "FROM python\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "image")
+    result = _run(repo, "main...feat", "--format", "list")
+    assert result.exit_code == 0, result.output
+    # Empty, so `| xargs pytest` runs the whole suite.
+    assert result.stdout == ""
+    lines = result.stderr.strip().splitlines()
+    assert lines[-1].startswith(
+        "Run every test: Dockerfile changed: build or test configuration can change any test."
+    )
+    # The same verdict --format args gives.
+    assert _run(repo, "main...feat", "--format", "args").stdout == ":all\n"
+
+
+def test_list_counts_the_further_run_everything_reasons(repo) -> None:
+    _write(repo, {"Dockerfile": "FROM python\n", "uv.lock": "lock\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "image")
+    result = _run(repo, "main...feat", "--format", "list")
+    assert result.stdout == ""
+    line = result.stderr.strip().splitlines()[-1]
+    assert line.startswith("Run every test: ")
+    assert line.endswith("more reason(s); --format json lists them)")
+
+
 def test_stamps_one_commit_apart_select_from_the_older(repo) -> None:
     # The database row says main; state.json says feat, one commit later.
     (repo / ".repowise" / "state.json").write_text(
@@ -638,3 +666,22 @@ def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"], data
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

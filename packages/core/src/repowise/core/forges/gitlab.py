@@ -98,6 +98,7 @@ register(
         kind=ForgeKind.GITLAB,
         label="GitLab",
         change_term="merge request",
+        change_head_ref="refs/merge-requests/{number}/head",
         noreply_re=_NOREPLY_RE,
         bot_name_re=_BOT_NAME_RE,
         bot_email_re=_BOT_EMAIL_RE,

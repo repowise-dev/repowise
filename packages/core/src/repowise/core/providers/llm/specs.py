@@ -338,3 +338,24 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {spec.name: spec for spec in _SPECS}
 ZERO_COST_MODEL_PREFIXES: tuple[str, ...] = tuple(
     f"{spec.name}/" for spec in _SPECS if spec.zero_cost
 )
+
+#: Every value :func:`provider_kind` returns. Fixed labels, safe for telemetry.
+PROVIDER_KINDS = frozenset({"none", "subscription_cli", "local", "api_key", "mock", "other"})
+
+
+def provider_kind(provider_name: str | None) -> str:
+    """How the named provider runs, as one fixed label from :data:`PROVIDER_KINDS`.
+
+    An agent CLI login (``subscription_cli``) before ``local``, since those
+    CLIs also run on this machine.
+    """
+    if not provider_name:
+        return "none"
+    spec = PROVIDER_SPECS.get(provider_name)
+    if spec is None:
+        return "other"
+    if spec.agent:
+        return "subscription_cli"
+    if spec.name == "mock":
+        return "mock"
+    return "local" if spec.local else "api_key"

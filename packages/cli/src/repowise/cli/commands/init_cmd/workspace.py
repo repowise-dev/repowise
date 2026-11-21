@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import structlog
 from rich.markup import escape
 
 from repowise.cli._setup import setup_logging_silence
@@ -27,8 +28,10 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_project_file_overrides,
 )
 from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
     register_editor_clients,
     resolve_editor_setup_options,
+    snapshot_agent_configs,
     write_editor_project_files,
 )
 from repowise.cli.git_exclude import keep_workspace_data_out
@@ -67,6 +70,7 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import pages
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -99,6 +103,8 @@ from .persistence import (
     stamp_fresh_index,
 )
 from .reporting import show_workspace_completion
+
+logger = structlog.get_logger(__name__)
 
 
 def _run_workspace_generation(
@@ -322,6 +328,9 @@ class _WorkspaceCtx:
     save_key: bool = True
     #: Asked-for work a repo did not get; any entry makes init exit degraded.
     gaps: list[str] = field(default_factory=list)
+    #: The primary's agent config bytes before any repo's editor files were
+    #: written, to name every host to restart, not only Claude Code.
+    agent_configs_before: dict[str, Any] | None = None
 
 
 @dataclass
@@ -466,9 +475,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 llm_client=repo_provider,
                 cost_tracker=cost_tracker,
                 mode=(
-                    OrchestratorMode.FAST
-                    if ctx.run_mode == "fast"
-                    else OrchestratorMode.STANDARD
+                    OrchestratorMode.FAST if ctx.run_mode == "fast" else OrchestratorMode.STANDARD
                 ),
                 progress=callback,
                 existing_kg_fingerprint=_prev_kg_fp,
@@ -476,7 +483,9 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 generation_config=structural_generation_config(ctx.index_only),
             )
         )
-    console.print(f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
+    console.print(
+        f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
+    )
     # Persisted now: generation may not run for this repo, and flushes only its own.
     if cost_tracker is not None:
         flush_cost_tracker(cost_tracker)
@@ -540,7 +549,9 @@ def _generate_repo_with_model(
 
         docs.pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
         docs.docs_mode = "llm"
-        console.print(f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n")
+        console.print(
+            f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n"
+        )
     except CostGateDeclined:
         # Declining only meant "not at that price": fall back to the free
         # template renderer rather than leave the repo with no wiki.
@@ -633,6 +644,10 @@ def _repo_state(
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
+    # Same ledger write the single-repo paths make (#6031).
+    mining_state.record_extraction_report(
+        state, getattr(result, "decision_report", None), head
+    )
     _stamp_repo_scope(state, repo_path, ctx, index, docs)
     keep_prior_documentation(state, load_state(repo_path), ctx.run_mode)
     kg = getattr(result, "knowledge_graph_result", None)
@@ -730,7 +745,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
-            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
+            embedding_model=resolve_embedding_model(
+                ctx.embedder_name_resolved, repo_path=repo_path
+            ),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
@@ -742,6 +759,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             save_config_partial(repo_path, wiki_style=ctx.wiki_style)
         if ctx.language != "en":
             save_config_partial(repo_path, language=ctx.language)
+    if ctx.follow_renames and docs.docs_mode in ("llm", "deterministic"):
+        # So update keeps following renames for this repo (#5367).
+        save_config_partial(repo_path, follow_renames=True)
     elif docs.docs_mode == "deterministic":
         from repowise.cli.providers.embedders import resolve_embedding_model
 
@@ -754,7 +774,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
+            embedding_model=(
+                resolve_embedding_model(det_embedder, repo_path=repo_path) if det_embedder else None
+            ),
         )
 
 
@@ -872,7 +894,9 @@ def _workspace_init(
         hook = plan.sync if plan.sync is not None else hook
     primary_repo = pick.primary_repo
     load_dotenv(primary_repo.path)
-    answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+    answers.embedder_name_resolved = resolve_embedder(
+        answers.embedder_name, repo_path=primary_repo.path
+    )
     # Whether the user named this embedder, rather than resolve_embedder
     # inferring one from an LLM key: the free template path will not put a
     # hosted embedder on the user's bill unless they named it.
@@ -889,7 +913,7 @@ def _workspace_init(
     if repo_names:
         console.print(repos_primary_line(ws_config.default_repo, pick))
 
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
     ctx = _WorkspaceCtx(
         provider=provider,
@@ -915,15 +939,20 @@ def _workspace_init(
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=answers.embedder_name_resolved,
         embedder_was_requested=embedder_was_requested,
-        resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
+        resolved_commit_limit=clamp_commit_limit(answers.commit_limit),
         run_mode=run_mode,
         first_index=first_index,
     )
+    if not dry_run and not is_editor_setup_disabled(not editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            ctx.agent_configs_before = snapshot_agent_configs(primary_repo.path)
     totals = _index_workspace_repos(selected, ctx)
 
     # A dry run writes nothing for any repo, so nothing at the workspace level.
+    repointed = False
     if not dry_run:
-        _save_workspace(
+        repointed = _save_workspace(
             ws_config,
             root,
             selected,
@@ -943,8 +972,9 @@ def _workspace_init(
             editor_setup=editor_setup,
         )
 
-    # Last, so Connected and Auto-sync read what the hook offers left behind.
-    show_workspace_completion(
+    # Last, so Connected reads what the hook offers left behind.
+    setup = _workspace_setup(primary_repo.path, ctx, repointed=repointed)
+    completion = show_workspace_completion(
         selected=selected,
         errors=totals.errors,
         total_files=totals.total_files,
@@ -955,13 +985,24 @@ def _workspace_init(
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
         dry_run=dry_run,
-        setup=_workspace_setup(primary_repo.path, ctx),
+        setup=setup,
+        cross_repo=None if dry_run else cross_repo_finding(root),
     )
     console.print()
-    exit_on_gaps(_workspace_gaps(ctx, totals))
+    gaps = _workspace_gaps(ctx, totals)
+    from repowise.cli.agent_events import active
+
+    events = active()
+    if events is not None:
+        from ._agent_summary import workspace_summary
+
+        events.summary(
+            workspace_summary(setup, completion.steps, completion.first_prompt, gaps)
+        )
+    exit_on_gaps(gaps)
 
 
-def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
+def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx, *, repointed: bool) -> Any:
     """What editor setup left for the primary repo; None on a dry run, which set nothing up."""
     if ctx.dry_run:
         return None
@@ -972,7 +1013,59 @@ def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
         interactive=sys.stdin.isatty() and not ctx.yes,
         first_index=ctx.first_index,
         no_editor_setup=not ctx.editor_setup,
+        configs_before=ctx.agent_configs_before,
+        claude_repointed=repointed,
     )
+
+
+def cross_repo_finding(root: Path) -> str | None:
+    """The workspace's one cross-repo finding, worded; None when none was measured.
+
+    The repo pair whose files changed together in the most work sessions, else
+    the count of contracts matched across repos. Reads what cross-repo
+    analysis just wrote.
+    """
+    try:
+        pair = _busiest_repo_pair(root)
+        links = 0 if pair else _contract_links(root)
+    except Exception:
+        # Analysis wrote these moments ago; an unreadable one costs the panel
+        # a line, never the run. Logged so a bug here is still visible.
+        logger.warning("workspace_cross_repo_finding_failed", root=str(root), exc_info=True)
+        return None
+    if pair:
+        (first, second), sessions = pair
+        noun = "work session" if sessions == 1 else "work sessions"
+        return f"{first} and {second} changed together in {sessions:,} {noun}"
+    if links:
+        noun = "contract link" if links == 1 else "contract links"
+        return f"{links:,} {noun} between repos"
+    return None
+
+
+def _busiest_repo_pair(root: Path) -> tuple[tuple[str, str], int] | None:
+    """The repo pair of the file pair that changed together in the most work sessions.
+
+    An edge's ``frequency`` counts the sessions one file pair shared. Summing
+    edges would count a session once per file pair it touched, so the largest
+    single edge is the honest count: both repos changed in at least that many
+    sessions. The dashboard's workspace welcome reads the same edge.
+    """
+    from repowise.core.workspace.cross_repo import load_overlay
+
+    overlay = load_overlay(root)
+    edges = overlay.co_changes if overlay is not None else []
+    if not edges:
+        return None
+    top = max(edges, key=lambda e: e.frequency)
+    return tuple(sorted((top.source_repo, top.target_repo))), top.frequency
+
+
+def _contract_links(root: Path) -> int:
+    from repowise.core.workspace.contracts import load_contract_store
+
+    store = load_contract_store(root)
+    return len(store.contract_links) if store is not None else 0
 
 
 def _settle_repos(
@@ -1035,23 +1128,25 @@ def _save_workspace(
     editor_setup: bool,
     yes: bool,
     global_consent: bool | None = None,
-) -> None:
+) -> bool:
     """Save the indexed timestamps, run cross-repo analysis, register the primary.
 
     *global_consent* is the plan screen's answer for the global MCP entry;
-    ``None`` when the screen did not ask.
+    ``None`` when the screen did not ask. True when registering wrote a new or
+    moved global entry, which Claude Code loads only on a restart.
     """
     ws_config.save(root)
     _run_cross_repo_analysis(ws_config, root, selected, errors)
     primary_entry = ws_config.get_primary()
     if not primary_entry:
-        return
+        return False
     from repowise.cli.editor_integrations.global_mcp import (
         REGISTER_LATER_COMMAND,
         confirm_global_mcp,
     )
 
     primary_path = (root / primary_entry.path).resolve()
+    repointed = False
     if global_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this workspace only). Run "
@@ -1064,6 +1159,9 @@ def _save_workspace(
         yes=yes or global_consent is True,
         no_editor_setup=not editor_setup,
     ):
+        from ._finish import _mcp_entry_moves
+
+        repointed = _mcp_entry_moves(primary_path)
         register_editor_clients(console, primary_path)
         # The repos' .mcp.json files were written before the user-scope entry
         # existed; drop each one that entry now serves, as single-repo init does.
@@ -1073,6 +1171,7 @@ def _save_workspace(
             # Best effort: a malformed .mcp.json was already reported when written.
             with contextlib.suppress(Exception):
                 sync_project_mcp_config(Path(repo.path))
+    return repointed
 
 
 def _resolve_workspace_provider(
@@ -1097,7 +1196,9 @@ def _resolve_workspace_provider(
             )
             # Re-resolve: interactive provider selection may just have set the
             # provider's API key in os.environ.
-            answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+            answers.embedder_name_resolved = resolve_embedder(
+                answers.embedder_name, repo_path=primary_repo.path
+            )
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
                 f"Model: [{VALUE}]{provider.model_name}[/]"
@@ -1134,7 +1235,9 @@ def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
         if excluded := keep_workspace_data_out(root):
-            console.print(f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]")
+            console.print(
+                f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]"
+            )
     console.print()
     return ws_config
 
@@ -1205,9 +1308,7 @@ def _offer_workspace_hooks(
         yes=yes,
         no_editor_setup=not editor_setup,
     )
-    warn_unresolved_hooks(
-        console, [r.path for r in selected], no_editor_setup=not editor_setup
-    )
+    warn_unresolved_hooks(console, [r.path for r in selected], no_editor_setup=not editor_setup)
 
 
 def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:

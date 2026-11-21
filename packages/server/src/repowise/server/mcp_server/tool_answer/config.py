@@ -89,6 +89,8 @@ _SPECIFIC_TOKEN_MAX_FILES = 3
 # environment variable) are scanned for in live source, and the definitions
 # holding them anchored, up to the inline-body cap. Scans per question:
 _LITERAL_SCAN_MAX_TOKENS = 3
+# Lines served for such a word in files the index holds no symbol for.
+_UNINDEXED_LINES_MAX = 3
 # Definition kinds an exact question name may anchor.
 _ANCHOR_KINDS = ("function", "method", "class", "interface")
 
@@ -106,6 +108,18 @@ _DATA_SHAPE_ACCESS_WINDOW = 40  # lines below a binding to mine VAR key accesses
 _DATA_SHAPE_MIN_FIELDS = 2  # never answer from a single-field shape (too weak to trust)
 _DATA_SHAPE_MIN_IDENT_LEN = 6  # identifier must be specific, not a bare generic name
 _DATA_SHAPE_GREP_TIMEOUT_S = 6.0
+
+# The sentences a synthesis-less ``note`` is built from.
+_NO_SYNTHESIS_NOTE = "Synthesis is unavailable; local retrieval and source evidence remain usable."
+_RATIONALE_NOTE = (
+    " code_rationale carries rationale comments mined from the candidate "
+    "source — they may already answer the question."
+)
+_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
+_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
+_BODY_NOTE = (
+    " symbol_bodies carries the live body of the symbol(s) you named, so " + _BODY_NOTE_TAIL
+)
 
 # Classes first: "what does X do" / "which class inherits Y" resolve at class level.
 _KIND_PRIORITY = {"class": 0, "interface": 0, "function": 1, "method": 2}
@@ -234,6 +248,11 @@ _GAP_MARKERS = (
 # Enough for a page's opening section plus a code reference; much less stops
 # mid-context and agents fall back to native exploration.
 _GATED_EXCERPT_CHARS = 1500
+
+# Chars of that excerpt held for the page's agent digest, which opens with the
+# questions the page answers (median about 400 chars). Joined after a body that
+# is almost always longer than the whole excerpt, it was cut off every time.
+_DIGEST_SLOT_CHARS = 500
 
 # How many hits the low-confidence payload hands back to the agent.
 _GATED_RETURN_HITS = 3

@@ -607,6 +607,7 @@ def _emit(pc, fmt: str) -> None:
         emit_json(pc.to_dict())
     elif fmt == "markdown":
         click.echo(render_markdown(pc), nl=False)
+        write_gate_summary(gate_summary(pc))
     elif fmt == "github":
         for line in github_annotations(pc):
             click.echo(line)

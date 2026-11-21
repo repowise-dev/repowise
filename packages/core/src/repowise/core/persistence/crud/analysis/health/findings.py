@@ -25,6 +25,7 @@ from ....batches import chunked
 from ....models import HealthFinding, _new_uuid, _now_utc
 from ..._shared import _BATCH_SIZE
 from ...graph import get_test_file_paths
+from .._notes import KEEP, next_note
 from ..shown import gated_counts, shown
 from .exclude import _filter_excluded_paths, health_exclude_spec
 
@@ -253,10 +254,14 @@ async def update_health_finding_status(
     session: AsyncSession,
     finding_id: str,
     status: str,
+    note: Any = KEEP,
 ) -> HealthFinding | None:
+    """Set *finding_id*'s triage status, with the *note* saying why (see
+    :func:`.._notes.next_note`)."""
     f = await session.get(HealthFinding, finding_id)
     if f is None:
         return None
+    f.status_note = next_note(f.status, status, f.status_note, note)
     f.status = status
     await session.flush()
     return f

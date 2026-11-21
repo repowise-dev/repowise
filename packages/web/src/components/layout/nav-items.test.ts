@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repoNavGroups, repoNavItems } from "./nav-items";
+import { WORKSPACE_NAV, repoNavGroups, repoNavItems, viewIdFor } from "./nav-items";
 import en from "../../../messages/en.json";
 import zh from "../../../messages/zh-CN.json";
 
@@ -35,5 +35,29 @@ describe("repoNavGroups", () => {
     const hrefs = repoNavItems("r1").map((i) => i.href);
     expect(hrefs).toContain("/repos/r1/tests");
     expect(hrefs).toContain("/repos/r1/security");
+  });
+});
+
+describe("viewIdFor", () => {
+  it("names the nav entry a path sits under, never the repo or the path", () => {
+    expect(viewIdFor("/")).toBe("global.dashboard");
+    expect(viewIdFor("/settings/privacy")).toBe("global.settings");
+    expect(viewIdFor("/workspace")).toBe("workspace.overview");
+    expect(viewIdFor("/workspace/contracts/detail")).toBe("workspace.contracts");
+    expect(viewIdFor("/repos/secret-repo/code-health/trend")).toBe("repo.codeHealth");
+    expect(viewIdFor("/repos/secret-repo/files/src/secret.py")).toBe("repo.files");
+    expect(viewIdFor("/repos/secret-repo/settings")).toBe("repo.settings");
+  });
+
+  it("reports nothing off the nav", () => {
+    expect(viewIdFor("/repos/r1")).toBeNull();
+    expect(viewIdFor("/repos/r1/zoom")).toBeNull();
+    expect(viewIdFor("/nowhere")).toBeNull();
+  });
+});
+
+describe("workspace nav", () => {
+  it("ends with the workspace Setup", () => {
+    expect(WORKSPACE_NAV.at(-1)).toMatchObject({ labelKey: "setup", href: "/workspace/setup" });
   });
 });

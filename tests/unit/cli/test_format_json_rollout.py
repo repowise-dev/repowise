@@ -385,13 +385,21 @@ def test_forgone_rows_keeps_what_it_read_when_a_later_surface_errors(
             pass
 
     # ``_forgone_rows`` imports sqlite3 inside the function, so the module
-    # attribute is what it resolves at call time.
-    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: _Con())
+    # attribute is what it resolves at call time. Only the omissions database
+    # gets the fake: coverage.py writes its per-test data through
+    # sqlite3.connect while the test runs, and must reach the real one.
+    db = tmp_path / "omissions.db"
+    real_connect = sqlite3.connect
+
+    def _connect(target, *a, **k):
+        return _Con() if db.as_posix() in str(target) else real_connect(target, *a, **k)
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
     monkeypatch.setattr(
         "repowise.cli.commands.augment_cmd._shared.hook_flag_enabled", lambda *_a: False
     )
 
-    rows = saved_cmd._forgone_rows(tmp_path, tmp_path / "omissions.db", None)
+    rows = saved_cmd._forgone_rows(tmp_path, db, None)
     assert len(rows) == 1, "the surface read before the error must survive"
     assert rows[0]["forgone_tokens"] == 800
 

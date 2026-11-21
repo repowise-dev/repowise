@@ -87,7 +87,7 @@ _FN = (FunctionComplexity(name="run", start_line=1, end_line=40, ccn=20, max_nes
 
 
 @pytest.mark.parametrize(
-    "origin", ["tooling", "build", "vendored", "generated", "docs_example", "test"]
+    "origin", ["tooling", "build", "vendored", "generated", "docs_example", "test", "data"]
 )
 def test_every_coverage_marker_skips_code_that_does_not_ship(origin: str) -> None:
     ctx = FileContext(

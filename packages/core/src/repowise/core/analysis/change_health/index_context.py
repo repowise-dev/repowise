@@ -14,10 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...ids import SYMBOL_SEP, is_external
 from ...ingestion.cohesion import records_no_use
+from ...ingestion.models import NON_CODE_EDGE_TYPES
 from ...persistence.models import GraphEdge
 
-#: History, not code: the edge kind the in-memory dependents count leaves out.
-_NOT_A_USE = ("co_changes",)
+#: History and prose, not code: the edge kinds the in-memory dependents count leaves out.
+_NOT_A_USE = NON_CODE_EDGE_TYPES
 
 
 async def index_dependents(session: AsyncSession, repository_id: str) -> dict[str, int]:

@@ -43,6 +43,13 @@ export interface DecisionReviewDrawerProps {
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
   /** Re-accepts a decision whose files moved. Given only where it applies. */
   onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
+  /** Pins or unpins a decision in force. Given only where it applies. */
+  onPin?: ((decision: DecisionRecord, pinned: boolean) => void) | undefined;
+  /**
+   * The record's agent prompts (pin, veto, change it), rendered first in the
+   * verb row: handing a change to an agent is the primary action.
+   */
+  prompts?: React.ReactNode;
   readOnlyReason?: string | undefined;
   pending?: boolean | undefined;
   /** The full record page, where its fields are edited. */
@@ -55,6 +62,9 @@ export interface DecisionReviewDrawerProps {
   /** Slot for marks the caller already renders on the row (currency, signer). */
   marks?: React.ReactNode;
 }
+
+/** The verb that turns a background record into a decision in force. */
+export const PUT_IN_FORCE_LABEL = "Put in force";
 
 /** Quote provenance as quiet row meta, matching the queue table. */
 const EVIDENCE_META = "text-2xs text-[var(--color-text-tertiary)]";
@@ -69,6 +79,8 @@ export function DecisionReviewDrawer({
   onAccept,
   onDismiss,
   onReaffirm,
+  onPin,
+  prompts,
   readOnlyReason,
   pending,
   href,
@@ -97,6 +109,8 @@ export function DecisionReviewDrawer({
               onAccept={onAccept}
               onDismiss={onDismiss}
               onReaffirm={onReaffirm}
+              onPin={onPin}
+              prompts={prompts}
               readOnlyReason={readOnlyReason}
               pending={pending}
               href={href}
@@ -159,6 +173,7 @@ function DrawerHeader({
   marks,
   href,
   Link,
+  prompts,
   ...verbs
 }: BodyProps & { blockers: string[]; typedReason: string }) {
   const flagged = d.verification && d.verification !== "exact" ? d.verification : null;
@@ -182,6 +197,7 @@ function DrawerHeader({
             bottom-right corner of every overlay, which is where a footer's
             primary verb would sit. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
+          {prompts}
           <DrawerVerbs d={d} {...verbs} />
           <Link
             href={href}
@@ -203,16 +219,70 @@ function DrawerHeader({
 
 type VerbProps = Pick<
   BodyProps,
-  "d" | "reviewable" | "onAccept" | "onDismiss" | "onReaffirm" | "readOnlyReason" | "pending"
+  | "d"
+  | "reviewable"
+  | "onAccept"
+  | "onDismiss"
+  | "onReaffirm"
+  | "onPin"
+  | "readOnlyReason"
+  | "pending"
 > & { blockers: string[]; typedReason: string };
 
 function DrawerVerbs(props: VerbProps) {
-  const { reviewable, onReaffirm, readOnlyReason } = props;
-  if (!reviewable && !onReaffirm) return null;
+  const { d, reviewable, onReaffirm, onPin, readOnlyReason, pending } = props;
+  if (!reviewable && !onReaffirm && !onPin) return null;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
-  return onReaffirm ? <ReaffirmVerb {...props} onReaffirm={onReaffirm} /> : <ReviewVerbs {...props} />;
+  if (reviewable) return <ReviewVerbs {...props} />;
+  return (
+    <div className="flex items-center gap-2">
+      {onPin && <PinVerb d={d} pending={pending ?? false} onPin={onPin} />}
+      {onReaffirm && <ReaffirmVerb {...props} onReaffirm={onReaffirm} />}
+    </div>
+  );
+}
+
+/** Pin or unpin, the same words and titles wherever the verb is drawn. */
+export const PIN_LABEL = "Pin";
+export const UNPIN_LABEL = "Unpin";
+export const PIN_TITLE = "Hold it as law: an agent asks a person before replacing it";
+export const UNPIN_TITLE = "It stays in force; agents may replace it again";
+
+/** A pinned decision's mark: the word, with the sentence on hover. */
+export function PinnedMark() {
+  return (
+    <span
+      className="inline-flex items-center whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-2xs font-medium text-[var(--color-text-secondary)]"
+      title="Pinned: a person holds it as law, and an agent asks before replacing it."
+    >
+      Pinned
+    </span>
+  );
+}
+
+export function PinVerb({
+  d,
+  pending,
+  onPin,
+}: {
+  d: DecisionRecord;
+  pending: boolean;
+  onPin: (decision: DecisionRecord, pinned: boolean) => void;
+}) {
+  const pinned = d.pinned === true;
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={pending}
+      title={pinned ? UNPIN_TITLE : PIN_TITLE}
+      onClick={() => onPin(d, !pinned)}
+    >
+      {pinned ? UNPIN_LABEL : PIN_LABEL}
+    </Button>
+  );
 }
 
 function ReaffirmVerb({
@@ -239,7 +309,7 @@ function ReviewVerbs({ d, onAccept, onDismiss, pending, blockers, typedReason }:
           disabled={pending || open.length > 0}
           onClick={() => (reason ? onAccept(d, { reason }) : onAccept(d))}
         >
-          {pending ? "Accepting…" : "Accept"}
+          {pending ? "Putting in force…" : PUT_IN_FORCE_LABEL}
         </Button>
       )}
       {onDismiss && (

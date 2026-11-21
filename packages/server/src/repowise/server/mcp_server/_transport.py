@@ -40,11 +40,17 @@ CLIENT_GONE = "client_gone"
 #: channel was written to, not one whose frames were definitely mangled.
 PROTOCOL_CORRUPTED = "protocol_corrupted"
 
-#: A network transport's own run returned. Nobody hung up on us; we stopped.
+#: A network transport's own run returned, or the run was interrupted (Ctrl-C).
+#: Nobody hung up on us; we stopped.
 SERVER_STOPPED = "server_stopped"
 
+#: The server exited on purpose before serving, because this environment cannot
+#: be served (no store would open). The event's ``failure_reason`` says why.
+#: Exits non-zero, but it is not a crash.
+SERVER_REFUSED = "server_refused"
+
 #: Anything else that ended the run. The only outcome that is this server's
-#: fault, and the only one that exits non-zero.
+#: fault.
 SERVER_FAULT = "server_fault"
 
 

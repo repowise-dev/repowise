@@ -27,7 +27,10 @@ through its imports can break a test through either:
    a class keep every test. A fixture a test asks for affects the tests that
    ask for it, directly, through other fixtures, through ``usefixtures`` or by
    ``getfixturevalue``; the index records each of those requests as a fixture
-   edge, and those tests are selected.
+   edge, and those tests are selected. A test file or conftest that asks for
+   fixtures in a way the index cannot record (``pytest_edges.UNRECORDED_HINT``)
+   is selected too, standing for its own tests: a request resolves for the
+   test making it, and every other file's requests are recorded.
 
 Granularity is the module, not the function: a fixture that names anything in
 a module on the route to the change counts as reaching it, however deep the
@@ -43,11 +46,9 @@ test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
 conftest does not parse, loads plugins, star-imports a module on the route, has
-a route the analysis cannot tie to one of its imports, when a test or conftest
-asks for its fixtures in a way the index cannot record
-(``pytest_edges.UNRECORDED_HINT``), when some file imports a conftest by a
-name the index could not resolve, or when the index predates fixture-request
-edges.
+a route the analysis cannot tie to one of its imports, when some file imports
+a conftest by a name the index could not resolve, or when the index predates
+fixture-request edges.
 
 Ceiling: an import-time side effect of the changed module itself (it registers
 itself in a shared registry) that a test observes without any import route of
@@ -77,6 +78,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.pyparse import parse_python, symtable_python
 
 from ..ingestion.framework_edges.pytest_edges import (
@@ -1173,7 +1175,7 @@ async def _load_scope(
     judged = [(conf, r) for by_conf in routes.values() for conf, r in by_conf.items()]
     narrowable = {conf for conf, r in judged if r.use is not None and r.reason is None}
     declared = {
-        f"{conf}::{name}"
+        make_symbol_id(conf, name)
         for conf, r in judged
         if conf in narrowable and r.use is not None
         for name in r.use.declared
@@ -1183,7 +1185,7 @@ async def _load_scope(
     unstamped = any(
         r.use is not None
         and r.use.fixtures
-        and not any(f"{conf}::{n}" in stamped for n in r.use.declared)
+        and not any(make_symbol_id(conf, n) in stamped for n in r.use.declared)
         for conf, r in judged
         if conf in narrowable
     )
@@ -1265,7 +1267,7 @@ def _narrow(
             result[t] = BROADCAST_VIA
     for conf in narrowed:
         check = _add_import_check(conf, result, scope)
-        _add_note(notes, _narrow_note(conf, routes[conf], check), target)
+        _add_note(notes, _narrow_note(conf, routes[conf], check, scope), target)
     return list(result.items())
 
 
@@ -1320,14 +1322,33 @@ def _dir_prefix(conf: str) -> str:
     return "" if d == "." else f"{d}/"
 
 
-def _narrow_note(conf: str, route: _Route, check: str | None) -> tuple[str, str]:
+def _narrow_note(conf: str, route: _Route, check: str | None, scope: _Scope) -> tuple[str, str]:
     use = route.use
     fixtures = sorted(use.fixtures) if use else []
     what = (
         f"the tests requesting {', '.join(fixtures)}" if fixtures else "no fixture-requesting test"
     )
+    hidden = sorted(_hidden_requesters(conf, scope)) if fixtures else []
+    if hidden:
+        who = hidden[0] if len(hidden) == 1 else f"{len(hidden)} files (e.g. {hidden[0]})"
+        what += f", and {who} asking for fixtures in a way the index cannot record"
     tail = f"; {check} runs as its import check" if check else ""
     return "", f" reaches {conf} only through its imports: selected {what}{tail}"
+
+
+def _hidden_requesters(conf: str, scope: _Scope) -> set[str]:
+    """Files under *conf* that may ask for its fixtures in a way no edge records.
+
+    Each is a collected test file or a conftest (:data:`UNRECORDED_HINT` is
+    stamped only on their conftest edges). A request resolves for the test
+    making it, so such a file can reach a fixture only for its own tests, or,
+    for a conftest, for the tests under it.
+    """
+    return {
+        e.source
+        for e in scope.edges
+        if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
+    }
 
 
 def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str:
@@ -1335,30 +1356,20 @@ def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str
 
     A reason string instead when the users cannot be known. A conftest whose
     fixtures no recorded request names has no users: nothing asks for them.
+    A file asking for fixtures in a way the index cannot record
+    (:func:`_hidden_requesters`) counts as a user: every other file's requests
+    are all recorded, so the hidden ones cannot reach past it.
     """
     if not use.fixtures:
         return set()
     if not scope.recorded:
         return "the index was built before fixture requests were recorded; run `repowise update`"
-    hidden = next(
-        (
-            e.source
-            for e in scope.edges
-            if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
-        ),
-        None,
-    )
-    if hidden:
-        return (
-            f"{hidden} asks for fixtures in a way the index cannot record, and "
-            f"{', '.join(sorted(use.fixtures))} reach the change"
-        )
-    wanted = {f"{conf}::{n}" for n in use.fixtures}
-    users: set[str] = set()
+    wanted = {make_symbol_id(conf, n) for n in use.fixtures}
+    users: set[str] = _hidden_requesters(conf, scope)
     for edge in scope.edges:
         if edge.target not in wanted or edge.edge_type == "framework":
             continue
-        source_file = edge.source.split("::", 1)[0]
+        source_file = file_of_symbol(edge.source)
         if source_file == conf:
             continue
         if is_runnable_test(source_file) or scope_kind(source_file) == "conftest":

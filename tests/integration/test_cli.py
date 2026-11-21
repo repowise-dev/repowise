@@ -291,7 +291,7 @@ class TestInitIndexOnly:
         providers = set(_db_column(db_path, "SELECT DISTINCT provider_name FROM wiki_pages"))
         assert providers == {"template"}
 
-    def test_index_only_persists_clamped_commit_limit_and_excludes(self, runner, work_repo):
+    def test_index_only_persists_a_deep_commit_limit_and_excludes(self, runner, work_repo):
         from repowise.cli.helpers import load_config
 
         result = runner.invoke(
@@ -303,7 +303,7 @@ class TestInitIndexOnly:
 
         cfg = load_config(work_repo)
         assert cfg["exclude_patterns"] == ["vendor/"]
-        assert cfg["commit_limit"] == 10000  # 99999 clamped to the 10000 max
+        assert cfg["commit_limit"] == 99999  # no upper bound: a full-history window
 
     def test_index_only_omits_excludes_when_none_given(self, runner, work_repo):
         from repowise.cli.helpers import load_config
@@ -631,7 +631,7 @@ class TestDeleteWithConfiguredDb:
             catch_exceptions=False,
         )
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert f"No repository in the database matches {unknown.resolve()}" in result.output
         assert "Deleted" not in result.output
         assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
@@ -651,7 +651,7 @@ class TestDeleteWithConfiguredDb:
 
         (dest / ".repowise").mkdir()
         result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "Database not found." in result.output
 
     def test_deletes_from_local_wiki_db_when_configured(
@@ -817,7 +817,7 @@ class TestUpdateWorkingTree:
         """One watcher-style update. Mirrors ``_watch_single_repo``'s trigger,
         lock release included — in-process repeat runs need it."""
         from repowise.cli.commands.update_cmd.command import run_update
-        from repowise.cli.commands.watch_cmd import _release_own_update_lock
+        from repowise.core.update_lock import release_own_update_lock
 
         try:
             return run_update(
@@ -836,7 +836,7 @@ class TestUpdateWorkingTree:
             )
         finally:
             if release_lock:
-                _release_own_update_lock(repo)
+                release_own_update_lock(repo)
 
     def _page_status(self, repo, path):
         import sqlite3

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -9,6 +11,61 @@ import sys
 from pathlib import Path
 
 import pytest
+
+#: Seconds per test file from a CI run, written by scripts/shard_weights.py.
+SHARD_WEIGHTS = Path(__file__).with_name("shard_weights.json")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        metavar="K/N",
+        help="Run only shard K of N (1-based). Whole test files go to one shard: "
+        "files in tests/shard_weights.json are packed by their recorded time, "
+        "the rest go by a hash of their path, so every run splits the same way.",
+    )
+
+
+def _shard(value: str) -> tuple[int, int]:
+    try:
+        k, n = (int(part) for part in value.split("/"))
+    except ValueError:
+        raise pytest.UsageError(f"--shard takes K/N, e.g. 1/2; got {value!r}") from None
+    if not 1 <= k <= n:
+        raise pytest.UsageError(f"--shard {value}: K must be between 1 and N")
+    return k, n
+
+
+def shard_buckets(files: set[str], n: int, weights: dict[str, float]) -> dict[str, int]:
+    """0-based shard per test file.
+
+    Weighted files are packed greedily, heaviest first, into the lightest
+    shard; ties break by path so every xdist worker agrees. A file with no
+    weight (new, or under the recorded floor) goes by an md5 of its path;
+    ``hash()`` is salted per process.
+    """
+    totals = [0.0] * n
+    out: dict[str, int] = {}
+    for path in sorted(files & weights.keys(), key=lambda p: (-weights[p], p)):
+        out[path] = totals.index(min(totals))
+        totals[out[path]] += weights[path]
+    for path in files - out.keys():
+        out[path] = int(hashlib.md5(path.encode(), usedforsecurity=False).hexdigest(), 16) % n
+    return out
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    value = config.getoption("--shard")
+    if not value:
+        return
+    k, n = _shard(value)
+    rel = {item: item.path.relative_to(config.rootpath).as_posix() for item in items}
+    weights = json.loads(SHARD_WEIGHTS.read_text(encoding="utf-8")) if SHARD_WEIGHTS.exists() else {}
+    buckets = shard_buckets(set(rel.values()), n, weights)
+    keep = [item for item in items if buckets[rel[item]] == k - 1]
+    if len(keep) < len(items):
+        config.hook.pytest_deselected(items=[item for item in items if buckets[rel[item]] != k - 1])
+        items[:] = keep
 
 
 @pytest.fixture(autouse=True)

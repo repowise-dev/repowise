@@ -45,6 +45,7 @@ __all__ = [
     "RE_DERIVED_TIERS",
     "Currency",
     "commits_since",
+    "decision_commits_since",
     "describe_decision_currency",
     "episode_currency",
     "episode_still_true",
@@ -171,6 +172,27 @@ def describe_decision_currency(
         return f"nothing in the {files} it governs has changed since {on}"
     commits = "1 commit" if count == 1 else f"{count} commits"
     return f"the {files} it governs changed in {commits} since {on}"
+
+
+def decision_commits_since(
+    root: Path | str,
+    *,
+    created_at: datetime | None,
+    nodes: Sequence[str],
+    evidence_commits: Sequence[str] = (),
+    accepted_at: datetime | None = None,
+) -> int | None:
+    """The count :func:`describe_decision_currency` words, from the same anchor.
+
+    ``None`` for an unscoped record or one with no birth date: with no scope,
+    ``git rev-list`` would count the whole repository, which says nothing
+    about the decision.
+    """
+    scope = [n for n in nodes if n]
+    if not scope or created_at is None:
+        return None
+    since_commit, since_date, _ = _anchor(root, created_at, evidence_commits, accepted_at)
+    return commits_since(root, since_commit=since_commit, since_date=since_date, nodes=scope)
 
 
 def _anchor(

@@ -4,12 +4,13 @@ Two contracts. The agent registry and the provider registry name each other
 (``AgentIdentity.indexing_provider`` and ``ProviderSpec.agent``), and the two
 links must agree. And no module outside the registries branches on, or keeps a
 table keyed by, a provider name: that is how the parallel tables this file
-replaced drifted.
+replaced drifted. The Python half of that second contract reads the whole
+source tree, so it lives in ``tests/unit/test_source_tree_guards.py``; the web
+UI half is here.
 """
 
 from __future__ import annotations
 
-import ast
 import re
 import types
 from pathlib import Path
@@ -23,6 +24,7 @@ from repowise.core.providers.llm.registry import get_provider
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
 _PACKAGES = Path(__file__).parents[3] / "packages"
+_EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
 
 # --- the link between the two registries -----------------------------------
 
@@ -69,143 +71,10 @@ def test_agent_clis_get_no_rate_limiter(spec, monkeypatch):
     assert "rate_limiter" not in seen
 
 
-# --- no provider-name branches outside the registries ----------------------
-
-#: Every provider name but ``mock``, which is also the default embedder and the
-#: ordinary test-double word that health and dead-code analysis match on.
-_CHECKED = frozenset(PROVIDER_SPECS) - {"mock"}
-
-_EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
-
-#: Path (relative to ``packages/``) -> names it may spell, and why.
-_ALLOWED: dict[str, frozenset[str]] = {
-    # ``opencode`` is a ``--target`` id as well as a provider.
-    "cli/src/repowise/cli/agent_targets/registry.py": frozenset({"opencode"}),
-    # Commit-trailer patterns naming the agent that wrote a commit.
-    "core/src/repowise/core/ingestion/git_indexer/agent_provenance.py": frozenset(
-        {"gemini", "opencode"}
-    ),
-    # Price keys are model families (``deepseek-v4``, ``kimi-k2``, ``gemini``),
-    # and embedding rates are keyed by embedder.
-    "core/src/repowise/core/cost_estimator/pricing.py": frozenset({"deepseek", "gemini", "kimi"})
-    | _EMBEDDERS,
-    # Third-party SDK names found in a scanned repo's imports.
-    "core/src/repowise/core/ingestion/external_systems/classifier.py": frozenset(
-        {"anthropic", "openai"}
-    ),
-    # SDK module names whose error base classes chat matches.
-    "server/src/repowise/server/chat_errors.py": frozenset({"anthropic", "openai", "ollama"}),
-    # Behaviour only the OpenAI adapter has: the custom-gateway row and base-url
-    # prompt, and its reasoning budget. Ollama's readiness is a TCP probe.
-    "cli/src/repowise/cli/_helpers/providers.py": frozenset({"openai"}),
-    "cli/src/repowise/cli/ui/provider_selection.py": frozenset({"openai", "ollama"}),
-    # Embedder surfaces: these literals name embedders, which share spellings.
-    "core/src/repowise/core/providers/embedding/registry.py": _EMBEDDERS,
-    "core/src/repowise/core/providers/embedding/resolve.py": _EMBEDDERS,
-    "cli/src/repowise/cli/commands/init_cmd/command.py": _EMBEDDERS,
-    "cli/src/repowise/cli/commands/reindex_cmd.py": _EMBEDDERS,
-    "cli/src/repowise/cli/commands/serve_cmd/_embedder.py": _EMBEDDERS,
-    "cli/src/repowise/cli/commands/update_cmd/deterministic.py": _EMBEDDERS,
-    "cli/src/repowise/cli/providers/embedders.py": _EMBEDDERS,
-    "cli/src/repowise/cli/ui/mode_selection.py": _EMBEDDERS,
-    "server/src/repowise/server/mcp_server/_server.py": _EMBEDDERS,
-}
-
-
-def _is_allowed(path: Path, name: str) -> bool:
-    rel = path.relative_to(_PACKAGES).as_posix()
-    # A provider's own module tags its errors and reports its own name.
-    if rel.startswith("core/src/repowise/core/providers/llm/") and path.stem == name:
-        return True
-    return name in _ALLOWED.get(rel, frozenset())
-
-
-def _name_literals(tree: ast.AST):
-    """Provider-name literals used as a comparison operand, a ``case`` value, a
-    collection element, a dict key or a ``.get()`` key. A bare argument
-    (``get_provider("x")``) is a use, not a branch or a table, and is not
-    flagged."""
-
-    def names(node):
-        if isinstance(node, ast.Constant) and node.value in _CHECKED:
-            yield node
-        elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            for elt in node.elts:
-                yield from names(elt)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Compare):
-            for operand in (node.left, *node.comparators):
-                yield from names(operand)
-        elif isinstance(node, ast.MatchValue):
-            yield from names(node.value)
-        elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            yield from names(node)
-        elif isinstance(node, ast.Dict):
-            for key in node.keys:
-                if key is not None:
-                    yield from names(key)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "get"
-            and node.args
-        ):
-            yield from names(node.args[0])
-
-
-def _sources():
-    return sorted(p for p in _PACKAGES.glob("*/src/**/*.py"))
-
-
-def test_no_module_branches_on_a_provider_name():
-    offenders = sorted(
-        {
-            f"{path.relative_to(_PACKAGES).as_posix()}:{node.lineno} {node.value!r}"
-            for path in _sources()
-            for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))
-            if not _is_allowed(path, node.value)
-        }
-    )
-    assert not offenders, (
-        "provider names spelled outside the registry; read a ProviderSpec field "
-        f"instead: {offenders}"
-    )
-
-
-def test_the_allowlist_has_no_stale_entries():
-    """An entry that no longer matches anything would quietly widen later."""
-    for rel, names in _ALLOWED.items():
-        path = _PACKAGES / rel
-        assert path.is_file(), f"{rel} is gone"
-        found = {node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))}
-        assert found & names, f"{rel} no longer spells any of {sorted(names)}"
-
-
-@pytest.mark.parametrize(
-    "snippet",
-    [
-        'x == "codex_cli"',
-        'x in ("claude_cli", "y")',
-        '{"opencode": 1}',
-        'd.get("litellm")',
-        'match x:\n    case "kimi":\n        pass',
-    ],
-)
-def test_the_guard_sees_each_branch_shape(snippet):
-    assert list(_name_literals(ast.parse(snippet)))
-
-
-def test_the_guard_is_looking_at_real_sources():
-    """A glob that matched nothing, or a name set that emptied, passes vacuously."""
-    assert len(_sources()) > 500
-    assert {"claude_cli", "codex_cli", "opencode", "litellm", "openai"} <= _CHECKED
-
-
 # --- no provider or embedder lists in the web UI ----------------------------
 
 #: A quoted provider/embedder name, or one used as an object key. The UI reads
-#: these from ``/api/providers``; ``mock`` is checked here, unlike above.
+#: these from ``/api/providers``; ``mock`` is checked here, unlike in the Python guard.
 _UI_NAME = re.compile(
     r"""["'](?P<q>{names})["']|^\s*(?P<k>{names})\s*:""".format(
         names="|".join(sorted(frozenset(PROVIDER_SPECS) | _EMBEDDERS, key=len, reverse=True))

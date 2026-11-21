@@ -1,6 +1,6 @@
 """The one way a capture surface records what it saved.
 
-Every surface — distill, the hooks, MCP, the native VS Code tools — writes
+Every surface that records a saving (distill, the hooks and MCP) writes
 through this function. Not because the write is complicated, but because the
 rules around it are, and they were previously re-decided per surface: which
 database to open, whether to create one, and what to do when the write fails.
@@ -17,7 +17,9 @@ one records nothing.
 
 **Recording never raises.** Accounting sits behind a live tool call, a hook, and
 a shell command. A ledger that can fail a user's command is worse than no
-ledger, so every failure here is swallowed and logged at debug. The return value
+ledger, so every failure here is swallowed and logged at debug, and counted
+by reason in :func:`dropped_writes` so a silent ledger can still be diagnosed
+from inside the process. The return value
 says whether a row landed, for callers that want to stamp metadata only when one
 did; nobody has to check it.
 
@@ -30,11 +32,28 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: Rows this process dropped, by reason. The reasons are a fixed handful, so
+#: the counter stays a few entries however long a server runs.
+_dropped: Counter[str] = Counter()
+
+
+def dropped_writes() -> dict[str, int]:
+    """How many savings rows this process dropped, by reason. For diagnosis."""
+    return dict(_dropped)
+
+
+def _drop(reason: str) -> bool:
+    """Count one dropped row and log it at debug. Returns False for the caller."""
+    _dropped[reason] += 1
+    logger.debug("savings row dropped (%s); %d dropped by this process", reason, _dropped.total())
+    return False
 
 
 #: Spelled out rather than imported from ``distill.store``, which owns these
@@ -96,10 +115,10 @@ def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bo
     """
     try:
         if not repo_root:
-            return False
+            return _drop("no_repository")
         db_path = ensure_sidecar(repo_root)
         if db_path is None:
-            return False
+            return _drop("no_sidecar")
         event = _build(payload, repo_root)
         if event is None:
             return False
@@ -111,7 +130,7 @@ def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bo
         store = OmissionStore(db_path)
     except Exception:
         logger.debug("savings recorder could not open the sidecar", exc_info=True)
-        return False
+        return _drop("open_failed")
     try:
         return _write(store.savings(), event)
     finally:
@@ -128,7 +147,7 @@ def record_event_in(store: Any, repo_root: str | Path | None, payload: Mapping[s
     lock fight rather than a second writer.
     """
     if store is None or not repo_root:
-        return False
+        return _drop("no_repository")
     event = _build(payload, repo_root)
     if event is None:
         return False
@@ -136,7 +155,7 @@ def record_event_in(store: Any, repo_root: str | Path | None, payload: Mapping[s
         return _write(store.savings(), event)
     except Exception:
         logger.debug("savings write failed; dropping silently", exc_info=True)
-        return False
+        return _drop("write_failed")
 
 
 def record_event_on(
@@ -157,7 +176,7 @@ def record_event_on(
     paying a migration on a latency-critical path is the worse trade.
     """
     if connection is None or not repo_root:
-        return False
+        return _drop("no_repository")
     event = _build(payload, repo_root)
     if event is None:
         return False
@@ -167,6 +186,32 @@ def record_event_on(
         return _write(SavingsRepository(connection), event)
     except Exception:
         logger.debug("savings write failed; dropping silently", exc_info=True)
+        return _drop("write_failed")
+
+
+def record_file_read_on(
+    connection: Any, repo_root: str | Path | None, session_id: str | None, path: str
+) -> bool:
+    """Note an agent Read of *path* in this host session, on a raw connection. Never raises.
+
+    The files-not-opened clawback: a Read after the event that credited *path*
+    cancels that credit at report time. Stores the hashed session key, never
+    the raw id.
+    """
+    if connection is None or not repo_root or not session_id or not path:
+        return False
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.savings.contracts import utc_text
+        from repowise.core.savings.correlation import file_session_key
+        from repowise.core.savings.repository import SavingsRepository
+
+        key = file_session_key(session_id)
+        SavingsRepository(connection).record_file_read(key, path, utc_text(datetime.now(UTC)))
+        return True
+    except Exception:
+        logger.debug("file read write failed; dropping silently", exc_info=True)
         return False
 
 
@@ -199,6 +244,7 @@ def _build(payload: Mapping[str, Any], repo_root: str | Path) -> Any:
         )
     except Exception:
         logger.debug("savings event rejected before write", exc_info=True)
+        _drop("rejected")
         return None
 
 
@@ -207,7 +253,7 @@ def _write(repository: Any, event: Any) -> bool:
         return bool(repository.record_event(event))
     except Exception:
         logger.debug("savings write failed; dropping silently", exc_info=True)
-        return False
+        return _drop("write_failed")
 
 
 def relocate_ledger(repo_root: str | Path) -> int:

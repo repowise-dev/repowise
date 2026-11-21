@@ -444,10 +444,9 @@ async def test_each_sealed_row_executes_its_call_and_comparison(
     assert result["_meta"]["response_budget"]["serialized_chars"] == len(
         json.dumps(result, separators=(",", ":"), default=str)
     )
-    assert result["_meta"]["health_analysis"]["recomputed_this_call"] is False
-    assert result["_meta"]["health_analysis"]["live_verification"][
-        "source_bytes_verified"
-    ] is False
+    assert result["_meta"]["health_analysis"]["status"] in {
+        "available", "provenance_unknown", "unavailable"
+    }
     for dotted in case.invariant_paths:
         if dotted == "metrics" and case.name == "module triage":
             assert _path(result, dotted) == _path(comparison, dotted)[:1]

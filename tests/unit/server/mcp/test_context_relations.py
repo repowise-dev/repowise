@@ -145,7 +145,7 @@ async def test_a_fixture_nothing_calls_reports_no_callers(setup_mcp, session):
     # An empty `callers` beside a populated `relations` otherwise reads as a
     # graph failure rather than as the answer.
     assert "framework_binds" in t["_call_graph_note"]
-    assert "Nothing calls" in t["_call_graph_note"]
+    assert "No resolved call reaches" in t["_call_graph_note"]
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server._edit_sites import MAX_TEXT_CHARS, _import_lines, _read_lines
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import _get_repo, serves_no_source
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
@@ -178,6 +178,8 @@ async def _attach(ctx, query: str, rows: list[dict]) -> None:
         if path and "matched_lines" not in hit:
             wanted.setdefault(path, [span for *_, span in ranked])
     if not wanted:
+        return
+    if serves_no_source():
         return
     root = Path(served_root(repo, ctx.path))
     sampled = await asyncio.to_thread(_sample_lines, root, list(wanted.items()), terms)

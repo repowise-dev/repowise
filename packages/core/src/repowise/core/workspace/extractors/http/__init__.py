@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING
 from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
+from .aiohttp_web import AiohttpWebDialect
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
 from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
+from .drf import DrfDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .fastify import FastifyDialect
@@ -79,6 +81,8 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     AspNetDialect(),
     RustAxumDialect(),
     DjangoDialect(),
+    DrfDialect(),
+    AiohttpWebDialect(),
     JaxRsDialect(),
     MicronautDialect(),
     KtorServerDialect(),
@@ -167,7 +171,7 @@ class HttpExtractor:
         these contracts states its own denominator.
         """
         scanned = select_files(repo_path, self.source_extensions(), exclude, files)
-        mounts = self._collect_mounts(scanned, repo_alias)
+        mounts = self._collect_mounts(scanned, repo_alias, Path(repo_path))
 
         from ..from_index import (
             CONSUMER_INDEX_SUFFIXES,
@@ -226,7 +230,9 @@ class HttpExtractor:
                 contracts.extend(found)
         return contracts
 
-    def _collect_mounts(self, files: list[SourceFile], repo_alias: str) -> dict[str, str]:
+    def _collect_mounts(
+        self, files: list[SourceFile], repo_alias: str, repo_root: Path
+    ) -> dict[str, str]:
         """Build the unambiguous repo-wide ``router-var -> mount-prefix`` map.
 
         Any dialect may expose ``collect_mounts(ctx)``: a router mount, where
@@ -241,7 +247,7 @@ class HttpExtractor:
         ]
         per_file: list[dict[str, str]] = []
         for rel_path, suffix, content in files:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content)
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, repo_root=repo_root)
             for dialect in collectors:
                 # A collector may gate its repo-wide pass apart from extraction.
                 gate = getattr(dialect, "mount_requires", dialect.requires)

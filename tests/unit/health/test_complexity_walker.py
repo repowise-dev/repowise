@@ -353,8 +353,9 @@ def test_python_match_arms_count_toward_ccn():
     results = _walk("python/match.py", "python")
     match_fn = _find(results, "python_match")
     assert match_fn is not None, "python_match not detected"
-    # base 1 + 4 case arms (1, 2, 3, wildcard _) = 5.
-    assert match_fn.ccn == 5, f"python match CCN expected 5, got {match_fn.ccn}"
+    # base 1 + 3 case arms (1, 2, 3); the wildcard ``_`` is the fallthrough,
+    # like the ``else`` of the equivalent ``if`` / ``elif`` chain.
+    assert match_fn.ccn == 4, f"python match CCN expected 4, got {match_fn.ccn}"
     # The arms are genuinely counted, not flattened away.
     assert match_fn.ccn >= 4, f"match arms must count toward CCN, got {match_fn.ccn}"
 
@@ -997,8 +998,9 @@ def test_scala_match_and_guards():
     results = _walk("scala/nested.scala", "scala")
     guarded = _find(results, "matchGuards")
     assert guarded is not None
-    # 4 cases + 2 guards (guards make the match non-flat, so arms count).
-    assert guarded.ccn == 7, f"expected CCN 7, got {guarded.ccn}"
+    # The guarded arms count with their guards (2 + 2), the plain ``case 0``
+    # counts once on the match, ``case _`` is the fallthrough.
+    assert guarded.ccn == 6, f"expected CCN 6, got {guarded.ccn}"
     flat = _find(results, "flatMatch")
     assert flat is not None
     # A flat match counts once for the dispatch, not per arm.
@@ -1078,8 +1080,9 @@ def test_ruby_case_and_rescue():
     assert flat.ccn == 2, f"expected CCN 2, got {flat.ccn}"
     heavy = _find(results, "heavy_case")
     assert heavy is not None
-    # 3 when arms + the nested if.
-    assert heavy.ccn == 5, f"expected CCN 5, got {heavy.ccn}"
+    # The ``when`` holding an ``if`` counts with it; the two one-line arms
+    # count once on the case.
+    assert heavy.ccn == 4, f"expected CCN 4, got {heavy.ccn}"
     pat = _find(results, "pattern_match")
     assert pat is not None
     assert pat.ccn == 2, f"expected CCN 2, got {pat.ccn}"  # flat case/in

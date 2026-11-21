@@ -16,7 +16,7 @@ Repowise 在你自己的机器上，把代码、依赖图、git 历史、测试�
 
 没有索引时，智能体每接到一个任务就重新搜索、打开文件、再读一遍。Repowise 把这些答案提前算好：谁调用谁、改下去会碰到哪里、当初为什么这样写。智能体因此少读文件，自己写出的内容也会变短；动手改之前，就能看到这次改动的影响范围。
 
-项目要的是让人和智能体像长期维护这个仓库的人一样理解它。输出变短是这件事的结果。在 `django/django` 的 43 个问题上，配对的智能体循环里，Repowise 把智能体自己的输出减少了 **31.6%**（p&lt;0.0001），工具调用从 7.2 次降到 3.8 次。同一次实验里，这两项都少于其他上下文工具。42 个答案封存的检索任务上，它找对修复所需文件的比例是 **0.876**，下一名是 **0.610**。方法和我们输掉的每一行见 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+项目要的是让人和智能体像长期维护这个仓库的人一样理解它。输出变短是这件事的结果。在五个模型上，智能体用了 Repowise 之后打开的文件最多少了 **99%**，输出最多少了 **51%**，速度最多快了 **47%**（Sonnet 4.6，72 个答案中 71 个正确），每个模型都打开了更少的文件。在 `django/django` 的 43 个问题上，配对的智能体循环里，Repowise 把智能体自己的输出减少了 **31.6%**（p&lt;0.0001），工具调用从 7.2 次降到 3.8 次。同一次实验里，这两项都少于其他上下文工具。42 个答案封存的检索任务上，它找对修复所需文件的比例是 **0.876**，下一名是 **0.610**。方法和完整数据见 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
 
 图、变更风险、代码健康、测试和死代码都不调用大模型。同一份 diff，答案相同，计算留在你自己的网络里。曾在一台笔记本上一次性索引 1500 万行代码，之后每次提交增量更新。
 
@@ -76,7 +76,7 @@ pip install -i https://mirrors.aliyun.com/pypi/simple/ repowise
 
 任何支持 MCP 的编程智能体都能读这份索引，包括 Claude Code、Codex、Cursor，以及 Trae、Qwen Code、Kimi CLI。
 
-Claude Code 和 Codex 是 Full：MCP 工具、skills、斜杠命令、说明文件、工具调用钩子，还有会话记录挖掘。Cursor、VS Code、OpenCode、Hermes、GitHub Copilot CLI 和 Kiro 是 Good：MCP 工具，加上说明文件或 skills，没有会话记录挖掘（钩子仅限矩阵里写明的）。Trae、Qwen Code、Kimi CLI 以及其他没有单独接入描述的客户端，把下面的输出贴进自己的 MCP 配置。这条命令只打印，不写文件。
+Claude Code 和 Codex 是 Full：MCP 工具、skills、斜杠命令、说明文件、工具调用钩子，还有会话记录挖掘。Cursor、VS Code、OpenCode、Hermes、GitHub Copilot CLI 和 Kiro 是 Good：MCP 工具，加上说明文件或 skills，没有会话记录挖掘（钩子仅限矩阵里写明的）。Windsurf 是 Basic：只写 MCP 配置。Trae、Qwen Code、Kimi CLI 以及其他没有单独接入描述的客户端，把下面的输出贴进自己的 MCP 配置。这条命令只打印，不写文件。
 
 ```bash
 repowise agents print-config claude-code

@@ -28,7 +28,8 @@ load/save error degrades to a fresh computation.
 PageRank rides in the same file, reused only on an exact signature match (and
 only for unweighted graphs, see ``cached_pagerank``). A reused value is the one
 the previous run computed and persisted; a fresh one would normally differ only
-in the last bits, because summation follows insertion order.
+in the last bits, because summation follows insertion order. So does the last
+default execution-flow report, keyed by ``execution_flow_signature``.
 
 Note for the >30k-node sampled path (``nx.betweenness_centrality(k=...)``):
 sampling is seedless, so recomputing the same graph yields slightly
@@ -43,6 +44,7 @@ import threading
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -60,7 +62,13 @@ log = structlog.get_logger(__name__)
 _CACHE_VERSION = 4
 _CACHE_FILENAME = "centrality_cache.pkl"
 
-__all__ = ["BetweennessScoring", "CentralityCache", "subgraph_signature"]
+__all__ = [
+    "BetweennessScoring",
+    "CentralityCache",
+    "CommunityEntry",
+    "fingerprints",
+    "subgraph_signature",
+]
 
 
 def subgraph_signature(graph) -> str:
@@ -80,6 +88,14 @@ def subgraph_signature(graph) -> str:
         h.update(v.encode("utf-8", "replace"))
         h.update(b"\x00")
     return h.hexdigest()
+
+
+def fingerprints(items) -> frozenset[int]:
+    """64-bit fingerprints of *items* (strings), so drift can be counted by set difference."""
+    return frozenset(
+        int.from_bytes(hashlib.blake2b(item.encode(errors="replace"), digest_size=8).digest(), "big")
+        for item in items
+    )
 
 
 def _edge_fingerprints(graph) -> frozenset[int]:
@@ -109,6 +125,25 @@ class _Entry:
 
 
 @dataclass(frozen=True)
+class CommunityEntry:
+    """One kind's last full community detection, and the input it ran on.
+
+    *code* is the partition code's fingerprint; an entry from other code is never
+    reused. *nodes* and *edges* fingerprint the input (:func:`fingerprints`).
+    *extra* is whatever else the detection returned (the file kind's community
+    info and algorithm name).
+    """
+
+    code: str
+    signature: str
+    assignment: dict[str, int]
+    nodes: frozenset[int]
+    edges: frozenset[int]
+    scored_commit: str | None
+    extra: Any = None
+
+
+@dataclass(frozen=True)
 class BetweennessScoring:
     """Cached values, plus what a caller needs to judge their age.
 
@@ -132,6 +167,10 @@ class CentralityCache:
         # kind -> (signature, alpha, values). Exact-signature reuse only: unlike
         # betweenness, PageRank is cheap enough that drift is never worth serving.
         self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
+        # kind -> last full community detection; reused like betweenness.
+        self._communities: dict[str, CommunityEntry] = {}
+        # (signature, report) of the last default-config flow trace; exact reuse only.
+        self._flows: tuple[str, Any] | None = None
         self._lock = threading.Lock()
         self._loaded = False
         self._signatures: dict[str, tuple[weakref.ref, str]] = {}
@@ -155,6 +194,8 @@ class CentralityCache:
         self._signature_lock = threading.Lock()
         self.__dict__.setdefault("_signatures", {})
         self.__dict__.setdefault("_pagerank", {})
+        self.__dict__.setdefault("_communities", {})
+        self.__dict__.setdefault("_flows", None)
 
     def signature(self, kind: str, graph) -> str:
         """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
@@ -182,6 +223,9 @@ class CentralityCache:
             self._entries = payload.get("entries", {})
             # Optional key: files written before PageRank was cached lack it.
             self._pagerank = payload.get("pagerank", {})
+            self._communities = payload.get("communities", {})
+            # Optional key: files written before flows were cached read as a miss.
+            self._flows = payload.get("flows")
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
@@ -194,6 +238,8 @@ class CentralityCache:
                 "version": _CACHE_VERSION,
                 "entries": self._entries,
                 "pagerank": self._pagerank,
+                "communities": self._communities,
+                "flows": self._flows,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -217,6 +263,22 @@ class CentralityCache:
         with self._lock:
             self._ensure_loaded()
             self._pagerank[kind] = (signature, alpha, dict(values))
+            self._save_locked()
+
+    def lookup_flows(self, *, signature: str) -> Any | None:
+        """The stored flow report if it was traced on this exact signature, else ``None``."""
+        with self._lock:
+            self._ensure_loaded()
+            entry = self._flows
+        if not isinstance(entry, tuple) or len(entry) != 2 or entry[0] != signature:
+            return None
+        return entry[1]
+
+    def put_flows(self, *, signature: str, report: Any) -> None:
+        """Record the flow report traced on *signature* and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._flows = (signature, report)
             self._save_locked()
 
     def lookup(
@@ -261,3 +323,57 @@ class CentralityCache:
                 signature, dict(values), _edge_fingerprints(graph), scored_commit
             )
             self._save_locked()
+
+    def lookup_communities(
+        self,
+        kind: str,
+        *,
+        signature: str,
+        code: str,
+        nodes: frozenset[int] | None = None,
+        edges: frozenset[int] | None = None,
+    ) -> tuple[CommunityEntry, int, int] | None:
+        """*kind*'s last full detection, with how far the input has drifted from it.
+
+        Returns ``(entry, node churn, edge churn)``: ``(entry, 0, 0)`` on an exact
+        *signature* match, the counted drift when the caller passes the input's
+        *nodes* and *edges* fingerprints (:func:`fingerprints`), else ``None``.
+        ``None`` too when there is no entry or it is from other partition code.
+        Judging the drift is the caller's: kinds tolerate different changes.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            entry = self._communities.get(kind)
+        if entry is None or entry.code != code:
+            return None
+        if entry.signature == signature:
+            return entry, 0, 0
+        if nodes is None or edges is None:
+            return None
+        return entry, len(nodes ^ entry.nodes), len(edges ^ entry.edges)
+
+    def put_communities(
+        self,
+        kind: str,
+        *,
+        signature: str,
+        code: str,
+        assignment: dict[str, int],
+        nodes: frozenset[int] = frozenset(),
+        edges: frozenset[int] = frozenset(),
+        scored_commit: str | None,
+        extra: Any = None,
+        persist: bool = True,
+    ) -> None:
+        """Record a full detection for *kind* and persist atomically.
+
+        ``persist=False`` holds it for the next put that persists, so two kinds
+        detected together cost one write of the whole cache.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            self._communities[kind] = CommunityEntry(
+                code, signature, dict(assignment), nodes, edges, scored_commit, extra
+            )
+            if persist:
+                self._save_locked()

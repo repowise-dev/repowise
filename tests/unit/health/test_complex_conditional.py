@@ -111,7 +111,8 @@ def _conditions(source: str, language: str, name: str):
         ("a === 1 || b === 2 || c === 3 || d === 4 || e === 5 || g === 6 || h === 7", 6, True),
         ("a && b && c && d && e && g && h", 6, True),
         ("a && b || c && d || e && g || h", 6, False),
-        ("a || b || c || !d || e || g || h", 6, False),
+        ("a || b || c || !d || e || g || h", 6, True),
+        ("a || b || c || !(d || e) || g || h", 6, False),
         ("a !== b || c != d || e || g || h || i || j!", 6, True),
     ],
 )
@@ -128,7 +129,8 @@ def test_flat_chain_typescript(condition: str, count: int, flat: bool):
         ("a or b or c or d", True),
         ("a and b and c is not None and d not in e", True),
         ("a and b or c and d", False),
-        ("a and not b and c and d", False),
+        ("a and not b and c and d", True),
+        ("a and not (b and c) and d", False),
     ],
 )
 def test_flat_chain_python(condition: str, flat: bool):
@@ -143,7 +145,7 @@ def test_flat_chain_has_no_finding_and_mixed_keeps_count_severity():
         "function flat(a, b, c, d, e, g, h) { if (a || b || c || d || e || g || h) { return 1; } }\n"
         "function knot(a, b, c, d, e, g, h) { if (a && b || c && !d || e && g || h) { return 1; } }\n"
         "function mixedLow(a, b, c, d) { if (a && b || c && d) { return 1; } }\n"
-        "function negated(a, b, c, d) { if (a || !b || c || d) { return 1; } }\n"
+        "function negated(a, b, c, d) { if (a || !(b || c) || d) { return 1; } }\n"
     )
     results = walk_file_complexity("x.ts", "typescript", src.encode())
     if not results:

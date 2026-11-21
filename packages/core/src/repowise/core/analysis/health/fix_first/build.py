@@ -72,6 +72,7 @@ from repowise.core.analysis.health.queue.eligibility import (
     Verdict,
     dead_spans,
     finding_verdict,
+    observation,
     path_verdict,
     perf_fix_verdict,
     refactor_verdict,
@@ -134,9 +135,10 @@ def _basis(metrics: Rows) -> dict[str, str | None]:
     }
 
 
-def _shown_findings(findings: Iterable[Any]) -> dict[str, list[Any]]:
-    """Open code-health findings that score, of a shown type, by file."""
-    hidden = excluded_types()
+def _scoring_findings(findings: Iterable[Any], *, shown_only: bool) -> dict[str, list[Any]]:
+    """Open code-health findings that score, by file; with *shown_only*, of a
+    shown type."""
+    hidden = excluded_types() if shown_only else frozenset()
     by_file: dict[str, list[Any]] = defaultdict(list)
     for f in findings:
         if (
@@ -159,7 +161,11 @@ def _prepare(
     blame_skipped: Iterable[str] = (),
 ) -> tuple[dict[str, tuple[list[Any], list[Any]]], _Files]:
     """Findings split into (code shape, history) by file, and the file facts."""
-    split = {path: split_by_origin(rows) for path, rows in _shown_findings(findings).items()}
+    findings = list(findings)
+    split = {
+        path: split_by_origin(rows)
+        for path, rows in _scoring_findings(findings, shown_only=True).items()
+    }
     files = _Files(
         metrics,
         {p: hist for p, (_shape, hist) in split.items() if hist},
@@ -170,7 +176,9 @@ def _prepare(
         dead_spans(dead_code),
         function_changes,
         blame_skipped,
-        {p: shape + hist for p, (shape, hist) in split.items()},
+        # A fix's gain rescores its file with every finding the score
+        # counted: a hidden type sharing the fix's category saturates it too.
+        _scoring_findings(findings, shown_only=False),
     )
     return split, files
 
@@ -398,12 +406,14 @@ def _perf_units(
 
 
 def _interventions(performance: Rows) -> dict[tuple[str, str], list[Any]]:
-    """Open performance rows by (file, intervention symbol)."""
+    """Open performance rows by (file, intervention symbol). An observation
+    (a marker with no fix strategy) is no unit of the queue, so it is left out
+    uncounted."""
     # Ceiling: grouped by the intervention as stored, until persistence writes
     # one row per intervention.
     groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
     for row in performance:
-        if _open(row):
+        if _open(row) and not observation(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
     return groups
