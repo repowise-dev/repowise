@@ -16,8 +16,8 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 #: order: one file's calls read the bindings and declarations of the files its
 #: callees live in, so a handful missed nearly every lookup (99.5% of
 #: ``_bindings_for`` calls rescanned a file on a 24-file update of this
-#: repository). Ceiling: 256 files of scan results and source text is a few MB
-#: per resolver; a larger repository still rescans past it.
+#: repository). Ceiling: 256 files of scan results and source text, about 5 MB
+#: per resolver at 20 KB a file; a larger repository still rescans past it.
 _SOURCE_CACHE_FILES = 256
 
 _K = TypeVar("_K")
@@ -27,9 +27,10 @@ _V = TypeVar("_V")
 def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
     """Store *value*, evicting *cache*'s oldest entry once it holds *cap* entries.
 
-    Oldest by insertion, so the files the current run of lookups keeps
-    returning to stay cached; emptying the whole cache instead threw them out
-    with the rest.
+    Oldest by insertion (a hit does not move an entry), so a full cache drops
+    one file instead of every file the current lookups keep returning to.
+    Each resolver is built for one resolution pass, so nothing outlives the
+    files it read.
     """
     if key not in cache and len(cache) >= cap:
         del cache[next(iter(cache))]
