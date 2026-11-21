@@ -15,15 +15,18 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   libraries it called, never time blocked in a wait. Inclusive time is kept
   as context and never ranks: a function that only calls things is on every
   stack and costs nothing itself.
-- ``ranked``: among the run's production functions, in the top
-  ``rank_top_n`` by cost, with at least ``rank_min_samples`` self samples on
-  the function. A run that counted no samples (a traced or an evented
+- ``ranked``: among the run's production functions with at least
+  ``rank_min_samples`` self samples, in the top ``rank_top_n`` by cost. A
+  function under the floor takes no place, so the places a run lists run
+  1, 2, 3 with no gap. A run that counted no samples (a traced or an evented
   profile) cannot be checked against the floor and ranks by its order alone.
   Otherwise the row is ``measured``: not enough samples in repo code, or
   outside the top.
+- *Share*: the function's self time over the run's time, with an interval
+  around that same number (:func:`_share_interval`).
 - ``lead_candidate``: ranked in a workload class that may lead (never
-  ``unit_test``), and either the function's share of all samples is at least
-  ``lead_min_share`` with the interval's lower bound at least
+  ``unit_test``), and either the function's self share of the run's time is
+  at least ``lead_min_share`` with the interval's lower bound at least
   ``lead_min_lower_bound``, or it is ranked in ``lead_min_runs`` or more
   runs. Internal only until the thresholds are calibrated: no surface may
   word it as a claim, which is why the tier is not named for one.
@@ -61,7 +64,7 @@ from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.stats import wilson_interval
+from repowise.core.stats import Interval, wilson_interval
 
 from .status import run_share, time_split
 
@@ -330,22 +333,56 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
 
     Stale rows take no place, and neither does a row that cost nothing itself
     (a function that only calls others): it stays measured, never ranked, even
-    in a run with fewer costly functions than the top. A tracer's rows order
-    by what the tracer gave and are exempt.
+    in a run with fewer costly functions than the top, nor a row under the
+    sample floor, so the places listed never skip a number. A tracer's rows
+    order by what the tracer gave and are exempt.
     """
     place = 0
     for row in rows:
         if not _takes_place(row):
             continue
+        counted = row.samples is not None
+        if not row.ordering_only and n is not None and counted and row.samples <= n:
+            row.share = _share_interval(row, n)
+        if counted and row.samples < rules.min_samples:
+            continue
         place += 1
         row.rank = place
-        counted = row.samples is not None
-        if place <= rules.top_n and (not counted or row.samples >= rules.min_samples):
+        if place <= rules.top_n:
             row.tier = "ranked"
-        if not row.ordering_only and n is not None and counted and row.samples <= n:
-            row.share = wilson_interval(row.samples, n)
         if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
+
+
+def _share_interval(row: _Row, n: int) -> Interval:
+    """The function's self share of the run's time, with an interval around it.
+
+    The share is a share of time (``self_value / total_value``) and the
+    interval comes from the sample counts (Wilson on ``samples`` of *n*). The
+    two differ whenever samples carry unequal time, which a sampler's do (each
+    sample is charged the time since the last, so a sample inside a blocking
+    call weighs more): on one real run a function held 3.6% of the time and
+    4.0% of the samples, and the raw count interval (3.8% to 4.2%) left out
+    the share it was printed beside. The counts still say how firm the share
+    is, so their interval is scaled by the time-to-count ratio: the relative
+    width stays, the bounds bracket the share that is shown and ranked.
+    A run without a time total keeps the count interval.
+    """
+    counts = wilson_interval(row.samples or 0, n)
+    share = _share(row.cost.self_value, row.run.total_value)
+    if share is None:
+        return counts
+    if counts.estimate <= 0:
+        return Interval(share, 0.0, max(counts.high, share), n, counts.method, counts.confidence)
+    scale = share / counts.estimate
+    return Interval(
+        share,
+        min(counts.low * scale, share),
+        max(min(counts.high * scale, 1.0), share),
+        n,
+        counts.method,
+        counts.confidence,
+    )
 
 
 def _takes_place(row: _Row) -> bool:
@@ -388,9 +425,12 @@ def _may_lead(row: _Row) -> bool:
 
 
 def _clears_share_rule(row: _Row, rules: HotnessRules) -> bool:
+    """The share rule, on the self share of the run's time: a run with no time
+    total has no share to show, so it never clears it."""
     share = row.share
     return (
         share is not None
+        and _share(row.cost.self_value, row.run.total_value) is not None
         and share.estimate >= rules.lead_min_share
         and share.low >= rules.lead_min_lower_bound
     )

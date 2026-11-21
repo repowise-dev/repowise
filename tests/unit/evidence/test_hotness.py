@@ -21,7 +21,7 @@ RULES = HotnessRules(top_n=10, min_samples=30, lead_min_share=0.05, lead_min_low
                      lead_min_runs=2)
 
 
-def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float = 1000,
+def _run(run_id: str = "r1", *, cls: str = "entry_point", commit: str = HEAD, total: float | None = 1000,
          samples: int | None = None, unit: str = "samples", explained: float | None = 400,
          day: int = 1, split: tuple[float, float, float] | None = None) -> RunFacts:
     repo_self, waits, libraries = split or (None, None, None)
@@ -108,6 +108,33 @@ def test_a_time_unit_run_uses_its_counted_samples() -> None:
     row = _derive([run], {"r1": [_cost("f", 1000.0, samples=100)]})["src/m.py::f"]
     assert (row["samples"], row["run_samples"]) == (100, 500)
     assert row["share_low"] is not None
+
+
+def test_the_interval_brackets_the_time_share_when_samples_weigh_unequally() -> None:
+    # A sampler's samples carry unequal time: 3.6% of the time on 4% of the samples.
+    run = _run(unit="ms", total=10000.0, samples=50000)
+    row = _derive([run], {"r1": [_cost("f", 356.0, samples=2000)]})["src/m.py::f"]
+    assert row["self_share"] == 0.0356
+    assert row["share_low"] < row["self_share"] < row["share_high"]
+    # The counts' relative width is kept.
+    assert row["share_low"] > 0.0356 * 0.9
+    assert row["share_high"] < 0.0356 * 1.1
+
+
+def test_a_run_without_a_time_total_never_clears_the_share_rule() -> None:
+    run = _run(unit="ms", total=None, samples=1000)
+    row = _derive([run], {"r1": [_cost("f", 400.0, samples=400)]})["src/m.py::f"]
+    assert (row["tier"], row["self_share"]) == ("ranked", None)
+
+
+def test_a_function_under_the_sample_floor_takes_no_place() -> None:
+    # Costlier in time than "next" but too few samples: the places run 1, 2.
+    run = _run(unit="ms", total=10000.0, samples=10000)
+    costs = [_cost("top", 900.0, samples=900), _cost("thin", 500.0, samples=10),
+             _cost("next", 400.0, samples=400)]
+    rows = _derive([run], {"r1": costs})
+    assert [rows[f"src/m.py::{n}"]["rank"] for n in ("top", "thin", "next")] == [1, None, 2]
+    assert rows["src/m.py::thin"]["tier"] == "measured"
 
 
 def test_a_function_that_only_calls_things_ranks_below_the_one_doing_the_work() -> None:
