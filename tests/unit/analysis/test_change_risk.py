@@ -216,6 +216,20 @@ def test_repowise_state_alone_does_not_make_the_tree_dirty(git_repo: Path) -> No
     assert working_tree_is_dirty(str(git_repo))
 
 
+def test_files_init_writes_alone_do_not_make_the_tree_dirty(git_repo: Path) -> None:
+    """init's editor files hold only repowise's entry; that is not a code change."""
+    (git_repo / ".vscode").mkdir()
+    mcp = git_repo / ".vscode" / "mcp.json"
+    mcp.write_text('{"servers": {"repowise": {"command": "repowise"}}}', encoding="utf-8")
+    assert not working_tree_is_dirty(str(git_repo))
+    # The user's own entry in the same file is their change.
+    mcp.write_text(
+        '{"servers": {"repowise": {"command": "repowise"}, "mine": {"command": "x"}}}',
+        encoding="utf-8",
+    )
+    assert working_tree_is_dirty(str(git_repo))
+
+
 def test_extract_commit_features_counts_diffusion(git_repo: Path) -> None:
     _commit(
         git_repo,
