@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+import structlog
+
 from repowise.core.analysis.execution_flows import (
     TIER1_NAMES,
     build_call_degree_maps,
@@ -67,6 +69,7 @@ from .flow_entries import (
     declared_entries,
     doc_mentions,
     doc_sections,
+    file_paths,
     is_ui_path,
     line_reader,
     program_name,
@@ -76,7 +79,16 @@ from .flow_entries import (
 from .flow_trace import FlowStep, trace
 from .models import compute_page_id
 
-__all__ = ["FLOW_PAGE_TYPE", "FlowPlan", "FlowStep", "plans_for_index", "select_flow_plans"]
+__all__ = [
+    "FLOW_PAGE_TYPE",
+    "FlowPlan",
+    "FlowStep",
+    "plans_for_index",
+    "select_flow_plans",
+    "selected_flow_page_ids",
+]
+
+log = structlog.get_logger(__name__)
 
 FLOW_PAGE_TYPE = "flow_page"
 
@@ -559,7 +571,25 @@ def _no_lines(_path: str) -> list[str]:
 
 
 def plans_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPlan]:
-    """:func:`select_flow_plans` over a built index: what generation and the cascade call."""
+    """:func:`select_flow_plans` over a built index: what generation and the cascade call.
+
+    Memoized on a built :class:`GraphBuilder` for the same parsed file objects
+    and graph size; a build or patch clears it. Repo files (scripts, docs) are
+    read once per graph, which holds within one run.
+    """
+    if not hasattr(graph_builder, "_flow_plan_cache") or not graph_builder._built:
+        return _select_for_index(graph_builder, parsed_files)
+    graph = graph_builder._graph
+    key = (tuple(map(id, parsed_files)), id(graph), len(graph), graph.number_of_edges())
+    cached = graph_builder._flow_plan_cache
+    if cached is None or cached[0] != key:
+        # The file list rides along so the ids in the key stay unique while cached.
+        cached = (key, list(parsed_files), _select_for_index(graph_builder, parsed_files))
+        graph_builder._flow_plan_cache = cached
+    return list(cached[2])
+
+
+def _select_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPlan]:
     from repowise.core.ingestion.package_roots import package_roots_from_paths
 
     from .page_generator.helpers import indexed_parsed_files
@@ -582,14 +612,25 @@ def plans_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPla
     )
 
 
+def selected_flow_page_ids(graph_builder: Any, parsed_files: list[Any]) -> set[str] | None:
+    """Page ids of the flows :func:`plans_for_index` selects, or ``None`` when
+    the graph cannot be asked: a released graph cannot say a flow was dropped."""
+    if graph_builder is None:
+        return None
+    try:
+        plans = plans_for_index(graph_builder, parsed_files)
+    except Exception as exc:
+        log.warning("flow_selection_failed", error=str(exc))
+        return None
+    return {plan.page_id for plan in plans}
+
+
 def _code_file_count(graph: Any) -> int:
     """Production files in the graph: the size the page budget scales with."""
     return sum(
         1
-        for node, attrs in graph.nodes(data=True)
-        if attrs.get("node_type") == "file"
-        and not attrs.get("is_test")
-        and not is_excluded_node(graph, node)
+        for node in file_paths(graph)
+        if not graph.nodes[node].get("is_test") and not is_excluded_node(graph, node)
     )
 
 

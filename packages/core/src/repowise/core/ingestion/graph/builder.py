@@ -190,6 +190,8 @@ class GraphBuilder(
         self._symbol_pagerank_cache: dict[str, float] | None = None
         self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
+        # (key, parsed files, plans) of ``flow_pages.plans_for_index``.
+        self._flow_plan_cache: tuple[Any, ...] | None = None
         # Filtered-subgraph caches — rebuilt lazily; guarded by a lock because
         # the init pipeline computes metrics concurrently (asyncio.to_thread).
         import threading
@@ -222,6 +224,8 @@ class GraphBuilder(
         # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
         state["_cycle_subgraph_cache"] = None
         state["_centrality_subgraph_cache"] = None
+        # Its key holds object ids, meaningless in another process.
+        state["_flow_plan_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -253,6 +257,7 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        self._flow_plan_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None

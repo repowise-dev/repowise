@@ -324,7 +324,11 @@ def test_cli_search_opens_the_store_only_for_a_mode_that_reads_it(monkeypatch, m
     monkeypatch.setattr(search_cmd._ta, "run", _run)
     search_cmd._run_search(Path("."), "q", 5, mode)
 
-    assert seen == {"tool_name": "search_codebase", "reads_vectors": opens}
+    assert seen == {
+        "tool_name": "search_codebase",
+        "reads_vectors": opens,
+        "arguments": {"query": "q", "limit": 5, "mode": mode},
+    }
 
 
 def test_the_cli_bridge_skips_the_store_when_told_the_call_reads_no_vectors(

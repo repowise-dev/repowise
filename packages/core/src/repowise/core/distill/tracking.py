@@ -11,6 +11,8 @@ import sqlite3
 import time
 from typing import Any
 
+from repowise.core.savings.schema import is_newer_store
+
 
 def record_saving(
     conn: sqlite3.Connection,
@@ -21,7 +23,12 @@ def record_saving(
     raw_tokens: int,
     distilled_tokens: int,
 ) -> None:
-    """Append one distillation event to the savings ledger."""
+    """Append one distillation event to the savings ledger.
+
+    Dropped when a newer Repowise owns the store, like every ledger write.
+    """
+    if is_newer_store(conn):
+        return
     conn.execute(
         """
         INSERT INTO savings

@@ -99,6 +99,20 @@ def estimate_cost(
     )
 
 
+#: The page type of the first-look report's one model call.
+FIRST_LOOK_CALL_TYPE = "first_look"
+
+
+def estimate_first_look_cost(provider_name: str, model_name: str) -> CostEstimate:
+    """What the first-look report's one model call costs on *model_name*.
+
+    One call of a fixed size: the report caps every section, so a bigger repo
+    sends the same amount.
+    """
+    plan = PageTypePlan(page_type=FIRST_LOOK_CALL_TYPE, count=1, level=0)
+    return estimate_cost([plan], provider_name, model_name)
+
+
 def _embedding_cost(pages: int, embedder: str | None, model: str | None) -> tuple[int, float]:
     """``(tokens, usd)`` to embed *pages* pages, priced at the per-input cap.
 

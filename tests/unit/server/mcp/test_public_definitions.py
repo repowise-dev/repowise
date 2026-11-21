@@ -37,7 +37,7 @@ async def test_public_definitions_match_the_live_server_byte_for_byte(
             for t in await server.list_tools()
         ]
         served = [tool["name"] for tool in listed]
-        assert json.dumps(tool_definitions(served)) == json.dumps(listed)
+        assert json.dumps(tool_definitions(served, workspace=workspace)) == json.dumps(listed)
         assert server.instructions == server_instructions(served, workspace=workspace)
     finally:
         if _tool_selection._full_surface is not None:

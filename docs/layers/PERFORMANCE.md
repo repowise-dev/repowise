@@ -117,9 +117,15 @@ The default queue holds production opportunities in the `plan_ready` and
 opportunities with `cost_proof = proven` are in it: the code shows how the cost
 scales (a loop that grows with the data or is bounded, a cost paid once per call,
 or a shape that grows by itself, such as an unbounded goroutine loop or a
-cartesian join). A loop whose size the code does not show is
-`cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
-filter.
+cartesian join), or a run measured the loop. A loop whose size the code does not
+show and no run measured is `cost_proof = unproven`, never leads, and shows only
+with the `proof=unproven` filter.
+
+`static_cost` is the code's part alone, never what a run measured:
+`grows_with_data`, `grows_by_shape`, `per_call_reached`, `per_call_unreached`,
+`bounded` or `size_unknown`. The dashboard counts it as the Loop size facet, and
+the REST list narrows by it with `static_cost=<value>`. What a run showed is the
+row's `runtime_evidence`.
 
 Each opportunity also says what runs its loop (`execution_role`: request, event
 consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run

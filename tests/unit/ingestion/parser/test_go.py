@@ -113,6 +113,17 @@ class TestGoParser:
         assert "go_pkg/generic/generic.go::Stack::Push" in ids
         assert "go_pkg/generic/generic.go::Pair::Key" in ids
 
+    def test_alias_declaration_is_a_type_alias(self, parser: ASTParser) -> None:
+        source = b"package main\n\ntype Old = int\n\ntype list[T any] = []T\n\ntype G int\n"
+        fi = _make_file_info("go_pkg/alias/alias.go", "go")
+        result = parser.parse_file(fi, source)
+        kinds = {s.name: (s.kind, s.visibility) for s in result.symbols}
+        assert kinds["Old"] == ("type_alias", "public")
+        assert kinds["list"] == ("type_alias", "private")
+        # A defined type was already found through type_spec.
+        assert kinds["G"] == ("type_alias", "public")
+        assert [s.name for s in result.symbols].count("Old") == 1
+
 
 @pytest.mark.parametrize(
     ("receiver", "expected"),

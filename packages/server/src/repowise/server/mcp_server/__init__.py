@@ -262,18 +262,18 @@ def wire_result(payload: Any) -> Any:
     FastMCP renders the text with ``indent=2`` beside a structured copy that is
     already compact. The same ``fallback=str`` keeps a value JSON cannot hold
     rendering as before, and the structured copy is converted exactly as
-    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
-    is left to FastMCP's own conversion.
+    FastMCP converts it. ``REPOWISE_MCP_PRETTY_JSON=1`` indents the text again.
+    Anything but a dict is left to FastMCP's own conversion.
     """
     import os
 
-    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-    if pretty or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return payload
     import pydantic_core
     from mcp.types import CallToolResult, TextContent
 
-    text = pydantic_core.to_json(payload, fallback=str).decode()
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    text = pydantic_core.to_json(payload, fallback=str, indent=2 if pretty else None).decode()
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
@@ -380,9 +380,14 @@ def _slim_tool(tool: Any) -> None:
     core tool's ``Args:`` block onto its properties. Hosts re-send the tool
     list on every turn. Arguments are still validated against the function
     signature, not this dict, so an unlisted parameter keeps working.
+
+    Also drops the output schema FastMCP derives from the return annotation:
+    every tool's says only "an object under ``result``". Without one the spec
+    makes ``structuredContent`` optional, and :func:`wire_result` still sends it.
     """
     from repowise.core.registry.tool_selection import CORE_TOOLS
 
+    tool.fn_metadata.output_schema = None
     params = tool.parameters
     params.pop("title", None)
     properties = params.get("properties", {})
@@ -439,7 +444,7 @@ def _register_tools() -> None:
     load_plugins()  # plugin tools register before the surface is attached
 
 
-def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
+def tool_definitions(names: Iterable[str], *, workspace: bool = True) -> list[dict[str, Any]]:
     """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
 
     Built from the tool registry with the server's own wrapping and schema
@@ -447,11 +452,14 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
     server lists them; a name with no registered tool is skipped. The
     ``mcp.always_load`` hint is a per-repository setting, so it is not here;
     a server that honours it adds it per session (``mark_always_loaded``).
+    ``workspace=False`` lists them as a single-repo server does, with no
+    ``repo="all"`` offer.
     """
     from mcp.server.fastmcp.tools import Tool
     from mcp.types import Tool as MCPTool
 
     from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import without_repo_all
 
     _register_tools()
     wanted = set(names)
@@ -464,7 +472,7 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
             )
             _slim_tool(tool)
             tools[entry.name] = tool
-    return [
+    listed = [
         MCPTool(
             name=tool.name,
             title=tool.title,
@@ -474,9 +482,12 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
             annotations=tool.annotations,
             icons=tool.icons,
             _meta=tool.meta,
-        ).model_dump(by_alias=True, mode="json", exclude_none=True)
+        )
         for _, tool in sorted(tools.items())
     ]
+    if not workspace:
+        listed = [without_repo_all(tool) for tool in listed]
+    return [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in listed]
 
 
 def ensure_full_surface() -> Any:

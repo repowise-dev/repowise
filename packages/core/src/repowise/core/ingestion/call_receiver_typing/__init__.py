@@ -575,8 +575,9 @@ class ReceiverTypingMixin(
         written = id_segment_name(type_name)
 
         # An import statement binds the name outright, so it settles which type
-        # this is before any scope search.
-        bound = self._import_names.get(file_path, {}).get(written)
+        # this is before any scope search. A Python import in a function binds
+        # there, and elsewhere only where every such import agrees.
+        bound = self._import_maps.source_at(file_path, written, call.line)
         if bound is not None and not bound.startswith("external:"):
             sym_id = self._import_bound_method(file_path, bound, key)
             return None if sym_id is None else (sym_id, "import")

@@ -72,6 +72,7 @@ _STRATEGY_SUMMARY: dict[str, str] = {
     "buffer_string_accumulation": "Join the string once instead of growing it in a loop",
     "shrink_lock_scope": "Move the I/O out of the locked section",
     "push_reduction_into_query": "Let the query do the reduction",
+    "reduce_measured_self_time": "Cut the work a measured run spends in this function",
 }
 
 Step = dict[str, Any]

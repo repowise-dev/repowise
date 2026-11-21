@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -174,14 +177,50 @@ def test_unproduced_stale_pages_are_retired(tmp_path) -> None:
             await engine.dispose()
 
     asyncio.run(build())
-    written = SimpleNamespace(
-        generated_pages=[SimpleNamespace(page_id="module_page:kept")],
-        stale_page_ids={"module_page:gone"},
-        plan=SimpleNamespace(generate_ids={"module_page:gone", "module_page:kept"}),
+    catch_up_mod.retire_unproduced(
+        repo_path,
+        {"module_page:gone", "module_page:kept"},
+        [SimpleNamespace(page_id="module_page:kept")],
     )
-    catch_up_mod._retire_unproduced(repo_path, written)
 
     assert asyncio.run(statuses()) == {"module_page:gone": "tombstone", "module_page:kept": "fresh"}
+    # No vector store is open here: the next update's persist drops its vector.
+    from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
+
+    assert load_cleanup_debt(repo_path)["vectors"] == {"module_page:gone"}
+
+
+def test_the_second_pass_does_not_trip_the_first_pass_lock(monkeypatch, tmp_path) -> None:
+    """Each pass holds the lock until the process exits; the next pass must still take it."""
+    from repowise.core.update_lock import try_acquire_update_lock
+
+    rec = _Recorder(monkeypatch, {True: [0], False: [2]})
+    taken: list[bool] = []
+
+    def update(**kwargs: Any) -> Any:
+        # As run_update does: acquire, and leave the release to atexit.
+        taken.append(try_acquire_update_lock(tmp_path, None) is None)
+        return rec.outcome
+
+    monkeypatch.setattr(update_cmd, "run_update", update)
+    catch_up_mod.catch_up(_opts(), tmp_path)
+    assert taken == [True, True]
+
+
+def test_the_exit_cleanup_leaves_another_run_lock(monkeypatch, tmp_path) -> None:
+    """Another update can take the lock before the second pass; this exit must not drop it."""
+    from repowise.core.update_lock import update_lock_path
+
+    cleanups: list[tuple] = []
+    monkeypatch.setattr(atexit, "register", lambda fn, *args: cleanups.append((fn, args)))
+    run = SimpleNamespace(repo_path=tmp_path, head="abc")
+    assert update_cmd._acquire_update_lock(run) is None
+
+    other = {"pid": os.getppid(), "target_commit": "def", "started_at": time.time()}
+    update_lock_path(tmp_path).write_text(json.dumps(other), encoding="utf-8")
+    for fn, args in cleanups:
+        fn(*args)
+    assert json.loads(update_lock_path(tmp_path).read_text(encoding="utf-8")) == other
 
 
 def test_yes_reaches_the_update_too(monkeypatch, tmp_path) -> None:

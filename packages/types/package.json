@@ -46,6 +46,7 @@
     "./fix-first": "./src/fix-first.ts",
     "./queue": "./src/queue.ts",
     "./agent-prompts": "./src/agent-prompts.ts",
+    "./first-look": "./src/first-look.ts",
     "./serve-lock": "./src/serve-lock.ts",
     "./generated/http": "./src/generated/http.ts"
   },

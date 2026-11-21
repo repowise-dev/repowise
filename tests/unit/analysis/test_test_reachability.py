@@ -330,6 +330,32 @@ def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> No
     }
 
 
+def test_a_third_party_import_does_not_contradict_a_test_name() -> None:
+    # A test that runs the script it is named for as text, or in a subprocess,
+    # imports only its framework: that says nothing about another file.
+    g = _dep_graph(
+        ("src/lib/page-check.test.ts", "external:vitest", "imports"),
+        ("src/lib/page-check.test.ts", "external:node:fs", "imports"),
+        ("tests/distill/test_engine.py", "external:pytest", "imports"),
+        ("tests/distill/test_engine.py", "src/distill/engine.py", "imports"),
+    )
+    paths = {"lib/page-check.js", "src/health/engine.py", "src/distill/engine.py"}
+    tests = {"src/lib/page-check.test.ts", "tests/distill/test_engine.py"}
+    paired = files_with_paired_tests(g, paths, tests)
+    assert "lib/page-check.js" in paired
+    # A dependency inside the repository still contradicts a colliding name.
+    assert "src/distill/engine.py" in paired
+    assert "src/health/engine.py" not in paired
+
+
+def test_a_framework_node_does_not_contradict_a_test_name() -> None:
+    # ``framework:`` names code the repository does not own, as ``external:``
+    # does: an edge to one says nothing about which repository file is tested.
+    g = _dep_graph(("src/lib/page-check.test.ts", "framework:angular", "framework"))
+    paired = files_with_paired_tests(g, {"lib/page-check.js"}, {"src/lib/page-check.test.ts"})
+    assert "lib/page-check.js" in paired
+
+
 # ---------------------------------------------------------------------------
 # rank_reaching: the order a capped reverse list keeps
 # ---------------------------------------------------------------------------
