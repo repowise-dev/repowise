@@ -879,8 +879,11 @@ NON_PRODUCTION_ENDS_STAT = "contract_ends_not_production"
 #: Code origins whose calls and routes are not the system's own contract ends: a
 #: test, an e2e or smoke script, a docs example or a tooling script calls real
 #: routes. Generated code is the output of a contract and vendored code a copy
-#: of someone else's library, neither a party to one.
-_NOT_CONTRACT_ORIGINS = frozenset({"test", "docs_example", "tooling", "generated", "vendored"})
+#: of someone else's library, neither a party to one; a data folder's code is
+#: material the product reads by path.
+_NOT_CONTRACT_ORIGINS = frozenset(
+    {"test", "docs_example", "tooling", "generated", "vendored", "data"}
+)
 
 
 async def _production_ends(

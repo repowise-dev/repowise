@@ -1325,9 +1325,11 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
     import atexit
 
+    from repowise.core.update_lock import release_own_update_lock
+
     # The lock now owns the hook's suppression window; drop the queued marker.
     clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
+    atexit.register(release_own_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
     return None
 

@@ -301,7 +301,7 @@ export interface HealthFileMetric {
   is_test?: boolean;
   /**
    * Where the file's code comes from (`production`, `test`, `vendored`,
-   * `generated`, `docs_example`, `tooling`, `build`). `null` on rows scored
+   * `generated`, `docs_example`, `tooling`, `build`, `data`). `null` on rows scored
    * before the column existed; absent on payloads that do not carry it.
    */
   code_origin?: string | null;

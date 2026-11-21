@@ -406,6 +406,7 @@ def _scoped(
     secrets_only: bool,
     patterns: Sequence[CustomPattern] = (),
     path_allowlisted: bool = False,
+    repo_root: str | None = None,
 ) -> tuple[list[dict], set[tuple[str, str]]]:
     """Findings in *source* that span a line in *lines*, as gate rows, and the long lines skipped.
 
@@ -414,13 +415,14 @@ def _scoped(
     secret kinds, matched on the lines in *lines* only; a custom match is also
     masked in a built-in finding's snippet on its line, while that finding keeps
     the fingerprint it has without patterns. *path_allowlisted* drops every
-    secret kind, as an allow marker on each line would.
+    secret kind, as an allow marker on each line would. *repo_root* lets the
+    file's origin read the folders around it, as the indexed scan does.
     """
     secrets_only = secrets_only or PurePosixPath(path).suffix.lower() in DOC_EXTENSIONS
     text = _Text(path, source_lines(source), patterns)
     found = [
         entry
-        for f in scan_source(path, source)
+        for f in scan_source(path, source, repo_root=repo_root)
         if (entry := _builtin_entry(text, f, lines, secrets_only)) is not None
     ]
     custom, long_lines = _custom_entries(text, lines)
@@ -651,6 +653,10 @@ def scan_change(
             secrets_only=False,
             patterns=patterns,
             path_allowlisted=allowlisted(path),
+            # Ceiling: the folder rules (docs site, data folder) read the
+            # working tree, not *rev*'s tree. They agree on a checked-out head;
+            # a scan of another revision reads today's folders.
+            repo_root=root,
         )
         rows += scoped
         skipped |= long_lines

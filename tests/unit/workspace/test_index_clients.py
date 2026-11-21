@@ -187,6 +187,24 @@ class TestWrapperBodiesAndStaticFields:
         contracts, _u, _c = _run(source, "src/api.ts")
         assert _ids(contracts) == {"http::GET::/api/users"}
 
+    def test_a_static_field_read_through_the_class_name(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static get() {\n"
+            "    return fetch(Api.BASE + '/x');\n"
+            "  }\n"
+            "  list() { return fetch(`${Api.BASE}/items`); }\n"
+            "}\n"
+            "export function top() { return fetch(Api.BASE + '/top'); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {
+            "http::GET::/api/x",
+            "http::GET::/api/items",
+            "http::GET::/api/top",
+        }
+
     def test_the_regex_dialect_alone_cannot_see_these(self):
         """Fails before this change: the generic type argument breaks the regex.
 
