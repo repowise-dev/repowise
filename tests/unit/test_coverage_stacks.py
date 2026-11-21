@@ -584,6 +584,31 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
 
 
+@pytest.mark.parametrize(
+    ("extra", "package_manager", "install", "add"),
+    [
+        # Yarn classic refuses to add to a workspace root without -W.
+        ({}, None, "yarn install --frozen-lockfile", "yarn add -D -W"),
+        # Yarn Berry has no -W; its config file or packageManager field says it is Berry.
+        ({".yarnrc.yml": "nodeLinker: node-modules\n"}, None, "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@4.5.0", "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@1.22.22", "yarn install --frozen-lockfile", "yarn add -D -W"),
+    ],
+)
+def test_a_yarn_workspace_root_adds_with_the_flag_its_yarn_needs(tmp_path, extra, package_manager, install, add):
+    fields = {"workspaces": ["packages/*"], **({"packageManager": package_manager} if package_manager else {})}
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "vitest": "1"}, **fields),
+             **extra}
+    (stack,) = detect_stacks(["yarn.lock", *files], files)
+    assert stack.requires == (install, f"{add} jest-junit@16")
+
+
+def test_a_yarn_member_adds_without_the_root_flag():
+    files = {"web/package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1"})}
+    (stack,) = detect_stacks(["yarn.lock", "web/package.json"], files)
+    assert stack.requires[-1] == 'yarn add -D "@vitest/coverage-v8@1"'
+
+
 # ---------------------------------------------------------------------------
 # Fixtures, stubs and samples are not units
 # ---------------------------------------------------------------------------
@@ -843,8 +868,10 @@ def test_other_runners_need_no_junit_environment():
         # Not the runner alone: the script stays, hooks and all.
         ("package-lock.json", "cross-env CI=1 jest", "npm test -- --coverage --coverageReporters=lcov"),
         ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
-        # A shell comment would swallow the flags appended after it.
-        ("package-lock.json", "jest # unit tests", "npm test -- --coverage --coverageReporters=lcov"),
+        # A shell comment would swallow the flags appended after it, so the runner runs directly.
+        ("package-lock.json", "jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        # Not the runner alone and commented: no command, since every flag would land in the comment.
+        ("package-lock.json", "cross-env CI=1 jest # unit tests", None),
         # A bare -- would turn the flags appended after it into test patterns.
         ("package-lock.json", "jest --", "npm test -- --coverage --coverageReporters=lcov"),
     ],
@@ -853,9 +880,53 @@ def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command
     scripts = {"pretest": "node scripts/check-tokens.js", "test": script}
     deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
     (stack,) = detect_stacks(["package.json", lock], {"package.json": _package(scripts, devDependencies=deps)})
-    assert stack.test == command
-    direct = not command.startswith("npm test")
+    assert stack.test == (command or "")
+    direct = command is not None and not command.startswith("npm test")
     assert any("would also run the `pretest` script" in n for n in stack.notes) is direct
+
+
+@pytest.mark.parametrize(
+    ("script", "command"),
+    [
+        ("jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        ("vitest run  # CI", f"npx vitest run {_VITEST}"),
+        # The comment is not read as the script's own flags.
+        ("jest # add --coverage later", "npx jest --coverage --coverageReporters=lcov"),
+        ("cross-env CI=1 jest # unit tests", ""),
+        # A # inside quotes is no comment: the script stays.
+        ('jest -t "a #b"', "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_commented_test_script_runs_the_runner_without_the_comment(script, command):
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"],
+                             {"package.json": _package({"test": script}, devDependencies=deps)})
+    assert stack.test == command
+    # No hooks were skipped, so no hooks note.
+    assert not any("would also run" in n for n in stack.notes)
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest --coverage", "npm test --"),
+        ("pnpm-lock.yaml", "jest --coverage", "pnpm run test"),
+        ("yarn.lock", "jest --coverage --ci", "yarn test"),
+    ],
+)
+def test_a_jest_script_that_measures_coverage_still_writes_test_timings(lock, script, command):
+    files = {"package.json": _package({"test": script}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    # The command takes the JUnit flag appended to it: npm needs its separator, pnpm its run form.
+    assert (stack.runner, stack.test) == ("jest", command)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    assert stack.requires[-1].endswith("jest-junit@16")
+
+
+def test_a_script_that_measures_behind_c8_keeps_no_junit_flag():
+    files = {"package.json": _package({"test": "c8 --reporter=lcov mocha"}, devDependencies={"mocha": "10"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert (stack.runner, stack.junit_flag) == ("covered", "")
 
 
 def test_a_test_script_without_hooks_stays_the_script():
