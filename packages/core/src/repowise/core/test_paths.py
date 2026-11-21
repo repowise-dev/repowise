@@ -63,7 +63,7 @@ from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Iterable
 
     from .dotnet_test_projects import DotnetTestProjects
     from .phpunit_roots import PhpunitRoots
@@ -311,6 +311,15 @@ def _conventions() -> _Conventions:
         manifest_names=REGISTRY.package_manifest_filenames(),
         js_family_exts=REGISTRY.extensions_for(TS_JS_LANGUAGES),
     )
+
+
+def js_family_extensions() -> frozenset[str]:
+    """The extensions the language registry gives JavaScript and TypeScript.
+
+    ``.vue``, ``.svelte`` and ``.astro`` are in it: their components are tested
+    from ``.ts`` and ``.js`` files.
+    """
+    return _conventions().js_family_exts
 
 
 def _parts(path: str) -> tuple[list[str], list[str]]:
@@ -1000,7 +1009,69 @@ def _qualified_name(test_name: str, rel_path: str) -> bool:
     return False
 
 
-def names_test_for(test_path: str, rel_path: str, siblings: Collection[str] = ()) -> bool:
+def qualified_name_leads(rel_path: str) -> frozenset[str]:
+    """What a qualified test name for *rel_path* starts with, before its qualifier.
+
+    ``test_loader`` and ``loader`` for ``loader.py``: ``test_loader_golden.py``
+    and ``loader.retry.test.ts`` start with one of them. Look these up among the
+    :func:`qualified_name_prefixes` of an indexed set of test names to find the
+    qualified ones without testing every name against every file.
+    """
+    p = PurePath(rel_path)
+    return frozenset(f"{head}{p.stem}" for head, _ in _paired_affixes(p))
+
+
+def qualified_name_prefixes(test_name: str) -> list[str]:
+    """Every prefix of *test_name* that a qualifier could follow.
+
+    A qualified name has ``._-`` or an uppercase letter right after the
+    ``qualified_name_leads`` of the file it is named for (the rule in
+    :func:`_qualified_name`), so ``a_b.c`` yields ``a`` and ``a_b``. A name whose
+    lead is not among these prefixes is not qualified for that file.
+    """
+    return [test_name[:i] for i, char in enumerate(test_name) if char in "._-" or char.isupper()]
+
+
+class SiblingNames:
+    """The files of one directory, indexed by the test names they claim.
+
+    ``names_test_for`` asks of each qualified name whether some sibling claims it.
+    Over a plain list that is a scan of the directory per name; this answers from
+    two lookups, and builds its index on the first question, so a directory
+    nobody asks about costs nothing.
+    """
+
+    __slots__ = ("_by_lead", "_exact", "_files")
+
+    def __init__(self, files: Iterable[str]) -> None:
+        self._files = files
+        self._exact: dict[str, list[str]] | None = None
+        self._by_lead: dict[str, list[str]] = {}
+
+    def claims(self, test_name: str, rel_path: str) -> bool:
+        """Whether a file other than *rel_path* claims *test_name* (see :func:`names_test_for`)."""
+        if self._exact is None:
+            self._exact = {}
+            for file in self._files:
+                for name in paired_test_names(file):
+                    self._exact.setdefault(name, []).append(file)
+                for lead in qualified_name_leads(file):
+                    self._by_lead.setdefault(lead, []).append(file)
+        if any(other != rel_path for other in self._exact.get(test_name, ())):
+            return True
+        own = len(PurePath(rel_path).stem)
+        return any(
+            other != rel_path
+            and len(PurePath(other).stem) > own
+            and _qualified_name(test_name, other)
+            for prefix in qualified_name_prefixes(test_name)
+            for other in self._by_lead.get(prefix, ())
+        )
+
+
+def names_test_for(
+    test_path: str, rel_path: str, siblings: Collection[str] | SiblingNames = ()
+) -> bool:
     """Whether *test_path* is named for *rel_path*: a paired name, or one with a
     qualifier after the stem (``test_loader_golden.py``, ``loader.retry.test.ts``,
     ``loader_retry_test.go``, ``LoaderRetryTest.java``).
@@ -1008,12 +1079,15 @@ def names_test_for(test_path: str, rel_path: str, siblings: Collection[str] = ()
     *siblings* are the other files in *rel_path*'s directory. A qualified name
     one of them claims is that file's test: ``test_foo_bar.py`` is for
     ``foo_bar.py``, not ``foo.py``, and ``foo.config.test.ts`` for ``foo.config.ts``.
+    Pass a :class:`SiblingNames` to ask of many names against one directory.
     """
     name = PurePath(test_path).name
     if name in paired_test_names(rel_path):
         return True
     if not _qualified_name(name, rel_path):
         return False
+    if isinstance(siblings, SiblingNames):
+        return not siblings.claims(name, rel_path)
     own = len(PurePath(rel_path).stem)
     return not any(
         name in paired_test_names(other)

@@ -14,6 +14,7 @@ from repowise.core.dotnet_test_projects import read_dotnet_test_projects
 from repowise.core.phpunit_roots import read_phpunit_roots
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
+    SiblingNames,
     is_skippable_test_path,
     is_test_path,
     is_test_related_path,
@@ -604,6 +605,8 @@ def test_phpunit_config_overrules_a_test_shaped_php_name(path: str, expected: st
 )
 def test_a_test_named_for_a_file_may_carry_a_qualifier(test_path, source, siblings, named):
     assert names_test_for(test_path, source, siblings) is named
+    # An indexed directory answers the same, with the source among its files.
+    assert names_test_for(test_path, source, SiblingNames([source, *siblings])) is named
 
 
 _DOTNET_PROJECTS = read_dotnet_test_projects(

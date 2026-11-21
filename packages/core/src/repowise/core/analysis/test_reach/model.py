@@ -5,11 +5,19 @@ from __future__ import annotations
 import sys
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import PurePath
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.test_paths import paired_test_names
+from repowise.core.test_paths import (
+    SiblingNames,
+    js_family_extensions,
+    names_test_for,
+    paired_test_names,
+    qualified_name_leads,
+    qualified_name_prefixes,
+)
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section of the package docstring.
@@ -183,6 +191,114 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
+def _language_compatible(target: str, test: str) -> bool:
+    """Whether *test* uses a test tail for *target*'s own language.
+
+    A JS/TS test file (``x.test.ts``) is no evidence for a ``.py`` or ``.go`` file
+    of the same stem; it counts only for a JS/TS target.
+    """
+    js_family = js_family_extensions()
+    if PurePath(test).suffix.lower() in js_family:
+        return PurePath(target).suffix.lower() in js_family
+    return True
+
+
+def _directory_overlap(target: str, test: str) -> int:
+    """How many trailing directory components *target* and *test* share."""
+    target_dirs = target.split("/")[:-1]
+    test_dirs = test.split("/")[:-1]
+    overlap = 0
+    for target_dir, test_dir in zip(reversed(target_dirs), reversed(test_dirs), strict=False):
+        if target_dir != test_dir:
+            break
+        overlap += 1
+    return overlap
+
+
+def _names_target(
+    target: str,
+    test: str,
+    siblings: SiblingNames,
+    owned_by: Mapping[str, set[str]],
+) -> bool:
+    """Whether *test* is named for *target*, and no other file beside it owns the name."""
+    target_stem = PurePath(target).stem.lower()
+    test_stem = PurePath(test).stem.lower()
+    if target_stem not in test_stem and target_stem.removeprefix("u") not in test_stem:
+        return False
+    if not _language_compatible(target, test) or not names_test_for(test, target, siblings):
+        return False
+    return test not in owned_by or target in owned_by[test]
+
+
+def _mirrored_by_rival(target: str, test: str, rivals: Iterable[str]) -> bool:
+    """Whether a same-named file in *rivals* mirrors *test* more deeply than *target* does.
+
+    ``tests/unit/core/config/test_settings.py`` belongs to ``src/core/config/settings.py``
+    rather than ``src/cli/config/settings.py``: both share ``config`` with it, but
+    only the first also shares ``core``.
+    """
+    own = _directory_overlap(target, test)
+    return any(
+        _directory_overlap(rival, test) > own and _language_compatible(rival, test)
+        for rival in rivals
+    )
+
+
+def _index_tests(
+    test_list: list[str],
+) -> tuple[dict[str, list[int]], dict[str, list[int]], dict[tuple[str, str], list[str]]]:
+    """Positions in *test_list* by file name and by each prefix of the name a qualifier
+    could follow, so a target reads its candidates off two lookups; and the tests by
+    directory and name, for the sibling-ownership rule."""
+    by_name: dict[str, list[int]] = {}
+    by_prefix: dict[str, list[int]] = {}
+    by_dir_and_name: dict[tuple[str, str], list[str]] = {}
+    for position, path in enumerate(test_list):
+        dir_path, _, name = path.rpartition("/")
+        by_dir_and_name.setdefault((dir_path, name), []).append(path)
+        by_name.setdefault(PurePath(path).name, []).append(position)
+        for prefix in qualified_name_prefixes(PurePath(path).name):
+            by_prefix.setdefault(prefix, []).append(position)
+    return by_name, by_prefix, by_dir_and_name
+
+
+def _owners(
+    all_files: Iterable[str], tests_by_dir_and_name: Mapping[tuple[str, str], list[str]]
+) -> dict[str, set[str]]:
+    """The files beside which each test sits under a name they claim."""
+    owned_by: dict[str, set[str]] = {}
+    for source in all_files:
+        dir_path = source.rpartition("/")[0]
+        for name in paired_test_names(source):
+            for test in tests_by_dir_and_name.get((dir_path, name), ()):
+                if source != test:
+                    owned_by.setdefault(test, set()).add(source)
+    return owned_by
+
+
+def _candidates(
+    target: str,
+    test_list: list[str],
+    by_name: Mapping[str, list[int]],
+    by_prefix: Mapping[str, list[int]],
+) -> list[str]:
+    """Tests whose file name is a paired name of *target* or a qualified one, in input order."""
+    positions: set[int] = set()
+    for name in paired_test_names(target):
+        positions.update(by_name.get(name, ()))
+    for lead in qualified_name_leads(target):
+        positions.update(by_prefix.get(lead, ()))
+    return [test_list[position] for position in sorted(positions)]
+
+
+def _most_mirrored(target: str, found: list[str]) -> list[str]:
+    """The tests in *found* sharing the most trailing directories with *target*, when any share one."""
+    overlaps = [(_directory_overlap(target, test), test) for test in found]
+    best = max(overlap for overlap, _ in overlaps)
+    return [test for overlap, test in overlaps if overlap == best] if best > 0 else found
+
+
 def tests_matching_by_name(
     targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
 ) -> dict[str, ReachedBy]:
@@ -194,30 +310,42 @@ def tests_matching_by_name(
     owned by that sibling, though: ``a/index.test.ts`` is not evidence for
     every other ``index.ts`` in the repository.  Tests outside their subject
     directory retain the cross-directory fallback.
+
+    When several tests match, the ones that mirror more of the target's
+    trailing directories win, so ``tests/dead_code/test_analyzer_golden.py``
+    is preferred over ``tests/doc_drift/test_analyzer.py`` for
+    ``pkg/dead_code/analyzer.py``.  A qualified name that
+    :func:`~repowise.core.test_paths.names_test_for` accepts is also eligible,
+    and a test tail for another language (a ``.test.ts`` for a ``.py``) is not.
+    A test is also left out when a same-named source file mirrors it more deeply
+    than the target does: ``tests/unit/core/config/test_settings.py`` is for
+    ``src/core/config/settings.py``, not ``src/cli/config/settings.py``.
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
-    by_name: dict[str, list[str]] = {}
-    tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
-    for path in test_files:
-        dir_path, _, name = path.rpartition("/")
-        by_name.setdefault(name, []).append(path)
-        tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
+    files_by_dir: dict[str, list[str]] = {}
+    for path in all_files:
+        files_by_dir.setdefault(path.rpartition("/")[0], []).append(path)
+    siblings_by_dir = {directory: SiblingNames(files) for directory, files in files_by_dir.items()}
 
-    owned_by: dict[str, set[str]] = {}
-    for source in all_files:
-        dir_path, _, _ = source.rpartition("/")
-        for name in paired_test_names(source):
-            for test in tests_by_dir_and_name.get((dir_path, name), ()):
-                if source != test:
-                    owned_by.setdefault(test, set()).add(source)
+    test_list = list(test_files)
+    by_name, by_prefix, tests_by_dir_and_name = _index_tests(test_list)
+    owned_by = _owners(all_files, tests_by_dir_and_name)
+
+    sources_by_name: dict[str, list[str]] = {}
+    for path in all_files - set(test_list):
+        sources_by_name.setdefault(path.rpartition("/")[2], []).append(path)
+
     out: dict[str, ReachedBy] = {}
     for target in targets:
+        # Same-directory files; the target itself never claims a name from itself.
+        siblings = siblings_by_dir[target.rpartition("/")[0]]
+        rivals = [f for f in sources_by_name.get(target.rpartition("/")[2], ()) if f != target]
         found = [
-            path
-            for name in paired_test_names(target)
-            for path in by_name.get(name, ())
-            if path not in owned_by or target in owned_by[path]
+            test
+            for test in _candidates(target, test_list, by_name, by_prefix)
+            if _names_target(target, test, siblings, owned_by)
+            and not _mirrored_by_rival(target, test, rivals)
         ]
         if found:
-            out[target] = capped(target, found, "name-match")
+            out[target] = capped(target, _most_mirrored(target, found), "name-match")
     return out

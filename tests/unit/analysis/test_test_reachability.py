@@ -243,6 +243,54 @@ def test_a_test_without_a_sibling_source_still_matches_across_directories() -> N
     assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
 
+def test_a_directory_mirroring_test_wins_over_another_packages_same_name() -> None:
+    src = ["pkg/dead_code/analyzer.py", "pkg/doc_drift/analyzer.py", "pkg/core/constants.py"]
+    tests = {
+        "tests/doc_drift/test_analyzer.py",
+        "tests/dead_code/test_analyzer_golden.py",
+        "ui/__tests__/constants.test.ts",
+    }
+    found = name_match(src, tests, set(src) | tests)
+
+    assert found["pkg/dead_code/analyzer.py"].tests == ["tests/dead_code/test_analyzer_golden.py"]
+    assert found["pkg/doc_drift/analyzer.py"].tests == ["tests/doc_drift/test_analyzer.py"]
+    assert "pkg/core/constants.py" not in found
+
+
+@pytest.mark.parametrize("component", ["Widget.vue", "Widget.svelte", "Widget.astro"])
+def test_a_component_keeps_its_ts_test(component) -> None:
+    target = f"src/components/{component}"
+    test = "tests/components/Widget.test.ts"
+    found = name_match([target], {test}, {target, test})
+
+    assert found[target].tests == [test]
+
+
+def test_a_component_is_no_evidence_for_a_python_file_of_the_same_name() -> None:
+    found = name_match(["src/widget.py"], {"tests/widget.test.ts"}, set())
+
+    assert found == {}
+
+
+def test_a_test_mirroring_another_same_named_file_more_deeply_is_not_the_targets() -> None:
+    test = "tests/unit/core/config/test_settings.py"
+    cli, core = "src/cli/config/settings.py", "src/core/config/settings.py"
+
+    assert name_match([cli], {test}, {core}) == {}
+    assert name_match([core], {test}, {cli})[core].tests == [test]
+    found = name_match([cli, core], {test}, set())
+    assert list(found) == [core]
+
+
+def test_a_test_mirroring_the_target_as_deeply_stays_with_both() -> None:
+    test = "tests/config/test_settings.py"
+    cli, core = "src/cli/config/settings.py", "src/core/config/settings.py"
+    found = name_match([cli, core], {test}, set())
+
+    assert found[cli].tests == [test]
+    assert found[core].tests == [test]
+
+
 @pytest.mark.parametrize("size", [16, 32, 64])
 @pytest.mark.parametrize("layout", ["flat", "separate"])
 def test_name_matching_generates_convention_names_linearly(monkeypatch, size, layout) -> None:
@@ -268,6 +316,61 @@ def test_name_matching_generates_convention_names_linearly(monkeypatch, size, la
     assert calls <= len(all_files) + 2 * len(targets)
 
 
+def _name_match_work(monkeypatch, size: int, layout: str) -> int:
+    """Count the name-rule evaluations ``name_match`` makes over *size* sources and tests.
+
+    Counted, not timed: a timing assertion is flaky, and a count says exactly
+    which loop grew.
+    """
+    from repowise.core import test_paths
+
+    work = 0
+
+    def counting(function):
+        def wrapper(*args, **kwargs):
+            nonlocal work
+            work += 1
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(model, "PurePath", counting(model.PurePath))
+    monkeypatch.setattr(model, "paired_test_names", counting(model.paired_test_names))
+    monkeypatch.setattr(model, "names_test_for", counting(model.names_test_for))
+    monkeypatch.setattr(test_paths, "paired_test_names", counting(test_paths.paired_test_names))
+    monkeypatch.setattr(test_paths, "_qualified_name", counting(test_paths._qualified_name))
+
+    # Every third source has a conventional test, a qualified test (so each
+    # asks its directory's siblings) and a same-stem test in another directory.
+    targets, tests = [], []
+    for i in range(size):
+        directory = "src" if layout == "flat" else f"src/pkg_{i // 8}"
+        mirror = "tests" if layout == "flat" else f"tests/pkg_{i // 8}"
+        targets.append(f"{directory}/mod_{i}.py")
+        tests.append(
+            [
+                f"{mirror}/test_mod_{i}.py",
+                f"{mirror}/test_mod_{i}_golden.py",
+                f"other/{i % 4}/test_mod_{i}.py",
+            ][i % 3]
+        )
+    found = name_match(targets, tests, targets)
+
+    assert len(found) == size
+    return work
+
+
+@pytest.mark.parametrize("layout", ["flat", "separate"])
+def test_name_matching_work_grows_linearly_with_the_file_count(monkeypatch, layout) -> None:
+    small = _name_match_work(monkeypatch, 1500, layout)
+    large = _name_match_work(monkeypatch, 3000, layout)
+
+    # Doubling the files may double the work; a scan of every test (or every
+    # sibling) per target would quadruple it.
+    assert large <= 2.2 * small
+    assert large <= 25 * 3000
+
+
 def test_a_sibling_owner_only_in_the_index_prevents_an_unrelated_name_match() -> None:
     assert name_match(["elsewhere/x.py"], {"test_x.py"}, {"x.py"}) == {}
 
@@ -284,13 +387,25 @@ def test_a_sibling_test_can_belong_to_multiple_sources() -> None:
 
 
 def test_unowned_name_matches_keep_their_rank_and_complete_list_beyond_the_cap() -> None:
+    # No candidate mirrors a directory of the target, so none is dropped and
+    # all rank by path; the list stays complete past the cap.
+    tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET + 1)}
+    ordered = tuple(sorted(tests))
+
+    assert name_match(["src/x.py"], tests) == {
+        "src/x.py": model.ReachedBy(
+            list(ordered[:MAX_TESTS_PER_TARGET]), "name-match", len(tests), ordered
+        )
+    }
+
+
+def test_a_mirrored_directory_leaves_no_other_same_name_test_beyond_the_cap() -> None:
     tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET)}
     tests.add("tests/pkg/test_x.py")
-    ordered = ("tests/pkg/test_x.py", *sorted(tests - {"tests/pkg/test_x.py"}))
 
     assert name_match(["src/pkg/x.py"], tests) == {
         "src/pkg/x.py": model.ReachedBy(
-            list(ordered[:MAX_TESTS_PER_TARGET]), "name-match", len(tests), ordered
+            ["tests/pkg/test_x.py"], "name-match", 1, ("tests/pkg/test_x.py",)
         )
     }
 

@@ -154,17 +154,15 @@ class TestPascalPairing:
         assert not _has_paired_test_file("lib/user.rb", _path_basenames({"spec/user.spec.rb"}))
 
 
-def test_name_match_tier_finds_tests_named_for_a_target_anywhere():
+def test_name_match_tier_prefers_the_test_whose_directories_mirror_the_target():
     from repowise.core.analysis.test_reachability import tests_matching_by_name
 
     tests = {"tests/unit/test_jira_links.py", "tests/app/test_jira_links.py", "web/a.test.ts"}
     found = tests_matching_by_name(["app/jira_links.py", "web/a.ts", "app/none.py"], tests)
 
-    # Same name twice: the one whose directories mirror the target's leads.
-    assert found["app/jira_links.py"].tests == [
-        "tests/app/test_jira_links.py",
-        "tests/unit/test_jira_links.py",
-    ]
+    # Same name twice: the one whose directories mirror the target's wins, and
+    # the unrelated one is dropped.
+    assert found["app/jira_links.py"].tests == ["tests/app/test_jira_links.py"]
     assert found["app/jira_links.py"].via == "name-match"
     assert found["web/a.ts"].total == 1
     assert "app/none.py" not in found
