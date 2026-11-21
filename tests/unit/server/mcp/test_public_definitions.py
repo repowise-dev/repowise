@@ -59,6 +59,9 @@ def test_a_single_repo_listing_drops_repo_from_schema_and_args() -> None:
         ws_props = dict(workspace[name]["inputSchema"]["properties"])
         ws_props.pop("repo")
         assert single[name]["inputSchema"]["properties"] == ws_props, name
+    # A tool whose only Args entry is repo loses the empty heading too.
+    conformance = tool_definitions(["get_conformance"])[0]["description"]
+    assert not conformance.rstrip().endswith("Args:")
     assert "repo:" in workspace["get_risk"]["description"]
     ws_lines = workspace["get_risk"]["description"].splitlines()
     assert single["get_risk"]["description"].splitlines() == [
