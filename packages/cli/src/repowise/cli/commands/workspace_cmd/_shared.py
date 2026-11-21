@@ -121,6 +121,13 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
     still means the repository is indexed. Collapsing the two would report a
     repository the store has never seen as indexed with a zero count.
 
+    A store that errors (unreachable database, corrupt file, missing table)
+    raises :class:`click.ClickException` rather than returning ``None``:
+    under a configured database ``None`` reads as "not indexed", which would
+    report a fully indexed repository as missing during an outage — the
+    misreport this helper exists to fix, produced by a failure instead of a
+    missing row.
+
     With ``REPOWISE_DB_URL`` (or ``REPOWISE_DATABASE_URL``) set the local file is
     not consulted at all: a repository indexed into a shared store has no file
     on disk, and a repo-local ``wiki.db`` left behind from an earlier run is not
@@ -148,7 +155,7 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
 
         url = get_db_url_for_repo(repo_path)
         # Without this a store one repowise older reports 0 files: the
-        # `no such column` is swallowed by the except below.
+        # `no such column` would surface as a store error below.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
         sf = create_session_factory(engine)
@@ -166,8 +173,12 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
 
     try:
         return run_async(_query())
-    except Exception:
-        return None
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not read the index store for {repo_path}: {exc}"
+        ) from exc
 
 
 def _print_evidence(evidence: dict[str, Any] | None) -> None:
