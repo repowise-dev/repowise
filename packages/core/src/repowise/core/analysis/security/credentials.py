@@ -312,6 +312,24 @@ def holds_secret(text: str) -> bool:
     )
 
 
+#: Kinds whose snippet is a credential's own line. ``public_env_secret`` sits
+#: outside ``SECRET_KINDS`` only because its value is found differently.
+_CREDENTIAL_KINDS = SECRET_KINDS | {"public_env_secret"}
+
+
+def shown_snippet(kind: str, snippet: str | None) -> str:
+    """What any surface may show of a stored *snippet*: nothing of a secret's.
+
+    A masked value keeps its first characters and the rest of its line, so a
+    credential finding, or any snippet with a masked value on it, is shown by
+    kind and location only. The stored snippet stays for line checks and
+    fingerprints.
+    """
+    if not snippet or kind in _CREDENTIAL_KINDS or _MARKER in snippet:
+        return ""
+    return snippet
+
+
 def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 

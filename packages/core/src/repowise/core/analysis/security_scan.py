@@ -42,6 +42,7 @@ from repowise.core.analysis.security.credentials import (
     _ANGLE_SLOT,
     _CONSTANT_NAME,
     _CREDENTIAL_EXACT_PLACEHOLDERS,
+    _CREDENTIAL_KINDS,
     _CREDENTIAL_SUBSTRING_PLACEHOLDERS,
     _KEY_NAME_VALUE,
     _LONG_DIGIT_RUN,
@@ -73,6 +74,7 @@ from repowise.core.analysis.security.credentials import (
     _string_end,
     _value_span,
     masked_snippet,
+    shown_snippet,
 )
 from repowise.core.analysis.security.masking import (
     _BLOCK_STOP,

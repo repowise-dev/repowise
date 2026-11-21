@@ -316,6 +316,34 @@ def test_no_raw_secret_in_any_format(repo, tmp_path):
             assert raw not in text
 
 
+def test_a_secret_is_shown_by_kind_and_place_only(repo, tmp_path):
+    password = "Zq9XjW7vK3pLm2Nb"  # made up for this test
+    _write(repo, "cfg.py", f"AWS_KEY = '{KEY}'\npassword = '{password}'\nos.system(cmd)\n")
+    _commit(repo, "secrets")
+    scan = _scan(repo)
+    assert {f["kind"] for f in scan.findings} >= {"aws_access_key", "hardcoded_password"}
+    gate = evaluate(scan.findings)
+    baseline = tmp_path / "b.json"
+    write_baseline(baseline, scan.findings)
+    outputs = [
+        json.dumps(scan.findings),
+        json.dumps(gate.to_dict()),
+        render_markdown(gate, label="main...HEAD", files_scanned=1, commits_scanned=1),
+        "\n".join(github_annotations(scan.findings, gate)),
+        json.dumps(render_sarif(scan.findings, tool_version="0")),
+        json.dumps(render_gitlab(scan.findings)),
+        baseline.read_text(encoding="utf-8"),
+    ]
+    for text in outputs:
+        assert "AWS_KEY" not in text and "****" not in text
+        for value in (KEY[4:], password):
+            for at in range(len(value) - 2):
+                assert value[at : at + 3] not in text
+    # A pattern finding with no secret on its line keeps its line text.
+    assert "os.system(cmd)" in outputs[0]
+    assert "cfg.py:2" in outputs[2]
+
+
 def test_annotations_are_capped_escaped_and_skip_the_baseline():
     rows = [_row(path=f"src/a,b:{i}.py", snippet=f"eval({i})") for i in range(12)]
     rows.append(_row("weak_hash", "low", snippet="md5"))
