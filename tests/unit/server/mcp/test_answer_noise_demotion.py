@@ -94,5 +94,12 @@ def test_stable_order_preserved_among_real_hits():
     assert [h.get("target_path") for h in out] == ["src/a.py", "src/b.py", "src/pkg", ""]
 
 
+def test_a_test_file_defining_a_named_symbol_keeps_its_rank():
+    anchored = {**_hit("file_page", "tests/model_forms/tests.py"), "_symbol_anchored": True}
+    hits = [anchored, _hit("file_page", "src/forms.py")]
+    out = demote_noise_hits(hits, "how does IncompleteFormWithFields set url", is_why=False)
+    assert out[0]["target_path"] == "tests/model_forms/tests.py"
+
+
 def test_empty_hits_noop():
     assert demote_noise_hits([], "anything", is_why=False) == []

@@ -18,7 +18,9 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
     """Stable-partition noise below real hits before the top-5 cap; nothing is dropped.
 
     Decision records are noise unless the question is why-shaped, test files
-    unless it is about tests. Test support such as ``conftest.py`` is not noise.
+    unless it is about tests. Test support such as ``conftest.py`` is not noise,
+    nor is a test file that defines a symbol the question names: symbol
+    anchoring placed it, and the question asks about it.
     """
     if not hits:
         return hits
@@ -27,7 +29,10 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
     def _is_noise(h: dict) -> bool:
         pt = h.get("page_type")
         return (pt == "decision_record" and not is_why) or (
-            pt in FILE_ROW_TYPES and not test_focused and is_test_path(h.get("target_path") or "")
+            pt in FILE_ROW_TYPES
+            and not test_focused
+            and not h.get("_symbol_anchored")
+            and is_test_path(h.get("target_path") or "")
         )
 
     real = [h for h in hits if not _is_noise(h)]

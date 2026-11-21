@@ -35,6 +35,7 @@ from repowise.server.mcp_server._query_shape import (
     _VALID_MODES,
     _fetch_limit_for,
     _resolve_mode,
+    declared_name,
     query_pattern,
 )
 from repowise.server.mcp_server._retrieval_rank import (
@@ -275,6 +276,10 @@ async def search_codebase(
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
     names = await _indexed_names(repo, fed, query)
+    if mode in ("auto", "symbol") and (declared := declared_name(query, names)):
+        # The keyword names no symbol; ranked with it, ``class Article`` found
+        # a docstring that says "class" and none of the classes.
+        query, mode = declared, "symbol"
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
     issue = await _issue_files(repo, query, names)
