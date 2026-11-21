@@ -114,7 +114,8 @@ async def test_the_next_core_session_is_sent_the_setup_line(indexed, monkeypatch
     monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
     monkeypatch.setattr(_server, "_client_instructions", _server._client_instructions)
     monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
-    info = Implementation(name="codex-mcp-client", version="1")
+    # Not Codex: it repeats the instructions under every tool, so it gets none of this.
+    info = Implementation(name="claude-code", version="1")
     try:
         server = create_mcp_server(str(root))
 

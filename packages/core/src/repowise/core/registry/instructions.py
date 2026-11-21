@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-_HEAD = "repowise indexes this repository's code graph, git history and decisions."
+#: The first line is all a host that defers tools shows before discovery, so it
+#: says when to call.
+_HEAD = "Call repowise first for where/how/why questions about this repo's code."
 
 TOOL_LINES = {
     "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` are read "
@@ -54,12 +56,14 @@ def server_instructions(
     names every core tool but no workspace tool. *repo_line* says what get_why
     holds for the served repository. *workspace* says the server serves a
     workspace, the only place the workspace tools are named. *extra* lines
-    follow everything else, verbatim. *brief* keeps only the first line and
-    *extra*, for a host that repeats the instructions under every tool it
-    lists, where each tool's own description already says when to call it.
+    follow everything else, verbatim. *brief* keeps only the first line, for a
+    host that repeats the instructions under every tool it lists, where each
+    tool's own description already says when to call it. *extra* is dropped
+    there: a note printed under every tool reads as tool output, and agents
+    relay it to the user.
     """
     if brief:
-        return "\n".join([_HEAD, *(extra or ())])
+        return _HEAD
     names = set(served) if served is not None else set(TOOL_LINES) | set(CHECK_CLAUSES)
     lines = [_HEAD]
     lines += [line for name, line in TOOL_LINES.items() if name in names]

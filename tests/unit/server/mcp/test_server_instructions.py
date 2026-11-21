@@ -15,7 +15,7 @@ from repowise.server.mcp_server import mcp
 # Well under the 2,000 chars some hosts keep.
 _MAX_INSTRUCTIONS_CHARS = 1500
 #: The base text before a repository or workspace line is added.
-_BASE_INSTRUCTIONS_CHARS = 720
+_BASE_INSTRUCTIONS_CHARS = 700
 
 
 def test_instructions_fit_the_length_cap() -> None:
@@ -42,6 +42,15 @@ def test_instructions_stay_short() -> None:
     base = server_instructions(None)
     assert len(base) <= _BASE_INSTRUCTIONS_CHARS
     assert "uncommitted" not in base
+
+
+def test_the_first_line_says_when_to_call() -> None:
+    # A host that defers tools shows only this line until the model looks.
+    from repowise.core.registry.instructions import server_instructions
+
+    first = server_instructions(None).splitlines()[0]
+    assert first.startswith("Call repowise first for where/how/why questions")
+    assert server_instructions(None, brief=True, extra=["note"]) == first
 
 
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
