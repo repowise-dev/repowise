@@ -1306,7 +1306,7 @@ def split_rewired(
         joined = [
             p
             for p, rw in pending.items()
-            if p in reach or rw.imports & reach or rw.names & stems or rw.dirs & dirs
+            if p in reach or rw.imports & reach or _names(p, rw.names) & stems or rw.dirs & dirs
         ]
         if not joined:
             break
@@ -1321,17 +1321,28 @@ _PACKAGE_FILES = frozenset({"__init__", "__main__", "index"})
 
 
 def _add_words(paths: Iterable[str], stems: set[str], dirs: set[str]) -> None:
-    """Add the words naming each file (its name up to the first and the last dot,
-    and a package file's directory) to *stems*, and its directory names to *dirs*;
-    a dotfile's words also without the dot, as a string's words are split."""
+    """Add the words naming each file to *stems* (its name up to the first and
+    the last dot; a package file's directory instead, since every package
+    shares the file's own name), and its directory names to *dirs*; a dotfile's
+    words also without the dot, as a string's words are split."""
     for path in paths:
         p = PurePosixPath(path)
         name = p.name.lstrip(".")
         first = name.split(".", 1)[0]
-        stems.update((first, p.stem, PurePosixPath(name).stem))
         if first in _PACKAGE_FILES:
             stems.add(p.parent.name)
+        else:
+            stems.update((first, p.stem, PurePosixPath(name).stem))
         dirs.update(part.lstrip(".") for part in p.parent.parts)
+
+
+def _names(path: str, names: frozenset[str]) -> frozenset[str]:
+    """*names* as they name files: a package file's own name (``__init__``,
+    ``index``) names a package only through its directory, which a relative
+    one (``./index``, ``../index``) leaves as one above the file's own."""
+    if not names & _PACKAGE_FILES:
+        return names
+    return (names - _PACKAGE_FILES) | set(PurePosixPath(path).parent.parts)
 
 
 def _files_under(init: str, files: Collection[str]) -> list[str]:

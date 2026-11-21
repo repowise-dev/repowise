@@ -656,6 +656,13 @@ def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
     held = {"src/b.py": [[], [], [], ["new"]]}
     assert _split(held) == ([], ["src/b.py"])
     assert _split(held, added=["src/new.py"]) == (["src/b.py"], [])
+    # A package file's own name names only a package above the file: with
+    # src/__init__.py on a route, "__init__.py" in src/b.py may name it, in
+    # lib/z.py it cannot.
+    on_route = {**_INDEX, "src/a.py": ("src/c.py", "src/__init__.py")}
+    named = [[], ["__init__", "py"], []]
+    assert _split({"src/b.py": named}, index=on_route) == (["src/b.py"], [])
+    assert _split({"lib/z.py": named}, index=on_route) == ([], ["lib/z.py"])
     # A test runs only itself, and may now walk a tree or spawn a process.
     assert _split({"tests/test_d.py": [[], [], []]}) == (["tests/test_d.py"], [])
 
