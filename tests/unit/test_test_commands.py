@@ -41,6 +41,8 @@ OTHER_TEST_RUNS = [
     "gradlew test",
     "tox -e py313",
     "nose",
+    "nosetests tests/ -v",
+    "nose2",
 ]
 
 NOT_TESTS = [
@@ -57,6 +59,7 @@ NOT_TESTS = [
     "echo pytest",
     "git log -- tests",
     "toxic",
+    "nosey",
 ]
 
 

@@ -157,7 +157,8 @@ def _segment_kind(segment: str) -> str | None:
         tokens = _original_case(shlex.split(args), segment)
     except ValueError:
         return "partial"  # cannot tell, so do not replace full-suite coverage
-    runner = match.group(0).split()[0]
+    # ``go.exe`` takes the same value flags as ``go``.
+    runner = match.group(0).split()[0].removesuffix(".exe")
     return "partial" if _targets_some(tokens, _VALUE_FLAGS.get(runner, frozenset())) else "full"
 
 

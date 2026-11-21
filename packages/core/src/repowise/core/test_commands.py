@@ -45,7 +45,8 @@ _OTHER_RUNNERS = (
     r"bun test\b",
     r"npm run test[\w:-]*",
     r"tox\b",
-    r"nose\b",
+    # ``nosetests`` is nose's command; ``nose2`` its successor.
+    r"nose(?:tests|2)?\b",
 )
 
 #: A normalised simple command the ``test_output`` distill family claims.
