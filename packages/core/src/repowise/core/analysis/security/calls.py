@@ -10,7 +10,7 @@ from repowise.core.pyparse import parse_python
 
 from .credentials import _snippet
 from .masking import source_lines
-from .patterns import _CALL_PATTERNS
+from .patterns import _CALL_PATTERNS, _PY_BUILTIN_EVAL_PATTERN
 
 # ``exec`` is not a global in JavaScript; the name belongs to
 # ``RegExp.prototype.exec``. The receiver-chain prefix above therefore matches
@@ -229,6 +229,16 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
                 if isinstance(node.func, ast.Name):
                     call_name = node.func.id
                 elif isinstance(node.func, ast.Attribute):
+                    # Only the builtin executes a string: ``obj.eval(x)`` is a
+                    # method call (e.g. a PyTorch ``model.eval()`` mode switch),
+                    # so a Python attribute ``eval`` counts only on
+                    # ``builtins.eval`` (#6028). ``exec`` keeps both shapes.
+                    if node.func.attr == "eval":
+                        value = node.func.value
+                        if not (
+                            isinstance(value, ast.Name) and value.id == "builtins"
+                        ):
+                            continue
                     call_name = node.func.attr
                 else:
                     continue
@@ -260,6 +270,10 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
     for pattern, kind, severity in _CALL_PATTERNS:
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
+        if kind == "eval_call" and is_python:
+            # Same rule as the AST path: a Python attribute ``eval`` counts
+            # only as ``builtins.eval`` (#6028).
+            pattern = _PY_BUILTIN_EVAL_PATTERN
         for match in pattern.finditer(masked_source):
             add(kind, severity, match.start())
 
