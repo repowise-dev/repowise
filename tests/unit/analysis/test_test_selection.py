@@ -677,16 +677,23 @@ def test_always_run_is_appended_and_kept_on_a_full_run() -> None:
     assert runner_args(full, "pytest") == [RUN_ALL]
 
 
-def test_a_stale_map_is_stated() -> None:
+def test_a_stale_map_is_stated_for_the_files_it_matched_by_file() -> None:
     tiers = _tiers(
-        covered={"t::x": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}}
+        covered={
+            "t::x": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]},
+            "t::y": {"test_file": "tests/test_b.py", "source_files": ["src/b.py"]},
+        }
     )
-    sel = _select(["src/a.py"], tiers, map_current=False)
+    tiers["matched_by_file"] = ["src/b.py", "src/gone.py"]  # gone.py has no covering test
+    sel = _select(["src/a.py", "src/b.py"], tiers)
     assert not sel.run_all
     assert sel.reasons == (
-        "The per-test map was measured at another commit, so covering tests are matched "
-        "by file, not by changed line.",
+        "The per-test map was measured at another commit, so covering tests of 1 changed "
+        "file(s) are matched by file, not by changed line (e.g. src/b.py).",
     )
+    # Every covered file matched by line: nothing to say.
+    tiers["matched_by_file"] = []
+    assert _select(["src/a.py", "src/b.py"], tiers).reasons == ()
 
 
 # -- config -------------------------------------------------------------------

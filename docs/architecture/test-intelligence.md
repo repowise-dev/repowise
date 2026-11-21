@@ -221,6 +221,26 @@ Statuses other than `selected` carry `run_all: true`: `run_all` (`reasons` says 
 `repowise impacted-tests` gives the same answer), `busy` (a selection is still running),
 `no_source_line_changes`.
 
+## Matching changed lines
+
+The per-test map is keyed in the line numbers of the commit it was measured at
+(`query_lines` in `analysis/test_collection.py`):
+
+- At the change's head: the new side of the diff is looked up.
+- At its base: the old side.
+- At an earlier commit on the base's history (`git merge-base --is-ancestor`): one
+  `git diff --no-renames <map commit> <base>` over the changed files moves each base-side
+  line back to the map's numbering. A file with a touched line inside code edited
+  between the two commits, or right beside code removed there, is matched by file; so is
+  a file added or renamed in between, which reads as added.
+- Anywhere else (another branch, a commit missing from the clone, a failed git call):
+  every file is matched by file.
+
+Matching by file never selects fewer tests than matching by line. The files matched by
+file are listed in `matched_by_file`, and the selection says so only when one of them
+has covering tests. Function-scoped matching (a change wholly inside function bodies)
+still needs a map at the base or head.
+
 ## Coverage re-ingest hook
 
 `hooks.coverage_reingest: true` fires after a whole-suite run (`pytest`, `go test ./...`,
