@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import networkx as nx
 import pytest
 
 from repowise.core.build_units.adapters import cargo as cargo_adapter
+from repowise.core.build_units.adapters import cmake as cmake_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.adapters import maven as maven_adapter
@@ -186,6 +188,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(cmake_adapter, "get_or_build_cpp_index", boom)
     index = _collect(tmp_path, {
         "pkg/Gemfile": "",
         "pkg/m.rb": "",
@@ -643,3 +646,111 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+_CMAKE_FIXTURE = Path(__file__).parents[2] / "fixtures" / "cmake_build_units"
+
+
+def test_cmake_targets_link_deps_and_shared_library(tmp_path):
+    # Issue #5775's layout: An -> Bn -> Cn slices, A1-A3 sharing ACommon.
+    shutil.copytree(_CMAKE_FIXTURE, tmp_path, dirs_exist_ok=True)
+    index = collect_build_units(_ctx(tmp_path))
+    deps = _deps(index)
+
+    assert deps["cmake:ACommon"] == ()
+    assert deps["cmake:A1"] == ("cmake:ACommon", "cmake:B1")
+    assert deps["cmake:A2"] == ("cmake:ACommon", "cmake:B2")
+    assert deps["cmake:B1"] == ("cmake:C1",)
+    assert deps["cmake:C1"] == ()  # Threads::Threads is third-party
+    assert deps["cmake:app"] == ("cmake:A1", "cmake:A2", "cmake:A3")
+    assert "cmake:B1" not in deps["cmake:A2"]
+    assert _owners(index, "A/A2/src/a2_model.cpp") == ["cmake:A2"]
+    assert _owners(index, "A/ACommon/include/acommon/acommon.h") == ["cmake:ACommon"]
+    assert index.unit("cmake:A1").manifest == "A/A1/CMakeLists.txt"
+
+
+def test_cmake_targets_at_the_repo_root_own_only_their_sources(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_library(core src/core/a.cpp)\n"
+            "add_executable(tool src/tool/main.cpp)\n"
+            "target_link_libraries(tool PRIVATE core)\n"
+        ),
+        "src/core/a.cpp": "",
+        "src/tool/main.cpp": "",
+        "src/core/a.h": "",
+    })
+    assert index.unit("cmake:core").manifest == "CMakeLists.txt"
+    assert index.unit("cmake:core").root == ""
+    assert _deps(index)["cmake:tool"] == ("cmake:core",)
+    assert _owners(index, "src/core/a.cpp") == ["cmake:core"]
+    assert _owners(index, "src/tool/main.cpp") == ["cmake:tool"]
+    # A file no target lists falls to the root, which both targets share.
+    assert _owners(index, "src/core/a.h") == ["cmake:core", "cmake:tool"]
+
+
+def test_cmake_adapter_leaves_bazel_targets_out(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core a.cpp)\n",
+        "a.cpp": "",
+        "MODULE.bazel": "",
+        "lib/BUILD": 'cc_library(name = "util", srcs = ["u.cc"])\n',
+        "lib/u.cc": "",
+    })
+    assert [u.id for u in index.units.values() if u.ecosystem == "cmake"] == ["cmake:core"]
+    assert _owners(index, "lib/u.cc") == ["cmake:core"]
+
+
+def test_cmake_half_written_file_keeps_its_target_and_its_siblings(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(good)\nadd_subdirectory(bad)\n",
+        "good/CMakeLists.txt": "add_library(good g.cpp)\n",
+        "good/g.cpp": "",
+        # Unclosed calls: the tokenizer recovers what it can.
+        "bad/CMakeLists.txt": "add_library(bad b.cpp\n  target_link_libraries(\n",
+        "bad/b.cpp": "",
+    })
+    assert set(index.units) == {"cmake:bad", "cmake:good"}
+    assert _owners(index, "good/g.cpp") == ["cmake:good"]
+    assert _owners(index, "bad/b.cpp") == ["cmake:bad"]
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_cmake_file_declaring_no_target_gives_no_unit(tmp_path):
+    index = _collect(tmp_path, {"CMakeLists.txt": "))((( $<\n", "a.cpp": ""})
+    assert list(index.units) == []
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_cmake_deps_outside_the_repo_are_dropped(tmp_path):
+    outside = tmp_path / "outside"
+    _write(outside, {"CMakeLists.txt": "add_library(ext e.cpp)\n", "e.cpp": ""})
+    index = _collect(tmp_path / "repo", {
+        "CMakeLists.txt": (
+            "add_subdirectory(../outside outside)\n"
+            "add_executable(app main.cpp)\n"
+            "target_link_libraries(app PRIVATE ext fmt::fmt -lm)\n"
+        ),
+        "main.cpp": "",
+    })
+    assert list(index.units) == ["cmake:app"]
+    assert _deps(index)["cmake:app"] == ()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the CMake parser reads add_library(<name> ALIAS <target>) as a library of its own",
+)
+def test_cmake_dep_on_an_alias_links_the_aliased_target(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_library(core c.cpp)\n"
+            "add_library(proj::core ALIAS core)\n"
+            "add_executable(app m.cpp)\n"
+            "target_link_libraries(app PRIVATE proj::core)\n"
+        ),
+        "c.cpp": "",
+        "m.cpp": "",
+    })
+    assert set(index.units) == {"cmake:app", "cmake:core"}
+    assert _deps(index)["cmake:app"] == ("cmake:core",)
