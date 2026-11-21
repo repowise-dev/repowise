@@ -7,30 +7,6 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
-## 0.16.0
-
-The bundled Code Health and overview views carry the health and decisions
-wording of repowise 0.61.
-
-**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
-0.61.0 fills every view in this release.
-
-### Code Health
-
-- Marker descriptions say where each one scores: duplicated code scores in
-  TypeScript and error handling in Python, low cohesion is advisory, and an
-  advisory marker costs the file no points.
-- The complex-method finding reads "Many paths through one function", naming
-  what it measures.
-- Copy prompts treat mined decision records as background: the agent checks one
-  only when it bears on the change, and can put it in force with
-  `repowise decision confirm`.
-
-### Overview
-
-- The decisions summary counts decisions in force and background records, and
-  its attention row lists in-force decisions drifting from their code.
-
 ## 0.15.0
 
 The Docs panel reads as a table of contents with walkthroughs in their own group,
