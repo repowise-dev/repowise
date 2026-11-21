@@ -5,18 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import CoverageFile, CoverageIngest, _new_uuid, _now_utc
+from ...models import CoverageFile, CoverageIngest, HealthFileMetric, _new_uuid, _now_utc
 
 if TYPE_CHECKING:
     from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
     from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
     from repowise.core.analysis.health.coverage.model import FileCoverage
 from .._shared import _BATCH_SIZE
+from .health.exclude import _filter_excluded_paths, health_exclude_spec
 
 #: Ingest rows kept per repo for the coverage trend; older ones are pruned on write.
 #: One row per measured commit, so identical figures can repeat; the trend read
@@ -484,6 +486,8 @@ def empty_coverage_summary() -> dict[str, Any]:
         "ingested_commit_sha": None,
         "report_paths": None,
         "freshness": None,
+        "unreported_file_count": 0,
+        "unreported_files": [],
     }
 
 
@@ -623,6 +627,7 @@ async def get_coverage_summary(
     # default), which is correct for complete legacy ingests.
     mapping_partial = bool(getattr(latest, "mapping_partial", False))
     status: FreshnessStatus = coverage_freshness(latest.ingested_commit_sha, reference_commit)
+    unreported = await _unreported_production_files(session, repository_id, rows, ingest)
     return {
         "file_count": len(rows),
         "covered_lines": covered,
@@ -636,4 +641,53 @@ async def get_coverage_summary(
         "ingested_commit_sha": latest.ingested_commit_sha,
         "report_paths": _report_paths(ingest),
         "freshness": {"status": status, "indexed_commit": reference_commit},
+        "unreported_file_count": len(unreported),
+        "unreported_files": unreported[:_UNREPORTED_SAMPLE],
     }
+
+
+#: How many unreported files the summary names; the count says how many there are.
+_UNREPORTED_SAMPLE = 5
+
+
+async def _unreported_production_files(
+    session: AsyncSession, repository_id: str, rows: list[Any], ingest: CoverageIngest | None
+) -> list[str]:
+    """Indexed production files the stored report has no row for, sorted (#5873).
+
+    A report names only the files its run loaded, so a Go profile without
+    ``-coverpkg`` or a JS run without an all-files option leaves out the
+    least-tested ones and its percentage reads as complete. Production is the
+    stored ``code_origin``; a file with no code lines (``nloc`` 0, an empty
+    ``__init__.py``) has nothing to cover; and only a type the report measured
+    counts, as patch coverage's ``not_in_report`` does. A file the ingest's
+    ``coverage.ignore`` left out was dropped on purpose, so it is not listed,
+    nor is one the repository's ``exclude_patterns`` keep out of health.
+    A file of declarations only (Go types, a TS interface file) has ``nloc``
+    but nothing a report measures, and is still listed.
+    """
+    import pathspec
+
+    from repowise.core.analysis.patch_coverage.stored import ingest_scope
+
+    scope = ingest_scope(ingest) if ingest is not None else None
+    ignored = pathspec.PathSpec.from_lines("gitwildmatch", scope.ignore if scope else ())
+    reported = {r.file_path for r in rows}
+    measured = {PurePosixPath(p).suffix for p in reported}
+    result = await session.execute(
+        select(HealthFileMetric.file_path).where(
+            HealthFileMetric.repository_id == repository_id,
+            HealthFileMetric.code_origin == "production",
+            HealthFileMetric.nloc > 0,
+        )
+    )
+    indexed = _filter_excluded_paths(
+        result.all(), await health_exclude_spec(session, repository_id)
+    )
+    return sorted(
+        row.file_path
+        for row in indexed
+        if row.file_path not in reported
+        and PurePosixPath(row.file_path).suffix in measured
+        and not ignored.match_file(row.file_path)
+    )

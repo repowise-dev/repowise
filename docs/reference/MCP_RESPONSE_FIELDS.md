@@ -754,6 +754,7 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 
 - `freshness.status`: `current` (at the indexed commit), `stale`, `unknown`. `source_formats` lists merged formats.
 - `report_paths`: ingest mapping `total`, `matched`, `unmatched`, `ambiguous`, `unmatched_sample`.
+- `unreported_file_count`, `unreported_files` (first five): indexed production files with code lines, of a type the report measured, that the report has no row for.
 - Dashboard `history`: one point per complete ingest, newest 10.
 - Targeted `decay`: `confirmed_lines`, `invalidated_lines` (unknown, not uncovered), `drifted` once a fifth has moved.
 

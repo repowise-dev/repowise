@@ -19,7 +19,7 @@ pytest --cov=<package> --cov-context=test   # also records which test ran each l
 # 2. Ingest it.
 repowise coverage add coverage.lcov
 repowise coverage add .coverage             # per-test map
-repowise coverage status                    # files, line and branch %, map counts
+repowise coverage status                    # files, line and branch %, files left out, map counts
 # 3. Use it.
 repowise health                             # untested hotspots now light up
 repowise impacted-tests main...HEAD         # the tests guarding this branch
@@ -305,7 +305,7 @@ across layers, [BENCHMARKS.md](../BENCHMARKS.md).
 ## Reference
 
 `repowise coverage add [PATHS...]` (ingest; auto-discovers with no path),
-`coverage status` (summary plus per-test map counts), `coverage check [REVSPEC]`
+`coverage status` (summary, the indexed production files the report leaves out, and per-test map counts), `coverage check [REVSPEC]`
 (patch-coverage gate, no index needed), `coverage suggest-gates` (proposes
 `coverage.gates` YAML, writes nothing) and `repowise impacted-tests [REVSPEC]` (the tests
 a change exercises, or runner arguments). Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage). MCP:
