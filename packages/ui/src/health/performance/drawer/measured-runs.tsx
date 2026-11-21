@@ -87,9 +87,9 @@ export function MeasuredRunsSection({
   const symbolId = current.intervention_symbol;
   // The tab's own overview read, shared by key: a repository with no stored
   // runs never asks about one function.
-  const { data: overview } = useMeasuredOverview(adapter);
+  const { data: overview, isLoading: overviewLoading } = useMeasuredOverview(adapter);
   const stored = overview != null && overview.status !== "no_runtime_data";
-  const { data } = useSWR(
+  const { data, isLoading } = useSWR(
     load && symbolId && stored ? `evidence-function:${adapter.cacheKey}:${symbolId}` : null,
     () => load!({ symbolId: symbolId! }),
     { revalidateOnFocus: false, shouldRetryOnError: false },
@@ -97,8 +97,12 @@ export function MeasuredRunsSection({
   const fn = data?.functions[0];
   if (!fn) {
     // A measured hotspot's evidence is its run, so a host that cannot read the
-    // function still shows the measurement its detail carried.
-    const carried = isMeasuredHotspot(current) ? current.evidence[0]?.reason : null;
+    // function still shows the measurement its detail carried. Only once the
+    // reads settled without a row: while one is in flight the live row may
+    // still come, and the carried line would flash before it.
+    const settled = !overviewLoading && !isLoading;
+    const carried =
+      settled && isMeasuredHotspot(current) ? current.evidence[0]?.reason : null;
     return carried ? (
       <Section title="Runs that measured it">
         <p className="text-xs text-[var(--color-text-secondary)]">{carried}</p>
