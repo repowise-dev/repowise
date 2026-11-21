@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -255,9 +256,12 @@ def _store_dir(session: AsyncSession) -> Path | None:
 
 
 #: ``(store dir, row id, checkout path, checkout HEAD)`` whose row git said is
-#: another repo's. Kept for the process so a miss on every path-keyed read does
-#: not rerun the git checks; a new HEAD or a re-indexed store misses the entry.
-_REJECTED_ROWS: set[tuple[str, str, str, str]] = set()
+#: another repo's, with when git said so. A miss on every path-keyed read does
+#: not rerun the git checks; a new HEAD or a re-indexed store misses the entry,
+#: and an entry older than _REJECTION_TTL_S is checked again, since a fetch can
+#: bring the indexed commit in without moving HEAD.
+_REJECTED_ROWS: dict[tuple[str, str, str, str], float] = {}
+_REJECTION_TTL_S = 60.0
 
 
 async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
@@ -281,13 +285,14 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     # The checkout's HEAD is in the key: a pull or checkout that brings the
     # indexed commit in moves it, and the row is checked again.
     key = (str(store_dir), repo.id, local_path, _read_head_commit(local_path) or "")
-    if key in _REJECTED_ROWS:
+    rejected_at = _REJECTED_ROWS.get(key)
+    if rejected_at is not None and time.monotonic() - rejected_at < _REJECTION_TTL_S:
         return None
     same = await asyncio.to_thread(_same_checkout, repo, local_path)
     if not same:
         if same is False:
             # Only git's own answer is remembered; a failed git call is retried.
-            _REJECTED_ROWS.add(key)
+            _REJECTED_ROWS[key] = time.monotonic()
         return None
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path

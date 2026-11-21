@@ -250,3 +250,26 @@ async def test_a_rejection_is_checked_again_once_head_moves(tmp_path: Path, monk
     (here / "a.py").write_text("# pulled\n")
     _git(here, "commit", "-qam", "pulled")
     assert await _lookup(here) == repo_id
+
+
+async def test_a_rejection_expires_for_a_commit_fetched_without_moving_head(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    built.rename(tmp_path / "gone")
+    (here / "a.py").write_text("# next\n")
+    _git(here, "commit", "-qam", "next")
+    real = repository._has_commit
+    # The indexed commit is missing until a fetch, which leaves HEAD alone.
+    monkeypatch.setattr(repository, "_has_commit", lambda *_a: False)
+    assert await _lookup(here) is None
+    monkeypatch.setattr(repository, "_has_commit", real)
+    assert await _lookup(here) is None
+
+    monkeypatch.setattr(repository, "_REJECTION_TTL_S", 0.0)
+    assert await _lookup(here) == repo_id
