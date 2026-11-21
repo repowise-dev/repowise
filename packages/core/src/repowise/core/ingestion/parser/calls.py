@@ -558,36 +558,53 @@ def _rust_token_call(name: Node, target_name: str) -> tuple[str, str | None] | N
     ``{...}``. Before it, nothing is a bare call, ``a::b::`` a path and
     ``self.`` or ``x.`` a receiver. Any other shape (a chained receiver, a
     turbofish) is dropped rather than read as a bare call, and so are a macro
-    definition's body, a template rather than code that runs, and an
-    attribute (``#[cfg(all(unix))]``), which calls nothing.
+    definition's body, a template rather than code that runs, an attribute
+    (``#[cfg(all(unix))]``), which calls nothing, and a name the tokens
+    declare (``fn foo(``, ``struct S(``) or a closure type (``dyn Fn(i32)``).
     Ceiling: a tuple-struct pattern (``matches!(e, Kind(_))``) reads as a call.
     """
     group = name.next_sibling
     if group is None or group.type != "token_tree" or group.child(0).type != "(":
         return None
-    node = name.parent
-    while node is not None:
-        if node.type in _RUST_NON_CODE_TOKEN_TREES:
-            return None
-        node = node.parent
+    if not _rust_tokens_run(name):
+        return None
     before = name.prev_sibling
     if target_name in _RUST_FN_TRAITS or (before is not None and before.type in _RUST_ITEM_WORDS):
-        return None  # ``fn foo(``, ``struct S(``, ``dyn Fn(i32)``: a declaration or a type
+        return None
     if before is None or before.type not in (".", "::"):
         return target_name, None
+    receiver = _rust_token_receiver(before)
+    return None if receiver is None else (target_name, receiver)
+
+
+def _rust_tokens_run(node: Node) -> bool:
+    """Whether a token sits in code that runs, outside a macro definition or attribute."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type in _RUST_NON_CODE_TOKEN_TREES:
+            return False
+        parent = parent.parent
+    return True
+
+
+def _rust_token_receiver(joint: Node) -> str | None:
+    """The path or variable before a ``::`` or ``.`` *joint* in macro tokens, or None.
+
+    ``a::b::`` gives ``a::b`` and ``x.`` gives ``x``; a chained receiver
+    (``a.b().``) or a turbofish (``T::<U>::``) gives None.
+    """
     path: list[str] = []
-    word = before.prev_sibling
+    word = joint.prev_sibling
     while word is not None and word.type in ("identifier", "self", "super", "crate"):
-        path.insert(0, (word.text or b"").decode())
-        joint = word.prev_sibling
-        if before.type == "." or joint is None or joint.type != "::":
-            if joint is not None and joint.type in (".", "::"):
-                return None  # a chained receiver or a turbofish
-            break
-        word = joint.prev_sibling
-    if not path:
-        return None
-    return target_name, "::".join(path)
+        path.append((word.text or b"").decode())
+        link = word.prev_sibling
+        if joint.type == "::" and link is not None and link.type == "::":
+            word = link.prev_sibling
+            continue
+        if link is not None and link.type in (".", "::"):
+            return None
+        break
+    return "::".join(reversed(path)) or None
 
 
 def _call_names(

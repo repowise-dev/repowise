@@ -1845,13 +1845,14 @@ class CallResolver(
         # a fallback for names no top-level symbol claims (class-scoped
         # bindings live there alone).
         language = self._language_of(file_path)
-        if language == "rust" and not call.receiver_name and not call.scope_name:
-            item = self._rust_block_item(file_path, call.line, call.target_name)
-            # Written bare: a chained ``a().f()`` reaches here without its receiver.
-            if item is not None and _called_bare_on_line(self._lines_of(file_path), call):
-                if item == caller_id and not self._is_bare_recursion(file_path, call, caller_id):
-                    return True, None
-                return True, ResolvedCall(caller_id, item, 0.95, call.line, "same_file")
+        if language == "rust":
+            item = self._rust_block_call(file_path, call, caller_id)
+            if item is not None:
+                return True, (
+                    None
+                    if item == caller_id and not self._is_bare_recursion(file_path, call, caller_id)
+                    else ResolvedCall(caller_id, item, 0.95, call.line, "same_file")
+                )
         if language in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES or (
             language in _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES
             and call.target_name in self._file_top_level.get(file_path, {})
@@ -1871,6 +1872,19 @@ class CallResolver(
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         # A method no bare name reaches here (Python, Go, Rust) is not this call's target.
         return False, None
+
+    def _rust_block_call(self, file_path: str, call: CallSite, caller_id: str) -> str | None:
+        """The inline block item a Rust call written bare names, else None.
+
+        Written bare on its line: a chained ``a().f()`` reaches here without
+        its receiver.
+        """
+        if call.receiver_name or call.scope_name:
+            return None
+        item = self._rust_block_item(file_path, call.line, call.target_name)
+        if item is None or not _called_bare_on_line(self._lines_of(file_path), call):
+            return None
+        return item
 
     def _bare_name_reaches_caller(self, file_path: str, call: CallSite, own: str | None) -> bool:
         """Is a bare call the flat index answers with its own caller recursion?
