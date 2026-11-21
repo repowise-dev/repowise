@@ -2729,14 +2729,22 @@ _MACRO_OPENING = re.compile(r"\b[A-Z][A-Z0-9_]+\s*\([^()]*$")
 
 
 def _called_bare_on_line(lines: list[str], call: CallSite) -> bool:
-    """Does *call*'s line call its name with no receiver or path before it?"""
+    """Does *call*'s line call its name with no receiver or path before it?
+
+    Strings and a trailing ``//`` comment are blanked first; a turbofish
+    (``bar::<Vec<u8>>()``) still reads as a call.
+    """
     if not 0 < call.line <= len(lines):
         return False
-    text = lines[call.line - 1]
+    text = _RUST_LINE_COMMENT.sub("", _STRING_LITERAL.sub('""', lines[call.line - 1]))
+    called = re.compile(rf"\b{re.escape(call.target_name)}\b\s*(?:::\s*<|\()")
     return any(
-        not text[: m.start()].rstrip().endswith((".", "::", "->"))
-        for m in _name_pattern(call.target_name, call=True).finditer(text)
+        not text[: m.start()].rstrip().endswith((".", "::", "->")) for m in called.finditer(text)
     )
+
+
+_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
+_RUST_LINE_COMMENT = re.compile(r"//.*$")
 
 
 def _unqualified(before: str) -> bool:

@@ -265,6 +265,18 @@ def test_a_bare_call_in_an_inline_mod_names_the_blocks_own_item(tmp_path: Path) 
     assert ("src/lib.rs::tests::check", "src/lib.rs::bar") in edges
 
 
+def test_the_block_item_check_reads_a_turbofish_and_skips_strings(tmp_path: Path) -> None:
+    lib = (
+        "fn bar<T>() {}\n\n"
+        "mod inner {\n    fn bar<T>() {}\n"
+        "    pub fn run() {\n        bar::<Vec<u8>>();\n    }\n"
+        '    pub fn chained() {\n        make().bar(); let s = "bar()";\n    }\n}\n'
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert ("src/lib.rs::inner::run", "src/lib.rs::inner::bar") in edges
+    assert ("src/lib.rs::inner::chained", "src/lib.rs::inner::bar") not in edges
+
+
 def test_calls_inside_macro_arguments_are_edges(tmp_path: Path) -> None:
     lib = (
         "mod util;\n"
