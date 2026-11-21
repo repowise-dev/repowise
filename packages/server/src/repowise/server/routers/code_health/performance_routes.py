@@ -80,7 +80,8 @@ async def _measurement(
     file_path = file_of_symbol(symbol_id)
     return [
         {
-            "finding_id": None,
+            # No static finding: the wire type is a string, so empty, never null.
+            "finding_id": "",
             "file_path": file_path,
             "biomarker_type": MEASURED_HOTSPOT,
             "function_name": symbol_id[len(file_path) + 2 :] or None,
