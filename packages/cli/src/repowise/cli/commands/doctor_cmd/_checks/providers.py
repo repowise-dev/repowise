@@ -11,20 +11,25 @@ from .context import CheckContext, open_store
 
 
 async def _stale_page_counts(session: object, repo_id: str) -> dict[str, int]:
-    """Count stale pages by type without hydrating their rendered content."""
+    """Count stale pages by type without hydrating their rendered content.
+
+    A model-free page is filed under ``model_free``, not its type: no model writes one.
+    """
     from sqlalchemy import func, select
 
     from repowise.core.persistence.models import Page
 
+    from ..._page_freshness import stale_model_free_counts
+
+    stale = (Page.repository_id == repo_id, Page.freshness_status.in_(["stale", "expired"]))
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.page_type, func.count())
-        .where(
-            Page.repository_id == repo_id,
-            Page.freshness_status.in_(["stale", "expired"]),
-        )
-        .group_by(Page.page_type)
+        select(Page.page_type, func.count()).where(*stale).group_by(Page.page_type)
     )
-    return {str(page_type): int(count) for page_type, count in result.all()}
+    counts = {str(page_type): int(count) for page_type, count in result.all()}
+    for page_type, n in (await stale_model_free_counts(session, stale)).items():
+        counts[page_type] -= n
+        counts["model_free"] = counts.get("model_free", 0) + n
+    return counts
 
 
 # What `repowise update --full` does, by `stale_remedy`. A model wiki's text is

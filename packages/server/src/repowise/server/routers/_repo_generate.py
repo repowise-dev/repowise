@@ -46,9 +46,18 @@ class GenerateRequestBody(BaseModel):
 
 
 def _reject_structural_page_ids(page_ids: list[str]) -> None:
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES, compute_page_id
+    from repowise.core.generation.onboarding import iter_specs, target_path
 
-    structural = [pid for pid in page_ids if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES]
+    # A deterministic subkind's page is model-free: generate would drop it from the plan.
+    model_free = {
+        compute_page_id("onboarding", target_path(s.slot)) for s in iter_specs() if s.deterministic
+    }
+    structural = [
+        pid
+        for pid in page_ids
+        if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES or pid in model_free
+    ]
     if structural:
         raise HTTPException(
             status_code=400,

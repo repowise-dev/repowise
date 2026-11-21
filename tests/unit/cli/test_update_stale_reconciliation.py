@@ -304,16 +304,21 @@ def test_a_stale_model_free_page_is_structural_everywhere(tmp_path: Path) -> Non
 
     repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, []))
     asyncio.run(_add_stale_page(repo_path, "onboarding", {"model_free": True}))
+    (repo_path / ".repowise" / "state.json").write_text(json.dumps({"docs_mode": "llm"}))
 
     # The catch-up of `update --full` starts `generate --stale` on a model count.
     assert asyncio.run(stale_page_count(repo_path, model_written=True)) == 0
     assert asyncio.run(stale_page_count(repo_path, model_written=False)) == 1
     assert load_stale_update_targets(repo_path) == ([], {"onboarding:app"})
+    detail = _stale_pages_row(repo_path).detail
+    assert detail.startswith("1 stale (1 structural)")
+    assert "pricing" not in detail
 
     # A model wrote this one: update must not render a stub over its prose.
     asyncio.run(_add_stale_page(repo_path, "onboarding", target="paid"))
     assert load_stale_update_targets(repo_path) == ([], {"onboarding:app"})
     assert asyncio.run(stale_page_count(repo_path, model_written=True)) == 1
+    assert _stale_pages_row(repo_path).detail.startswith("2 stale (1 model-written, 1 structural)")
 
 
 def test_the_stale_split_reads_metadata_of_model_free_types_only(tmp_path: Path) -> None:
