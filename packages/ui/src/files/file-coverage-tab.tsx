@@ -51,11 +51,11 @@ export function FileCoverageTab({
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
           <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-            Run your suite with coverage on, then{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
-              repowise coverage add
+              repowise coverage setup
             </span>{" "}
-            finds the report and reads it. Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
+            prints the test command that writes a report here and the line that adds it. Any of{" "}
+            {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>
