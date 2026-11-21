@@ -59,6 +59,23 @@
   "subscript" @symbol.name
 ) @symbol.def
 
+; Initialisers and deinitialisers have no name of their own; the keyword is
+; the name, as for subscripts. `init?` and `init!` are the same node.
+(init_declaration
+  (modifiers)? @symbol.modifiers
+  "init" @symbol.name
+) @symbol.def
+
+(deinit_declaration
+  "deinit" @symbol.name
+) @symbol.def
+
+; typealias Id = Int
+(typealias_declaration
+  (modifiers)? @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------
