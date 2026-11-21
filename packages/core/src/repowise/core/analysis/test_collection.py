@@ -456,7 +456,7 @@ async def _gap_routes(
         cached_import_graphs,
         cached_test_files,
     )
-    from .test_selection import split_rewired, with_rewired
+    from .test_selection import is_code_file, is_runnable_test, split_rewired, with_rewired
 
     try:
         indexed: frozenset[str] | None = await cached_file_paths(session, repo_id)
@@ -475,7 +475,13 @@ async def _gap_routes(
         try:
             imports = (await cached_import_graphs(session, repo_id))[1]
             calls = await cached_call_importers(session, repo_id)
-            tests = await cached_test_files(session, repo_id)
+            # The walks' own leaves: runnable code tests (``_loading_tests`` passes
+            # through any other file the index marks a test).
+            tests = {
+                t
+                for t in await cached_test_files(session, repo_id)
+                if is_code_file(t) and is_runnable_test(t, is_test=True)
+            }
             # A file added since has no edges in the index, so it may reach the change.
             seeds = [*change.files, *change.deleted, *scope_routes, *added]
             rewired, unreached = split_rewired(
