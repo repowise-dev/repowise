@@ -98,6 +98,7 @@ def _config(repo, text: str) -> None:
         "pytest -p no:cacheprovider",
         "pytest -n 4 -W error",
         "go test -count 1 -coverprofile cover.out ./...",
+        "go.exe test -tags integration ./...",
         "go test -p 4 ./...",
         "cargo test --workspaces",
     ],
@@ -136,6 +137,18 @@ def test_full_test_runs_are_recognised(command) -> None:
 )
 def test_partial_runs_are_not_full(command) -> None:
     assert not hook.is_full_test_run(command)
+
+
+@pytest.mark.parametrize(
+    ("client", "tools", "named"),
+    [(None, "", True), ("codex", "", False), ("codex", "mcp:\n  tools: standard\n", True)],
+)
+def test_the_notice_names_get_change_risk_only_when_listed(repo, spawned, client, tools, named) -> None:
+    _config(repo, tools)
+    _report(repo)
+    note = hook.coverage_reingest_notice({"command": "pytest"}, str(repo), client)
+    assert note is not None and note.endswith(".")
+    assert ("get_change_risk" in note) is named
 
 
 @pytest.mark.parametrize(

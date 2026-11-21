@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { OverviewSection } from "@repowise-dev/ui/overview";
-import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { CheckoutFactsDisclosure } from "@repowise-dev/ui/decisions";
 import {
   getDecisionCounts,
@@ -11,10 +9,10 @@ import {
 } from "@/lib/api/decisions";
 import { listEpisodes } from "@/lib/api/episodes";
 import { ApiClientError } from "@/lib/api/client";
-import { AddDecisionButton } from "@/components/decisions/add-decision-button";
-import { DecisionReviewWrapper } from "@/components/decisions/decision-review-wrapper";
+import { DecisionAgentPanel } from "@/components/decisions/add-decision-button";
+import { DecisionsBoard } from "@/components/decisions/decision-review-wrapper";
+import { DecisionsLede } from "@/components/decisions/decisions-lede";
 import { getTranslations } from "next-intl/server";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const revalidate = 30;
 export const metadata: Metadata = { title: "Decisions" };
@@ -91,12 +89,12 @@ export default async function DecisionsPage({ params }: Props) {
     include_proposed: true,
   }).catch(() => undefined);
 
-  // The lede's figure. `/decisions/counts` groups the status column, which is
-  // the projection kept in step for readers that predate the acceptance split,
-  // so its `active` counts records nobody accepted. The number this page leads
-  // with is what the repository actually stands behind, which is the lane
-  // count. Degrades the same way: a frontend ahead of its backend 404s here
-  // and falls back to the projection rather than losing the page.
+  // The lede's figure, seeded here for the first paint. The lede and the tab
+  // badges then read it from the same client key, so a review moves both.
+  // `/decisions/counts` groups the status column, the projection kept for
+  // readers that predate the acceptance split, so it is only the fallback for
+  // a backend that 404s here. The ungoverned-hotspots read lives on the client
+  // for the same reason: under the decisions prefix a review revalidates it.
   const lanes = await getDecisionLaneCounts(repoId).catch(() => undefined);
 
   // Facts about the checkout, which is the structural tier of the episode
@@ -116,97 +114,39 @@ export default async function DecisionsPage({ params }: Props) {
     limit: 50,
   }).catch(() => undefined);
 
-  // With counts we can state a measured total; without them we report only
-  // what this page actually loaded, and say so. Never a number nobody counted.
-  const total = lanes?.total ?? counts?.total;
-  const proposed =
-    lanes?.candidates ??
-    counts?.proposed ??
-    decisions.filter((d) => d.status === "proposed").length;
-  // Everything with an acceptance row, which is what "accepted" means. Not
-  // `governing`: that is `active + needs_review` and leaves the accepted but
-  // unscoped records out, so the lede and the Uncheckable tab under it would
-  // not add up. The status fallback counts the projection instead, and it can
-  // include records nobody accepted, so it is labelled differently below.
-  const accepted =
-    lanes !== undefined
-      ? lanes.active + lanes.needs_review + lanes.uncheckable
-      : (counts?.active ??
-        decisions.filter((d) => d.status === "active").length);
-  const measuredByLane = lanes !== undefined;
-  const empty = total === 0;
-  const denominator =
-    total !== undefined
-      ? `of ${formatNumber(total)} recorded`
-      : `in the first ${formatNumber(decisions.length)}`;
+  const empty = (lanes?.total ?? counts?.total) === 0;
 
   return (
     <PageShell
       title={t("title")}
       description={t("description")}
     >
-      {/* The headline used to be the size of the review queue, so the largest
-          number on the page pointed at the work nobody had done rather than at
-          what the repository actually stands behind. The accepted count leads
-          now; the queue keeps its sentence, because a few hundred unreviewed
-          candidates are worth knowing about, just not worth 52px.
+      <DecisionsLede
+        repoId={repoId}
+        initialLanes={lanes}
+        statusFallback={{
+          total: counts?.total,
+          proposed:
+            counts?.proposed ?? decisions.filter((d) => d.status === "proposed").length,
+          active: counts?.active ?? decisions.filter((d) => d.status === "active").length,
+          loaded: decisions.length,
+        }}
+      />
 
-          It counts acceptance rows, not the status column, so it is every
-          record somebody accepted: the ones that govern plus the ones that
-          were accepted and then drifted or turned out to name nothing. Those
-          are separate lanes below and the four numbers add up.
+      {/* The one handoff: the agent maintains the record, the person audits
+          it. Visible on an empty store too, where the server hands the add
+          pass instead, which is exactly when somebody needs the first one. */}
+      <DecisionAgentPanel repoId={repoId} />
 
-          The count is not de-duplicated. A live index carries near-identical
-          pairs, two spellings of one fix landing as two accepted records, and
-          collapsing them here would need a title-similarity threshold tuned on
-          one repository sitting in a page component, where a wrong merge hides
-          a record a human accepted. That belongs to supersession, which is
-          structural and not yet built. Until then the number is honest about
-          what it counts and the pairs stay visible in their lane, where they
-          can be superseded. */}
-      <PageLede
-        label={measuredByLane ? t("ledeAccepted") : t("ledeConfirmed")}
-        value={formatNumber(accepted)}
-        unit={denominator}
-        layout="beside"
-      >
-        {empty ? (
-          <p>
-            {t.rich("ledeEmpty", {
-              code: (chunks) => <code>{chunks}</code>,
-            })}
-          </p>
-        ) : accepted === 0 ? (
-          // A repository with records and no accepted one is not an empty
-          // repository, and it used to get the copy for one: "decisions land
-          // here as the indexer mines them" on a store already holding five
-          // hundred of them. It is also what a store looks like the first time
-          // it is read after the acceptance split, when everything the status
-          // column called active turns out to be something nobody accepted, so
-          // this is the state most likely to be read by somebody surprised.
-          <>
-            <p>{t("ledeNoGovernance")}</p>
-            <p>{t("ledeCandidates", { count: proposed })}</p>
-          </>
-        ) : (
-          <>
-            <p>{t("ledeAcceptedRecords", { count: accepted })}</p>
-            {proposed > 0 && (
-              <p>{t("ledeAcceptedMore", { count: proposed })}</p>
-            )}
-          </>
-        )}
-      </PageLede>
-
-      {/* Visible in both states on purpose: the table section below is not
-          rendered at all on an empty repo, which is exactly when somebody
-          needs to record the first one. */}
-      <div className="flex justify-end">
-        <AddDecisionButton repoId={repoId} />
-      </div>
+      <DecisionsBoard
+        repoId={repoId}
+        pageSize={PAGE_SIZE}
+        initialLaneCounts={lanes}
+        hasRecords={!empty}
+      />
 
       {/* Closed by default, with every fact's heading on the toggle: the
-          review queue below is what this page is visited for. */}
+          digest and the record above are what this page is visited for. */}
       {facts && (
         <CheckoutFactsDisclosure
           title={t("checkoutTitle")}
@@ -216,17 +156,6 @@ export default async function DecisionsPage({ params }: Props) {
           total={facts.total}
         />
       )}
-
-      {!empty && (
-        <OverviewSection
-          title={t("reviewTitle")}
-          description={t("reviewDescription")}
-        >
-          <DecisionReviewWrapper repoId={repoId} pageSize={PAGE_SIZE} />
-        </OverviewSection>
-      )}
-
-
     </PageShell>
   );
 }

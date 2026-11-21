@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from repowise.core.entry_candidacy import is_reachability_root
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from .prune import _PRUNE_CHUNK
 
@@ -280,6 +281,53 @@ async def persist_incremental_symbols(
     await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
 
 
+async def stored_symbol_complexity(session: Any, repo_id: str) -> dict[str, int]:
+    """``{symbol_id: complexity_estimate}`` as the last health run stored it, zeros left out."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import WikiSymbol
+
+    rows = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
+            WikiSymbol.repository_id == repo_id
+        )
+    )
+    return {sid: int(value) for sid, value in rows if value}
+
+
+def apply_stored_complexity(
+    parsed_files: list[Any] | None, stored: dict[str, int], skip_paths: set[str] | frozenset = frozenset()
+) -> None:
+    """Set each symbol's ``complexity_estimate`` from *stored*, outside *skip_paths*.
+
+    A parse leaves every symbol at the parser default and only health analysis
+    measures complexity. An update analyses the changed files alone, so they go
+    in *skip_paths* and keep the values this run measured.
+    """
+    for pf in parsed_files or []:
+        if pf.file_info.path in skip_paths:
+            continue
+        for sym in pf.symbols:
+            sid = getattr(sym, "id", None) or make_symbol_id(pf.file_info.path, sym.name)
+            if value := stored.get(sid):
+                sym.complexity_estimate = value
+
+
+async def restore_stored_complexity(
+    session: Any, repo_id: str, parsed_files: list[Any] | None, measured_paths: list[str]
+) -> None:
+    """Give the symbols outside *measured_paths* the complexity their last health run measured.
+
+    Left at the parser default, the update's parse ranks spotlights unlike
+    init (the deselection sweep retires pages init keeps), and a symbol write
+    widened to every file by a parser change stores the default over every
+    measured value.
+    """
+    if parsed_files:
+        stored = await stored_symbol_complexity(session, repo_id)
+        apply_stored_complexity(parsed_files, stored, set(measured_paths or ()))
+
+
 async def persist_symbol_analysis(
     session: Any,
     repo_id: str,
@@ -389,6 +437,7 @@ async def prune_absent_graph_rows(
     """
     from sqlalchemy import delete, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
     if not node_ids:
@@ -423,19 +472,11 @@ async def prune_absent_graph_rows(
             )
         )
 
-    node_rows_db = (
-        await session.execute(
-            select(GraphNode.id, GraphNode.node_id).where(GraphNode.repository_id == repo_id)
-        )
-    ).all()
-    stale_node_ids = [row_id for row_id, node_id in node_rows_db if node_id not in node_ids]
-    for i in range(0, len(stale_node_ids), _PRUNE_CHUNK):
-        await session.execute(
-            delete(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.id.in_(stale_node_ids[i : i + _PRUNE_CHUNK]),
-            )
-        )
+    stored_node_ids = (
+        await session.execute(select(GraphNode.node_id).where(GraphNode.repository_id == repo_id))
+    ).scalars()
+    stale_node_ids = [node_id for node_id in stored_node_ids if node_id not in node_ids]
+    await delete_graph_nodes(session, repo_id, stale_node_ids)
 
     if stale_edge_ids or stale_node_ids:
         logger.info(
@@ -661,8 +702,8 @@ async def _drifted_files(
     changed file. The store is read only for the changed files and the
     rest is a dictionary diff, so no step reads the whole edge table.
     """
-    from repowise.core.analysis.execution_graph import file_of_symbol
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
 
     graph = graph_builder.graph()
     owner = _edge_owners(graph.nodes(data=True))
@@ -756,10 +797,13 @@ def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
     """Whether the graph holds every row the store does for the files it covers.
 
     Short when a synthetic-edge pass failed, or when a traversed file that
-    failed to parse had graph rows before: its symbols are missing, so every
-    caller's edge into it reads as gone. A file that has never parsed had no
-    rows to lose, as the last persisted graph (``previous_seed_edges``) shows;
-    without that snapshot any unparsed file counts as short.
+    failed to parse had graph rows before that the graph no longer holds: its
+    symbols are missing, so every caller's edge into it reads as gone. The
+    last persisted graph (``previous_seed_edges``) shows which rows a file
+    had. A file that never parsed had none, a bare file node with no edge
+    carries nothing a caller can lose, and rows the update restored
+    (``restore_unparsed_graph_rows``) are not lost; without that snapshot any
+    unparsed file counts as short.
     """
     if not getattr(graph_builder, "synthetic_edges_complete", True):
         return False
@@ -770,10 +814,30 @@ def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
     previous = getattr(graph_builder, "previous_seed_edges", None)
     if previous is None:
         return False
-    return not any(
-        node_id in unparsed or attrs.get("file_path") in unparsed
+    return not _lost_unparsed_rows(graph_builder.graph(), previous, unparsed)
+
+
+def _lost_unparsed_rows(graph: Any, previous: dict[str, list], unparsed: set[str]) -> bool:
+    """Whether an unparsed file had a symbol or an edge that *graph* no longer holds."""
+    owned = {
+        node_id
         for node_id, attrs in previous["nodes"]
+        if node_id in unparsed or attrs.get("file_path") in unparsed
+    }
+    if not owned:
+        return False
+    if any(node_id not in graph for node_id in owned - unparsed):
+        return True
+    return any(
+        (source in owned or target in owned)
+        and not _holds_edge(graph, source, target, attrs.get("edge_type", "imports"))
+        for source, target, attrs in previous["edges"]
     )
+
+
+def _holds_edge(graph: Any, source: str, target: str, edge_type: str) -> bool:
+    data = graph.get_edge_data(source, target)
+    return data is not None and data.get("edge_type", "imports") == edge_type
 
 
 async def _prune_vanished_symbol_nodes(
@@ -786,11 +850,11 @@ async def _prune_vanished_symbol_nodes(
     a new parser) would otherwise keep its old row beside the new ones. Scoped
     to files this run reconciled; a file that is gone is
     :func:`_prune_stale_file_rows`'s job.
-    Membership rows prune themselves on their next write, and ``graph_metrics``
-    holds files only.
+    Membership rows retire with their nodes; ``graph_metrics`` holds files only.
     """
     from sqlalchemy import delete, or_, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
     graph = graph_builder.graph()
@@ -812,11 +876,7 @@ async def _prune_vanished_symbol_nodes(
                 or_(GraphEdge.source_node_id.in_(batch), GraphEdge.target_node_id.in_(batch)),
             )
         )
-        await session.execute(
-            delete(GraphNode).where(
-                GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch)
-            )
-        )
+    await delete_graph_nodes(session, repo_id, stale)
     if stale:
         logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
 
@@ -837,6 +897,7 @@ async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder
     """
     from sqlalchemy import delete, or_, select
 
+    from repowise.core.persistence.crud import delete_graph_nodes
     from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
 
     graph = graph_builder.graph()
@@ -875,12 +936,14 @@ async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder
                 ).scalars()
             )
         gone.extend(n for n in batch if n not in linked)
+    await delete_graph_nodes(session, repo_id, gone)
     for i in range(0, len(gone), _PRUNE_CHUNK):
         batch = gone[i : i + _PRUNE_CHUNK]
-        for model in (GraphNode, GraphMetric):
-            await session.execute(
-                delete(model).where(model.repository_id == repo_id, model.node_id.in_(batch))
+        await session.execute(
+            delete(GraphMetric).where(
+                GraphMetric.repository_id == repo_id, GraphMetric.node_id.in_(batch)
             )
+        )
     if gone:
         logger.info("graph_synthetic_nodes_pruned", repo_id=repo_id, nodes=len(gone))
     return len(gone)

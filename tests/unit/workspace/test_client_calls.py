@@ -15,6 +15,10 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
+from repowise.core.workspace.extractors.http.dialect import (
+    build_consumer_contract,
+    method_from_callee,
+)
 from repowise.core.workspace.extractors.http.paths import (
     absolute_host,
     extract_path_from_url,
@@ -304,6 +308,70 @@ class TestLiteralSpan:
         assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
 
 
+class TestOptionsMethod:
+    def test_a_method_on_a_later_line_of_the_options_is_read(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            "await apiRequest(`/api/sessions/${id}`, {\n"
+            "  headers: { 'Content-Type': 'application/json' },\n"
+            "  method: 'DELETE',\n"
+            "});\n"
+            "fetch('/api/events', {\n  headers: { a: 'b' },\n  method: 'POST',\n});\n"
+        )
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.method == "DELETE"
+        (row,) = fetch_calls(content)
+        assert row.method == "POST"
+
+    def test_a_method_inside_the_body_is_not_the_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/rpc', { body: JSON.stringify({ method: 'DELETE' }) });"
+        (row,) = fetch_calls(content)
+        assert row.method is None
+
+    @pytest.mark.parametrize(
+        ("options", "method"),
+        [
+            ("{ method: 'DELETE' as const }", "DELETE"),
+            ("{ method: 'POST' } as RequestInit", "POST"),
+            ("{ method: 'POST' } as unknown as RequestInit", "POST"),
+            ("{ method: 'PATCH' as unknown as Method }", "PATCH"),
+            ("{ method: 'POST' } satisfies RequestInit", "POST"),
+            ("{ ...opts, method: 'PUT' }", "PUT"),
+            # A body passed as the second argument, with a field of its own.
+            ("{ method: 'card', amount: 10 }", None),
+            ("{ method }", None),
+        ],
+    )
+    def test_the_options_method_reads_through_casts_and_spreads(self, options, method):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        (row,) = fetch_calls(f"fetch('/api/a', {options});")
+        assert row.method == method
+
+    def test_one_url_fetched_twice_gives_a_row_per_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/a');\nfetch('/api/a', { method: 'POST' });\n"
+        assert [r.method for r in fetch_calls(content)] == [None, "POST"]
+
+    def test_a_typed_wrapper_call_is_read_with_its_name_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = (
+            "return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {\n"
+            "  limit,\n});\n"
+            "return apiDelete<{ ok: boolean }>(`/api/repos/${repoId}`);\n"
+            'return apiPost<Paginated<Array<Commit>>>("/api/commits");\n'
+        )
+        rows = list(wrapper_calls(content, frozenset()))
+        assert [r.callee for r in rows] == ["apiGet", "apiDelete", "apiPost"]
+        assert {r.method for r in rows} == {None}
+        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE", "POST"]
+
+
 class TestConsumerContracts:
     def _ctx(self, content: str, suffix: str = ".go") -> ScanContext:
         return ScanContext("svc", f"client{suffix}", suffix, content, {}, None)
@@ -336,6 +404,37 @@ class TestConsumerContracts:
 
 
 class TestConsumerUrlShapes:
+    @pytest.mark.parametrize(("url", "host"), [
+        ("http://[::1]:8080/", "::1"),
+        ("http://[::1]/api", "::1"),
+        ("//[2001:DB8::1]:8080/api", "2001:db8::1"),
+        ("${proto}://[2001:DB8::1]/api", "2001:db8::1"),
+        ("http://[2001:DB8::1]/api/${id}", "2001:db8::1"),
+        ("https://BACKEND:8000/api", "backend"),
+        ("http://127.0.0.1:8080/", "127.0.0.1"),
+        ("//cdn.example.com/x", "cdn.example.com"),
+        ("${API_BASE}/users", None),
+        ("http://${HOST}:8080/api", None),
+        ("http://[::1]:${PORT}/api", None),
+        ("http://[::1/api", None),
+    ])
+    def test_absolute_host(self, url, host):
+        assert absolute_host(url) == host
+
+    @pytest.mark.parametrize("url", ["http://[::1]:8080/", "//[::1]/"])
+    def test_ipv6_loopback_root_names_no_service(self, url):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        assert build_consumer_contract(ctx, method="GET", url=url, client="fetch") is None
+
+    def test_nonlocal_ipv6_root_keeps_its_host(self):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        contract = build_consumer_contract(
+            ctx, method="GET", url="http://[2001:DB8::1]:8080/", client="fetch"
+        )
+        assert contract is not None
+        assert contract.contract_id == "http::GET::/"
+        assert contract.meta["host"] == "2001:db8::1"
+
     def test_nested_braces_in_an_interpolation_stay_one_segment(self):
         assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
         assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"
@@ -390,3 +489,9 @@ class TestLocust:
 
     def test_a_client_attribute_without_locust_is_not_read(self):
         assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []
+
+
+def test_a_spaced_comparison_is_not_read_as_type_arguments():
+    from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+    assert list(wrapper_calls('if (api < limit && max > ("/api/x")) {}', frozenset())) == []

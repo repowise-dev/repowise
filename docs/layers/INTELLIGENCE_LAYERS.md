@@ -23,7 +23,7 @@ few optional extras, and never switches a layer on.
 
 Every file, symbol, import and call in the repository, parsed from an AST in 27
 languages. Each call edge is stamped with how it was resolved (one of 39 named
-resolution origins) and how far to trust it, across 17 edge types. Communities,
+resolution origins) and how far to trust it, across 18 edge types. Communities,
 centrality, cycles and execution flows from each entry point are computed on top.
 
 The graph is what lets every other layer point at the right code: git history
@@ -92,6 +92,7 @@ against real bug history. The same machinery judges a change before it merges.
 | Code health score | Per-file score, bands, trends, badges | [CODE_HEALTH.md](CODE_HEALTH.md) |
 | Fix first | A ranked queue of what to fix, by impact and effort (`repowise next`) | [CODE_HEALTH.md](CODE_HEALTH.md#fix-first) |
 | Performance findings | N+1 queries, I/O in loops, blocking calls in async code, traced across functions | [PERFORMANCE.md](PERFORMANCE.md) |
+| Runtime evidence | Profiles, benchmark results, test timings and query counts from your own runs, joined to the functions they measured | [RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) |
 | Refactoring plans | Extract Class, Extract Method, Extract Helper, Move Method, Break Cycle, Split File, Performance Fix | [REFACTORING.md](REFACTORING.md) |
 | Change risk | Where a commit or range ranks against the repo's recent history, and what it made worse | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Tests and coverage gates | Impacted tests, patch coverage, untested hotspots | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md), [CI.md](../start/CI.md) |

@@ -8,8 +8,8 @@ real finding that nobody should be asked to fix first.
 
 The answer is one of :data:`CODE_ORIGINS`, decided in precedence order, so a
 file has exactly one: ``generated`` beats ``vendored`` beats ``build`` beats
-``test`` beats ``docs_example`` beats ``tooling``, and everything else is
-``production``. ``build`` is decided by the file's type (a Gradle script, a
+``test`` beats ``docs_example`` beats ``tooling`` beats ``data``, and
+everything else is ``production``. ``build`` is decided by the file's type (a Gradle script, a
 ``CMakeLists.txt``, a bundler config), wherever it sits; :func:`is_build_file`
 answers it for a caller that needs only that.
 
@@ -40,6 +40,8 @@ __all__ = [
     "CodeOrigin",
     "code_origin",
     "declares_test",
+    "is_benchmark_function",
+    "is_benchmark_path",
     "is_build_file",
     "is_generated_header",
     "is_migration_path",
@@ -50,7 +52,7 @@ __all__ = [
 ]
 
 CodeOrigin = Literal[
-    "production", "test", "vendored", "docs_example", "generated", "tooling", "build"
+    "production", "test", "vendored", "docs_example", "generated", "tooling", "build", "data"
 ]
 
 CODE_ORIGINS: tuple[CodeOrigin, ...] = (
@@ -61,6 +63,7 @@ CODE_ORIGINS: tuple[CodeOrigin, ...] = (
     "generated",
     "tooling",
     "build",
+    "data",
 )
 
 # --------------------------------------------------------------------------
@@ -443,14 +446,12 @@ _ASSET_DIR_TOKENS = (
 )
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
-    r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
+    r"copyright|\(c\)|©|@license|licen[cs]ed\s+(?:under|as)|released\s+under|\bMIT\b",
     re.IGNORECASE,
 )
 # What says the header names a project and its release, rather than an owner:
 # a preserved banner, a license tag, or "<name> v1.2" / "<name>.js 0.10.5".
-_BANNER_RE = re.compile(
-    r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b"
-)
+_BANNER_RE = re.compile(r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b")
 # A license's own version ("Apache License, Version 2.0") is not a release.
 _LICENSE_VERSION_RE = re.compile(
     r"(?:licen[cs]e|\b[al]?gpl|\bmpl|\bepl)\W*(?:v(?:ersion)?\.?\s*)?\d+(?:\.\d+)*"
@@ -465,6 +466,7 @@ _URL_RE = re.compile(r"https?://\S+")
 # header names its owner, not each file.
 _LIBRARY_HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx")
 _ROOT_SCRIPTS_DIR = "scripts"
+_RESOURCE_DIR = "resources"
 _SCRIPT_SUFFIXES = (".js", ".mjs", ".cjs")
 _MIN_SELF_NAME = 4
 # Links into a repository's source tree name a file, not a library's home page.
@@ -472,11 +474,14 @@ _SOURCE_LINK_SEGMENTS = frozenset({"blob", "tree", "src"})
 
 
 def _copied_library_scope(name: str, dirs: list[str], project: str | None) -> str | None:
-    """``"asset"`` under an asset directory, ``"library"`` for a single-file
-    library shape outside one, None where the header rule does not run."""
+    """``"asset"`` under an asset directory, ``"resource"`` for a script under
+    ``resources/``, ``"library"`` for a single-file library shape outside one,
+    or None where the header rule does not run."""
     if any(d in _ASSET_DIR_TOKENS for d in dirs):
         return "asset"
     lowered = name.lower()
+    if _RESOURCE_DIR in dirs and lowered.endswith(_SCRIPT_SUFFIXES):
+        return "resource"
     shaped = lowered.endswith(_LIBRARY_HEADER_SUFFIXES) or (
         dirs[:1] == [_ROOT_SCRIPTS_DIR] and lowered.endswith(_SCRIPT_SUFFIXES)
     )
@@ -512,7 +517,12 @@ def _squash(text: str) -> str:
 
 
 def _third_party_header(
-    name: str, header: str, project: str | None, *, names_file: bool = False
+    name: str,
+    header: str,
+    project: str | None,
+    *,
+    names_file: bool = False,
+    allow_homepage: bool = False,
 ) -> bool:
     """Whether the leading comments carry another project's license banner.
 
@@ -521,7 +531,10 @@ def _third_party_header(
     name *project* when the caller knows it. A repository's own
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
     With *names_file*, the banner must be preserved (``/*!``) or a URL to the
-    file's own home page, and the comments must name the file's stem.
+    file's own home page, and the comments must name the file's stem. With
+    *allow_homepage*, a preserved banner (``/*!``) or a home page URL naming
+    the file's stem satisfies the check without falling back to loose
+    ``_BANNER_RE`` version strings.
     """
     comments = "\n".join(_comment_lines(header))
     stem = _squash(PurePosixPath(name).stem)
@@ -529,12 +542,19 @@ def _third_party_header(
         return False
     if not comments or not _LICENSE_RE.search(comments):
         return False
-    if not _has_banner(header, comments, stem, names_file):
+    if not _has_banner(header, comments, stem, names_file, allow_homepage=allow_homepage):
         return False
     return not (project and _squash(project) in _squash(comments))
 
 
-def _has_banner(header: str, comments: str, stem: str, names_file: bool) -> bool:
+def _has_banner(
+    header: str,
+    comments: str,
+    stem: str,
+    names_file: bool,
+    *,
+    allow_homepage: bool = False,
+) -> bool:
     # The comment prefix is stripped from *comments*, so a preserved ``/*!``
     # opener is read from the raw head.
     if header.lstrip().startswith("/*!"):
@@ -542,6 +562,8 @@ def _has_banner(header: str, comments: str, stem: str, names_file: bool) -> bool
     if names_file:
         # "protocol v1.2" in a first-party header is not a release banner.
         return _homepage_names(stem, comments)
+    if allow_homepage:
+        return len(stem) >= _MIN_SELF_NAME and _homepage_names(stem, comments)
     return bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
 
 
@@ -743,8 +765,7 @@ def _has_docs_site_config(names: set[str], paired: bool) -> bool:
     if names & _DOCS_SITE_MARKERS:
         return True
     return paired and any(
-        config in names and names & companions
-        for config, companions in _DOCS_SITE_PAIRED_MARKERS
+        config in names and names & companions for config, companions in _DOCS_SITE_PAIRED_MARKERS
     )
 
 
@@ -774,10 +795,9 @@ def _is_docs_example(
     """A docs root or example folder as the first segment, a build tool's example
     target, or a docs folder deeper beside a docs-site generator's config. A
     nested ``app/docs/`` with no such config is the product's own docs route."""
-    if (
-        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
-        or _is_tool_example(normalized, dirs)
-    ):
+    if bool(
+        dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0]))
+    ) or _is_tool_example(normalized, dirs):
         return True
     if repo_root is None:
         return False
@@ -798,6 +818,63 @@ def _is_docs_example(
     )
 
 
+# --------------------------------------------------------------------------
+# Data
+# --------------------------------------------------------------------------
+
+# A folder a repository keeps content in. Code inside one is material the
+# product reads by path (reference solutions, problem generators, inputs for a
+# sandbox), not modules it imports, when the folder is mostly data files and
+# its code spans several languages: an application does not import its own
+# modules in three languages out of one data folder, while a bank of solutions
+# per problem does. Ceiling: a bank in one language (``data/*/reference.py``
+# alone) stays production, since telling it from a data folder's own loader
+# module needs the import graph.
+_DATA_DIR_TOKENS = frozenset({"data", "datasets"})
+_DATA_MAX_CODE_SHARE = 0.2
+_DATA_MIN_LANGUAGES = 3
+
+
+def _is_content_bank_member(
+    normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
+    """Whether a data-named folder above the file is a content bank."""
+    if repo_root is None or _DATA_DIR_TOKENS.isdisjoint(dirs):
+        return False
+    parts = normalized.split("/")
+    root = os.fspath(repo_root)
+    return any(
+        d in _DATA_DIR_TOKENS and _is_content_bank(os.path.join(root, *parts[: i + 1]))
+        for i, d in enumerate(dirs)
+    )
+
+
+# Ceiling: memoised per folder for the process, like ``_is_docs_site``, so a
+# long-running process keeps a folder's first verdict until it restarts.
+# Upgrade path: key the verdict on the folder listing's mtimes.
+@lru_cache(maxsize=1024)
+def _is_content_bank(folder: str) -> bool:
+    """Whether *folder* (an absolute path) holds mostly data, and code in several languages."""
+    from .fs_walk import walk_repo
+    from .ingestion.models import EXTENSION_TO_LANGUAGE
+
+    code_suffixes = frozenset(_code_suffixes())
+    files = code = 0
+    languages: set[str] = set()
+    for _dir, _subdirs, names in walk_repo(folder):
+        for name in names:
+            files += 1
+            suffix = PurePosixPath(name).suffix.lower()
+            if suffix in code_suffixes:
+                code += 1
+                languages.add(EXTENSION_TO_LANGUAGE.get(suffix, suffix))
+    return (
+        code > 0
+        and code <= files * _DATA_MAX_CODE_SHARE
+        and len(languages) >= _DATA_MIN_LANGUAGES
+    )
+
+
 # No ``/cli/`` rule: a CLI's source ships and its findings are real work (only
 # performance treats a CLI loop as off the request path, in
 # ``perf/causal.execution_context``). Migrations join: they run once at deploy
@@ -807,6 +884,7 @@ _TOOLING_DIR_TOKENS = frozenset(
         ".github",
         "bench",
         "benches",
+        "benchmark",
         "benchmarks",
         "build",
         "devtools",
@@ -927,6 +1005,7 @@ _SERVED_SCRIPTS_DIR = "scripts"
 # folder (``eng/tools``, ``hack/tools``). Deeper it is as often the product's own
 # code: AI SDK tools in ``lib/ai/tools``, ``src/tools``, ``pkg/tools``. Ceiling:
 # path-only, so a monorepo member's own ``tools/`` reads as production.
+_BENCHMARK_DIR = "benchmark"
 _TOOLS_DIR = "tools"
 _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
 
@@ -934,6 +1013,8 @@ _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
 def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
     if d not in _TOOLING_DIR_TOKENS:
         return False
+    if d == _BENCHMARK_DIR:
+        return i == 0
     if d == _TOOLS_DIR:
         return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
     return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])
@@ -962,6 +1043,51 @@ def _is_benchmark_file(name: str) -> bool:
     return lowered.endswith(_code_suffixes()) and PurePosixPath(lowered).stem.endswith(
         _TOOLING_STEM_SUFFIXES
     )
+
+
+# Benchmark directories at any depth, for :func:`is_benchmark_path` (the tooling
+# rule above keeps a bare ``benchmark/`` to the root; a benchmark is a benchmark
+# wherever it sits).
+_BENCHMARK_DIRS = frozenset({"bench", "benches", "benchmark", "benchmarks"})
+# ``bench_*.py`` (pytest-benchmark, asv), ``*.bench.ts`` (Vitest bench, mitata).
+_BENCHMARK_NAME_RE = re.compile(r"^(?:bench_\w+\.py|[\w.-]+\.bench\.[cm]?[jt]sx?)$")
+# Go's testing package runs ``BenchmarkX``: the name goes on with anything but a
+# lower-case letter (``Benchmarking`` is a plain function).
+_GO_BENCHMARK_RE = re.compile(r"^Benchmark(?![a-z])\w*$")
+_PY_BENCHMARK_FUNC_RE = re.compile(r"^(?:bench|test)_\w*$")
+
+
+def is_benchmark_path(path: str) -> bool:
+    """Whether the code file at repo-relative *path* holds benchmarks by its path.
+
+    A benchmarks directory at any depth (``benches/`` is Cargo's), a
+    ``*_benchmark`` stem, ``bench_*.py`` or ``*.bench.ts``. Go benchmarks sit
+    in ordinary ``_test.go`` files: :func:`is_benchmark_function` finds those.
+    """
+    lowered = path.lower().replace("\\", "/")
+    *dirs, name = lowered.split("/")
+    if not name.endswith(_code_suffixes()):
+        return False
+    return (
+        not _BENCHMARK_DIRS.isdisjoint(dirs)
+        or _is_benchmark_file(name)
+        or bool(_BENCHMARK_NAME_RE.match(name))
+    )
+
+
+def is_benchmark_function(path: str, name: str) -> bool:
+    """Whether function *name* in *path* is a benchmark a runner collects.
+
+    Go: ``BenchmarkX`` in a ``_test.go`` file. Python: ``bench_*`` or
+    ``test_*`` in a benchmark file (:func:`is_benchmark_path`), as
+    pytest-benchmark collects them. Ceiling: other languages mark benchmarks
+    by file only.
+    """
+    if path.endswith("_test.go"):
+        return bool(_GO_BENCHMARK_RE.match(name))
+    if path.endswith(".py"):
+        return is_benchmark_path(path) and bool(_PY_BENCHMARK_FUNC_RE.match(name))
+    return False
 
 
 def code_origin(
@@ -1006,7 +1132,11 @@ def code_origin(
 def _copied_library(name: str, dirs: list[str], header: str, project: str | None) -> bool:
     scope = _copied_library_scope(name, dirs, project) if header else None
     return scope is not None and _third_party_header(
-        name, header, project, names_file=scope == "library"
+        name,
+        header,
+        project,
+        names_file=scope == "library",
+        allow_homepage=scope == "resource",
     )
 
 
@@ -1058,7 +1188,7 @@ def _maintained_origin(
     header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
-    examples, tooling, or production, in that precedence."""
+    examples, tooling, data, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
     if (
@@ -1071,6 +1201,8 @@ def _maintained_origin(
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
+    if _is_content_bank_member(normalized, dirs, repo_root):
+        return "data"
     return "production"
 
 
@@ -1087,8 +1219,8 @@ def path_origin(path: str) -> CodeOrigin:
 def owes_a_test(path: str, origin: str | None = None) -> bool:
     """Whether a missing test for *path* is a gap worth naming.
 
-    Only shipped code owes one. Generated, vendored, build, tooling and docs
-    example code, and a schema migration, read "no test" as noise: every
+    Only shipped code owes one. Generated, vendored, build, tooling, docs
+    example and data code, and a schema migration, read "no test" as noise: every
     surface that says a file is untested (``pr_blast.file_tests``, the health
     biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
     stored ``code_origin`` when there is one; without it the path decides.

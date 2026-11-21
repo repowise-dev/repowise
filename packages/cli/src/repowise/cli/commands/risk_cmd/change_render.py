@@ -51,6 +51,26 @@ def _independent_changes_for(repo_path: str, result, revspec: str | None) -> dic
     return run_async(read())
 
 
+def _impacted_tests_for(repo_path: str, result, revspec: str | None) -> dict:
+    """The tests the change needs, as ``get_change_risk`` and the Review page name them."""
+    from repowise.core import git_refs
+    from repowise.core.persistence import create_session_factory
+    from repowise.server.mcp_server._test_selection import scored_change_tests
+
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+
+    async def read() -> dict:
+        async with repo_index_session(root) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                factory = create_session_factory(session.bind)
+                return await scored_change_tests(root, factory, revspec, result, repo=repo_id)
+        # No index: the block says so, as get_change_risk's does.
+        return await scored_change_tests(root, None, revspec, result)
+
+    return run_async(read())
+
+
 def _print_independent_changes(block: dict) -> None:
     """The groups, plainly: no score, no percentage, no adjective."""
     console.print(f"\n[bold]{escape(str(block.get('summary') or ''))}[/bold]")
@@ -192,6 +212,9 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
         if groups:
             payload["independent_changes"] = groups
+        payload["impacted_tests"] = _impacted_tests_for(
+            subject.repo_path, result, subject.revspec
+        )
         if fail_above is not None:
             payload["gate"] = {
                 "fail_above_percentile": fail_above,

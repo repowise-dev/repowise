@@ -16,6 +16,9 @@ from repowise.cli.commands.update_cmd.deterministic import (
     deterministic_embedder_name,
     regenerate_deterministic_page_ids,
 )
+from repowise.cli.helpers import load_config
+from repowise.core.generation.selection import SelectionInputs, select_pages
+from tests.unit.generation.test_selection_contract import _build_synthetic_repo
 
 
 @pytest.fixture(autouse=True)
@@ -110,3 +113,139 @@ def test_exact_structural_refresh_uses_full_context_without_model(
     assert captured["parsed"] == parsed
     assert captured["source"] == source
     assert captured["only_page_ids"] == {"scc_page:scc-current"}
+
+
+_LANDSCAPE = "onboarding:onboarding/active_landscape"
+
+
+@pytest.mark.parametrize(
+    ("stored", "rendered", "expect_git", "expect_retired", "expect_degraded"),
+    [
+        # Rendered from every file's stored git row, so the page counts the whole repo.
+        ({"a.py": "row", "b.py": "row"}, "page", {"a.py": "row", "b.py": "row"}, None, 0),
+        # The gate fails: the code no longer yields the page, so it leaves the store.
+        ({"a.py": "row"}, "none", {"a.py": "row"}, {_LANDSCAPE}, 0),
+        # A render that raised retires nothing.
+        ({"a.py": "row"}, "raise", {"a.py": "row"}, None, 1),
+        # No stored history: the page is not rendered at all and stays stale.
+        (None, "page", None, None, 1),
+    ],
+    ids=["refreshed", "gate-fails", "render-raised", "history-unreadable"],
+)
+def test_a_model_free_onboarding_refresh(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored,
+    rendered,
+    expect_git,
+    expect_retired,
+    expect_degraded,
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.update_cmd import catch_up
+
+    seen: dict[str, object] = {}
+
+    class _Config:
+        language = "en"
+
+        @classmethod
+        def from_repo_config(cls, _cfg, **_kwargs):
+            return cls()
+
+    class _Generator:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def generate_all(self, *_a, git_meta_map=None, **_k):
+            seen["git"] = git_meta_map
+            if rendered == "raise":
+                raise RuntimeError("boom")
+            return [SimpleNamespace(page_id=_LANDSCAPE)] if rendered == "page" else []
+
+    async def _retire(_repo, page_ids):
+        seen["retired"] = page_ids
+        return sorted(page_ids)
+
+    import repowise.core.generation as generation
+
+    monkeypatch.setattr(generation, "GenerationConfig", _Config)
+    monkeypatch.setattr(generation, "ContextAssembler", lambda *_a, **_k: object())
+    monkeypatch.setattr(generation, "PageGenerator", _Generator)
+    monkeypatch.setattr(deterministic, "deterministic_embedder_name", lambda _cfg: "mock")
+    monkeypatch.setattr(deterministic, "with_stored_git_meta", lambda *_a: stored)
+    monkeypatch.setattr(catch_up, "_retire", _retire)
+
+    degraded: list[str] = []
+    regenerate_deterministic_page_ids(
+        repo_path=tmp_path,
+        parsed_files=[SimpleNamespace(file_info=SimpleNamespace(path="a.py"))],
+        source_map={"a.py": b"a"},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={"a.py": "changed slice"},
+        page_ids={_LANDSCAPE},
+        cfg={},
+        concurrency=2,
+        degraded=degraded,
+    )
+
+    assert seen.get("git") == expect_git
+    assert seen.get("retired") == expect_retired
+    assert len(degraded) == expect_degraded
+
+
+@pytest.mark.parametrize("choice, expected", [(None, 4500), (0, 4501), (25, 25)])
+def test_deterministic_refresh_preserves_saved_file_page_choice(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, choice: int | None, expected: int
+) -> None:
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(4501)
+    state = tmp_path / ".repowise"
+    state.mkdir()
+    config_path = state / "config.yaml"
+    config_path.write_text(
+        "embedder: mock\n" + ("" if choice is None else f"max_file_pages: {choice}\n")
+    )
+    original = config_path.read_bytes()
+
+    class SelectionGenerator:
+        def __init__(self, _provider, _assembler, config, **_kwargs):
+            self.config = config
+
+        async def generate_all(self, parsed_files, _source, *_args, **_kwargs):
+            return select_pages(
+                SelectionInputs(
+                    parsed_files=parsed_files,
+                    pagerank=pagerank,
+                    betweenness=betweenness,
+                    community=community,
+                    community_info=None,
+                    sccs=[],
+                    git_meta_map=None,
+                    config=self.config,
+                )
+            ).file_page_paths
+
+    import repowise.core.generation as generation
+
+    monkeypatch.setattr(generation, "PageGenerator", SelectionGenerator)
+    degraded: list[str] = []
+    selected = deterministic.regenerate_deterministic_pages(
+        repo_path=tmp_path,
+        parsed_files=parsed,
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        regenerate_paths=[],
+        cfg=load_config(tmp_path),
+        concurrency=1,
+        degraded=degraded,
+        full_scope=True,
+        embed_during_generation=False,
+    )
+
+    assert not degraded
+    assert len(selected) == expected
+    assert config_path.read_bytes() == original

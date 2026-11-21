@@ -116,6 +116,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._savings.interaction import timed_stage
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
@@ -124,6 +125,8 @@ from repowise.server.mcp_server.tool_answer.bodies import (
 from repowise.server.mcp_server.tool_answer.cache import (
     _serve_cached_answer,
     _write_answer_cache,
+    remember_keyless_reply,
+    serve_keyless_reply,
 )
 from repowise.server.mcp_server.tool_answer.callers import (
     NO_EVIDENCE,
@@ -146,6 +149,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
 from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
     _LEAN_HIGH_DROP_KEYS,  # re-exported for tests that assert the key set
+    _NO_SYNTHESIS_NOTE,
     _PAGE_EXCERPT_HITS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
@@ -162,6 +166,7 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
 )
 from repowise.server.mcp_server.tool_answer.degraded import _degraded_payload
 from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
+from repowise.server.mcp_server.tool_answer.episodes import CallVerdicts, prefetch_verdicts
 from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
@@ -263,6 +268,7 @@ class _Retrieved(NamedTuple):
     other_repo_lines: list[dict]
 
 
+@timed_stage("retrieve")
 async def _run_retrieval_pipeline(
     question: str, ctx, *, scope: str | None, exclude_spec, repo_id
 ) -> _Retrieved:
@@ -414,6 +420,69 @@ class _Ask:
     t0: float
 
 
+class _StageClock:
+    """Wall time per ``get_answer`` stage, logged once per call.
+
+    A slow answer then says where its time went (lookup, retrieval, the work
+    before synthesis, synthesis, grading) instead of one total.
+    """
+
+    def __init__(self, started: float) -> None:
+        self._last = started
+        self._ms: dict[str, float] = {}
+
+    def mark(self, stage: str) -> None:
+        now = time.perf_counter()
+        self._ms[stage] = self._ms.get(stage, 0.0) + (now - self._last) * 1000
+        self._last = now
+
+    def log(self, outcome: str, stage: str) -> None:
+        self.mark(stage)
+        _log.info(
+            "get_answer stages (%s): %s total=%.0fms",
+            outcome,
+            " ".join(f"{name}={ms:.0f}ms" for name, ms in self._ms.items()),
+            sum(self._ms.values()),
+        )
+
+
+def _kept_keyless_reply(ask: _Ask, qhash: str) -> dict | None:
+    """The reply kept for this keyless question, unless a model can answer it now."""
+    served = serve_keyless_reply(
+        repository=ask.repository,
+        repo_id=ask.repo_id,
+        qhash=qhash,
+        exclude_spec=ask.exclude_spec,
+        t0=ask.t0,
+    )
+    if served is not None and _resolve_provider_for_answer(getattr(ask.ctx, "path", None)):
+        return None
+    return served
+
+
+#: Prefetches still running after their answer returned (the attach waits only
+#: for the queries it needs), held so the event loop does not drop them.
+_PREFETCHES: set[asyncio.Task] = set()
+
+
+def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> CallVerdicts:
+    """Start checking the episodes scoped to the ranked files; the attach after
+    synthesis reads the returned memo."""
+    verdicts = CallVerdicts()
+    task = asyncio.ensure_future(
+        prefetch_verdicts(
+            question=ask.question,
+            paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
+            repo_path=getattr(ask.ctx, "path", None),
+            repo_name=getattr(ask.repository, "name", None),
+            verdicts=verdicts,
+        )
+    )
+    _PREFETCHES.add(task)
+    task.add_done_callback(_PREFETCHES.discard)
+    return verdicts
+
+
 def _empty_question_payload(t0: float) -> dict:
     from repowise.server.mcp_server._savings.interaction import error_reply
 
@@ -510,7 +579,9 @@ async def _pre_synthesis_reply(
     )
     if union_payload is not None:
         return await neighbors(attach_graph_callers(union_payload, graph_callers))
-    if not hits:
+    # Another workspace repo's documents can answer what this repo's code does
+    # not (a ticket asked about by its key): synthesis reads their lines.
+    if not hits and not retrieved.other_repo_lines:
         return _no_answer_payload(
             "No wiki hits for this question. Rephrase around the code "
             "concept. " + _NO_HITS_RECOVERY_HINT,
@@ -703,6 +774,7 @@ async def _cache_and_stamp(
     confidence: str,
     targets: list[str],
     cut_off: bool = False,
+    episode_verdicts: CallVerdicts | None = None,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
@@ -740,6 +812,7 @@ async def _cache_and_stamp(
         question=ask.question,
         repo_path=getattr(ask.ctx, "path", None),
         repo_name=getattr(ask.repository, "name", None),
+        verdicts=episode_verdicts,
     )
 
 
@@ -770,7 +843,8 @@ async def get_answer(
 
     Responses fit 24,000 serialized chars. Pass ``include=["evidence"]`` for
     the deduplicated expanded evidence projection (32,000 chars). Reductions
-    carry counts and a recovery: repeat the call with that include.
+    carry counts and a recovery: repeat the call with that include. A keyless
+    reply has one shape and lists ``evidence`` under ``ignored_arguments``.
 
     Args:
         question: developer question.
@@ -783,6 +857,7 @@ async def get_answer(
         return _unsupported_repo_all("get_answer")
 
     t0 = time.perf_counter()
+    clock = _StageClock(t0)
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
     if not question or not question.strip():
@@ -812,12 +887,17 @@ async def get_answer(
             exclude_spec=exclude_spec,
             t0=t0,
         )
+        if served is None:
+            served = _kept_keyless_reply(ask, qhash)
         if served is not None:
+            clock.log("cached", "lookup")
             return served
+    clock.mark("lookup")
 
     retrieved = await _run_retrieval_pipeline(
         question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
     )
+    clock.mark("retrieve")
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
     graph_callers = await _graph_callers(ask, retrieved)
@@ -834,10 +914,18 @@ async def get_answer(
     # Above the early returns: they rate retrieval too.
     agreement_dominant = _agreement(hits)
 
-    def _finish(payload: dict) -> dict:
+    def _finish(payload: dict, *, keep: bool = False) -> dict:
         _with_scan_gaps(payload, retrieved.homonyms)
         if retrieved.other_repo_lines:
             payload["other_repo_lines"] = retrieved.other_repo_lines
+        # Kept on the terms of the database cache, which watches only this repo.
+        if keep and not cache_disabled and not retrieved.other_repo_lines:
+            remember_keyless_reply(
+                _with_candidates(dict(payload), resolved_pool),
+                repository=repository,
+                repo_id=ask.repo_id,
+                qhash=qhash,
+            )
         return _with_candidates(payload, resolved_pool)
 
     # Every return from here on goes through ``_finish`` (or the
@@ -846,6 +934,7 @@ async def get_answer(
         ask, retrieved, agreement_dominant, graph_callers, _neighbors
     )
     if early is not None:
+        clock.log("early", "prepare")
         return _finish(early)
 
     fallback_targets = _fallback_targets(hits)
@@ -856,6 +945,7 @@ async def get_answer(
         ask, retrieved, dominance, fallback_targets, graph_callers, _neighbors
     )
     if gated is not None:
+        clock.log("gated", "prepare")
         return _finish(gated)
 
     # Both ways synthesis can go missing share one payload; they differ only in
@@ -880,7 +970,10 @@ async def get_answer(
         degraded_legs = _degraded_legs(_retrieval_legs())
         if degraded_legs:
             payload.setdefault("_meta", {})["retrieval_degraded"] = degraded_legs
-        return _finish(payload)
+        clock.log(reason, "degrade")
+        # A reply made while a retrieval leg failed is not kept: the next ask
+        # may have that leg back.
+        return _finish(payload, keep=reason == "no-llm-provider" and not degraded_legs)
 
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
@@ -892,19 +985,24 @@ async def get_answer(
         )
         return await _degrade(
             "no-llm-provider",
-            "Synthesis is unavailable; local retrieval and source evidence remain usable.",
+            _NO_SYNTHESIS_NOTE,
         )
 
+    prompt = await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines)
+    # The episode check's git queries run while the model writes.
+    episode_verdicts = _prefetch_episodes(ask, hits, fallback_targets)
+    clock.mark("prepare")
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
     answer_text, failure_note, stop_reason = await synthesize(
         provider,
         _SYSTEM_PROMPT,
-        await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines),
+        prompt,
         reasoning=_resolve_reasoning_for_answer(getattr(ctx, "path", None)),
         session_factory=getattr(ctx, "session_factory", None),
         repo_id=ask.repo_id,
     )
+    clock.mark("synthesize")
     if failure_note is not None:
         return await _degrade("synthesis-failed", failure_note)
 
@@ -928,7 +1026,9 @@ async def get_answer(
         provider=provider,
         confidence=confidence,
         targets=[*citations, *fallback_targets],
+        episode_verdicts=episode_verdicts,
     )
+    clock.log("synthesized", "grade")
     return payload
 
 
@@ -959,17 +1059,14 @@ async def get_answer(
     """Answer a how, where, or why question in one evidence-grounded call.
 
     High confidence may be used directly; medium and low lead with the
-    evidence to verify. ``candidate_files`` ranks files worth opening that
+    evidence to verify. `candidate_files` ranks files worth opening that
     the citations do not name.
 
     Args:
-        question: One question about one subject. Split "where is X and
-            when does Y run" into two calls; do not paste a whole
-            multi-part task.
-        scope: repository-relative path prefix.
-        repo: usually omitted.
-        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
-            adds ``retrieval_quality``.
+        question: One question about one subject; split a multi-part task.
+        scope: Repository-relative path prefix.
+        repo: Usually omitted.
+        include: ["evidence"] expands evidence; ["diagnostics"] adds retrieval_quality.
     """
     return await _projected_get_answer(
         question=question,

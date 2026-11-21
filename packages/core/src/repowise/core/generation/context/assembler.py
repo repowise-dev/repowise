@@ -19,6 +19,7 @@ from repowise.core.analysis.dead_code.file_reachability import (
 )
 from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.ids import file_path_of, is_external
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANGUAGES
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 from repowise.core.ingestion.package_roots import (
     module_for,
@@ -540,6 +541,7 @@ class ContextAssembler:
         execution_flows: Sequence[Any] = (),
         target_path: str | None = None,
         full_material: bool = False,
+        symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template.
 
@@ -681,7 +683,7 @@ class ContextAssembler:
             [fc.file_path for fc in by_rank],
             source_map or {},
             budget._replace(excerpt_tokens=max(0, budget.excerpt_tokens - api_cost)),
-            symbol_weight(graph, own, execution_flows),
+            symbol_weight(graph, own, execution_flows, symbol_index),
         )
 
         ctx = ModulePageContext(
@@ -1012,7 +1014,7 @@ class ContextAssembler:
             repo_name=repo_name or getattr(repo_structure, "name", None) or "this repository",
             is_monorepo=repo_structure.is_monorepo,
             packages=repo_structure.packages,
-            language_distribution=repo_structure.root_language_distribution,
+            language_distribution=_code_language_share(repo_structure.root_language_distribution),
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
             # Ranked, not filtered, and ranked by the helper every other
@@ -1239,3 +1241,14 @@ def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
     # count matches what ``symbol_use`` ranked the symbol by.
     scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
     return [site for _, site in scored]
+
+
+def _code_language_share(distribution: dict[str, float]) -> dict[str, float]:
+    """The share of each code language, or the whole distribution when there is none.
+
+    The summary names the first language as what the repository is written in,
+    and a project with more docs than source is still a project in its code
+    language, not "a markdown codebase".
+    """
+    code = _LANGUAGES.code_languages()
+    return {k: v for k, v in distribution.items() if k in code} or distribution

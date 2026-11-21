@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   disambiguateBasenames,
   formatAgeDays,
@@ -6,7 +6,11 @@ import {
   formatCompact,
   formatDate,
   formatDateTime,
+  formatDateWith,
   formatPercent,
+  getDisplayTimeZone,
+  isTimeZone,
+  setDisplayTimeZone,
   parseDate,
   truncatePath,
 } from "../../src/lib/format";
@@ -165,7 +169,7 @@ describe("parseDate", () => {
   });
 });
 
-describe("formatDate / formatDateTime render UTC, not the local zone", () => {
+describe("formatDate / formatDateTime default to UTC, not the runtime zone", () => {
   it("renders the bare API string as the same wall-clock in UTC", () => {
     // With a plain `new Date("2026-08-21T13:23:33")`, a UTC+8 browser would
     // render 21:23 on the 21st as the local reading of 13:23 UTC. Parsing as
@@ -178,6 +182,47 @@ describe("formatDate / formatDateTime render UTC, not the local zone", () => {
   it("renders an explicit Z timestamp at the same UTC wall-clock", () => {
     expect(formatDate("2026-08-21T13:23:33Z")).toBe("Aug 21, 2026");
     expect(formatDateTime("2026-08-21T13:23:33Z")).toBe("Aug 21, 2026, 1:23 PM");
+  });
+});
+
+describe("formatDate / formatDateTime in the viewer's display zone", () => {
+  afterEach(() => setDisplayTimeZone("UTC"));
+
+  it("renders an instant in the zone set as the display zone", () => {
+    setDisplayTimeZone("America/New_York");
+    // 02:30 UTC on the 21st is still the evening of the 20th in New York.
+    expect(formatDate("2026-08-21T02:30:00Z")).toBe("Aug 20, 2026");
+    expect(formatDateTime("2026-08-21T02:30:00Z")).toBe("Aug 20, 2026, 10:30 PM");
+    setDisplayTimeZone("Asia/Kolkata");
+    expect(formatDateTime("2026-08-21T13:23:33")).toBe("Aug 21, 2026, 6:53 PM");
+  });
+
+  it("keeps a date-only day on that day in every zone", () => {
+    // A server-chosen day, often a UTC-day bucket: never shifted a day back.
+    setDisplayTimeZone("America/Los_Angeles");
+    expect(formatDate("2026-11-01")).toBe("Nov 1, 2026");
+  });
+
+  it("lets a caller pin a zone for a label that must not move", () => {
+    setDisplayTimeZone("America/Los_Angeles");
+    expect(formatDateWith("2026-11-02T00:00:00Z", { month: "short", day: "numeric", timeZone: "UTC" })).toBe(
+      "Nov 2",
+    );
+  });
+
+  it("falls back to UTC for a zone Intl does not know", () => {
+    setDisplayTimeZone("Mars/Olympus_Mons");
+    expect(getDisplayTimeZone()).toBe("UTC");
+    setDisplayTimeZone(null);
+    expect(getDisplayTimeZone()).toBe("UTC");
+  });
+
+  it("validates zone names without throwing", () => {
+    expect(isTimeZone("Europe/Berlin")).toBe(true);
+    expect(isTimeZone("UTC")).toBe(true);
+    expect(isTimeZone("Not/AZone")).toBe(false);
+    expect(isTimeZone("")).toBe(false);
+    expect(isTimeZone(42)).toBe(false);
   });
 });
 

@@ -11,10 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._helpers import resolve_enum_argument
 from repowise.server.mcp_server.tool_answer.config import (
+    _BODY_NOTE,
+    _BODY_NOTE_TAIL,
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
+    _CUT_BODY_NOTE_TAIL,
     _LARGE_FILE_BYTES,
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
 )
 from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
@@ -35,6 +41,9 @@ _COLLECTIONS = (
 # ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
 # so the agent reads one trust signal.
 _INCLUDES = frozenset({"evidence", "diagnostics"})
+#: Why a keyless reply ignores ``include=["evidence"]``: it has no expanded
+#: shape, and the files the expansion would quote are already listed.
+_KEYLESS_EVIDENCE_REQUIRES = "an LLM provider; Read candidate_files"
 
 
 def _path(row: Any) -> str | None:
@@ -290,12 +299,43 @@ def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
     return next((row for row in rows if _same_file(_nav_path(row), top)), None)
 
 
+# Generic sentences a keyless ``note`` drops: ``degraded`` and ``answer`` already
+# say synthesis is off, and each field the rest names sits beside it. The cut
+# body sentence stays: it is the prose pointer at a body's continuation.
+_KEYLESS_GENERIC_NOTES = (
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
+    _BODY_NOTE,
+)
+
+
+def _trim_keyless_note(payload: dict[str, Any]) -> None:
+    """Drop the generic sentences from a keyless ``note``; a sentence naming a
+    path or continuation is not one of them and stays."""
+    note = payload.get("note")
+    if payload.get("degraded") != "no-llm-provider" or not isinstance(note, str):
+        return
+    for generic in _KEYLESS_GENERIC_NOTES:
+        note = note.replace(generic, "")
+    if note.strip():
+        payload["note"] = note.strip()
+    else:
+        payload.pop("note", None)
+
+
 def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     """Describe only evidence that survived the external projection."""
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies") and payload.get("grounding"):
+    if payload.get("call_path"):
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). call_path: the calls "
+            f"{payload.get('call_path_from')} in call order, one per row as caller "
+            "file:call line -> callee file:definition line, shipped code only; a call "
+            "may sit on a branch that does not always run."
+        )
+    elif payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
@@ -408,7 +448,8 @@ def _first_guess(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     """Swap each low-confidence guess's page excerpt for compact facts about its file.
 
-    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``.
+    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``
+    on a keyed reply.
     The row's own ``why_relevant`` and ``score`` win: they come from the same hit.
     Returns whether there were rows to slim, so sizes are stamped on those only.
     """
@@ -540,6 +581,7 @@ def _ranked_list_only(payload: dict[str, Any]) -> bool:
         and payload.get("retrieval_quality") == "weak"
         and payload.get("confidence") == "low"
         and not payload.get("symbol_bodies")
+        and not payload.get("call_path")
         and _first_guess(payload) is not None
     )
 
@@ -549,7 +591,7 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 
     A rationale row from the top guess, or one opening with its file's
     ``why_relevant``, adds nothing; one other row survives, shortened.
-    ``include=["evidence"]`` restores everything.
+    A keyless reply has no expanded shape, so this list is the whole reply.
     """
     top = _nav_path(_first_guess(payload))
     why = {
@@ -596,8 +638,6 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 # symbol_bodies, a body keeps its leading lines and a continuation to Read.
 _KEYLESS_BODY_CHARS = 2_000
 _KEYLESS_BODY_REASON = "keyless_body_budget"
-_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
-_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
 
 
 def _cut_body(entry: dict[str, Any], chars: int, root: Path | None) -> int:
@@ -717,7 +757,8 @@ def _record_reductions(
         payload.setdefault("_meta", {}).setdefault("reductions", []).append(
             {"field": "evidence", "total": hidden, "emitted": shown, "reason": reason}
         )
-    if reduced and not expanded:
+    # A keyless reply has no expanded shape to recover.
+    if reduced and not expanded and payload.get("degraded") != "no-llm-provider":
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
         # The caller already holds the question; restating a long one costs
         # tokens on every reduced reply. Short scope and repo stay, so a caller
@@ -757,7 +798,12 @@ def _project(
         for key in _COLLECTIONS
     }
     _deduplicate(payload)
-    expanded = "evidence" in set(include or [])
+    asked = set(include or [])
+    # Keyless replies have one shape: with no prose to check, the expanded rows
+    # are long excerpts of ranked files that stay in the caller's context, and
+    # every file they name is already a guess or a citation to Read.
+    keyless = payload.get("degraded") == "no-llm-provider"
+    expanded = "evidence" in asked and not keyless
     facts = payload.pop("_candidate_file_facts", None)
     slimmed = False
     if not expanded:
@@ -767,6 +813,7 @@ def _project(
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
+    _trim_keyless_note(payload)
     ranked = not expanded and _ranked_list_only(payload)
     if ranked:
         _serve_ranked_list(payload)
@@ -778,11 +825,18 @@ def _project(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
     )
-    if "diagnostics" not in set(include or []):
+    if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(set(include or []) - _INCLUDES)
-    if unknown:
-        payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
+    ignored: list[dict[str, Any]] = []
+    for key in sorted(asked):
+        resolve_enum_argument(key, _INCLUDES, argument="include", ignored=ignored)
+    if keyless and "evidence" in asked:
+        # Named with its reason and where the files are, so it is not re-asked.
+        ignored.append(
+            {"argument": "include", "values": ["evidence"], "requires": _KEYLESS_EVIDENCE_REQUIRES}
+        )
+    if ignored:
+        payload.setdefault("_meta", {})["ignored_arguments"] = ignored
     return payload, slimmed, ranked
 
 

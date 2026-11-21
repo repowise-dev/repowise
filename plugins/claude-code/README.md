@@ -77,10 +77,11 @@ Claude uses these when relevant — no slash command needed:
 - **Dead-code cleanup** — uses `get_dead_code`, conservatively, during cleanup.
 - **Settings** — lists, explains and (after asking you) changes Repowise settings with `repowise config`.
 
-### MCP tools (10 flagship + `list_repos`)
+### MCP tools (10 flagship, `list_repos` in a workspace)
 
-Registered automatically when the plugin is enabled. The default single-repo
-surface is the ten flagship tools below plus `list_repos` (see
+Registered automatically when the plugin is enabled. Claude Code's default
+single-repo surface is the ten flagship tools below; a workspace adds
+`list_repos` (see
 [MCP_TOOLS.md](../../docs/agent/MCP_TOOLS.md)):
 
 | Tool | What it answers |

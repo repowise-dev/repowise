@@ -42,6 +42,7 @@ from repowise.cli.commands.decision_lanes import (
 from repowise.cli.commands.upgrade_state import (
     _finish_upgrade_state,
     _mark_transition,
+    _stamp_upgrade_inputs,
     _start_transition,
     _unpack_upgrade_result,
     _upgrade_checkpoint,
@@ -798,7 +799,11 @@ def upgrade_to_full(
     follow_renames = flag(cfg.get("follow_renames"), False)
 
     _announce_upgrade(repo_path, provider)
-    embedder_name = _keyless_embedder_name(cfg, repo_path=repo_path) if keyless else _upgrade_embedder_name(cfg, repo_path=repo_path)
+    embedder_name = (
+        _keyless_embedder_name(cfg, repo_path=repo_path)
+        if keyless
+        else _upgrade_embedder_name(cfg, repo_path=repo_path)
+    )
 
     # The same single-flight lock as an incremental update: a concurrent
     # `repowise update` must not race this run's save_state. If another update
@@ -848,9 +853,7 @@ def upgrade_to_full(
             _mark_transition(
                 repo_path,
                 cfg,
-                status="resumable"
-                if isinstance(exc, (KeyboardInterrupt, SystemExit))
-                else "failed",
+                status="resumable" if isinstance(exc, KeyboardInterrupt | SystemExit) else "failed",
                 retryable=True,
                 error=type(exc).__name__,
             )
@@ -866,13 +869,15 @@ def upgrade_to_full(
             outcome=outcome,
             provider_block=provider_block,
         )
-        save_state(repo_path, state, full_index=True)
         if embedder_name and embedder_name != cfg.get("embedder"):
             from repowise.cli.helpers import save_config_partial
 
             # `embedding_model=None` clears a model pinned for the old embedder;
             # passing `embedder` alone does not.
             save_config_partial(repo_path, embedder=embedder_name, embedding_model=None)
+
+        _stamp_upgrade_inputs(repo_path, state, head=head)
+        save_state(repo_path, state, full_index=True)
 
         _report_upgrade(time.monotonic() - start, generated_pages, outcome, keyless=keyless)
     finally:

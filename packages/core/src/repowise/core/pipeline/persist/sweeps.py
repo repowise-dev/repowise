@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import structlog
@@ -419,6 +420,56 @@ async def sweep_deselected_pages(
     return retired
 
 
+async def sweep_deselected_flow_pages(
+    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any] | None
+) -> list[str]:
+    """Delete template ``flow_page`` rows whose entry the selection no longer picks.
+
+    An update renders a flow page only while its entry is selected, so a page
+    the ranking dropped was queued by every update and written by none. Judged
+    by the selection, never by what a run produced: a selected page whose
+    render failed stays.
+
+    Unlike :func:`sweep_absent_cycle_pages`, which retires by id whatever wrote
+    the page, this leaves a model-written page alone: its prose was paid for.
+    A model wiki can therefore hold more flow pages than the budget, until a
+    full generation leaves the dropped ones out or ``update --full`` finds them
+    stale and no longer produced.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.generation.flow_pages import FLOW_PAGE_TYPE, selected_flow_page_ids
+    from repowise.core.persistence.models import Page
+
+    if not parsed_files:  # nothing parsed selects nothing: no evidence a flow was dropped
+        return []
+    selected = selected_flow_page_ids(graph_builder, parsed_files)
+    if selected is None:
+        return []
+    existing = (
+        (
+            await session.execute(
+                select(Page.id).where(
+                    Page.repository_id == repo_id,
+                    Page.page_type == FLOW_PAGE_TYPE,
+                    Page.freshness_status != "tombstone",
+                    Page.provider_name == "template",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    retired = [pid for pid in existing if pid not in selected]
+    await delete_pages(session, repo_id, retired, "deselected")
+    if retired:
+        logger.info("deselected_flow_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired
+
+
 async def sweep_deselected_file_keyed_pages(
     session: Any, repo_id: str, parsed_files: list[Any] | None
 ) -> list[str]:
@@ -509,6 +560,7 @@ async def sweep_superseded_generated_pages(
     session: Any,
     repo_id: str,
     generated_pages: list[Any] | None,
+    existing_files: Collection[str] | None = None,
 ) -> list[str]:
     """Retire structurally-keyed rows whose coverage a scoped run just took over.
 
@@ -532,6 +584,11 @@ async def sweep_superseded_generated_pages(
     elsewhere. A page that failed to generate keeps files no produced page
     claims, so it survives — which matters, because deleting a page because its
     generation errored would be a worse bug than the one this fixes.
+
+    When the caller passes *existing_files*, a row's members are narrowed to the
+    files that still exist before the test: no produced page can ever claim a
+    deleted file, so counting one would keep the row stale for good. A row none
+    of whose members survive proves nothing and is left alone.
 
     Returns the swept page ids so the caller can drop them from FTS after the
     session closes.
@@ -561,6 +618,7 @@ async def sweep_superseded_generated_pages(
         covered.setdefault(page_type, set()).update(files)
         coverage.setdefault(page_type, {})[page.page_id] = files
 
+    alive = None if existing_files is None else set(existing_files)
     swept: list[str] = []
     for page_type, current in produced_ids.items():
         union = covered.get(page_type) or set()
@@ -588,6 +646,8 @@ async def sweep_superseded_generated_pages(
                 continue
             members = metadata.get("file_paths") or metadata.get("files") or []
             members = {m for m in members if isinstance(m, str)}
+            if alive is not None:
+                members &= alive
             # No recorded membership means no proof of supersession. Those rows
             # are the pre-membership ones (backlog B20) and they are left for a
             # full index to retire.
@@ -603,3 +663,91 @@ async def sweep_superseded_generated_pages(
     if swept:
         logger.info("superseded_generated_pages_swept", repo_id=repo_id, count=len(swept))
     return swept
+
+
+def _live_members(raw: Any) -> set[str]:
+    """The files a stored module row recorded, or none when it is not safe to judge.
+
+    A row whose metadata cannot be read, a stub left by a failed generation, and
+    a row with no recorded membership all read as empty, which the caller skips.
+    """
+    try:
+        metadata = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(metadata, dict) or STUB_FALLBACK_ERROR in metadata:
+        return set()
+    members = metadata.get("file_paths") or metadata.get("files") or []
+    return {m for m in members if isinstance(m, str)}
+
+
+def _best_successor(
+    members: set[str], module_page_of: Mapping[str, str], produced: set[str]
+) -> str | None:
+    """The produced page covering most of *members*, ties broken by page id."""
+    covering: dict[str, int] = {}
+    for member in members:
+        owner = module_page_of.get(member)
+        if owner in produced:
+            covering[owner] = covering.get(owner, 0) + 1
+    return min(covering, key=lambda pid: (-covering[pid], pid)) if covering else None
+
+
+async def sweep_unyielded_module_pages(
+    session: Any,
+    repo_id: str,
+    planned_ids: Collection[str],
+    module_page_of: Mapping[str, str],
+    produced_ids: Collection[str],
+) -> list[str]:
+    """Retire planned module pages the repository's own module plan no longer yields.
+
+    *module_page_of* is the whole-repository plan, file to the module page that
+    now covers it. A module page this run was asked for (*planned_ids*) whose id
+    is not among that plan's pages is not stale, it is gone: the code groups its
+    files differently now, so no run can write it again. Left alone it stays
+    ``stale`` and every ``generate --stale`` plans it and reports it cannot
+    refresh it.
+
+    It is retired in favour of the page *produced_ids* names that covers the most
+    of its files, ties broken by page id; with no such page it is retired without
+    one. Only pages the run planned are judged, so a scoped run touches nothing
+    else. A stub left by a failed generation, a row with no recorded membership,
+    and a run whose plan yields no module page at all are left alone.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    yielded = set(module_page_of.values())
+    gone = {
+        page_id
+        for page_id in planned_ids
+        if page_id.startswith("module_page:") and page_id not in yielded
+    }
+    if not yielded or not gone:
+        return []
+    produced = {page_id for page_id in produced_ids if page_id in yielded}
+    rows = (
+        await session.execute(
+            select(Page.id, Page.metadata_json).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "module_page",
+                Page.id.in_(gone),
+            )
+        )
+    ).all()
+    retired: list[str] = []
+    successors: dict[str, str] = {}
+    for page_id, raw in rows:
+        members = _live_members(raw)
+        if not members:
+            continue
+        retired.append(page_id)
+        successor = _best_successor(members, module_page_of, produced)
+        if successor is not None:
+            successors[page_id] = successor
+    await delete_pages(session, repo_id, retired, "superseded", successors)
+    if retired:
+        logger.info("unyielded_module_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired

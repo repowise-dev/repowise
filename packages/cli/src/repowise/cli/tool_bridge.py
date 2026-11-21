@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +43,12 @@ async def _acall_tool(
     factory: Callable[[], Awaitable[dict]],
     tool_name: str,
     workspace_root: Path | None = None,
+    reads_vectors: bool | None = None,
+    arguments: Mapping[str, Any] | None = None,
 ) -> dict:
     """Wire tool state for *repo_path*, await ``factory()``, then tear down."""
+    if reads_vectors is None:
+        reads_vectors = tool_name in _VECTOR_TOOLS
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
@@ -52,7 +56,7 @@ async def _acall_tool(
     from repowise.server.mcp_server._failure_shield import _shape_exception
 
     # Not via ``chat_tools``: that module imports the HTTP auth stack.
-    from repowise.server.mcp_server._state import init_tool_state
+    from repowise.server.mcp_server._state import init_tool_state, publish_served_repo_id
 
     engine = None
     store = None
@@ -84,7 +88,7 @@ async def _acall_tool(
                 engine, expire_on_commit=False, class_=AsyncSession
             )
             store = await _open_vector_store(repo_path)
-            if tool_name in _VECTOR_TOOLS:
+            if reads_vectors:
                 store = await _connect_or_degrade(store)
             init_tool_state(
                 session_factory,
@@ -95,7 +99,10 @@ async def _acall_tool(
                 decision_store=store,
                 repo_path=str(repo_path),
             )
-        return _budgeted(tool_name, await factory())
+            # Live reads (lines, references) follow this checkout, not the
+            # path a copied or moved index was built at, as through MCP.
+            await publish_served_repo_id(session_factory)
+        return _budgeted(tool_name, await factory(), arguments)
     except Exception as exc:
         return _shape_exception(tool_name, exc, long_running=False)
     finally:
@@ -161,15 +168,20 @@ def _close_workspace() -> None:
     _state._vector_store_ready = None
 
 
-def _budgeted(tool_name: str, result: dict) -> dict:
+def _budgeted(tool_name: str, result: dict, arguments: Mapping[str, Any] | None) -> dict:
     """Apply the tool's response budget, which the MCP middleware would have.
 
     A CLI command awaits the undecorated tool function, so none of the
     middleware runs. Budgeting is the one layer that has to: ``repowise search
     --format json`` is read by agents, and an unbounded response is the failure
-    the shared contract exists to prevent. The expansion tier needs the call's
-    own arguments, which the zero-argument factory has already closed over, so
-    every bridged call is budgeted at the default tier.
+    the shared contract exists to prevent.
+
+    *arguments* are the ones the command passed the tool. They pick the
+    expansion tier and the requested projections, so ``context --include``
+    gets the budget the same call gets over MCP. The signature stays empty:
+    that is how the budget tells a bridged call from an MCP one, whose
+    commands print the omission marker and skip the hooks that reshape an
+    MCP answer, and the budget then reads the arguments as keywords.
     """
     from repowise.server.mcp_server._budget import enforce_response_budget
 
@@ -181,7 +193,7 @@ def _budgeted(tool_name: str, result: dict) -> dict:
         result,
         signature=inspect.signature(_call),
         args=(),
-        kwargs={},
+        kwargs=dict(arguments or {}),
     )
 
 
@@ -279,6 +291,8 @@ def call_tool(
     tool_name: str,
     *,
     workspace_root: Path | None = None,
+    reads_vectors: bool | None = None,
+    arguments: Mapping[str, Any] | None = None,
 ) -> dict:
     """Run one MCP tool coroutine against *repo_path* and return its dict.
 
@@ -293,8 +307,18 @@ def call_tool(
     *workspace_root* serves the tool with that workspace, defaulting to
     *repo_path*, as the MCP server would, so a tool that reads across members
     sees them all.
+
+    *reads_vectors* overrides whether the call opens the vector store up front,
+    which by default follows *tool_name*: a ``search_codebase`` call in symbol
+    or path mode never reads it, and opening it costs about two seconds.
+
+    *arguments* are the keyword arguments *factory* passes the tool, which the
+    response budget reads as the MCP middleware would. Without them the call
+    is budgeted at the default tier with nothing requested.
     """
-    return run_async(_acall_tool(repo_path, factory, tool_name, workspace_root))
+    return run_async(
+        _acall_tool(repo_path, factory, tool_name, workspace_root, reads_vectors, arguments)
+    )
 
 
 __all__ = ["call_tool"]

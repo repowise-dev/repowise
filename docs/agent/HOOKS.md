@@ -87,10 +87,13 @@ either way; re-run `repowise init` without the flag to register the repo later.
 
 ### SessionStart: freshness and relevant decisions
 
-The generated `CLAUDE.md` is static between reindexes, so it cannot say whether
-the index is current right now. This hook adds a short block at session start:
+The block is paid for the whole session, so this hook says only what is true
+and not already in context, and stays silent otherwise. A current index says
+nothing: the generated `CLAUDE.md` already carries the indexed commit.
 
-- **Index current**: one line saying so, with the indexed `HEAD`.
+- **No generated `CLAUDE.md` block** (a plugin-only install): the one line
+  telling the agent to call a Repowise tool first, the same line the block
+  leads with.
 - **Update running**: a "catching up" notice.
 - **Index behind**: indexed commit vs `HEAD` with a changed-file count, and the
   trust rule (a `stale_warning` fires only when a file a response served has

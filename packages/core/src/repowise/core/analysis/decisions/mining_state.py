@@ -83,6 +83,36 @@ def record_failure(
     )
 
 
+def record_extraction_report(
+    state: dict[str, Any] | None, report: Any, commit: str | None
+) -> None:
+    """Record what a whole extraction ran, from its own report.
+
+    Init is the only extraction run a fresh index has had, and it wrote no
+    ledger, so ``decision status`` read every source as "never run" until the
+    first update (#6031). A source the report names under ``failures`` records
+    a failure, the rest record success at *commit*, the run's head.
+
+    The report also names the session lanes; those are not mining sources and
+    update never records them, so a row here would freeze one run's date
+    forever. Only the index sources are written.
+    """
+    by_source = getattr(report, "by_source", None)
+    if not isinstance(state, dict) or not isinstance(by_source, dict):
+        return
+    failures = getattr(report, "failures", None) or {}
+    from .policy import INDEX_SOURCE_KEYS
+
+    for source in sorted(by_source):
+        if source not in INDEX_SOURCE_KEYS:
+            continue
+        error = failures.get(source)
+        if error:
+            record_failure(state, source, commit, error)
+        else:
+            record_success(state, source, commit)
+
+
 def status_fields(entry: dict[str, Any] | None) -> dict[str, Any]:
     """The per-source fields ``decision status`` reports, all present when absent.
 

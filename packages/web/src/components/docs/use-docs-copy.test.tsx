@@ -76,12 +76,17 @@ function inLocale(locale: string, messages: Record<string, unknown>, ui: React.R
 }
 
 describe("docs copy", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    // The tree remembers open folders; start each test with them closed.
+    window.localStorage.clear();
+  });
 
   it("renders the tree's own wording in zh-CN, counts included", () => {
     inLocale("zh-CN", zhMessages, <TranslatedTree />);
     expect(screen.getByPlaceholderText("搜索文档...")).toBeTruthy();
-    expect(screen.getByText("代码参考")).toBeTruthy();
+    // The count sits on the Files row inside the collapsed Reference folder.
+    fireEvent.click(screen.getByText("参考"));
     expect(screen.getByText("1 个文件 · 1 个符号")).toBeTruthy();
     expect(screen.getByRole("button", { name: "1 个未撰写" })).toBeTruthy();
   });
@@ -89,6 +94,7 @@ describe("docs copy", () => {
   it("keeps the English plurals when the locale is en", () => {
     inLocale("en", enMessages, <TranslatedTree />);
     expect(screen.getByText("3 pages")).toBeTruthy();
+    fireEvent.click(screen.getByText("Reference"));
     expect(screen.getByText("1 file · 1 symbol")).toBeTruthy();
   });
 
@@ -98,12 +104,34 @@ describe("docs copy", () => {
     expect(screen.getByText("src/gone.py")).toBeTruthy();
   });
 
-  it("explains a keyless index once, with the write action beside it", () => {
+  it("asks for a model once, with the write action beside it", () => {
     const onClick = vi.fn();
     inLocale("en", enMessages, <NoProseNotice pages={PAGES} count={83} running={false} onClick={onClick} />);
-    expect(screen.getByText(/has not written the prose for 83 pages yet/)).toBeTruthy();
+    expect(screen.getByText("Add a model to write the how and why on these pages.")).toBeTruthy();
+    expect(screen.getByText(/83 pages are built from the index/)).toBeTruthy();
+    // No source found here: no agent prompt, only the write action.
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Write with AI" }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a model found on this machine and leads with its agent prompt", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    inLocale(
+      "en",
+      enMessages,
+      <NoProseNotice
+        pages={PAGES}
+        count={83}
+        running={false}
+        onClick={vi.fn()}
+        ready={{ source: "Uses your Anthropic key", prompt: "Write the docs with a model." }}
+      />,
+    );
+    expect(screen.getByText(/A model is ready\. Uses your Anthropic key\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs with a model."));
   });
 
   it("stays silent once any page carries model prose", () => {

@@ -118,6 +118,16 @@ async def reconcile_generation_scope(ctx: IncrementalPersist) -> None:
     )
 
 
+async def restore_complexity(ctx: IncrementalPersist) -> None:
+    # Before the sweep ranks spotlights and the symbol write stores them. The
+    # diffed files are the ones partial health measured; changed_paths can be
+    # wider (a traversal change persists every file).
+    from repowise.core.pipeline.persist import restore_stored_complexity
+
+    measured = [fd.path for fd in ctx.file_diffs or []]
+    await restore_stored_complexity(ctx.session, ctx.repo_id, ctx.parsed_files, measured)
+
+
 async def sweep_retired(ctx: IncrementalPersist) -> None:
     # Delete rows of pages retired since this index was built. This path never
     # regenerates a repo-wide page, so nothing else here would ever visit one
@@ -126,6 +136,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist import (
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
+        sweep_deselected_flow_pages,
         sweep_deselected_pages,
         sweep_store_hygiene,
     )
@@ -153,6 +164,10 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.graph_builder,
             _generation_config(ctx.repo_path),
             ctx.git_meta_map,
+        )
+        # A flow page the selection dropped: no update renders it again.
+        deselected += await sweep_deselected_flow_pages(
+            ctx.session, ctx.repo_id, ctx.graph_builder, ctx.parsed_files
         )
         ctx.swept_page_ids += deselected
         ctx.deselected_page_ids = hygiene + deselected
@@ -343,6 +358,15 @@ async def persist_edges(ctx: IncrementalPersist) -> None:
         )
 
 
+async def persist_units(ctx: IncrementalPersist) -> None:
+    # Replaced whole, so a deleted file or a removed member leaves no row and
+    # the prune has nothing to add.
+    from repowise.core.pipeline.persist import persist_build_units
+
+    with timed(ctx.timings, "persist.build_units"):
+        await persist_build_units(ctx.session, ctx.repo_id, ctx.graph_builder)
+
+
 async def backfill_related(ctx: IncrementalPersist) -> None:
     # Refresh related-pages metadata across the whole wiki. LLM-free, so even
     # index-only updates heal pages generated before the feature shipped (or
@@ -482,6 +506,13 @@ def _has_git_input(ctx: IncrementalPersist) -> bool:
     return bool(ctx.git_meta_map or ctx.git_decay_map or ctx.full_git_summary is not None)
 
 
+#: Shared with the docs-mode writer. Skipped when the build collected no units.
+BUILD_UNITS_STEP = Step(
+    "Build units persist",
+    persist_units,
+    when=lambda ctx: getattr(ctx.graph_builder, "build_units", None) is not None,
+)
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -495,6 +526,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
+    Step("Stored complexity restore", restore_complexity, when=lambda ctx: bool(ctx.parsed_files)),
     Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
@@ -528,6 +560,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
     Step("Related-pages backfill", backfill_related),
     Step(
         "Knowledge-graph persist",
@@ -604,7 +637,9 @@ async def delete_vector_rows(ctx: IncrementalPersist) -> None:
 
 
 def _lance_dir(ctx: IncrementalPersist) -> Path:
-    return Path(ctx.repo_path) / ".repowise" / "lancedb"
+    from repowise.core.persistence.database import LANCEDB_DIRNAME
+
+    return Path(ctx.repo_path) / ".repowise" / LANCEDB_DIRNAME
 
 
 def _needs_vector_store(ctx: IncrementalPersist) -> bool:
@@ -688,6 +723,7 @@ async def persist_incremental_index(
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
     retry_prune: bool = False,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
@@ -745,6 +781,7 @@ async def persist_incremental_index(
         log=log or _noop_log,
         degraded=[] if degraded is None else degraded,
         retry_prune=retry_prune,
+        prune_refusals=[] if prune_refusals is None else prune_refusals,
         failed_steps=failed_steps,
         timings=timings,
     )

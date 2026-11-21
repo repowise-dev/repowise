@@ -58,6 +58,7 @@ async def test_router_rules(routed_ws):
                 "backend_probe",
                 abs_fe,
                 "src/only_fe.py:1-2",
+                "src/only_fe.py:2:5",
             ]
         )
     )
@@ -76,6 +77,8 @@ async def test_router_rules(routed_ws):
     assert routes["backend_probe"] == Route("backend_probe", "backend_probe", "backend")
     assert (routes[abs_fe].repo, routes[abs_fe].local) == ("frontend", "src/only_fe.py")
     assert routes["src/only_fe.py:1-2"].repo == "frontend"
+    # An editor's line and column, as in ``path:line:col``.
+    assert routes["src/only_fe.py:2:5"].repo == "frontend"
 
 
 async def test_router_never_lets_a_path_escape_its_repo(routed_ws):

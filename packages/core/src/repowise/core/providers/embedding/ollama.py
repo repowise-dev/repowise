@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -22,6 +23,15 @@ _DEFAULT_TIMEOUT = 30.0
 # so a flat 30s dropped every such chunk. 2 ms/char leaves room for slower boxes.
 _SECONDS_PER_CHAR = 0.002
 _TIMEOUT_ENV_VARS = ("OLLAMA_EMBEDDING_TIMEOUT", "REPOWISE_EMBEDDING_TIMEOUT")
+# Ollama's own error text when the requested width is larger than the model's.
+_DIMS_TOO_LARGE = re.compile(r"dimensions (\d+) exceeds embedding length (\d+)")
+_MAX_DETAIL_CHARS = 500
+# Ollama's 404 body when the model was never pulled: `model "x" not found, try pulling it first`.
+_MODEL_NOT_FOUND = re.compile(r"model .*not found")
+
+
+class OllamaModelMissingError(RuntimeError):
+    """Ollama is up but does not have the embedding model: a setup step, not a bad input."""
 
 
 def _normalize_base_url(url: str) -> str:
@@ -143,10 +153,7 @@ class OllamaEmbedder:
         if self._requested_dimensions is not None:
             payload["dimensions"] = self._requested_dimensions
 
-        async with httpx.AsyncClient(timeout=self._request_timeout(texts)) as client:
-            response = await client.post(f"{self._base_url}/api/embed", json=payload)
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post_embed(payload, texts)
 
         raw_vectors = data.get("embeddings")
         if raw_vectors is None and "embedding" in data:
@@ -177,6 +184,58 @@ class OllamaEmbedder:
             )
 
         return [_l2_normalize([float(value) for value in vector]) for vector in raw_vectors]
+
+    async def _post_embed(self, payload: dict[str, Any], texts: list[str]) -> dict[str, Any]:
+        """POST one batch to ``/api/embed``; a refusal raises with Ollama's reason."""
+        async with httpx.AsyncClient(timeout=self._request_timeout(texts)) as client:
+            response = await client.post(f"{self._base_url}/api/embed", json=payload)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise self._explain_refusal(exc) from exc
+            return response.json()
+
+    def _explain_refusal(self, exc: httpx.HTTPStatusError) -> Exception:
+        """The error to raise for a refused embed, carrying Ollama's own reason.
+
+        httpx's message names only the status line, while Ollama says why in
+        the body's ``error`` field. A width larger than the model's is a
+        configuration error, not a bad input: it becomes a ``ValueError`` that
+        names the setting to change.
+        """
+        detail = _refusal_detail(exc.response)
+        if exc.response.status_code == 404 and _MODEL_NOT_FOUND.search(detail):
+            return OllamaModelMissingError(
+                f"Ollama has no model {self._model!r}. Run `ollama pull {self._model}`, "
+                "then re-run this command."
+            )
+        match = _DIMS_TOO_LARGE.search(detail)
+        if match:
+            native = match.group(2)
+            return ValueError(
+                f"Ollama refused dimensions={match.group(1)} for model {self._model!r}, "
+                f"which returns {native}-dimensional vectors. Set OLLAMA_EMBEDDING_DIMS="
+                f"{native} (or REPOWISE_EMBEDDING_DIMS={native}), or unset both so the "
+                "width is inferred from the model."
+            )
+        if not detail:
+            return exc
+        return httpx.HTTPStatusError(
+            f"Ollama answered {exc.response.status_code} to /api/embed: {detail}",
+            request=exc.request,
+            response=exc.response,
+        )
+
+
+def _refusal_detail(response: httpx.Response) -> str:
+    """Ollama's reason for a refused request: its JSON ``error``, else the body text."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("error"), str):
+        return body["error"].strip()[:_MAX_DETAIL_CHARS]
+    return (response.text or "").strip()[:_MAX_DETAIL_CHARS]
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:

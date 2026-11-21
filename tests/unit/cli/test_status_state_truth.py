@@ -15,6 +15,15 @@ from repowise.cli.commands.generate_cmd import command as generate_cmd
 from repowise.cli.main import cli
 from repowise.core.index_scope import resolve_index_scope
 
+#: What ``stored_freshness`` returns for a repository with coverage and no runs.
+FRESHNESS = {
+    "reference_commit": "abc",
+    "coverage": {"present": True, "commit_sha": "abc", "ingested_at": "2026-11-18T00:00:00+00:00",
+                 "age_days": 1, "freshness": "current"},
+    "runtime": {"present": False, "commit_sha": None, "ingested_at": None, "age_days": None,
+                "freshness": "unknown", "runs": 0},
+}
+
 
 def _status(tmp_path: Path, monkeypatch, state: dict, *, files: int = 0, fmt: str = "table"):
     repowise_dir = tmp_path / ".repowise"
@@ -31,6 +40,7 @@ def _status(tmp_path: Path, monkeypatch, state: dict, *, files: int = 0, fmt: st
     monkeypatch.setattr(status_cmd, "_query_health", lambda _path: None)
     monkeypatch.setattr(status_cmd, "_query_health_line", lambda _path: None)
     monkeypatch.setattr(status_cmd, "_load_actions", lambda _path: None)
+    monkeypatch.setattr(status_cmd, "_evidence_freshness", lambda _path: FRESHNESS)
     args = [str(tmp_path), "--no-workspace", "--format", fmt]
     result = CliRunner().invoke(status_cmd.status_command, args, terminal_width=200)
     assert result.exit_code == 0, result.output
@@ -112,6 +122,28 @@ class TestUpgradeRow:
         assert "Full upgrade" in _status(tmp_path, monkeypatch, state)
 
 
+def test_json_carries_the_evidence_freshness_block(tmp_path, monkeypatch) -> None:
+    data = json.loads(_status(tmp_path, monkeypatch, {"last_sync_commit": "abc"}, fmt="json"))
+    assert data["evidence_freshness"] == FRESHNESS
+
+
+def test_an_unreadable_store_is_named_not_null(monkeypatch) -> None:
+    from repowise.cli.commands import _evidence_freshness
+    from repowise.cli.helpers import StaleIndexError
+
+    def raise_(exc):
+        def read(_path):
+            raise exc
+
+        return read
+
+    monkeypatch.setattr(_evidence_freshness, "stored_freshness", raise_(StaleIndexError()))
+    stale = status_cmd._evidence_freshness(Path("."))
+    assert stale["fix"] == "repowise update" and stale["error"]
+    monkeypatch.setattr(_evidence_freshness, "stored_freshness", raise_(OSError("locked")))
+    assert status_cmd._evidence_freshness(Path(".")) == {"error": "OSError: locked", "fix": None}
+
+
 def test_json_total_tokens_match_the_page_rows(tmp_path, monkeypatch) -> None:
     data = json.loads(_status(tmp_path, monkeypatch, {"last_sync_commit": "abc"}, fmt="json"))
     assert data["state"]["total_tokens"] == data["page_tokens"] == 1125
@@ -133,7 +165,9 @@ class TestGenerateRestampsScope:
         monkeypatch.setattr(generate_cmd, "get_head_commit", lambda _p: "head")
         monkeypatch.setattr(generate_cmd, "save_state", lambda _p, _s: None)
         monkeypatch.setattr(generate_cmd, "load_config", lambda _p: {})
-        outcome = SimpleNamespace(total_pages=28, remaining_template_pages=remaining)
+        outcome = SimpleNamespace(
+            total_pages=28, remaining_template_pages=remaining, generated_pages=[]
+        )
         provider = SimpleNamespace(provider_name="mock", model_name="mock-1")
         generate_cmd._write_state(Path("."), state, provider, outcome, embedder="mock")
         return resolve_index_scope(state)

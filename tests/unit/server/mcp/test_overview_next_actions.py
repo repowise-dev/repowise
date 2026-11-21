@@ -30,12 +30,21 @@ async def _seed(session, rid: str) -> None:
 
 
 @pytest.mark.asyncio
+async def _setup(session, rid: str):
+    """The live setup facts the overview reads for the fixture's checkout."""
+    from repowise.core.persistence import crud
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    return await setup_facts(session, await crud.get_repository(session, rid))
+
+
+@pytest.mark.asyncio
 async def test_overview_carries_the_stored_actions(setup_mcp, session):
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
     from repowise.server.mcp_server import get_overview
 
     await _seed(session, setup_mcp)
-    view = await load_actions_view(session, setup_mcp)
+    view = await load_actions_view(session, setup_mcp, setup=await _setup(session, setup_mcp))
     lead = next(h for h in ("week", "quarter") if view["horizons"][h]["actions"])
 
     result = await get_overview()
@@ -62,6 +71,7 @@ async def test_overview_carries_the_stored_actions(setup_mcp, session):
 @pytest.mark.asyncio
 async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session):
     """An agent following Do next opens the id it was handed, details and all."""
+    from repowise.core.agent_prompts.setup import SETUP_STEP_RULES
     from repowise.core.persistence.crud.analysis.actions import load_action
     from repowise.server.mcp_server import get_health, get_overview
 
@@ -73,9 +83,11 @@ async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session
         full = await get_health(fix_id=action_id)
         assert full["mode"] == "action" and full["found"] is True
         # The same serialization the REST actions route renders from.
-        expected = (await load_action(session, setup_mcp, action_id)).as_dict()
+        setup = await _setup(session, setup_mcp)
+        expected = (await load_action(session, setup_mcp, action_id, setup=setup)).as_dict()
         assert full["action"] == expected
-        assert full["action"]["details"] and full["action"]["commands"]
+        if expected["rule"] not in SETUP_STEP_RULES:  # a setup step is one command
+            assert full["action"]["details"] and full["action"]["commands"]
 
     missing = await get_health(fix_id="act_0000000000000000")
     assert missing["mode"] == "action" and missing["found"] is False

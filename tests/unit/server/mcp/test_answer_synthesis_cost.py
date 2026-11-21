@@ -17,10 +17,8 @@ import logging
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import LlmCost, Repository
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.server.mcp_server.tool_answer.synthesis import synthesize
@@ -45,13 +43,7 @@ class _Provider:
 
 
 @pytest.fixture
-async def factory():
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    await init_db(engine)
+async def factory(engine):
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with sessionmaker() as session:
         session.add(
@@ -65,8 +57,7 @@ async def factory():
             )
         )
         await session.commit()
-    yield sessionmaker
-    await engine.dispose()
+    return sessionmaker
 
 
 async def _ledger_rows(factory) -> list[LlmCost]:

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
-from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
+from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
+    register_editor_clients,
+    snapshot_agent_configs,
+    write_editor_project_files,
+)
 from repowise.cli.helpers import (
     console,
     get_head_commit,
@@ -20,6 +28,7 @@ from repowise.cli.helpers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import OK, mascot, print_stage, progress_steps
 from repowise.cli.ui.glyphs import glyph
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -41,6 +50,8 @@ from .persistence import (
     stamp_fresh_index,
 )
 from .reporting import show_completion
+
+logger = structlog.get_logger(__name__)
 
 
 def persist_index(run: InitRun) -> None:
@@ -137,6 +148,10 @@ def register_clients(run: InitRun) -> None:
     )
 
     no_editor_setup = not run.opts.editor_setup
+    if not is_editor_setup_disabled(no_editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            run.agent_configs_before = snapshot_agent_configs(run.repo_path)
     if run.global_mcp_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this repo only). Run "
@@ -277,6 +292,11 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     _stamp_scope(run, base_state, docs_mode)
     record_decision_lanes(
         base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
+    )
+    # The ledger has to read "ran" from the first status page: init's
+    # extraction is the only one this index has had (#6031).
+    mining_state.record_extraction_report(
+        base_state, getattr(result, "decision_report", None), head
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
@@ -426,6 +446,82 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     return files_written
 
 
+def first_look_provider(run: InitRun) -> Any:
+    """The provider the repo report is written with; ``None`` on a run meant
+    to cost nothing (keyless, ``--no-prose``, a declined cost) or a dry run, even
+    when a key sits in the environment."""
+    opts = run.opts
+    if opts.dry_run or opts.index_only or run.no_provider or run.effective_index_only:
+        return None
+    return run.provider
+
+
+def _write_first_look(run: InitRun, steps: Any) -> Any:
+    """Write the repo report from the finished index; ``None`` when off or failed.
+
+    Written once: a later init keeps the stamped report (``--since-last`` shows
+    progress against it). A failure is logged and never fails init.
+    """
+    try:
+        from repowise.core.report.first_look.config import first_look_settings
+
+        settings = first_look_settings(run.repo_path)
+        if not settings.enabled:
+            return None
+        with steps.step("first_look"):
+            return run_async(_first_look(run, settings))
+    except Exception:
+        logger.warning("first_look_report_failed", repo=str(run.repo_path), exc_info=True)
+        return None
+
+
+def _for_an_agent() -> bool:
+    """The ``--progress json`` stream is open, or nobody can answer at the terminal."""
+    from repowise.cli.agent_events import active
+
+    return active() is not None or not sys.stdin.isatty()
+
+
+async def _first_look(run: InitRun, settings: Any) -> Any:
+    from repowise.cli.commands.serve_cmd._lock import live_web_url
+    from repowise.cli.helpers import repo_index_session
+    from repowise.cli.ui.finish_panel import FirstLook
+    from repowise.core.report.first_look.marks import item_statuses
+    from repowise.core.report.first_look.store import read_report_file
+    from repowise.core.report.first_look.write import rendered_path, write_files, write_first_look
+
+    root = run.repo_path
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        web = live_web_url(root)
+        report = read_report_file(root)
+        if report is not None and not rendered_path(root, ".html").exists():
+            await write_files(session, repo_id, root, report, app_url=web)
+        provider = first_look_provider(run)
+        if report is None and provider is not None and run.cost_tracker is not None:
+            provider._cost_tracker = run.cost_tracker
+        report = report or await write_first_look(
+            session, repo_id, root, provider=provider, settings=settings, app_url=web
+        )
+        statuses = await item_statuses(session, repo_id, report.items())
+    if provider is not None and run.cost_tracker is not None:
+        await run.cost_tracker.flush()
+    where = (
+        f"{web}/repos/{repo_id}/report"
+        if web
+        else rendered_path(root, ".html").relative_to(root).as_posix()
+    )
+    return FirstLook(
+        where,
+        report.stamp.generator,
+        report.stamp.cost,
+        agent=_for_an_agent(),
+        open_items=sum(s.status == "open" for s in statuses.values()),
+    )
+
+
 def _keep_out_of_git(run: InitRun) -> None:
     """The plan screen's exclude offer, over the machine-specific files now on disk."""
     if not run.git_exclude:
@@ -446,6 +542,7 @@ def complete_setup(run: InitRun) -> None:
         with steps.step("state"):
             write_run_state(run)
         files_written = _write_editor_files(run, steps)
+        first_look = _write_first_look(run, steps)
     _keep_out_of_git(run)
     _record_init_outcome(run)
 
@@ -476,6 +573,8 @@ def complete_setup(run: InitRun) -> None:
         interactive=(sys.stdin.isatty() and not opts.yes),
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
+        configs_before=run.agent_configs_before,
+        claude_repointed=run.mcp_repointed,
     )
     completion = show_completion(
         repo_path=repo_path,
@@ -488,10 +587,12 @@ def complete_setup(run: InitRun) -> None:
         files_written=files_written,
         verbose=opts.verbose,
         owl=_finish_owl(run),
+        first_look=first_look,
     )
     run.next_steps = completion.steps
     run.stood_out = completion.stood_out
-    run.model_upgrade = completion.model_upgrade
+    run.first_prompt = completion.first_prompt or None
+    run.first_look = first_look
 
 
 def _gaps(run: InitRun) -> list[str]:

@@ -62,6 +62,15 @@ agent such as `opencode` (`unknown` when nothing matches).
 reports `served_no_index` (`true` when it serves a directory with no index),
 and an `update` that defers to one already running reports `outcome: deferred`.
 
+`coverage add` reports how the ingest ended as `outcome`. Coverage was stored
+for `ingested` and `partial` (a fragment kept with `--allow-partial`). Nothing
+was stored for `no_report` (none found), `no_index`, `mostly_unmapped` (more
+than half of the report, or all of it, did not map to the repo tree),
+`misaligned`, `unreadable` and `unmapped` (no file mapped). `strict_unmapped`
+is a `--strict` failure, after any coverage that mapped was stored. It also
+reports `files_matched_bucket`, a range of the indexed files the reports
+mapped to, never the files themselves.
+
 For `init` and `update`, a few coarse **buckets and enums** describe the shape
 of the run so we can see the size of repos people index and whether docs
 generation is used. Never exact counts, never repo or file names:
@@ -98,6 +107,13 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.semantic_search` | `true` / `false` | Whether retrieval had a vector leg |
 | `properties.response_chars` | `10979` | Serialised size of the response, a count only |
 | `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
+| `properties.include` | `["callers", "skeleton"]` | Which `include` blocks the call asked for, by the tool's own block names; any other value is sent as `other` |
+| `properties.error_source` | `tool` / `exception` | Where an `error` call's reason came from: the tool's own error payload, or an exception the server caught |
+| `properties.cold_start` | `true` / `false` | Whether this was the first tool call since the MCP server started, so start-up cost can be told apart |
+| `properties.index_mode` | `none` / `template` / `model` / `mixed` | Who wrote the served index's pages; absent when the server has no index to read |
+| `properties.provider_kind` | `none` / `subscription_cli` / `local` / `api_key` / `mock` / `other` | How the model that synthesised the answer runs (an agent CLI login, a local model, a hosted API key); never the provider or model name |
+| `properties.empty_result` | `true` / `false` | Whether the call found nothing; sent only by `search_codebase`, `get_context`, `get_answer` and `get_why`, and not on an `error` call |
+| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo` and `branch_overlap` (`get_change_risk`) |
 
 Example `command_run` payload:
 
@@ -121,6 +137,21 @@ Example `command_run` payload:
   }
 }
 ```
+
+### `view_opened` - once per web view opened
+
+Emitted by the local server when the web UI opens one of its navigation views,
+so we can see which views people use. The browser sends only the view's fixed
+id to its own server, which refuses any id not on the list and records the
+event through the same opt-out as every other event. **Never the repo, the
+page path, or anything shown on the page**:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`, `setup`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
+
+Moving between pages inside one view (two files under Files), or to the same
+view in another repo, sends nothing new.
 
 ## What is **never** collected
 

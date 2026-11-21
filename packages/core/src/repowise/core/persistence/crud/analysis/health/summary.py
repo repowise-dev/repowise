@@ -99,6 +99,7 @@ async def get_health_summary(
     metrics: list | None = None,
     findings: list | None = None,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> dict:
     """Aggregate KPIs over the per-file metrics table.
 
@@ -193,6 +194,7 @@ async def get_health_summary(
         repository_id,
         covered_nloc=coverage.covered_nloc,
         include_unverified=include_unverified,
+        include_measured_hotspots=include_measured_hotspots,
     )
     return {
         "file_count": len(metrics),

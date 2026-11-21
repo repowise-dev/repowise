@@ -381,6 +381,16 @@ def agents_group(ctx: click.Context, fmt: str) -> None:
     metavar="OWNER/NAME",
     help="The repo on repowise.dev, with --hosted. Default: this checkout's GitHub origin.",
 )
+@click.option(
+    "--tools",
+    "tools",
+    default=None,
+    metavar="VALUE",
+    help="Which MCP tools the local server lists, saved as this repo's mcp.tools "
+    "(same as 'repowise config set mcp.tools'): core, lean, standard or all, "
+    "optionally followed by +name or -name. Unset: Claude Code lists standard, "
+    "other clients core.",
+)
 @format_option(help="Output format. json reports every file and what happened to it.")
 def agents_add(
     path: str | None,
@@ -389,6 +399,7 @@ def agents_add(
     yes: bool,
     hosted: bool,
     hosted_repo: str | None,
+    tools: str | None,
     fmt: str,
 ) -> None:
     """Wire one or more agents up to this repo.
@@ -406,19 +417,66 @@ def agents_add(
     """
     if hosted_repo is not None and not hosted:
         raise click.UsageError("--repo needs --hosted.")
+    if tools is not None and hosted:
+        raise click.UsageError("--tools sets the local server's tools; it does not apply to --hosted.")
     repo_path = _repo_path(path, fmt)
     if hosted:
         payload = _hosted_payload(repo_path, target_flag, hosted_repo, yes, fmt)
     else:
+        if tools is not None:
+            _save_tools(repo_path, tools)
         targets = _select_targets_for_add(repo_path, target_flag, yes, fmt)
         payload = _write_payload("add", repo_path, targets, scope, remove=False)
+        _note_tool_surface(payload, repo_path)
     if fmt == "json":
         emit_json(payload)
         return
+    from rich.markup import escape
+
+    from repowise.cli.agent_targets.tool_surface import always_load_text
+
     _render_writes(payload)
     for agent in payload["agents"]:
         if agent.get("next_step"):
             console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['next_step']}")
+        if agent.get("tools"):
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(agent['tools'])}")
+        always = always_load_text(agent["tool_surface"]) if agent.get("tool_surface") else None
+        if always:
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(always)}")
+    if payload.get("tools_hint"):
+        console.print(f"  [dim]{escape(payload['tools_hint'])}[/dim]")
+
+
+def _save_tools(repo_path: Path, value: str) -> None:
+    """Save ``--tools`` as the repo's ``mcp.tools``, validated like ``config set``."""
+    from repowise.core.settings import registry
+    from repowise.core.settings.writers import parse_text, set_value
+
+    try:
+        set_value(repo_path, "mcp.tools", parse_text(registry.get("mcp.tools"), value))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--tools") from None
+
+
+def _note_tool_surface(payload: dict, repo_path: Path) -> None:
+    """Say which MCP tools each wired agent's local server lists, and how to change it.
+
+    ``tools`` is the human line, ``tool_surface`` the same facts as keys.
+    """
+    from repowise.cli.agent_targets.tool_surface import (
+        agent_tool_surface,
+        change_hint,
+        surface_text,
+    )
+
+    for agent in payload["agents"]:
+        surface = agent_tool_surface(repo_path, agent.get("id", ""))
+        if surface is None:
+            return
+        agent["tool_surface"] = surface
+        agent["tools"] = surface_text(surface)
+        payload["tools_hint"] = change_hint(surface)
 
 
 def _hosted_url(repo_path: Path, hosted_repo: str | None) -> tuple[str, str]:

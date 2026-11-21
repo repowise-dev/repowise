@@ -316,7 +316,10 @@ def test_reload_follows_the_dependency_table():
     listed = set().union(*CONFIG_DEPENDENCY_KEYS.values())
     for s in all_settings():
         if s.scope == "repo" and s.reload != "reindex" and s.key.split(".")[0] in listed:
-            assert s.reload == file_reload(s.key), s.key
+            # "restart" refines "immediate": nothing to rebuild, read when a
+            # long-running process (the MCP server) starts.
+            expected = "immediate" if s.reload == "restart" else s.reload
+            assert expected == file_reload(s.key), s.key
 
 
 # ---------------------------------------------------------------- generation

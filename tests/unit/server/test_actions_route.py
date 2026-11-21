@@ -42,10 +42,10 @@ async def test_get_returns_the_actions_shape(actions_client: AsyncClient, sessio
     assert resp.status_code == 200
     body = ActionsResponse.model_validate(resp.json())
     assert set(body.horizons) == {"week", "quarter"}
-    assert body.summary["quarter"].endswith(", 1 of them now.")
+    assert ", 1 of them now" in body.summary["quarter"]
     (secret,) = [a for a in body.horizons["quarter"].actions if a.rule == "live_secret"]
     assert secret.tier == "act_now"
-    assert len(body.rules) == 11
+    assert len(body.rules) == 21  # 13 stored rules and 8 live setup steps
 
 
 @pytest.mark.anyio

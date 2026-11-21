@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
 from repowise.core.co_change import CoChangePartner, parse_partners
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GitMetadata, GraphNode
 from repowise.core.workspace.cross_repo import _is_noise_path
@@ -35,24 +36,6 @@ BRANCH_SCAN_LIMIT = 50
 # History rows corroborate a direct hit, they do not compete with it: past a
 # few, one file that pairs with everything drowns out the files truly shared.
 CO_CHANGE_ROWS_PER_BRANCH = 3
-
-# Every dependency bump edits the manifest, so sharing one says nothing about
-# the work. Kept here rather than in the shared noise list, which is counted on.
-_MANIFEST_NAMES = frozenset(
-    {
-        "go.mod",
-        "package.json",
-        "pyproject.toml",
-        "Cargo.toml",
-        "Gemfile",
-        "composer.json",
-        "requirements.txt",
-        "setup.py",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-    }
-)
 
 # Git serves concurrent reads, and the exact diffs are the only per-hit cost left.
 _DIFF_WORKERS = 4
@@ -157,7 +140,8 @@ def _signal(paths: Iterable[str]) -> frozenset[str]:
         for path in paths
         if path
         and not _is_noise_path(path)
-        and path.replace("\\", "/").rsplit("/", 1)[-1] not in _MANIFEST_NAMES
+        # Every dependency bump edits the manifest, so sharing one says nothing.
+        and not _LANG_REGISTRY.is_package_manifest(path)
     )
 
 
@@ -189,6 +173,66 @@ def _candidates(
         if kept is None or _prefer(ref, kept):
             by_sha[ref.sha] = ref
     return list(by_sha.values())
+
+
+def _remote_of(ref: git_refs.BranchRef) -> str | None:
+    """The remote a remote-tracking ref belongs to, ``None`` for a local branch."""
+    parts = ref.ref.split("/")
+    return parts[2] if ref.is_remote and len(parts) > 3 else None
+
+
+def _other_remote_trunks(repo_path: str, refs: Iterable[git_refs.BranchRef]) -> dict[str, str]:
+    """``remote -> trunk`` for every remote but ``origin``, which the base belongs to.
+
+    A fork's base can sit far from another remote's trunk. Measured from the
+    base, each of that remote's branches would claim everything its trunk did
+    since the two diverged, and overlap with nearly any change.
+    """
+    remotes = {_remote_of(ref) for ref in refs} - {None, "origin"}
+    trunks = {remote: git_refs.remote_trunk(repo_path, remote) for remote in sorted(remotes)}
+    return {remote: trunk for remote, trunk in trunks.items() if trunk}
+
+
+def _by_base(
+    refs: Iterable[git_refs.BranchRef], bases: dict[str, str]
+) -> dict[str, list[git_refs.BranchRef]]:
+    """*refs* grouped by the branch each is measured from."""
+    groups: dict[str, list[git_refs.BranchRef]] = {}
+    for ref in refs:
+        groups.setdefault(bases[ref.name], []).append(ref)
+    return groups
+
+
+def _measured_refs(
+    repo_path: str, refs: list[git_refs.BranchRef], base: str
+) -> tuple[list[git_refs.BranchRef], dict[str, str]]:
+    """The open branches among *refs*, and the branch each is measured from."""
+    trunks = _other_remote_trunks(repo_path, refs)
+    # Another remote's trunk is what its branches are measured from, not open work.
+    kept = [ref for ref in refs if ref.name not in trunks.values()]
+    return kept, {ref.name: trunks.get(_remote_of(ref) or "", base) for ref in kept}
+
+
+def _files_touched(
+    repo_path: str, refs: list[git_refs.BranchRef], bases: dict[str, str]
+) -> dict[str, frozenset[str]]:
+    """The bulk read of what each ref changed, one walk per base."""
+    touched: dict[str, frozenset[str]] = {}
+    for base, group in _by_base(refs, bases).items():
+        touched.update(git_refs.files_by_ref(repo_path, base, [ref.name for ref in group]))
+    return touched
+
+
+def _divergence(
+    repo_path: str, refs: list[git_refs.BranchRef], bases: dict[str, str]
+) -> dict[str, tuple[int, int]]:
+    """``(ahead, behind)`` per ref name, one bulk count per base."""
+    counts: dict[str, tuple[int, int]] = {}
+    for base, group in _by_base(refs, bases).items():
+        counts.update(
+            git_refs.ahead_behind_many(repo_path, base, [ref.ref for ref in group if ref.ref])
+        )
+    return counts
 
 
 def _worth_diffing(preview: frozenset[str] | None, ours: frozenset[str]) -> bool:
@@ -224,7 +268,9 @@ def scan_branches(
         resolved = git_refs.current_branch(repo_path) or current
     refs = _candidates(
         repo_path,
-        {base, current, resolved} | _same_line_of_work(repo_path, current),
+        # The local copy of the base is the same trunk, however far it has moved.
+        {base, base.removeprefix("origin/"), current, resolved}
+        | _same_line_of_work(repo_path, current),
         {
             sha
             for sha in (git_refs.resolve(repo_path, base), git_refs.resolve(repo_path, current))
@@ -232,8 +278,9 @@ def scan_branches(
         },
     )
 
+    refs, bases = _measured_refs(repo_path, refs, base)
     scanned = refs[:limit]
-    touched = git_refs.files_by_ref(repo_path, base, [ref.name for ref in scanned])
+    touched = _files_touched(repo_path, scanned, bases)
     # No bulk answer at all means a git too old for %S: diff every branch instead.
     probe_each = not touched and bool(scanned)
 
@@ -244,7 +291,7 @@ def scan_branches(
     def diff(ref: git_refs.BranchRef) -> frozenset[str]:
         # Rows come from the exact three-dot diff, never from the bulk read: a file
         # changed and reverted on a branch is in the bulk read but not in the diff.
-        return _signal(git_refs.changed_files(repo_path, base, ref.name))
+        return _signal(git_refs.changed_files(repo_path, bases[ref.name], ref.name))
 
     hit: list[tuple[git_refs.BranchRef, list[str]]] = []
     others: dict[str, frozenset[str]] = {}
@@ -258,11 +305,13 @@ def scan_branches(
             hit.append((ref, shared))
             others[ref.name] = theirs
 
-    counts = git_refs.ahead_behind_many(repo_path, base, [ref.ref for ref, _ in hit if ref.ref])
+    counts = _divergence(repo_path, [ref for ref, _ in hit], bases)
     entries: list[BranchOverlapEntry] = []
     for ref, shared in hit:
         # A git too old for the bulk count still answers one ref at a time.
-        ahead, behind = counts.get(ref.name) or git_refs.ahead_behind(repo_path, base, ref.name)
+        ahead, behind = counts.get(ref.name) or git_refs.ahead_behind(
+            repo_path, bases[ref.name], ref.name
+        )
         entries.append(
             BranchOverlapEntry(
                 branch=ref.name,

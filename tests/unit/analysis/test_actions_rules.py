@@ -20,6 +20,7 @@ from repowise.core.analysis.actions.facts import (
     FileFacts,
     LeadFinding,
     RecentFinding,
+    RuntimeState,
     SecretFacts,
 )
 from repowise.core.analysis.actions.model import SEVERITY_VALUE, TIER_RANK, Action
@@ -520,6 +521,27 @@ def test_secret_ignores_docs_comments_and_quotes() -> None:
     assert _run(hygiene.live_secret, _facts(secrets=quiet)).actions == ()
 
 
+def test_secret_action_carries_location_and_kind_only() -> None:
+    from repowise.core.agent_prompts import render_action
+    from repowise.core.analysis.security.credentials import masked_snippet
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    snippet = masked_snippet(f'    API_KEY = "{value}"')
+    assert snippet.startswith('API_KEY = "Zq9X')  # what the store keeps
+    s = SecretFacts("src/config.py", "hardcoded_secret", 4, snippet)
+    (a,) = _run(hygiene.live_secret, _facts(secrets=(s,))).actions
+    wire = a.as_dict()
+    surfaces = [json.dumps(wire), render_action(wire), render_action(wire, "claude-code-mcp")]
+    for text in surfaces:
+        assert "API_KEY" not in text and "****" not in text
+        for at in range(len(value) - 2):
+            assert value[at : at + 3] not in text
+    assert "`src/config.py:4`" in surfaces[1]
+    assert [(d["path"], d["line"], d["marker"], d["reason"]) for d in wire["details"]] == [
+        ("src/config.py", 4, "hardcoded_secret", "")
+    ]
+
+
 # ---------------------------------------------------------------------------
 # broken_doc_refs
 # ---------------------------------------------------------------------------
@@ -647,6 +669,55 @@ def test_coverage_stale_is_improve_signal() -> None:
     )
 
 
+def test_coverage_actions_hand_over_the_setup_command() -> None:
+    stale = CoverageState("stale", ANCHOR - timedelta(days=30), 40)
+    for a in (
+        *_run(signal.coverage_missing, _facts(_many_files())).actions,
+        *_run(signal.coverage_stale, _facts(coverage=stale)).actions,
+    ):
+        assert a.command == "repowise coverage setup"
+        (cmd,) = a.as_dict()["commands"]
+        assert cmd["cli"] == "repowise coverage setup --format json"
+        assert cmd["mcp"] is None
+
+
+def test_runtime_missing_fires_only_with_something_to_run() -> None:
+    files = _many_files()
+    found = RuntimeState("unknown", targets=("entry_point", "unit_test"))
+    (a,) = _run(signal.runtime_missing, _facts(files, runtime=found)).actions
+    assert (a.tier, a.surface) == ("improve_signal", "performance")
+    assert a.command == "repowise evidence setup"
+    assert a.commands[0].cli == "repowise evidence setup --format json"
+    why = {w.label: (w.value, w.basis) for w in a.why}
+    assert why["runtime evidence"] == ("None stored", "unknown")
+    assert why["found to run"] == ("entry points, a test suite", "inferred")
+    assert "hot" not in _text(a).split() and "cold" not in _text(a).split()
+
+    nothing = _run(signal.runtime_missing, _facts(files))
+    assert (nothing.status, nothing.actions) == ("not_applicable", ())
+    small = _run(signal.runtime_missing, _facts(_many_files(5), runtime=found))
+    assert small.status == "not_applicable"
+    stored = RuntimeState("measured", ANCHOR, "head", 2)
+    assert _run(signal.runtime_missing, _facts(files, runtime=stored)).actions == ()
+    gone = _run(signal.runtime_missing, _facts(files, unavailable={"runtime": "Not here."}))
+    assert (gone.status, gone.reason) == ("unavailable", "Not here.")
+
+
+def test_runtime_stale_asks_once_the_newest_run_is_old() -> None:
+    old = RuntimeState("stale", ANCHOR - timedelta(days=30), "abc" * 10, 3)
+    (a,) = _run(signal.runtime_stale, _facts(runtime=old)).actions
+    assert a.tier == "improve_signal"
+    assert a.command == "repowise evidence setup"
+    why = {w.label: w.value for w in a.why}
+    assert why == {"newest run age": "30 days", "measured at": "abcabcabcabc", "runs stored": "3"}
+    recent = replace(old, ingested_at=ANCHOR - timedelta(days=3))
+    outcome = _run(signal.runtime_stale, _facts(runtime=recent))
+    assert outcome.actions == ()
+    assert outcome.reason.startswith("Runtime evidence was measured at an earlier commit;")
+    current = replace(old, status="measured")
+    assert _run(signal.runtime_stale, _facts(runtime=current)).actions == ()
+
+
 
 # ---------------------------------------------------------------------------
 # engine
@@ -692,7 +763,7 @@ def test_engine_reports_totals_and_every_rule() -> None:
     assert quarter["total"] == len(quarter["actions"]) == 7
     assert quarter["hidden"] == 0
     assert quarter["by_tier"] == {"act_now": 1, "plan": 5, "improve_signal": 1}
-    assert len(view["rules"]) == 11
+    assert len(view["rules"]) == 13
     # The week sees the secret and the coverage prompt, not the quarter's plan work.
     assert view["horizons"]["week"]["total"] == 2
 

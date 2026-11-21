@@ -165,9 +165,11 @@ background until someone confirms it (`repowise decision confirm ID`).
 | Manual entry | `cli` | `repowise decision add`, the dashboard form | No | Always |
 | Agent entry | `agent` | `repowise decision add --agent <slug>` | No | Always |
 
-`repowise init` mines the history window once. `repowise update` reads inline
-markers on changed files and makes no model call for decisions unless
-`decision config update-mining --on`. A committed ADR whose status says
+`repowise init` mines the history window once. `repowise update` re-reads ADRs
+that were added or modified and reads inline markers on changed files; unchanged
+ADRs are not re-read, and deleting an ADR does not delete its decision record.
+It makes no model call for decisions unless `decision config update-mining --on`.
+A committed ADR whose status says
 `accepted` or `approved` and that names what it governs is in force on its
 own, with the file recorded as the signer. The same decision found by two
 sources becomes one record with two evidence rows.
@@ -263,7 +265,11 @@ agent and when last. Code health reports `ungoverned_hotspot`,
 
 `repowise decision export` writes the decisions in force to
 `.repowise/decisions.yaml`, a file you commit; `repowise decision import`
-reads it back, and on `import` the file wins. Once the file exists,
+reads it back. Each entry carries a `base_token` for the exported content:
+on `import`, edits apply unless the store has changed since that export,
+conflicting entries are skipped and listed in the summary, and
+`import --force` overrides the check. Older files without tokens still
+apply, and the summary marks those entries as not checked for staleness. Once the file exists,
 `repowise update` keeps it current. `update` never creates it, and leaves it
 alone when it holds something the index has not read (a colleague's committed
 edit, say), with one line saying `decision import` reconciles it. Format and

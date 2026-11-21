@@ -46,6 +46,7 @@ from .graph import (
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,
+    apply_stored_complexity,
     has_graph_edges,
     persist_graph_nodes,
     persist_incremental_edges,
@@ -53,7 +54,9 @@ from .graph import (
     persist_symbol_analysis,
     prune_absent_graph_rows,
     prune_absent_synthetic_nodes,
+    restore_stored_complexity,
     stamp_edges_parser_fingerprint,
+    stored_symbol_complexity,
 )
 from .health import (
     _analyzed_commit,
@@ -63,6 +66,7 @@ from .health import (
     snapshot_health_from_store,
 )
 from .ingestion import (
+    persist_build_units,
     persist_ingestion,
 )
 from .prune import (
@@ -89,10 +93,12 @@ from .sweeps import (
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
     sweep_deselected_file_keyed_pages,
+    sweep_deselected_flow_pages,
     sweep_deselected_pages,
     sweep_retired_pages,
     sweep_store_hygiene,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,

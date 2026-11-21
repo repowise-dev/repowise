@@ -12,7 +12,11 @@ from dataclasses import fields
 from typing import Any
 
 from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
-from repowise.server.mcp_server.tool_health.request import PLANS_PAGE_CAP, HealthRequest
+from repowise.server.mcp_server.tool_health.request import (
+    PLANS_PAGE_CAP,
+    TARGETED_FINDINGS_CAP,
+    HealthRequest,
+)
 
 _PAGED_COLLECTIONS = frozenset(
     {
@@ -46,7 +50,11 @@ _QUEUE_PAGE = 6
 _COUNTED_COLLECTIONS = ("top_findings", "performance_opportunities")
 
 #: A collection's fixed page, for naming a cut below ``limit`` a cap.
-_COLLECTION_CAPS = {"refactoring_plans": PLANS_PAGE_CAP, "performance_opportunities": _QUEUE_PAGE}
+_COLLECTION_CAPS = {
+    "refactoring_plans": PLANS_PAGE_CAP,
+    "performance_opportunities": _QUEUE_PAGE,
+    "findings": TARGETED_FINDINGS_CAP,
+}
 
 
 class Pager:
@@ -133,14 +141,24 @@ _QUEUE_FILTERS = tuple(
 def call_for(req: HealthRequest, root: str, *, limit: int, cursor: int) -> str:
     """The call that reads ``root`` again from ``cursor``, under the same
     arguments and queue filters, so the next page reads the same queue."""
-    filters = "".join(
-        f", {name}={value!r}" for name in _QUEUE_FILTERS if (value := getattr(req, name)) is not None
+    return health_call(
+        targets=req.raw_targets,
+        include=list(req.include or []),
+        repo=req.repo,
+        limit=limit,
+        only=[root],
+        refactoring_view=req.refactoring_view,
+        **{name: getattr(req, name) for name in _QUEUE_FILTERS},
+        cursor=cursor,
     )
-    return (
-        f"get_health(targets={req.raw_targets!r}, include={list(req.include or [])!r}, "
-        f"repo={req.repo!r}, limit={limit}, only={[root]!r}, "
-        f"refactoring_view='{req.refactoring_view}'{filters}, cursor={cursor})"
-    )
+
+
+def health_call(**args: Any) -> str:
+    """A ``get_health(...)`` call naming only the arguments that carry a value,
+    so an omitted ``repo`` or ``targets`` is left out rather than written as
+    ``repo=None``."""
+    named = ", ".join(f"{k}={v!r}" for k, v in args.items() if v is not None and v != [])
+    return f"get_health({named})"
 
 
 def _settle_pages(result: dict[str, Any], call: Mapping[str, Any]) -> None:

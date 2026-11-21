@@ -2,6 +2,7 @@
 frontmatter: |
     description: Work with architectural decisions; list, check health, record, pin, or put background records in force.
     allowed-tools: Bash(repowise decision:*), Bash(repowise config list:*), Bash(repowise config explain:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Decisions

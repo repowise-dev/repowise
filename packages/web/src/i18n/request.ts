@@ -1,7 +1,13 @@
 import { cookies } from "next/headers";
 import { getRequestConfig } from "next-intl/server";
+import { setDisplayTimeZone } from "@repowise-dev/ui/lib/format";
 import { DEFAULT_LOCALE, LOCALE_COOKIE, resolveLocale, type Locale } from "./config";
 import { withFallback } from "./fallback";
+import {
+  DETECTED_TIME_ZONE_COOKIE,
+  TIME_ZONE_COOKIE,
+  resolveViewerTimeZone,
+} from "./time-zone";
 import en from "../../messages/en.json";
 import zhCN from "../../messages/zh-CN.json";
 
@@ -34,14 +40,24 @@ export default getRequestConfig(async ({ requestLocale }) => {
   // it is undefined, so the cookie is the authority. Kept in the chain so the
   // config keeps working if prefix routing is ever turned on.
   const fromRouting = await requestLocale;
-  const fromCookie = (await cookies()).get(LOCALE_COOKIE)?.value;
+  const jar = await cookies();
+  const fromCookie = jar.get(LOCALE_COOKIE)?.value;
   const locale: Locale = resolveLocale(fromRouting ?? fromCookie ?? DEFAULT_LOCALE);
+  const { zone } = resolveViewerTimeZone(
+    jar.get(TIME_ZONE_COOKIE)?.value,
+    jar.get(DETECTED_TIME_ZONE_COOKIE)?.value,
+  );
+  // Server components format dates through format.ts, which has no request
+  // context of its own. This config runs once per request, first thing (the
+  // root layout's getLocale), so it is where the server realm learns the
+  // zone. The browser and SSR realms get it from <DisplayTimeZone>.
+  setDisplayTimeZone(zone);
 
   return {
     locale,
     messages: withFallback(en, MESSAGES[locale]),
-    // A fixed zone keeps server and client formatting in agreement; the UI
-    // renders relative times from the API rather than formatting zones itself.
-    timeZone: "UTC",
+    // The viewer's zone, from the same cookies on every render, so the server
+    // render and the browser agree.
+    timeZone: zone,
   };
 });

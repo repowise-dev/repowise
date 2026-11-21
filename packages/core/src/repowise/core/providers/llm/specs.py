@@ -49,6 +49,9 @@ class ProviderSpec:
     models: tuple[str, ...] = ()
     api_key_envs: tuple[str, ...] = ()
     base_url_envs: tuple[str, ...] = ()
+    #: Where the provider listens when no ``base_url_envs`` value is set, so a
+    #: missing variable is fine as long as something answers here.
+    default_base_url: str = ""
     #: Runs with no API key: out-of-band login, a local model, or a proxy.
     keyless: bool = False
     #: Runs with no key when ``base_url`` is a local server (LM Studio, vLLM).
@@ -238,6 +241,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_model="qwen3.5:4b",
         models=("qwen3.5:4b", "qwen3.5:2b", "llama3.2", "qwen2.5-coder"),
         base_url_envs=("OLLAMA_BASE_URL",),
+        default_base_url="http://localhost:11434",
         keyless=True,
         local=True,
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
@@ -338,3 +342,24 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {spec.name: spec for spec in _SPECS}
 ZERO_COST_MODEL_PREFIXES: tuple[str, ...] = tuple(
     f"{spec.name}/" for spec in _SPECS if spec.zero_cost
 )
+
+#: Every value :func:`provider_kind` returns. Fixed labels, safe for telemetry.
+PROVIDER_KINDS = frozenset({"none", "subscription_cli", "local", "api_key", "mock", "other"})
+
+
+def provider_kind(provider_name: str | None) -> str:
+    """How the named provider runs, as one fixed label from :data:`PROVIDER_KINDS`.
+
+    An agent CLI login (``subscription_cli``) before ``local``, since those
+    CLIs also run on this machine.
+    """
+    if not provider_name:
+        return "none"
+    spec = PROVIDER_SPECS.get(provider_name)
+    if spec is None:
+        return "other"
+    if spec.agent:
+        return "subscription_cli"
+    if spec.name == "mock":
+        return "mock"
+    return "local" if spec.local else "api_key"

@@ -32,6 +32,11 @@ _SUMMARY_KEYS = {
     "files_written",
     "next",
     "findings",
+    "mcp_tools",
+    "restart_hosts",
+    "connect",
+    "long_running",
+    "first_prompt",
 }
 
 _KEYS = (
@@ -185,7 +190,6 @@ def test_a_piped_init_stays_within_the_line_width(repo):
 
 
 def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo, monkeypatch):
-    # No agent CLI probe: the model command is then the same on every machine.
     monkeypatch.setenv("REPOWISE_OFFLINE", "1")
     result = _init(repo, "--no-editor-setup", "--progress", "json")
 
@@ -198,7 +202,11 @@ def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo, monkey
     assert summary["mode"] == {"key": "template", "label": "Built from code", "run_mode": "standard"}
     assert summary["restart_required"] is False
     assert summary["spend"] == {"tokens": 0, "usd": 0.0}
-    assert summary["next"][:2] == ["repowise serve", "repowise generate"]
+    # serve does not return, so it comes last and is named as long running.
+    assert summary["next"] == ["repowise agents add", "repowise serve"]
+    assert summary["long_running"] == ["repowise serve"]
+    assert summary["first_prompt"].startswith(("Before I change ", "Use Repowise to give me a tour"))
+    assert "Repowise" in summary["first_prompt"]
     findings = summary["findings"]
     assert set(findings) == {"health", "dead_code", "hotspot", "decision_candidates"}
     assert isinstance(findings["decision_candidates"], int)
@@ -240,3 +248,55 @@ def test_json_init_interrupted_summary(repo, monkeypatch):
     assert summary["status"] == "interrupted"
     assert summary["next"] == ["repowise init --resume"]
     assert "Interrupted." in result.stderr
+
+
+def test_json_workspace_init_ends_with_its_own_summary(tmp_path, monkeypatch):
+    import git as gitpython
+
+    for var in _KEYS:
+        monkeypatch.delenv(var, raising=False)
+    for name in ("api", "web"):
+        member = tmp_path / name
+        member.mkdir()
+        (member / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        g = gitpython.Repo.init(member)
+        g.index.add(["app.py"])
+        g.index.commit("init")
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli,
+        [
+            "init", str(tmp_path), "--yes", "--all", "--no-prose",
+            "--no-editor-setup", "--progress", "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    summary = _lines(result.stdout)[-1]
+    assert summary["event"] == "summary" and summary["status"] == "ready"
+    assert set(summary) >= _SUMMARY_KEYS
+    assert summary["next"] == ["repowise agents add", "repowise serve"]
+    assert summary["long_running"] == ["repowise serve"]
+    assert summary["first_prompt"].startswith("Use Repowise to show me how ")
+    assert "api" in summary["first_prompt"] and "web" in summary["first_prompt"]
+    assert summary["restart_required"] is False
+
+
+def test_workspace_setup_diffs_every_agent_config_not_only_claude(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from repowise.cli import editor_setup
+    from repowise.cli.commands.init_cmd import workspace
+
+    seen = {}
+    monkeypatch.setattr(
+        editor_setup, "detect_editor_setup_outcome", lambda path, **kw: seen.update(kw)
+    )
+    before = {"vscode": {"x/.vscode/mcp.json": None}}
+    ctx = SimpleNamespace(
+        dry_run=False, yes=True, first_index=False, editor_setup=True,
+        agent_configs_before=before,
+    )
+    workspace._workspace_setup(tmp_path, ctx, repointed=True)
+    assert seen["configs_before"] is before
+    assert seen["claude_repointed"] is True

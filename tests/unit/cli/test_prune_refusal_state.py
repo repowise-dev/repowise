@@ -154,7 +154,6 @@ def _index(root, state, head):
     try:
         persistence._persist_index_only_update(
             root, builder, {}, None, None, state, head, time.monotonic(), [], parsed_files=parsed,
-            stamp_config=False,
         )
     except PruneHoldError as exc:
         persistence.save_prune_hold(root, load_state(root), exc)

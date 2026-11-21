@@ -18,7 +18,7 @@ export default async function AgentsSettingsPage() {
     <SettingsGroup title={tg("agents.title")} description={tg("agents.description")}>
       <HostedNudgeSlot candidates={["mcp"]} />
       <SettingsRows>
-        <McpSection />
+        <McpSection repos={repos.map((r) => ({ id: r.id, name: r.name }))} />
         <SettingsRow label={ts("mcpTools.perRepoLabel")} hint={ts("mcpTools.perRepoHint")}>
           <McpToolsRepoLinks repos={repos} />
         </SettingsRow>

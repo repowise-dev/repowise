@@ -18,7 +18,8 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
-from repowise.cli.helpers import resolve_repo_path
+from repowise.cli.helpers import console, get_head_commit, resolve_repo_path
+from repowise.cli.ui import WARN
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
@@ -342,7 +343,7 @@ def _check_folder_coverage(
         "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
-        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        ".repowise/ is touched, and 'repowise agents print-config <agent>' prints the config "
         "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
         "does not turn setup back on."
@@ -512,9 +513,17 @@ def _check_folder_coverage(
         "Progress output. 'rich' (default) draws a live checklist in a terminal "
         "and one short line per step anywhere else. 'json' writes one JSON event "
         "per line to stdout (stages, steps, warnings) and ends with a summary "
-        "line: status, mode, restart_required, spend, warnings, files_written "
-        "and next commands. Human text goes to stderr."
+        "line: status, mode, restart_required, restart_hosts, spend, warnings, "
+        "files_written, next commands, long_running, first_prompt, mcp_tools "
+        "and connect. Human text goes "
+        "to stderr."
     ),
+)
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
 )
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
@@ -534,9 +543,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
@@ -586,9 +612,24 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     if run is None:
         return
     index_repository(run)
+    # Before anything is written for an agent: an index of nothing helps no one.
+    if not opts.resume and not getattr(run.result, "file_count", 0):
+        raise reasoned_error(
+            f"No source files to index in {repo_path} (.gitignore and excludes applied). "
+            "Run init in a code repository: repowise init <path>",
+            reason="no_source_files",
+        )
     # Each one is an analysis step the pipeline skipped on an error.
     if run.run_warnings:
         run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
+    if get_head_commit(repo_path) is None:
+        # Said, not a gap: the code index is complete, only history is missing.
+        note = (
+            "No git commits here, so hotspots, ownership and decisions are empty. "
+            "Commit this folder to git, then run repowise update."
+        )
+        console.print(f"[{WARN}]{note}[/]")
+        run.run_warnings.append(note)
 
     if _generate(run):
         return

@@ -24,6 +24,7 @@ from .models import FileInfo, Import, ParsedFile, Symbol
 from .salesforce_flow import parse_flow_file
 from .salesforce_schema import parse_object_metadata
 from .salesforce_soql import parse_soql_file
+from .symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -209,7 +210,7 @@ def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
             name = "entrypoint" if "ENTRYPOINT" in line.upper() else "cmd"
             symbols.append(
                 Symbol(
-                    id=f"{file_info.path}::{name}",
+                    id=make_symbol_id(file_info.path, name),
                     name=name,
                     qualified_name=name,
                     kind="function",
@@ -318,7 +319,7 @@ def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
     for target, lineno in iter_make_targets(text):
         symbols.append(
             Symbol(
-                id=f"{file_info.path}::{target}",
+                id=make_symbol_id(file_info.path, target),
                 name=target,
                 qualified_name=target,
                 kind="function",
@@ -453,7 +454,7 @@ def _extract_sql_symbols(file_info: FileInfo, text: str) -> tuple[list[Symbol], 
         line, cursor = _locate_line(text, name, cursor)
         symbols.append(
             Symbol(
-                id=f"{file_info.path}::{qualified}",
+                id=make_symbol_id(file_info.path, qualified),
                 name=name,
                 qualified_name=qualified,
                 kind=kind,  # type: ignore[arg-type]

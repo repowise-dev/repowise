@@ -1,10 +1,6 @@
 ---
 name: settings
-description: >
-  Use when the user asks what Repowise can be configured to do, how to turn something on or off,
-  what a feature costs in tokens or model calls, why Repowise behaves a certain way in this
-  repository, or asks you to change a Repowise option. Covers every setting in
-  .repowise/config.yaml, the user-level files and the REPOWISE_* environment variables.
+description: Repowise options, what they cost, and changing them.
 user-invocable: false
 ---
 

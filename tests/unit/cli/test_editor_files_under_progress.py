@@ -23,14 +23,6 @@ def console() -> Console:
     return Console(file=io.StringIO(), force_terminal=True, width=100)
 
 
-@pytest.fixture(autouse=True)
-def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-
-
 def test_owl_status_inside_a_live_display_runs_its_body(console: Console) -> None:
     ran = False
     with progress_steps(console), owl_status(console, "working"):

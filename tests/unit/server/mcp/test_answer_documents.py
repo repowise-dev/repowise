@@ -14,7 +14,12 @@ from types import SimpleNamespace
 import pytest
 
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server.tool_answer.answer import _Ask, _user_prompt
+from repowise.server.mcp_server.tool_answer.answer import (
+    _Ask,
+    _pre_synthesis_reply,
+    _Retrieved,
+    _user_prompt,
+)
 from repowise.server.mcp_server.tool_answer.callers import NO_EVIDENCE
 from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
 
@@ -225,7 +230,54 @@ async def test_an_issue_key_in_code_comments_still_reaches_its_ticket(tmp_path):
 
     assert [h["target_path"] for h in docs.hits] == ["jira/PROJ/PROJ-12.md"]
     assert docs.hits[0]["summary"] == "Line 5: # PROJ-12: Deploys stall"
-    assert docs.hits[0]["excerpt"] == '5: # PROJ-12: Deploys stall\n2: key: "PROJ-12"'
+    assert docs.hits[0]["excerpt"] == "5: # PROJ-12: Deploys stall"
+
+
+async def test_a_ticket_asked_about_by_key_serves_its_opening_not_its_key_lines(tmp_path):
+    ticket = (
+        '---\nkey: "PROJ-12"\nurl: "https://jira.example/browse/PROJ-12"\n---\n\n'
+        "# PROJ-12: Deploys stall under load\n\nStatus: In Progress\n\n"
+        "[Open in Jira](https://jira.example/browse/PROJ-12)\n\n"
+        "Deploys stall when the queue fills.\n\n## Steps\n\n1. Drain the queue\n"
+    )
+    guide = "# Deploy guide\n\nRoll back first.\n\nTracked in PROJ-12.\n"
+    root = _repo(tmp_path / "r", {"jira/PROJ/PROJ-12.md": ticket, "confluence/guide.md": guide})
+
+    docs = await _find(root, "what is PROJ-12")
+
+    by_path = {h["target_path"]: h["excerpt"] for h in docs.hits}
+    assert by_path["jira/PROJ/PROJ-12.md"] == (
+        "6: # PROJ-12: Deploys stall under load\n"
+        "8: Status: In Progress\n"
+        "10: [Open in Jira](https://jira.example/browse/PROJ-12)\n"
+        "12: Deploys stall when the queue fills.\n"
+        "14: ## Steps"
+    )
+    # A page that only cites the ticket keeps the line citing it.
+    assert by_path["confluence/guide.md"] == "5: Tracked in PROJ-12."
+
+
+async def test_another_question_word_keeps_its_line_past_a_ticket_opening(tmp_path):
+    body = "# PROJ-12: Deploys stall\n" + "".join(f"Line {i}.\n" for i in range(8))
+    root = _repo(tmp_path / "r", {"jira/PROJ-12.md": body + "Roll back with zanzibarflux.\n"})
+
+    docs = await _find(root, "how does PROJ-12 use zanzibarflux")
+
+    assert docs.hits[0]["excerpt"].splitlines() == [
+        "1: # PROJ-12: Deploys stall",
+        "2: Line 0.",
+        "3: Line 1.",
+        "4: Line 2.",
+        "10: Roll back with zanzibarflux.",
+    ]
+
+
+async def test_a_ticket_with_no_body_still_serves_its_key_lines(tmp_path):
+    root = _repo(tmp_path / "r", {"jira/PROJ-12.md": '---\nkey: "PROJ-12"\n---\n\n'})
+
+    docs = await _find(root, "what is PROJ-12")
+
+    assert [h["excerpt"] for h in docs.hits] == ['2: key: "PROJ-12"']
 
 
 async def test_an_ordinary_word_in_code_still_names_no_document(tmp_path):
@@ -238,3 +290,37 @@ async def test_a_key_shaped_word_without_its_own_document_is_an_ordinary_word(tm
     root = _repo(tmp_path / "r", {"io.py": "ENC = 'UTF-8'  # force output\n", "CHANGELOG.md": "Force UTF-8 output.\n"})
 
     assert (await _find(root, "why force UTF-8 output")).hits == []
+
+
+async def test_a_named_pages_body_lines_holding_other_question_words_fill_its_lines(tmp_path):
+    policy = (
+        '---\ntitle: "Card network retry policy"\n---\n\n# Card network retry policy\n\n'
+        "We retry card network timeouts at most 4 times.\n\nAgreed with the Risk team.\n"
+    )
+    code = "def with_retry(call):\n    # card network timeouts\n    return call()\n"
+    root = _repo(tmp_path / "r", {"policy.md": policy, "retry.py": code})
+
+    docs = await _find(root, "What retry policy did we agree on for card network timeouts?")
+
+    # ``policy`` names the page from its title; the body line answering is
+    # served for the commoner words it holds, front matter is not.
+    assert docs.hits[0]["excerpt"].splitlines() == [
+        "5: # Card network retry policy",
+        "7: We retry card network timeouts at most 4 times.",
+        '2: title: "Card network retry policy"',
+    ]
+
+
+async def test_another_repos_documents_alone_go_to_synthesis():
+    ask = _Ask("What is PAY-101 about?", SimpleNamespace(), None, "r", None, 0.0)
+    rows = [{"repo": "mirror", "path": "jira/PAY-101.md", "line": 11, "text": "# PAY-101: Duplicate refunds"}]
+
+    def retrieved(other_repo_lines):
+        return _Retrieved([], [], set(), {}, [], other_repo_lines)
+
+    async def neighbors(payload):
+        return payload
+
+    assert await _pre_synthesis_reply(ask, retrieved(rows), False, NO_EVIDENCE, neighbors) is None
+    no_hits = await _pre_synthesis_reply(ask, retrieved([]), False, NO_EVIDENCE, neighbors)
+    assert no_hits["note"].startswith("No wiki hits")

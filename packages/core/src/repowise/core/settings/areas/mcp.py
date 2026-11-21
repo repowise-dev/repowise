@@ -32,14 +32,33 @@ _ANSWER_SWITCHES: tuple[tuple[str, bool, str], ...] = (
     ("LEAN_HIGH", False, "Drop re-read evidence from high-confidence answers."),
 )
 
+#: Measured per request: about 2.6k on current flagship models, 1.9k on smaller ones;
+#: one figure on every surface.
+_ALWAYS_LOAD_COST = "about 2.5k more tokens a turn"
+
 SETTINGS: tuple[Setting, ...] = (
     _s(
         "mcp.tools",
         "list",
         None,
-        "Which MCP tools are offered: all, lean, +name or -name to adjust the "
-        "default, or plain names as the exact list. Unset offers the default set.",
+        "Which MCP tools are offered, for every client: a profile (core, lean, "
+        "standard, all), optionally followed by +name or -name; +name or -name "
+        "alone to adjust each client's default; or plain names as the exact list. "
+        "Unset: Claude Code gets standard, clients that load every schema up "
+        "front get core.",
         parser="repowise.core.registry.tool_selection:normalize_override",
+        # The server lists its tools once, when it starts.
+        reload="restart",
+    ),
+    _s(
+        "mcp.always_load",
+        "bool",
+        False,
+        "Claude Code only: load the four read tools (get_answer, get_context, "
+        "search_codebase, get_symbol) from the first turn instead of through tool "
+        f"search, for {_ALWAYS_LOAD_COST}.",
+        cost_note=_ALWAYS_LOAD_COST,
+        reload="restart",
     ),
     _e(
         "REPOWISE_ANSWER_TIMEOUT_S",

@@ -22,7 +22,8 @@ responses carry a `stale_warning` when a file they served has changed.
 ## 1. Post-Commit Git Hook (Recommended)
 
 Runs `repowise update` in the background after every local commit. Your
-terminal is never blocked.
+terminal is never blocked. This hook is what updates the index; the agent
+hooks check freshness and flag stale results, and do not update it.
 
 `repowise init` installs the hook by default (interactive runs ask first;
 `--no-hook` skips it). To manage it yourself:
@@ -240,7 +241,7 @@ checkout someone edits.
    (`--cascade-budget N` to override).
 4. Regenerate those pages with the LLM, when the repo was indexed with docs.
    Affected pages beyond the budget are marked stale, not regenerated;
-   `repowise generate --stale` refreshes them when you choose to spend on it.
+   `repowise update --full` refreshes them all, pricing the model's pages first.
 5. In a workspace, re-run the cross-repo analysis.
 6. Save the new `HEAD` as the last synced commit.
 

@@ -136,6 +136,23 @@ class CoverageState:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeState:
+    """The runtime evidence stored (profiles, benchmarks, test timings, query
+    counts) and what there is to measure when none is."""
+
+    #: ``measured`` when the newest run is at the index's commit (or either
+    #: commit is unknown), ``stale`` at another, ``unknown`` with no run stored.
+    status: CoverageStatus
+    #: When the newest run was ingested, and the commit it measured.
+    ingested_at: datetime | None = None
+    commit_sha: str | None = None
+    runs: int = 0
+    #: Workload classes the index holds something to run for, in
+    #: ``evidence setup`` order: ``entry_point``, ``benchmark``, ``unit_test``.
+    targets: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RepoFacts:
     """Everything the rules may read about one repository."""
 
@@ -159,6 +176,7 @@ class RepoFacts:
     author_last_commit: Mapping[str, datetime] = field(default_factory=dict)
     active_authors_90d: int = 0
     coverage: CoverageState = CoverageState("unknown")
+    runtime: RuntimeState = RuntimeState("unknown")
     #: Commits the index holds; ``None`` when not counted.
     history_commits: int | None = None
     #: Store name -> why it could not be read.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
-from .ast_utils import is_named_block_lambda
+from .ast_utils import is_named_lambda
 from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
@@ -65,6 +65,7 @@ _ELSE_IF_NODE_KINDS = frozenset(
         "if_statement",
         "if_expression",
         "elif_clause",
+        "elif_expression",
         "elsif",
         "else_if_clause",
         "if_let_expression",
@@ -105,7 +106,16 @@ _FLAT_BRANCH_KINDS = frozenset(
         "while_modifier",
         "until_modifier",
         "rescue_modifier",
+        # Perl's statement modifiers (``return if $x`` / ``$i++ while $c``).
+        "postfix_conditional_expression",
+        "postfix_for_expression",
+        "postfix_loop_expression",
     }
+)
+
+# Perl's ``if`` / ``unless`` node names say "conditional" but are not ternaries.
+_CONDITIONAL_STATEMENT_KINDS = frozenset(
+    {"conditional_statement", "postfix_conditional_expression"}
 )
 
 
@@ -119,6 +129,7 @@ def _is_elif_continuation(node: Node) -> bool:
     special-case. The AST shape differs per grammar:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
+    - F#: a dedicated ``elif_expression`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
     - PHP: a dedicated ``else_if_clause`` node for ``elseif`` (always a
       continuation); ``else if`` is wrapped in an ``else_clause`` as below.
@@ -129,7 +140,7 @@ def _is_elif_continuation(node: Node) -> bool:
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
-    if node.type in ("elif_clause", "elsif", "else_if_clause"):
+    if node.type in ("elif_clause", "elif_expression", "elsif", "else_if_clause"):
         return True
     parent = node.parent
     if parent is None:
@@ -269,6 +280,8 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type in lmap.catch_kinds:
         return "catch"
     if node.type in lmap.branch_kinds:
+        if node.type in _CONDITIONAL_STATEMENT_KINDS:
+            return "if"
         if "ternary" in node.type or "conditional" in node.type:
             return "ternary"
         return "if"
@@ -517,13 +530,13 @@ def _is_decision_body(body_node: Node, lmap: LanguageNodeMap) -> bool:
 def _stops_at_unit(node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, scope: int) -> bool:
     """Whether the CCN walk stops at *node*, a unit measured on its own.
 
-    A nested function, or a named block-bodied lambda, whose subtree the
-    facts *tally* still reads the way the walk would have.
+    A nested function, or a named lambda, whose subtree the facts *tally*
+    still reads the way the walk would have.
     """
     node_type = node.type
     if node_type in lmap.function_kinds:
         return True
-    if node_type not in lmap.lambda_kinds or not is_named_block_lambda(node, lmap):
+    if node_type not in lmap.lambda_kinds or not is_named_lambda(node, lmap):
         return False
     if tally is not None:
         _tally_only(node, tally, lmap, scope)
@@ -533,7 +546,7 @@ def _stops_at_unit(node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, s
 def _tally_only(node: Node, tally: BodyTally, lmap: LanguageNodeMap, scope: int) -> None:
     """Count *node*'s subtree into *tally* the way the CCN walk's visits would.
 
-    A named block-bodied lambda is a unit of its own for the complexity
+    A named lambda is a unit of its own for the complexity
     metrics, but the facts of the function holding it still read it as the
     lambda it is (a scope of its own that shares the receiver), so they come
     out the same as when the walk descended it.
@@ -561,8 +574,8 @@ def _walk_function_body(
     complex_conditions).
 
     Starts CCN at 1 (the entry path). Nested function bodies, and the
-    bodies of block-bodied arrow functions bound to a name
-    (:func:`.ast_utils.is_named_block_lambda`), are skipped — they will
+    bodies of JS/TS arrow functions bound to a name
+    (:func:`.ast_utils.is_named_lambda`), are skipped — they will
     (or already did) produce their own ``FunctionComplexity``.
 
     ``bumps`` counts how many *direct* children of the function body
@@ -606,7 +619,7 @@ def _walk_function_body(
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
         # contribute to the enclosing function's complexity, unless one is
-        # bound to a name with a block body: that is a unit of its own too.
+        # bound to a name: that is a unit of its own too.
         node_type = node.type
         if _stops_at_unit(node, lmap, tally, scope):
             return

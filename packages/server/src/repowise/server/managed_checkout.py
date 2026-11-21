@@ -155,6 +155,17 @@ def fast_forward(repo_path: Path | str) -> tuple[str, str]:
     return before, _git(repo_path, "rev-parse", "HEAD").stdout.strip()
 
 
+def fetch_ref(repo_path: Path | str, ref: str) -> None:
+    """Fetch one full ref (a merge request's published head) from ``origin`` under its own name.
+
+    Only refs, never the checked-out branch, so the working tree is untouched.
+    Raises :class:`ManagedCheckoutError` with git's reason when the fetch fails.
+    """
+    fetched = _remote_git(repo_path, "fetch", "--quiet", "--no-tags", "origin", f"+{ref}:{ref}")
+    if fetched.returncode != 0:
+        raise ManagedCheckoutError(f"could not fetch {ref}: {_reason(fetched)}")
+
+
 def sync_managed_checkout(repo_path: Path | str) -> None:
     """Bring a managed checkout to its remote head; a no-op for any other checkout.
 

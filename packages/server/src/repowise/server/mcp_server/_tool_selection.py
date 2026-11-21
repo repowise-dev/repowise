@@ -9,21 +9,34 @@ The registry attaches *every* tool to the FastMCP instance the first time a
 caller asks for the full surface (``mcp_server.ensure_full_surface``).
 :func:`apply_tool_selection` then trims that set once, at boot, by removing the
 deselected tools from the FastMCP tool manager, so raw MCP clients see the
-surface as it stood when the server started. Chat calls
+surface as it stood when the server started. Each MCP session then sees that
+set narrowed to its client's default profile (:func:`session_tool_names`) when
+the configuration names no profile; tools outside it stay callable. Chat calls
 :func:`selected_tool_entries` instead, which re-resolves on every turn. There
-is no per-call cost and tool schemas are untouched.
+is no per-call cost, and the only schema edit is :func:`single_repo_schemas`.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 from typing import Any
 
 from repowise.core.registry import ToolEntry, mcp_tool_registry
-from repowise.core.registry.tool_selection import ALL, AvailabilityFacts, resolve_enabled_tools
+from repowise.core.registry.tool_selection import (
+    ALL,
+    ALWAYS_LOAD_TOOLS,
+    DEFERRED_SCHEMA_CLIENTS,
+    PROFILES,
+    AvailabilityFacts,
+    default_profile,
+    is_delta,
+    normalize_override,
+    resolve_enabled_tools,
+    split_profile,
+)
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -34,6 +47,16 @@ _log = logging.getLogger("repowise.mcp")
 # removal, not re-registration).
 _full_surface: dict[str, Any] | None = None
 _selected_surface: tuple[bool, frozenset[str]] | None = None
+# The inputs the boot selection resolved from, so each session can resolve its
+# client's default from the same override, mode and facts.
+_boot_inputs: tuple[bool, str | Sequence[str] | None, AvailabilityFacts] | None = None
+# Tools whose tools/list entry carries the always-load hint (``mcp.always_load``),
+# read once at boot like the surface. Empty leaves every entry untouched.
+_always_load: frozenset[str] = frozenset()
+
+#: Per-tool ``_meta`` key Claude Code reads to keep a tool's schema loaded
+#: instead of deferring it behind tool search.
+ALWAYS_LOAD_META_KEY = "anthropic/alwaysLoad"
 
 
 def _ensure_registered() -> None:
@@ -66,28 +89,62 @@ def snapshot_full_surface(mcp: Any) -> None:
         _full_surface = dict(registered)
 
 
-def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
-    """Read ``mcp.tools`` from ``.repowise/config.yaml`` if present."""
+def _read_repo_config(repo_path: str | None) -> dict[str, Any] | None:
+    """``.repowise/config.yaml`` as a mapping; None when unreadable or no repo.
+
+    A file that cannot be read or parsed logs a warning naming it, so a user
+    whose ``mcp.tools`` or ``mcp.always_load`` did nothing can see why. Any
+    other error is a bug and propagates.
+    """
     if not repo_path:
         return None
-    try:
-        from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
 
-        mcp_cfg = load_repo_config(repo_path).get("mcp") or {}
-        if isinstance(mcp_cfg, dict):
-            return mcp_cfg.get("tools")
-    except Exception:
-        _log.debug("Failed to read mcp.tools from config", exc_info=True)
-    return None
+    try:
+        config = load_repo_config(repo_path)
+    except (RepoConfigError, OSError) as exc:
+        _log.warning("Ignoring the mcp settings in .repowise/config.yaml: %s", exc)
+        return None
+    return config
+
+
+def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
+    """Read ``mcp.tools`` from ``.repowise/config.yaml`` if present."""
+    config = _read_repo_config(repo_path)
+    mcp_cfg = (config or {}).get("mcp") or {}
+    return mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None
+
+
+def _read_always_load(repo_path: str | None) -> bool:
+    """Read ``mcp.always_load`` from ``.repowise/config.yaml``; off when unreadable."""
+    config = _read_repo_config(repo_path)
+    if config is None:
+        return False
+    from repowise.core.settings import resolve
+
+    resolved = resolve("mcp.always_load", config)
+    if resolved.problem:
+        _log.warning("Ignoring %s", resolved.problem)
+    return bool(resolved.value)
 
 
 def _is_workspace(repo_path: str | None) -> bool:
+    """Whether the server serves *repo_path* in workspace mode.
+
+    The rule the lifespan serves by (``_detect_workspace``, plus
+    ``--no-workspace``), so the listed surface never offers workspace-only
+    tools to a server that answers as a single repo.
+    """
     if not repo_path:
         return False
-    try:
-        from repowise.core.workspace.config import find_workspace_root
+    from repowise.server.mcp_server import _state
 
-        return find_workspace_root(Path(repo_path)) is not None
+    if _state._force_single_repo:
+        return False
+    try:
+        from repowise.server.mcp_server._server import _detect_workspace
+
+        return _detect_workspace(repo_path)[0] is not None
     except Exception:
         _log.debug("Workspace detection failed during tool selection", exc_info=True)
         return False
@@ -123,14 +180,17 @@ def apply_tool_selection(
         override = _read_config_override(repo_path)
 
     is_workspace = _is_workspace(repo_path)
+    facts = _availability_facts(repo_path)
     enabled = resolve_enabled_tools(
         mcp_tool_registry.entries(),
         is_workspace=is_workspace,
         override=override,
-        facts=_availability_facts(repo_path),
+        facts=facts,
     )
-    global _selected_surface
+    global _selected_surface, _boot_inputs, _always_load
     _selected_surface = (is_workspace, frozenset(enabled))
+    _boot_inputs = (is_workspace, override, facts)
+    _always_load = ALWAYS_LOAD_TOOLS if _read_always_load(repo_path) else frozenset()
 
     manager = getattr(mcp, "_tool_manager", None)
     registered = getattr(manager, "_tools", None)
@@ -157,12 +217,128 @@ def apply_tool_selection(
     return enabled
 
 
+def session_tool_names(client: str) -> frozenset[str] | None:
+    """The tools one MCP session lists, for the agent slug of its client.
+
+    The boot selection resolves with no client, which is the standard profile
+    and a superset of every client default, so a session's set is that
+    resolution redone for its client and kept inside what boot registered.
+    ``None`` before any boot selection (nothing to narrow).
+    """
+    if _boot_inputs is None or _selected_surface is None:
+        return None
+    is_workspace, override, facts = _boot_inputs
+    names = resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=is_workspace,
+        override=override,
+        facts=facts,
+        client=client,
+    )
+    return frozenset(names) & _selected_surface[1]
+
+
+def client_tool_names(
+    repo_path: str | None, client: str, *, override: Sequence[str] | None = None
+) -> set[str]:
+    """The tools a server started for *repo_path* lists to *client*, an agent slug.
+
+    For setup output, outside any running server: the same inputs the boot
+    selection reads (``mcp.tools``, workspace mode, facts), resolved for one
+    client, which is what :func:`session_tool_names` serves it. A per-entry
+    ``repowise mcp --tools`` pin is not seen here. *override* replaces the
+    configured ``mcp.tools``, so a caller can resolve a profile without its
+    deltas.
+    """
+    _ensure_registered()
+    return resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=_read_config_override(repo_path) if override is None else override,
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+
+
+def mark_always_loaded(tools: list[Any]) -> list[Any]:
+    """*tools* (``mcp.types.Tool``) with the always-load hint on those configured.
+
+    Only tools in the list are marked, so a tool the session does not serve is
+    never touched; with the setting off the list comes back as given.
+    """
+    if not _always_load:
+        return tools
+    return [
+        t.model_copy(update={"meta": {**(t.meta or {}), ALWAYS_LOAD_META_KEY: True}})
+        if t.name in _always_load
+        else t
+        for t in tools
+    ]
+
+
+#: What a single-repo server lists for a ``repo`` argument whose description
+#: offers ``"all"``: one repository has nothing to fan out over.
+SINGLE_REPO_REPO_DESCRIPTION = "Usually omitted."
+
+
+def without_repo_all(tool: Any) -> Any:
+    """*tool* (``mcp.types.Tool``) with no ``repo="all"`` offer in its schema."""
+    props = tool.inputSchema.get("properties") or {}
+    repo = props.get("repo")
+    if not isinstance(repo, dict) or '"all"' not in (repo.get("description") or ""):
+        return tool
+    repo = {**repo, "description": SINGLE_REPO_REPO_DESCRIPTION}
+    schema = {**tool.inputSchema, "properties": {**props, "repo": repo}}
+    return tool.model_copy(update={"inputSchema": schema})
+
+
+def single_repo_schemas(tools: list[Any]) -> list[Any]:
+    """*tools* without the ``repo="all"`` offer when this server serves one repository.
+
+    A workspace server, or one with no boot selection, gets the list as given.
+    """
+    if _selected_surface is None or _selected_surface[0]:
+        return tools
+    return [without_repo_all(tool) for tool in tools]
+
+
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
     """Return the surface selected for this running server, or its default."""
     _ensure_registered()
     if _selected_surface is not None and _selected_surface[0] == is_workspace:
         return set(_selected_surface[1])
     return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
+
+
+#: What each tool cannot serve on a server with no source (the repository's
+#: files) and with no git history. ``"unavailable": True`` is a tool that has
+#: nothing to answer with; it replies with the reason instead.
+_NEEDS_SOURCE: dict[str, dict[str, Any]] = {
+    "get_context": {"includes": ["references", "references+", "skeleton", "skeleton+"]},
+    "get_symbol": {"arguments": ["context_lines", "depth"]},
+}
+_NEEDS_GIT: dict[str, dict[str, Any]] = {
+    "get_change_risk": {"unavailable": True},
+    "get_why": {"includes": ["history"]},
+}
+
+
+def capability_gaps(ctx: Any) -> dict[str, dict[str, Any]]:
+    """``{tool: {"arguments", "includes"}}`` that *ctx* (a ``RepoContext``) cannot serve.
+
+    Empty for a context with a checkout and git. A server that embeds the
+    tools over a store alone reads its gaps here instead of keeping its own.
+    """
+    gaps: dict[str, dict[str, Any]] = {}
+    tables = ([_NEEDS_SOURCE] if ctx.source is None else []) + ([] if ctx.git else [_NEEDS_GIT])
+    for table in tables:
+        for tool, gap in table.items():
+            row = gaps.setdefault(tool, {"arguments": [], "includes": []})
+            row["arguments"] = sorted({*row["arguments"], *gap.get("arguments", ())})
+            row["includes"] = sorted({*row["includes"], *gap.get("includes", ())})
+            if gap.get("unavailable"):
+                row["unavailable"] = True
+    return gaps
 
 
 def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
@@ -269,20 +445,78 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
             "default": row["name"] in default_surface,
             "eligible": row["name"] in eligible,
             "enabled": row["name"] in enabled,
+            "schema_tokens": schema_tokens(row["name"]),
         }
         for row in rows
     ]
     return {
         "is_workspace": is_workspace,
         "override": list(override) if isinstance(override, (list, tuple)) else override,
+        "profile": split_profile(normalize_override(override))[0],
+        "profiles": {name: sorted(resolve(name)) for name in PROFILES},
         "tools": tools,
+        "command": _config_command(override),
     }
+
+
+def _config_command(override: str | Sequence[str] | None) -> str:
+    """The ``repowise config`` command that leaves ``mcp.tools`` at *override*."""
+    from repowise.core.settings.views import set_command
+
+    tokens = normalize_override(override)
+    return set_command("mcp.tools", tokens) if tokens else "repowise config reset mcp.tools"
+
+
+def client_tool_surface(repo_path: str | None, client: str) -> dict[str, Any]:
+    """What one client lists for a repo: its profile, tool names and always-load state.
+
+    *client* is an agent slug (``claude_code``). ``profile`` is ``None`` when
+    ``mcp.tools`` is an exact list of names; ``always_load`` is ``None`` for a
+    client that loads every schema up front, where the setting does nothing.
+    """
+    _ensure_registered()
+    override = _read_config_override(repo_path)
+    tokens = normalize_override(override)
+    named, rest = split_profile(tokens)
+    exact = bool(rest) and named is None and not is_delta(rest)
+    names = resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=override,
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+    return {
+        "profile": None if exact else named or default_profile(client),
+        "tools": sorted(names),
+        "always_load": (
+            _read_always_load(repo_path) if client in DEFERRED_SCHEMA_CLIENTS else None
+        ),
+    }
+
+
+def schema_tokens(name: str) -> int:
+    """About how many tokens a client that loads schemas up front pays for *name*.
+
+    The compact JSON of what ``tools/list`` sends for it, at four characters a
+    token: an estimate for comparing tools, not a tokenizer count.
+    """
+    tool = (_full_surface or {}).get(name)
+    if tool is None:
+        return 0
+    listed = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.parameters,
+    }
+    return len(json.dumps(listed, separators=(",", ":"))) // 4
 
 
 def set_tool_override(repo_path: str, tools: str | list[str] | None) -> None:
     """Persist the ``mcp.tools`` override into ``.repowise/config.yaml``.
 
-    A falsy/empty ``tools`` clears the override (the repo falls back to the
+    A running server keeps the surface it started with; the change applies
+    when it next starts. A falsy/empty ``tools`` clears the override (the repo falls back to the
     default surface); the ``mcp`` block is removed when it becomes empty so the
     file stays clean. Other config keys are preserved.
     """

@@ -21,6 +21,8 @@ import {
   contextLabel,
   FACET_GLOSSARY,
   humanizeToken,
+  isMeasuredHotspot,
+  observationsText,
   whyRankedLabel,
 } from "../presentation";
 import { Field, Section } from "./layout";
@@ -55,7 +57,9 @@ export function ChangeabilitySection({ current }: { current: PerformanceOpportun
         <Field
           label="Actionability"
           value={ACTIONABILITY_LABEL[current.actionability_state]}
-          detail={humanizeToken(current.actionability_reason)}
+          detail={
+            current.actionability_reason ? humanizeToken(current.actionability_reason) : undefined
+          }
         />
         <Field
           label="Actionability confidence"
@@ -128,7 +132,11 @@ export function EvidenceSection({ current }: { current: PerformanceOpportunity }
         <Field
           label="Affected"
           value={affectedSummary(current)}
-          detail={`${formatNumber(current.observations_total)} observation${current.observations_total === 1 ? "" : "s"} fold into this cause.`}
+          detail={
+            isMeasuredHotspot(current)
+              ? "No static observation folds into this cause: the run that measured it is its evidence."
+              : `${observationsText(current)} fold into this cause.`
+          }
         />
         <Field
           label="Amplification"

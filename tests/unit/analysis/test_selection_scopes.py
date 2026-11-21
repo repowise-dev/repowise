@@ -13,6 +13,7 @@ from repowise.core.analysis.selection_scopes import (
     trigger_scopes,
 )
 from repowise.core.analysis.test_selection import (
+    SHARED_TEST_DATA_REASON,
     SelectionInput,
     TestSelectionConfig,
     file_namers,
@@ -105,7 +106,6 @@ def test_a_manifest_or_lockfile_scopes_to_its_ecosystem(path, root, suffix, reac
         "Dockerfile",
         ".tool-versions",
         ".github/workflows/ci.yml",
-        "tests/fixtures/package.json",
         "tests/data/pyproject.toml",
         "__init__.py",
         # Tool configuration, not an asset any code reads.
@@ -541,3 +541,64 @@ def test_an_owner_package_scope_routes_through_one_package_walk(tmp_path) -> Non
     assert plan.scopes[css].routes == ("web/",)
     assert plan.routes == ["web/"]
     assert plan.groups == {"web/": ("web/src/app.ts",)}
+
+
+def test_a_setup_module_has_no_ecosystem_scope_away_from_a_project_root() -> None:
+    """``setup.py`` inside a package is code: the graph decides, not the Python ecosystem."""
+    from repowise.core.analysis.selection_scopes import keeps_full_run
+    from repowise.core.analysis.test_selection import project_dirs
+
+    dirs = project_dirs(_TRACKED)
+    module, packaging = "src/pkg/setup.py", "setup.py"
+    scopes = trigger_scopes([module, packaging], _TRACKED, {}, _NONE, dirs)
+    assert module not in scopes
+    assert scopes[packaging].basis == "ecosystem"
+    assert not needs_namers(module, _NONE, dirs)
+    assert not keeps_full_run(module, _NONE, dirs)
+    # Without the checkout's files the name decides.
+    assert _scopes([module])[module].basis == "ecosystem"
+
+
+def test_plan_scopes_counts_a_manifest_the_change_adds_as_a_project_root() -> None:
+    """A change adding ``libs/new/pyproject.toml`` makes the ``setup.py`` beside it packaging."""
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import Checkout, plan_scopes
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    tracked = ["pyproject.toml", "src/pkg/__init__.py", "src/pkg/setup.py", "libs/new/setup.py"]
+    checkout = Checkout(tracked, [], read_pytest_roots([]), lambda _p: "", lambda _p: True)
+
+    def plan(*changed):
+        files = {p: FileDiff(path=p) for p in changed}
+        change = ChangeSet(files=files, deleted=set(), label="t", base=None, head=None)
+        return plan_scopes(change, _NONE, checkout)
+
+    assert plan("src/pkg/setup.py").scopes == {}
+    assert plan("libs/new/setup.py").scopes == {}
+    added = plan("libs/new/setup.py", "libs/new/pyproject.toml")
+    assert added.scopes["libs/new/setup.py"].basis == "ecosystem"
+    assert "libs/new" in added.project_dirs
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/package.json",
+        "tests/fixtures/app/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+        "pkg/testdata/go.mod",
+    ],
+)
+def test_a_manifest_in_a_test_data_tree_runs_the_tests_reading_it(path) -> None:
+    """No build of this repo reads it: it is test data, like any file beside it."""
+    reader = "tests/test_core.py"
+    assert full_run_reason(path) == SHARED_TEST_DATA_REASON
+    assert _scopes([path], {path: [reader]})[path].basis == "fixture-readers"
+    # A manifest at the root or in a sub-project is still this repo's.
+    assert full_run_reason("package.json") != SHARED_TEST_DATA_REASON
+    assert full_run_reason("crate/Cargo.toml") == "dependencies can change any test"
+
+
+def test_build_code_in_a_test_data_tree_keeps_its_rule() -> None:
+    path = "tests/fixtures/app/build.gradle.kts"
+    assert full_run_reason(path) == "build or test configuration can change any test"

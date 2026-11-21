@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.analysis import MAX_CHANGE_ANALYSIS_FILE_BYTES as MAX_FILE_BYTES
 from repowise.core.analysis.change_health import GitRevisionSource
+from repowise.core.analysis.change_health.analyzer import RevisionHealthAnalyzer
 from repowise.core.analysis.diff_risk import (
     DiffRiskFinding,
     FileTexts,
@@ -636,3 +638,40 @@ def test_a_failed_or_binary_read_drops_the_file():
         {"src/a.py": b"x = 1  # noqa\n", "src/b.py": b"\x00binary", "src/c.py": b"y = 2  # noqa\n"},
     )
     assert [f.path for f in read_change_texts(source, pair)] == ["src/c.py"]
+
+
+@pytest.mark.parametrize("size", [1_000_000, 1_200_000, MAX_FILE_BYTES, MAX_FILE_BYTES + 1])
+def test_change_health_and_diff_risk_share_source_size_boundary(size):
+    from repowise.core.analysis.diff_risk.source import _decode
+
+    raw = (b"x = 1\n" * (size // 6 + 1))[:size]
+    accepted = size <= MAX_FILE_BYTES
+    assert (RevisionHealthAnalyzer._reject("src/a.py", raw) is None) is accepted
+    assert (_decode(raw) is not None) is accepted
+
+
+@pytest.mark.parametrize("oversized_side", ["base", "head"])
+def test_diff_risk_drops_a_change_when_either_side_exceeds_shared_limit(oversized_side):
+    from repowise.core.analysis.change_health import FileChange, RevisionPair
+    from repowise.core.analysis.diff_risk import read_change_texts
+
+    pair = RevisionPair(
+        "b", "h", "b", "h", False,
+        [FileChange(head_path="src/a.py", base_path="src/a.py", status="modified")],
+    )  # fmt: skip
+    small = b"x = 1\n"
+    large = b"x = 1\n" * (MAX_FILE_BYTES // 6 + 1)
+    base = large if oversized_side == "base" else small
+    head = large if oversized_side == "head" else small
+    assert read_change_texts(_Source({"src/a.py": base}, {"src/a.py": head}), pair) == []
+
+
+def test_existing_binary_checks_remain_module_specific():
+    from repowise.core.analysis.diff_risk.source import _decode
+
+    first_bytes = b"x\x00" + b"a" * (MAX_FILE_BYTES - 2)
+    late_nul = (b"x = 1\n" * (8192 // 6 + 1))[:8192] + b"\x00"
+    assert RevisionHealthAnalyzer._reject("src/a.py", first_bytes) == "binary"
+    assert _decode(first_bytes) is None
+    assert RevisionHealthAnalyzer._reject("src/a.py", late_nul) is None
+    assert _decode(late_nul) is None

@@ -356,7 +356,10 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v4: a per-file walk widens a file's names only through its own renames, not
 #: those of other files in the same commit. A shallow clone's cut commit
 #: credits no author and counts as neither churn nor a file's origin.
-GIT_HISTORY_VERSION: int = 4
+#: v5: one person counts once across names and emails (mailmap applied) in a
+#: file's owners, top authors, bus factor and blame owners (#6045), and bot
+#: accounts count toward neither ownership nor the contributor count (#6051).
+GIT_HISTORY_VERSION: int = 5
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
@@ -403,6 +406,21 @@ HOTSPOT_HIGH_COMMITS_90D: int = 8
 # Co-change detection still runs across ALL tracked files regardless.
 # Derived from the centralised LanguageRegistry — all code language extensions.
 _CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
+
+# Pack memory each git process the indexer runs may map. Git maps pack files
+# in windows and, with its 64-bit defaults, never unmaps one: on a 15 GiB pack a
+# history walk or the commit-graph write touched every window and showed ~15 GiB
+# resident, and eight blame workers each held their own windows. Those pages are
+# file-backed (the machine's free memory barely moves) but they count toward a
+# process's resident size and a container's limit. These bounds keep a blame or
+# history walk well under 1 GiB; eight blames at once ran 2% slower with them.
+_PACK_WINDOW_OPTIONS: tuple[str, ...] = ("core.packedGitLimit=1g", "core.packedGitWindowSize=128m")
+# The commit-graph write reads every tree in the pack once, so remapping costs
+# it more: 17% at these bounds (1 GiB resident instead of 17), 28% at the ones above.
+_GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
+    "core.packedGitLimit=2g",
+    "core.packedGitWindowSize=256m",
+)
 
 # Files larger than this skip git blame.  blame is O(lines) and blocks the
 # executor thread — for large files the commit-based ownership estimate is

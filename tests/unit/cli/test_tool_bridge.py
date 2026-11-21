@@ -69,6 +69,11 @@ def wired(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr("repowise.server.mcp_server._state.init_tool_state", _fake_init)
+
+    async def _no_identity(session_factory):
+        return None
+
+    monkeypatch.setattr("repowise.server.mcp_server._state.publish_served_repo_id", _no_identity)
     return engine, store, published, tmp_path
 
 
@@ -438,6 +443,41 @@ def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
     assert result["_meta"]["omitted"]["refs"]
 
 
+def _oversized_context() -> dict:
+    return {
+        "targets": {f"src/f{i}.py": {"summary": "x" * 900} for i in range(60)},
+        "_meta": {},
+    }
+
+
+def test_a_bridged_call_with_an_include_gets_the_expanded_tier(wired):
+    """``repowise context --include ...`` is budgeted like the same MCP call."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        return _oversized_context()
+
+    default = tool_bridge.call_tool(repo, _tool, "get_context", arguments={"targets": ["a"]})
+    expanded = tool_bridge.call_tool(
+        repo, _tool, "get_context", arguments={"targets": ["a"], "include": ["source"]}
+    )
+
+    assert default["_meta"]["response_budget"]["tier"] == "default"
+    assert expanded["_meta"]["response_budget"]["tier"] == "expanded"
+    assert len(expanded["targets"]) > len(default["targets"])
+
+
+def test_a_bridged_call_without_arguments_stays_at_the_default_tier(wired):
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        return _oversized_context()
+
+    result = tool_bridge.call_tool(repo, _tool, "get_context")
+
+    assert result["_meta"]["response_budget"]["tier"] == "default"
+
+
 def test_publishing_tool_state_does_not_load_the_http_stack():
     """A CLI tool call wires state per process; FastAPI costs about half a second."""
     import subprocess
@@ -553,3 +593,50 @@ def test_a_workspace_store_that_cannot_open_falls_back_to_the_repo_alone(workspa
         "registry"
     ] is None
     assert registry.closed and published["repo_path"] == str(code)
+
+
+def test_live_reads_follow_the_served_checkout_of_a_moved_index(monkeypatch, tmp_path):
+    """An index copied to another path reads its files where it is served.
+
+    The stored ``local_path`` still names where it was built, so reading lines
+    or references through it found another tree, or none. The MCP server serves
+    the checkout's own row from its own path; a CLI call must do the same.
+    """
+    import asyncio
+
+    from repowise.core.persistence import create_engine, init_db
+    from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _state
+    from repowise.server.mcp_server._meta import served_root
+
+    built_at = tmp_path / "built"
+    served = tmp_path / "copy"
+    (served / ".repowise").mkdir(parents=True)
+    (served / ".git").mkdir()
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
+    monkeypatch.setattr(_state, "_served_repo_id", _state._served_repo_id)
+
+    async def _build():
+        engine = create_engine(resolve_db_url(served))
+        await init_db(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                Repository.__table__.insert().values(id="r1", name="r", local_path=str(built_at))
+            )
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+    async def _fake_open(repo_path):
+        return None
+
+    monkeypatch.setattr(tool_bridge, "_open_vector_store", _fake_open)
+
+    async def _tool():
+        async with _state._session_factory() as session:
+            return {"root": served_root(await session.get(Repository, "r1"))}
+
+    assert tool_bridge.call_tool(served, _tool, "get_context")["root"] == str(served)

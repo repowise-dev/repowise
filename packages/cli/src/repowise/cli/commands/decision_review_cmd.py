@@ -145,9 +145,25 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     "--lane", default=None, help="Only candidates raised by this extraction lane."
 )
 @click.option("--limit", default=30, show_default=True)
+@click.option(
+    "--offset", default=0, show_default=True, help="Skip this many records first, to page the list."
+)
+@click.option(
+    "--background",
+    is_flag=True,
+    default=False,
+    help="Only the records the discovery pass checks (open, not an agreement, not waiting "
+    "for an agent's commit to land, naming a production file), busiest first.",
+)
 @format_option()
 def candidates_command(
-    path: str | None, state: str, lane: str | None, limit: int, fmt: str
+    path: str | None,
+    state: str,
+    lane: str | None,
+    limit: int,
+    offset: int,
+    background: bool,
+    fmt: str,
 ) -> None:
     """List background records: mined or recorded, and not in force.
 
@@ -156,6 +172,8 @@ def candidates_command(
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
+    if background and (state != "open" or lane is not None):
+        raise click.UsageError("--background lists open records only; drop --state and --lane.")
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _run():
@@ -164,18 +182,24 @@ def candidates_command(
             list_candidates,
             record_blockers,
         )
+        from repowise.core.persistence.crud.decision_discovery import background_records
 
         engine, sf = await _open(repo_path)
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                rows = await list_candidates(
-                    session,
-                    repo_id,
-                    review_state=None if state == "all" else state,
-                    lane=lane,
-                    limit=limit,
-                )
+                if background:
+                    found = await background_records(session, repo_id)
+                    rows = [(rec, meta) for rec, meta, _files in found[offset : offset + limit]]
+                else:
+                    rows = await list_candidates(
+                        session,
+                        repo_id,
+                        review_state=None if state == "all" else state,
+                        lane=lane,
+                        limit=limit,
+                        offset=offset,
+                    )
                 return [
                     {
                         "id": rec.id,
@@ -234,8 +258,15 @@ def candidates_command(
     default=False,
     help="Instead, the prompt that moves stored working agreements into CLAUDE.md.",
 )
+@click.option(
+    "--all",
+    "review_all",
+    is_flag=True,
+    default=False,
+    help="Instead, the prompt that works through every background record, a page at a time.",
+)
 @format_option()
-def discover_command(path: str | None, agreements: bool, fmt: str) -> None:
+def discover_command(path: str | None, agreements: bool, review_all: bool, fmt: str) -> None:
     """Print a prompt for your agent: check the background records on the busiest files.
 
     The agent puts the real ones in force, signed as itself with evidence, and
@@ -245,6 +276,9 @@ def discover_command(path: str | None, agreements: bool, fmt: str) -> None:
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
+    if agreements and review_all:
+        raise click.UsageError("--agreements and --all are separate prompts; pass one.")
+    kind = "agreements" if agreements else "review_all" if review_all else "discover"
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _run():
@@ -255,9 +289,7 @@ def discover_command(path: str | None, agreements: bool, fmt: str) -> None:
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                return await decision_prompt_for(
-                    session, repo_id, "agreements" if agreements else "discover"
-                )
+                return await decision_prompt_for(session, repo_id, kind)
         finally:
             await engine.dispose()
 
@@ -266,7 +298,8 @@ def discover_command(path: str | None, agreements: bool, fmt: str) -> None:
         emit_json(prompt.as_dict())
         return
     if not prompt.text:
-        console.print("[dim]No working agreements are stored.[/dim]")
+        empty = "background records left" if review_all else "working agreements are stored"
+        console.print(f"[dim]No {empty}.[/dim]")
         return
     # Plain, not through rich: the text is pasted as is, so no wrapping or markup.
     click.echo(prompt.text)
@@ -723,12 +756,19 @@ def export_command(path: str | None, force: bool, fmt: str) -> None:
 @click.command("import")
 @click.argument("path", required=False, default=None)
 @click.option("--dry-run", is_flag=True, default=False, help="Report without writing.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-accept entries even if the store changed since export.",
+)
 @format_option()
-def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
+def import_command(path: str | None, dry_run: bool, force: bool, fmt: str) -> None:
     """Reconcile the store to ``.repowise/decisions.yaml``.
 
-    The file wins: it is what a colleague's commit changes, and the store is the
-    copy. Entries missing a reason or a scope are skipped rather than guessed at.
+    Conflicting edits are skipped if the store changed since export; --force
+    overrides this token check. Older files without tokens keep their previous
+    behaviour. Entries missing a reason or a scope are skipped rather than guessed at.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -745,7 +785,7 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
                 repo_id = await _repository_id(session, repo_path)
                 try:
                     outcome = await import_manifest(
-                        session, repo_id, repo_path, dry_run=dry_run
+                        session, repo_id, repo_path, dry_run=dry_run, force=force
                     )
                 except ManifestConflictError as exc:
                     emit_refusal("manifest_unreadable", str(exc), fmt)
@@ -763,8 +803,12 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         f"reaffirmed {len(result['reaffirmed'])}  unchanged {len(result['unchanged'])}  "
         f"skipped {len(result['skipped'])}  repaired {len(result['repaired'])}"
     )
+    unchecked = set(result["unchecked"])
     for decision_id in result["reaffirmed"]:
-        console.print(f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted")
+        note = " (no base token, not checked for staleness)" if decision_id in unchecked else ""
+        console.print(
+            f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted{note}"
+        )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
     _print_repairs(result["repaired"])

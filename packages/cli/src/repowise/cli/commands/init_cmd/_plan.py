@@ -10,6 +10,7 @@ from typing import Any
 import click
 
 from repowise.cli.helpers import console, load_config
+from repowise.cli.platform import telemetry
 from repowise.cli.ui import (
     WARN,
     agent_providers_set_up,
@@ -291,6 +292,7 @@ def run_plan_screen(run: InitRun, scan: Any) -> None:
     except EOFError:
         run.opts, run.generate_docs, run.editor_options = before
         run.is_interactive = False
+        telemetry.add_command_outcome(interactive=False)
         say_no_answer()
         return
     _apply(run, base, answers)

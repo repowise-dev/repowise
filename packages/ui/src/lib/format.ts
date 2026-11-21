@@ -5,6 +5,59 @@
 /** A timestamp we can render. */
 type Timestamp = string | Date;
 
+/** A calendar day with no time, "2026-11-01": a day the server already chose,
+ *  usually a UTC-day bucket, so it renders as that day in every zone. */
+function isDateOnly(date: Timestamp): boolean {
+  return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date.trim());
+}
+
+/**
+ * The zone absolute dates render in: an IANA name such as "Europe/Berlin".
+ *
+ * One value per JS realm, set by the host from the viewer's preference
+ * (`setDisplayTimeZone`, or the `<DisplayTimeZone>` component for a React
+ * tree). It starts as UTC, so a host that never sets it renders exactly what
+ * it did before the preference existed.
+ *
+ * Ceiling: on a server that renders for many viewers at once, the value is
+ * shared by every in-flight request, so two viewers with different zones can
+ * briefly see each other's zone (React then repairs the text on hydration).
+ * Fine for a single-viewer server such as the OSS web UI. A multi-tenant host
+ * that needs it exact per request should scope it with AsyncLocalStorage.
+ */
+let displayTimeZone = "UTC";
+
+/** True for a zone `Intl` accepts, "UTC" or an IANA name. Never throws. */
+export function isTimeZone(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Set the zone absolute dates render in. An invalid zone falls back to UTC. */
+export function setDisplayTimeZone(zone: string | null | undefined): void {
+  displayTimeZone = isTimeZone(zone) ? zone : "UTC";
+}
+
+/** The zone absolute dates render in right now. */
+export function getDisplayTimeZone(): string {
+  return displayTimeZone;
+}
+
+/** This browser's own zone, or UTC where the runtime cannot say. */
+export function browserTimeZone(): string {
+  try {
+    const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return isTimeZone(zone) ? zone : "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
 /**
  * Parse an API timestamp into a `Date`, treating a bare ISO string without an
  * explicit timezone suffix (e.g. `"2026-08-21T13:23:33"`) as UTC. The repowise
@@ -15,7 +68,7 @@ type Timestamp = string | Date;
 export function parseDate(date: Timestamp): Date {
   if (date instanceof Date) return date;
   // A date-only string already parses as UTC, and "2026-06-23Z" is invalid in Safari.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
+  if (isDateOnly(date)) return new Date(date.trim());
   // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return new Date(`${date.trim()}Z`);
@@ -142,32 +195,41 @@ export function parseDateOrNull(date: Timestamp | null | undefined): Date | null
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC).
- *  A missing or unparseable date renders as "—". */
-export function formatDate(date: Timestamp | null | undefined): string {
+/**
+ * The one place a `Date` becomes absolute text. Renders in en-US (pinned, so
+ * server and browser agree) and in the display zone, except:
+ * - `options.timeZone` wins, for a label that must stay in one zone on
+ *   purpose, such as a server-side UTC bucket;
+ * - a date-only string renders in UTC, so "2026-11-01" stays Nov 1 for a
+ *   viewer west of Greenwich.
+ * A missing or unparseable date renders as "—".
+ */
+export function formatDateWith(
+  date: Timestamp | null | undefined,
+  options: Intl.DateTimeFormatOptions,
+): string {
   const d = parseDateOrNull(date);
   if (d == null) return NO_DATE;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(d);
+  const timeZone = options.timeZone ?? (isDateOnly(date!) ? "UTC" : displayTimeZone);
+  return new Intl.DateTimeFormat("en-US", { ...options, timeZone }).format(d);
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC).
+/** Format a datetime to an absolute string: "Mar 19, 2026", in the display
+ *  zone. A missing or unparseable date renders as "—". */
+export function formatDate(date: Timestamp | null | undefined): string {
+  return formatDateWith(date, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** Format a datetime to full: "Mar 19, 2026, 10:30 AM", in the display zone.
  *  A missing or unparseable date renders as "—". */
 export function formatDateTime(date: Timestamp | null | undefined): string {
-  const d = parseDateOrNull(date);
-  if (d == null) return NO_DATE;
-  return new Intl.DateTimeFormat("en-US", {
+  return formatDateWith(date, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-    timeZone: "UTC",
-  }).format(d);
+  });
 }
 
 /** Format LOC counts: 50000 → "50K", 1234 → "1.2K" */

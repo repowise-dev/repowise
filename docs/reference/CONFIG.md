@@ -365,7 +365,8 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 <!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `tools` | unset | Which MCP tools are offered: all, lean, +name or -name to adjust the default, or plain names as the exact list. Unset offers the default set. |
+| `tools` | unset | Which MCP tools are offered, for every client: a profile (core, lean, standard, all), optionally followed by +name or -name; +name or -name alone to adjust each client's default; or plain names as the exact list. Unset: Claude Code gets standard, clients that load every schema up front get core. |
+| `always_load` | `false` | Claude Code only: load the four read tools (get_answer, get_context, search_codebase, get_symbol) from the first turn instead of through tool search, for about 2.5k more tokens a turn. |
 <!-- END GENERATED settings:mcp -->
 
 | `tools` value | Effect |
@@ -399,16 +400,21 @@ editor_files:
 | `cursor_rules` | `true` | Write the Cursor rules file. |
 | `kiro_steering` | `true` | Write the Kiro steering file. |
 | `vscode_mcp` | `true` | Write the VS Code MCP entry. |
-| `sections` | `[architecture, decisions, entry_points, health, hotspots, how_to_work, key_modules]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: code_health, fix_first, commands, how_to_work_full, tools. |
+| `sections` | `[decisions, how_to_work]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: architecture, key_modules, entry_points, hotspots, health, code_health, fix_first, commands, how_to_work_full, tools. |
 <!-- END GENERATED settings:editor_files -->
 
 - `false` on a file key stops Repowise writing that file.
-- Default sections: `architecture`, `key_modules`, `entry_points`,
-  `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (which task goes to Grep and which to a Repowise call).
-- Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`,
-  `tools` (the MCP tool table).
+- Every block leads with one line telling the agent to call a Repowise tool
+  first for any question about the codebase.
+- Default sections: `how_to_work` (one line per moment: rename, edit, finish,
+  noisy commands, settings) and `decisions` (whether decisions govern files,
+  plus up to five pinned titles). The default block stays within about 250
+  tokens; a test holds it there.
+- Opt-in: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `code_health` (all health signals, replaces
+  `health`), `fix_first`, `commands` (build, test and lint from manifests),
+  `how_to_work_full`, `tools` (the MCP tool table). For example
+  `sections: [+key_modules, +hotspots]`.
 
 ## The `decisions:` block
 
@@ -913,6 +919,29 @@ agent_provenance:
 - `repowise doctor` names values that fell back to defaults. Read events with
   `repowise events` or `GET /api/repos/{id}/events`.
 
+## The `evidence:` block
+
+Caps on the runtime evidence `repowise evidence add` stores (profiles,
+benchmark results, test timings, query counts). A capped run keeps its
+costliest entries and counts the rest, so a reader shows them as unknown,
+never as zero. How evidence is collected and joined:
+[RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
+
+<!-- BEGIN GENERATED settings:evidence (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `max_file_mb` | `20` | > 0 | Largest evidence file read, in MB; a bigger one is refused before it is read. |
+| `max_symbols_per_run` | `1500` | >= 1 | Most functions stored from one profile, costliest self time (waits excluded) first; the rest are counted. |
+| `max_rows_per_run` | `30000` | >= 1 | Most benchmark, test or query rows stored from one run; the rest are counted. |
+| `history_runs` | `20` | >= 1 | Runs kept per workload and environment for each evidence kind; oldest go first. |
+| `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
+| `rank_top_n` | `10` | >= 1 | A measured function is ranked when it is among this many production functions with the most self time in its run (built-ins and libraries it calls included, waits excluded). |
+| `rank_min_samples` | `30` | >= 1 | Fewest self samples on a function for it to be ranked; below this the run has not enough samples in repo code. Runs that count no samples rank by their order alone. |
+| `lead_min_share` | `0.025` | 0-1 | Self share of the run's time a ranked function needs to count as a measured cost from one run. |
+| `lead_min_lower_bound` | `0.02` | 0-1 | Lower bound of the 95% interval on that share a lead candidate needs from one run. |
+| `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
+<!-- END GENERATED settings:evidence -->
+
 ## The `refactoring:` block
 
 Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break
@@ -935,6 +964,20 @@ Cycle / Split File plans behind `repowise health --refactoring-targets`,
   `min_confidence` query parameter can only narrow further.
 - Per-path disables use the `health-rules.json` glob mechanism markers use.
   Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+## The `report:` block
+
+The repo report written after the first index: what Repowise found,
+in order, with a link and an agent prompt per item. The template version is
+free; with a configured provider one model call can write its prose.
+
+<!-- BEGIN GENERATED settings:report (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `first_look.enabled` | `true` | Write the repo report after the first index; the template version costs nothing. |
+| `first_look.llm` | `true` | Let one model call write the report's prose when a provider is configured and prose is on. |
+| `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
+<!-- END GENERATED settings:report -->
 
 ## The `assertions:` block
 
@@ -1408,7 +1451,7 @@ faster.
 <!-- END GENERATED settings:env-mcp -->
 
 `REPOWISE_ANSWER_TIMEOUT_S` defaults to 60s for remote API providers, 120s
-for `ollama` and `litellm`, and 180s for agent CLI providers (`claude_cli`,
+for `ollama` and `litellm`, and 50s for agent CLI providers (`claude_cli`,
 `codex_cli`, `copilot_cli`, `opencode`). Raise it for a slow model, lower it to
 fail fast. Your MCP client's own tool timeout sits underneath: a higher value
 yields a client error instead of Repowise's "synthesis exceeded its budget".

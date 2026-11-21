@@ -29,6 +29,8 @@ _WORD = re.compile(r"[A-Za-z_$][\w$]*")
 _CONSTRUCTOR_NAMES = frozenset({"__init__", "__new__", "__post_init__"})
 _JS_CONSTRUCTOR_LANGUAGES = frozenset({"typescript", "javascript"})
 
+_INCLUDE_LANGUAGES = frozenset({"c", "cpp"})
+
 #: How the class-member expansion follows ``extends`` chains, at most.
 _MAX_ANCESTOR_DEPTH = 32
 
@@ -41,6 +43,10 @@ class SurfaceKeys:
     stems: frozenset[str]
     importers_of: tuple[str, ...]
     module_imports_changed: tuple[str, ...] = ()
+    include_only: frozenset[str] = frozenset()
+    site_names: frozenset[str] = frozenset()
+    cross_names: frozenset[str] = frozenset()
+    import_names: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def _words(*values: Any) -> Iterator[str]:
@@ -154,8 +160,11 @@ def _is_module_import(fact: tuple) -> bool:
     return fact[0] == "import" and (not fact[2] or "*" in fact[2])
 
 
-def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, bool]:
-    """``(identifiers, via_importers, module_import_changed)`` for one file's edit.
+def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, bool, set[str]]:
+    """``(identifiers, via_importers, module_import_changed, import names)`` for one file's edit.
+
+    *import names* are the identifiers only the file's own imports touched:
+    another file sees them only by importing this one (``affected``).
 
     *via_importers*: the file's importers stand in for some names.
     *module_import_changed*: a whole-module import changed, so what the file
@@ -164,19 +173,23 @@ def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, 
     old = _name_facts(before) if before is not None else set()
     new = _name_facts(after) if after is not None else set()
     moved = before is None or after is None
+    # An include binds no name: what it passes on is the files it reaches,
+    # which the build checks itself (``include_reach``).
+    includes = (after or before).file_info.language in _INCLUDE_LANGUAGES
     names: set[str] = set()
+    import_names: set[str] = set()
     via_importers = False
     module_import_changed = False
     for fact in old ^ new:
-        if moved and fact[0] == "import":
+        if (moved or includes) and fact[0] == "import":
             # Another file sees an added or removed file's imports only by
             # importing that file, and that import re-routes (``affected``).
             continue
         module_import_changed = module_import_changed or _is_module_import(fact)
         fact_names, through_importers = _fact_names(fact)
-        names |= fact_names
+        (import_names if fact[0] == "import" else names).update(fact_names)
         via_importers = via_importers or through_importers
-    return names, via_importers, module_import_changed
+    return names, via_importers, module_import_changed, import_names - names
 
 
 def surface_keys(
@@ -188,12 +201,24 @@ def surface_keys(
     ``(before, after)`` parse, ``None`` where the file did not exist.
     """
     names: set[str] = set()
+    include_names: set[str] = set()
+    site_names: set[str] = set()
+    cross_names: set[str] = set()
     stems: set[str] = set()
     importers_of: set[str] = set()
     module_imports_changed: set[str] = set()
+    import_names: dict[str, frozenset[str]] = {}
     for path, (before, after) in surface_edits.items():
-        edit_names, via_importers, module_import_changed = _edit_names(before, after)
-        names |= edit_names
+        edit_names, via_importers, module_import_changed, imported = _edit_names(before, after)
+        if imported:
+            import_names[path] = frozenset(imported)
+        if (after or before).file_info.language in _INCLUDE_LANGUAGES:
+            by_site = _site_bound_names(before, after) & edit_names
+            site_names |= by_site
+            include_names |= edit_names - by_site
+            cross_names |= _declared_names(before, after) - by_site
+        else:
+            names |= edit_names
         if via_importers:
             importers_of.add(path)
         if module_import_changed:
@@ -201,12 +226,50 @@ def surface_keys(
         if before is None or after is None:
             stems.update(_stem_words(path))
     parses = [*parsed_files, *(before for before, _ in surface_edits.values() if before)]
+    names = _with_inherited_members(names, parses)
+    # A member of a touched class is reached through the calls naming it.
+    site_names |= _with_inherited_members(include_names, parses) - include_names
     return SurfaceKeys(
-        names=frozenset(_with_inherited_members(names, parses)),
+        names=frozenset(names | include_names),
         stems=frozenset(stems),
         importers_of=tuple(sorted(importers_of)),
         module_imports_changed=tuple(sorted(module_imports_changed)),
+        include_only=frozenset(include_names - names),
+        site_names=frozenset(site_names - names - include_names),
+        cross_names=frozenset(cross_names - names),
+        import_names=tuple(sorted(import_names.items())),
     )
+
+
+def _declared_names(before: Any | None, after: Any | None) -> set[str]:
+    """Names of the symbols a C/C++ edit added, removed or re-filed (kind, owner, body).
+
+    Another language meets a C/C++ declaration only in the repo-wide name
+    tiers, which count the symbols of a name before keeping one of its own
+    language: an edit reaches it only by changing that count.
+    """
+    def entries(parsed: Any | None) -> set[tuple]:
+        symbols = parsed.symbols if parsed is not None else ()
+        return {(s.name, s.id, str(s.kind), s.parent_name, s.is_declaration) for s in symbols}
+
+    return {entry[0] for entry in entries(before) ^ entries(after)}
+
+
+# C/C++ symbols another file reaches only through a parsed site that names
+# them: a call (its target or qualifier) for functions, methods and
+# function-like macros; a namespace is matched as a qualifier or not at all.
+# Types, fields, aliases and object-like macros are also read off source
+# text (receiver typing), so their names reach every C/C++ file spelling them.
+_SITE_BOUND_KINDS = frozenset({"function", "method", "module"})
+
+
+def _site_bound_names(before: Any | None, after: Any | None) -> set[str]:
+    """Names whose every symbol on either side of a C/C++ edit is site-bound."""
+    kinds: dict[str, set[str]] = defaultdict(set)
+    for parsed in (before, after):
+        for sym in parsed.symbols if parsed is not None else ():
+            kinds[sym.name].add(str(sym.kind))
+    return {name for name, found in kinds.items() if found <= _SITE_BOUND_KINDS}
 
 
 def path_set_reason(

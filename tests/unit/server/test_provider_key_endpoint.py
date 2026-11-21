@@ -74,6 +74,50 @@ async def test_remove_key_with_repo_id_clears_repo_env(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blank", ["   ", "", "\t"])
+async def test_add_blank_key_is_rejected_and_keeps_stored_key(
+    client: AsyncClient, isolate_server_store, blank: str
+) -> None:
+    # A blank paste must not replace a working key behind a 204.
+    from pathlib import Path
+
+    repo = await create_test_repo(client)
+    await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": "sk-ant-real", "repo_id": repo["id"]},
+    )
+
+    resp = await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": blank, "repo_id": repo["id"]},
+    )
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["detail"]
+
+    assert isolate_server_store._get_key_for_provider("anthropic") == "sk-ant-real"
+    providers = (await client.get("/api/providers")).json()["providers"]
+    assert {p["id"]: p["detected"] for p in providers}["anthropic"] == "saved"
+    assert load_repo_env(Path(repo["local_path"]))["ANTHROPIC_API_KEY"] == "sk-ant-real"
+
+
+@pytest.mark.asyncio
+async def test_add_padded_key_is_stored_stripped(client: AsyncClient, isolate_server_store) -> None:
+    from pathlib import Path
+
+    repo = await create_test_repo(client)
+
+    resp = await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": "  sk-ant-x  ", "repo_id": repo["id"]},
+    )
+    assert resp.status_code == 204
+
+    assert isolate_server_store._get_key_for_provider("anthropic") == "sk-ant-x"
+    env_file = Path(repo["local_path"]) / ".repowise" / ".env"
+    assert "ANTHROPIC_API_KEY=sk-ant-x\n" in env_file.read_text()
+
+
+@pytest.mark.asyncio
 async def test_add_key_resolves_non_primary_workspace_repo(client: AsyncClient, app, tmp_path) -> None:
     # Workspace mode: a non-primary repo's row lives only in its own wiki.db, not
     # the primary DB. The key endpoint gets repo_id in the body, so resolution
@@ -252,3 +296,53 @@ async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, mo
     assert by_id(plain)["codex_cli"] is None
     assert by_id(detected)["codex_cli"] == "signed_in"
     assert by_id(detected)["claude_cli"] is None
+
+
+@pytest.mark.asyncio
+async def test_detect_names_the_plan_route_timed_by_generate(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.generation import scope
+    from repowise.core.index_scope import FreeRoute
+    from repowise.core.providers.llm import subscription
+    from repowise.server.routers import providers
+
+    monkeypatch.setattr(providers, "_generate_calls", {})
+    repo = await create_test_repo(client)
+    seen: list[str] = []
+    counted: list[str] = []
+
+    def route(path):
+        seen.append(str(path))
+        return FreeRoute(provider="claude_cli", cli_name="Claude Code")
+
+    async def calls(session, repo_id, repo_path):
+        counted.append(repo_id)
+        return 300
+
+    monkeypatch.setattr(subscription, "detect_free_route", route)
+    monkeypatch.setattr(subscription, "process_limit", lambda name: 5)
+    monkeypatch.setattr(scope, "generate_model_calls", calls)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] == {"provider": "claude_cli", "cli_name": "Claude Code", "minutes": 60}
+    assert seen == [repo["local_path"]]
+
+    # Only the detect call probes, and only for a repo.
+    assert (await client.get(f"/api/providers?repo_id={repo['id']}")).json()["plan_route"] is None
+    assert (await client.get("/api/providers?detect=true")).json()["plan_route"] is None
+    assert len(seen) == 1
+
+    # A second open probes the sign-in again but reuses the count.
+    again = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert again["plan_route"]["minutes"] == 60
+    assert len(seen) == 2 and counted == [repo["id"]]
+
+
+@pytest.mark.asyncio
+async def test_detect_names_no_plan_route_without_a_paid_plan(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.providers.llm import subscription
+
+    repo = await create_test_repo(client)
+    monkeypatch.setattr(subscription, "detect_free_route", lambda path: None)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] is None

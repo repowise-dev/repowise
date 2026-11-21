@@ -166,10 +166,36 @@ async def test_reindex_aborts_when_every_item_failed(
         lambda *a, **k: store,
     )
 
-    with pytest.raises(click.ClickException, match="failed in two consecutive batches"):
+    with pytest.raises(click.ClickException, match="failed in two consecutive batches") as exc_info:
         await reindex_cmd._reindex(tmp_path, "openai", batch_size=20)
     assert store.batch_calls == 2
     assert store.single_calls == 0
+    # Two failed batches are as often a setting as an outage (issue #5738).
+    assert "outage" not in exc_info.value.message
+    assert "Last error: embedder down" in exc_info.value.message
+
+
+def test_batch_recovery_keeps_a_refused_dimension_setting_terminal() -> None:
+    """Control: a refused width stays terminal for the whole batch (issue #5738).
+
+    httpx keeps the status on ``.response``, which ``_is_input_specific_error``
+    does not read, so this held before the refusal became a ``ValueError`` too.
+    """
+    import httpx
+
+    request = httpx.Request("POST", "http://localhost:11434/api/embed")
+    refusal = httpx.HTTPStatusError(
+        "400", request=request, response=httpx.Response(400, request=request)
+    )
+    exc = ValueError("Ollama refused dimensions=3072 ...")
+    exc.__cause__ = refusal
+    items = [(f"p{i}", "text", {}) for i in range(4)]
+
+    successful, retry_items, terminal = reindex_cmd._batch_recovery_plan(exc, items)
+
+    assert successful == 0
+    assert retry_items == []
+    assert [item for item, _stage, _exc in terminal] == items
 
 
 def test_batch_recovery_retries_only_failed_input_chunk() -> None:
@@ -409,11 +435,10 @@ async def test_an_explicit_mock_still_means_mock(monkeypatch, tmp_path: Path) ->
     await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
 
 
-async def test_reindex_skips_tombstoned_pages(monkeypatch, tmp_path: Path) -> None:
-    """A tombstone is out of both indexes by design: update removes its vector
-    and doctor reports a leftover one as an orphan that ``--repair`` deletes.
-    Embedding it here meant reindex and ``doctor --repair`` undid each other on
-    every run."""
+async def _seed_pages(
+    tmp_path: Path, pages: dict[str, str], *, tombstoned: tuple[str, ...] = ()
+) -> str:
+    """Create the wiki database with one page per ``path: title``; return its URL."""
     from sqlalchemy import text
 
     from repowise.core.persistence.crud import upsert_page, upsert_repository
@@ -429,27 +454,39 @@ async def test_reindex_skips_tombstoned_pages(monkeypatch, tmp_path: Path) -> No
     await init_db(engine)
     async with get_session(create_session_factory(engine)) as session:
         repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
-        for page_id in ("file_page:live.py", "file_page:gone.py"):
+        for path, title in pages.items():
             await upsert_page(
                 session,
-                page_id=page_id,
+                page_id=f"file_page:{path}",
                 repository_id=repo.id,
                 page_type="file_page",
-                title=page_id,
+                title=title,
                 content="a body long enough to be worth embedding " * 4,
-                target_path=page_id.split(":", 1)[1],
+                target_path=path,
                 source_hash="h",
                 model_name="mock",
                 provider_name="mock",
                 input_tokens=1,
                 output_tokens=1,
             )
-        await session.execute(
-            text("UPDATE wiki_pages SET freshness_status = 'tombstone' WHERE id = :id"),
-            {"id": "file_page:gone.py"},
-        )
+        for path in tombstoned:
+            await session.execute(
+                text("UPDATE wiki_pages SET freshness_status = 'tombstone' WHERE id = :id"),
+                {"id": f"file_page:{path}"},
+            )
         await session.commit()
     await engine.dispose()
+    return db_url
+
+
+async def test_reindex_skips_tombstoned_pages(monkeypatch, tmp_path: Path) -> None:
+    """A tombstone is out of both indexes by design: update removes its vector
+    and doctor reports a leftover one as an orphan that ``--repair`` deletes.
+    Embedding it here meant reindex and ``doctor --repair`` undid each other on
+    every run."""
+    db_url = await _seed_pages(
+        tmp_path, {"live.py": "live", "gone.py": "gone"}, tombstoned=("gone.py",)
+    )
 
     class _RecordingStore:
         def __init__(self) -> None:
@@ -472,3 +509,257 @@ async def test_reindex_skips_tombstoned_pages(monkeypatch, tmp_path: Path) -> No
     await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
 
     assert store.ids == ["file_page:live.py"]
+
+
+# --- what a reindex leaves behind when it changes the embedder (#5673) -------
+
+
+async def _switch_embedder(
+    monkeypatch,
+    tmp_path: Path,
+    to: str,
+    *,
+    config: str,
+    pages: dict[str, str] | None = None,
+    pending_edit: str = "",
+) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    """Reindex a stamped repo with *to*; return its config, state and config changes.
+
+    *pending_edit* is appended to config.yaml after the stamp: a hand edit no
+    update has seen yet.
+    """
+    from repowise.cli.commands.update_cmd.config_changes import classify_config_changes
+    from repowise.cli.helpers import load_config, load_state, save_state
+    from repowise.cli.providers import semantic_search_status
+    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(config, encoding="utf-8")
+    old = load_config(tmp_path)["embedder"]
+    save_state(
+        tmp_path,
+        {
+            "config_fingerprint": config_fingerprint(tmp_path),
+            "config_dependency_fingerprints": config_dependency_fingerprints(tmp_path),
+            "index_scope": {
+                "provider": {"embedder": old},
+                "search": {"semantic": semantic_search_status(old, 0)},
+            },
+        },
+    )
+    with (tmp_path / ".repowise" / "config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(pending_edit)
+    db_url = await _seed_pages(tmp_path, pages or {"a.py": "a.py"})
+
+    class _Store:
+        async def embed_batch(self, items: list[Any]) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: _Store()
+    )
+    if to != "mock":
+        monkeypatch.setattr(
+            "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: object()
+        )
+
+    await reindex_cmd._reindex(tmp_path, to, batch_size=20)
+
+    cfg, state = load_config(tmp_path), load_state(tmp_path)
+    return cfg, state, classify_config_changes(tmp_path, state, cfg)
+
+
+async def test_a_clean_embedder_switch_leaves_nothing_for_update_to_rebuild(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The reindex just did the embed; the next update must not do it again."""
+    cfg, state, changes = await _switch_embedder(
+        monkeypatch, tmp_path, "openai", config="embedder: mock\nembedding_model: mock-model\n"
+    )
+
+    assert cfg["embedder"] == "openai"
+    # A model pinned for the old embedder would now be read as the new one's.
+    assert "embedding_model" not in cfg
+    assert state["index_scope"]["provider"]["embedder"] == "openai"
+    assert not changes.changed
+    assert not changes.rebuild_required
+
+
+async def test_a_partial_embedder_switch_still_asks_update_to_rebuild(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Pages failed, so the embed is not done: the fingerprints stay and update rebuilds."""
+    cfg, state, changes = await _switch_embedder(
+        monkeypatch,
+        tmp_path,
+        "openai",
+        config="embedder: mock\nembedding_model: mock-model\n",
+        pages={"a.py": "a.py", "b.py": ""},  # a blank title is counted as a failure
+    )
+
+    assert cfg["embedder"] == "openai"
+    assert "embedding_model" not in cfg
+    assert state["index_scope"]["provider"]["embedder"] == "openai"
+    assert changes.generation_changed
+    assert changes.rebuild_required
+
+
+async def test_a_clean_embedder_switch_keeps_a_pending_config_edit_for_update(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Only a fingerprint that still matched moves: update has not seen this edit."""
+    _cfg, _state, changes = await _switch_embedder(
+        monkeypatch,
+        tmp_path,
+        "openai",
+        config="embedder: mock\n",
+        pending_edit="exclude_patterns: [vendor]\n",
+    )
+
+    assert changes.traversal_changed
+    assert changes.rebuild_required
+
+
+async def test_a_switch_names_the_model_pin_it_removes(monkeypatch, tmp_path: Path) -> None:
+    """The embed did not read a pin bound to the old embedder; say it is gone."""
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    cfg, _state, _changes = await _switch_embedder(
+        monkeypatch,
+        tmp_path,
+        "openai",
+        config="embedder: mock\nembedding_model: text-embedding-3-large\n",
+    )
+
+    assert "embedding_model" not in cfg
+    assert any("Removed embedding_model: text-embedding-3-large" in w for w in warnings)
+
+
+async def test_a_switch_to_mock_is_named_in_the_scope(monkeypatch, tmp_path: Path) -> None:
+    _cfg, state, _changes = await _switch_embedder(
+        monkeypatch, tmp_path, "mock", config="embedder: openai\n"
+    )
+
+    assert state["index_scope"]["provider"]["embedder"] == "mock"
+    # Test vectors: the scope must not go on calling semantic search available.
+    assert state["index_scope"]["search"]["semantic"] == "unavailable"
+
+
+async def test_a_reindex_with_the_same_embedder_keeps_its_model_pin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    cfg, _state, changes = await _switch_embedder(
+        monkeypatch, tmp_path, "openai", config="embedder: openai\nembedding_model: small\n"
+    )
+
+    assert cfg["embedding_model"] == "small"
+    assert not warnings
+    assert not changes.rebuild_required
+
+
+async def test_a_broken_config_stops_the_reindex_before_it_embeds(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The config cannot be written, so say which file to fix, and before the embed."""
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("embedder: [mock\n", encoding="utf-8")
+    db_url = await _seed_pages(tmp_path, {"a.py": "a.py"})
+    embedded: list[Any] = []
+
+    class _Store:
+        async def embed_batch(self, items: list[Any]) -> None:
+            embedded.extend(items)
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: _Store()
+    )
+
+    with pytest.raises(
+        click.ClickException, match=r"(?s)config\.yaml.*Nothing was saved"
+    ) as raised:
+        await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+    assert getattr(raised.value, "reason", None) == "config_unreadable"
+    assert not embedded
+
+
+async def test_a_switch_pins_the_model_set_only_in_the_shell(monkeypatch, tmp_path: Path) -> None:
+    """OLLAMA_EMBEDDING_MODEL in one shell: the MCP server must embed queries with it too."""
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    cfg, _state, changes = await _switch_embedder(
+        monkeypatch, tmp_path, "ollama", config="embedder: mock\n"
+    )
+
+    assert cfg["embedder"] == "ollama"
+    assert cfg["embedding_model"] == "nomic-embed-text"
+    assert not changes.rebuild_required
+
+
+async def test_a_missing_ollama_model_stops_on_the_first_batch_with_the_pull_command(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
+
+    db_url = await _seed_pages(tmp_path, {"a.py": "a.py", "b.py": "b.py", "c.py": "c.py"})
+    missing = OllamaModelMissingError(
+        "Ollama has no model 'embeddinggemma'. Run `ollama pull embeddinggemma`, "
+        "then re-run this command."
+    )
+
+    class _Store:
+        calls = 0
+
+        async def embed_batch(self, items: list[Any]) -> None:
+            _Store.calls += 1
+            raise missing
+
+        async def close(self) -> None:
+            return None
+
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: _Store()
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: object()
+    )
+
+    with pytest.raises(click.ClickException) as exc_info:
+        await reindex_cmd._reindex(tmp_path, "ollama", batch_size=1)
+
+    assert _Store.calls == 1
+    assert not warnings
+    assert exc_info.value.message == str(missing)
+
+
+async def test_an_env_model_that_replaces_a_pin_says_so(monkeypatch, tmp_path: Path) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    cfg, _state, _changes = await _switch_embedder(
+        monkeypatch,
+        tmp_path,
+        "ollama",
+        config="embedder: ollama\nembedding_model: embeddinggemma\n",
+    )
+
+    assert cfg["embedding_model"] == "nomic-embed-text"
+    assert warnings == [
+        "embedding_model in config.yaml changed from embeddinggemma to nomic-embed-text: "
+        "this run embedded with the model the environment names."
+    ]

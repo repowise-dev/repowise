@@ -264,7 +264,6 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
-    ("docs/reference/CLI_REFERENCE.md", "lean", "the {w}-tool agent-lean profile"),
     ("packages/server/README.md", "total", "{n} registered MCP tools"),
     ("packages/server/README.md", "single_repo", "({n} advertised by default"),
     # The CLI help text is the copy every user reads, and it was the only place
@@ -280,14 +279,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "plus {w} more by default",
     ),
     ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "opt_in", "{W} more are opt-in"),
-    # The lean count is written twice in this file, in the --tools help and in
-    # the worked example. One row matching either would let the other go stale,
-    # so each occurrence is pinned by the text around it.
-    (
-        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
-        "lean",
-        "{w}-tool agent-lean profile. Overrides",
-    ),
+    # The lean count is written in the worked example; the --tools help names
+    # the profiles as peers, with no counts.
     (
         "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
         "lean",

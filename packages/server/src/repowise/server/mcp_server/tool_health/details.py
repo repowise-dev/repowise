@@ -198,7 +198,15 @@ async def _action_detail_response(
     session: Any, repository: Any, action_id: str, alias: str | None = None
 ) -> dict[str, Any]:
     """One Do next action in full, serialized as the REST actions route does."""
-    action = await load_action(session, repository.id, action_id, **_cross_repo_cut(alias))
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    action = await load_action(
+        session,
+        repository.id,
+        action_id,
+        setup=await setup_facts(session, repository),
+        **_cross_repo_cut(alias),
+    )
     result = {
         "mode": "action",
         "fix_id": action_id,
@@ -357,7 +365,9 @@ async def _performance_detail_response(
             **evidence_block(rows, total, cursor),
             "_meta": _build_meta(repository=repository),
         }
-    detail = await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    detail = _without_test_evidence(
+        await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    )
     file_path = detail.get("file_path")
     result = {
         "mode": "performance_opportunity",
@@ -368,6 +378,25 @@ async def _performance_detail_response(
     }
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
+
+
+def _without_test_evidence(detail: dict[str, Any]) -> dict[str, Any]:
+    """*detail* without the facets a unit-test run gave.
+
+    Measured-in-tests evidence is shown to people (CLI, web) and not yet to
+    agents, until an agent benchmark shows it helps; its effect on which
+    causes are queued is not hidden.
+    """
+    facets = detail.get("facets")
+    if not facets:
+        return detail
+    kept = {
+        key: value
+        for key, value in facets.items()
+        if key != "measured_in_tests"
+        and not (key == "confirmed" and value == "measured_in_tests")
+    }
+    return detail if kept == facets else {**detail, "facets": kept}
 
 
 async def _refactoring_detail_response(

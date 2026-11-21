@@ -28,6 +28,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_SCORE_FLOOR,
     _COVERAGE_FLOOR,
     _DEFINES_CHAR_BUDGET,
+    _DIGEST_SLOT_CHARS,
     _DOMAIN_PENALTY,
     _GATED_EXCERPT_CHARS,
     _PAGE_EXCERPT_HITS,
@@ -297,11 +298,7 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
             res = await session.execute(
                 select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
             )
-            # The digest carries what the page answers in an agent's words.
-            content_by_id = {
-                row[0]: "\n\n".join(part for part in (row[1], row[2]) if part)
-                for row in res.all()
-            }
+            content_by_id = {row[0]: _page_excerpt(row[1], row[2]) for row in res.all()}
     except Exception:
         # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(
@@ -315,10 +312,29 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     for h in top:
         body = content_by_id.get(h.get("page_id"), "")
         if body:
-            h["excerpt"] = body[:_GATED_EXCERPT_CHARS]
+            h["excerpt"] = body
         else:
             missing += 1
     return missing
+
+
+def _page_excerpt(content: str | None, digest: str | None) -> str:
+    """A page's body cut to fit the excerpt, then the head of its agent digest.
+
+    The digest carries what the page answers in an agent's words. Joined after
+    the body and cut as one, it never reached synthesis, so it gets its own
+    slot: at most ``_DIGEST_SLOT_CHARS``, ended at a line, with the body taking
+    the rest.
+    """
+    content, digest = content or "", (digest or "").strip()
+    if len(digest) > _DIGEST_SLOT_CHARS:
+        cut = digest[:_DIGEST_SLOT_CHARS]
+        digest = cut[: cut.rfind("\n")].rstrip() if "\n" in cut else cut
+    if not digest:
+        return content[:_GATED_EXCERPT_CHARS]
+    if not content:
+        return digest
+    return f"{content[: _GATED_EXCERPT_CHARS - len(digest) - 2]}\n\n{digest}"
 
 
 _DOMAIN_WORD_SUFFIXES = ("", "s", "es", "er", "ers")

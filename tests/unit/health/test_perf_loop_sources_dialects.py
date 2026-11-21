@@ -1,4 +1,4 @@
-"""What a perf loop walks, and the magnitude that proves, in Go, Java, C#, Pascal and Ruby.
+"""What a perf loop walks, and the magnitude that proves, in Go, Java, C#, Pascal, Ruby and Dart.
 
 Through the real walker. Each shape that grows or is bounded is paired with one
 the syntax does not settle, which must stay ``unknown``: no reader takes
@@ -339,10 +339,7 @@ def test_a_ruby_block_loop_never_claims_its_key_is_unused():
     hits = walk_file(
         "a.rb",
         "ruby",
-        b'require "active_record"\n'
-        b"def f(ids)\n"
-        b"  ids.each { |id| Order.find_by(id: 1) }\n"
-        b"end\n",
+        b'require "active_record"\ndef f(ids)\n  ids.each { |id| Order.find_by(id: 1) }\nend\n',
     ).perf_hits
     facts = [h.loop for h in hits if h.kind == "io_in_loop"]
     assert facts and all(f is None or not f.key_unused for f in facts)
@@ -482,7 +479,7 @@ def test_a_binding_under_a_branch_leaves_the_loop_unknown():
         "A.java",
         "java",
         "class A { void f(boolean ok, UserRepository userRepository) {\n"
-        "  List<String> names = List.of(\"a\", \"b\");\n"
+        '  List<String> names = List.of("a", "b");\n'
         "  if (ok) { names = userRepository.findAllNames(); }\n"
         "  for (String n : names) { userRepository.findByName(n); } } }\n",
     )
@@ -566,3 +563,68 @@ def test_returning_the_error_of_a_call_is_no_first_match():
     ).perf_hits
     py = [h.loop for h in hits if h.kind == "io_in_loop"]
     assert py and all(f is None or f.not_batchable is None for f in py)
+
+
+_DART = """import 'package:sqflite/sqflite.dart';
+Future<void> sync(Database db, List<int> ids, bool flag) async {
+  final rows = await db.rawQuery('SELECT id FROM orders');
+  for (final r in rows) { await db.rawUpdate('UPDATE t SET y = 1 WHERE id = ?', [r['id']]); }
+  for (final id in ids) { await db.rawDelete('DELETE FROM t WHERE id = ?', [id]); }
+  final names = ['a', 'b'];
+  for (final s in names) { await db.rawDelete('DELETE FROM t WHERE n = ?', [s]); }
+  var picks = ['a'];
+  if (flag) { picks = await loadAll(); }
+  for (final s in picks) { await db.rawDelete('DELETE FROM t WHERE n = ?', [s]); }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (4, ("grows_with_data", "query")),
+        (5, ("unknown", "parameter")),
+        (7, ("bounded", "constant")),
+    ],
+)
+def test_dart_loop_sources(line, expected):
+    assert _loops("sync.dart", "dart", _DART)[line] == expected
+
+
+def test_dart_branch_rebound_loop_stays_unknown():
+    assert _loops("sync.dart", "dart", _DART)[10][0] == "unknown"
+
+
+_DART_SHAPES = """import 'package:sqflite/sqflite.dart';
+import 'dart:io';
+enum Role { admin, user }
+Future<void> shapes(Database db, List<int> ids, Directory repoRoot, int n) async {
+  final rows = await db.rawQuery('SELECT id FROM orders');
+  for (var i = 0; i < rows.length; i++) { await db.rawUpdate('UPDATE t SET y = 1', [i]); }
+  final it = await db.rawQuery('SELECT id FROM cursors');
+  while (it.moveNext()) { await db.rawUpdate('UPDATE t SET y = 2'); }
+  for (final e in Role.values) { await db.rawUpdate('UPDATE t SET y = 3', [e]); }
+  for (final e in List.generate(3, (i) => i)) { await db.rawUpdate('UPDATE t SET y = 4', [e]); }
+  for (final f in Directory(repoRoot).listSync(recursive: true)) { await db.rawUpdate('UPDATE t SET y = 5', [f]); }
+  for (final x in [...ids, 1]) { await db.rawUpdate('UPDATE t SET y = 6', [x]); }
+  for (final x in ids.take(5).toList()) { await db.rawUpdate('UPDATE t SET y = 7', [x]); }
+  for (final x in ids.take(n)) { await db.rawUpdate('UPDATE t SET y = 8', [x]); }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (6, ("grows_with_data", "query")),
+        (8, ("grows_with_data", "query")),
+        (9, ("bounded", "constant")),
+        (10, ("bounded", "constant")),
+        (11, ("grows_with_data", "listing")),
+        (12, ("unknown", "unknown")),
+        (13, ("bounded", "parameter")),
+        (14, ("unknown", "unknown")),
+    ],
+)
+def test_dart_loop_shapes(line, expected):
+    assert _loops("shapes.dart", "dart", _DART_SHAPES)[line] == expected

@@ -118,7 +118,12 @@ def ollama_base_url() -> str:
 
 
 def _ollama_endpoint() -> tuple[str, int] | None:
-    """``(host, port)`` for the configured Ollama URL, or ``None`` if unusable.
+    """``(host, port)`` for the configured Ollama URL, or ``None`` if unusable."""
+    return _tcp_endpoint(ollama_base_url())
+
+
+def _tcp_endpoint(url: str) -> tuple[str, int] | None:
+    """``(host, port)`` for a local model server's URL, or ``None`` if unusable.
 
     A bare ``host:port`` is accepted, since that is a natural thing to put in
     ``OLLAMA_BASE_URL`` and urlparse would otherwise read the host as a scheme.
@@ -127,7 +132,7 @@ def _ollama_endpoint() -> tuple[str, int] | None:
     localhost: that reports someone's typo'd remote box as ready and defers the
     failure to the first generation call.
     """
-    raw = ollama_base_url().strip()
+    raw = url.strip()
     if "://" not in raw:
         raw = f"http://{raw}"
     try:
@@ -151,7 +156,12 @@ def _detect_ollama_status() -> bool:
     unavailable and then asked to paste a key that does not exist. A TCP
     connect is the cheapest honest answer.
     """
-    endpoint = _ollama_endpoint()
+    return endpoint_answers(ollama_base_url())
+
+
+def endpoint_answers(url: str) -> bool:
+    """Whether something is listening at *url*: a TCP connect, nothing more."""
+    endpoint = _tcp_endpoint(url)
     if endpoint is None:
         return False
     try:

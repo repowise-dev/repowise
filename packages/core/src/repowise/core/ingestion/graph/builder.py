@@ -16,6 +16,7 @@ import networkx as nx
 import structlog
 
 from ...analysis.public_api import stamp_public_api
+from ...build_units import BuildUnitIndex
 from ...cancellation import check_cancelled
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
@@ -28,10 +29,16 @@ from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext
+from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
 from ..resolvers.typescript import detect_platform_files
-from ..symbol_identity import has_overload_identity
+from ..symbol_identity import (
+    MODULE_SYMBOL_NAME,
+    has_overload_identity,
+    make_symbol_id,
+    module_symbol_id,
+)
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._import_targets import resolve_import_targets
@@ -111,9 +118,17 @@ class GraphBuilder(
         self.console_scripts: frozenset[str] = frozenset()
         self._pytest_roots: Any | None = None
         self._built = False
+        # What every resolver context of this file set shares, made once:
+        # the stem map and the Go modules, which walk the tree. Reset by
+        # ``add_file``.
+        self._context_inputs: tuple[dict[str, list[str]], Any, str | None] | None = None
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # The repo's build units, collected by build() from the warmed
+        # resolver indexes, or read from the store for a rehydrated builder.
+        # None until either happens.
+        self.build_units: BuildUnitIndex | None = None
         # {(file, partial type's bare name): every file declaring a fragment
         # of that type}, filled by ``_resolve_dotnet_partials`` so the call
         # resolver can treat the fragments as the one class scope they are.
@@ -155,6 +170,9 @@ class GraphBuilder(
         self._head_commit: str | None = head_commit
         # kind -> BetweennessScoring, read by persistence to stamp each node.
         self._betweenness_scoring: dict[str, Any] = {}
+        # Set by an update that re-scores every file: communities are detected
+        # afresh instead of reusing a partition the graph has drifted from.
+        self.fresh_communities: bool = False
 
         import pathspec
 
@@ -172,6 +190,8 @@ class GraphBuilder(
         self._symbol_pagerank_cache: dict[str, float] | None = None
         self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
+        # (key, parsed files, plans) of ``flow_pages.plans_for_index``.
+        self._flow_plan_cache: tuple[Any, ...] | None = None
         # Filtered-subgraph caches — rebuilt lazily; guarded by a lock because
         # the init pipeline computes metrics concurrently (asyncio.to_thread).
         import threading
@@ -204,6 +224,8 @@ class GraphBuilder(
         # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
         state["_cycle_subgraph_cache"] = None
         state["_centrality_subgraph_cache"] = None
+        # Its key holds object ids, meaningless in another process.
+        state["_flow_plan_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -216,6 +238,7 @@ class GraphBuilder(
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
         self.__dict__.setdefault("_centrality_subgraph_cache", None)
+        self.__dict__.setdefault("fresh_communities", False)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -234,6 +257,7 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        self._flow_plan_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
@@ -290,20 +314,22 @@ class GraphBuilder(
         """The import-resolution context :meth:`build` resolves against.
 
         *graph* receives the external nodes resolvers create; a caller that
-        only wants answers passes a copy.
+        only wants answers passes a throwaway graph.
         """
         path_set = set(self._parsed_files.keys())
-        go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+        if self._context_inputs is None:
+            go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+            go_module_path = go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
+            self._context_inputs = (build_stem_map(path_set), go_modules, go_module_path)
+        stem_map, go_modules, go_module_path = self._context_inputs
         return ResolverContext(
             path_set=path_set,
-            stem_map=build_stem_map(path_set),
+            stem_map=stem_map,
             graph=graph,
             repo_path=self._repo_path,
             prune_nested_git=self._prune_nested_git,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=(
-                go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
-            ),
+            go_module_path=go_module_path,
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             has_platform_files=detect_platform_files(path_set),
@@ -311,11 +337,31 @@ class GraphBuilder(
             source_map=self._source_map,
         )
 
+    def _collect_build_units(self, ctx: ResolverContext) -> None:
+        """Set :attr:`build_units` from the indexes the warmups left on *ctx*."""
+        from repowise.core.build_units.collect import collect_build_units
+
+        try:
+            self.build_units = collect_build_units(ctx)
+        except Exception as exc:  # a unit reader bug must not fail the index
+            log.warning("build_units_collection_failed", error=str(exc))
+            self.build_units = None
+
+    def _shared_cpp_index(self, ctx: ResolverContext) -> Any | None:
+        """The warmup's C/C++ workspace index, when the call resolver would build the same.
+
+        The call resolver's own index walks the tree pruning nested git
+        repositories; the warmup's is that index only when this build prunes
+        them too.
+        """
+        return getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+        self._context_inputs = None
 
         # --- File node ---
         self._graph.add_node(
@@ -386,7 +432,7 @@ class GraphBuilder(
 
             # HAS_METHOD edge: class/struct → method
             if sym.parent_name and sym.kind == "method":
-                parent_id = f"{path}::{sym.parent_name}"
+                parent_id = make_symbol_id(path, sym.parent_name)
                 if parent_id in self._graph:
                     self._graph.add_edge(
                         parent_id,
@@ -395,12 +441,12 @@ class GraphBuilder(
                     )
 
         # --- Synthetic module-level symbol for top-level calls ---
-        module_sym_id = f"{path}::__module__"
+        module_sym_id = module_symbol_id(path)
         self._graph.add_node(
             module_sym_id,
             node_type="symbol",
             kind="module",
-            name="__module__",
+            name=MODULE_SYMBOL_NAME,
             file_path=path,
             start_line=0,
             end_line=0,
@@ -504,6 +550,7 @@ class GraphBuilder(
         from ..graph_warmups import run_warmups
 
         run_warmups(self._parsed_files, ctx, progress=progress)
+        self._collect_build_units(ctx)
 
         # Tests the import graph cannot see into, from the bytes already held,
         # so selection reads a stored fact and never re-reads test files.
@@ -587,9 +634,9 @@ class GraphBuilder(
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
-        # header must be able to reach the implementation.
-        if scope_set is None:
-            self._resolve_cpp_header_pairs(progress=progress)
+        # header must be able to reach the implementation. Read off paths
+        # alone and cheap, so a patch re-derives the pairs its scope cleared.
+        self._resolve_cpp_header_pairs(progress=progress)
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
@@ -637,7 +684,11 @@ class GraphBuilder(
 
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(
-            import_targets, progress=progress, scope=scope_set, registrations=run_global
+            import_targets,
+            progress=progress,
+            scope=scope_set,
+            registrations=run_global,
+            cpp_index=self._shared_cpp_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---
@@ -652,6 +703,7 @@ class GraphBuilder(
         # Reads only the graph and is cheap, so every build re-derives it: a
         # seeded edge cannot tell whether a call now holds its pair.
         self._resolve_override_dispatch(progress=progress)
+        self._resolve_document_edges()  # global: a scoped build can make a seeded doc's link resolve
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
