@@ -121,8 +121,23 @@ def test_a_cause_group_asks_about_dead_code_only_once_it_is_worth_an_item() -> N
         # No known role and no entry point reaching it.
         ({"execution_role": "unknown", "exposure": "unknown"}, "unconfirmed_cost"),
         ({"execution_role": "unknown", "exposure": "entry_reachable"}, None),
+        # A leading run that ranks the loop owner reaches it.
+        ({"execution_role": "unknown", "exposure": "unknown", "measured": "api"}, None),
+        # A unit-test run reaches everything it imports: no proof of reach.
+        ({"execution_role": "unknown", "exposure": "unknown",
+          "measured_in_tests": "pytest", "confirmed": "measured_in_tests"}, "unconfirmed_cost"),
         # Still the queue's own reasons first.
         ({"loop_magnitude": "unknown"}, "unmeasured_cost"),
+        ({"loop_magnitude": "unknown", "measured": "api"}, "unmeasured_cost"),
+        # A run measured its owner above the share bar: the cost is proven.
+        ({"loop_magnitude": "unknown", "measured": "api", "confirmed": "measured"}, None),
+        ({"loop_magnitude": "unknown", "measured_in_tests": "pytest",
+          "confirmed": "measured_in_tests"}, None),
+        # Query counts confirm a growing statement count, not the loop's size.
+        ({"loop_magnitude": "unknown", "confirmed": "query_count"}, "unmeasured_cost"),
+        # A test run never overrides a cold role.
+        ({"execution_role": "cli", "measured_in_tests": "pytest",
+          "confirmed": "measured_in_tests"}, "cold_role"),
         ({"execution_role": "cli"}, "cold_role"),
         ({}, None),
     ],

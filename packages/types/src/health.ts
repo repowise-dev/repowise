@@ -468,8 +468,11 @@ export interface PerformanceOpportunityFacets {
   execution_role?: PerformanceExecutionRole;
   /** The workload whose stored run measured the cause's function; absent when none did. */
   measured?: string;
-  /** What confirmed the cause: a measured run, or query counts that grow. Absent otherwise. */
-  confirmed?: "measured" | "query_count";
+  /** The unit-test workload that measured it, when no leading workload did. */
+  measured_in_tests?: string;
+  /** What confirmed the cause: a measured run, a measured test run, or query
+   *  counts that grow. Absent otherwise. */
+  confirmed?: "measured" | "measured_in_tests" | "query_count";
 }
 
 /**
@@ -531,10 +534,11 @@ export type PerformanceEvidenceState =
 
 export interface PerformanceEvidenceMark {
   state: PerformanceEvidenceState;
-  /** `query_count` or `measured` for `confirmed`; `query_count` for
-   *  `counter_evidence` and `ran`. */
-  basis?: "query_count" | "measured";
-  /** The leading workload that ranks the cause's loop owner (`measured`). */
+  /** `query_count`, `measured` or `measured_in_tests` for `confirmed`;
+   *  `measured_in_tests` for `measured` when only a unit-test run ranks it;
+   *  `query_count` for `counter_evidence` and `ran`. */
+  basis?: "query_count" | "measured" | "measured_in_tests";
+  /** The workload that ranks the cause's loop owner (`measured`). */
   workload?: string;
   /** The leading workloads that ran and never reached it (`not_exercised`). */
   workloads?: string[];

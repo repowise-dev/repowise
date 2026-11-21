@@ -59,6 +59,65 @@ def test_degraded_git_persist_records_the_range_it_missed(tmp_path: Path, monkey
     assert "Git persist" in state["pending_repair"]["steps"]
 
 
+def test_rescore_over_unlanded_git_rows_is_not_stamped(tmp_path: Path, monkeypatch) -> None:
+    """A full re-score reads git rows from the store: when they did not land, it retries."""
+    import asyncio
+
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.update_cmd.command import release_update_lock
+    from repowise.cli.helpers import save_state
+    from repowise.cli.main import cli
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.persistence import crud
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "c0")
+    c0 = _git(repo, "rev-parse", "HEAD")
+    asyncio.run(index_repo_full(repo))
+    # An older analyzer's stamp forces a full re-score on this update.
+    old = "old-analyzer"
+    save_state(
+        repo,
+        {
+            "last_sync_commit": c0,
+            "last_docs_commit": c0,
+            "docs_mode": "none",
+            "health_analyzer_version": old,
+        },
+    )
+    (repo / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "c1")
+
+    real_upsert = crud.upsert_git_metadata_bulk
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(crud, "upsert_git_metadata_bulk", _boom)
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["health_analyzer_version"] == old
+    assert "Git persist" in state["pending_repair"]["steps"]
+
+    monkeypatch.setattr(crud, "upsert_git_metadata_bulk", real_upsert)
+    release_update_lock(repo)
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert "pending_repair" not in state
+
+
 def test_degraded_docs_update_leaves_a_marker_the_next_update_re_covers(
     tmp_path: Path, monkeypatch
 ) -> None:

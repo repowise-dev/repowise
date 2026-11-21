@@ -259,6 +259,8 @@ async def finalize_performance_opportunities(
         origins=await _unknown_context_origins(session, repository_id, rows),
         measured=measured.measured,
         hot=measured.hot,
+        in_tests=measured.in_tests,
+        hot_in_tests=measured.hot_in_tests,
         queries=await _query_readings(session, repository_id),
     )
 
@@ -315,7 +317,10 @@ class _Measured(NamedTuple):
     hot: frozenset[str]
     #: The leading workloads whose runs measured any function: what a cause
     #: no facet marks was not exercised in.
-    workloads: tuple[str, ...] = ()
+    workloads: tuple[str, ...]
+    #: The same two for ``unit_test`` runs, kept apart as measured in tests.
+    in_tests: dict[str, str]
+    hot_in_tests: frozenset[str]
 
 
 async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
@@ -325,33 +330,45 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> _Mea
     several runs).
 
     Read off ``workload_hotness``, which the health writers rebuild before
-    this runs, so it describes the current code. Only workload classes that
-    may lead (``evidence.hotness.LEAD_CLASSES``) count: a unit-test run says
-    nothing about production. A deterministic tracer's order is not a
-    measured cost (``ordering_only``), so it never counts either, as it never
-    leads in ``evidence.hotness``. A function two workloads rank takes the one
-    that ranks it best, ties by name. One indexed lookup without evidence.
+    this runs, so it describes the current code. Workload classes that may
+    lead (``evidence.hotness.LEAD_CLASSES``) fill ``measured`` and ``hot``;
+    ``unit_test`` runs fill ``in_tests`` and ``hot_in_tests`` apart, since a
+    test run shows what the code costs, not what production runs, and never
+    marks a cause not exercised. A deterministic tracer's order is not a
+    measured cost (``ordering_only``), so it never counts, as it never leads
+    in ``evidence.hotness``. A function two workloads rank takes the one that
+    ranks it best, ties by name. One indexed lookup without evidence.
     """
     from ....evidence.hotness import LEAD_CLASSES
     from .evidence import ranked_by_workload
 
-    best: dict[str, tuple[int, str]] = {}
-    hot: set[str] = set()
+    best: dict[bool, dict[str, tuple[int, str]]] = {True: {}, False: {}}
+    hot: dict[bool, set[str]] = {True: set(), False: set()}
     workloads: set[str] = set()
     for run, rows in await ranked_by_workload(session, repository_id):
-        if run.workload_class not in LEAD_CLASSES:
+        leads = run.workload_class in LEAD_CLASSES
+        if not leads and run.workload_class != "unit_test":
             continue
         for row in rows:
             if row.ordering_only:
                 continue
-            workloads.add(run.workload_name)
+            if leads:
+                workloads.add(run.workload_name)
             if row.tier == "lead_candidate":
-                hot.add(row.symbol_id)
+                hot[leads].add(row.symbol_id)
             key = (row.rank, run.workload_name)
-            if row.symbol_id not in best or key < best[row.symbol_id]:
-                best[row.symbol_id] = key
+            if row.symbol_id not in best[leads] or key < best[leads][row.symbol_id]:
+                best[leads][row.symbol_id] = key
+
+    def names(by: dict[str, tuple[int, str]]) -> dict[str, str]:
+        return {sid: name for sid, (_rank, name) in by.items()}
+
     return _Measured(
-        {sid: name for sid, (_rank, name) in best.items()}, frozenset(hot), tuple(sorted(workloads))
+        names(best[True]),
+        frozenset(hot[True]),
+        tuple(sorted(workloads)),
+        names(best[False]),
+        frozenset(hot[False]),
     )
 
 
