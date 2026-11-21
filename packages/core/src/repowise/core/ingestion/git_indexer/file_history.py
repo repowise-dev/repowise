@@ -573,29 +573,36 @@ def _temporal_hotspot_score(commits: list[_CommitRec], now: datetime) -> float:
 
 
 def _add_ownership(meta: dict[str, Any], authors: _Authors) -> None:
-    """Contributor count, bus factor, top authors and the overall and 90-day owners."""
-    meta["contributor_count"] = len(authors.counts)
-    total_commits = sum(authors.counts.values())
-    if total_commits > 0:
-        meta["bus_factor"] = _bus_factor(authors.counts, total_commits)
+    """Contributor count, bus factor, top authors and the overall and 90-day owners.
 
-    top_authors = [
-        authors.entry(key, count) for key, count in authors.counts.most_common(_MAX_TOP_AUTHORS)
-    ]
+    Automation accounts (kind ``bot``: dependabot, renovate, CI) are not
+    owners or contributors, so they are left out of every figure here. Coding
+    agents (kind ``agent``) are kept. Commit counts and churn are computed
+    elsewhere and still include bot commits.
+    """
+    resolve = authors.resolve
+    counts = Counter({k: n for k, n in authors.counts.items() if resolve.kind(k) != "bot"})
+    recent_counts = Counter(
+        {k: n for k, n in authors.recent_counts.items() if resolve.kind(k) != "bot"}
+    )
+    meta["contributor_count"] = len(counts)
+    total_commits = sum(counts.values())
+    if total_commits > 0:
+        meta["bus_factor"] = _bus_factor(counts, total_commits)
+
+    top_authors = [authors.entry(key, count) for key, count in counts.most_common(_MAX_TOP_AUTHORS)]
     meta["top_authors_json"] = json.dumps(top_authors)
 
     if top_authors:
         primary = top_authors[0]
         meta["primary_owner_name"] = primary["name"]
         meta["primary_owner_email"] = primary["email"]
-        meta["primary_owner_commit_pct"] = (
-            primary["commit_count"] / total_commits if total_commits > 0 else 0.0
-        )
+        meta["primary_owner_commit_pct"] = primary["commit_count"] / total_commits
 
-    if authors.recent_counts:
-        recent_top = authors.recent_counts.most_common(1)[0]
+    if recent_counts:
+        recent_top = recent_counts.most_common(1)[0]
         meta["recent_owner_name"] = authors.name(recent_top[0])
-        recent_total = sum(authors.recent_counts.values())
+        recent_total = sum(recent_counts.values())
         meta["recent_owner_commit_pct"] = recent_top[1] / recent_total if recent_total > 0 else 0.0
 
 
@@ -642,11 +649,13 @@ def _add_blame_ownership(
         for name, email in blame_idx.authors.values():
             authors.seen_names.setdefault(authors.resolve(name, email), name)
         blame_key, blame_pct = top_blame_identity(blame_idx, blame_idx.lines)
-        if blame_key is not None:
+        if blame_key is not None and authors.resolve.kind(blame_key) != "bot":
             meta["primary_owner_name"] = authors.name(blame_key)
             meta["primary_owner_email"] = authors.resolve.email(blame_key)
             meta["primary_owner_line_pct"] = blame_pct
-            total_commits = sum(authors.counts.values())
+            total_commits = sum(
+                n for k, n in authors.counts.items() if authors.resolve.kind(k) != "bot"
+            )
             own_commits = authors.counts.get(blame_key, 0)
             meta["primary_owner_commit_pct"] = (
                 own_commits / total_commits if own_commits and total_commits else None
