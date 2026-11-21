@@ -68,6 +68,11 @@ read, a program with no profiler flag).
   pytest-xdist and the config sets no worker count. When two requirements
   files pin a package to different versions, each installs on its own, the
   test requirements last.
+- A Python unit keeps out each Python unit below it that runs its own tests
+  (a directory with its own `pyproject.toml`, say): a coverage command and
+  unit-test profile that collect from the unit's root pass `--ignore=<dir>`
+  for it, and `--cov` leaves its packages out. A uv workspace member the root
+  runs stays the root's.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and its ingest
   line; a TypeScript `bin` gets a reason only. The command writes into a
   directory of its own (`.repowise/node-bin-cli-js`), cleaned first, where

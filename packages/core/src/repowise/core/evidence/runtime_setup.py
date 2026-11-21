@@ -457,14 +457,15 @@ def _python_targets(
         # file or a node id, not an option's value as in ``--ignore tests/slow``;
         # a file option's value such as ``--cov-config .coveragerc`` is neither):
         # then they pick what runs. The plugin keeps the failed count for the
-        # profile (``n``).
+        # profile (``n``). A nested unit that runs its own tests stays ignored either way.
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
+        ignores = [f"--ignore={p}" for p in stack.test_ignores if _SAFE_PATH.fullmatch(p)]
         tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
             "a=sys.argv[1:];"
             f"import pytest;sys.exit(pytest.main(([] if any({tests} and not (j and a[j-1] in "
             f"{sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
-            f"else {paths!r})+a,plugins=[type('R',(),"
+            f"else {paths!r})+{ignores!r}+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
         # A launcher outside uv whose installs do not bring pytest installs it here.

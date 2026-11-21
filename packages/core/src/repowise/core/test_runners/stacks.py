@@ -101,6 +101,9 @@ class Stack:
     root: str = ""
     #: The test paths ``test`` names, relative to ``root``; empty when the runner picks.
     test_paths: tuple[str, ...] = ()
+    #: Directories below ``root`` that ``test`` keeps the runner from collecting: nested
+    #: units that run their own tests, relative to ``root``.
+    test_ignores: tuple[str, ...] = ()
     #: Where the runner writes JUnit XML (a file, or a directory of files), relative to
     #: ``root``; empty when repowise does not know how this runner writes it.
     junit_report: str = ""
@@ -473,12 +476,18 @@ def _installs_xdist(paths: list[str], files: dict[str, str]) -> bool:
     return any(re.search(r"pytest[-_]xdist", json.dumps(t)) for t in tables if t)
 
 
-def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+def _python(root: set[str], paths: list[str], files: dict[str, str], nested: tuple[str, ...] = ()) -> Stack:
+    """The unit's pytest run. *nested* are the Python units below it that run their own tests,
+    relative to it: *paths* no longer holds their files, and the run ignores them, since their
+    tests often import what only their own unit installs."""
     reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
-    args = _pytest_args(paths, files)
+    tests = _pytest_args(paths, files)
+    # Named test paths are tests directories, which hold no unit of their own.
+    ignores = () if tests else nested
+    args = tests + "".join(f" --ignore={quote_arg(n)}" for n in ignores)
     # pytest-xdist where the printed install brings it spreads the coverage run over
     # every core (pytest-cov combines the workers' data), unless the config already
     # picks a worker count.
@@ -498,7 +507,7 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     requires = _run_lines(test.prepare) + installs
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
-        notes=tuple(notes), requires=requires, test_paths=tuple(args.split()), pattern=_PYTEST,
+        notes=tuple(notes), requires=requires, test_paths=tuple(tests.split()), test_ignores=ignores, pattern=_PYTEST,
         skip=_PYTEST_ONE_FILE, editor=editor, junit_report="junit.xml", junit_flag="--junitxml=junit.xml",
     )
 
@@ -1485,6 +1494,24 @@ def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set
     return [p for p in rel if not any(p.startswith(i + "/") for i in inner)]
 
 
+def _runs_python(root: str, found: _Units, paths: list[str], files: Mapping[str, str]) -> bool:
+    """Whether the unit at *root* prints its own pytest run."""
+    if "python" not in found.roots.get(root, ()) or not _runs_at("python", root, found, files):
+        return False
+    rel = _listing_at(root, "python", paths, found.roots)
+    names = {p for p in rel if "/" not in p}
+    # The repository root keeps its guess when pip's own spelling names its requirements.
+    if not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names):
+        return True
+    return _has_pytest_suite(names, rel, {r: t for p, t in files.items() if (r := _under(root, p)) is not None})
+
+
+def _nested(root: str, runs: Iterable[str]) -> tuple[str, ...]:
+    """The outermost of the unit roots *runs* below *root*, relative to it."""
+    below = sorted(r for other in runs if (r := _under(root, other)))
+    return tuple(r for r in below if not any(r.startswith(f"{o}/") for o in below))
+
+
 def detect_stacks(
     paths: Iterable[str],
     files: Mapping[str, str],
@@ -1503,6 +1530,7 @@ def detect_stacks(
     paths = sorted(set(paths))
     present = set(paths)
     found = _units(paths, units, repo_root)
+    python_runs = {r for r in found.roots if _runs_python(r, found, paths, files)}
     stacks: list[Stack] = []
     for root in sorted(found.roots, key=lambda r: (r.count("/") + bool(r), r)):
         texts = {r: text for p, text in files.items() if (r := _under(root, p)) is not None}
@@ -1510,6 +1538,14 @@ def detect_stacks(
         for stack in _ORDER:
             if stack in found.roots[root] and _runs_at(stack, root, found, files):
                 rel = _listing_at(root, stack, paths, found.roots)
+                build = _BUILDERS[stack]
+                if stack == "python":
+                    if root not in python_runs:
+                        continue
+                    # A nested unit that runs its own tests is not this unit's to collect or cover.
+                    nested = _nested(root, python_runs)
+                    rel = [p for p in rel if not any(p.startswith(f"{n}/") for n in nested)]
+                    build = partial(_python, nested=nested)
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
@@ -1517,11 +1553,7 @@ def detect_stacks(
                     texts = {**texts, _YARN_LOCK: files[lock]}
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
-                # The repository root keeps its guess when pip's own spelling names its requirements.
-                pip_root = not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names)
-                if stack == "python" and not pip_root and not _has_pytest_suite(names, rel, texts):
-                    continue
-                built = _BUILDERS[stack](names, rel, texts)
+                built = build(names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
         tooling = len(here) > 1 and here[-1].language == "node" and not here[-1].test
