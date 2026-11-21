@@ -90,7 +90,15 @@ def _is_declaration(
 
 
 _FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
-_DART_FUNCTION_NODE_TYPES = ("function_signature", "getter_signature", "setter_signature")
+_DART_FUNCTION_NODE_TYPES = (
+    "function_signature",
+    "getter_signature",
+    "setter_signature",
+    "constructor_signature",
+    "factory_constructor_signature",
+    "constant_constructor_signature",
+)
+_DART_CONSTRUCTOR_NODE_TYPES = _DART_FUNCTION_NODE_TYPES[3:]
 
 
 def _is_fsharp_binding(language: str, node_type: str) -> bool:
@@ -109,6 +117,17 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
         # `defimpl Proto, for: Type` is named for the module the
         # compiler generates, not for the protocol alone.
         return _elixir_symbol_name(def_node, name, src)
+    if language == "dart":
+        # Constructors expose no ``name`` field; the first identifier is the
+        # class. Name them ``A`` / ``A.named``, the same distinct member names
+        # the health layer uses, so no two members of one class collide.
+        if def_node.type in _DART_CONSTRUCTOR_NODE_TYPES:
+            return ".".join(
+                _node_text(c, src)
+                for c in def_node.children
+                if c.type == "identifier"
+            )
+        return name
     if language == "objectivec":
         # `typedef NS_ENUM(NSInteger, Kind) { ... }` has no grammar
         # rule, so only its enum *cases* survive as declarators and

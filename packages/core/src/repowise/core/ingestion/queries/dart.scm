@@ -45,6 +45,25 @@
   (identifier) @symbol.name
 ) @symbol.def
 
+; Constructors — plain, named, factory and const. The signature's first
+; identifier is the class (no ``name`` field); the parser's Dart branch joins
+; the identifiers into ``A`` / ``A.named`` and extends the symbol over the
+; sibling body, like the other signature shapes.
+(constructor_signature
+  (identifier) @symbol.name
+  (formal_parameter_list) @symbol.params
+) @symbol.def
+
+(factory_constructor_signature
+  (identifier) @symbol.name
+  (formal_parameter_list) @symbol.params
+) @symbol.def
+
+(constant_constructor_signature
+  (identifier) @symbol.name
+  (formal_parameter_list) @symbol.params
+) @symbol.def
+
 ; typedef Callback = void Function(int);
 (type_alias
   (type_identifier) @symbol.name

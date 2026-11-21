@@ -1667,6 +1667,21 @@ class ReceiverTypingMixin(
             return self._python_call_returns(symbol, path, awaited)
         if symbol.language == "rust":
             return self._rust_returned_type_id(symbol, path, awaited)
+        if (
+            symbol.language == "dart"
+            and symbol.kind == "method"
+            and symbol.parent_name is not None
+            and (
+                symbol.name == symbol.parent_name
+                or symbol.name.startswith(f"{symbol.parent_name}.")
+            )
+        ):
+            # A Dart constructor (``A`` / ``A.named``) has no declared return
+            # type; it yields an instance of its enclosing class.
+            owner = self._symbols_by_id.get(_enclosing_id(symbol.id))
+            if owner is not None and owner.kind in _TYPE_KINDS and owner.name == symbol.parent_name:
+                return owner.id
+            return None
         return self._written_returned_class(symbol, path, awaited)
 
     def _overloads_disagree(self, symbol: Symbol, path: str, argument_count: int | None) -> bool:
