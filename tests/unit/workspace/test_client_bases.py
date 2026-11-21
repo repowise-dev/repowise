@@ -148,6 +148,29 @@ def test_a_class_in_a_block_comment_gives_no_static_constant(tmp_path: Path) -> 
     assert ("GET", "/api/top") not in _paths(tmp_path, "src/api.ts", text)
 
 
+def test_a_comment_opener_inside_a_string_keeps_the_static_constant(tmp_path: Path) -> None:
+    text = (
+        "const GLOB = 'src/*';\n"
+        "export class Api {\n"
+        "  static BASE = '/api';\n"
+        "}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    assert ("GET", "/api/top") in _paths(tmp_path, "src/api.ts", text)
+
+
+def test_a_static_field_a_static_member_rewrites_is_no_constant(tmp_path: Path) -> None:
+    text = (
+        "export class Api {\n"
+        "  static BASE = '/api';\n"
+        "  static init() { this.BASE = '/v2'; }\n"
+        "}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    found = _paths(tmp_path, "src/api.ts", text)
+    assert ("GET", "/api/top") not in found and ("GET", "/v2/top") not in found
+
+
 def test_this_reads_static_fields_only_in_static_members(tmp_path: Path) -> None:
     # `this.BASE` in an instance method is no static field (it is undefined at
     # run time), and an instance field is not what a static method reads.

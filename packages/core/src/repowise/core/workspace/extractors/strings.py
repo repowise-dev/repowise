@@ -539,7 +539,7 @@ def string_constants(
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
     if syntax is JS_SYNTAX and "static" in content:
-        _record_class_statics(content, text, seen)
+        _record_class_statics(content, seen)
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
         seen[m.group(1)] = None
@@ -549,25 +549,29 @@ def string_constants(
     return {name: text for name, text in seen.items() if text is not None}
 
 
-def _record_class_statics(content: str, text: str, seen: dict[str, str | None]) -> None:
+def _record_class_statics(content: str, seen: dict[str, str | None]) -> None:
     """Record each class's static fields as ``Name.field``, read from anywhere in the file.
 
     Runs after the object literals fold, so a ``const Api = {...}`` beside a class
     ``Api`` retires the key. A field the file also writes from outside
     (``Api.BASE = x``, ``Api[k] = x``, ``Object.assign(Api, ...)``, ``Reflect.set``)
-    is no constant, nor is a class inside a block comment.
+    is no constant, nor is a class inside a comment.
 
-    Ceiling: a write through an alias (``const C = Api; C.BASE = x``) is not seen.
+    Ceiling: a write through an alias (``const C = Api; C.BASE = x``) or a dynamic
+    one through ``this`` in a static member (``this[k] = x``) is not seen.
     """
+    from repowise.core.ingestion.source_mask import mask_source
+
+    code = mask_source(content, ".js")
     for cls in js_class_fields(content):
-        if content.rfind("/*", 0, cls.start) > content.rfind("*/", 0, cls.start):
-            continue
+        if code[cls.start - 1] != "{":
+            continue  # the class body opens inside a comment
         for field_name, rhs in cls.static_fields.items():
             key = cls.name + field_name.removeprefix("this")
             unsettled = (
                 key in seen
                 or resolve_string(rhs, JS_SYNTAX) is None
-                or _static_rebinding_re(key).search(text) is not None
+                or _static_rebinding_re(key).search(code) is not None
             )
             seen[key] = None if unsettled else rhs
 
