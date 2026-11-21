@@ -272,7 +272,9 @@ _ROW_KEY = {
 }
 
 
-def rebase_test_entries(doc: EvidenceDocument, files: Collection[str], base: str) -> EvidenceDocument:
+def rebase_test_entries(
+    doc: EvidenceDocument, files: Collection[str], base: str
+) -> EvidenceDocument:
     """*doc* with each test file the index does not hold read from *base*, when the index holds that.
 
     *base* is the repo-relative directory the report was read from. A runner in a
@@ -286,12 +288,13 @@ def rebase_test_entries(doc: EvidenceDocument, files: Collection[str], base: str
     for entry in doc.entries:
         path = entry.get("test_file")
         moved = f"{base}/{path}" if path and path not in files else None
-        if moved is not None and moved in files:
+        test_id = entry["test_id"]
+        # The id names the file first (``path::name``); one that does not is left whole.
+        if moved in files and test_id.startswith(f"{path}::"):
             location = entry.get("location")
-            test_id = entry["test_id"]
             entry = {
                 **entry,
-                "test_id": moved + test_id[len(path):] if test_id.startswith(path) else test_id,
+                "test_id": moved + test_id[len(path) :],
                 "test_file": moved,
                 "location": {**location, "path": moved} if location else None,
             }

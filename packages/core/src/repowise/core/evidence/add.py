@@ -76,8 +76,8 @@ class PreparedEvidence:
     run: Any = None
     #: How many profile files the run was merged from.
     profiles: int = 1
-    #: The repo-relative directory the file (or every file) was read from; ``""`` for the
-    #: root, for files in several directories, or for data not read from a file.
+    #: The repo-relative directory the file (or every file) was read from
+    #: (:func:`evidence_report_dir`); ``""`` when unknown or the root.
     report_dir: str = ""
 
 
@@ -289,6 +289,7 @@ def prepare_evidence_files(
     input_format_name: str | None = None,
     value_kind: str | None = None,
     max_file_mb: float | None = None,
+    report_dir: str = "",
 ) -> PreparedEvidence:
     """*files* (name, bytes) read as one run.
 
@@ -300,13 +301,13 @@ def prepare_evidence_files(
     Maven or Gradle report directory, one file per test class) read as one
     report, and the other files beside them are left out
     (:func:`_junit_reports_as_one`). The merged run does not depend on the
-    order the files are named in.
+    order the files are named in. *report_dir* is the repo-relative
+    directory the files were read from (:func:`evidence_report_dir`).
     """
     from .profile_convert import merge_runs
 
     if not files:
         raise _bad_option("FILE", "name at least one evidence file.")
-    report_dir = _report_dir([name for name, _ in files], checkout_root)
     files = _junit_reports_as_one(files, input_format_name)
     digests = [hashlib.sha256(data).hexdigest() for _, data in files]
     if len(set(digests)) < len(digests):
@@ -360,20 +361,15 @@ def prepare_evidence_files(
     return replace(parts[0], run=run, profiles=len(parts))
 
 
-def _report_dir(names: Sequence[str], checkout_root: Path) -> str:
-    """The repo-relative directory every file in *names* is in; ``""`` when that is the
-    root, when they differ, or when a name is not a file under *checkout_root*."""
-    dirs: set[str] = set()
-    for name in names:
-        path = Path(name)
-        try:
-            if not path.is_file():
-                return ""
-            dirs.add(path.resolve().parent.relative_to(checkout_root.resolve()).as_posix())
-        except (OSError, ValueError):
-            return ""
-    found = dirs.pop() if len(dirs) == 1 else "."
-    return "" if found == "." else found
+def evidence_report_dir(paths: Sequence[Path], checkout_root: Path) -> str:
+    """The repo-relative directory every file in *paths* is in; ``""`` when that is the
+    root, when they differ, or when one lies outside *checkout_root*."""
+    root = checkout_root.resolve()
+    try:
+        dirs = {p.resolve().parent.relative_to(root).as_posix() for p in paths}
+    except (OSError, ValueError):
+        return ""
+    return dirs.pop() if len(dirs) == 1 and dirs != {"."} else ""
 
 
 def _junit_reports_as_one(
@@ -788,6 +784,7 @@ __all__ = [
     "detect_environment",
     "evidence_caps",
     "evidence_paths",
+    "evidence_report_dir",
     "ingest_evidence",
     "input_format",
     "prepare_evidence",

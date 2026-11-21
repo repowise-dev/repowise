@@ -9,6 +9,7 @@ import pytest
 
 from repowise.core.evidence.add import (
     EvidenceRefusedError,
+    evidence_report_dir,
     prepare_evidence,
     prepare_evidence_files,
 )
@@ -260,7 +261,6 @@ def test_an_absolute_file_falls_back_to_the_classname() -> None:
 
 
 def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Path) -> None:
-    from repowise.core.evidence.add import prepare_evidence_files
 
     prepared = prepare_evidence_files(
         [
@@ -294,17 +294,13 @@ def test_a_path_the_index_holds_as_given_is_kept() -> None:
     assert rebase_test_entries(_doc(VITEST), set(), "web").entries[0]["test_file"] == "src/cart.test.ts"
 
 
-def test_prepared_files_carry_the_directory_they_were_read_from(tmp_path: Path) -> None:
-    (tmp_path / "web").mkdir()
-    report = tmp_path / "web" / "junit.xml"
-    report.write_bytes(VITEST)
-    (tmp_path / "junit.xml").write_bytes(VITEST)
+def test_the_report_directory_is_where_every_file_is(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    root_report, web_report = tmp_path / "junit.xml", web / "junit.xml"
 
-    def prepared(path: Path, root: Path = tmp_path):
-        return prepare_evidence_files([(str(path), VITEST)], checkout_root=root, commit="a" * 40)
-
-    assert prepared(report).report_dir == "web"
-    assert prepared(tmp_path / "junit.xml").report_dir == ""
-    # Outside the checkout, or not a file: no directory.
-    assert prepared(report, tmp_path / "other").report_dir == ""
-    assert prepared(Path("the evidence file")).report_dir == ""
+    assert evidence_report_dir([web_report], tmp_path) == "web"
+    assert evidence_report_dir([web_report, web / "b.xml"], tmp_path) == "web"
+    # The root, several directories, or outside the checkout: none.
+    assert evidence_report_dir([root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report, root_report], tmp_path) == ""
+    assert evidence_report_dir([web_report], tmp_path / "other") == ""
