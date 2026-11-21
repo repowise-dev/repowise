@@ -223,39 +223,6 @@ def test_the_exit_cleanup_leaves_another_run_lock(monkeypatch, tmp_path) -> None
     assert json.loads(update_lock_path(tmp_path).read_text(encoding="utf-8")) == other
 
 
-def test_the_second_pass_does_not_trip_the_first_pass_lock(monkeypatch, tmp_path) -> None:
-    """Each pass holds the lock until the process exits; the next pass must still take it."""
-    from repowise.core.update_lock import try_acquire_update_lock
-
-    rec = _Recorder(monkeypatch, {True: [0], False: [2]})
-    taken: list[bool] = []
-
-    def update(**kwargs: Any) -> Any:
-        # As run_update does: acquire, and leave the release to atexit.
-        taken.append(try_acquire_update_lock(tmp_path, None) is None)
-        return rec.outcome
-
-    monkeypatch.setattr(update_cmd, "run_update", update)
-    catch_up_mod.catch_up(_opts(), tmp_path)
-    assert taken == [True, True]
-
-
-def test_the_exit_cleanup_leaves_another_run_lock(monkeypatch, tmp_path) -> None:
-    """Another update can take the lock before the second pass; this exit must not drop it."""
-    from repowise.core.update_lock import update_lock_path
-
-    cleanups: list[tuple] = []
-    monkeypatch.setattr(atexit, "register", lambda fn, *args: cleanups.append((fn, args)))
-    run = SimpleNamespace(repo_path=tmp_path, head="abc")
-    assert update_cmd._acquire_update_lock(run) is None
-
-    other = {"pid": os.getppid(), "target_commit": "def", "started_at": time.time()}
-    update_lock_path(tmp_path).write_text(json.dumps(other), encoding="utf-8")
-    for fn, args in cleanups:
-        fn(*args)
-    assert json.loads(update_lock_path(tmp_path).read_text(encoding="utf-8")) == other
-
-
 def test_yes_reaches_the_update_too(monkeypatch, tmp_path) -> None:
     rec = _Recorder(monkeypatch, {True: [0], False: [0]})
     catch_up_mod.catch_up(_opts(yes=True), tmp_path)
