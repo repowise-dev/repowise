@@ -445,21 +445,7 @@ def _python_targets(
             continue
         run = f"sys.argv=['{module}']+sys.argv[1:];import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
         out.append(profiled("entry_point", f"python -m {module}", run))
-    for module, app in _asgi_apps(repo_root, root, roots, inputs.entry_files):
-        # uvicorn imports the app by name and serves it until Ctrl-C (or SIGTERM),
-        # then returns, so the profile is written as for any clean exit.
-        run = f"import uvicorn;uvicorn.run('{module}:{app}')"
-        server = launcher.replace("--with pyinstrument", "--with pyinstrument --with uvicorn")
-        workload, profile = _named(root, f"serve {module}:{app}", ".speedscope.json")
-        out.append({
-            **_target("entry_point", workload, cwd=cwd, command=_pyinstrument(server, _from(root, profile), run),
-                      profile=profile, commit=commit, input_format="speedscope",
-                      prerequisites=[*needs, *([f"{launcher} -m pip install uvicorn"] if needs else [])]),
-            "serves": True,
-        })
-        # Its ingest line stands; the reason keeps it from leading ``next_call``, as an
-        # entry point waiting for its arguments is kept.
-        out[-1]["reason"] = out[-1]["reason"] or _SERVE_REASON
+    out += _served_apps(stack, repo_root, inputs, commit, roots)
     out = out[:PER_CLASS]
 
     if _declares_pytest_benchmark(repo_root, root):
@@ -524,6 +510,31 @@ def _asgi_apps(
         if (m := _ASGI_APP.search(text)) is not None:
             found.append((module, m.group(1)))
     return found[:PER_CLASS]
+
+
+def _served_apps(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> list[dict[str, Any]]:
+    """Each module-level ASGI app of the unit, served by uvicorn under the profiler.
+
+    uvicorn imports the app by name and serves it until Ctrl-C (or SIGTERM),
+    then returns, so the profile is written as for any clean exit. The ingest
+    line stands; the reason keeps the target from leading ``next_call``, as an
+    entry point waiting for its arguments is kept.
+    """
+    root = stack.root
+    launcher, needs = _python_launcher(stack)
+    server = launcher.replace("--with pyinstrument", "--with pyinstrument --with uvicorn")
+    install = [f"{launcher} -m pip install uvicorn"] if needs else []
+    out: list[dict[str, Any]] = []
+    for module, app in _asgi_apps(repo_root, root, roots, inputs.entry_files):
+        workload, profile = _named(root, f"serve {module}:{app}", ".speedscope.json")
+        run = f"import uvicorn;uvicorn.run('{module}:{app}')"
+        target = _target("entry_point", workload, cwd=str(repo_root / root) if root else str(repo_root),
+                         command=_pyinstrument(server, _from(root, profile), run), profile=profile,
+                         commit=commit, input_format="speedscope", prerequisites=[*needs, *install])
+        out.append({**target, "reason": target["reason"] or _SERVE_REASON, "serves": True})
+    return out
 
 
 def _pytest_benchmark(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:

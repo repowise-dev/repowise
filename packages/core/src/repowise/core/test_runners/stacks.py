@@ -263,15 +263,20 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
             if testpaths and base not in testpaths:
                 return ""  # pytest's testpaths already decide what runs
             return f" {base}/{unit}"
-    if _testpaths(files):
-        return ""
+    return "" if _testpaths(files) else _tests_dir(paths, files)
+
+
+def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
+    """``tests`` (or ``test``) when it holds test files and a bare run would collect others too.
+
+    Ceiling: tests kept inside the source packages beside a tests/ directory are
+    left out too; a unit that keeps them there names them in its pytest testpaths.
+    """
     roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
     collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)]
     for base in ("tests", "test"):
-        inside = [p for p in collected if p.startswith(f"{base}/")]
-        # Ceiling: tests kept inside the source packages beside a tests/ directory are left
-        # out too; a unit that keeps them there names them in its pytest testpaths.
-        if inside and len(inside) < len(collected):
+        inside = sum(p.startswith(f"{base}/") for p in collected)
+        if 0 < inside < len(collected):
             return f" {base}"
     return ""
 
