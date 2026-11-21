@@ -13,6 +13,7 @@ are worth pinning, and the third is the one nobody notices going wrong:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -41,12 +42,13 @@ def fake_repowise(tmp_path: Path) -> Path:
     script.parent.mkdir(parents=True)
     script.write_text(
         # Records the HEAD it was run against, so a test can tell which commits
-        # a run actually covered. FAKE_COMMIT lands one commit mid-run, which is
-        # the burst a coalescing guard must not drop (#5518).
+        # a run actually covered. Each of the first FAKE_COMMITS runs lands one
+        # commit mid-run, the burst a coalescing guard must not drop (#5518).
         "#!/bin/sh\n"
         'echo "$(git rev-parse HEAD)" >> "$PWD/.repowise/ran"\n'
-        'if [ "${FAKE_COMMIT:-0}" = "1" ] && [ ! -f "$PWD/.repowise/committed" ]; then\n'
-        '  : > "$PWD/.repowise/committed"\n'
+        'made=$(wc -l < "$PWD/.repowise/committed" 2>/dev/null || echo 0)\n'
+        'if [ "$made" -lt "${FAKE_COMMITS:-0}" ]; then\n'
+        '  echo x >> "$PWD/.repowise/committed"\n'
         "  git -c user.email=t@t -c user.name=t commit -q --allow-empty -m mid-run\n"
         "fi\n"
         'sleep "${FAKE_SLEEP:-0}"\n',
@@ -182,7 +184,7 @@ def test_a_commit_that_lands_mid_run_is_covered_before_release(repo, fake_repowi
     # Install after that commit: an installed hook fires on it too, and with the
     # real `repowise` still on PATH it would take the guard before the test ran.
     hook = _install_hook(repo, monkeypatch)
-    env = {**_env(fake_repowise.parent, sleep_s=0), "FAKE_COMMIT": "1"}
+    env = {**_env(fake_repowise.parent, sleep_s=0), "FAKE_COMMITS": "1"}
 
     _fire(hook, repo, env).wait()
     assert _wait_until(lambda: len(_ran(repo)) >= 2, timeout=20), (
@@ -190,3 +192,84 @@ def test_a_commit_that_lands_mid_run_is_covered_before_release(repo, fake_repowi
     )
     heads = _ran(repo)
     assert heads[0] != heads[-1], "the second run did not see the commit that landed mid-run"
+
+
+def _commit(repo: Path, message: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_a_commit_during_every_pass_ends_indexed(repo, fake_repowise, monkeypatch):
+    """No cap on passes: the commit that lands during the last pass is still indexed."""
+    _commit(repo, "first")
+    hook = _install_hook(repo, monkeypatch)
+    # The sleep keeps each mid-run commit's own hook from finding the guard free.
+    env = {**_env(fake_repowise.parent, sleep_s=1), "FAKE_COMMITS": "4"}
+
+    _fire(hook, repo, env).wait()
+    assert _wait_until(lambda: len(_ran(repo)) >= 5, timeout=30), (
+        f"the burst stopped after {len(_ran(repo))} run(s)"
+    )
+    assert _wait_until(lambda: not (repo / _GUARD).exists(), timeout=15)
+    assert _ran(repo)[-1] == _head(repo), "the last commit of the burst was never indexed"
+
+
+def test_a_commit_after_the_last_head_check_is_indexed(repo, fake_repowise, tmp_path, monkeypatch):
+    """A commit whose hook finds the guard held after the holder's last HEAD check.
+
+    A `git` shim makes that interleaving deterministic: on the holder's first
+    HEAD check after an update ran, it reads HEAD, lands a commit whose own hook
+    finds the guard held, waits for that hook, then reports the HEAD it read.
+    """
+    real_git = Path(shutil.which("git") or "git").as_posix()
+    shim = tmp_path / "shim" / "git"
+    shim.parent.mkdir()
+    shim.write_text(
+        "#!/bin/sh\n"
+        f"REAL='{real_git}'\n"
+        'if [ "$*" = "rev-parse HEAD" ] && [ -f .repowise/ran ] && [ ! -f .repowise/shimmed ]; then\n'
+        "  : > .repowise/shimmed\n"
+        '  out=$("$REAL" rev-parse HEAD)\n'
+        '  "$REAL" -c user.email=t@t -c user.name=t commit -q --allow-empty -m late\n'
+        "  sleep 1\n"
+        '  echo "$out"\n'
+        "  exit 0\n"
+        "fi\n"
+        'exec "$REAL" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    shim.chmod(0o755)
+    _commit(repo, "first")
+    hook = _install_hook(repo, monkeypatch)
+    env = _env(fake_repowise.parent, sleep_s=0)
+    env["PATH"] = f"{shim.parent}{os.pathsep}{env['PATH']}"
+
+    _fire(hook, repo, env).wait()
+    assert _wait_until(lambda: (repo / ".repowise" / "shimmed").exists(), timeout=15)
+    # The guard is briefly absent while the holder releases and retakes it, so
+    # wait on the run log, not the guard.
+    assert _wait_until(lambda: bool(_ran(repo)) and _ran(repo)[-1] == _head(repo), timeout=15), (
+        f"the late commit was never indexed: {len(_ran(repo))} run(s)"
+    )
+    assert _wait_until(lambda: not (repo / _GUARD).exists(), timeout=15)

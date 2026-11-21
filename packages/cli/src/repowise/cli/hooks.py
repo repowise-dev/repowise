@@ -103,12 +103,20 @@ _HOOK_SCRIPT = """\
   # The age escape is the part that matters: a run killed mid-flight leaves the
   # directory, and without it every later commit is silently skipped. A hook
   # that does nothing looks exactly like one that is working.
-  find "$ROOT/.repowise/.update.lock.d" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null
+  #
+  # A hook that finds the guard held leaves .update.hook-pending so the holder
+  # runs again for its commit. It writes the marker before it tries the guard,
+  # and the holder releases the guard before it looks for the marker, so every
+  # commit is either seen through the marker or takes the guard itself.
+  GUARD="$ROOT/.repowise/.update.lock.d"
+  PENDING="$ROOT/.repowise/.update.hook-pending"
+  : > "$PENDING" 2>/dev/null || true
+  find "$GUARD" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null
   (
-    if ! mkdir "$ROOT/.repowise/.update.lock.d" 2>/dev/null; then
+    if ! mkdir "$GUARD" 2>/dev/null; then
       exit 0
     fi
-    trap 'rmdir "$ROOT/.repowise/.update.lock.d" 2>/dev/null' EXIT
+    trap 'rmdir "$GUARD" 2>/dev/null' EXIT
     cd "$ROOT" || exit 1
     run_update() {
       if command -v repowise >/dev/null 2>&1; then
@@ -119,21 +127,29 @@ _HOOK_SCRIPT = """\
         "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
       fi
     }
-    # A commit that lands while that run is in flight cannot take the guard, and
-    # the run has already read HEAD — so it would leave that commit unindexed
+    # A commit that lands while a run is in flight cannot take the guard, and
+    # the run has already read HEAD, so it would leave that commit unindexed
     # and, because it also clears .update.queued, silence the stale warning that
-    # would have said so. Cover it before releasing (#5518).
-    before=$(git rev-parse HEAD 2>/dev/null) || before=""
-    run_update
-    passes=0
-    while [ "$passes" -lt 2 ]; do
-      passes=$((passes + 1))
-      after=$(git rev-parse HEAD 2>/dev/null) || after=""
-      if [ "$after" = "$before" ]; then
-        break
-      fi
-      before=$after
+    # would have said so. Run again until HEAD holds still (#5518). No cap on
+    # passes: a capped loop drops the commit that lands during the last one.
+    while :; do
+      rm -f "$PENDING"
+      # Refresh the guard's age so a long burst is not taken for a killed run.
+      touch "$GUARD" 2>/dev/null || :
+      before=$(git rev-parse HEAD 2>/dev/null) || before=""
       run_update
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] && continue
+      trap - EXIT
+      rmdir "$GUARD" 2>/dev/null || :
+      # A commit after the HEAD check above found the guard still held and left
+      # only the marker. Take the guard back and run for it; if that commit's
+      # own hook took the guard first, that hook runs instead.
+      [ -f "$PENDING" ] || break
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      [ "$after" != "$before" ] || break
+      mkdir "$GUARD" 2>/dev/null || break
+      trap 'rmdir "$GUARD" 2>/dev/null' EXIT
     done
   ) &
 } >/dev/null 2>&1
