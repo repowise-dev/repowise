@@ -358,10 +358,15 @@ def cap_rows(
 
 
 def run_key(
-    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+    text: str,
+    provenance: RunProvenance,
+    kind: str,
+    index_commit: str | None = None,
+    report_dir: str = "",
 ) -> str:
     """One measurement's identity: its content, everything the run row records,
-    and the index it was joined against (a later index joins it afresh)."""
+    the index it was joined against (a later index joins it afresh), and the
+    directory its test paths were read from (:func:`rebase_test_entries`)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
@@ -374,6 +379,7 @@ def run_key(
         provenance.source,
         # Only when known, so a run that never reports it keeps its key.
         *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
+        *((f"report_dir={report_dir}",) if report_dir else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))

@@ -549,7 +549,7 @@ async def store_evidence(
             doc,
             provenance,
             joined,
-            key=run_key(text, provenance, doc.kind, index_commit),
+            key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
             truncated=truncated,
             mapping_partial=partial,
             unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,

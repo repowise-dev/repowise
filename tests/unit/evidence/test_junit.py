@@ -304,3 +304,15 @@ def test_the_report_directory_is_where_every_file_is(tmp_path: Path) -> None:
     assert evidence_report_dir([root_report], tmp_path) == ""
     assert evidence_report_dir([web_report, root_report], tmp_path) == ""
     assert evidence_report_dir([web_report], tmp_path / "other") == ""
+
+
+def test_the_report_directory_is_part_of_the_run_key() -> None:
+    from repowise.core.evidence.ingest import RunProvenance, run_key
+
+    provenance = RunProvenance(
+        workload_name="w", workload_class="unit_test", commit_sha="c", checkout_root="r", dirty=False
+    )
+    keys = {run_key("x", provenance, "test_timing", "c", d) for d in ("", "web", "api")}
+    assert len(keys) == 3
+    # A run read from the root keeps the key it always had.
+    assert run_key("x", provenance, "test_timing", "c") == run_key("x", provenance, "test_timing", "c", "")
