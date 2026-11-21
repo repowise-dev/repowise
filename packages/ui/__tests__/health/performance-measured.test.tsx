@@ -210,6 +210,28 @@ describe("Runtime evidence marks", () => {
     expect(screen.getAllByText(/^(Measured|Confirmed|Not exercised)$/)).toHaveLength(3);
   });
 
+  it("labels evidence from a unit-test run as measured in tests", async () => {
+    const items = [
+      opportunity({
+        opportunity_id: "perf2_in_tests",
+        runtime_evidence: { state: "measured", basis: "measured_in_tests", workload: "pytest" },
+      }),
+      opportunity({
+        opportunity_id: "perf2_confirmed_in_tests",
+        runtime_evidence: { state: "confirmed", basis: "measured_in_tests" },
+      }),
+    ];
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => page({ items }) })} />);
+    const row = async (id: string) =>
+      (await screen.findAllByRole("listitem")).find(
+        (li) => li.getAttribute("data-performance-opportunity") === id,
+      )!;
+    expect(within(await row("perf2_in_tests")).getByText("Measured in tests")).toBeTruthy();
+    expect(within(await row("perf2_in_tests")).getByText("in pytest")).toBeTruthy();
+    expect(within(await row("perf2_confirmed_in_tests")).getByText("Confirmed")).toBeTruthy();
+    expect(within(await row("perf2_confirmed_in_tests")).getByText("by a measured test run")).toBeTruthy();
+  });
+
   it("lists the slowest timed tests the route returns, and nothing without them", async () => {
     const getEvidenceTests = vi.fn(async () => ({
       status: "measured" as const,

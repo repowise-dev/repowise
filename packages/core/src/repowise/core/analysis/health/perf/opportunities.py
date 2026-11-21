@@ -180,12 +180,17 @@ class _Reading:
     growth: str
     # The leading workload whose newest run ranks a live member's loop owner.
     measured: str | None
+    # The unit-test workload whose newest run ranks one, when no leading one does.
+    in_tests: str | None
     # What query counts at a live member's loop owner or call path say.
     queries: Any
 
 
 def _read_live(
-    members: list[Any], measured: Mapping[str, str], queries: Mapping[str, Any]
+    members: list[Any],
+    measured: Mapping[str, str],
+    queries: Mapping[str, Any],
+    in_tests: Mapping[str, str],
 ) -> _Reading:
     """Read a group's facts off its live members.
 
@@ -196,7 +201,9 @@ def _read_live(
 
     *measured* maps a function a leading workload ranks to that workload. One
     live member whose loop owner is in it makes the group measured, which
-    overrides the static guesses that it runs rarely or never.
+    overrides the static guesses that it runs rarely or never. *in_tests* is
+    the same for unit-test runs: it marks the group measured in tests and
+    overrides no guess about where the code runs.
     """
     live = [facts for facts in members if not _inert(facts)] or members
     markers = tuple(sorted({facts.marker for facts in live}))
@@ -204,6 +211,7 @@ def _read_live(
     sites = {facts.site for facts in live}
     role = hottest_role(facts.execution_role for facts in live)
     owners = [f for f in live if hottest_role((f.execution_role,)) == role]
+    lead = _measured_workload(live, measured)
     return _Reading(
         live=live,
         markers=markers,
@@ -220,7 +228,8 @@ def _read_live(
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
         magnitude=loop_magnitude(marker, [f.details for f in owners]),
         growth=growth_source(marker, owners),
-        measured=_measured_workload(live, measured),
+        measured=lead,
+        in_tests=None if lead else _measured_workload(live, in_tests),
         queries=_query_reading(live, queries),
     )
 
@@ -256,6 +265,7 @@ def _facets(
         "execution_role": r.role,
         # Only with runtime evidence, so a repo without any stores what it did.
         **({"measured": r.measured} if r.measured else {}),
+        **({"measured_in_tests": r.in_tests} if r.in_tests else {}),
         # The name said it runs once and a run said otherwise: kept, never led.
         **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
         **_query_facets(r.queries),
@@ -263,15 +273,19 @@ def _facets(
     }
 
 
-def _confirmed(r: _Reading, hot: frozenset[str]) -> str | None:
+def _confirmed(r: _Reading, hot: frozenset[str], hot_in_tests: frozenset[str]) -> str | None:
     """What confirms the cause, or ``None``: exact evidence at its call path
     (``query_count``: statements grow with the items), else a live member's
     loop owner a leading workload measured above the lead bar
-    (``lead_candidate``, ``measured``)."""
+    (``lead_candidate``, ``measured``), else one a unit-test run did
+    (``measured_in_tests``)."""
     if r.queries is not None and r.queries.verdict == "grows":
         return "query_count"
-    if any(f.details.get("role_owner") in hot for f in r.live):
+    owners = {f.details.get("role_owner") for f in r.live}
+    if owners & hot:
         return "measured"
+    if owners & hot_in_tests:
+        return "measured_in_tests"
     return None
 
 
@@ -294,6 +308,8 @@ def _assemble(
     measured: Mapping[str, str],
     queries: Mapping[str, Any],
     hot: frozenset[str],
+    in_tests: Mapping[str, str],
+    hot_in_tests: frozenset[str],
 ) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
@@ -308,7 +324,7 @@ def _assemble(
     context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
     # Statement counts speak only to a cause that crosses a database boundary.
-    r = _read_live(members, measured, queries if boundary == "db" else {})
+    r = _read_live(members, measured, queries if boundary == "db" else {}, in_tests)
     evidence_confidence = provenance_confidence(r.provenance)
     assessment = assess_fix(
         r.marker,
@@ -341,7 +357,7 @@ def _assemble(
         provenance=r.provenance,
         magnitude=r.magnitude,
     )
-    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot))
+    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot, hot_in_tests))
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
@@ -385,6 +401,8 @@ def build_performance_opportunities(
     measured: Mapping[str, str] | None = None,
     queries: Mapping[str, Any] | None = None,
     hot: frozenset[str] = frozenset(),
+    in_tests: Mapping[str, str] | None = None,
+    hot_in_tests: frozenset[str] = frozenset(),
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
@@ -396,14 +414,24 @@ def build_performance_opportunities(
     (``evidence.query_counts``); a database cause reached by one carries the
     ``queries`` facet. *hot* holds the functions a leading workload
     measured in the ``lead_candidate`` tier; a cause inside one, or whose query counts grow, carries
-    the ``confirmed`` facet.
+    the ``confirmed`` facet. *in_tests* and *hot_in_tests* are the same two
+    for unit-test runs: the ``measured_in_tests`` facet, and ``confirmed`` as
+    ``measured_in_tests`` when nothing stronger confirms the cause.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
         opportunity = _assemble(
-            key, members, cap, origins or {}, measured or {}, queries or {}, hot
+            key,
+            members,
+            cap,
+            origins or {},
+            measured or {},
+            queries or {},
+            hot,
+            in_tests or {},
+            hot_in_tests,
         )
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}

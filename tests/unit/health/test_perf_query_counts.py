@@ -76,3 +76,24 @@ def test_growing_counts_confirm_first_and_a_ranked_function_alone_does_not() -> 
 
     assert exact.facets["confirmed"] == "query_count"
     assert "confirmed" not in ranked.facets
+
+
+def test_a_unit_test_run_marks_and_confirms_apart_and_a_leading_run_wins() -> None:
+    (tests,) = build_performance_opportunities(
+        [_finding("network")], in_tests={OWNER: "pytest"}, hot_in_tests=frozenset({OWNER})
+    )
+    assert (tests.facets["measured_in_tests"], tests.facets["confirmed"]) == (
+        "pytest",
+        "measured_in_tests",
+    )
+    assert "measured" not in tests.facets
+
+    (both,) = build_performance_opportunities(
+        [_finding("network")],
+        measured={OWNER: "api-load"},
+        hot=frozenset({OWNER}),
+        in_tests={OWNER: "pytest"},
+        hot_in_tests=frozenset({OWNER}),
+    )
+    assert (both.facets["measured"], both.facets["confirmed"]) == ("api-load", "measured")
+    assert "measured_in_tests" not in both.facets
