@@ -906,11 +906,27 @@ def js_first_parameter_scope(content: str, name: str, offset: int) -> bool:
 
 def _expression_holds(content: str, start: int, offset: int) -> bool:
     """Whether an arrow's expression body starting at *start* runs on to *offset*:
-    no bracket it did not open closes, and no top-level ``;`` or ``,`` ends it."""
+    no bracket it did not open closes, and no top-level ``;``, ``,`` or line
+    break that ends the statement (automatic semicolon insertion) ends it."""
     text = "(" + content[start:offset]
     if any(_scan(text, 0, len(text), closer=c)[0] >= 0 for c in ")]}"):
         return False
-    return not any(_scan(content, start, offset, sep=s)[1] for s in ";,")
+    if any(_scan(content, start, offset, sep=s)[1] for s in ";,"):
+        return False
+    return not any(_ends_statement(content, start, nl) for nl in _scan(content, start, offset, sep="\n")[1])
+
+
+# A line that carries on the expression above it: a member, an operator or a ternary.
+_CONTINUED_LINE_RE = re.compile(r"\s*(?:[.?:+\-*/%&|]|=>)")
+
+
+def _ends_statement(content: str, start: int, newline: int) -> bool:
+    """Whether the line break at *newline* ends an arrow body begun at *start*:
+    the body has text before it and the next line does not carry it on."""
+    before = content[start:newline].rstrip()
+    if not before or before[-1] in "+-*/%&|?:=.":
+        return False  # the body starts on the next line, or an operator carries on
+    return _CONTINUED_LINE_RE.match(content, newline + 1) is None
 
 
 def on_comment_line(content: str, offset: int) -> bool:

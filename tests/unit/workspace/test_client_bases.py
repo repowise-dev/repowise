@@ -167,12 +167,17 @@ def test_a_trailing_hole_that_is_no_parameter_still_reads_its_path(tmp_path: Pat
         "export function other(qs: string) { return qs; }\n"
         "export const more = () => fetch(`/api/more${qs}`);\n"
         "if (qs) { fetch(`/api/cond${qs}`); }\n"
+        # An arrow body a line break ends, with no semicolon, before a loop
+        # that reuses its parameter's name.
+        "const norm = (endpoint) => endpoint.trim()\n"
+        "for (const endpoint of endpoints) { fetch(`/api/loop${endpoint}`) }\n"
     )
     assert {p for _m, p in _paths(tmp_path, "src/l.ts", text)} == {
         "/api/repos",
         "/api/users/{param}",
         "/api/more",
         "/api/cond",
+        "/api/loop",
     }
 
 
