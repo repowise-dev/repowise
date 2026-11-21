@@ -199,6 +199,15 @@ def test_a_cold_name_a_leading_run_measured_above_the_bar_is_confident() -> None
     assert perf_confident_verdict(overridden).eligible
 
 
+def test_growing_query_counts_on_a_run_ranked_cold_role_are_confident() -> None:
+    # Query counts take precedence in ``confirmed``; the run still answers the role.
+    cli = {"loop_magnitude": "grows_with_data", "growth_source": "loop", "execution_role": "cli"}
+    both = _cause(facets={**cli, "measured": "update", "confirmed": "query_count"})
+    assert perf_confident_verdict(both).eligible
+    counts_only = _cause(facets={**cli, "confirmed": "query_count"})
+    assert perf_confident_verdict(counts_only).reason == "cold_role"
+
+
 def test_a_measured_cold_name_is_never_confident_whatever_its_shape() -> None:
     # A shape that grows by itself skips the loop-growth check; the override must not.
     facets = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}

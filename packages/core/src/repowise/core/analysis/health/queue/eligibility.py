@@ -36,6 +36,7 @@ from ..worth import (
     measured,
     measured_nloc,
     perf_facets,
+    run_answers_cold,
     terminal_shaped,
 )
 
@@ -546,7 +547,7 @@ def _unconfirmed(item: Any) -> bool:
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
         return True
     cold = execution_role(item) in COLD_ROLES or facets.get("measured_overrides")
-    if cold and facets.get("confirmed") != "measured":
+    if cold and not run_answers_cold(facets):
         return True
     reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
     return execution_role(item) == "unknown" and not reached
