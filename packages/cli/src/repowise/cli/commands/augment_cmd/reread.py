@@ -43,8 +43,10 @@ to compare against and is served in full — which is also what stops a collapse
 claiming "you were served the whole file" to an agent that was served a
 skeleton.
 
-Not a silent truncation: the notice names the file, the tool call of the
-earlier read, the range served then, and how to get the bytes back.
+Not a silent truncation: the notice names the file, the range served by the
+earlier read, and how to get the bytes back. It names no tool-call number: the
+session state counts only the reads and edits it tracks, so any number it could
+give would not match the agent's own count of its calls.
 
 This is **not** the retired ``("read", "reread")`` advisory, which told the
 agent it had already read the file and left it to act. This does the thing
@@ -125,8 +127,6 @@ def collapse(rel: str, content: str, prior: dict, *, touched: bool) -> Offer | N
     """
     whole_file = prior.get("off") is None and prior.get("lim") is None
     label = _range_label(prior.get("off"), prior.get("lim"))
-    turn = prior.get("seq")
-    when = f" (tool call {turn} of this session)" if isinstance(turn, int) and turn else ""
     if not touched:
         also = ""
     elif whole_file:
@@ -143,7 +143,7 @@ def collapse(rel: str, content: str, prior: dict, *, touched: bool) -> Offer | N
         )
     text = (
         f"[repowise] Unchanged since you read it: {rel}. You were served {label}"
-        f"{when} and it hashes the same now, so those bytes are already in your "
+        " earlier in this session and it hashes the same now, so those bytes are already in your "
         f"context and are not repeated here.{also}\n"
         "Read it again and you get the content — this is never collapsed twice in a row."
     )
@@ -177,10 +177,8 @@ def changed_notice(rel: str, prior: dict) -> str:
     Different offsets legitimately return different bytes, and calling that a
     change would be the judgment this surface exists to avoid making.
     """
-    turn = prior.get("seq")
-    when = f" at tool call {turn}" if isinstance(turn, int) and turn else " earlier"
     return (
-        f"[repowise] {rel} changed on disk since you read it{when}, and not through an "
+        f"[repowise] {rel} changed on disk since you read it earlier, and not through an "
         "Edit in this session — something outside it wrote the file. The content below "
         "is current; anything you concluded from the earlier read may not be."
     )

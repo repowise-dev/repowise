@@ -1,15 +1,16 @@
 import * as React from "react";
-import type { StatsHighlights } from "@repowise-dev/types/stats";
-import { PageLede } from "../shared/page-lede";
-import { formatAgeDays, formatBytes, formatDate, formatNumber } from "../lib/format";
+import type { StatsHighlights, StatsVelocity } from "@repowise-dev/types/stats";
+import { formatBytes, formatDate, formatDateWith, formatNumber } from "../lib/format";
+import { repoArchetype } from "./archetype";
 import { ArrivalsTimeline } from "./arrivals-timeline";
 import { ChronotypeList } from "./chronotype-list";
 import { ChurnLedger } from "./churn-ledger";
+import { Gauges, type Gauge } from "./gauges";
+import { LanguageSplit } from "./language-split";
+import { ageLabel, gapLabel, momentum, shortCount } from "./numbers";
 import { OriginBlock } from "./origin-block";
 import { PunchCard } from "./punch-card";
 import { RecordsList, type RecordLinks } from "./records-list";
-import { NLOC_HINT } from "./stat-callout";
-import { StatRibbon, type RibbonStat } from "./stat-ribbon";
 import { DEFAULT_WEEKEND_PRESET } from "./weekend";
 
 export interface StatsReportProps extends RecordLinks {
@@ -19,210 +20,214 @@ export interface StatsReportProps extends RecordLinks {
   contributorsHref?: string | undefined;
 }
 
-function Section({
-  title,
-  lede,
-  children,
-}: {
-  title: string;
-  lede?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section aria-label={title} className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-[22px] font-semibold text-[var(--color-text-primary)]">{title}</h2>
-        {lede && (
-          <p className="max-w-[72ch] text-xs text-[var(--color-text-secondary)]">{lede}</p>
-        )}
-      </div>
-      {children}
-    </section>
-  );
-}
+const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+const H2 = "text-lg font-semibold text-[var(--color-text-primary)]";
 
-function monthLabel(key: string): string {
-  const [y, m] = key.split("-");
-  // Built from parts so the browser's offset can never nudge it across a month.
-  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("en-US", {
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function hoursLabel(hours: number): string {
-  if (hours < 48) return `${hours} hours`;
-  return formatAgeDays(Math.floor(hours / 24));
+/** "Mar 2026", in the viewer's zone; a date-only value stays on its own day. */
+function monthYear(iso: string): string {
+  return formatDateWith(iso, { month: "short", year: "numeric" });
 }
 
 function span(start: string, end: string): string {
   return `${formatDate(start)} to ${formatDate(end)}`;
 }
 
-function languageMix(data: StatsHighlights): string | undefined {
-  const langs = data.scale.languages ?? [];
-  const total = langs.reduce((a, l) => a + l.file_count, 0);
-  if (total === 0) return undefined;
-  return langs
-    .slice(0, 2)
-    .map((l) => `${l.language} ${Math.round((l.file_count / total) * 100)}%`)
-    .join(", ");
-}
-
-function identityStats(data: StatsHighlights): RibbonStat[] {
-  const { scale, origin } = data;
-  return [
-    { label: "Files", value: formatNumber(scale.file_count) },
-    { label: "Symbols", value: formatNumber(scale.symbol_count) },
-    { label: "Modules", value: formatNumber(scale.module_count) },
-    {
-      label: "Languages",
-      value: formatNumber(scale.language_count),
-      sub: languageMix(data),
-      hint: "Programming languages by file count. Data and markup formats such as JSON, YAML and Markdown are not counted.",
-    },
-    {
-      label: "Commits",
-      value: formatNumber(origin.total_commits),
-      ...(origin.total_merge_commits != null
-        ? {
-            sub: `plus ${formatNumber(origin.total_merge_commits)} merge${origin.total_merge_commits === 1 ? "" : "s"}`,
-            hint: "Non-merge commits reachable from HEAD. Merge commits are counted apart.",
-          }
-        : {}),
-    },
-  ];
-}
-
-function rhythmStats(rhythm: StatsHighlights["rhythm"]): RibbonStat[] {
-  const { longest_streak: streak, longest_silence: silence, busiest_day: day } = rhythm;
-  const v = rhythm.velocity;
-  const month = rhythm.busiest_month;
-  const cells: (RibbonStat | null)[] = [
-    streak
-      ? { label: "Longest streak", value: `${formatNumber(streak.days)} days`, sub: span(streak.start, streak.end) }
-      : null,
-    silence
-      ? {
-          label: "Longest silence",
-          value: hoursLabel(silence.hours),
-          sub: span(silence.start, silence.end),
-          hint: "The longest gap between two consecutive commits.",
-        }
-      : null,
-    day
-      ? { label: "Busiest day", value: `${formatNumber(day.commits)} commits`, sub: formatDate(day.date) }
-      : null,
-    rhythm.code_half_life_days != null
-      ? {
-          label: "Code half-life",
-          value: `${formatNumber(rhythm.code_half_life_days)} days`,
-          sub: "half the files have gone unchanged this long",
-          hint: "Median time since each file was last changed, measured from the newest commit.",
-        }
-      : null,
-    v && v.pct_change != null
-      ? {
-          label: "Momentum",
-          value: `${v.pct_change >= 0 ? "+" : ""}${v.pct_change}%`,
-          sub: `${formatNumber(v.recent_90d)} commits in 90 days vs ${formatNumber(v.prior_90d)} before`,
-          hint: "The 90 days ending at the newest commit, against the 90 before it.",
-        }
-      : month
-        ? { label: "Busiest month", value: monthLabel(month.month), sub: `${formatNumber(month.total)} commits` }
-        : null,
-  ];
-  return cells.filter((s): s is RibbonStat => s !== null);
-}
-
-function peopleStats(people: StatsHighlights["people"], contributorsHref: string | undefined): RibbonStat[] {
-  const tf = people.truck_factor;
-  const cells: (RibbonStat | null)[] = [
-    {
-      label: "Contributors",
-      value: formatNumber(people.contributor_count),
-      sub: "people who have committed",
-      ...(contributorsHref ? { href: contributorsHref } : {}),
-    },
-    { label: "Owners", value: formatNumber(people.owner_count), sub: "own at least one file" },
-    tf != null
-      ? {
-          label: "Truck factor",
-          value: formatNumber(tf),
-          sub: tf === 1 ? "person owns most of the code" : "people own most of the code",
-          hint: "The fewest primary owners who together hold more than half the owned files.",
-        }
-      : null,
-    {
-      label: "Single-owner files",
-      value: formatNumber(people.single_owner_files),
-      sub: people.tracked_files ? `of ${formatNumber(people.tracked_files)} files` : undefined,
-      hint: "Files where one author made at least 80% of the commits.",
-    },
-    {
-      label: "Knowledge silos",
-      value: formatNumber(people.silo_count),
-      sub: "top-level folders with one dominant owner",
-      hint: "Top-level folders where one person is the primary owner of more than 80% of the files.",
-    },
-  ];
-  return cells.filter((s): s is RibbonStat => s !== null);
-}
-
-function windowSentence(data: StatsHighlights): string | undefined {
-  const sample = data.rhythm.window;
-  if (!sample?.first_at || !sample.last_at) return undefined;
-  const days = `across ${formatNumber(data.rhythm.active_days)} active days`;
-  const range = span(sample.first_at, sample.last_at);
-  return sample.complete
-    ? `Every commit from ${range}, ${days}.`
-    : `Drawn from the latest ${formatNumber(sample.commits)} of ${formatNumber(
+/** What history the rhythm was drawn from, said beside the chart it qualifies. */
+function scopeSentence(data: StatsHighlights): string | undefined {
+  const w = data.rhythm.window;
+  if (!w?.first_at || !w.last_at) return undefined;
+  const range = `${monthYear(w.first_at)} to ${monthYear(w.last_at)}`;
+  return w.complete
+    ? `Every commit, ${range}.`
+    : `Drawn from the latest ${formatNumber(w.commits)} of ${formatNumber(
         data.origin.total_commits,
-      )} commits, ${range}, ${days}.`;
-}
-
-function SizeLede({ data }: { data: StatsHighlights }) {
-  const { scale } = data;
-  const testNloc = scale.test_nloc ?? 0;
-  const sourceNloc = scale.total_nloc - testNloc;
-  return (
-    <PageLede
-      label="Lines of code"
-      labelHint={NLOC_HINT}
-      value={formatNumber(scale.total_nloc)}
-      band={{ label: scale.size_class.name }}
-      layout="beside"
-    >
-      <p>
-        {data.repo.name ? `${data.repo.name} is a ${scale.size_class.name}. ` : ""}
-        {scale.size_class.blurb}
-        {testNloc > 0 && sourceNloc > 0 && (
-          <>
-            {" "}For every 100 lines of source there are{" "}
-            <strong className="font-semibold text-[var(--color-text-primary)]">
-              {Math.round((testNloc / sourceNloc) * 100)} lines of tests
-            </strong>
-            .
-          </>
-        )}
-        {data.index_storage_bytes ? (
-          <>
-            {" "}Its Repowise index (documentation, symbols and vectors) takes{" "}
-            <strong className="font-semibold text-[var(--color-text-primary)]">
-              {formatBytes(data.index_storage_bytes)}
-            </strong>{" "}
-            on disk.
-          </>
-        ) : null}
-      </p>
-    </PageLede>
-  );
+      )} commits, ${range}.`;
 }
 
 /**
- * The whole Stats page: what the repo is, its records, when the work happens,
- * and who does it. One scroll, because every section is already in the single
- * payload and tabs only hid most of it.
+ * The one sentence a reader takes away: the repo named by the shape of its
+ * work, with the evidence that earned the name right under it. When there is
+ * too little history to name a rhythm, the size class leads instead.
+ */
+function Headline({ data, weekendDays }: { data: StatsHighlights; weekendDays: readonly number[] }) {
+  const name = data.repo.name || "This repo";
+  const archetype = repoArchetype(data.rhythm.punch_card?.matrix, weekendDays);
+  const { size_class: size } = data.scale;
+  const asOf = data.origin.last_commit_at;
+  return (
+    <header className="flex flex-col gap-3 pb-8">
+      {asOf && <span className={MICRO}>As of {formatDate(asOf)}</span>}
+      <p className="max-w-[24ch] text-[clamp(28px,6.5vw,44px)] font-normal leading-[1.1] tracking-[-0.02em] text-[var(--color-text-primary)] [text-wrap:balance]">
+        {archetype ? (
+          <>
+            {name} ships like a <strong className="font-semibold">{archetype.name}</strong>.
+          </>
+        ) : (
+          <>
+            {name} is a <strong className="font-semibold">{size.name}</strong>.
+          </>
+        )}
+      </p>
+      <p className="max-w-[60ch] text-[18px] leading-snug text-[var(--color-text-secondary)] [text-wrap:pretty]">
+        {archetype ? archetype.because : size.blurb}
+      </p>
+      <OriginBlock data={data.origin} />
+      {data.index_storage_bytes ? (
+        <p className="-mt-2 text-xs text-[var(--color-text-tertiary)]">
+          Its Repowise index (documentation, symbols and vectors) takes{" "}
+          {formatBytes(data.index_storage_bytes)} on disk.
+        </p>
+      ) : null}
+    </header>
+  );
+}
+
+/** The two "per 100" readouts: test lines against source, and lines taken back. */
+function ratioGauges({ scale, churn }: StatsHighlights): Gauge[] {
+  const tests = scale.test_nloc ?? 0;
+  const source = scale.total_nloc - tests;
+  const out: Gauge[] = [];
+  if (tests > 0 && source > 0) {
+    out.push({ label: "Tests", value: String(Math.round((tests / source) * 100)), unit: "per 100", sub: "lines of source" });
+  }
+  if (churn && churn.lines_added > 0) {
+    out.push({
+      label: "Taken back",
+      value: String(Math.round(churn.deleted_per_hundred)),
+      unit: "per 100",
+      sub: "lines ever written",
+    });
+  }
+  return out;
+}
+
+function leadGauges(data: StatsHighlights, contributorsHref: string | undefined): Gauge[] {
+  const { scale, origin, rhythm } = data;
+  const w = rhythm.window;
+  const nloc = shortCount(scale.total_nloc);
+  const exact = formatNumber(scale.total_nloc);
+  const out: Gauge[] = [
+    { label: "Lines of code", value: nloc, exact: nloc === exact ? undefined : exact, sub: scale.size_class.name },
+  ];
+  if (origin.age_days != null) {
+    const since = origin.first_commit_at ? `since ${monthYear(origin.first_commit_at)}` : undefined;
+    out.push({ label: "Age", ...ageLabel(origin.age_days), sub: since });
+  }
+  out.push(
+    { label: "People", value: formatNumber(origin.contributor_count), sub: "have committed", href: contributorsHref },
+    {
+      label: "Active days",
+      value: formatNumber(rhythm.active_days),
+      sub: w && !w.complete ? `in the latest ${formatNumber(w.commits)} commits` : "with at least one commit",
+    },
+    ...ratioGauges(data),
+  );
+  return out;
+}
+
+const markInk = "bg-[var(--color-text-primary)]";
+
+const days = (n: number) => (n === 1 ? "day" : "days");
+
+function streakGauge({ longest_streak: s }: StatsHighlights["rhythm"]): Gauge | null {
+  if (!s) return null;
+  const ticks = Array.from({ length: Math.min(s.days, 60) }, (_, i) => (
+    <span key={i} className={`max-w-[3px] flex-1 ${markInk} opacity-50`} />
+  ));
+  return {
+    label: "Longest streak",
+    value: formatNumber(s.days),
+    unit: days(s.days),
+    mark: <div className="flex h-3 gap-px overflow-hidden">{ticks}</div>,
+    sub: span(s.start, s.end),
+  };
+}
+
+function silenceGauge({ longest_silence: s }: StatsHighlights["rhythm"]): Gauge | null {
+  if (!s) return null;
+  return {
+    label: "Longest silence",
+    ...gapLabel(s.hours),
+    mark: (
+      <div className="relative h-3 border-x border-[var(--color-text-tertiary)]">
+        <span className="absolute inset-x-0 top-1/2 border-t border-dashed border-[var(--color-text-tertiary)]" />
+      </div>
+    ),
+    sub: span(s.start, s.end),
+  };
+}
+
+function busiestDayGauge({ busiest_day: day, busiest_month: month }: StatsHighlights["rhythm"]): Gauge | null {
+  if (!day) return null;
+  const monthNote = month
+    ? `. Busiest month ${monthYear(`${month.month}-01`)}, ${formatNumber(month.total)}`
+    : "";
+  return {
+    label: "Busiest day",
+    value: formatNumber(day.commits),
+    unit: "commits",
+    sub: `${formatDate(day.date)}${monthNote}`,
+  };
+}
+
+function halfLifeGauge({ code_half_life_days: d }: StatsHighlights["rhythm"]): Gauge | null {
+  if (d == null) return null;
+  return {
+    label: "Code half-life",
+    value: formatNumber(d),
+    unit: days(d),
+    mark: (
+      <div className="flex h-1.5">
+        <span className={`flex-1 ${markInk} opacity-35`} />
+        <span className={`flex-1 ${markInk} opacity-10`} />
+      </div>
+    ),
+    sub: "Half the files have gone unchanged this long",
+  };
+}
+
+/** The 90 days before against the last 90, drawn only when the comparison holds. */
+function PaceBars({ v }: { v: StatsVelocity }) {
+  const peak = Math.max(v.recent_90d, v.prior_90d, 1);
+  const bars: Array<[string, number, string]> = [
+    ["before", v.prior_90d, "opacity-35"],
+    ["last 90", v.recent_90d, "opacity-80"],
+  ];
+  return (
+    <div className="grid gap-1 font-mono text-[10px] text-[var(--color-text-tertiary)]">
+      {bars.map(([label, n, op]) => (
+        <div key={label} className="grid grid-cols-[42px_minmax(0,1fr)] items-center gap-1.5">
+          {label}
+          <span className={`h-1.5 ${markInk} ${op}`} style={{ width: `${Math.round((n / peak) * 100)}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function paceGauge({ velocity: v }: StatsHighlights["rhythm"]): Gauge | null {
+  const m = momentum(v);
+  if (!v || !m) return null;
+  return {
+    label: "Last 90 days",
+    value: m.value,
+    unit: m.unit,
+    mark: v.pct_change != null ? <PaceBars v={v} /> : undefined,
+    sub: m.sub,
+  };
+}
+
+function tempoGauges(data: StatsHighlights): Gauge[] {
+  return [streakGauge, silenceGauge, busiestDayGauge, halfLifeGauge, paceGauge]
+    .map((g) => g(data.rhythm))
+    .filter((g): g is Gauge => g !== null);
+}
+
+/**
+ * The Stats page as an instrument panel: one headline sentence, a ribbon of
+ * readouts, then a hairline grid of the rhythm, tempo, records, ledger and
+ * people. Ownership figures (truck factor, single-owner files, silos) are left
+ * to Contributors, and file, symbol and commit totals to Overview and Commits.
  *
  * Shared by every host; the host supplies the weekend preference and whatever
  * routes it has.
@@ -233,52 +238,67 @@ export function StatsReport({
   contributorsHref,
   ...links
 }: StatsReportProps) {
-  const { origin, churn, rhythm, people, records } = data;
+  const { churn, rhythm, people, records } = data;
   const sample = rhythm.window;
   const partial = sample != null && !sample.complete;
-  const rhythmCells = rhythmStats(rhythm);
+  const tempo = tempoGauges(data);
+  const languages = data.scale.languages ?? [];
+  const block = "border-b border-[var(--color-border-default)] py-7";
 
   return (
-    <div className="flex flex-col gap-12">
-      <div className="flex flex-col gap-8">
-        <SizeLede data={data} />
-        <StatRibbon stats={identityStats(data)} />
-        <OriginBlock data={origin} />
-        {churn && <ChurnLedger data={churn} />}
-      </div>
+    <div className="flex min-w-0 flex-col">
+      <Headline data={data} weekendDays={weekendDays} />
+      <Gauges
+        gauges={leadGauges(data, contributorsHref)}
+        LinkComponent={links.LinkComponent}
+        className="border-y border-t-[var(--color-text-primary)] border-b-[var(--color-border-default)]"
+      />
 
-      <Section
-        title="Records"
-        lede="The biggest, longest and most tangled things in the codebase. The length, naming and patch records leave test code out."
-      >
-        <RecordsList
-          records={records}
-          commitScope={partial ? `latest ${formatNumber(sample.commits)}` : undefined}
-          {...links}
-        />
-      </Section>
-
-      <Section title="When the work happens" lede={windowSentence(data)}>
+      <div className={block}>
         <PunchCard
           data={rhythm.punch_card}
           weekendDays={weekendDays}
-          firstCommitAt={sample?.first_at ?? origin.first_commit_at}
-          lastCommitAt={sample?.last_at ?? origin.last_commit_at}
+          scope={scopeSentence(data)}
+          partialCommits={partial ? sample.commits : undefined}
         />
-        {rhythmCells.length > 0 && <StatRibbon stats={rhythmCells} />}
-      </Section>
+      </div>
 
-      <Section title="Who does it">
-        <StatRibbon stats={peopleStats(people, contributorsHref)} LinkComponent={links.LinkComponent} />
-        <ChronotypeList people={people.chronotypes} weekendDays={weekendDays} />
-        {people.chronotypes.length === 0 && rhythm.punch_card.timezone_mode === "utc" && (
-          <p className="text-xs text-[var(--color-text-secondary)]">
-            Commit-hour habits need each commit&apos;s local time, which this index does not
-            carry.
+      {tempo.length > 0 && (
+        <section aria-label="Tempo" className={`${block} flex flex-col gap-2`}>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h2 className={H2}>Tempo</h2>
+            {partial && <span className={MICRO}>Latest {formatNumber(sample.commits)} commits</span>}
+          </div>
+          <Gauges gauges={tempo} />
+        </section>
+      )}
+
+      <div className={`${block} grid grid-cols-1 gap-y-8 lg:grid-cols-12`}>
+        <div className="min-w-0 lg:col-span-7 lg:pr-6">
+          <RecordsList
+            records={records}
+            commitScope={partial ? `latest ${formatNumber(sample.commits)}` : undefined}
+            {...links}
+          />
+        </div>
+        <aside className="flex min-w-0 flex-col gap-8 border-t border-[var(--color-border-default)] pt-8 lg:col-span-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+          {churn && <ChurnLedger data={churn} />}
+          {languages.length > 0 && <LanguageSplit languages={languages} />}
+          <ArrivalsTimeline arrivals={people.arrivals} partialSince={partial ? sample.first_at : null} />
+        </aside>
+      </div>
+
+      {people.chronotypes.length > 0 ? (
+        <div className="py-7">
+          <ChronotypeList people={people.chronotypes} weekendDays={weekendDays} />
+        </div>
+      ) : (
+        rhythm.punch_card.timezone_mode === "utc" && (
+          <p className="py-7 text-xs text-[var(--color-text-secondary)]">
+            Commit-hour habits need each commit&apos;s local time, which this index does not carry.
           </p>
-        )}
-        <ArrivalsTimeline arrivals={people.arrivals} partialSince={partial ? sample.first_at : null} />
-      </Section>
+        )
+      )}
     </div>
   );
 }

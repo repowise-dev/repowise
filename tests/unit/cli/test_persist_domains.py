@@ -40,6 +40,14 @@ class _Session:
     async def rollback(self):
         self.harness.events.append(("rollback", self.domain, self.attempt))
 
+    async def execute(self, *_args, **_kwargs):
+        # The search cleanup-debt seed reads tombstoned page ids once per store.
+        class _Rows:
+            def scalars(self):
+                return []
+
+        return _Rows()
+
 
 class _Harness:
     def __init__(self, monkeypatch, *, index_done=True, domain=None, stage=None, errors=()):

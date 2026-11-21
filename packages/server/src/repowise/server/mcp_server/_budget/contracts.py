@@ -8,6 +8,7 @@ quantisation have produced the object the MCP client will receive.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 from dataclasses import dataclass
@@ -53,8 +54,9 @@ class ResponseBudgetContract:
     #: ``(request token, shed-order keys)``. The token is an ``include`` value
     #: or an argument whose presence is itself the request. Keys named here
     #: shed last and trim to :func:`entitled_floor`; the ceiling still wins, so
-    #: this is priority, not immunity. Declaring nothing keeps a tool's
-    #: existing behaviour.
+    #: this is priority, not immunity. A floor that cannot fit drops the
+    #: entitlement for that call (:func:`_entitlement_that_fits`). Declaring
+    #: nothing keeps a tool's existing behaviour.
     requested_projections: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
@@ -324,6 +326,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "churn_complexity[]",
             "untested_complexity[]",
             "doc_drift.findings[]",
+            "performance_measured.in_tests[]",
             "test_findings[]",
             "top_findings[]",
             "findings[]",
@@ -336,6 +339,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "refactoring_summary",
             "performance_opportunities[]",
             "performance_summary",
+            "performance_measured.rows[]",
             "high_leverage_files[]",
             "secondary_rankings",
             # A named page holds up to 25 items; its tail goes last of all.
@@ -586,6 +590,92 @@ def _prioritised_shed_order(
     return kept + trimmable + whole
 
 
+def _values_at(response: dict[str, Any], stem: str) -> list[Any]:
+    """The non-empty values *stem* names: ``"a.b"`` one, ``"a.rows[].f"`` one per row."""
+    path, _, field = stem.partition("[].")
+    node: Any = response
+    for part in path.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    found = (
+        [row.get(field) for row in node if isinstance(row, dict)]
+        if field and isinstance(node, list)
+        else [] if field else [node]
+    )
+    return [value for value in found if value]
+
+
+def _trial_fit(
+    result: dict[str, Any],
+    contract: ResponseBudgetContract,
+    requested: frozenset[str],
+    limit: int,
+    tool: str,
+    repo_root: str | Path | None,
+) -> dict[str, Any] | None:
+    """The block pass on a copy of *result*, with *requested* entitled.
+
+    ``None`` when *result* holds a value that cannot be copied.
+    """
+    try:
+        trial = copy.deepcopy(result)
+    except (TypeError, copy.Error, RecursionError):
+        return None
+    fit_to_budget(
+        trial,
+        _prioritised_shed_order(contract.shed_order, requested),
+        # Never attached, so nothing the trial drops reaches the store.
+        OmissionCollector(tool, repo_root=repo_root),
+        char_budget=limit,
+        headroom=0,
+        record_counts=True,
+        entitled=requested,
+    )
+    return trial
+
+
+def _entitlement_that_fits(
+    result: dict[str, Any],
+    contract: ResponseBudgetContract,
+    requested: frozenset[str],
+    limit: int,
+    tool: str,
+    repo_root: str | Path | None,
+    size: int,
+) -> frozenset[str]:
+    """*requested*, or nothing when its floors cannot fit and asking costs rows.
+
+    A requested collection sheds last, so it is reached only once everything
+    unrequested is gone. When even its floor does not fit, it is dropped whole
+    and the response keeps neither it nor what was shed to make room. If the
+    unrequested pass then serves at least as much of everything requested,
+    and more of something, the call is budgeted that way: the block trims to
+    what fits in its normal place. Trials on copies decide, so a call whose requested
+    collections all survive is budgeted exactly as before.
+    """
+    floors = [stem for stem in requested if f"{stem}[]" in contract.shed_order]
+    if not floors or size <= limit:
+        return requested
+    asked = _trial_fit(result, contract, requested, limit, tool, repo_root)
+    if asked is None or all(
+        len(_values_at(asked, stem)) >= len(_values_at(result, stem)) for stem in floors
+    ):
+        return requested
+    plain = _trial_fit(result, contract, frozenset(), limit, tool, repo_root)
+    if plain is None:
+        return requested
+
+    def served(response: dict[str, Any], stem: str) -> int:
+        return sum(
+            len(value) if isinstance(value, (list, dict)) else 1
+            for value in _values_at(response, stem)
+        )
+
+    gains = [served(plain, stem) - served(asked, stem) for stem in requested]
+    if min(gains) >= 0 and max(gains) > 0:
+        return frozenset()
+    return requested
+
+
 def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:
     meta = result.setdefault("_meta", {})
     budget = meta.setdefault("response_budget", {})
@@ -696,16 +786,14 @@ async def resolve_response_budget_repo_root(
         if repo == "all":
             from repowise.server.mcp_server import _state
 
-            return getattr(_state, "_workspace_root", None) or getattr(
-                _state, "_repo_path", None
-            )
+            return getattr(_state, "_workspace_root", None) or _state.served_path()
         from repowise.server.mcp_server._helpers import _resolve_repo_context
 
         return (await _resolve_repo_context(repo)).path
     except Exception:
         from repowise.server.mcp_server import _state
 
-        return getattr(_state, "_repo_path", None)
+        return _state.served_path()
 
 
 def _emergency_fit(
@@ -895,7 +983,7 @@ def enforce_response_budget(
     if repo_root is None:
         from repowise.server.mcp_server import _state
 
-        repo_root = getattr(_state, "_repo_path", None)
+        repo_root = _state.served_path()
 
     expanded = _call_uses_expansion(contract, signature, args, kwargs)
     declared = EXPANDED_RESPONSE_CHARS if expanded else DEFAULT_RESPONSE_CHARS
@@ -924,14 +1012,17 @@ def enforce_response_budget(
             tool, result, signature, args, kwargs, limit - FIT_HEADROOM_CHARS
         )
     else:
+        entitled = _entitlement_that_fits(
+            result, contract, requested, working_limit, tool, repo_root, entry_chars
+        )
         fit_to_budget(
             result,
-            _prioritised_shed_order(contract.shed_order, requested),
+            _prioritised_shed_order(contract.shed_order, entitled),
             collector,
             char_budget=working_limit,
             headroom=0,
             record_counts=True,
-            entitled=requested,
+            entitled=entitled,
         )
         run_post_shed(tool, result, collector)
         collector.attach(result)

@@ -144,6 +144,7 @@ def security_scan(
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -166,6 +167,9 @@ def security_scan(
 
     async def _do() -> dict:
         engine = create_engine(get_db_url_for_repo(repo_path))
+        # A repo that was never indexed has no tables yet; the scan stores its
+        # findings itself, so it creates them rather than requiring an init.
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             row = await get_repository_by_path(session, str(repo_path))
@@ -581,7 +585,7 @@ def _print_findings(v: _Verdict) -> None:
     if not rows:
         return
     table = Table(show_edge=False, pad_edge=False)
-    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+    for column in ("Severity", "Kind", "Where", "Matched (secrets hidden)"):
         table.add_column(column)
     for f in rows:
         colour = _SEVERITY_COLOUR[f["severity"]]

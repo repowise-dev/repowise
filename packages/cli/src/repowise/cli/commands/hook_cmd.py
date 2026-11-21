@@ -338,7 +338,7 @@ def _install_cursor_hook() -> None:
 def _install_codex_surfaces(target) -> None:
     """Codex side of ``rewrite install``: version-gated hook + awareness section.
 
-    Skipped silently when the user doesn't use Codex (no ``~/.codex``). The
+    Skipped silently when the user doesn't use Codex (no Codex home directory). The
     hooks.json entry installs only on a build that honors ``updatedInput``
     rewrites; the AGENTS.md awareness section installs regardless, because it
     needs no hook support at all.
@@ -485,7 +485,9 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
 
     codex = CodexAdapter()
     if not codex.detect():
-        console.print("  [dim]✗[/dim] codex: not detected (no ~/.codex)")
+        from repowise.core.codex_home import codex_home
+
+        console.print(f"  [dim]✗[/dim] codex: not detected (no {codex_home()})")
         return
 
     from repowise.cli.editor_integrations.codex_config import (

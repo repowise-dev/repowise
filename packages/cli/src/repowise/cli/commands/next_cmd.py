@@ -33,17 +33,50 @@ ALL = 20
 _TIER_COLOUR = {"act_now": "red", "plan": "yellow", "improve_signal": "cyan"}
 
 
+#: The one prompt that hands every setup step to the agent.
+PROMPT_LINE = "repowise next --prompt setup"
+
+
+def _rewrite_hook() -> bool | None:
+    """Whether Claude Code's distill rewrite hook is installed; ``None`` when unreadable."""
+    try:
+        from repowise.cli.editor_integrations.claude_config import (
+            claude_code_rewrite_hook_installed,
+        )
+
+        return claude_code_rewrite_hook_installed()
+    except Exception:
+        return None
+
+
 async def _read_view(root: Path) -> dict[str, Any] | None:
-    """The actions view for *root*, or ``None`` when there is no index to read."""
+    """The actions view for *root* with the live setup steps, or ``None`` with no index."""
     from repowise.cli._helpers.paths import find_workspace_root
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.crud.analysis.setup_facts import load_setup_facts
 
     async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened
         cut = cross_repo_cut_inputs(root, find_workspace_root(root))
-        return await load_actions_view(session, repo_id, **cut)
+        setup = await load_setup_facts(session, repo_id, root, rewrite_hook=_rewrite_hook())
+        return await load_actions_view(session, repo_id, setup=setup, **cut)
+
+
+async def _dismiss_setup(root: Path) -> bool:
+    """Record the declined pass in the index; ``False`` with no index to write."""
+    from repowise.core.persistence.crud.analysis.setup_facts import dismiss_setup
+    from repowise.core.setup_state import write_setup_state
+
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return False
+        session, repo_id = opened
+        await dismiss_setup(session, repo_id)
+        await session.commit()
+    write_setup_state(root, dismissed=True, offer=None)
+    return True
 
 
 def load_view(root: Path) -> dict[str, Any] | None:
@@ -131,6 +164,12 @@ def render(view: dict[str, Any], horizon: str, limit: int) -> None:
         console.print(f"[dim]Showing {len(shown)} of {total}.{more}[/dim]")
     if h.get("hidden"):
         console.print(f"[dim]{plural(h['hidden'], 'action')} dismissed, snoozed or done.[/dim]")
+    setup = view.get("setup") or {}
+    quiet = setup.get("dismissed") or setup.get("completed")
+    if any(a["tier"] == "improve_signal" for a in shown) and not quiet:
+        console.print(
+            f"[dim]Or hand all of it to your agent: [bold]{PROMPT_LINE}[/bold] prints one prompt.[/dim]"
+        )
     unavailable = sorted(view.get("unavailable") or {})
     if unavailable:
         console.print(
@@ -150,6 +189,20 @@ def render(view: dict[str, Any], horizon: str, limit: int) -> None:
 @click.option("--all", "show_all", is_flag=True, default=False, help="Show up to 20, not 5.")
 @click.option("--repo", "repo_alias", default=None, help="In workspace mode, target one repo.")
 @click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+@click.option(
+    "--prompt",
+    "prompt",
+    type=click.Choice(["setup"]),
+    default=None,
+    help="Print the prompt that hands every setup step to your agent.",
+)
+@click.option(
+    "--dismiss",
+    "dismiss",
+    type=click.Choice(["setup"]),
+    default=None,
+    help="Stop offering the setup pass here. The steps stay in this list.",
+)
 @format_option(help="Output format. json prints the whole stored view.")
 @json_option(help="Alias for --format json.")
 def next_command(
@@ -158,15 +211,35 @@ def next_command(
     show_all: bool,
     repo_alias: str | None,
     no_workspace: bool,
+    prompt: str | None,
+    dismiss: str | None,
     fmt: str,
     as_json: bool,
 ) -> None:
     """Show the few things worth doing next, ranked from the index."""
     fmt = resolve_format(fmt, as_json)
+    if prompt == "setup":
+        from repowise.core.agent_prompts import render_finish_setup
+
+        # Plain print: the text is pasted or piped, so no markup and no wrapping.
+        click.echo(render_finish_setup())
+        return
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
     root = target.narrow(notice_console(fmt), command="next").resolve()
+    if dismiss == "setup":
+        done = run_async(_dismiss_setup(root))
+        if fmt == "json":
+            emit_json({"repo": str(root), "setup": {"dismissed": done}})
+        elif done:
+            console.print(
+                "Repowise will stop offering the setup pass here. "
+                "The steps stay in [bold]repowise next[/bold]."
+            )
+        else:
+            console.print("[yellow]No readable index here. Run 'repowise init'.[/yellow]")
+        return
     view = load_view(root)
 
     if fmt == "json":

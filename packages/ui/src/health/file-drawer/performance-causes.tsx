@@ -2,7 +2,7 @@
 
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 import { biomarkerLabel } from "../biomarker-glossary";
-import { ACTIONABILITY_LABEL } from "../performance/presentation";
+import { ACTIONABILITY_LABEL, observationsText } from "../performance/presentation";
 import { MICRO_LABEL } from "./shared";
 import { formatNumber } from "../../lib/format";
 
@@ -103,7 +103,7 @@ function CauseRow({
         </span>
       ) : null}
       <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {o.observations_total} observation{o.observations_total === 1 ? "" : "s"} ·{" "}
+        {observationsText(o)} ·{" "}
         {o.affected_files_total} file{o.affected_files_total === 1 ? "" : "s"} ·{" "}
         {o.plan_id ? "stored plan" : o.plan_reason}
       </span>

@@ -18,7 +18,7 @@ function useNextActionsCopy(): NextActionsCopy {
   return useMemo(
     () => ({
       title: t("title"),
-      titleCount: (count) => t("titleCount", { count }),
+      titleCount: (count, setup) => t("titleCount", { count, setup }),
       timeFrame: t("timeFrame"),
       week: t("week"),
       weekHint: t("weekHint"),

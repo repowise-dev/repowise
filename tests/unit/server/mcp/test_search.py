@@ -35,6 +35,16 @@ async def test_search_codebase(setup_mcp):
     assert len(result["results"]) >= 1
 
 
+def _federate_one_repo(monkeypatch):
+    """Keep ``repo="all"`` on the fan-out path over the one fixture repo, which
+    a single-repo server otherwise serves as a plain search."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search import tool
+
+    monkeypatch.setattr(tool, "_state", SimpleNamespace(_registry=object()))
+
+
 def _mk_result(page_id, title, page_type, target_path, score):
     from repowise.core.persistence.search import SearchResult
 
@@ -793,7 +803,8 @@ class TestSymbolSearch:
         assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
-        assert top["next"] == "get_symbol"
+        # Ranking fields and the constant pointer stay internal.
+        assert not {"qualified_name", "language", "score", "next"} & set(top)
 
     @pytest.mark.asyncio
     async def test_auto_routes_bare_identifier_to_symbol(self, setup_mcp):
@@ -818,7 +829,7 @@ class TestSymbolSearch:
 
         result = await search_codebase("auth.service.AuthService.login", mode="symbol")
         assert result["results"][0]["symbol_id"] == "src/auth/service.py::login"
-        assert result["results"][0]["qualified_name"] == "auth.service.AuthService.login"
+        assert result["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_symbol_kind_filter(self, setup_mcp):
@@ -889,7 +900,7 @@ class TestPathSearch:
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
-        assert top["next"] == "get_context"
+        assert "next" not in top
 
     @pytest.mark.asyncio
     async def test_a_directory_name_lists_indexed_files_without_a_page(
@@ -910,7 +921,7 @@ class TestPathSearch:
         result = await search_codebase("filters_toml", mode="path")
         files = {r["path"] for r in result["results"]}
         assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
-        assert all(r["next"] == "get_context" for r in result["results"])
+        assert all(r["type"] == "file" for r in result["results"])
         globbed = await search_codebase("filters_toml *.toml", mode="path")
         assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
 
@@ -1170,10 +1181,13 @@ class TestEmptyConceptRecoveryHint:
         assert "grep_hint" not in result
 
     @pytest.mark.asyncio
-    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+    async def test_empty_federated_concept_query_carries_recovery_hint(
+        self, setup_mcp, monkeypatch
+    ):
         from repowise.server.mcp_server import search_codebase
         from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
 
+        _federate_one_repo(monkeypatch)
         result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
         assert result["results"] == []
         assert result["hint"] == NO_HITS_RECOVERY_HINT
@@ -2058,9 +2072,10 @@ class TestPathlessPagesInCodeLocationModes:
         assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
-    async def test_federated_rows_carry_path(self, setup_mcp):
+    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
         from repowise.server.mcp_server import search_codebase
 
+        _federate_one_repo(monkeypatch)
         await self._seed()
         res = await search_codebase("listing releases in order", mode="concept", repo="all")
         by_type = {r["page_type"]: r for r in res["results"]}
@@ -2510,3 +2525,103 @@ def test_a_path_query_naming_one_directory_names_its_files_call():
     assert _named_directory("jsx", paths) == "src/jsx"
     assert _named_directory("url.ts", paths) is None
     assert _named_directory("src/*", paths) is None
+
+
+@pytest.mark.asyncio
+async def test_a_kind_filter_that_removes_a_named_symbol_says_so(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    res = await search_codebase("AuthService", kind="test", mode="symbol")
+    assert not [r for r in res["results"] if r.get("type") == "symbol"]
+    assert "'AuthService' is indexed but not as kind=test" in res["note"]
+    assert "Recheck the spelling" not in res["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_limit_past_the_cap_is_cut_and_reported(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+    from repowise.server.mcp_server.tool_search.tool import MAX_LIMIT
+
+    res = await search_codebase("AuthService", limit=MAX_LIMIT + 80)
+    assert res["ignored_arguments"] == [
+        {"argument": "limit", "values": [MAX_LIMIT + 80], "clamped_to": MAX_LIMIT}
+    ]
+    assert "ignored_arguments" not in await search_codebase("AuthService", limit=MAX_LIMIT)
+
+
+@pytest.mark.asyncio
+async def test_repo_all_on_a_single_repo_server_searches_that_repo(setup_mcp):
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import search_codebase
+
+    await mcp_mod._vector_store.embed_and_upsert(
+        "file_page:src/auth/service.py",
+        "Auth Service — Main authentication service class",
+        {"title": "Auth Service", "page_type": "file_page", "target_path": "src/auth/service.py"},
+    )
+    every = await search_codebase("authentication service", repo="all")
+    one = await search_codebase("authentication service")
+    assert every["results"] == one["results"]
+    assert not [r for r in every["results"] if "repo" in r]
+
+
+def test_rows_beside_a_filtered_name_are_marked_as_other_symbols():
+    from repowise.server.mcp_server.tool_search.structured import _exact_match_note
+
+    filtered = ("kind=test", ["isLockStale"])
+    served = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, True, None, filtered)
+    assert "'isLockStale' is indexed but not as kind=test" in served
+    assert "fuzzy neighbours" in served
+    assert "No indexed symbol is named" not in served
+    empty = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, False, None, filtered)
+    assert "fuzzy neighbours" not in empty
+
+
+def test_a_name_served_from_the_spare_pool_is_not_called_filtered():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search.structured import _filtered_names
+
+    plan = SimpleNamespace(kind="test", symbol_kind=None, names={"isLockStale"})
+    row = {"name": "isLockStale"}
+    assert _filtered_names(plan, SimpleNamespace(symbols=[], spare=[row]), ["isLockStale"]) is None
+    hidden = _filtered_names(plan, SimpleNamespace(symbols=[], spare=[]), ["isLockStale"])
+    assert hidden == ("kind=test", ["isLockStale"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["class RetryTransport", "class RetryTransport.", "def RetryTransport("]
+)
+async def test_a_declaration_query_looks_up_the_indexed_name(setup_mcp, query):
+    # Through the real name loader: the keyword is dropped and the name is looked up.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase(query)
+    assert result.get("mode") == "symbol", result
+    assert result["results"][0]["name"] == "RetryTransport"
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_unindexed_word_stays_a_search(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase("class Unheardof")
+    assert result.get("mode") != "symbol"
+
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_indexed_plain_word_stays_a_search(setup_mcp):
+    # ``checking`` is indexed, but a plain lowercase word is never a lookup key,
+    # so "type checking" is prose, not a declaration.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("checking")
+
+    result = await search_codebase("type checking")
+    assert result.get("mode") != "symbol"

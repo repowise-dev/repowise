@@ -89,8 +89,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....test_paths import is_test_related_path
-from ...execution_graph import ExecutionGraphIndex, file_of_symbol, reachable_to_sink
+from ...execution_graph import ExecutionGraphIndex, reachable_to_sink
 from .predicate import checks_something
 
 if TYPE_CHECKING:

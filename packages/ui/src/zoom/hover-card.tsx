@@ -15,6 +15,7 @@ import { formatVerbCounts, relationDirections, summarizeRelations } from "./rela
 import type { HoverState } from "./use-zoom-input";
 import type { ZoomCanvasLabels } from "./zoom-canvas-labels";
 import type { ZoomNode, ZoomRelation } from "./types";
+import { formatNumber } from "../lib/format";
 
 /** How many importing children an external's hover card names. */
 const TOP_IMPORTERS = 3;
@@ -254,7 +255,7 @@ function ExternalBody({
           {importers.map((l) => (
             <div key={l.sourceId} className="flex justify-between gap-3">
               <span className="truncate">{nodeById.get(l.sourceId)?.name ?? l.sourceId}</span>
-              <span className="text-[var(--color-text-tertiary)]">{l.edgeCount.toLocaleString("en-US")}</span>
+              <span className="text-[var(--color-text-tertiary)]">{formatNumber(l.edgeCount)}</span>
             </div>
           ))}
         </div>

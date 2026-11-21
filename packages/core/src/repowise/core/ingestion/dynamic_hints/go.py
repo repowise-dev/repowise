@@ -8,7 +8,8 @@ from pathlib import Path
 from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"vendor", "node_modules", ".git", "bin"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"bin"}
 
 # reflect.TypeOf(Foo{}) / reflect.New(Foo{}) / reflect.ValueOf(Foo{}) — and
 # the pointer-nil idiom reflect.TypeOf((*Foo)(nil)). Capture the bare or

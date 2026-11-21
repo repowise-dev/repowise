@@ -42,6 +42,7 @@ from ...ingestion.package_roots import package_roots_from_paths as _package_root
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
 from ...pipeline.parse_pool import PENDING, run_with_deadline
+from ...stats import percentile
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
 from ..graph_view import ImportEdgeView
@@ -110,16 +111,36 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v45: Astro joins the TypeScript family in constant-flag gating, Extract Method
-# plans (render and helper naming) and the move-destination language family. The
-# Astro projection the walker parses changed too: a string or comment in a markup
-# ``{expr}`` (``{"<style>"}``) no longer blanks a later ``<script>`` function. The
-# walk cache keys on file bytes, so unchanged ``.astro`` files re-score only on
-# this stamp.
+# v45 (released in 0.61.0): Astro joins the TypeScript family in constant-flag
+# gating, Extract Method plans (render and helper naming) and the
+# move-destination language family. The Astro projection the walker parses
+# changed too: a string or comment in a markup ``{expr}`` (``{"<style>"}``) no
+# longer blanks a later ``<script>`` function. The walk cache keys on file bytes,
+# so unchanged ``.astro`` files re-score only on this stamp.
+#
+# The same stamp carries the cycle's other scoring changes: markers advisory per
+# language from the blind precision review, ``low_cohesion`` advisory everywhere,
+# cold-path loop markers unscored (#5426, #5434, #5436, #5463); guard runs,
+# literal data and view trees counted once or as data, and per-language
+# parameter and god-class rules (#5427 to #5471); Fix first gains priced with the
+# hidden findings (#5453); and the contributor rules for Ruby, Swift, Dart and
+# Scala catches, C++ out-of-line methods, F#, Objective-C, Razor and Dart loops
+# (#4832, #5258, #5486, #5487, #5489, #5490, #5494, #5544, #5547).
+#
+# v46 (0.62): code a data folder holds for the product to read is ``data``, and
+# the queues, the health map and the security scan hold it like the other
+# non-production origins (#6009, #6086). A measured share stays inside its own
+# interval (#6058); measured runs, test runs included, admit causes to the perf
+# queue (#6066); a leading run that measured a cold role or name above the bar
+# may lead (#6093); and a measured hotspot with no static cause becomes a perf
+# work item (#6097). ``PERFORMANCE_MODEL_VERSION`` moved with it. The re-score
+# also writes each cause's ``static_cost`` beside ``cost_proof`` (#6112). A
+# third-party import no longer contradicts a test named for a file (#5958), and
+# coverage names the indexed production files a report leaves out (#5917).
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 45
+HEALTH_ANALYZER_VERSION = 46
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -165,18 +186,6 @@ def _pct_of_kept(
 _PARTNER_LINES_CACHE = 256
 
 
-def _percentile_p80(counts: list[int]) -> int | None:
-    """80th percentile of *counts* using the inclusive-lower convention
-    already used by ``churn_percentile`` in ``enrich.compute_percentiles``.
-    Returns ``None`` for an empty list.
-    """
-    if not counts:
-        return None
-    counts = sorted(counts)
-    idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
-    return counts[idx_p80]
-
-
 def _full_repo_p80(
     value: int | None, changed_files: object, override: int | None
 ) -> int | None:
@@ -212,7 +221,7 @@ def _compute_repo_function_mod_p80(
             mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
             if mod_count > 0:
                 counts.append(mod_count)
-    return _percentile_p80(counts)
+    return percentile(counts, 0.8)
 
 
 def _dependents_count(graph: Any, path: str) -> int:
@@ -233,7 +242,7 @@ def _compute_repo_dependents_p80(dependents: dict[str, int]) -> int | None:
     sparse-graph languages (TS/Rust) instead of assuming Python's denser
     import graph.
     """
-    return _percentile_p80([deg for deg in dependents.values() if deg > 0])
+    return percentile([deg for deg in dependents.values() if deg > 0], 0.8)
 
 
 def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
@@ -1112,6 +1121,8 @@ class HealthAnalyzer:
                         ),
                         "early_exits": facts.early_exits if facts else None,
                         **fc.stored_metrics(),
+                        "body_digest": fc.body_digest,
+                        "body_tokens": fc.body_tokens,
                     }
                 )
         return rows

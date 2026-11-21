@@ -13,7 +13,7 @@ surface as it stood when the server started. Each MCP session then sees that
 set narrowed to its client's default profile (:func:`session_tool_names`) when
 the configuration names no profile; tools outside it stay callable. Chat calls
 :func:`selected_tool_entries` instead, which re-resolves on every turn. There
-is no per-call cost and tool schemas are untouched.
+is no per-call cost, and the only schema edit is :func:`single_repo_schemas`.
 """
 
 from __future__ import annotations
@@ -22,16 +22,17 @@ import inspect
 import json
 import logging
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 from typing import Any
 
-from repowise.core.agents.identity import UNKNOWN_AGENT
 from repowise.core.registry import ToolEntry, mcp_tool_registry
 from repowise.core.registry.tool_selection import (
     ALL,
     ALWAYS_LOAD_TOOLS,
+    DEFERRED_SCHEMA_CLIENTS,
     PROFILES,
     AvailabilityFacts,
+    default_profile,
+    is_delta,
     normalize_override,
     resolve_enabled_tools,
     split_profile,
@@ -128,12 +129,22 @@ def _read_always_load(repo_path: str | None) -> bool:
 
 
 def _is_workspace(repo_path: str | None) -> bool:
+    """Whether the server serves *repo_path* in workspace mode.
+
+    The rule the lifespan serves by (``_detect_workspace``, plus
+    ``--no-workspace``), so the listed surface never offers workspace-only
+    tools to a server that answers as a single repo.
+    """
     if not repo_path:
         return False
-    try:
-        from repowise.core.workspace.config import find_workspace_root
+    from repowise.server.mcp_server import _state
 
-        return find_workspace_root(Path(repo_path)) is not None
+    if _state._force_single_repo:
+        return False
+    try:
+        from repowise.server.mcp_server._server import _detect_workspace
+
+        return _detect_workspace(repo_path)[0] is not None
     except Exception:
         _log.debug("Workspace detection failed during tool selection", exc_info=True)
         return False
@@ -227,6 +238,28 @@ def session_tool_names(client: str) -> frozenset[str] | None:
     return frozenset(names) & _selected_surface[1]
 
 
+def client_tool_names(
+    repo_path: str | None, client: str, *, override: Sequence[str] | None = None
+) -> set[str]:
+    """The tools a server started for *repo_path* lists to *client*, an agent slug.
+
+    For setup output, outside any running server: the same inputs the boot
+    selection reads (``mcp.tools``, workspace mode, facts), resolved for one
+    client, which is what :func:`session_tool_names` serves it. A per-entry
+    ``repowise mcp --tools`` pin is not seen here. *override* replaces the
+    configured ``mcp.tools``, so a caller can resolve a profile without its
+    deltas.
+    """
+    _ensure_registered()
+    return resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=_read_config_override(repo_path) if override is None else override,
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+
+
 def mark_always_loaded(tools: list[Any]) -> list[Any]:
     """*tools* (``mcp.types.Tool``) with the always-load hint on those configured.
 
@@ -243,18 +276,30 @@ def mark_always_loaded(tools: list[Any]) -> list[Any]:
     ]
 
 
-def every_client_lists(names: Iterable[str]) -> bool:
-    """Whether no client's default profile leaves out any of *names*.
+#: What a single-repo server lists for a ``repo`` argument whose description
+#: offers ``"all"``: one repository has nothing to fan out over.
+SINGLE_REPO_REPO_DESCRIPTION = "Usually omitted."
 
-    Only a tool boot registered but a client's default narrows away counts: a
-    tool the configuration itself removed (a profile, a list, ``-name``) was
-    chosen, so there is nothing to tell an agent. Judged for a client with the
-    smallest default (any name other than a schema-deferring host's).
+
+def without_repo_all(tool: Any) -> Any:
+    """*tool* (``mcp.types.Tool``) with no ``repo="all"`` offer in its schema."""
+    props = tool.inputSchema.get("properties") or {}
+    repo = props.get("repo")
+    if not isinstance(repo, dict) or '"all"' not in (repo.get("description") or ""):
+        return tool
+    repo = {**repo, "description": SINGLE_REPO_REPO_DESCRIPTION}
+    schema = {**tool.inputSchema, "properties": {**props, "repo": repo}}
+    return tool.model_copy(update={"inputSchema": schema})
+
+
+def single_repo_schemas(tools: list[Any]) -> list[Any]:
+    """*tools* without the ``repo="all"`` offer when this server serves one repository.
+
+    A workspace server, or one with no boot selection, gets the list as given.
     """
-    listed = session_tool_names(UNKNOWN_AGENT)
-    if listed is None or _selected_surface is None:
-        return True
-    return not (set(names) & _selected_surface[1]) - listed
+    if _selected_surface is None or _selected_surface[0]:
+        return tools
+    return [without_repo_all(tool) for tool in tools]
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
@@ -263,6 +308,37 @@ def selected_tool_names(*, is_workspace: bool) -> set[str]:
     if _selected_surface is not None and _selected_surface[0] == is_workspace:
         return set(_selected_surface[1])
     return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
+
+
+#: What each tool cannot serve on a server with no source (the repository's
+#: files) and with no git history. ``"unavailable": True`` is a tool that has
+#: nothing to answer with; it replies with the reason instead.
+_NEEDS_SOURCE: dict[str, dict[str, Any]] = {
+    "get_context": {"includes": ["references", "references+", "skeleton", "skeleton+"]},
+    "get_symbol": {"arguments": ["context_lines", "depth"]},
+}
+_NEEDS_GIT: dict[str, dict[str, Any]] = {
+    "get_change_risk": {"unavailable": True},
+    "get_why": {"includes": ["history"]},
+}
+
+
+def capability_gaps(ctx: Any) -> dict[str, dict[str, Any]]:
+    """``{tool: {"arguments", "includes"}}`` that *ctx* (a ``RepoContext``) cannot serve.
+
+    Empty for a context with a checkout and git. A server that embeds the
+    tools over a store alone reads its gaps here instead of keeping its own.
+    """
+    gaps: dict[str, dict[str, Any]] = {}
+    tables = ([_NEEDS_SOURCE] if ctx.source is None else []) + ([] if ctx.git else [_NEEDS_GIT])
+    for table in tables:
+        for tool, gap in table.items():
+            row = gaps.setdefault(tool, {"arguments": [], "includes": []})
+            row["arguments"] = sorted({*row["arguments"], *gap.get("arguments", ())})
+            row["includes"] = sorted({*row["includes"], *gap.get("includes", ())})
+            if gap.get("unavailable"):
+                row["unavailable"] = True
+    return gaps
 
 
 def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
@@ -379,6 +455,43 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
         "profile": split_profile(normalize_override(override))[0],
         "profiles": {name: sorted(resolve(name)) for name in PROFILES},
         "tools": tools,
+        "command": _config_command(override),
+    }
+
+
+def _config_command(override: str | Sequence[str] | None) -> str:
+    """The ``repowise config`` command that leaves ``mcp.tools`` at *override*."""
+    from repowise.core.settings.views import set_command
+
+    tokens = normalize_override(override)
+    return set_command("mcp.tools", tokens) if tokens else "repowise config reset mcp.tools"
+
+
+def client_tool_surface(repo_path: str | None, client: str) -> dict[str, Any]:
+    """What one client lists for a repo: its profile, tool names and always-load state.
+
+    *client* is an agent slug (``claude_code``). ``profile`` is ``None`` when
+    ``mcp.tools`` is an exact list of names; ``always_load`` is ``None`` for a
+    client that loads every schema up front, where the setting does nothing.
+    """
+    _ensure_registered()
+    override = _read_config_override(repo_path)
+    tokens = normalize_override(override)
+    named, rest = split_profile(tokens)
+    exact = bool(rest) and named is None and not is_delta(rest)
+    names = resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=_is_workspace(repo_path),
+        override=override,
+        facts=_availability_facts(repo_path),
+        client=client,
+    )
+    return {
+        "profile": None if exact else named or default_profile(client),
+        "tools": sorted(names),
+        "always_load": (
+            _read_always_load(repo_path) if client in DEFERRED_SCHEMA_CLIENTS else None
+        ),
     }
 
 
@@ -395,7 +508,6 @@ def schema_tokens(name: str) -> int:
         "name": tool.name,
         "description": tool.description,
         "inputSchema": tool.parameters,
-        "outputSchema": tool.output_schema,
     }
     return len(json.dumps(listed, separators=(",", ":"))) // 4
 

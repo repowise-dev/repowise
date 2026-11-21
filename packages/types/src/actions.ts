@@ -16,8 +16,18 @@ export type ActionRule =
   | "knowledge_loss"
   | "broken_doc_refs"
   | "dead_code_batch"
+  | "sync_hook_missing"
+  | "coverage_found"
+  | "evidence_found"
+  | "decisions_unchecked"
+  | "docs_model_ready"
+  | "settings_suggested"
+  | "always_load_suggested"
+  | "distill_suggested"
   | "coverage_missing"
-  | "coverage_stale";
+  | "coverage_stale"
+  | "runtime_missing"
+  | "runtime_stale";
 
 export type ActionHorizonKey = "week" | "quarter";
 
@@ -46,7 +56,8 @@ export type ActionSurface =
   | "dead_code"
   | "decisions"
   | "commits"
-  | "coverage";
+  | "coverage"
+  | "setup";
 
 export type ActionTargetKind = "file" | "symbol" | "folder" | "document" | "decision" | "repo";
 
@@ -160,6 +171,31 @@ export interface ActionsResponse {
   rules: ActionRuleReport[];
   /** Store name to why it could not be read. */
   unavailable: Record<string, string>;
+  /** Setup steps left and the agent-pass offer; absent where the setup facts were not read. */
+  setup?: ActionsSetup | null;
+}
+
+/** Depth rows usage has unlocked: Claude Code calls for the first two, synced commits for the last. */
+export interface SetupUnlocks {
+  always_load: boolean;
+  distill: boolean;
+  suggested_settings: boolean;
+}
+
+export interface ActionsSetup {
+  /** Visible `improve_signal` actions: what the finish-setup pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed: boolean;
+  agent_calls: number | null;
+  claude_code_calls: number;
+  first_call_at: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
 }
 
 export interface ActionStateRequest {

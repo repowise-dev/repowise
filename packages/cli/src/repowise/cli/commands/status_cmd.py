@@ -110,7 +110,12 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
 
 
 def _query_git_history_file_count(repo_path: Path) -> int | None:
-    """Return the live number of indexed files with git history, if readable."""
+    """Return the live number of indexed files with git history, if readable.
+
+    Counts the population the stored denominator counts, the code files the
+    Git indexer measured. ``history_only`` rows (docs, configs) carry commit
+    counts too, but are outside it.
+    """
 
     async def _query() -> int:
         from sqlalchemy import func as sa_func
@@ -121,6 +126,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
             create_session_factory,
             get_session,
         )
+        from repowise.core.persistence.crud import code_file_rows
         from repowise.core.persistence.models import GitMetadata, Repository
 
         url = get_db_url_for_repo(repo_path)
@@ -138,10 +144,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
                 result = await session.execute(
                     sa_select(sa_func.count())
                     .select_from(GitMetadata)
-                    .where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.commit_count_total > 0,
-                    )
+                    .where(code_file_rows(repo_id), GitMetadata.commit_count_total > 0)
                 )
                 return int(result.scalar_one() or 0)
         finally:
@@ -568,12 +571,15 @@ def _query_health_line(repo_path: Path) -> str | None:
     # the bounded /10 average trails in parens, never as a verification claim.
     perf = data.get("performance_average")
     causes = data.get("performance_causes")
-    perf_part = (
-        f" · {causes['now']} of {causes['production']} production perf causes "
-        f"worth fixing now ({format_score(perf)})"
-        if perf is not None and causes
-        else ""
-    )
+    if perf is None or not causes:
+        perf_part = ""
+    elif not causes["production"]:
+        perf_part = f" · no production perf causes ({format_score(perf)})"
+    else:
+        perf_part = (
+            f" · {causes['now']} of {causes['production']} production perf causes "
+            f"worth fixing now ({format_score(perf)})"
+        )
     # ``None`` when the repo has no hotspot files, so the segment is dropped
     # rather than printing a 10.0 that would read as "your hotspots are
     # perfect" when there are none to score.
@@ -701,6 +707,7 @@ def _next_actions_summary(view: dict | None) -> dict | None:
             for name, h in view["horizons"].items()
         },
         "unavailable": sorted(view.get("unavailable") or {}),
+        "setup": view.get("setup"),
     }
 
 
@@ -724,6 +731,41 @@ def _next_actions_lines(view: dict | None) -> list[str]:
         lines.append(f"  {render_title(top['title'])}")
         lines.append("  [dim]Run [bold]repowise next[/bold] for the list.[/dim]")
     return lines
+
+
+def _setup_tail(repo_path: Path, view: dict | None) -> str | None:
+    """The agent-pass offer, on the first status after the first agent call, once."""
+    from repowise.core.analysis.actions.rules._text import plural
+    from repowise.core.setup_state import read_setup_state, write_setup_state
+
+    setup = (view or {}).get("setup") or {}
+    if not setup.get("offer") or read_setup_state(repo_path).get("status_tail_shown"):
+        return None
+    write_setup_state(repo_path, status_tail_shown=True)
+    from repowise.cli.commands.next_cmd import PROMPT_LINE
+
+    return (
+        f"[cyan]●[/cyan] {plural(setup['open'], 'setup step')} left. "
+        f"Your agent can finish them: [bold]{PROMPT_LINE}[/bold]"
+    )
+
+
+def _evidence_freshness(repo_path: Path) -> dict | None:
+    """The block ``doctor``'s evidence rows read; ``None`` without a store.
+
+    A store that cannot be read says so under ``error`` (with ``fix`` for one
+    an older repowise wrote), so it never reads like a repository with none.
+    """
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+    from repowise.cli.helpers import StaleIndexError
+    from repowise.core.evidence.setup import UPDATE_COMMAND
+
+    try:
+        return stored_freshness(repo_path)
+    except StaleIndexError as exc:
+        return {"error": exc.message, "fix": UPDATE_COMMAND}
+    except Exception as exc:  # the rest of status still answers
+        return {"error": f"{type(exc).__name__}: {exc}", "fix": None}
 
 
 def _format_relative_time(iso_timestamp: str | None) -> str:
@@ -1060,6 +1102,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "stale_pages": stale_pages,
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
+                # Coverage and runtime evidence: present, commit, age, fresh or stale.
+                # ``None`` without a store, as the reader opens none.
+                "evidence_freshness": _evidence_freshness(repo_path),
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),
@@ -1168,8 +1213,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         parts = [_answers_line(repo_path, scope)]
         if scope["search"]["semantic"] != "available":
             reindex = scope["search"]["next_command"] or "repowise reindex"
-            parts.append(f"{reindex} adds semantic search")
-        console.print(f"[dim]{'; '.join(p for p in parts if p)}.[/dim]")
+            parts.append(f"{reindex} adds semantic search.")
+        console.print(f"[dim]{' '.join(p for p in parts if p)}[/dim]")
     elif upgrade_command(scope):
         console.print(
             f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
@@ -1225,7 +1270,11 @@ def _closing_lines(repo_path: Path, incomplete: dict | None, path: str | None) -
     if incomplete is not None:
         lines = [_incomplete_line(incomplete)]
     else:
-        lines = _next_actions_lines(_load_actions(repo_path))
+        view = _load_actions(repo_path)
+        lines = _next_actions_lines(view)
+        tail = _setup_tail(repo_path, view)
+        if tail:
+            lines.append(tail)
     settings_line = suggested_line(len(suggested_for(repo_path)), path)
     if settings_line:
         lines.append(f"[dim]{settings_line}[/dim]")

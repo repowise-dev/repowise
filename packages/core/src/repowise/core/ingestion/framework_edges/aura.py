@@ -24,10 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from ...symbol_spans import symbol_at
 from ..extractors.synthetic_symbols.aura_bundle_js import aura_js_role
 from ..languages.apex_namespace import apex_namespaces
 from ..languages.specs.aura import aura_bundle
 from ..resolvers.lwc import lwc_namespaces, nearest
+from ..symbol_identity import module_symbol_id
 from ..type_names import bare_type_name
 from .base import (
     DetectionContext,
@@ -298,13 +300,8 @@ class _AuraIndex:
         Line granularity: in a one-line bundle with several handlers the later
         one is credited. Bundle JS is written one handler per line block.
         """
-        best: Any = None
-        for s in self.parsed_files[path].symbols:
-            if s.start_line <= line <= s.end_line and (
-                best is None or s.start_line >= best.start_line
-            ):
-                best = s
-        return best.id if best is not None else f"{path}::__module__"
+        best = symbol_at(self.parsed_files[path].symbols, line)
+        return best.id if best is not None else module_symbol_id(path)
 
 
 def _file_edge(graph: nx.DiGraph, src: str, dst: str, names: set[str]) -> int:
@@ -395,7 +392,7 @@ def _root_edges(idx: _AuraIndex, bdir: str, main: str, edges: _Edges) -> None:
         if target is not None:
             edges.file(main, target)
     # The framework calls these: renderer overrides and interface-named controller functions.
-    module = f"{main}::__module__"
+    module = module_symbol_id(main)
     platform = {
         m
         for b_dir in idx.chain(bdir)
@@ -413,7 +410,7 @@ def _root_edges(idx: _AuraIndex, bdir: str, main: str, edges: _Edges) -> None:
 def _markup_file_edges(idx: _AuraIndex, bdir: str, path: str, edges: _Edges) -> None:
     """Handler, tag and event edges of one markup file of the bundle."""
     text = _mask_xml(idx.text(path))
-    module = f"{path}::__module__"
+    module = module_symbol_id(path)
     handlers = {m.group(1) for m in _MARKUP_HANDLER_RE.finditer(text)}
     for n in sorted(handlers | _default_action_methods(text)):
         hit = idx.bundle_function(bdir, "Controller", n)

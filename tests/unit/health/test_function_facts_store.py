@@ -70,6 +70,40 @@ class _File:
         self.file_info = type("FI", (), {"path": path, "is_test": is_test})()
 
 
+def test_the_walk_digests_each_body_as_the_move_map_does() -> None:
+    """The stored digest is the move passes' digest: one normaliser, a stable hash."""
+    from repowise.core.analysis.change_health.moves import symbol_bodies
+    from repowise.core.ingestion.models import Symbol
+
+    fcs = walk_file("store.py", "python", _PY).functions
+    symbols = [
+        Symbol(
+            id=f"store.py::{fc.name}",
+            name=fc.name,
+            qualified_name=fc.name,
+            kind="function",
+            signature="",
+            start_line=fc.start_line,
+            end_line=fc.end_line,
+            docstring=None,
+        )
+        for fc in fcs
+    ]
+    moved = {b.name: (b.digest, b.tokens) for b in symbol_bodies("store.py", _PY, symbols)}
+    assert {fc.name: (fc.body_digest, fc.body_tokens) for fc in fcs} == moved
+    assert all(len(fc.body_digest or "") == 32 for fc in fcs)
+
+    # A rename, a reindent and a comment leave the body alone; an edit does not.
+    renamed = _PY.replace(b"def plain(a):", b"def simple(a):  # renamed").replace(
+        b"        raise", b"        raise  "
+    )
+    edited = _PY.replace(b"return a\n", b"return a + 1\n")
+    digest = {fc.name: fc.body_digest for fc in walk_file("store.py", "python", renamed).functions}
+    assert digest["simple"] == {fc.name: fc.body_digest for fc in fcs}["plain"]
+    changed = {fc.name: fc.body_digest for fc in walk_file("store.py", "python", edited).functions}
+    assert changed["plain"] != digest["simple"]
+
+
 def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
     fcx = walk_file("store.py", "python", _PY)
     graph = nx.DiGraph()
@@ -92,6 +126,9 @@ def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
     assert set(by_id) == {"store.py::save", "store.py::each", "store.py::plain"}
     assert by_id["store.py::save"]["receiver_assigns"] == ("cache", "count")
     assert by_id["store.py::save"]["receiver_assigns_known"] is True
+    walked = {fc.name: fc for fc in fcx.functions}
+    assert by_id["store.py::plain"]["body_digest"] == walked["plain"].body_digest
+    assert by_id["store.py::plain"]["body_tokens"] == walked["plain"].body_tokens
 
 
 @pytest.fixture
@@ -173,6 +210,13 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
         "a.py::f": ("request", False, False, None),
         "b.py::g": ("request", False, False, None),
     }
+    # The body digest and size are stored as given.
+    await write_function_facts(
+        session, repo, [_row("a.py::f", body_digest="ab" * 16, body_tokens=40)], file_paths={"a.py"}
+    )
+    stored = (await get_function_facts(session, repo, ["a.py::f"]))["a.py::f"]
+    assert (stored.body_digest, stored.body_tokens) == ("ab" * 16, 40)
+    assert stored.lineage_id is not None
     # A walked file whose function is gone loses its row.
     await write_function_facts(session, repo, [], file_paths={"a.py"}, roles=None)
     assert set(await get_function_facts(session, repo, ["a.py::f", "b.py::g"])) == {"b.py::g"}
@@ -277,3 +321,69 @@ def test_a_fresh_analysis_fills_the_size_measures(tmp_path: Path) -> None:
     assert plain["nloc"] > 0
     # No parameter besides the receiver: unknown, never 0.
     assert by_id["store.py::each"]["params"] is None
+
+
+async def _events(session, repository_id: str) -> list[tuple]:
+    from repowise.core.persistence.models import SymbolLineageEvent
+
+    result = await session.execute(
+        select(
+            SymbolLineageEvent.from_symbol_id,
+            SymbolLineageEvent.to_symbol_id,
+            SymbolLineageEvent.method,
+            SymbolLineageEvent.reason,
+            SymbolLineageEvent.commit_sha,
+        )
+        .where(SymbolLineageEvent.repository_id == repository_id)
+        .order_by(SymbolLineageEvent.id)
+    )
+    return [tuple(row) for row in result.all()]
+
+
+async def test_a_moved_function_keeps_its_lineage_across_a_rewrite(store) -> None:
+    from repowise.core.persistence.crud import get_function_facts, write_function_facts
+
+    session, repo = store
+    body = {"body_digest": "ab" * 16, "body_tokens": 40}
+    await write_function_facts(
+        session,
+        repo,
+        [_row("a.py::f", **body), _row("gone.py::g", **body | {"body_digest": "cd" * 16})],
+    )
+    first = (await get_function_facts(session, repo, ["a.py::f"]))["a.py::f"].lineage_id
+    assert first is not None
+
+    # f moved to b.py; gone.py was deleted and its row is read, not removed here.
+    await write_function_facts(
+        session,
+        repo,
+        [_row("b.py::f", **body)],
+        file_paths={"a.py", "b.py"},
+        departed={"gone.py"},
+        commit="c1",
+    )
+    stored = await get_function_facts(session, repo, ["b.py::f", "gone.py::g"])
+    assert stored["b.py::f"].lineage_id == first
+    assert "gone.py::g" in stored
+    assert await _events(session, repo) == [("a.py::f", "b.py::f", "verbatim_move", None, "c1")]
+
+    # A full rewrite carries lineage by id.
+    await write_function_facts(session, repo, [_row("b.py::f", **body)])
+    assert (await get_function_facts(session, repo, ["b.py::f"]))["b.py::f"].lineage_id == first
+
+
+async def test_the_event_log_keeps_only_the_newest(store, monkeypatch) -> None:
+    from repowise.core.persistence.crud import write_function_facts
+    from repowise.core.persistence.crud.analysis import function_facts
+
+    monkeypatch.setattr(function_facts, "LINEAGE_EVENT_CAP", 3)
+    session, repo = store
+    for i in range(5):
+        await write_function_facts(
+            session,
+            repo,
+            [_row(f"f{i + 1}.py::f", body_digest="ab" * 16, body_tokens=40)],
+            file_paths={f"f{i}.py", f"f{i + 1}.py"},
+            commit=f"c{i}",
+        )
+    assert [e[4] for e in await _events(session, repo)] == ["c2", "c3", "c4"]

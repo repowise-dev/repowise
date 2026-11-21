@@ -41,7 +41,9 @@ Optional ``include`` parameter widens the response:
                             complexity, resolved callers) and direct test links
   - include=["changes"]   → recent Change Records touching a file target
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
-                            targets as a symptom, each with the signals that fired
+                            targets' files and the typed ``symptom`` text (the
+                            targets' path words without one), each with the
+                            signals that fired; a ``symptom`` alone adds it
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
   - include=["files"]     → on a directory, every file under it (capped, with
@@ -93,6 +95,7 @@ from repowise.server.mcp_server._workspace_routing import (
     run_grouped,
 )
 from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
+from repowise.server.mcp_server.tool_context.measured import attach_measured
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
@@ -148,25 +151,24 @@ async def get_context(
     repo: str | None = None,
     symptom: str | None = None,
 ) -> dict:
-    """Triage card for files / modules / symbols — relationships, not source bytes.
+    """Triage card for files, modules or symbols: relationships, not source bytes.
 
     Returns summary, signatures with lines, hotspot, fix_history and
     decision titles; either risk cue means get_risk. Batch targets in one
     call. Whole file, body-elided and line-verified: include=["skeleton"]
     in ONE call, or Read it; do not call get_symbol per signature. Rename:
-    include=["references"] is the whole edit set when ``complete``. Which
+    include=["references"] is the whole edit set when `complete`. Which
     files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol", "component:<name>",
-            "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: callers | callees | references (+ adds comments) | skeleton | skeleton+
-            | files | symbols (all, not top 15) | decisions | full_doc
-            | ownership | last_change | metrics | community | health
-            | doc_drift | changes | provenance | suspects | facts.
+        targets: Paths, "path::Symbol", "component:<name>", "change:<pr-123 or sha>",
+            "package:<name>".
+        include: callers | callees | references | skeleton | files | symbols
+            | decisions | full_doc | ownership | last_change | health | doc_drift
+            | changes | suspects (pass symptom=).
         compact: False adds structure, imports, docstrings.
-        symptom: issue text or stack trace to rank ``suspects`` on.
-        repo: usually omitted.
+        symptom: Issue text or stack trace.
+        repo: Usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
@@ -182,10 +184,9 @@ async def get_context(
     collector = OmissionCollector("get_context", repo_root=ctx.path)
     ignored: list[dict[str, Any]] = []
     include_set = _include_set(include, ignored)
-    if symptom and "suspects" not in include_set:
-        ignored.append(
-            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
-        )
+    # A symptom has one reading: rank suspects on it.
+    if symptom and symptom.strip():
+        include_set.add("suspects")
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time
@@ -196,12 +197,13 @@ async def get_context(
         raw_results = await _resolve_cards(
             session, repository, targets, include_set, compact, ctx, exclude_spec, collector
         )
+        cards = {r["target"]: r for r in raw_results if isinstance(r, dict)}
         # One batched read on the shared session, not one per target inside the
         # gather: savepoints opened concurrently on one session close each other.
         await attach_doc_references(
             session,
             repository,
-            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            cards,
             exclude_spec=exclude_spec,
             collector=collector,
             repo_root=served_root(repository, ctx.path),
@@ -211,6 +213,8 @@ async def get_context(
             if "suspects" in include_set
             else None
         )
+        # Last read in the session: it takes no savepoint (see attach_measured).
+        await attach_measured(session, repository.id, cards)
 
     results = _per_target_results(targets, raw_results)
     # One integer per target: how many dated episodes are bound here. Absent at zero.

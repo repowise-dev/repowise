@@ -210,9 +210,11 @@ export function SecurityFindingsTable({
   if (findings.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2">
+        {/* A findings list was handed over, so the scan ran: zero is a clean result. */}
         <EmptyState
-          title="No findings"
-          description="The pattern scan has no security findings to show for this repository."
+          tone="positive"
+          title="No security findings at this commit"
+          description="The pattern scan checked this repository and found nothing to flag."
         />
         <CiHint command="repowise security check" checks="what each change adds" />
       </div>

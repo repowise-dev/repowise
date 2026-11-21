@@ -460,7 +460,7 @@ async def decision_lane_counts(
 async def decision_agent_prompt(
     repo_id: str,
     kind: Literal[
-        "discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
+        "discover", "review_all", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
     ] = Query("discover"),
     decision_id: str | None = Query(
         None, description="The record a review, pin, unpin, veto or edit prompt is about."
@@ -470,7 +470,8 @@ async def decision_agent_prompt(
     """A prompt for the reader's agent, the text the CLI prints for the same pass.
 
     ``discover`` names the background records on the busiest files for the
-    agent to check, put in force or dismiss; ``add`` has it record what nobody
+    agent to check, put in force or dismiss; ``review_all`` has it page through
+    every background record the same way, empty when none is left; ``add`` has it record what nobody
     wrote down; ``agreements`` moves working agreements into CLAUDE.md. The
     rest are about one record, named by ``decision_id``: ``review`` checks a
     background record, ``pin`` / ``unpin`` mark one as law or not, ``veto``

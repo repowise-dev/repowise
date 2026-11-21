@@ -56,6 +56,9 @@ class UpdateRun:
     base_ref: str = field(init=False, repr=False)
     defer_docs: bool = False
     head: str | None = None
+    # The repair marker this run could not check, so it keeps it (see
+    # ``unchecked_repair_marker``).
+    unchecked_repair: dict | None = None
     config: ConfigChanges = field(init=False, repr=False)
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""
@@ -113,6 +116,23 @@ class UpdateRun:
         """Whether this run regenerates the whole page set, every level included."""
         config = getattr(self, "config", None)
         return bool(config and config.generation_changed) or self.wiki_rebuild
+
+
+def rework_pending(run: UpdateRun, *, defer_renderer: bool = False) -> bool:
+    """Whether a moved version stamp or a forced re-read owes work no commit explains.
+
+    The one list every shortcut checks (nothing to do, config only, working
+    tree only, dead code reuse); a new recompute stamp joins here once.
+    ``defer_renderer`` leaves a renderer change to a later run.
+    """
+    return bool(
+        run.analyzer_changed
+        or run.extraction_changed
+        or (run.renderer_changed and not defer_renderer)
+        or run.wiki_rebuild
+        or run.history_stale
+        or run.refresh_git
+    )
 
 
 @dataclass

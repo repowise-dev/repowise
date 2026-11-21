@@ -171,14 +171,22 @@ class IdentityResolver:
         node = _node(name, email)
         return self._key_of.get(node, node)
 
-    def display_name(self, key: str) -> str:
-        """The identity's most frequent name, preferring names of 2+ words."""
+    def display_name(self, key: str, default: str | None = None) -> str:
+        """The identity's most frequent name, preferring names of 2+ words.
+
+        An identity the resolver was not built from has no names: *default*
+        (the caller's own observed name), else the key itself.
+        """
         names = self._names.get(key)
         if not names:
-            return key.removeprefix("name:")
+            return default or key.removeprefix("name:")
         pool = Counter({n: c for n, c in names.items() if len(n.split()) >= 2}) or names
         # Ties break alphabetically so the name is stable across runs.
         return min(pool, key=lambda n: (-pool[n], n))
+
+    def email(self, key: str) -> str:
+        """The identity's email: its key, or ``""`` for a name-only identity."""
+        return "" if key.startswith("name:") else key
 
     def kind(self, key: str) -> IdentityKind:
         return self._kinds.get(key, "human")

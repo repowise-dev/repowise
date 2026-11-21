@@ -22,8 +22,12 @@ def extract_go_receiver_type(receiver_text: str) -> str | None:
     letter is what lets an unexported receiver — ``func (s *startEnd) add()`` —
     carry a parent at all; the export convention says nothing about whether a
     name is a type.
+
+    A generic receiver lists its type parameters, which may contain spaces:
+    ``(p *Pair[K, V])``. They are cut first, so the type is ``Pair``, the
+    name its struct is recorded under.
     """
-    text = receiver_text.strip("() ")
+    text = receiver_text.strip("() ").split("[", 1)[0]
     parts = text.split()
     if not parts:
         return None
@@ -214,6 +218,7 @@ _JSDOC_WRAPPER_TYPES = frozenset(
         "lexical_declaration",
         "variable_declaration",
         "variable_declarator",
+        "expression_statement",  # /** doc */ obj.f = function () {}
     }
 )
 

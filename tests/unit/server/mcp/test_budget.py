@@ -35,6 +35,7 @@ from repowise.server.mcp_server._budget import (
     over_budget,
     truncate_to_budget,
 )
+from repowise.server.mcp_server._budget.budgeter import entitled_floor
 
 
 @pytest.fixture
@@ -265,6 +266,231 @@ def test_budgeter_decisions_unchanged_by_collector(repo_root: Path):
     )
 
 
+def _module_target(name: str, n_files: int, *, summary_len: int = 500, n_symbols: int = 10) -> dict:
+    """A module target whose file rows arrive ranked, highest first."""
+    rows = [
+        {
+            "path": f"packages/core/src/repowise/core/ingestion/mod_{i:03d}.py",
+            "description": f"Module part {i}",
+            "confidence_score": 0.9,
+        }
+        for i in range(n_files)
+    ]
+    return {
+        "target": name,
+        "type": "module",
+        "docs": {
+            "title": "Ingestion",
+            "summary": "s" * summary_len,
+            "symbols": [
+                {"name": f"Sym{j}", "kind": "function", "signature": "def sym(...)"}
+                for j in range(n_symbols)
+            ],
+            "files": rows,
+            "files_total": n_files,
+            "files_emitted": n_files,
+        },
+    }
+
+
+def test_truncate_keeps_ranked_file_prefix_within_share(repo_root: Path):
+    """A 240-row module over budget keeps a ranked prefix, not an empty list."""
+    name = "packages/core/src/repowise/core/ingestion"
+    collector = OmissionCollector("get_context", repo_root=repo_root)
+    out = truncate_to_budget(
+        {"targets": {name: _module_target(name, 240)}},
+        char_budget=9000,
+        collector=collector,
+        record_counts=True,
+    )
+
+    docs = out["targets"][name]["docs"]
+    files = docs["files"]
+    assert len(files) >= entitled_floor(240)
+    assert len(files) < 240
+    assert files[0]["path"].endswith("mod_000.py")
+    assert [f["path"] for f in files] == sorted(f["path"] for f in files)
+    assert docs["files_total"] == 240
+    assert docs["files_emitted"] == len(files)
+    assert docs["files_omitted"] == 240 - len(files)
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert "docs.files" not in out.get("dropped_blocks", {}).get(name, [])
+    # The collector's marker lands after the fit, so the fitted payload is
+    # the targets mapping, not the whole attached response.
+    assert len(json.dumps(out["targets"], separators=(",", ":"), default=str)) <= 9000
+
+    # The shed tail stays recoverable through the collector.
+    stored = _joined(repo_root, out["_meta"]["omitted"]["refs"])
+    assert "mod_239.py" in stored
+
+
+def test_truncate_trims_capped_file_list_instead_of_dropping_it():
+    """A construction-capped list (15 of 275 rows) trims toward its floor."""
+    name = "packages/core/src/repowise/core/ingestion"
+    target = _module_target(name, 15)
+    target["docs"]["files_total"] = 275
+    target["docs"]["files_emitted"] = 15
+    target["docs"]["files_reduced_reason"] = "construction_cap"
+    target["docs"]["files_truncated"] = True
+    target["docs"]["files_omitted"] = 260
+    out = truncate_to_budget({"targets": {name: target}}, char_budget=2000, record_counts=True)
+
+    docs = out["targets"][name]["docs"]
+    files = docs["files"]
+    assert len(files) >= entitled_floor(15)
+    assert len(files) < 15
+    assert docs["files_total"] == 275
+    assert docs["files_emitted"] == len(files)
+    assert docs["files_omitted"] == 275 - len(files)
+    assert docs["files_reduced_reason"] == "construction_cap_and_response_budget"
+    assert "docs.files" not in out.get("dropped_blocks", {}).get(name, [])
+
+
+def test_truncate_leaves_small_module_files_untouched():
+    """A small module under budget keeps every file row and no truncation flag."""
+    name = "packages/core/src/repowise/core/ingestion"
+    before = _module_target(name, 5, summary_len=100, n_symbols=2)
+    out = truncate_to_budget({"targets": {name: copy.deepcopy(before)}}, char_budget=9000)
+
+    assert "truncated" not in out
+    assert out["targets"][name]["docs"]["files"] == before["docs"]["files"]
+
+
+def test_truncate_drops_files_whole_only_when_the_floor_cannot_fit():
+    """Last resort: a floor that busts the share still drops the block whole."""
+    name = "packages/core/src/repowise/core/ingestion"
+    out = truncate_to_budget(
+        {"targets": {name: _module_target(name, 15)}},
+        char_budget=1000,
+        record_counts=True,
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert "files" not in docs
+    assert docs["files_total"] == 15
+    assert docs["files_emitted"] == 0
+    assert docs["files_omitted"] == 15
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert "docs.files" in out.get("dropped_blocks", {}).get(name, [])
+
+
+def test_truncate_stage_2a_keeps_target_that_fits_after_file_trim():
+    """Stage 2a eviction sizes survivors with files trimmed, not full.
+
+    Three modules whose identity cards bust the budget: with symbols alone
+    trimmed the two survivors still look over budget, so the old sizing
+    evicted a second target; with the files cut to their floor as well they
+    fit, so only one target goes and the survivors keep their file prefix.
+    """
+    names = [f"pkg/mod_{i}" for i in range(3)]
+    targets = {name: _module_target(name, 15, summary_len=3000) for name in names}
+    out = truncate_to_budget({"targets": targets}, char_budget=8500, record_counts=True)
+
+    assert out.get("dropped_targets") == ["pkg/mod_0"]
+    assert sorted(out["targets"]) == ["pkg/mod_1", "pkg/mod_2"]
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 8500
+    for target in out["targets"].values():
+        docs = target["docs"]
+        assert len(docs["symbols"]) >= entitled_floor(10)
+        assert len(docs["files"]) >= entitled_floor(15)
+        assert docs["files_total"] == 15
+        assert docs["files_emitted"] == len(docs["files"])
+        assert docs["files_reduced_reason"] == "response_budget"
+
+
+def test_truncate_file_trim_stops_at_first_row_over_share():
+    """File trimming keeps a prefix: it stops at the first row over the share.
+
+    Five rows, floor three: the fourth row is too large to fit once the
+    floor is met, but the fifth row is tiny and would fit in the room the
+    fourth leaves. The old loop skipped the fourth and kept the fifth, so
+    the kept list was not a prefix of the ranked rows; the fix breaks at
+    the fourth row instead. The share leaves headroom for the counts fields
+    the trim writes after the loop, so the tail-shed loop cannot pop the
+    tail row back off and hide the difference.
+    """
+    name = "pkg/mod"
+    target = _module_target(name, 5, summary_len=100, n_symbols=0)
+    rows = target["docs"]["files"]
+    rows[3]["description"] = "d" * 600
+    rows[4]["description"] = "tiny"
+    costs = [len(json.dumps(row, separators=(",", ":"), default=str)) for row in rows]
+    probe = copy.deepcopy(target)
+    probe["docs"]["files"] = []
+    base = len(json.dumps(probe, separators=(",", ":"), default=str))
+    share = base + 200 + sum(costs[:3]) + costs[4] + 3
+    assert costs[3] > 200 + costs[4]  # the large row really does not fit
+    envelope = {
+        "targets": {name: target},
+        "truncated": False,
+        "dropped_targets": [],
+        "dropped_symbols": {},
+    }
+    overhead = len(json.dumps(envelope, separators=(",", ":"), default=str)) - len(
+        json.dumps(target, separators=(",", ":"), default=str)
+    )
+    out = truncate_to_budget(
+        {"targets": {name: target}}, char_budget=overhead + share, record_counts=True
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert [row["path"] for row in docs["files"]] == [row["path"] for row in rows[:3]]
+    assert docs["files_total"] == 5
+    assert docs["files_emitted"] == 3
+    assert docs["files_omitted"] == 2
+    assert docs["files_reduced_reason"] == "response_budget"
+    assert out["truncated"] is True
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= overhead + share
+
+
+def test_truncate_symbol_trim_stops_at_first_row_over_share():
+    """Symbol trimming keeps a prefix: it stops at the first row over the share.
+
+    Five symbols, floor three: the fourth symbol is too large to fit once the
+    floor is met, but the fifth symbol is tiny and would fit in the room the
+    fourth leaves. The old loop skipped the fourth and kept the fifth, so
+    the kept list was not a prefix of the ranked symbols; the fix breaks at
+    the fourth symbol instead. Centrality pins the ranked order, since the
+    priority sort would otherwise push the large fourth symbol to the tail.
+    The share leaves headroom for the counts fields the trim writes after
+    the loop, so nothing after the trim sheds the tail symbol back off and
+    hides the difference.
+    """
+    name = "pkg/mod"
+    target = _module_target(name, 0, summary_len=100, n_symbols=5)
+    symbols = target["docs"]["symbols"]
+    for rank, sym in enumerate(symbols):
+        sym["pagerank"] = 0.5 - rank * 0.1
+    symbols[3]["docstring"] = "d" * 600
+    costs = [len(json.dumps(sym, separators=(",", ":"), default=str)) for sym in symbols]
+    probe = copy.deepcopy(target)
+    probe["docs"]["symbols"] = []
+    base = len(json.dumps(probe, separators=(",", ":"), default=str))
+    share = base + 200 + sum(costs[:3]) + costs[4] + 3
+    assert costs[3] > 200 + costs[4]  # the large symbol really does not fit
+    envelope = {
+        "targets": {name: target},
+        "truncated": False,
+        "dropped_targets": [],
+        "dropped_symbols": {},
+    }
+    overhead = len(json.dumps(envelope, separators=(",", ":"), default=str)) - len(
+        json.dumps(target, separators=(",", ":"), default=str)
+    )
+    out = truncate_to_budget(
+        {"targets": {name: target}}, char_budget=overhead + share, record_counts=True
+    )
+
+    docs = out["targets"][name]["docs"]
+    assert [sym["name"] for sym in docs["symbols"]] == ["Sym0", "Sym1", "Sym2"]
+    assert docs["symbols_total"] == 5
+    assert docs["symbols_emitted"] == 3
+    assert docs["symbols_reduced_reason"] == "response_budget"
+    assert out["dropped_symbols"][name] == ["Sym3", "Sym4"]
+    assert out["truncated"] is True
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= overhead + share
+
+
 # ---------------------------------------------------------------------------
 # fit_to_budget — the block-shedding ceiling
 # ---------------------------------------------------------------------------
@@ -346,6 +572,38 @@ def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path,
     refs = response["_meta"]["omitted"]["refs"]
     stored = _joined(repo_root, refs)
     assert '"row": 5' in stored
+
+
+@pytest.mark.parametrize("shape", ["list", "dict", "aliased"])
+def test_fit_to_budget_tail_stops_at_the_first_row_that_fits(repo_root: Path, shape: str):
+    """The tail sheds exactly to the fit line: one row fewer would still be over.
+
+    ``aliased`` serialises the same list twice, so each dropped row frees
+    twice its own size; the shed must still stop at the first fit.
+    """
+    rows = [{"row": i, "body": "r" * (i % 7 * 40)} for i in range(400)]
+    every = list(rows)  # the shed pops ``rows`` itself
+    response: dict = {"results": {f"k{i}": row for i, row in enumerate(rows)}}
+    if shape != "dict":
+        response = {"results": rows}
+    if shape == "aliased":
+        response["mirror"] = rows
+    budget, headroom = 9000, 100
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+
+    fit_to_budget(response, ("results[]",), collector, char_budget=budget, headroom=headroom)
+
+    # The flag lands after the last fit check, so it is not part of the fit.
+    assert response.pop("truncated") is True
+    kept = response["results"]
+    assert 1 < len(kept) < 400
+    assert not over_budget(response, headroom=headroom, char_budget=budget)
+    nxt = len(kept)
+    if isinstance(kept, dict):
+        kept[f"k{nxt}"] = every[nxt]
+    else:
+        kept.append(every[nxt])
+    assert over_budget(response, headroom=headroom, char_budget=budget)
 
 
 def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
@@ -675,3 +933,121 @@ def test_cli_expand_resolves_mcp_row(repo_root: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "dropped target pkg/a.py" in result.output
     assert '"title": "A"' in result.output
+
+
+def _shed_in_rows_measured(response, key, collector, limits, requested) -> None:
+    """The per-row loop :func:`_shed_in_rows` must match: one full measure per row."""
+    from repowise.server.mcp_server._budget.budgeter import (
+        _record_reduction,
+        _rows_to_keep,
+        _shed_tail,
+        shed_stem,
+    )
+
+    path, _, leaf = key.partition("[].")
+    rows = response
+    for part in path.split("."):
+        rows = rows.get(part) if isinstance(rows, dict) else None
+    name = shed_stem(leaf)
+    heaviest = sorted(
+        (i for i, row in enumerate(rows) if isinstance(row, dict) and row.get(name)),
+        key=lambda i: len(json.dumps(rows[i][name], default=str)),
+        reverse=True,
+    )
+    for i in heaviest:
+        if not limits.exceeded(response):
+            return
+        row, label = rows[i], f"{path}[{i}].{name}"
+        if name not in row:
+            continue
+        if leaf.endswith("[]") or isinstance(row[name], list):
+            keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
+            _shed_tail(response, row, name, label, collector, limits, keep)
+            if not row[name]:
+                row.pop(name)
+            continue
+        value = row.pop(name)
+        collector.add(label, value)
+        if limits.record_counts:
+            _record_reduction(response, row, label, name, value, emitted=0)
+        response["truncated"] = True
+
+
+def _rows_payload(seed: int, aliased: str) -> dict:
+    import random
+
+    rng = random.Random(seed)
+    rows = []
+    for i in range(rng.randint(1, 60)):
+        row: dict = {"kind": f"k{i}", "status": "ok"}
+        shape = rng.choice(["list", "list", "dict", "text", "none"])
+        if shape == "list":
+            row["details"] = [
+                {"path": f"src/{i}/{j}.py", "note": "n" * rng.randint(0, 300)}
+                for j in range(rng.randint(0, 40))
+            ]
+        elif shape == "dict":
+            row["details"] = {"files": ["f" * rng.randint(1, 80)] * rng.randint(1, 9), "n": i}
+        elif shape == "text":
+            row["details"] = "t" * rng.randint(1, 900)
+        rows.append(row)
+    response = {"title": "x", "evidence": {"items": rows}, "_meta": {"v": 1}}
+    if rng.random() < 0.3:
+        response["truncated"] = rng.choice([True, False])
+    if aliased == "row" and rows:
+        rows.append(rows[0])
+    elif aliased == "elsewhere" and rows:
+        response["mirror"] = rows[-1]
+    elif aliased == "details" and len(rows) > 1 and isinstance(rows[0].get("details"), list):
+        rows[1]["details"] = rows[0]["details"]
+    return response
+
+
+@pytest.mark.parametrize("aliased", ["none", "row", "elsewhere", "details"])
+@pytest.mark.parametrize("key", ["evidence.items[].details[]", "evidence.items[].details"])
+def test_shed_in_rows_sheds_what_measuring_every_row_sheds(aliased: str, key: str) -> None:
+    """Measuring once and sizing each row decides exactly as measuring per row."""
+    from repowise.server.mcp_server._budget.budgeter import (
+        _shed_in_rows,
+        _ShedLimits,
+        response_chars,
+    )
+
+    for seed in range(15):
+        original = _rows_payload(seed, aliased)
+        size = response_chars(original)
+        for fraction in (0.3, 0.8, 0.97):
+            for requested in (False, True):
+                for record_counts in (False, True):
+                    limits = _ShedLimits(0, int(size * fraction), record_counts)
+                    fast, slow = copy.deepcopy(original), copy.deepcopy(original)
+                    fast_drops = OmissionCollector("t", store_path=Path("unused.db"))
+                    slow_drops = OmissionCollector("t", store_path=Path("unused.db"))
+                    # A row listed twice sheds at its first index and is skipped after.
+                    _shed_in_rows(fast, key, fast_drops, limits, requested)
+                    _shed_in_rows_measured(slow, key, slow_drops, limits, requested)
+                    assert json.dumps(fast) == json.dumps(slow), (seed, fraction)
+                    assert fast_drops._chunks == slow_drops._chunks, (seed, fraction)
+
+
+def test_shed_in_rows_measures_the_response_once(monkeypatch) -> None:
+    from repowise.server.mcp_server._budget import budgeter
+
+    rows = [{"kind": f"k{i}", "details": [{"note": "n" * 50}] * 20} for i in range(300)]
+    response = {"evidence": {"items": rows}}
+    whole = 0
+    measure = budgeter.response_chars
+
+    def counting(value):
+        nonlocal whole
+        whole += value is response
+        return measure(value)
+
+    monkeypatch.setattr(budgeter, "response_chars", counting)
+    limits = budgeter._ShedLimits(0, measure(response) // 2, True)
+    budgeter._shed_in_rows(
+        response, "evidence.items[].details[]", OmissionCollector("t", store_path=Path("unused.db")), limits, False
+    )
+
+    assert all(len(row["details"]) == 1 for row in rows[:5])
+    assert whole == 1

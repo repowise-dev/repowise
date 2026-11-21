@@ -1,0 +1,26 @@
+{"Time":"2026-11-19T17:44:52.3190272+05:30","Action":"start","Package":"example.com/gobench/strs"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"goos: windows\n"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"goarch: amd64\n"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"pkg: example.com/gobench/strs\n"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"cpu: x86-64\n"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"BenchmarkJoin"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkJoin","Output":"=== RUN   BenchmarkJoin\n"}
+{"Time":"2026-11-19T17:44:52.8535594+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkJoin","Output":"BenchmarkJoin\n"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkJoin","Output":"BenchmarkJoin-32      \t"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkJoin","Output":"    2000\t        61.55 ns/op\t      24 B/op\t       1 allocs/op\n"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"BenchmarkConcat"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat","Output":"=== RUN   BenchmarkConcat\n"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat","Output":"BenchmarkConcat\n"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=2"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=2","Output":"=== RUN   BenchmarkConcat/n=2\n"}
+{"Time":"2026-11-19T17:44:52.8546228+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=2","Output":"BenchmarkConcat/n=2\n"}
+{"Time":"2026-11-19T17:44:52.8556622+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=2","Output":"BenchmarkConcat/n=2-32         \t"}
+{"Time":"2026-11-19T17:44:52.8556622+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=2","Output":"    2000\t        46.75 ns/op\t       3 B/op\t       1 allocs/op\n"}
+{"Time":"2026-11-19T17:44:52.8556622+05:30","Action":"run","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=5"}
+{"Time":"2026-11-19T17:44:52.8556622+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=5","Output":"=== RUN   BenchmarkConcat/n=5\n"}
+{"Time":"2026-11-19T17:44:52.8556622+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=5","Output":"BenchmarkConcat/n=5\n"}
+{"Time":"2026-11-19T17:44:52.8561834+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=5","Output":"BenchmarkConcat/n=5-32         \t"}
+{"Time":"2026-11-19T17:44:52.8561834+05:30","Action":"output","Package":"example.com/gobench/strs","Test":"BenchmarkConcat/n=5","Output":"    2000\t        95.55 ns/op\t      40 B/op\t       4 allocs/op\n"}
+{"Time":"2026-11-19T17:44:52.8561834+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"PASS\n"}
+{"Time":"2026-11-19T17:44:52.8587362+05:30","Action":"output","Package":"example.com/gobench/strs","Output":"ok  \texample.com/gobench/strs\t0.540s\n"}
+{"Time":"2026-11-19T17:44:52.8587362+05:30","Action":"pass","Package":"example.com/gobench/strs","Elapsed":0.54}

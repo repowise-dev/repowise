@@ -59,6 +59,7 @@ FixExclusion = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",
@@ -176,6 +177,9 @@ class FixVerify:
     basis: FixFactBasis
     #: What to do before the edit when no test reaches it.
     prerequisite: str | None = None
+    #: How a performance item's change is timed (``perf_measure.verify_measure``);
+    #: left out of the wire dict when there is none.
+    measure: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +221,10 @@ class FixItem:
     value: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        if out["verify"]["measure"] is None:
+            del out["verify"]["measure"]
+        return out
 
     def compact(self) -> dict[str, Any]:
         """The projection a list renders; the full item is one lookup away."""

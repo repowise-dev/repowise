@@ -6,11 +6,15 @@ import asyncio
 import contextlib
 import os
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+import anyio
+from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import server as _lowlevel
+from mcp.server.session import ServerSession
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,6 +35,7 @@ from repowise.core.providers.embedding.base import (
     warm_query_embedder,
 )
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.registry.instructions import server_instructions
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
 from repowise.server.mcp_server._checkout import close_own_index_contexts
@@ -128,6 +133,13 @@ def _configured_embedder_name() -> str:
 def _is_keyless_name(name: str) -> bool:
     """Whether the configured embedder *name* resolves to :class:`KeylessEmbedder`."""
     return not name or name == "mock"
+
+
+def _embedder_lacks_key(name: str) -> bool:
+    """Whether *name* needs an API key and none is set: it builds as keyless."""
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    return bool(EMBEDDER_KEY_ENVS.get(name)) and _persisted_embedder_key(name) is None
 
 
 def _persisted_embedder_key(name: str) -> str | None:
@@ -270,21 +282,28 @@ def _share_lifespan(server: Any) -> None:
             error = exc
             raise
         finally:
-            async with manager["lock"]:
-                manager["active"] -= 1
-                if manager["active"] == 0:
-                    context = manager["context"]
-                    manager["context"] = None
-                    manager["state"] = None
-                    if context is not None:
-                        teardown_error = (
-                            None if isinstance(error, asyncio.CancelledError) else error
-                        )
-                        await context.__aexit__(
-                            type(teardown_error) if teardown_error is not None else None,
-                            teardown_error,
-                            teardown_error.__traceback__ if teardown_error is not None else None,
-                        )
+            # A session ends by cancelling its anyio task group, and that
+            # cancellation lands on every await below: unshielded, the teardown
+            # was cut short and left the engine, the store and the background
+            # tasks open past the session.
+            with anyio.CancelScope(shield=True):
+                async with manager["lock"]:
+                    manager["active"] -= 1
+                    if manager["active"] == 0:
+                        context = manager["context"]
+                        manager["context"] = None
+                        manager["state"] = None
+                        if context is not None:
+                            teardown_error = (
+                                None if isinstance(error, asyncio.CancelledError) else error
+                            )
+                            await context.__aexit__(
+                                type(teardown_error) if teardown_error is not None else None,
+                                teardown_error,
+                                teardown_error.__traceback__
+                                if teardown_error is not None
+                                else None,
+                            )
 
     server.lifespan = shared
 
@@ -420,10 +439,12 @@ async def _warm_lancedb() -> None:
     ``_failure_shield``), so the two never overlap.
 
     A keyless embedder never runs the vector leg, so nothing reads LanceDB and
-    the import is skipped: no tool call waits on it.
+    the import is skipped: no tool call waits on it. That includes a keyed
+    embedder with no key, which :func:`_resolve_embedder` serves as keyless.
     """
     try:
-        if _is_keyless_name(_configured_embedder_name()):
+        name = _configured_embedder_name()
+        if _is_keyless_name(name) or _embedder_lacks_key(name):
             return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:
@@ -812,9 +833,10 @@ class _RepowiseMCP(FastMCP):
         from repowise.server.mcp_server._tool_selection import (
             mark_always_loaded,
             session_tool_names,
+            single_repo_schemas,
         )
 
-        tools = mark_always_loaded(await super().list_tools())
+        tools = single_repo_schemas(mark_always_loaded(await super().list_tools()))
         client = self._client_slug()
         if client is not None:
             names = session_tool_names(client)
@@ -856,80 +878,105 @@ class _RepowiseMCP(FastMCP):
             current_principal.reset(reset)
 
 
-# Hosts that defer tool schemas show the model only tool names and this
-# string, so it says when to call; tests pin the key lines and a length cap.
-# Every line or clause that names a tool is keyed by it and kept only when the
-# server serves that tool: a host calls a named tool even when it is unlisted.
-_TOOL_LINES = {
-    "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` are read "
-    "from live files; `complete: true` means every match.",
-    "get_context": '- get_context(targets=[symbol], include=["references"]) before a rename: a '
-    '`complete` list is the whole edit set. include=["files"] on a directory '
-    "lists its files and tests.",
-    "get_answer": "- get_answer(question): one how/where/why question per call.",
-}
-_CHECK_CLAUSES = {
-    "get_risk": "get_risk before editing a widely imported file",
-    "get_change_risk": "get_change_risk before committing",
-    "get_why": "get_why before changing an established pattern",
-}
-_NO_INDEX_LINE = (
-    "No index: tell the user to run 'repowise init --yes --no-prose' (no "
-    "API key or model calls). Suggest it, do not run it yourself."
-)
-
-#: Opt-in workspace tools, named only once the selected surface has them.
-_WORKSPACE_TOOL_LINES = {
-    "get_architecture": "get_architecture for the workspace's coupling and architecture score",
-    "get_blast_radius": "get_blast_radius for the services a change reaches in other repos",
-}
-
-
-#: Tools the instructions name that a client's default profile may leave out.
-_NAMED_TOOLS = ("get_risk", "get_change_risk")
-
-#: Said when some client is not listed a served tool in :data:`_NAMED_TOOLS`. A
-#: host only calls listed tools, so this is how an agent learns to turn them on.
-_OFF_LINE = "{names} not listed? `repowise config set mcp.tools standard`, then restart the server."
-
-
-def _instructions(
-    enabled: Iterable[str] | None = None,
-    repo_line: str | None = None,
-    *,
-    all_listed: bool = True,
-) -> str:
-    """The server instructions, naming a tool only when it is served.
-
-    *enabled* is the surface the server serves; ``None`` (before any
-    selection) names every core tool but no workspace tool.
-    *repo_line* says what get_why holds for the served repository.
-    *all_listed* is false when some client's default profile leaves out a tool
-    in :data:`_NAMED_TOOLS`, which adds the line saying how to turn it on.
-    """
-    served = set(enabled) if enabled is not None else set(_TOOL_LINES) | set(_CHECK_CLAUSES)
-    lines = ["repowise indexes this repository's code graph, git history and decisions."]
-    lines += [line for name, line in _TOOL_LINES.items() if name in served]
-    clauses = [clause for name, clause in _CHECK_CLAUSES.items() if name in served]
-    if clauses:
-        lines.append(f"- {', '.join(clauses)}.")
-    lines.append(_NO_INDEX_LINE)
-    off = [name for name in _NAMED_TOOLS if name in served]
-    if not all_listed and off:
-        lines.append(_OFF_LINE.format(names=" or ".join(off)))
-    if repo_line and "get_why" in served:
-        lines.append(repo_line)
-    workspace = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in served]
-    if workspace:
-        lines.append(f"In this workspace, use {' and '.join(workspace)}.")
-    return "\n".join(lines)
-
-
 mcp = _RepowiseMCP(
     "repowise",
-    instructions=_instructions(),
+    instructions=server_instructions(None),
     lifespan=_lifespan,
 )
+
+#: The instructions one session's client reads, by its agent slug. Set with
+#: the boot selection; None (no selection yet) sends the boot text to all.
+_client_instructions: Callable[[str], str] | None = None
+
+#: Clients that repeat the instructions under every tool they list (Codex
+#: appends them to each tool it discovers), so a full text is paid once per
+#: tool. They get the brief text: the first line alone, since a line repeated
+#: under every tool reads as tool output and agents relay it.
+_PER_TOOL_INSTRUCTION_CLIENTS = frozenset({"codex"})
+
+
+def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set[str]:
+    """Trim *mcp* to the selected surface and set the instructions it sends.
+
+    The boot text names the boot surface. A session's own text names only the
+    tools its client is listed (:func:`session_tool_names`), so a client given
+    the core profile is not told to call a tool it never sees.
+    """
+    global _client_instructions
+    from repowise.server.mcp_server import _tool_selection
+
+    enabled = _tool_selection.apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    workspace = bool(_tool_selection._selected_surface and _tool_selection._selected_surface[0])
+    repo_line = decisions_line(repo_path)
+
+    def text(served: Iterable[str], *, brief: bool = False) -> str:
+        return server_instructions(
+            served,
+            repo_line=repo_line,
+            workspace=workspace,
+            extra=_setup_extra(repo_path),
+            brief=brief,
+        )
+
+    mcp._mcp_server.instructions = text(enabled)
+
+    def for_client(client: str) -> str:
+        listed = _tool_selection.session_tool_names(client)
+        return text(
+            enabled if listed is None else listed,
+            brief=client in _PER_TOOL_INSTRUCTION_CLIENTS,
+        )
+
+    _client_instructions = for_client
+    return enabled
+
+
+def _setup_extra(repo_path: str | None) -> list[str]:
+    """The temporary setup line while the agent pass is offered, else nothing.
+
+    Read at each handshake from the last full read (``core.setup_state``), so
+    the line drops the session after setup is done or dismissed.
+    """
+    from repowise.core.setup_state import MCP_SETUP_LINE, offered_steps
+
+    try:
+        return [MCP_SETUP_LINE] if offered_steps(repo_path) else []
+    except Exception:  # an optional line must never stop a handshake
+        return []
+
+
+class _ClientSession(ServerSession):
+    """A session that answers ``initialize`` with its own client's instructions.
+
+    The initialize reply carries the instructions and is the first moment the
+    server knows the client, so the text is chosen there. Other servers in the
+    process, and this one before any selection, keep the SDK's behaviour.
+    """
+
+    async def _received_request(self, responder: Any) -> None:
+        request = responder.request.root
+        if (
+            isinstance(request, mcp_types.InitializeRequest)
+            and _client_instructions is not None
+            and self._init_options.server_name == mcp.name
+        ):
+            from repowise.core.agents.identity import resolve_client_identity
+
+            # This leans on SDK internals; if they move, the boot text goes out
+            # rather than the handshake failing.
+            try:
+                client = resolve_client_identity(request.params.clientInfo.name)
+                self._init_options = self._init_options.model_copy(
+                    update={"instructions": _client_instructions(client)}
+                )
+            except Exception:
+                _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
+        await super()._received_request(responder)
+
+
+# The low-level server builds each session from this module name; there is no
+# session-class hook. Read at session creation, so every transport gets it.
+_lowlevel.ServerSession = _ClientSession
 _share_lifespan(mcp._mcp_server)
 # FastMCP takes no version argument, and without one the handshake's
 # serverInfo.version reports the installed ``mcp`` SDK's version.
@@ -954,19 +1001,11 @@ def create_mcp_server(
     _state._repo_path = repo_path
     _state._force_single_repo = not workspace_mode
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import (
-        apply_tool_selection,
-        every_client_lists,
-    )
 
     # Tool modules import lazily now, so a server has to ask for the full
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
-
-    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-    mcp._mcp_server.instructions = _instructions(
-        enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
-    )
+    _select_surface(repo_path, tools)
     return mcp
 
 
@@ -1116,6 +1155,27 @@ def _run_network_transport(transport: str, host: str, port: int) -> None:
     mcp.run(transport=transport)
 
 
+def _load_native_libraries() -> None:
+    """Load numpy before the stdio transport starts reading stdin.
+
+    On Windows, loading numpy's OpenBLAS DLL while a read is pending on the
+    stdin pipe never returns: its start-up waits behind the read, the read
+    waits for the client, the client waits for the reply. The SDK keeps a read
+    pending all session, and tools first import numpy mid-call (networkx
+    pagerank, lancedb), so that call hung. Any thread hangs; only loading it
+    before a read is pending avoids it. numpy alone covers what tools load
+    (pagerank, scipy.sparse, pyarrow, lancedb) in about 0.15 s. scipy's own
+    Fortran modules (``scipy.linalg``, ``scipy.stats``) hang too; a tool that
+    starts importing one adds it here.
+    """
+    from repowise.core.blas_threads import limit_blas_threads
+
+    limit_blas_threads()  # before numpy, even when run_mcp is reached without the CLI
+    # A broken install fails in the tool that needs it, not at startup.
+    with contextlib.suppress(ImportError):
+        import numpy  # noqa: F401
+
+
 def _run_stdio_transport() -> int:
     """Run the stdio transport; returns how many stray stdout writes it saw."""
     # stdout is the JSON-RPC channel on stdio, so every log line written there
@@ -1131,6 +1191,7 @@ def _run_stdio_transport() -> int:
     from repowise.server.mcp_server._watchdog import start_parent_watchdog
 
     start_parent_watchdog()
+    _load_native_libraries()
     # The SDK writes frames through stdout's buffer, so anything arriving at
     # the text layer is a stray print. The guard moves it to stderr, counts it,
     # and the count is what names the session protocol_corrupted.
@@ -1173,16 +1234,9 @@ def run_mcp(
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
         from repowise.server.mcp_server import ensure_full_surface
-        from repowise.server.mcp_server._tool_selection import (
-            apply_tool_selection,
-            every_client_lists,
-        )
 
         ensure_full_surface()
-        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-        mcp._mcp_server.instructions = _instructions(
-            enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
-        )
+        _select_surface(repo_path, tools)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

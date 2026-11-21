@@ -30,7 +30,7 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RemoteServerEntryError
+from ..formats.server_entry import RemoteServerEntryError, agents_remove_command, read_servers
 from ..types import (
     Capability,
     DoctorReport,
@@ -40,6 +40,7 @@ from ..types import (
     InstallMethod,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 from . import vscode
@@ -281,6 +282,18 @@ class CopilotTarget:
         if scope is Scope.USER:
             return [str(mcp_config_path())]
         return [str(vscode.instructions_path(repo_path or Path.cwd()))]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``mcpServers`` in the user ``mcp-config.json``, the one file the CLI reads."""
+        path = mcp_config_path()
+        return [
+            ServerMap(
+                path,
+                Scope.USER,
+                read_servers(path, "mcpServers"),
+                remove_command=agents_remove_command(ID, "user"),
+            )
+        ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """User-scope health; the project block needs a repo to check."""

@@ -53,12 +53,14 @@ AREAS: tuple[str, ...] = (
     "distill",
     "editor",
     "events",
+    "evidence",
     "generation",
     "health",
     "hooks",
     "indexing",
     "mcp",
     "providers",
+    "report",
     "server",
 )
 

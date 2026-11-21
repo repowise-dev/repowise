@@ -19,6 +19,8 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import make_symbol_id
+
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     blame_as_of,
@@ -82,7 +84,7 @@ def build_function_blame_rows(
             shas = recent_distinct_commits_in_range(idx, start, end, limit=COMMIT_SET_LIMIT)
             rows.append(
                 {
-                    "symbol_id": f"{path}::{fc.name}",
+                    "symbol_id": make_symbol_id(path, fc.name),
                     "file_path": path,
                     "function_name": fc.name,
                     "start_line": start,

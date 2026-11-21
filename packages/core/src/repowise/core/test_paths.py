@@ -139,8 +139,9 @@ _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 # that shows up in real directory names. These count only when the
 # filename corroborates, or when the file's own language declares the token
 # (Ruby's spec/ needs no corroboration - a Ruby file under spec/ is RSpec
-# material whatever its name; Python's t/ likewise - a Python file under t/
-# is test material whatever its name).
+# material whatever its name; Python's and Perl's t/ likewise - a Python or
+# Perl file under t/ is test material whatever its name). A language declares
+# its tokens with ``test_dir_tokens`` on its spec.
 _AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs", "t"})
 
 # A whole module named for testing and nothing else: Django's per-app
@@ -242,6 +243,7 @@ class _Conventions:
     stem_prefixes: tuple[str, ...]
     stem_suffixes: tuple[str, ...]
     infixes: tuple[str, ...]
+    test_exts: frozenset[str]
     source_exts: frozenset[str]
     exact_stem_exts: frozenset[str]
     camel_res: dict[str, re.Pattern[str]]
@@ -277,6 +279,7 @@ def _conventions() -> _Conventions:
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
         stem_suffixes=REGISTRY.test_stem_suffixes(),
         infixes=REGISTRY.test_infixes(),
+        test_exts=REGISTRY.test_extensions(),
         source_exts=REGISTRY.all_code_extensions(),
         exact_stem_exts=REGISTRY.extensions_for(("python", "rust")),
         camel_res=REGISTRY.camel_test_res_by_extension(),
@@ -369,6 +372,8 @@ def _is_test_name(filename: str) -> bool:
     ext = PurePosixPath(lowered).suffix
     if ext not in rules.source_exts:
         return False
+    if ext in rules.test_exts:
+        return True
     if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
         return True
     stem = PurePosixPath(lowered).stem
@@ -663,6 +668,17 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
     )
 
 
+def is_test_support_module(path: str) -> bool:
+    """Test-tree code a runner never collects: Perl's ``t/lib/Helper.pm``.
+
+    Ingestion still marks it test material; reach walks through it to the
+    test that loads it, as through a Python helper.
+    """
+    from .ingestion.languages.registry import REGISTRY
+
+    return PurePosixPath(path).suffix.lower() in REGISTRY.test_support_extensions()
+
+
 def is_test_path(
     path: str,
     language: str | None = None,
@@ -800,6 +816,122 @@ def is_test_to_production_pair(
     against another file, with no node to read a stored flag from.
     """
     return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
+
+
+#: The suffixes pytest-cov's ``--cov-context=test`` adds, one context per phase.
+_TEST_PHASES = ("|setup", "|run", "|teardown")
+
+# Extensions that make a test-id prefix a source path rather than a bare suite name.
+_TEST_ID_FILE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
+
+
+def nodeid_without_phase(test_id: str) -> str:
+    """*test_id* without the ``|setup`` / ``|run`` / ``|teardown`` pytest-cov adds.
+
+    The three phases are one test: fixture setup and teardown lines are what
+    that test exercised.
+    """
+    for phase in _TEST_PHASES:
+        if test_id.endswith(phase):
+            return test_id[: -len(phase)]
+    return test_id
+
+
+def nodeid_test_file(test_id: str) -> str | None:
+    """The path a test id names before ``::``, or ``None`` for a bare suite name.
+
+    ``tests/test_x.py::Class::test|run`` gives ``tests/test_x.py``; an lcov
+    ``TN:`` label with no path in it gives ``None``.
+    """
+    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
+    if not head:
+        return None
+    looks_pathy = "/" in head or "\\" in head or head.endswith(_TEST_ID_FILE_EXTS)
+    return head if looks_pathy else None
+
+
+def nodeid_without_params(test_id: str) -> str:
+    """*test_id* without the parameter id of a parametrized test.
+
+    ``tests/test_x.py::TestC::test_f[1-a]`` gives ``tests/test_x.py::TestC::test_f``,
+    the test function's symbol id. Only the part after the file is cut, so a
+    path with brackets (``app/[id]/page.test.ts``) keeps them; a name holds no
+    ``[``, so whatever the parameter id holds (``::`` included) goes with it.
+    """
+    head, sep, rest = test_id.partition("::")
+    if not sep:
+        return test_id
+    return f"{head}::{rest.partition('[')[0]}"
+
+
+def nodeid_function(test_id: str) -> str:
+    """The test function a ``path::qualname`` test id names, as its id after the file.
+
+    Parameters are cut (:func:`nodeid_without_params`) and so is a JVM runner's
+    argument list: ``CartTest.java::CartTest::adds(int)[1]`` gives
+    ``CartTest::adds``. Empty when the id names no function after its file.
+    """
+    _, _, local = nodeid_without_params(test_id).partition("::")
+    return local.partition("(")[0]
+
+
+def dotted_module_paths(dotted: str, *, min_parts: int = 1) -> list[tuple[str, tuple[str, ...]]]:
+    """Where a dotted test name may live: ``(module path, names after it)``, longest first.
+
+    A runner that names a test by module rather than by file (coverage.py
+    dynamic contexts, JUnit XML ``classname``) writes ``tests.unit.test_x.TestC``.
+    Each split gives a module path without its extension (``tests/unit/test_x``)
+    and the names that follow it (``("TestC",)``); the caller keeps the first
+    one that names a file it knows. Splits of fewer than *min_parts* parts are
+    left out, and a name with a part that is not an identifier gives none.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if len(parts) < min_parts or not all(p.isidentifier() for p in parts):
+        return []
+    return [
+        ("/".join(parts[:k]), tuple(parts[k:]))
+        for k in range(len(parts), max(min_parts, 1) - 1, -1)
+    ]
+
+
+def _without_extension(path: str) -> str:
+    head, slash, name = path.rpartition("/")
+    return head + slash + (name.rpartition(".")[0] or name)
+
+
+def files_by_stem(paths: Collection[str]) -> dict[str, list[str]]:
+    """*paths* keyed by their file name without its extension, for :func:`dotted_name_file`."""
+    out: dict[str, list[str]] = {}
+    for path in paths:
+        out.setdefault(_without_extension(path).rpartition("/")[2], []).append(path)
+    return out
+
+
+def dotted_name_file(
+    dotted: str, by_stem: dict[str, list[str]]
+) -> tuple[str, tuple[str, ...]] | None:
+    """The file a dotted test name lives in, and the names inside it, as its symbol ids read.
+
+    The longest module path that is the tail of one file of *by_stem*
+    (:func:`files_by_stem`) wins. A Python file is a module, so the names are
+    the ones after it: ``tests.test_x.TestC`` gives ``("TestC",)``. Any other
+    file is named for the class it declares, which leads the names:
+    ``com.acme.CartTest$Totals`` and ``.../com/acme/CartTest.java`` give
+    ``("CartTest", "Totals")``. A module path two files end with is refused
+    (``None``), never guessed, as is a name that leads to no file.
+    """
+    for module, rest in dotted_module_paths(dotted.replace("$", ".")):
+        hits = [
+            path
+            for path in by_stem.get(module.rpartition("/")[2], ())
+            if (stem := _without_extension(path)) == module or stem.endswith("/" + module)
+        ]
+        if len(hits) > 1:
+            return None
+        if hits:
+            path = hits[0]
+            return path, rest if path.endswith(".py") else (module.rpartition("/")[2], *rest)
+    return None
 
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})

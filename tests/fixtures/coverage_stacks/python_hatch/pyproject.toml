@@ -1,0 +1,6 @@
+[project]
+name = "h"
+version = "0"
+
+[tool.hatch.envs.default]
+dependencies = ["pytest"]

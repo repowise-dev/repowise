@@ -15,12 +15,7 @@ from repowise.server.mcp_server import mcp
 # Well under the 2,000 chars some hosts keep.
 _MAX_INSTRUCTIONS_CHARS = 1500
 #: The base text before a repository or workspace line is added.
-_BASE_INSTRUCTIONS_CHARS = 720
-#: The base text plus the line naming the command that lists get_risk and
-#: get_change_risk, which a default server sends because some client's default
-#: profile leaves them out. Always-present context on Claude Code with it is
-#: 684 tokens against a 700-token gate.
-_DEFAULT_INSTRUCTIONS_CHARS = 810
+_BASE_INSTRUCTIONS_CHARS = 700
 
 
 def test_instructions_fit_the_length_cap() -> None:
@@ -42,12 +37,20 @@ def test_instructions_stay_short() -> None:
     # already flags what it says about uncommitted edits, so that stays there.
     # Built here, not read from ``mcp.instructions``, which any earlier
     # create_mcp_server call in the process rewrites.
-    from repowise.server.mcp_server._server import _instructions
+    from repowise.core.registry.instructions import server_instructions
 
-    base, default = _instructions(), _instructions(all_listed=False)
+    base = server_instructions(None)
     assert len(base) <= _BASE_INSTRUCTIONS_CHARS
-    assert len(default) <= _DEFAULT_INSTRUCTIONS_CHARS
-    assert "uncommitted" not in base and "uncommitted" not in default
+    assert "uncommitted" not in base
+
+
+def test_the_first_line_says_when_to_call() -> None:
+    # A host that defers tools shows only this line until the model looks.
+    from repowise.core.registry.instructions import server_instructions
+
+    first = server_instructions(None).splitlines()[0]
+    assert first.startswith("Call repowise first for where/how/why questions")
+    assert server_instructions(None, brief=True, extra=["note"]) == first
 
 
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
@@ -121,8 +124,8 @@ def test_instructions_name_no_tool_the_server_does_not_serve(
 
 
 def test_the_decisions_line_is_dropped_without_get_why() -> None:
-    from repowise.server.mcp_server._server import _instructions
+    from repowise.core.registry.instructions import server_instructions
 
     line = "- 3 decisions govern files here: get_why(targets=[file]) first."
-    assert line in _instructions({"get_why"}, line)
-    assert "get_why" not in _instructions({"get_answer", "get_risk"}, line)
+    assert line in server_instructions({"get_why"}, repo_line=line)
+    assert "get_why" not in server_instructions({"get_answer", "get_risk"}, repo_line=line)

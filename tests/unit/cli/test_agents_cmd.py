@@ -292,10 +292,23 @@ def test_add_says_which_tools_each_agent_lists(repo: Path) -> None:
     payload = _json(["agents", "add", str(repo), "--target", "vscode,claude-code", "-y"])
     tools = {agent["id"]: agent["tools"] for agent in payload["agents"]}
     assert tools == {
-        "vscode": "lists the core MCP tools",
-        "claude-code": "lists the standard MCP tools",
+        "vscode": "lists 5 MCP tools (core profile)",
+        "claude-code": "lists 10 MCP tools (standard profile)",
     }
     assert "repowise config set mcp.tools" in payload["tools_hint"]
+    surfaces = {agent["id"]: agent["tool_surface"] for agent in payload["agents"]}
+    assert surfaces["vscode"]["always_load"] is None
+    always = surfaces["claude-code"]["always_load"]
+    assert always["enabled"] is False
+    assert always["command"] == "repowise config set mcp.always_load true"
+    assert always["tools"] == ["get_answer", "get_context", "get_symbol", "search_codebase"]
+
+
+def test_add_prints_one_line_per_agent_and_the_always_load_switch(repo: Path) -> None:
+    out = _run(["agents", "add", str(repo), "--target", "vscode,claude-code", "-y"]).output
+    assert "VS Code: lists 5 MCP tools (core profile)" in out
+    assert "Claude Code: always-load is off" in out
+    assert out.count("repowise config set mcp.tools") == 1
 
 
 def test_add_tools_saves_the_same_setting_config_set_writes(repo: Path) -> None:
@@ -305,7 +318,7 @@ def test_add_tools_saves_the_same_setting_config_set_writes(repo: Path) -> None:
         ["agents", "add", str(repo), "--target", "vscode", "--tools", "core,+get_health", "-y"]
     )
     assert load_repo_config(str(repo))["mcp"]["tools"] == ["core", "+get_health"]
-    assert payload["agents"][0]["tools"] == "lists the core MCP tools +get_health"
+    assert payload["agents"][0]["tools"] == "lists 6 MCP tools (core profile +get_health)"
 
 
 def test_add_rejects_an_unknown_target_by_name(repo: Path) -> None:
@@ -610,3 +623,20 @@ def test_removing_every_agent_clears_the_shared_agents_md(repo: Path) -> None:
     assert not agents_md.exists(), "shared AGENTS.md survived removing every agent"
     notes = [note for agent in payload["agents"] for w in agent["writes"].values() for note in w["notes"]]
     assert not any("still reads the same managed block" in note for note in notes)
+
+
+def test_init_names_a_host_to_restart_only_when_its_config_changed(repo: Path) -> None:
+    from repowise.cli.editor_setup import detect_editor_setup_outcome, snapshot_agent_configs
+
+    before = snapshot_agent_configs(repo)
+    _run(["agents", "add", str(repo), "--target", "vscode", "--scope", "project", "-y"])
+    outcome = detect_editor_setup_outcome(
+        repo, interactive=False, first_index=False, configs_before=before
+    )
+    assert [h["id"] for h in outcome.restart_hosts] == ["vscode"]
+    assert [s["id"] for s in outcome.tool_surfaces] == ["vscode"]
+
+    again = detect_editor_setup_outcome(
+        repo, interactive=False, first_index=False, configs_before=snapshot_agent_configs(repo)
+    )
+    assert again.restart_hosts == ()

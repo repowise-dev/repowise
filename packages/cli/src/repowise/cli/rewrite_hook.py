@@ -135,12 +135,15 @@ def _normalize(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # A hot-path mirror of ``repowise.core.test_commands.DISTILL_TEST_RE``,
+    # the one "runs tests" predicate: this hook may not import
+    # ``repowise.core``. ``test_test_commands.py`` asserts the two patterns
+    # are the same string; change both together.
     (
         "test_output",
         re.compile(
-            r"^(pytest\b|py\.test\b|jest\b|vitest\b|cargo (?:test|nextest)\b|"
-            r"go test\b|npm (?:test|run test)\b|pnpm (?:test|run test)\b|"
-            r"yarn (?:test|run test)\b)"
+            r"^(?:pytest\b|py\.test\b|jest\b|vitest\b|cargo(?:\.exe)? (?:test|nextest)\b|"
+            r"go(?:\.exe)? test\b|(?:npm(?:\.cmd)?|pnpm|yarn) (?:test|run test)\b)"
         ),
     ),
     (
@@ -281,7 +284,7 @@ _CHAIN_OPS = frozenset({"&&", "||", ";"})
 #     the lexer would split the command in a place PowerShell would not.
 #   - Defense in depth on the renderer. A PowerShell-dialect command is still
 #     handed to the system shell by ``distill``, and
-#     ``distill_cmd._render_command`` caret-escapes what it gives cmd.exe but
+#     ``command_runner.render_command`` caret-escapes what it gives cmd.exe but
 #     still has to refuse a couple of shapes outright (a ``%NAME%`` cmd would
 #     expand, an embedded newline). A rewrite is auto-allowed, so this side
 #     stays conservative rather than depending on the far side getting every

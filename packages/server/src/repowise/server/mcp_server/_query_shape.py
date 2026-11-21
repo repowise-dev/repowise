@@ -107,7 +107,8 @@ def _is_path(query: str) -> bool:
 
 
 _TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
-_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+# ``:12``, ``:12-20``, or an editor's ``:12:5`` (line, then column).
+_LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?(?:-\d+(?::\d+)?)?$")
 
 
 def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
@@ -585,6 +586,27 @@ def query_pattern(query: str) -> tuple[str, Any] | None:
     if pattern := regex_query(query):
         return "regex", pattern
     return None
+
+
+# A declaration copied from source (``class Article``, ``pub fn new(``,
+# ``export interface Props``): the name after the keyword is the lookup.
+_DECLARATION_RE = re.compile(
+    r"^\s*(?:(?:export|pub|public|private|protected|internal|static|abstract|final|"
+    r"sealed|open|async|unsafe|default|data|partial)\s+)*"
+    r"(?:class|def|func|fn|function|interface|struct|type|enum|trait|impl|object|"
+    r"record|protocol|module|mod|namespace|union|typedef)\s+"
+    r"([A-Za-z_$][\w$]*)\s*[:({<\[.;]?\s*$"
+)
+
+
+def declared_name(query: str, names: Container[str]) -> str | None:
+    """The indexed name a ``class Article``-shaped query declares, else None.
+
+    Only an indexed name counts, so prose such as ``type checking`` stays a
+    concept search: ``_name_lookup_keys`` never loads a plain lowercase word.
+    """
+    m = _DECLARATION_RE.match(query)
+    return m.group(1) if m and m.group(1) in names else None
 
 
 _VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}

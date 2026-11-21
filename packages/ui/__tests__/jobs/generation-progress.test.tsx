@@ -260,10 +260,73 @@ describe("GenerationProgress", () => {
     expect(screen.getByRole("link", { name: /Provider settings/ })).toBeTruthy();
   });
 
+  it("calls a run with no model an index, and shows what it holds", () => {
+    render(
+      <GenerationProgress
+        job={{
+          id: "j1",
+          status: "completed",
+          total_pages: 40,
+          completed_pages: 40,
+          failed_pages: 0,
+          config: { mode: "initial_index", docs_mode: "deterministic", file_count: 120, symbol_count: 900 },
+        }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Index ready")).toBeTruthy();
+    expect(screen.queryByText(/Generation/)).toBeNull();
+    expect(screen.getByText("files")).toBeTruthy();
+    expect(screen.getByText("900")).toBeTruthy();
+    expect(screen.queryByText("tokens in")).toBeNull();
+  });
+
+  it("says indexing failed for a failed run that wrote no docs", () => {
+    render(
+      <GenerationProgress
+        job={{ id: "j1", status: "failed", total_pages: 0, completed_pages: 0, config: { mode: "sync" } }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Indexing failed")).toBeTruthy();
+  });
+
+  it("says generation failed for a failed full resync, which rewrites the docs", () => {
+    render(
+      <GenerationProgress
+        job={{ id: "j1", status: "failed", total_pages: 0, completed_pages: 0, config: { mode: "full_resync" } }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Generation failed")).toBeTruthy();
+  });
+
   it("keeps a clean run quiet", () => {
     render(
       <GenerationProgress
-        job={{ id: "j1", status: "completed", total_pages: 5, completed_pages: 5, failed_pages: 0 }}
+        job={{
+          id: "j1",
+          status: "completed",
+          total_pages: 5,
+          completed_pages: 5,
+          failed_pages: 0,
+          config: { docs_mode: "llm" },
+        }}
         log={[]}
         elapsed={10_000}
         actualCost={null}

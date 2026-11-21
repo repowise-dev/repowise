@@ -30,7 +30,8 @@ from typing import Any, NamedTuple
 import structlog
 
 from ..pytest_roots import PytestRoots
-from .test_selection import Selection, TestSelectionConfig
+from .function_hunks import FileFunctions
+from .test_selection import Selection, TestSelectionConfig, project_dirs
 
 log = structlog.get_logger(__name__)
 
@@ -57,7 +58,6 @@ class Checkout:
     read: Callable[[str], str | None]
     exists: Callable[[str], bool]
     holding: Callable[[Collection[str]], Collection[str] | None] | None = None
-
 
 def read_checkout(repo_path, head: str | None = None) -> Checkout:
     """Tracked files, their conftests and pytest configs, and pytest's collection roots.
@@ -160,13 +160,15 @@ class Plan(NamedTuple):
     """Who names each changed doc or asset, the scope each scoped file runs, and its routes.
 
     *groups* maps a route standing for a whole package (:func:`_package_groups`)
-    to the files it is walked from.
+    to the files it is walked from. *project_dirs* are where a file named like
+    a module counts as build config (:func:`~.test_selection.project_dirs`).
     """
 
     namers: dict[str, list[str]]
     scopes: dict
     routes: list[str]
     groups: dict[str, tuple[str, ...]]
+    project_dirs: frozenset[str] | None = None
 
 
 def plan_scopes(
@@ -190,8 +192,10 @@ def plan_scopes(
 
     paths = [*change.files, *change.deleted]
     # A file that runs everything anyway makes every namer search moot.
-    blocked = any(keeps_full_run(p, config) for p in paths)
-    asked = [] if blocked else [p for p in paths if needs_namers(p, config)]
+    # The change's own files count: it may add the manifest that makes a root.
+    dirs = project_dirs([*checkout.tracked, *change.files])
+    blocked = any(keeps_full_run(p, config, dirs) for p in paths)
+    asked = [] if blocked else [p for p in paths if needs_namers(p, config, dirs)]
     namers: dict[str, list[str]] = {}
     if asked:
         namers = file_namers(asked, _scan_texts(checkout, asked, cancelled), is_manifest)
@@ -210,12 +214,12 @@ def plan_scopes(
                 fixtures, namers, test_code, other, checkout.read, checkout.holding
             )
             namers = {**{f: n for f, n in namers.items() if f not in fixtures}, **readers}
-    scopes = trigger_scopes(paths, checkout.tracked, namers, config)
+    scopes = trigger_scopes(paths, checkout.tracked, namers, config, dirs)
     if change.head is None:
         scopes.update(_empty_new_files(change.files, checkout))
     groups = _package_groups(scopes, set(paths))
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
-    return Plan(namers, scopes, routes, groups)
+    return Plan(namers, scopes, routes, groups, dirs)
 
 
 def _package_groups(scopes: dict, changed: set[str]) -> dict[str, tuple[str, ...]]:
@@ -302,6 +306,8 @@ async def collect(
     indexed_commit: str | None = None,
     read_source: Callable[[str], str | None] | None = None,
     scope_groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
+    project_dirs: Collection[str] | None = None,
 ) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks.
 
@@ -314,11 +320,13 @@ async def collect(
     without them no conftest route is narrowed. *read_source* (``Checkout.read``)
     lets that narrowing read the modules a conftest takes names from.
     *scope_groups* (``Plan.groups``) names the scope routes standing for a
-    set of files.
+    set of files. *project_dirs* (``Plan.project_dirs``) tell a changed
+    ``setup.py`` module from a build file; without them the name decides.
     """
     from ..persistence.crud import get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import map_is_truncated
     from ..persistence.crud.analysis.health.metrics import health_file_paths
+    from .function_hunks import function_scoped_lines
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -338,13 +346,24 @@ async def collect(
     routes = (
         []
         if config is None
-        else await asyncio.to_thread(_gap_routes, repo_path, change, config, repo_keys, out)
+        else await asyncio.to_thread(
+            _gap_routes, repo_path, change, config, repo_keys, out, project_dirs
+        )
     )
     routes = sorted({*routes, *scope_routes})
+    # git runs off the event loop when the map's commit needs moving to the base.
+    out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
+    functions = (
+        await function_scoped_lines(
+            session, repo_id, repo_path, change, measured_side(change, measured), lines
+        )
+        if out["map_current"] and not (out["map_empty"] or out["map_truncated"])
+        else {}
+    )
     await resolve_impacted(
         session,
         repo_id,
-        query_lines(change, measured),
+        lines,
         repo_keys,
         out,
         roots,
@@ -352,6 +371,15 @@ async def collect(
         pytest_texts,
         read_source=read_source,
         groups=scope_groups,
+        cancelled=cancelled,
+        functions=functions,
+    )
+    # Changed files with lines whose covering tests were matched by file all the same.
+    covered = {f for row in out["covered"].values() for f in row["source_files"]}
+    out["matched_by_file"] = sorted(
+        p
+        for p, diff in change.files.items()
+        if diff.hunks and lines[p] is None and p in covered
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -405,7 +433,14 @@ def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
     out["indexed_commit"] = resolved.sha
 
 
-def _gap_routes(repo_path, change, config, repo_keys: set[str], out: dict) -> list[str]:
+def _gap_routes(
+    repo_path,
+    change,
+    config,
+    repo_keys: set[str],
+    out: dict,
+    project_dirs: Collection[str] | None = None,
+) -> list[str]:
     """Record the files changed since the indexed commit, and return those to walk.
 
     Only files whose edges may have moved are walked: each candidate is read at
@@ -419,7 +454,7 @@ def _gap_routes(repo_path, change, config, repo_keys: set[str], out: dict) -> li
     out["index_gap"] = gap = index_gap(str(repo_path), out["indexed_commit"], change)
     if gap is None:
         return []
-    plan = plan_gap(gap, config, [*change.files, *change.deleted])
+    plan = plan_gap(gap, config, [*change.files, *change.deleted], project_dirs)
     if plan.candidates:
         old, new = out["indexed_commit"], change.base
         # ``rev:./path`` reads from the checkout, which can sit below the git
@@ -464,22 +499,88 @@ def _unread(repo_path, specs: list[tuple[str, str]], blobs: Mapping | None) -> s
     return {path for (_, path), line in zip(missing, lines, strict=True) if line == "blob"}
 
 
-def query_lines(change, measured: str | None) -> dict[str, set[int] | None]:
-    """The lines to look up per file, on the side of the diff the map was measured at.
+def query_lines(change, measured: str | None, repo_path=None) -> dict[str, set[int] | None]:
+    """The lines to look up per file, in the line numbers of the commit the map was measured at.
 
     Coverage measured at the change's base is keyed in the old file's line
-    numbers, at its head in the new file's. Measured anywhere else, or for a
-    deleted or hunkless file, only the file can be matched (``None``).
+    numbers, at its head in the new file's. Measured at an ancestor of the
+    base, the base-side lines move back to that commit through one
+    ``git diff`` of the changed files (with *repo_path*); a file with a
+    touched line in, or right beside, code edited between the two is matched
+    by file. Measured anywhere else, or for a deleted or hunkless file, only
+    the file can be matched (``None``).
     """
-    side = None
-    if measured and measured == change.head:
-        side = "new"
-    elif measured and measured == change.base:
-        side = "old"
+    side = measured_side(change, measured)
+    since = None if side else _diffs_since(repo_path, change, measured)
     lines: dict[str, set[int] | None] = dict.fromkeys(change.deleted)
     for path, diff in change.files.items():
-        lines[path] = _touched_lines(diff.hunks, side) if side and diff.hunks else None
+        if not diff.hunks:
+            lines[path] = None
+        elif side:
+            lines[path] = _touched_lines(diff.hunks, side)
+        elif since is not None:
+            moved = since.get(path)
+            lines[path] = _moved_back(
+                moved.hunks if moved else (), _touched_lines(diff.hunks, "old")
+            )
+        else:
+            lines[path] = None
     return lines
+
+
+def _diffs_since(repo_path, change, measured: str | None) -> dict | None:
+    """The changed files' diffs from *measured* to the change's base, when it is an ancestor.
+
+    ``None`` when there is no checkout, the map's commit is not an ancestor
+    of the base (or not in the clone), or git fails: then every file is
+    matched by file.
+    """
+    import subprocess
+
+    from ..git_refs import is_ancestor
+    from .changed_lines import diff_since
+
+    base = change.base
+    paths = sorted(p for p, diff in change.files.items() if diff.hunks)
+    if repo_path is None or not (measured and base and paths):
+        return None
+    if not is_ancestor(str(repo_path), measured, base):
+        return None
+    try:
+        return diff_since(str(repo_path), measured, base, paths)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        # A path list too long for one command line lands here too: by file.
+        log.debug("map_line_move_failed", error=str(exc))
+        return None
+
+
+def _moved_back(hunks, lines: set[int]) -> set[int] | None:
+    """*lines* on the new side of a diff with these *hunks*, at their old-side numbers.
+
+    ``None`` when a line sits in code the diff added or rewrote, or beside
+    code it removed: the old side has no one line it was, so the file is
+    matched whole.
+    """
+    from .changed_lines import map_old_line
+
+    for _, _, new_start, new_count in hunks:
+        edited = (
+            range(new_start, new_start + new_count) if new_count else (new_start, new_start + 1)
+        )
+        if any(line in edited for line in lines):
+            return None
+    # The diff read backwards: its new side is the old one.
+    back = [(n, nc, o, oc) for o, oc, n, nc in hunks]
+    return {map_old_line(back, line) for line in lines}
+
+
+def measured_side(change, measured: str | None) -> str | None:
+    """``"new"`` when the map was measured at the change's head, ``"old"`` at its base."""
+    if measured and measured == change.head:
+        return "new"
+    if measured and measured == change.base:
+        return "old"
+    return None
 
 
 def _touched_lines(hunks, side: str) -> set[int]:
@@ -498,6 +599,10 @@ def empty_result(changed_files: int) -> dict:
         "map_current": True,
         "map_truncated": False,
         "measured_commit": None,
+        # changed file -> the lines its per-test map lookup asks for (``query_lines``);
+        # the changed files with lines whose covering tests are matched by file
+        "query_lines": {},
+        "matched_by_file": [],
         "indexed_commit": None,
         "index_problem": None,
         "index_gap": None,
@@ -511,6 +616,10 @@ def empty_result(changed_files: int) -> dict:
         "test_hops": {},  # test file -> fewest hops from the change, for ordering only
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
+        # changed files whose covering tests answer them (``function_hunks``),
+        # and every test file the per-test map measured, read only for those
+        "function_covered": [],
+        "measured_test_files": [],
         "inferred": [],  # {source_file, test_file, via}
         "unknown": [],  # source_file (nothing knows of a test for it)
     }
@@ -528,6 +637,8 @@ async def resolve_impacted(
     *,
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
+    functions: Mapping[str, FileFunctions] | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -561,10 +672,25 @@ async def resolve_impacted(
         file-level and all over-claim; none may be read as coverage.
     ``unknown``
         Nothing said anything. Run the full suite.
+
+    *functions* (:func:`~.function_hunks.function_scoped_lines`) are the
+    changed files whose every hunk sits inside function bodies. Each is looked
+    up by those functions' whole bodies; one the map has tests for is listed in
+    ``function_covered``, with the test files the map measured
+    (``measured_test_files``): selection keeps of its graph tests only those
+    the map never ran, since a measured test that does not cover the change
+    only imports it. One the map has no test for is decided like any other.
     """
+    from ..persistence.crud import measured_test_files
+
+    functions = functions or {}
+    asked = {**changed, **{p: f.lines for p, f in functions.items()}}
     route_only = [r for r in routes if r not in changed]
     graph_targets = sorted({*changed, *route_only})
-    has_rows = await _record_coverage(session, repo_id, changed, route_only, out, groups)
+    has_rows = await _record_coverage(session, repo_id, asked, route_only, out, groups)
+    out["function_covered"] = answered = sorted(p for p in functions if p in has_rows)
+    if answered:
+        out["measured_test_files"] = sorted(await measured_test_files(session, repo_id))
     if not graph_targets:
         return out
     try:
@@ -577,7 +703,10 @@ async def resolve_impacted(
             changed=changed,
             read_source=read_source,
             groups=groups,
+            cancelled=cancelled,
         )
+    except SelectionCancelledError:
+        raise
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
@@ -687,6 +816,7 @@ async def _graph_candidates(
     changed: Collection[str] | None = None,
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> GraphCandidates:
     """``{target: [(test file, via), ...]}`` from the graph, each test file's importers, notes.
 
@@ -716,10 +846,13 @@ async def _graph_candidates(
     test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
     graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
-        session, repo_id, targets, test_files, roots, graph, wide, groups
+        session, repo_id, targets, test_files, roots, graph, wide, groups, cancelled
     )
     seeds = {t for picks in found.values() for t in picks}
-    parents, parent_entries = await _test_importers(session, repo_id, seeds, test_files, graph)
+    parents, parent_entries = await _test_importers(
+        session, repo_id, seeds, test_files, graph, cancelled
+    )
+    _stop(cancelled)
     out, notes = await scoped_candidates(
         session,
         repo_id,
@@ -781,6 +914,7 @@ async def _tier_picks(
     graph=None,
     wide=None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict], dict[str, Mapping[str, Any]]]:
     """``{target: {test file: via}}``: a changed test itself, then the call and import walks.
 
@@ -799,6 +933,9 @@ async def _tier_picks(
     walks = [(reaching, None)]
     imports = [(graph, "import-graph")] + ([(wide, PACKAGE_INIT_VIA)] if wide is not None else [])
     for g, via in imports:
+        # Each walk can run for seconds on a wide change; an abandoned
+        # selection stops between them instead of finishing every tier.
+        _stop(cancelled)
         walked = await tests_reaching_by_tier(
             session,
             repo_id,
@@ -827,7 +964,12 @@ async def _tier_picks(
 
 
 async def _test_importers(
-    session, repo_id: str, seeds: set[str], test_files: set[str], graph=None
+    session,
+    repo_id: str,
+    seeds: set[str],
+    test_files: set[str],
+    graph=None,
+    cancelled: Callable[[], bool] = _never,
 ) -> tuple[dict[str, set[str]], dict[str, dict]]:
     """``{test file: test files importing it}``, walked until nothing new appears.
 
@@ -839,6 +981,7 @@ async def _test_importers(
     routes: dict[str, dict] = {}
     frontier, seen = set(seeds), set(seeds)
     while frontier:
+        _stop(cancelled)
         walked = await tests_reaching_by_tier(
             session,
             repo_id,
@@ -881,7 +1024,6 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             config=config,
             index_available=not result["no_index"],
             label=change.label,
-            map_current=result["map_current"],
             map_truncated=result["map_truncated"],
             index_gap=result["index_gap"],
             gap=result["gap"],
@@ -900,6 +1042,7 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
             always_run_tests=result["always_run_tests"],
             scopes=plan.scopes,
+            project_dirs=plan.project_dirs,
         )
     )
 
@@ -935,6 +1078,8 @@ async def select_for_change(
         indexed_commit=indexed_commit,
         read_source=checkout.read,
         scope_groups=plan.groups,
+        cancelled=cancelled,
+        project_dirs=plan.project_dirs,
     )
     result["diff"] = change.label
     _stop(cancelled)

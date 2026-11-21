@@ -149,6 +149,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
 from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
     _LEAN_HIGH_DROP_KEYS,  # re-exported for tests that assert the key set
+    _NO_SYNTHESIS_NOTE,
     _PAGE_EXCERPT_HITS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
@@ -165,10 +166,10 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
 )
 from repowise.server.mcp_server.tool_answer.degraded import _degraded_payload
 from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
+from repowise.server.mcp_server.tool_answer.episodes import CallVerdicts, prefetch_verdicts
 from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
-from repowise.server.mcp_server.tool_answer.episodes import prefetch_verdicts
 from repowise.server.mcp_server.tool_answer.evidence import (
     _first_resolvable_id,  # noqa: F401  — re-exported: imported from here by tests
     _is_readable_path,
@@ -459,14 +460,27 @@ def _kept_keyless_reply(ask: _Ask, qhash: str) -> dict | None:
     return served
 
 
-async def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> None:
-    """Check the episodes scoped to the ranked files, for the attach after synthesis."""
-    await prefetch_verdicts(
-        question=ask.question,
-        paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
-        repo_path=getattr(ask.ctx, "path", None),
-        repo_name=getattr(ask.repository, "name", None),
+#: Prefetches still running after their answer returned (the attach waits only
+#: for the queries it needs), held so the event loop does not drop them.
+_PREFETCHES: set[asyncio.Task] = set()
+
+
+def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> CallVerdicts:
+    """Start checking the episodes scoped to the ranked files; the attach after
+    synthesis reads the returned memo."""
+    verdicts = CallVerdicts()
+    task = asyncio.ensure_future(
+        prefetch_verdicts(
+            question=ask.question,
+            paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
+            repo_path=getattr(ask.ctx, "path", None),
+            repo_name=getattr(ask.repository, "name", None),
+            verdicts=verdicts,
+        )
     )
+    _PREFETCHES.add(task)
+    task.add_done_callback(_PREFETCHES.discard)
+    return verdicts
 
 
 def _empty_question_payload(t0: float) -> dict:
@@ -565,7 +579,9 @@ async def _pre_synthesis_reply(
     )
     if union_payload is not None:
         return await neighbors(attach_graph_callers(union_payload, graph_callers))
-    if not hits:
+    # Another workspace repo's documents can answer what this repo's code does
+    # not (a ticket asked about by its key): synthesis reads their lines.
+    if not hits and not retrieved.other_repo_lines:
         return _no_answer_payload(
             "No wiki hits for this question. Rephrase around the code "
             "concept. " + _NO_HITS_RECOVERY_HINT,
@@ -758,7 +774,7 @@ async def _cache_and_stamp(
     confidence: str,
     targets: list[str],
     cut_off: bool = False,
-    episode_prefetch: asyncio.Future[None] | None = None,
+    episode_verdicts: CallVerdicts | None = None,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
@@ -796,7 +812,7 @@ async def _cache_and_stamp(
         question=ask.question,
         repo_path=getattr(ask.ctx, "path", None),
         repo_name=getattr(ask.repository, "name", None),
-        prefetch=episode_prefetch,
+        verdicts=episode_verdicts,
     )
 
 
@@ -969,12 +985,12 @@ async def get_answer(
         )
         return await _degrade(
             "no-llm-provider",
-            "Synthesis is unavailable; local retrieval and source evidence remain usable.",
+            _NO_SYNTHESIS_NOTE,
         )
 
     prompt = await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines)
     # The episode check's git queries run while the model writes.
-    episode_prefetch = asyncio.ensure_future(_prefetch_episodes(ask, hits, fallback_targets))
+    episode_verdicts = _prefetch_episodes(ask, hits, fallback_targets)
     clock.mark("prepare")
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
@@ -1010,7 +1026,7 @@ async def get_answer(
         provider=provider,
         confidence=confidence,
         targets=[*citations, *fallback_targets],
-        episode_prefetch=episode_prefetch,
+        episode_verdicts=episode_verdicts,
     )
     clock.log("synthesized", "grade")
     return payload
@@ -1043,17 +1059,14 @@ async def get_answer(
     """Answer a how, where, or why question in one evidence-grounded call.
 
     High confidence may be used directly; medium and low lead with the
-    evidence to verify. ``candidate_files`` ranks files worth opening that
+    evidence to verify. `candidate_files` ranks files worth opening that
     the citations do not name.
 
     Args:
-        question: One question about one subject. Split "where is X and
-            when does Y run" into two calls; do not paste a whole
-            multi-part task.
-        scope: repository-relative path prefix.
-        repo: usually omitted.
-        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
-            adds ``retrieval_quality``.
+        question: One question about one subject; split a multi-part task.
+        scope: Repository-relative path prefix.
+        repo: Usually omitted.
+        include: ["evidence"] expands evidence; ["diagnostics"] adds retrieval_quality.
     """
     return await _projected_get_answer(
         question=question,

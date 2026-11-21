@@ -82,6 +82,88 @@ class EditorSetupOutcome:
     #: editor setup was turned off for this run — via --no-editor-setup or the
     #: REPOWISE_SKIP_EDITOR_SETUP env var (CI/benchmark) — so nothing was wired up.
     editor_setup_disabled: bool = False
+    #: ``{"id", "name", **surface}`` for each wired agent: the MCP tools its
+    #: local server lists (see :mod:`repowise.cli.agent_targets.tool_surface`).
+    tool_surfaces: tuple[dict[str, Any], ...] = ()
+    #: ``{"id", "name"}`` for each agent that loads its MCP config only at
+    #: startup and had it written or moved this run: restart these.
+    restart_hosts: tuple[dict[str, str], ...] = ()
+    #: ``{"id", "name"}`` for each agent installed here that repowise is not wired into.
+    unconnected: tuple[dict[str, str], ...] = ()
+
+
+def wired_tool_surfaces(repo_path: Path, rows: list[dict] | None = None) -> tuple[dict[str, Any], ...]:
+    """The tool surface of each agent ``init`` can wire that is wired to repowise now."""
+    from repowise.cli.agent_targets.registry import describe_agents
+    from repowise.cli.agent_targets.tool_surface import agent_tool_surface
+
+    installable, _ = _installable_rows(describe_agents(repo_path) if rows is None else rows)
+    out = []
+    for row in installable:
+        if not row["registrations"]:
+            continue
+        surface = agent_tool_surface(repo_path, row["id"])
+        if surface is not None:
+            out.append({"id": row["id"], "name": row["display_name"], **surface})
+    return tuple(out)
+
+
+def connect_command(agent_ids: Iterable[str]) -> str:
+    """The one command that wires repowise into these agents without a prompt."""
+    return f"repowise agents add --target={','.join(agent_ids)} --yes"
+
+
+#: Claude Code's restart is decided by its own rule (a first index or a moved
+#: global entry): its user config also changes for reasons of its own.
+_OWN_RESTART_RULE = frozenset({"claude-code"})
+
+
+def snapshot_agent_configs(repo_path: Path) -> dict[str, dict[str, bytes | None]]:
+    """The bytes of each init-writable agent's config files, to diff after setup.
+
+    Instruction files (``.md``) are left out: a regenerated stamp is not a
+    reason to restart. A missing file reads as ``None``.
+    """
+    from repowise.cli.agent_targets.registry import describe_agents
+
+    installable, _ = _installable_rows(describe_agents(repo_path))
+    snapshot: dict[str, dict[str, bytes | None]] = {}
+    for row in installable:
+        if row["id"] in _OWN_RESTART_RULE:
+            continue
+        files: dict[str, bytes | None] = {}
+        for paths in row["config_files"].values():
+            for raw in paths:
+                path = Path(raw)
+                if path.suffix == ".md" or path.is_dir():
+                    continue
+                files[raw] = path.read_bytes() if path.is_file() else None
+        snapshot[row["id"]] = files
+    return snapshot
+
+
+def _restart_hosts(
+    rows: list[dict],
+    before: dict[str, dict[str, bytes | None]] | None,
+    *,
+    claude_restart: bool,
+) -> tuple[dict[str, str], ...]:
+    """Wired agents whose MCP or hook config this run wrote or changed."""
+    hosts = []
+    for row in rows:
+        if not row["registrations"]:
+            continue
+        if row["id"] in _OWN_RESTART_RULE:
+            changed = claude_restart
+        else:
+            files = (before or {}).get(row["id"])
+            changed = files is not None and any(
+                (Path(raw).read_bytes() if Path(raw).is_file() else None) != old
+                for raw, old in files.items()
+            )
+        if changed:
+            hosts.append({"id": row["id"], "name": row["display_name"]})
+    return tuple(hosts)
 
 
 def detect_editor_setup_outcome(
@@ -90,10 +172,16 @@ def detect_editor_setup_outcome(
     interactive: bool,
     first_index: bool,
     no_editor_setup: bool = False,
+    configs_before: dict[str, dict[str, bytes | None]] | None = None,
+    claude_repointed: bool = False,
 ) -> EditorSetupOutcome:
     """Read the ground-truth editor-setup state for the completion panel.
 
     Called after registration and the hook offers, so what it reads is final.
+    *configs_before* is :func:`snapshot_agent_configs` from before setup ran;
+    without it (the workspace path takes none) only Claude Code can be named
+    for a restart. Another process editing an agent's config during the run
+    also names that agent, which errs toward one restart too many.
     Every probe is defensive: a failure degrades to "not set up" rather than
     crashing ``init``. All but one are local file reads; the autosync probe
     spawns ``git rev-parse`` once, because ``core.hooksPath`` and worktrees make
@@ -125,6 +213,24 @@ def detect_editor_setup_outcome(
     except Exception:
         pass
 
+    tool_surfaces: tuple[dict[str, Any], ...] = ()
+    restart_hosts: tuple[dict[str, str], ...] = ()
+    unconnected: tuple[dict[str, str], ...] = ()
+    if not disabled:
+        with contextlib.suppress(Exception):
+            from repowise.cli.agent_targets.registry import describe_agents
+
+            rows = describe_agents(repo_path)
+            tool_surfaces = wired_tool_surfaces(repo_path, rows)
+            restart_hosts = _restart_hosts(
+                rows, configs_before, claude_restart=first_index or claude_repointed
+            )
+            unconnected = tuple(
+                {"id": row["id"], "name": row["display_name"]}
+                for row in rows
+                if row["present"] and not row["registrations"]
+            )
+
     return EditorSetupOutcome(
         claude_code_connected=not disabled,
         autosync_hook_installed=autosync,
@@ -132,6 +238,9 @@ def detect_editor_setup_outcome(
         interactive=interactive,
         first_index=first_index,
         editor_setup_disabled=disabled,
+        tool_surfaces=tool_surfaces,
+        restart_hosts=restart_hosts,
+        unconnected=unconnected,
     )
 
 

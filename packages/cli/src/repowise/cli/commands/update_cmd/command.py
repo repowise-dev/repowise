@@ -70,7 +70,7 @@ from .incremental import (
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
-from .options import DocsPass, UpdateOptions, UpdateRun
+from .options import DocsPass, UpdateOptions, UpdateRun, rework_pending
 from .page_generation import _generation_warning_handler as _generation_warning_handler
 from .page_generation import generate_pages, render_stale_structure
 from .persistence import (
@@ -887,6 +887,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
+    else:
+        from repowise.core.pipeline.incremental.repair import unchecked_repair_marker
+
+        # Another base re-covers none of the marker's range: keep it.
+        run.unchecked_repair = unchecked_repair_marker(run.state, run.base_ref, None)
 
     _verify_sync_base(run)
 
@@ -919,7 +924,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -940,9 +944,13 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from .persistence import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import (
+        resolve_repair_base,
+        unchecked_repair_marker,
+    )
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
+    run.unchecked_repair = unchecked_repair_marker(run.state, repaired_ref, give_up)
     if give_up is not None:
         console.print(
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
@@ -1023,10 +1031,11 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
     run.refresh_git = opts.refresh_git
-    run.git_is_current = bool(
+    # Current but for a config edit: the run that would otherwise take the
+    # config-only path, which a parser change must also keep off.
+    current_but_config = bool(
         run.head
         and run.head == run.base_ref
-        and not run.config.changed
         and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
@@ -1034,8 +1043,10 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.history_stale
         and not run.refresh_git
     )
-    # A store read, so only asked when the run would otherwise exit.
-    run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
+    run.git_is_current = current_but_config and not run.config.changed
+    # A store read, so only asked when the run would otherwise exit or take the
+    # config-only path.
+    run.extraction_changed = current_but_config and parser_changed(run.repo_path)
     if run.extraction_changed:
         run.git_is_current = False
     _announce_rework(run)
@@ -1313,9 +1324,11 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
     import atexit
 
+    from repowise.core.update_lock import release_own_update_lock
+
     # The lock now owns the hook's suppression window; drop the queued marker.
     clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
+    atexit.register(release_own_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
     return None
 
@@ -1406,15 +1419,15 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.analyzer_changed
-        or run.extraction_changed
-        or run.history_stale
-        or run.refresh_git
+        or run.config.generation_changed
+        or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
@@ -1438,8 +1451,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
-    # is: another base says nothing about the marker's range.
-    if opts.since is None and run.index_only:
+    # is: another base says nothing about the marker's range, and a marker git
+    # could not check widened nothing.
+    if opts.since is None and run.index_only and run.unchecked_repair is None:
         persisted.pop("pending_repair", None)
     if not run.index_only and head:
         persisted["last_docs_commit"] = head
@@ -1457,14 +1471,19 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 
 def _config_change_only(run: UpdateRun) -> bool:
-    """A config edit with no commits to index; those fall through to the full path."""
+    """A config edit with nothing else to do; anything more falls through to the full path.
+
+    A moved version stamp (analyzer, parser, renderer, history) needs the full
+    path, which also records the new config; this one would only record it.
+    ``--defer-docs`` leaves a renderer change to the "up to date" path, as the
+    staleness gate does.
+    """
     config = run.config
     return config.changed and not (
         run.file_diffs
         or config.git_changed
         or run.full_generation
-        or run.history_stale
-        or run.refresh_git
+        or rework_pending(run, defer_renderer=run.defer_docs)
     )
 
 
@@ -1475,6 +1494,11 @@ def _config_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         action = "health would be re-scored" if config.health_changed else "state would be updated"
         console.print(f"[yellow]Dry run: {action}. No changes made.[/yellow]")
         return _emit_done(run, UpdateOutcome.DRY_RUN)
+    # Stamps ``run.state``, which both branches below save.
+    if run.scanner_changed:
+        rescan_security_if_changed(
+            repo_path, run.state, list(run.cfg.get("exclude_patterns") or [])
+        )
     if config.health_changed:
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
@@ -1582,11 +1606,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
         and not (
             run.config.health_changed
             or run.full_generation
-            or run.renderer_changed
-            or run.analyzer_changed
-            or run.extraction_changed
-            or run.history_stale
-            or run.refresh_git
+            or rework_pending(run)
         )
     )
 
@@ -1796,6 +1816,7 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         repo_function_mod_p80=repo_function_mod_p80,
         timings=run.timings,
         dead_code=not _dead_code_unchanged(run),
+        base_ref=run.base_ref,
     )
     run.doc_drift_report = _run_doc_drift_partial(
         run.graph_builder,
@@ -1823,15 +1844,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     consumes the report. (The knowledge graph takes the report but does not read it.)
     """
     config = run.config
-    if (
-        run.analyzer_changed
-        or run.extraction_changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.history_stale
-        or run.refresh_git
-        or config.changed
-    ):
+    if rework_pending(run) or config.changed:
         return False
     changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
     if not all(map(_is_prose, changed)):
@@ -2075,6 +2088,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         head_ts=run.head_ts,
         force_full_rescore=config.health_changed,
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
+        unchecked_repair=run.unchecked_repair,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
@@ -2093,7 +2107,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 
@@ -2171,7 +2190,7 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     flush_cost_tracker(docs.cost_tracker)
     _enrich_knowledge_graph(run, docs)
     _persist_docs(run, docs)
-    _rescore_after_persist(run)
+    _rescore_after_persist(run, docs)
 
     # The persist above only rescanned the changed files.
     if run.scanner_changed:
@@ -2337,7 +2356,7 @@ def _full_rescore_this_run(run: UpdateRun) -> bool:
     )
 
 
-def _rescore_after_persist(run: UpdateRun) -> None:
+def _rescore_after_persist(run: UpdateRun, docs: DocsPass) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
@@ -2354,7 +2373,9 @@ def _rescore_after_persist(run: UpdateRun) -> None:
                 run.exclude_patterns,
                 timings=run.timings,
             )
-    if rescored:
+    # Scored over git rows that did not land: not stamped, so the next update
+    # re-scores after the repair.
+    if rescored and "Git persist" not in docs.failed_steps:
         # No timestamp (git unavailable): keep the existing stamp.
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts

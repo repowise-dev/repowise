@@ -1,4 +1,4 @@
-# @repowise-dev/ui â€” Component Contracts
+# @repowise-dev/ui — Component Contracts
 
 This document is the public-facing prop contract for components in
 `@repowise-dev/ui`. Each section lists the prop interface, with types
@@ -13,7 +13,7 @@ should be deliberate and called out in PR titles.
 
 ---
 
-## `ui/*` â€” Radix-CVA primitives
+## `ui/*` — Radix-CVA primitives
 
 Standard shadcn-style primitives wrapping Radix UI: `Badge`, `Button`,
 `Card` (+ `CardHeader`/`CardTitle`/`CardDescription`/`CardContent`/
@@ -112,7 +112,7 @@ retry that re-mounts the subtree.
 
 ---
 
-## `shared/empty-state` â€” `EmptyState`
+## `shared/empty-state` — `EmptyState`
 
 Empty-list placeholder with optional icon and CTA.
 
@@ -126,7 +126,7 @@ Empty-list placeholder with optional icon and CTA.
 
 ---
 
-## `shared/metric-card` â€” `MetricCard`
+## `shared/metric-card` — `MetricCard`
 
 The canonical single-stat display tile.
 
@@ -145,7 +145,7 @@ The canonical single-stat display tile.
 
 ---
 
-## `coverage/coverage-donut` â€” `CoverageDonut`
+## `coverage/coverage-donut` — `CoverageDonut`
 
 Recharts donut visualising fresh/stale/outdated counts with a centred
 percentage label for the fresh slice.
@@ -161,7 +161,7 @@ are zero the donut renders empty and the centre text shows `0%`.
 
 ---
 
-## `decisions/decision-health-widget` â€” `DecisionHealthWidget`
+## `decisions/decision-health-widget` — `DecisionHealthWidget`
 
 Three-card summary tile for active / proposed / stale counts.
 
@@ -171,7 +171,7 @@ Three-card summary tile for active / proposed / stale counts.
 
 ---
 
-## `decisions/decisions-table` â€” `DecisionsTable`
+## `decisions/decisions-table` — `DecisionsTable`
 
 Filterable table of `DecisionRecord` rows with status + source dropdowns.
 
@@ -295,7 +295,7 @@ findings with the AI cleanup CTA.
 
 ---
 
-## `docs/docs-tree` â€” `DocsTree`
+## `docs/docs-tree` — `DocsTree`
 
 Filterable, collapsible directory tree of `DocPage` entries. Special
 pages (`repo_overview`, `architecture_diagram`) appear at the top
@@ -317,11 +317,11 @@ symbols nested under each file, debounced search that renders 200 rows
 at a time, type filter, and status filter (`all` / `fresh` / `stale` /
 `outdated` / `unwritten`), also reachable from the counts beside the
 page total. Filter state is
-UI-local â€” there's no fetch coupling.
+UI-local — there's no fetch coupling.
 
 ---
 
-## `coverage/freshness-table` â€” `FreshnessTable`
+## `coverage/freshness-table` — `FreshnessTable`
 
 Filterable table of `DocPage` rows with per-row regenerate action.
 
@@ -341,24 +341,24 @@ Behaviour:
 
 ---
 
-## `git/*` â€” Hotspot, ownership, and contributor visualisations
+## `git/*` — Hotspot, ownership, and contributor visualisations
 
 All twelve components are presentational and accept canonical engine
 artifacts via props (`Hotspot`, `OwnershipEntry` from `@repowise-dev/types/git`,
 or anonymous shapes for partner / owner / category records). None reach
-out to data hooks or mutation APIs â€” fetching belongs to the caller.
+out to data hooks or mutation APIs — fetching belongs to the caller.
 
-### `git/churn-bar` â€” `ChurnBar`
+### `git/churn-bar` — `ChurnBar`
 
 Inline horizontal bar shaded green/yellow/red against thresholds at
 50% / 75% percentile.
 
 | Prop | Type | Required |
 |------|------|----------|
-| `percentile` | `number` (0â€“100, clamped) | yes |
+| `percentile` | `number` (0–100, clamped) | yes |
 | `className` | `string` | no |
 
-### `git/co-change-list` â€” `CoChangeList`
+### `git/co-change-list` — `CoChangeList`
 
 Top-5 co-change partners with relative-magnitude bars.
 
@@ -366,7 +366,7 @@ Top-5 co-change partners with relative-magnitude bars.
 |------|------|----------|
 | `partners` | `Array<{ file_path: string; co_change_count: number }>` | yes |
 
-### `git/churn-histogram` â€” `ChurnHistogram`
+### `git/churn-histogram` — `ChurnHistogram`
 
 Recharts bar chart binning hotspots into 10-percentile buckets.
 
@@ -374,7 +374,7 @@ Recharts bar chart binning hotspots into 10-percentile buckets.
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
 
-### `git/commit-category-donut` â€” `CommitCategoryDonut`
+### `git/commit-category-donut` — `CommitCategoryDonut`
 
 Recharts donut with centred dominant-category label. Returns `null`
 when the total is zero.
@@ -383,7 +383,7 @@ when the total is zero.
 |------|------|----------|
 | `categories` | `Record<string, number>` | yes |
 
-### `git/commit-category-sparkline` â€” `CommitCategorySparkline`
+### `git/commit-category-sparkline` — `CommitCategorySparkline`
 
 Single-row stacked bar sized by category counts; each segment wears a
 tooltip. Returns `null` when the total is zero.
@@ -392,7 +392,7 @@ tooltip. Returns `null` when the total is zero.
 |------|------|----------|
 | `categories` | `Record<string, number>` | yes |
 
-### `git/contributor-bar` â€” `ContributorBar`
+### `git/contributor-bar` — `ContributorBar`
 
 Top-5 horizontal bar of files-by-owner.
 
@@ -400,7 +400,7 @@ Top-5 horizontal bar of files-by-owner.
 |------|------|----------|
 | `owners` | `Array<{ name; email?; file_count; pct }>` | yes |
 
-### `git/contributor-network` â€” `ContributorNetwork`
+### `git/contributor-network` — `ContributorNetwork`
 
 Force-directed (`d3-force`) co-ownership graph. Computes nodes/links
 from `hotspots[].primary_owner` and shared-file overlap; top-20
@@ -410,7 +410,7 @@ contributors only.
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
 
-### `git/hotspot-table` â€” `HotspotTable`
+### `git/hotspot-table` — `HotspotTable`
 
 Server-driven table of hotspots: the host owns search, filter, sort and
 paging (the table debounces the search box and reports settled values).
@@ -426,7 +426,7 @@ prompt and a header "Copy prompt for these N".
 | `query` / `filter` / `sort` and their `on*Change` | controlled state | no |
 | `onGeneratePrompt`, `onGenerateBatchPrompt` | callbacks | no |
 
-### `git/ownership-table` â€” `OwnershipTable`
+### `git/ownership-table` — `OwnershipTable`
 
 Search + silo filter over module ownership rows.
 
@@ -434,7 +434,7 @@ Search + silo filter over module ownership rows.
 |------|------|----------|
 | `entries` | `OwnershipEntry[]` (`@repowise-dev/types/git`) | yes |
 
-### `git/ownership-treemap` â€” `OwnershipTreemap`
+### `git/ownership-treemap` — `OwnershipTreemap`
 
 Treemap (`d3-hierarchy`) with file-count area, owner-hash colour, and
 silo highlight stroke. Hover tooltips computed against the container's
@@ -444,17 +444,17 @@ bounding rect.
 |------|------|----------|
 | `entries` | `OwnershipEntry[]` (`@repowise-dev/types/git`) | yes |
 
-### `git/risk-distribution-chart` â€” `RiskDistributionChart`
+### `git/risk-distribution-chart` — `RiskDistributionChart`
 
 Top-30 risk-scored vertical bar chart with average reference line.
-Score = `0.4Â·churn + 0.35Â·busFactor + 0.25Â·trend`, all normalised to
-0â€“100.
+Score = `0.4·churn + 0.35·busFactor + 0.25·trend`, all normalised to
+0–100.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
 
-### `git/bus-factor-panel` â€” `BusFactorPanel`
+### `git/bus-factor-panel` — `BusFactorPanel`
 
 Stacked bar of safe / warning / risk counts plus a top-5 highest-risk
 files list.
@@ -618,7 +618,7 @@ state is UI-local.
 
 ---
 
-## `wiki/code-block` â€” `CodeBlock`
+## `wiki/code-block` — `CodeBlock`
 
 Server-rendered fenced code block. The caller passes pre-highlighted
 HTML (e.g. from Shiki) plus the raw code for copy-to-clipboard.
@@ -629,7 +629,7 @@ HTML (e.g. from Shiki) plus the raw code for copy-to-clipboard.
 | `language` | `string` | no | Shown in the header bar. |
 | `html` | `string` | yes | Trusted HTML, set via `dangerouslySetInnerHTML`. |
 
-## `wiki/confidence-badge` â€” `ConfidenceBadge`
+## `wiki/confidence-badge` — `ConfidenceBadge`
 
 Coloured pill showing freshness status (`fresh` / `stale` / `outdated`).
 Computes status from `score` unless `status` is supplied. When stale
@@ -637,7 +637,7 @@ with `staleSince`, wraps in a tooltip exposing the date and confidence.
 
 | Prop | Type | Required |
 |------|------|----------|
-| `score` | `number` (0â€“1) | yes |
+| `score` | `number` (0–1) | yes |
 | `status` | `string` | no |
 | `showScore` | `boolean` | no |
 | `staleSince` | `string \| null` | no |
@@ -672,7 +672,7 @@ the file-detail endpoint serves.
 |------|------|----------|
 | `git` | `GitMetadata` (`@repowise-dev/types/git`) | yes |
 
-## `wiki/mermaid-diagram` â€” `MermaidDiagram`
+## `wiki/mermaid-diagram` — `MermaidDiagram`
 
 Client-side mermaid renderer with dynamic import to avoid SSR. Uses a
 dark theme matched to the design tokens. Failures render an inline
@@ -682,7 +682,7 @@ error card.
 |------|------|----------|
 | `chart` | `string` | yes |
 
-## `wiki/table-of-contents` â€” `TableOfContents`
+## `wiki/table-of-contents` — `TableOfContents`
 
 Extracts `#`/`##`/`###` headings from a markdown string and renders an
 anchor list. An `IntersectionObserver` highlights the active heading.
@@ -738,7 +738,7 @@ There is no React tooltip component. The hover card users see on the
 Sigma canvas is painted by `defaultDrawNodeHover` in
 `graph/sigma/use-sigma.ts`, not rendered as DOM.
 
-### `graph/graph-context-menu` â€” `GraphContextMenu`
+### `graph/graph-context-menu` — `GraphContextMenu`
 
 Floating right-click menu rendered at `(x, y)`. Pure UI; the host
 wires the four action callbacks.
@@ -750,7 +750,7 @@ wires the four action callbacks.
 | `isModule` | `boolean` | yes |
 | `onViewDocs` / `onExplore` / `onPathFrom` / `onPathTo` | `() => void` | yes |
 
-### `graph/graph-toolbar` â€” `GraphToolbar`
+### `graph/graph-toolbar` — `GraphToolbar`
 
 Top-right toolbar exposing view mode, color mode, hide-tests toggle,
 fit-view, path-finder toggle, flows toggle, and a search input. Also
@@ -768,7 +768,7 @@ unions consumed by `GraphLegend` and the host.
 | `showFlows` / `onToggleFlows` | `boolean` / `() => void` | yes |
 | `searchQuery` / `onSearchChange` | `string` / `(q) => void` | yes |
 
-### `graph/graph-legend` â€” `GraphLegend`
+### `graph/graph-legend` — `GraphLegend`
 
 Collapsible legend that picks a key per `colorMode`. Imports the
 `ColorMode` and `ViewMode` types from `graph-toolbar`.
@@ -782,14 +782,14 @@ Collapsible legend that picks a key per `colorMode`. Imports the
 
 ---
 
-## `workspace/*` â€” Multi-repo workspace views
+## `workspace/*` — Multi-repo workspace views
 
 Five presentational components that consume the canonical workspace
 shapes from `@repowise-dev/types/workspace`.
 
-### `workspace/contract-type-badge` â€” `ContractTypeBadge`, `RoleBadge`
+### `workspace/contract-type-badge` — `ContractTypeBadge`, `RoleBadge`
 
-Inline pill badges for contract type (`http`, `grpc`, `topic`, â€¦) and
+Inline pill badges for contract type (`http`, `grpc`, `topic`, …) and
 role (`provider` / `consumer`).
 
 | Component | Prop | Type |
@@ -797,7 +797,7 @@ role (`provider` / `consumer`).
 | `ContractTypeBadge` | `type` | `string` |
 | `RoleBadge` | `role` | `string` |
 
-### `workspace/repo-card` â€” `RepoCard`
+### `workspace/repo-card` — `RepoCard`
 
 Tile linking to `/repos/{id}/overview` with file count, doc confidence,
 hotspot count, and a primary indicator.
@@ -812,7 +812,7 @@ hotspot count, and a primary indicator.
 | `stats` | `RepoStats \| null` (`@repowise-dev/types/workspace`) | yes |
 | `gitSummary` | `GitSummary \| null` (`@repowise-dev/types/git`) | yes |
 
-### `workspace/co-change-table` â€” `CoChangeTable`
+### `workspace/co-change-table` — `CoChangeTable`
 
 Sortable cross-repo co-change table.
 
@@ -821,7 +821,7 @@ Sortable cross-repo co-change table.
 | `coChanges` | `WorkspaceCoChangeEntry[]` | yes | |
 | `compact` | `boolean` | no | Drops the frequency and last-date columns. |
 
-### `workspace/contract-links-table` â€” `ContractLinksTable`
+### `workspace/contract-links-table` — `ContractLinksTable`
 
 Provider/consumer table for matched contract links with confidence
 bars colour-graded against the freshness thresholds.
@@ -830,9 +830,9 @@ bars colour-graded against the freshness thresholds.
 |------|------|----------|
 | `links` | `WorkspaceContractLinkEntry[]` | yes |
 
-### `workspace/cross-repo-summary` â€” `CrossRepoSummary`
+### `workspace/cross-repo-summary` — `CrossRepoSummary`
 
-Four-tile summary header (`MetricCard` Ã— 4) for co-change pairs, package
+Four-tile summary header (`MetricCard` × 4) for co-change pairs, package
 deps, contract links, and contract count.
 
 | Prop | Type | Required |
@@ -878,12 +878,13 @@ hydration boundary.** A host composes them; it does not hand a
 
 `FilePage` used to be `"use client"` and import all seven tab bodies, so
 the whole slice plus a twice-serialised `FileDetailResponse` reached the
-browser to render one tab. `file-health-tab` is now the only file in
-`files/*` carrying `"use client"` — it owns triage state, two virtualised
-lists and a measured trend. Because its triage callback and href builders
+browser to render one tab. `file-health-tab` is now the only tab body in
+`files/*` carrying `"use client"`: it owns triage state, two virtualised
+lists and a measured trend. `file-source-code` is client too, for one
+effect: it scrolls a deep-linked line into view. Because its triage callback and href builders
 are functions, a host wraps it itself and passes the result in as
 `healthPanel`; that wrapper is the page's only client boundary besides
-the shell.
+the shell and the source viewer.
 
 Two consequences a host must honour:
 
@@ -899,6 +900,16 @@ Two consequences a host must honour:
   the shell through `refetchTabs` which tabs need a round trip on first
   click. A tab with nothing behind it is left out of that list rather
   than buying a trip to be shown the same empty state.
+
+**Line deep links.** `files/<path>?line=N` opens the file at line N. The
+route narrows the value with `asLineNumber` (anything but a plain positive
+integer is ignored). On Overview the route highlights the source itself,
+with `data-line` on every shiki line, and passes `sourceCodeHtml` and
+`highlightLine` to `buildFilePanels`; Overview then opens on a Source
+section. On Coverage the tab's own source takes `highlightLine`.
+`FileSourceCode` marks the row (`data-highlighted`, `aria-current="location"`)
+and scrolls it to the middle of the viewport, again each time the tab is
+shown. A line the HTML does not have marks nothing.
 
 Bands come from `bandForScore` (`@repowise-dev/types/health`), never from a
 threshold of the page's own — this page sits one click from the treemap and
@@ -947,7 +958,7 @@ fetch has settled, or the line flashes over a request about to succeed. It
 deliberately does **not** fall back to the overview: a reader who asked about
 one file must not silently land in another file's prose.
 
-### `dashboard/attention-panel` â€” `AttentionPanel`
+### `dashboard/attention-panel` — `AttentionPanel`
 
 Categorised list of items needing developer attention. Re-exports the
 `AttentionItem` type so `packages/web`'s `health-score.ts` can derive
@@ -958,7 +969,7 @@ items without recomputing the shape.
 | `items` | `AttentionItem[]` | yes |
 | `repoId` | `string` | yes |
 
-### `dashboard/decisions-timeline` â€” `DecisionsTimeline`
+### `dashboard/decisions-timeline` — `DecisionsTimeline`
 
 Top-6 most recent decisions with status dots and a "view all" link.
 
@@ -967,9 +978,9 @@ Top-6 most recent decisions with status dots and a "view all" link.
 | `decisions` | `DecisionRecord[]` (`@repowise-dev/types/decisions`) | yes |
 | `repoId` | `string` | yes |
 
-### `dashboard/dependency-heatmap` â€” `DependencyHeatmap`
+### `dashboard/dependency-heatmap` — `DependencyHeatmap`
 
-20Ã—20 canvas heatmap of module-to-module edge counts. Modules sorted
+20×20 canvas heatmap of module-to-module edge counts. Modules sorted
 by `avg_pagerank`. Returns `null` when fewer than two modules are
 available.
 
@@ -977,7 +988,7 @@ available.
 |------|------|----------|
 | `moduleGraph` | `ModuleGraph` (`@repowise-dev/types/graph`) | yes |
 
-### `dashboard/execution-flows-panel` â€” `ExecutionFlowsPanel`
+### `dashboard/execution-flows-panel` — `ExecutionFlowsPanel`
 
 Top-8 execution flows with collapsible call traces. `repoId` is
 accepted for parity with other dashboard tiles but currently unused.
@@ -987,16 +998,16 @@ accepted for parity with other dashboard tiles but currently unused.
 | `flows` | `ExecutionFlowEntry[]` (`@repowise-dev/types/graph`) | yes |
 | `repoId` | `string` | yes |
 
-### `dashboard/health-score-ring` â€” `HealthScoreRing`
+### `dashboard/health-score-ring` — `HealthScoreRing`
 
-Animated `framer-motion` SVG ring showing 0â€“100 score with text label.
+Animated `framer-motion` SVG ring showing 0–100 score with text label.
 
 | Prop | Type | Required |
 |------|------|----------|
-| `score` | `number` (0â€“100) | yes |
+| `score` | `number` (0–100) | yes |
 | `size` | `number` | no, default `160` |
 
-### `dashboard/hotspots-mini` â€” `HotspotsMini`
+### `dashboard/hotspots-mini` — `HotspotsMini`
 
 Top-5 hotspots tile.
 
@@ -1005,7 +1016,7 @@ Top-5 hotspots tile.
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
 | `repoId` | `string` | yes |
 
-### `dashboard/language-donut` â€” `LanguageDonut`
+### `dashboard/language-donut` — `LanguageDonut`
 
 Top-6 languages-by-file-count donut with grouped "other" bucket.
 
@@ -1013,10 +1024,10 @@ Top-6 languages-by-file-count donut with grouped "other" bucket.
 |------|------|----------|
 | `distribution` | `Record<string, number>` | yes |
 
-### `dashboard/module-minimap` â€” `ModuleMinimap`
+### `dashboard/module-minimap` — `ModuleMinimap`
 
 Force-directed module graph using `d3-force`. Doc-coverage colours
-the nodes. The simulation runs synchronously for small graphs (â‰¤150
+the nodes. The simulation runs synchronously for small graphs (≤150
 ticks) and re-renders once the layout converges.
 
 | Prop | Type | Required |
@@ -1025,10 +1036,10 @@ ticks) and re-renders once the layout converges.
 | `edges` | `ModuleEdge[]` (`@repowise-dev/types/graph`) | yes |
 | `repoId` | `string` | yes |
 
-### `dashboard/ownership-treemap` â€” `OwnershipTreemap`
+### `dashboard/ownership-treemap` — `OwnershipTreemap`
 
 `d3-hierarchy` treemap colouring rectangles by primary owner; silos
-render at lower opacity. Distinct from `git/ownership-treemap` â€”
+render at lower opacity. Distinct from `git/ownership-treemap` —
 this variant is the dashboard tile (Card-wrapped, fixed height,
 legend below).
 
@@ -1038,25 +1049,25 @@ legend below).
 
 ---
 
-## `chat/*` â€” Conversation rendering primitives
+## `chat/*` — Conversation rendering primitives
 
-The chat UI types are sourced from `@repowise-dev/types/chat` â€”
+The chat UI types are sourced from `@repowise-dev/types/chat` —
 `ChatUIMessage` and `ChatUIToolCall` are the post-streaming flattened
 shapes consumed by these components. The wire types (`ChatMessage`,
 `ChatToolCall`) live in the same module; consumers are expected to
 keep the SSE merge in their own data layer.
 
-### `chat/chat-markdown` â€” `ChatMarkdown`
+### `chat/chat-markdown` — `ChatMarkdown`
 
 Compact markdown renderer (`react-markdown` + `remark-gfm`) tuned for
-chat density. Code fences are inline `<pre><code>` blocks â€” no copy
+chat density. Code fences are inline `<pre><code>` blocks — no copy
 affordance.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `content` | `string` | yes |
 
-### `chat/tool-call-block` â€” `ToolCallBlock`
+### `chat/tool-call-block` — `ToolCallBlock`
 
 Collapsible card showing a single tool invocation. Friendly labels for
 known tool names; falls back to the raw name. Shows a "View" button
@@ -1067,12 +1078,12 @@ that fires `onViewArtifact` when an artifact is attached.
 | `toolCall` | `ChatUIToolCall` (`@repowise-dev/types/chat`) | yes |
 | `onViewArtifact` | `() => void` | no |
 
-### `chat/source-citations` â€” `SourceCitations`
+### `chat/source-citations` — `SourceCitations`
 
 Renders an inline list of source-page links extracted from
 `tool_calls[]`. Also exports `extractSources(toolCalls, repoId)` for
 callers that need the same shape outside of rendering. Uses plain
-`<a>` (no Next-only `Link`) so the package stays framework-neutral â€”
+`<a>` (no Next-only `Link`) so the package stays framework-neutral —
 consumers wire prefetching at the parent level if needed.
 
 | Prop | Type | Required |
@@ -1080,7 +1091,7 @@ consumers wire prefetching at the parent level if needed.
 | `toolCalls` | `ChatUIToolCall[]` | yes |
 | `repoId` | `string` | yes |
 
-### `chat/chat-message` â€” `ChatMessage`
+### `chat/chat-message` — `ChatMessage`
 
 Renders one user or assistant turn: avatar, message bubble for user,
 tool-call cards + markdown + citations for assistant. Streaming
@@ -1093,7 +1104,7 @@ indicator shows when `message.isStreaming` and there's no text yet.
 | `onViewArtifact` | `(artifact: { type; data }) => void` | no | Wired through to `ToolCallBlock` when an artifact is attached. |
 | `assistantAvatarSrc` | `string` | no | Defaults to `/repowise-logo.png`. Override in consumers that don't host that asset. |
 
-### `chat/artifact-panel` â€” `ArtifactPanel`
+### `chat/artifact-panel` — `ArtifactPanel`
 
 Right-edge slide-over panel. Switches on `artifact.type` to pick a
 renderer: markdown for `overview` / `wiki_page`, mermaid (via
@@ -1108,7 +1119,7 @@ renderer: markdown for `overview` / `wiki_page`, mermaid (via
 
 ---
 
-## `wiki/wiki-markdown` â€” `WikiMarkdown`
+## `wiki/wiki-markdown` — `WikiMarkdown`
 
 Client-side markdown renderer (`react-markdown` + `remark-gfm`) with
 slugged heading anchors, copy-on-hover code blocks, and inline

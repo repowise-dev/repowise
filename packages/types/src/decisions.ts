@@ -511,11 +511,12 @@ export const DECISION_LANE_FILTERS = [
 export type DecisionLaneFilter = (typeof DECISION_LANE_FILTERS)[number];
 
 /**
- * Which decision prompt for the reader's agent. The first three are about the
+ * Which decision prompt for the reader's agent. The first four are about the
  * repository; the rest are about one record and need its id.
  */
 export type DecisionAgentPromptKind =
   | "discover"
+  | "review_all"
   | "add"
   | "agreements"
   | "review"
@@ -530,6 +531,9 @@ export type { DecisionRecentInfo } from "./generated/http.js";
 
 /** `GET .../decisions/agent-prompt?kind=`: the prompt served, its text and the records it names. */
 export type { DecisionAgentPromptResponse } from "./generated/http.js";
+
+/** `GET /api/repos/{id}/decisions/health`: stale, background and ungoverned hotspots. */
+export type { DecisionHealthResponse } from "./generated/http.js";
 
 /**
  * Records per review lane.

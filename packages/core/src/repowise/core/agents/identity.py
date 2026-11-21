@@ -332,6 +332,29 @@ def slug_for_hook_adapter(name: str | None) -> str:
     return UNKNOWN_AGENT
 
 
+#: ``--source`` labels the rewrite hook derives from the shell dialect rather
+#: than from an adapter. Only the default adapter, Claude Code's, leaves its
+#: label to the dialect (``cli.agent_adapters.base.hook_source_for``); every
+#: other adapter writes ``hook-<adapter name>``. A test walks the adapter
+#: registry to keep the two in step.
+_DIALECT_HOOK_SOURCES = frozenset({"hook-bash", "hook-powershell"})
+_DIALECT_HOOK_ADAPTER = "claude-code"
+
+
+def slug_for_hook_source(source: str | None) -> str:
+    """The agent behind a rewrite hook's ``--source`` label, or :data:`UNKNOWN_AGENT`.
+
+    ``repowise distill`` runs as the agent's own shell command, so this label
+    is the only thing it hears from the hook that rewrote it. A label that is
+    not a hook's (``cli``, a typed ``repowise distill``) names no agent.
+    """
+    if not source or not source.startswith("hook-"):
+        return UNKNOWN_AGENT
+    if source in _DIALECT_HOOK_SOURCES:
+        return slug_for_hook_adapter(_DIALECT_HOOK_ADAPTER)
+    return slug_for_hook_adapter(source.removeprefix("hook-"))
+
+
 def identity_for_provider(name: str) -> AgentIdentity | None:
     """The agent whose CLI the LLM provider *name* drives, if any."""
     for identity in _REGISTERED.values():

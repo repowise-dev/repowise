@@ -14,6 +14,8 @@ curious; you don't need them to *use* repowise (start with
 | [decisions.md](decisions.md) | Decision capture internals: the source registry, evidence verification, confidence, currency, session mining and hook delivery |
 | [security.md](security.md) | Security signals internals: per-kind matching rules, placeholder skipping, baseline keys, and the JS/TS precision checks |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
+| [single-sources.md](single-sources.md) | One owner per concept: the module and function that decides each shared question (file origin, test paths, manifest names, build units, skip directories, commit ids, symbol ids), and the consolidations still open |
+| [build-units.md](build-units.md) | The build-unit model: units, file ownership and in-repo deps per ecosystem, storage, how precision is measured, and the recipe for adding an adapter |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
 | [workspace.md](workspace.md) | The multi-repo workspace layer: per-repo contract extraction, matching, the system graph and its evidence state, artifacts and incremental rules, and the recipes for adding a contract dialect or a service-name source |
 | [forges.md](forges.md) | Git host support: the forges package, its invariants, and the recipes for adding a host or a CI system |
@@ -25,6 +27,7 @@ curious; you don't need them to *use* repowise (start with
 | [structurizr-export.md](structurizr-export.md) | Exporting the architecture as Structurizr DSL: the two-file model, health and layer tags, and how to render it |
 | [editor-files.md](editor-files.md) | How `CLAUDE.md` / `AGENTS.md` generation works (no LLM: pure DB + filesystem derivation) and how to add a new editor file |
 | [pluggable-storage.md](pluggable-storage.md) | Plugins, seams and pluggable storage: the storage contracts, the registries, and how to add a new seam (plugin authors start at [PLUGINS.md](../reference/PLUGINS.md)) |
+| [ci.md](ci.md) | How CI runs: every job, what it checks, when it runs, and how to reproduce it locally |
 | [retired-page-archive.md](retired-page-archive.md) | Transactional retirement, complete prose/version preservation, successor notes, native readers and archive retention |
 
 For the design-token and theme tooling, see [../design/](../design/).
