@@ -20,6 +20,7 @@ from .dialect import topic_identity
 from .jms import JMS
 from .kafka import KAFKA
 from .laravel import LARAVEL_QUEUES
+from .mqtt import MQTT
 from .nats import NATS
 from .nestjs import NESTJS
 from .rabbitmq import RABBITMQ
@@ -34,6 +35,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     RABBITMQ,
     REDIS,
     NATS,
+    MQTT,
     BULLMQ,
     TEMPORAL,
     SQS,
