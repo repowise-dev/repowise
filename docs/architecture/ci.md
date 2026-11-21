@@ -102,7 +102,7 @@ skipping any.
   early one, else the newest older one, and runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
   The record's `index_cache` says which: `full`, `early`, `older` or `none`
-  (record version 2; version 1 said `exact` for the base's own index).
+  (record version 2).
 - `Test selection compared (recorded only)` reads the shards' JUnit reports
   and writes its job summary: selected test files out of those that ran, the
   test time the selection would have saved, every failing test the selection

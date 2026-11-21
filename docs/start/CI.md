@@ -669,6 +669,8 @@ added. A pull request opened while the tests still run gets its base's graph
 from the early entry instead of an older commit's index. The restore keys
 prefer full, then early, then the newest older index. Without the per-test
 map steps, the early entry is the only one and the restore keys still find it.
+GitHub evicts entries unused for 7 days or past the repository's 10 GB
+cache limit; a large index can be pruned sooner with `gh cache delete`.
 
 ```yaml
 # .github/workflows/repowise-index.yml
@@ -730,7 +732,8 @@ GitLab keeps one cache entry under a fixed key, so the two saves are two
 jobs: `repowise-index` saves the index as soon as it builds, and
 `repowise-per-test-map` adds the map after the tests and saves it again. The
 map job takes the index from the index job's artifact, so the map lands on
-the same commit's index.
+the same commit's index. The last job to save wins, so a slow pipeline can
+briefly leave an older commit's index in the cache until the next push.
 
 ```yaml
 variables:
