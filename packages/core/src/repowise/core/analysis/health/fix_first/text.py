@@ -94,6 +94,11 @@ PERF_SHAPE: dict[str, tuple[str, str, str]] = {
         "{name} reads every row and reduces them in memory",
         "rows the database could have reduced, read on every call",
     ),
+    "measured_hotspot": (
+        "Cut the measured cost of {name}",
+        "a measured run spends a large share of its own time in {name}",
+        "self time a measured run spent here",
+    ),
 }
 
 #: How a verify block found its tests, completing "reaches the changed code ...".
@@ -113,6 +118,7 @@ FIX_STRATEGY: dict[str, str] = {
     "replace_membership_collection": "Use a set or dict for the membership test",
     "buffer_string_accumulation": "Collect the pieces in a list and join them once",
     "push_reduction_into_query": "Let the query do the reduction",
+    "reduce_measured_self_time": "Find and cut the work a measured run spends here",
 }
 
 
@@ -175,7 +181,8 @@ def perf_cost(
 
     One function so the Fix-first item and the performance drawer say the same
     thing about the same cause. The gain names the repeated work, never a time
-    saving: nothing here was measured running.
+    saving: a static cause was never measured running, and a measured hotspot's
+    saving depends on the change.
     """
     noun = BOUNDARY_NOUN.get(boundary or "")
     call = f"{noun} call" if noun else "costly call"

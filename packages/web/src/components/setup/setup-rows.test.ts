@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentListRows, deriveSetup, type DeriveOptions, type SetupRow } from "./setup-rows";
-import { doneFixture, NOW, setupFixture } from "./setup-fixture";
+import { doneFixture, NOW, setupFixture, stepFixture, stepsFixture } from "./setup-fixture";
 
 const OPTS: DeriveOptions = { repoName: "orbit-api", now: NOW, relative: (iso) => `@${iso}` };
 const ids = (rows: SetupRow[]) => rows.map((r) => r.id);
@@ -10,7 +10,8 @@ describe("deriveSetup", () => {
     const view = deriveSetup(setupFixture(), OPTS);
     expect(view.attention).toEqual([]);
     expect(ids(view.essentials)).toEqual(["index", "agent", "sync"]);
-    expect(ids(view.optional)).toEqual(["model", "coverage", "rewrite"]);
+    expect(ids(view.optional)).toEqual(["model", "coverage", "evidence", "rewrite"]);
+    expect(view.depth).toEqual([]);
     expect(view.doneCount).toBe(2);
     expect(view.allDone).toBe(false);
   });
@@ -218,12 +219,20 @@ describe("deriveSetup", () => {
   });
 
   it("offers a discovered coverage report and the model sheet", () => {
-    const [model, coverage, rewrite] = deriveSetup(setupFixture(), OPTS).optional;
+    const [model, coverage, , rewrite] = deriveSetup(setupFixture(), OPTS).optional;
     expect(model!.action).toEqual({ kind: "model", hasModel: false });
     expect(coverage!.tone).toBe("found");
     expect(coverage!.action).toEqual({ kind: "coverage", path: "coverage/lcov.info" });
     expect(coverage!.command).toBe("repowise coverage add coverage/lcov.info");
     expect(rewrite!.action).toEqual({ kind: "hook", hook: "rewrite", enabled: false, unavailable: false });
+  });
+
+  it("points at coverage setup, not a placeholder, when no report is on disk", () => {
+    const s = setupFixture();
+    const none = deriveSetup({ ...s, coverage: { ...s.coverage, discovered: [] } }, OPTS).optional[1]!;
+    expect(none.tone).toBe("off");
+    expect(none.command).toBe("repowise coverage setup");
+    expect(none.prompt?.command).toBe("repowise coverage setup");
   });
 });
 
@@ -288,5 +297,71 @@ describe("agentListRows", () => {
       values: { path: ".cursor/mcp.json" },
     });
     expect(rows[2]!.title).toEqual({ text: "Codex" });
+  });
+});
+
+describe("setup steps on the rows", () => {
+  const withSteps = (rules: Parameters<typeof stepFixture>[], extra = {}) =>
+    setupFixture({ setup: stepsFixture(rules.map((args) => stepFixture(...args))), ...extra });
+  const row = (view: ReturnType<typeof deriveSetup>, id: string) =>
+    [...view.essentials, ...view.optional, ...view.depth].find((r) => r.id === id)!;
+
+  it("anchors each row by the rule that raises it", () => {
+    const view = deriveSetup(setupFixture(), OPTS);
+    expect(row(view, "sync").anchors).toEqual(["sync_hook_missing"]);
+    expect(row(view, "coverage").anchors).toEqual(["coverage_found"]);
+    expect(row(view, "model").anchors).toEqual(["docs_model_ready"]);
+    expect(row(view, "evidence").anchors).toEqual(["evidence_found"]);
+    expect(row(view, "rewrite").anchors).toEqual(["distill_suggested"]);
+  });
+
+  it("names the key or local model found here on the model row", () => {
+    const view = deriveSetup(
+      withSteps([["docs_model_ready", { why: [{ label: "model found", value: "Uses your Anthropic key", basis: "measured" }] }]]),
+      OPTS,
+    );
+    // One line: the source replaces "<providers> ready on this machine", never a second line.
+    expect(row(view, "model").detail).toEqual({ key: "model.ready", values: { source: "Uses your Anthropic key" } });
+    expect(row(view, "model").note).toBeUndefined();
+  });
+
+  it("suggests distill once usage unlocks it, and leaves it quiet before", () => {
+    expect(row(deriveSetup(setupFixture(), OPTS), "rewrite").tone).toBe("off");
+    const unlocked = row(deriveSetup(withSteps([["distill_suggested"]]), OPTS), "rewrite");
+    expect(unlocked.tone).toBe("found");
+    expect(unlocked.status).toEqual({ key: "rewrite.statusSuggested" });
+  });
+
+  it("moves a suggested distill row from Optional to Suggested from your usage", () => {
+    const quiet = deriveSetup(setupFixture(), OPTS);
+    expect(quiet.optional.map((r) => r.id)).toContain("rewrite");
+    expect(quiet.depth.map((r) => r.id)).not.toContain("rewrite");
+    const suggested = deriveSetup(withSteps([["distill_suggested"]]), OPTS);
+    expect(suggested.optional.map((r) => r.id)).not.toContain("rewrite");
+    expect(suggested.depth.map((r) => r.id)).toContain("rewrite");
+  });
+
+  it("reads evidence as found, on, or none", () => {
+    const found = row(deriveSetup(withSteps([["evidence_found", { details: [{ path: "prof.pprof", line: null, symbol: null, marker: null, severity: null, reason: "pprof", ref: null }] }]]), OPTS), "evidence");
+    expect(found.tone).toBe("found");
+    expect(found.action).toEqual({ kind: "prompt" });
+    expect(found.files).toEqual(["prof.pprof"]);
+    expect(found.buildPrompt!()).toContain("repowise evidence setup --format json");
+    expect(row(deriveSetup(setupFixture(), { ...OPTS, evidenceConnected: true }), "evidence").tone).toBe("done");
+    expect(row(deriveSetup(setupFixture(), OPTS), "evidence").tone).toBe("off");
+  });
+
+  it("builds depth rows from the unlocked steps, in a fixed order, with core's words", () => {
+    const view = deriveSetup(
+      withSteps([
+        ["settings_suggested", { title: "Review 3 settings that fit this repository", command: "repowise config list --suggested" }],
+        ["always_load_suggested", { title: "Load the four read tools up front", impact: "About 2.5k tokens a turn.", command: "repowise config set mcp.always_load true" }],
+      ]),
+      OPTS,
+    );
+    expect(ids(view.depth)).toEqual(["always-load", "settings"]);
+    expect(view.depth[0]!.title).toEqual({ text: "Load the four read tools up front" });
+    expect(view.depth[0]!.anchors).toEqual(["always_load_suggested"]);
+    expect(view.depth[0]!.prompt.command).toBe("repowise config set mcp.always_load true");
   });
 });

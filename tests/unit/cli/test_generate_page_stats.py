@@ -4,17 +4,21 @@ A deterministic onboarding subkind (Active Landscape) is rendered by the templat
 provider and stamped ``metadata.model_free``. The planner never offers it to
 ``--unwritten``, so the end-of-run counter must not report it as unwritten
 either, or the "N page(s) still unwritten" hint can never clear (#3614).
+A tombstoned page is never scheduled either, so it must not hold the count
+above zero and block the ``docs_mode -> llm`` flip (#3204).
 """
 
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from repowise.cli.commands.generate_cmd.engine import _page_stats
 from repowise.core.persistence.crud import upsert_page, upsert_repository
 from repowise.core.persistence.database import init_db
+from repowise.core.persistence.models import Page
 
 
 @pytest.fixture
@@ -59,6 +63,27 @@ async def test_model_free_page_is_not_counted_as_unwritten(session_factory, tmp_
         ("onboarding:onboarding/active_landscape", "onboarding", "template", {"model_free": True}),
         ("module_page:pkg", "module_page", "mock", None),
     )
+
+    total, stubs, _ = await _page_stats(session_factory, repo_id)
+
+    assert total == 2
+    assert stubs == 0
+
+
+async def test_tombstoned_page_is_not_counted_as_unwritten(session_factory, tmp_path):
+    repo_id = await _seed(
+        session_factory,
+        tmp_path,
+        ("onboarding:onboarding/active_landscape", "onboarding", "template", None),
+        ("module_page:pkg", "module_page", "mock", None),
+    )
+    async with session_factory() as session:
+        await session.execute(
+            update(Page)
+            .where(Page.id == "onboarding:onboarding/active_landscape")
+            .values(freshness_status="tombstone")
+        )
+        await session.commit()
 
     total, stubs, _ = await _page_stats(session_factory, repo_id)
 

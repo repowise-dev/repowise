@@ -5,6 +5,10 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Nightly full matrix on main, so a 3.11 or 3.13 break shows within a day
+  # even when nothing merges.
+  schedule:
+    - cron: "0 4 * * *"
 
 concurrency:
   # A new push to a pull request replaces its run. Pushes get one group per
@@ -12,43 +16,124 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # uv's default 30 s read timeout fails large wheel downloads (lancedb) on a
+  # slow connection, most often on the Windows runner.
+  UV_HTTP_TIMEOUT: "120"
+
+# Every uv job pins setup-uv and uv itself and keys its cache on uv.lock plus
+# the Python it installs for (cache-suffix), so jobs installing the same set
+# share one entry. A job whose key already exists restores it and saves
+# nothing.
+
 jobs:
   # ---------------------------------------------------------------------------
-  # Python tests — matrix across Python 3.11, 3.12, 3.13
+  # Which suites a pull request needs. Every other event runs everything.
+  # Python tests read far more than Python files (docs, the web and ui
+  # TypeScript contracts, plugins, .github), so the Python suites skip only a
+  # change confined to the VS Code extension or the api-client package.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ github.event_name != 'pull_request' || steps.python.outputs.python == 'true' }}
+      web: ${{ github.event_name != 'pull_request' || steps.node.outputs.web == 'true' }}
+      vscode: ${{ github.event_name != 'pull_request' || steps.node.outputs.vscode == 'true' }}
+
+    steps:
+      # Every listed pattern must match, so a file counts unless it sits in
+      # one of the excluded packages.
+      - name: Python-relevant files
+        id: python
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            python:
+              - '**'
+              - '!packages/vscode/**'
+              - '!packages/api-client/**'
+
+      - name: Node-relevant files
+        id: node
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            shared: &shared
+              - '.github/workflows/ci.yml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'uv.lock'
+            web:
+              - *shared
+              - 'packages/web/**'
+              - 'packages/ui/**'
+              - 'packages/types/**'
+              - 'packages/api-client/**'
+              - 'packages/claude-mod/**'
+              - 'plugins/claude-code/**'
+              - 'scripts/check-shared-imports.mjs'
+            vscode:
+              - *shared
+              - 'packages/vscode/**'
+              - 'packages/ui/**'
+              - 'packages/types/**'
+              - 'packages/api-client/**'
+
+  # ---------------------------------------------------------------------------
+  # Python tests. Pull requests run Python 3.12 in three shards; pushes and the
+  # nightly run add 3.11 and 3.13 unsharded. The 3.12 shards measure coverage,
+  # and the "Python tests" job below combines it.
   # ---------------------------------------------------------------------------
   test-python:
-    name: Python ${{ matrix.python-version }} tests
+    name: Python ${{ matrix.python }} tests${{ matrix.shard && format(' (shard {0})', matrix.shard) || '' }}
     runs-on: ubuntu-latest
-    # A normal run takes 30-40 minutes. The per-test timeout in pyproject.toml
-    # catches a hung test; this catches a hang outside any test.
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    # The per-test timeout in pyproject.toml catches a hung test; this catches
+    # a hang outside any test.
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write   # proves the coverage upload comes from this repository
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"}]' || '[{"python":"3.11","shard":""},{"python":"3.12","shard":"1/3"},{"python":"3.12","shard":"2/3"},{"python":"3.12","shard":"3/3"},{"python":"3.13","shard":""}]') }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py${{ matrix.python }}
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
 
       - name: Install dependencies
-        run: uv sync --all-packages --python ${{ matrix.python-version }}
+        run: uv sync --all-packages --python ${{ matrix.python }}
 
       # Apex and COBOL grammars download from GitHub releases on first use, and
       # a failed load is not retried within a process. Left to the tests, one
       # 504 empties every Apex or COBOL result on that xdist worker. Staged once
-      # here with retries, the tests load them from disk.
+      # here with retries, the tests load them from disk. The language pack
+      # version in uv.lock decides the grammar files, so the lock keys them.
+      - name: Cache runtime grammars
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/grammars
+          key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
       - name: Stage runtime grammars
         run: |
           dir="$RUNNER_TEMP/grammars/libs"
@@ -61,7 +146,9 @@ jobs:
           done
           exit 1
 
+      # Seconds long, so the first shard takes it whole.
       - name: Run provider tests (no API keys required)
+        if: matrix.shard == '' || matrix.shard == '1/3'
         run: uv run pytest tests/providers/ -v --tb=short
 
       # One worker per core. loadfile keeps each module on one worker, so a
@@ -71,30 +158,400 @@ jobs:
       # run with that test named. With restarts, loadfile hands the unfinished
       # tests of that file back, and the run can wait with every worker idle.
       - name: Run unit tests
-        if: matrix.python-version != '3.12'
+        if: matrix.shard == ''
         run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
 
-      # One leg measures coverage for the pull request bot's checks comment.
+      # --shard (tests/conftest.py) keeps whole test files together, so
+      # loadfile still holds, and packs them by tests/shard_weights.json.
       # sysmon (Python 3.12+) measures lines with far less overhead than the
-      # tracer; it cannot record per-test contexts, which this report omits.
+      # tracer, but it drops per-test contexts without a word. Pushes to main
+      # record them (which test ran which lines, for test selection) with
+      # the C tracer instead; pull requests keep sysmon and their wall time.
+      # Each shard keeps its raw data for the combine in "Python tests", and
+      # a JUnit report (xunit1 names each case's file) that refreshes the
+      # shard weights.
       - name: Run unit tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.shard != ''
         env:
-          COVERAGE_CORE: sysmon
-        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=xml
+          COVERAGE_CORE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ctrace' || 'sysmon' }}
+          COV_CONTEXT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '--cov-context=test' || '' }}
+        run: uv run --with pytest-cov pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages $COV_CONTEXT --cov-report= --junitxml=junit.xml -o junit_family=xunit1
+
+      - name: Keep the coverage data
+        if: always() && matrix.shard != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-data-${{ strategy.job-index }}
+          path: .coverage
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true   # a re-run of the job uploads again
+
+      - name: Keep the test report
+        if: always() && matrix.shard != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-${{ strategy.job-index }}
+          path: junit.xml
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+
+  # ---------------------------------------------------------------------------
+  # Test selection, recorded only. Every test above still runs; these jobs
+  # note which tests `repowise impacted-tests` would have picked, how much
+  # test time that would have saved, and whether a failing test fell outside
+  # the pick. They run beside the tests, every step continues on error, and
+  # no branch rule requires them, so none of them can fail a pull request.
+  # ---------------------------------------------------------------------------
+  # The index builds beside the tests, then waits for the Python 3.12 shards
+  # (not 3.11 or 3.13) to add the per-test coverage they recorded.
+  repowise-index:
+    name: Repowise index (main)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write   # deletes older index caches; main pushes only
+      id-token: write  # proves the per-test map upload comes from this repository
+
+    steps:
+      - uses: actions/checkout@v7
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
+
+      - name: Install dependencies
+        continue-on-error: true
+        timeout-minutes: 15
+        run: uv sync --all-packages
+
+      # The newest earlier index, brought up to this commit.
+      - name: Restore the previous index
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: .repowise
+          key: repowise-index-${{ github.sha }}
+          restore-keys: repowise-index-
+
+      - name: Build the index
+        id: build
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          PYTHONUTF8: "1"
+          DO_NOT_TRACK: "1"
+        run: |
+          if [ -f .repowise/state.json ]; then
+            uv run repowise update --index-only
+          else
+            uv run repowise init --yes --no-prose --no-editor-setup --no-hook
+          fi
+
+      # Which test ran which lines, the map `repowise impacted-tests` selects
+      # from. Taken only when all three shards passed: a map missing a shard's
+      # tests would leave them out of every selection. Otherwise the index
+      # keeps the map it restored.
+      - name: Wait for the Python 3.12 shards
+        id: shards
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          jobs="repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
+          filter='[.jobs[] | select(.name | startswith("Python 3.12 tests (shard"))]'
+          while :; do
+            state=$(gh api "$jobs" --jq "$filter | [length, (map(select(.status == \"completed\")) | length), (map(select(.conclusion == \"success\")) | length)] | @tsv") || state=""
+            read -r total done passed <<< "$state"
+            if [ "${total:-0}" -eq 3 ] && [ "$done" -eq 3 ]; then
+              [ "$passed" -eq 3 ] && exit 0
+              echo "::warning::A Python 3.12 shard did not pass; the index keeps its previous per-test map."
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Download the shards' coverage data
+        id: per-test
+        if: steps.shards.outcome == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-data-*
+          path: ${{ runner.temp }}/coverage-data
+
+      - name: Add the per-test coverage
+        id: add-map
+        if: steps.per-test.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          PYTHONUTF8: "1"
+          DO_NOT_TRACK: "1"
+        run: |
+          uvx coverage combine --data-file="$RUNNER_TEMP/per-test.coverage" "$RUNNER_TEMP"/coverage-data/*/.coverage
+          uv run repowise coverage add "$RUNNER_TEMP/per-test.coverage"
+
+      # The same map for hosted Repowise, exported from the index as a few MB
+      # of gzip (the raw .coverage is too big to send). Warn only, like the
+      # coverage upload in "Python tests".
+      - name: Upload the per-test map to Repowise
+        if: steps.add-map.outcome == 'success'
+        continue-on-error: true
+        env:
+          PYTHONUTF8: "1"
+          DO_NOT_TRACK: "1"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          uv run repowise coverage export -o "$RUNNER_TEMP/per-test-map.json.gz"
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty')
+          [ -n "$token" ] || { echo "::warning::Repowise: no OIDC token; the per-test map was not uploaded."; exit 0; }
+          curl -sS --fail-with-body --max-time 120 -H "Authorization: Bearer $token" \
+            -F "report=@$RUNNER_TEMP/per-test-map.json.gz" \
+            -F "repository=$GITHUB_REPOSITORY" -F "head_sha=$GITHUB_SHA" \
+            -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" \
+            https://api.repowise.dev/ci/coverage \
+            || echo "::warning::Repowise: per-test map upload failed; see the message above."
+
+      - name: Save the index
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: .repowise
+          key: repowise-index-${{ github.sha }}
+
+      # Keep the three newest indexes so they never evict the dependency
+      # caches the test jobs restore.
+      - name: Delete older indexes
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --key repowise-index- --sort created_at --order desc --limit 100 \
+            --json key --jq '.[].key' | tail -n +4 | xargs -r -n1 gh cache delete || true
+
+  impacted-tests-shadow:
+    name: Test selection (recorded only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.python == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
+
+      - name: Install dependencies
+        continue-on-error: true
+        timeout-minutes: 15
+        run: uv sync --all-packages
+
+      # A pull request checks out its merge commit, whose first parent is the
+      # target branch; on main the first parent is the previous commit. Either
+      # way it is the base the tests ran against.
+      - name: Find the base
+        id: base
+        continue-on-error: true
+        run: echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      # Read-only: pull requests, forks included, restore main's index and
+      # never save one. An older index is used as is.
+      - name: Restore the main index
+        id: index
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: .repowise
+          key: repowise-index-${{ steps.base.outputs.sha }}
+          restore-keys: repowise-index-
+
+      - name: Select tests
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          CACHE_HIT: ${{ steps.index.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.index.outputs.cache-matched-key }}
+          PYTHONUTF8: "1"
+          DO_NOT_TRACK: "1"
+        run: |
+          mkdir -p shadow
+          SECONDS=0
+          code=0
+          uv run repowise impacted-tests "$BASE...HEAD" --format json --runner pytest --prioritize \
+            > shadow/selection.json 2> shadow/selection.log || code=$?
+          seconds=$SECONDS
+          cache=none
+          if [ "$CACHE_HIT" = "true" ]; then cache=exact; elif [ -n "$CACHE_KEY" ]; then cache=older; fi
+          printf '{"base": "%s", "selector_exit": %d, "selector_seconds": %d, "index_cache": "%s"}\n' \
+            "$BASE" "$code" "$seconds" "$cache" > shadow/selector.json
+          tail -n 20 shadow/selection.log
+          exit 0
+
+      - name: Upload the selection
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: impacted-tests-selection
+          path: shadow/
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
+
+  impacted-tests-compare:
+    name: Test selection compared (recorded only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [impacted-tests-shadow, test-python]
+    if: ${{ !cancelled() && needs.impacted-tests-shadow.result != 'skipped' }}
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      # The script needs only the standard library and the shared CI helpers.
+      - uses: actions/checkout@v7
+        continue-on-error: true
+        with:
+          sparse-checkout: |
+            scripts
+            packages/core/src/repowise/core/ci
+            packages/core/src/repowise/core/forges
+
+      - name: Download the selection
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: impacted-tests-selection
+          path: shadow
+
+      # One report per shard, each in its own folder.
+      - name: Download the test reports
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: junit-*
+          path: shadow/junit
+
+      - name: Compare
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: packages/core/src
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # --expect-junit is the number of Python 3.12 shards in test-python's
+        # matrix, so a shard whose report never uploaded still counts as lost.
+        run: |
+          junit=()
+          for f in shadow/junit/*/junit.xml; do [ -f "$f" ] && junit+=(--junit "$f"); done
+          python3 scripts/impacted_tests_shadow.py --selection shadow/selection.json \
+            --meta shadow/selector.json "${junit[@]}" --expect-junit 3 --out impacted-shadow.json \
+            || echo "Test selection comparison could not run." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: impacted-shadow
+          path: impacted-shadow.json
+          if-no-files-found: ignore
+          retention-days: 90
+          overwrite: true
+
+  # ---------------------------------------------------------------------------
+  # The one Python check to require. It passes when every Python test job
+  # passed or the path filter skipped them, and on pull requests and pushes
+  # when the shards' coverage combined into coverage.xml for the coverage
+  # gate. A coverage step that fails fails this job. The nightly run skips
+  # the combine: nothing reads its coverage.
+  # ---------------------------------------------------------------------------
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    needs: [changes, test-python, test-integration]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      id-token: write   # proves the coverage upload comes from this repository
+
+    steps:
+      - uses: actions/checkout@v7
+        if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
+
+      - uses: actions/download-artifact@v8
+        id: coverage-data
+        if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
+        with:
+          pattern: coverage-data-*
+          path: coverage-data
+
+      - name: Install uv
+        if: steps.coverage-data.outcome == 'success'
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: false
+
+      # source = packages matches the shards' --cov=packages, so coverage.xml
+      # names files exactly as a single run did.
+      - name: Combine coverage
+        id: combine
+        if: steps.coverage-data.outcome == 'success'
+        run: |
+          printf '[run]\nsource = packages\n' > "$RUNNER_TEMP/coveragerc"
+          uvx coverage combine --rcfile="$RUNNER_TEMP/coveragerc" coverage-data/*/.coverage
+          uvx coverage xml --rcfile="$RUNNER_TEMP/coveragerc" -o coverage.xml
 
       # The Repowise coverage job below gates the pull request on this report.
       - name: Keep coverage.xml for the coverage gate
-        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+        if: steps.combine.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
           retention-days: 1
-          if-no-files-found: ignore
+          if-no-files-found: error
+          overwrite: true   # a re-run of the job uploads again
 
+      # Warn only: an outage of the Repowise service must not fail CI.
       - name: Upload coverage to Repowise
-        if: always() && matrix.python-version == '3.12'
+        if: steps.combine.outcome == 'success'
         continue-on-error: true
         env:
           REPORTS: "coverage.xml"
@@ -117,6 +574,24 @@ jobs:
             https://api.repowise.dev/ci/coverage \
             || echo "::warning::Repowise: coverage upload failed; see the message above."
 
+      - name: Fail when a Python test job failed
+        if: always()
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TESTS: ${{ needs.test-python.result }}
+          INTEGRATION: ${{ needs.test-integration.result }}
+        run: |
+          echo "Changed paths: $CHANGES; Python test jobs: $TESTS; integration tests: $INTEGRATION"
+          [ "$CHANGES" = success ] || { echo "::error::The path filter did not finish ($CHANGES)."; exit 1; }
+          case "$TESTS" in
+            success|skipped) ;;
+            *) echo "::error::A Python test job did not pass ($TESTS)."; exit 1 ;;
+          esac
+          case "$INTEGRATION" in
+            success|skipped) ;;
+            *) echo "::error::The integration tests did not pass ($INTEGRATION)."; exit 1 ;;
+          esac
+
   # ---------------------------------------------------------------------------
   # tree-sitter floor — installs the declared minimum tree-sitter version and
   # compiles every language's query against it. `uv sync` alone always
@@ -130,15 +605,19 @@ jobs:
   test-tree-sitter-floor:
     name: tree-sitter floor (query compilation)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -147,6 +626,12 @@ jobs:
         run: uv pip install "tree-sitter==0.25.0"
 
       # Same staging as the Python tests job: COBOL and Apex download on first use.
+      - name: Cache runtime grammars
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/grammars
+          key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
       - name: Stage runtime grammars
         run: |
           dir="$RUNNER_TEMP/grammars/libs"
@@ -177,15 +662,19 @@ jobs:
   windows-smoke:
     name: Windows smoke test (cp1252 console)
     runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Set up Python 3.12
         run: uv python install 3.12
@@ -249,25 +738,23 @@ jobs:
   # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
   # pinned in pyproject.toml), so running it there would burn three runners to
   # learn one thing, and a lint failure would masquerade as a test failure.
+  # The standalone binary at the ruff version uv.lock pins, so no project
+  # install; rules come from pyproject.toml as before.
   # ---------------------------------------------------------------------------
   lint-python:
     name: Python lint (ruff)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --all-packages
+      - uses: actions/checkout@v7
 
       - name: Run ruff
-        run: uv run ruff check .
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: check
 
   # ---------------------------------------------------------------------------
   # Documentation drift over the checkout, no index; the baseline says what it holds.
@@ -275,15 +762,19 @@ jobs:
   doc-drift:
     name: Documentation drift
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -305,7 +796,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -317,23 +808,23 @@ jobs:
           security-fail-on: high
 
   # ---------------------------------------------------------------------------
-  # Patch coverage on the Python 3.12 leg's report. Its own job so the gates
-  # above do not wait for the test matrix.
+  # Patch coverage on the combined Python 3.12 report. Its own job so the
+  # gates above do not wait for the tests.
   # ---------------------------------------------------------------------------
   repowise-coverage:
     name: Repowise coverage
     runs-on: ubuntu-latest
-    needs: test-python
-    if: github.event_name == 'pull_request'
+    needs: [changes, python-tests]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.python == 'true'
     permissions:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: coverage-xml
 
@@ -356,11 +847,11 @@ jobs:
     if: github.event_name == 'pull_request'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check whether the MCP surface changed
         id: changed
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             mcp:
@@ -375,10 +866,12 @@ jobs:
 
       - name: Install uv
         if: steps.changed.outputs.mcp == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         if: steps.changed.outputs.mcp == 'true'
@@ -391,21 +884,26 @@ jobs:
         run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
 
   # ---------------------------------------------------------------------------
-  # Integration tests (run on push to main only, slower)
+  # Integration tests: every push and the nightly run, and a pull request
+  # whenever its Python suites run, so a break shows before it merges.
   # ---------------------------------------------------------------------------
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -419,12 +917,14 @@ jobs:
   test-web:
     name: Web UI lint + type check
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -495,12 +995,14 @@ jobs:
   test-vscode:
     name: VS Code extension test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.vscode == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -515,7 +1017,7 @@ jobs:
           echo "version=$(node --input-type=module -e 'import { vscodeVersion } from "./packages/vscode/.vscode-test.mjs"; console.log(vscodeVersion)')" >> "$GITHUB_OUTPUT"
 
       - name: Cache VS Code test editor
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: packages/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ steps.vscode-test-version.outputs.version }}
@@ -564,11 +1066,11 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check whether the emitter changed
         id: changed
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             emitter:
@@ -582,10 +1084,12 @@ jobs:
 
       - name: Install uv
         if: steps.changed.outputs.emitter == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         if: steps.changed.outputs.emitter == 'true'

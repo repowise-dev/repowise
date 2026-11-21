@@ -23,6 +23,7 @@ from ...analysis.security_scan import mask_comments_and_strings
 from ..languages.apex_namespace import apex_namespaces
 from ..resolvers.lwc import lwc_namespaces, nearest
 from ..return_types import signature_parameter_count
+from ..symbol_identity import module_symbol_id
 from ..type_names import bare_type_name
 from .aura import _file_edge, _mask_xml
 from .base import DetectionContext, FrameworkHandler, add_symbol_edge, source_text
@@ -157,7 +158,7 @@ class _Edges:
 
     def bind(self, src_file: str, dst_file: str, symbols: list[Any], name: str) -> None:
         for sym_id in dict.fromkeys(s.id for s in symbols):
-            self.count += add_symbol_edge(self.graph, f"{src_file}::__module__", sym_id)
+            self.count += add_symbol_edge(self.graph, module_symbol_id(src_file), sym_id)
         self.file(src_file, dst_file, {name})
 
     def flush(self) -> int:

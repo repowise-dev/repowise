@@ -42,9 +42,11 @@
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
     "./refactoring": "./src/refactoring.ts",
+    "./runtime-evidence": "./src/runtime-evidence.ts",
     "./fix-first": "./src/fix-first.ts",
     "./queue": "./src/queue.ts",
     "./agent-prompts": "./src/agent-prompts.ts",
+    "./first-look": "./src/first-look.ts",
     "./serve-lock": "./src/serve-lock.ts",
     "./generated/http": "./src/generated/http.ts"
   },

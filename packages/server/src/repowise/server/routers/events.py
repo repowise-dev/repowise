@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.events.model import KINDS, to_cloudevent
 from repowise.core.events.store import empty_events_reason, list_events, snapshot_run_count
+from repowise.core.git_sha import FULL_SHA_PATTERN
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas.events import CloudEvent, EventListResponse
@@ -28,7 +29,7 @@ async def get_events(
     limit: int = Query(200, ge=1, le=1000),
     commit: str | None = Query(
         None,
-        pattern="^[0-9a-f]{40}$",
+        pattern=f"^{FULL_SHA_PATTERN}$",
         description="Only events detected at this commit (full sha)",
     ),
     important: bool = Query(

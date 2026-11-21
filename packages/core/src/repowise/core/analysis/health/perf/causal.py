@@ -57,7 +57,7 @@ _ID_PATTERN = re.compile(rf"^{_ID_PREFIX}(\d*)_[0-9a-f]{{20}}$")
 # Origins whose code may or may not ship: a copied library, a generator's
 # output, a docs tree. Calling such code production would assert an exposure
 # the tree does not support, which is the one thing the fallback must not do.
-_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example"})
+_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example", "data"})
 _TOOLING_ORIGINS = frozenset({"tooling", "build"})
 # Example, demo and docs trees at any depth. Not ``website/``: a site can serve
 # a shipped installer script.

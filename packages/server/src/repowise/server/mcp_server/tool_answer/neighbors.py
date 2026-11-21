@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
@@ -64,7 +65,7 @@ def _focus(symbols: dict[str, GraphNode], edges: list[GraphEdge], relevance: dic
     callers: dict[str, set[str]] = {}
     for e in edges:
         if e.edge_type == "calls":
-            callers.setdefault(e.target_node_id, set()).add(e.source_node_id.split("::")[0])
+            callers.setdefault(e.target_node_id, set()).add(file_of_symbol(e.source_node_id))
     ranked = sorted(
         callers,
         key=lambda sid: (-relevance.get(symbols[sid].name, 0), -len(callers[sid]), sid),
@@ -121,7 +122,7 @@ async def neighbor_evidence(
     for targets, limit in ((relevant, _MAX_RELEVANT_EDGES), (list(symbols), _MAX_EDGES)):
         for e in await _inbound(session, repo_id, targets, limit):
             key = (e.source_node_id, e.target_node_id, e.edge_type)
-            if key not in seen_edges and e.source_node_id.split("::")[0] != lead:
+            if key not in seen_edges and file_of_symbol(e.source_node_id) != lead:
                 seen_edges.add(key)
                 edges.append(e)
     res = await session.execute(
@@ -141,7 +142,7 @@ async def neighbor_evidence(
         candidates.append(
             caller_row(
                 e.source_node_id,
-                e.source_node_id.split("::")[0],
+                file_of_symbol(e.source_node_id),
                 src.start_line if src else None,
                 e.target_node_id,
                 e.edge_type,

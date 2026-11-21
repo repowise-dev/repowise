@@ -15,6 +15,7 @@ import { useRepositoryChat } from "./repository-chat-provider";
 import { useTranslations } from "next-intl";
 import { NoProviderReason } from "./no-provider-reason";
 import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
+import { useModelReady } from "@/components/setup/use-setup-actions";
 
 interface ChatInterfaceProps {
   repoId: string;
@@ -85,6 +86,8 @@ export function ChatInterface({
   const upgrade = useModelUpgrade(repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((p) => p.configured);
+  // Read only while chat has no model, to name a key or local model found here.
+  const modelReady = useModelReady(anyConfigured ? null : repoId);
 
   // A plain /chat URL is an explicit fresh workspace. Only an addressable
   // conversation URL restores history, which keeps returning users from being
@@ -218,7 +221,7 @@ export function ChatInterface({
       artifactOverrides={artifactOverrides}
       unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
-      sendDisabledReason={<NoProviderReason message="noProvider" onAddModel={upgrade.openSheet} />}
+      sendDisabledReason={<NoProviderReason message="noProvider" onAddModel={upgrade.openSheet} ready={modelReady} />}
       historySlot={
         <div className="lg:hidden">
           <ConversationHistory

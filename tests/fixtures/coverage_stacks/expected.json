@@ -1,0 +1,149 @@
+{
+  "dotnet": {
+    "language": "dotnet",
+    "runner": "dotnet test",
+    "package_manager": "dotnet",
+    "reports": "coverage/*/coverage.cobertura.xml",
+    "test": "dotnet test App.sln --collect:\"XPlat Code Coverage\" --results-directory coverage"
+  },
+  "go": {
+    "language": "go",
+    "runner": "go test",
+    "package_manager": "go",
+    "reports": "coverage.out",
+    "test": "go test -coverprofile=coverage.out ./..."
+  },
+  "gradle_jacoco": {
+    "language": "java",
+    "runner": "gradle",
+    "package_manager": "gradle",
+    "reports": "build/reports/jacoco/test/jacocoTestReport.xml",
+    "test": "./gradlew test jacocoTestReport"
+  },
+  "gradle_plain": {
+    "language": "java",
+    "runner": "gradle",
+    "package_manager": "gradle",
+    "reports": "**/build/reports/jacoco/test/jacocoTestReport.xml",
+    "test": "./gradlew test jacocoTestReport --init-script \"$RUNNER_TEMP/repowise-jacoco.gradle\""
+  },
+  "maven": {
+    "language": "java",
+    "runner": "maven",
+    "package_manager": "maven",
+    "reports": "target/site/jacoco/jacoco.xml",
+    "test": "mvn org.jacoco:jacoco-maven-plugin:0.8.15:prepare-agent -B verify org.jacoco:jacoco-maven-plugin:0.8.15:report"
+  },
+  "maven_jacoco_modules": {
+    "language": "java",
+    "runner": "maven",
+    "package_manager": "maven",
+    "reports": "**/target/site/jacoco/jacoco.xml",
+    "test": "./mvnw -B verify"
+  },
+  "node_bun": {
+    "language": "node",
+    "runner": "bun",
+    "package_manager": "bun",
+    "reports": "coverage/lcov.info",
+    "test": "bun run test --coverage --coverage-reporter=lcov"
+  },
+  "node_jest_npm": {
+    "language": "node",
+    "runner": "jest",
+    "package_manager": "npm",
+    "reports": "coverage/lcov.info",
+    "test": "npm test -- --coverage --coverageReporters=lcov"
+  },
+  "node_mocha_yarn": {
+    "language": "node",
+    "runner": "c8",
+    "package_manager": "yarn",
+    "reports": "coverage/lcov.info",
+    "test": "npx --yes c8 --reporter=lcov yarn test"
+  },
+  "node_monorepo": {
+    "language": "node",
+    "runner": null,
+    "package_manager": "npm",
+    "reports": "coverage/lcov.info",
+    "test": null
+  },
+  "node_vitest_pnpm": {
+    "language": "node",
+    "runner": "vitest",
+    "package_manager": "pnpm",
+    "reports": "coverage/lcov.info",
+    "test": "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
+  },
+  "php": {
+    "language": "php",
+    "runner": "phpunit",
+    "package_manager": "composer",
+    "reports": "clover.xml",
+    "test": "vendor/bin/phpunit --coverage-clover clover.xml"
+  },
+  "python_hatch": {
+    "language": "python",
+    "runner": "pytest",
+    "package_manager": "hatch",
+    "reports": "coverage.xml",
+    "test": "hatch run pytest --cov=src --cov-report=xml --cov-context=test"
+  },
+  "python_pdm": {
+    "language": "python",
+    "runner": "pytest",
+    "package_manager": "pdm",
+    "reports": "coverage.xml",
+    "test": "pdm run pytest --cov=tool --cov-report=xml --cov-context=test"
+  },
+  "python_pip": {
+    "language": "python",
+    "runner": "pytest",
+    "package_manager": "pip",
+    "reports": "coverage.xml",
+    "test": "pytest --cov=app --cov-report=xml --cov-context=test"
+  },
+  "python_poetry": {
+    "language": "python",
+    "runner": "pytest",
+    "package_manager": "poetry",
+    "reports": "coverage.xml",
+    "test": "poetry run pytest --cov=src --cov-report=xml --cov-context=test"
+  },
+  "python_uv_workspace": {
+    "language": "python",
+    "runner": "pytest",
+    "package_manager": "uv",
+    "reports": "coverage.xml",
+    "test": "uv run --with pytest-cov pytest tests/unit --cov=packages --cov-report=xml --cov-context=test"
+  },
+  "ruby": {
+    "language": "ruby",
+    "runner": "rspec",
+    "package_manager": "bundler",
+    "reports": "coverage/coverage.xml",
+    "test": "bundle exec rspec"
+  },
+  "ruby_cobertura": {
+    "language": "ruby",
+    "runner": "rake test",
+    "package_manager": "bundler",
+    "reports": "coverage/coverage.xml",
+    "test": "bundle exec rake test"
+  },
+  "rust": {
+    "language": "rust",
+    "runner": "cargo test",
+    "package_manager": "cargo",
+    "reports": "lcov.info",
+    "test": "cargo llvm-cov --workspace --lcov --output-path lcov.info"
+  },
+  "unknown": {
+    "language": "unknown",
+    "runner": null,
+    "package_manager": null,
+    "reports": "coverage.xml coverage/lcov.info lcov.info coverage.out **/jacoco.xml **/cobertura*.xml **/clover.xml",
+    "test": null
+  }
+}

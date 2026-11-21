@@ -829,3 +829,24 @@ def test_degraded_empty_retrieval_retains_full_fallback_targets():
     out = project_answer_payload(raw, question="where is LCOM4 computed")
     assert out["fallback_targets"] == paths
     assert "retrieval" not in out
+
+
+def test_keyless_note_drops_its_generic_sentences():
+    from repowise.server.mcp_server.tool_answer.config import (
+        _BODY_NOTE,
+        _NO_SYNTHESIS_NOTE,
+        _RATIONALE_NOTE,
+    )
+    from repowise.server.mcp_server.tool_answer.projection import _trim_keyless_note
+
+    generic = {"degraded": "no-llm-provider", "note": _NO_SYNTHESIS_NOTE + _RATIONALE_NOTE + _BODY_NOTE}
+    _trim_keyless_note(generic)
+    assert "note" not in generic
+
+    pointed = {"degraded": "no-llm-provider", "note": _NO_SYNTHESIS_NOTE + " Read src/a.py:40-90 next."}
+    _trim_keyless_note(pointed)
+    assert pointed["note"] == "Read src/a.py:40-90 next."
+
+    keyed = {"degraded": "synthesis-timeout", "note": _NO_SYNTHESIS_NOTE}
+    _trim_keyless_note(keyed)
+    assert keyed["note"] == _NO_SYNTHESIS_NOTE

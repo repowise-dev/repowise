@@ -8,8 +8,8 @@ real finding that nobody should be asked to fix first.
 
 The answer is one of :data:`CODE_ORIGINS`, decided in precedence order, so a
 file has exactly one: ``generated`` beats ``vendored`` beats ``build`` beats
-``test`` beats ``docs_example`` beats ``tooling``, and everything else is
-``production``. ``build`` is decided by the file's type (a Gradle script, a
+``test`` beats ``docs_example`` beats ``tooling`` beats ``data``, and
+everything else is ``production``. ``build`` is decided by the file's type (a Gradle script, a
 ``CMakeLists.txt``, a bundler config), wherever it sits; :func:`is_build_file`
 answers it for a caller that needs only that.
 
@@ -40,6 +40,8 @@ __all__ = [
     "CodeOrigin",
     "code_origin",
     "declares_test",
+    "is_benchmark_function",
+    "is_benchmark_path",
     "is_build_file",
     "is_generated_header",
     "is_migration_path",
@@ -50,7 +52,7 @@ __all__ = [
 ]
 
 CodeOrigin = Literal[
-    "production", "test", "vendored", "docs_example", "generated", "tooling", "build"
+    "production", "test", "vendored", "docs_example", "generated", "tooling", "build", "data"
 ]
 
 CODE_ORIGINS: tuple[CodeOrigin, ...] = (
@@ -61,6 +63,7 @@ CODE_ORIGINS: tuple[CodeOrigin, ...] = (
     "generated",
     "tooling",
     "build",
+    "data",
 )
 
 # --------------------------------------------------------------------------
@@ -815,6 +818,63 @@ def _is_docs_example(
     )
 
 
+# --------------------------------------------------------------------------
+# Data
+# --------------------------------------------------------------------------
+
+# A folder a repository keeps content in. Code inside one is material the
+# product reads by path (reference solutions, problem generators, inputs for a
+# sandbox), not modules it imports, when the folder is mostly data files and
+# its code spans several languages: an application does not import its own
+# modules in three languages out of one data folder, while a bank of solutions
+# per problem does. Ceiling: a bank in one language (``data/*/reference.py``
+# alone) stays production, since telling it from a data folder's own loader
+# module needs the import graph.
+_DATA_DIR_TOKENS = frozenset({"data", "datasets"})
+_DATA_MAX_CODE_SHARE = 0.2
+_DATA_MIN_LANGUAGES = 3
+
+
+def _is_content_bank_member(
+    normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
+    """Whether a data-named folder above the file is a content bank."""
+    if repo_root is None or _DATA_DIR_TOKENS.isdisjoint(dirs):
+        return False
+    parts = normalized.split("/")
+    root = os.fspath(repo_root)
+    return any(
+        d in _DATA_DIR_TOKENS and _is_content_bank(os.path.join(root, *parts[: i + 1]))
+        for i, d in enumerate(dirs)
+    )
+
+
+# Ceiling: memoised per folder for the process, like ``_is_docs_site``, so a
+# long-running process keeps a folder's first verdict until it restarts.
+# Upgrade path: key the verdict on the folder listing's mtimes.
+@lru_cache(maxsize=1024)
+def _is_content_bank(folder: str) -> bool:
+    """Whether *folder* (an absolute path) holds mostly data, and code in several languages."""
+    from .fs_walk import walk_repo
+    from .ingestion.models import EXTENSION_TO_LANGUAGE
+
+    code_suffixes = frozenset(_code_suffixes())
+    files = code = 0
+    languages: set[str] = set()
+    for _dir, _subdirs, names in walk_repo(folder):
+        for name in names:
+            files += 1
+            suffix = PurePosixPath(name).suffix.lower()
+            if suffix in code_suffixes:
+                code += 1
+                languages.add(EXTENSION_TO_LANGUAGE.get(suffix, suffix))
+    return (
+        code > 0
+        and code <= files * _DATA_MAX_CODE_SHARE
+        and len(languages) >= _DATA_MIN_LANGUAGES
+    )
+
+
 # No ``/cli/`` rule: a CLI's source ships and its findings are real work (only
 # performance treats a CLI loop as off the request path, in
 # ``perf/causal.execution_context``). Migrations join: they run once at deploy
@@ -985,6 +1045,51 @@ def _is_benchmark_file(name: str) -> bool:
     )
 
 
+# Benchmark directories at any depth, for :func:`is_benchmark_path` (the tooling
+# rule above keeps a bare ``benchmark/`` to the root; a benchmark is a benchmark
+# wherever it sits).
+_BENCHMARK_DIRS = frozenset({"bench", "benches", "benchmark", "benchmarks"})
+# ``bench_*.py`` (pytest-benchmark, asv), ``*.bench.ts`` (Vitest bench, mitata).
+_BENCHMARK_NAME_RE = re.compile(r"^(?:bench_\w+\.py|[\w.-]+\.bench\.[cm]?[jt]sx?)$")
+# Go's testing package runs ``BenchmarkX``: the name goes on with anything but a
+# lower-case letter (``Benchmarking`` is a plain function).
+_GO_BENCHMARK_RE = re.compile(r"^Benchmark(?![a-z])\w*$")
+_PY_BENCHMARK_FUNC_RE = re.compile(r"^(?:bench|test)_\w*$")
+
+
+def is_benchmark_path(path: str) -> bool:
+    """Whether the code file at repo-relative *path* holds benchmarks by its path.
+
+    A benchmarks directory at any depth (``benches/`` is Cargo's), a
+    ``*_benchmark`` stem, ``bench_*.py`` or ``*.bench.ts``. Go benchmarks sit
+    in ordinary ``_test.go`` files: :func:`is_benchmark_function` finds those.
+    """
+    lowered = path.lower().replace("\\", "/")
+    *dirs, name = lowered.split("/")
+    if not name.endswith(_code_suffixes()):
+        return False
+    return (
+        not _BENCHMARK_DIRS.isdisjoint(dirs)
+        or _is_benchmark_file(name)
+        or bool(_BENCHMARK_NAME_RE.match(name))
+    )
+
+
+def is_benchmark_function(path: str, name: str) -> bool:
+    """Whether function *name* in *path* is a benchmark a runner collects.
+
+    Go: ``BenchmarkX`` in a ``_test.go`` file. Python: ``bench_*`` or
+    ``test_*`` in a benchmark file (:func:`is_benchmark_path`), as
+    pytest-benchmark collects them. Ceiling: other languages mark benchmarks
+    by file only.
+    """
+    if path.endswith("_test.go"):
+        return bool(_GO_BENCHMARK_RE.match(name))
+    if path.endswith(".py"):
+        return is_benchmark_path(path) and bool(_PY_BENCHMARK_FUNC_RE.match(name))
+    return False
+
+
 def code_origin(
     path: str,
     text: str | bytes | None = None,
@@ -1083,7 +1188,7 @@ def _maintained_origin(
     header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
-    examples, tooling, or production, in that precedence."""
+    examples, tooling, data, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
     if (
@@ -1096,6 +1201,8 @@ def _maintained_origin(
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
+    if _is_content_bank_member(normalized, dirs, repo_root):
+        return "data"
     return "production"
 
 
@@ -1112,8 +1219,8 @@ def path_origin(path: str) -> CodeOrigin:
 def owes_a_test(path: str, origin: str | None = None) -> bool:
     """Whether a missing test for *path* is a gap worth naming.
 
-    Only shipped code owes one. Generated, vendored, build, tooling and docs
-    example code, and a schema migration, read "no test" as noise: every
+    Only shipped code owes one. Generated, vendored, build, tooling, docs
+    example and data code, and a schema migration, read "no test" as noise: every
     surface that says a file is untested (``pr_blast.file_tests``, the health
     biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
     stored ``code_origin`` when there is one; without it the path decides.

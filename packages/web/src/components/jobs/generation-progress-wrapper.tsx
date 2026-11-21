@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   GenerationProgress,
   jobOutcome,
+  jobRunKind,
   providerIssue,
   type GenerationProgressLabels,
   type JobOutcome,
@@ -77,9 +78,15 @@ export function GenerationProgressWrapper({
     notifiedRef.current = true;
     const issue = providerIssue(job);
     if (!quiet) {
+      const wroteDocs = jobRunKind(job) === "docs";
       if (outcome === "completed") {
-        toast.success(t("completed", { name: repoName ? ` — ${repoName}` : "" }), {
-          description: t("pagesGenerated", { count: formatNumber(job.completed_pages) }),
+        const name = repoName ? ` (${repoName})` : "";
+        toast.success(wroteDocs ? t("completed", { name }) : t("indexed", { name }), {
+          description: wroteDocs
+            ? t("pagesGenerated", { count: formatNumber(job.completed_pages) })
+            : t("filesIndexed", {
+                count: formatNumber(Number(job.config?.file_count ?? job.completed_pages)),
+              }),
         });
       } else if (outcome === "warning") {
         toast.warning(t("completedWithProblems", { name: repoName ? ` (${repoName})` : "" }), {
@@ -88,7 +95,7 @@ export function GenerationProgressWrapper({
             : t("pagesFailed", { count: formatNumber(job.failed_pages) }),
         });
       } else if (outcome === "failed") {
-        toast.error(t("failed"), {
+        toast.error(wroteDocs ? t("failed") : t("indexFailed"), {
           description: issue ? issueText(issue) : (job.error_message ?? t("unknownError")),
         });
       } else {
@@ -100,6 +107,11 @@ export function GenerationProgressWrapper({
 
   const labels = useMemo<Partial<GenerationProgressLabels>>(
     () => ({
+      queued: t("progress.queued"),
+      indexReady: t("progress.indexReady"),
+      docsReady: t("progress.docsReady"),
+      indexFailed: t("progress.indexFailed"),
+      docsFailed: t("progress.docsFailed"),
       warningTitle: t("progress.warningTitle"),
       noPagesWritten: t("progress.noPagesWritten"),
       somePagesFailed: (failed, total) =>

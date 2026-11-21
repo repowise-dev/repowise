@@ -16,6 +16,7 @@ export default defineConfig({
   esbuild: { jsx: "automatic", jsxImportSource: "react" },
   test: {
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    setupFiles: ["src/test/setup.ts"],
   },
   resolve: {
     alias: [

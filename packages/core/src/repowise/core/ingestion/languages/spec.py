@@ -76,6 +76,8 @@ class LanguageSpec:
     test_stem_prefixes: tuple[str, ...] = ()  # ("test_",)
     test_stem_suffixes: tuple[str, ...] = ()  # ("_test", "_spec")
     test_infixes: tuple[str, ...] = ()  # (".test.", ".spec.")
+    # Extensions only tests use, so the filename alone marks one (Perl's ``.t``).
+    test_extensions: frozenset[str] = frozenset()
     test_fixture_stems: tuple[str, ...] = ()  # ("conftest",)
 
     # Case-sensitive camel-boundary test suffixes, applied ONLY to this

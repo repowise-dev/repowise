@@ -37,6 +37,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 from repowise.core.settings.model import flag, parse_flag
+from repowise.core.test_paths import dotted_module_paths, nodeid_test_file
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
@@ -85,7 +86,8 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
 # NOT ``coverage``/``target`` (that is where the reports live). Applied at
 # traversal time via the shared pruned walk, and post-hoc as a safety net
 # for the non-recursive glob paths. A pruned name spelled literally in a
-# pattern (``build/reports/...``) is an explicit opt-in and is not pruned.
+# pattern (``build/reports/...``, ``**/build/reports/...``) is an explicit
+# opt-in and is not pruned for that pattern.
 _PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 
 # Hard cap on discovered artifacts — a sane upper bound that still covers
@@ -628,65 +630,54 @@ def _expand_pattern(
     literal pattern is a direct file check; single-level wildcards are a
     bounded plain glob; ``**`` is served from a pruned walk of *root*
     (*snapshots* caches one per root), so it never enters dependency, cache
-    or build trees, nested repositories, or symlinks. A pruned name spelled
-    literally before the first wildcard is an explicit opt-in.
+    or build trees, nested repositories, or symlinks. A pruned name the
+    pattern spells literally as a directory, before or after a wildcard
+    (``build/reports/**``, ``**/build/reports/**``), is an explicit opt-in to
+    that name only; every other pruned name stays pruned.
     """
     if not _has_magic(pattern):
         direct = root / pattern
         if direct.is_file():
             yield direct
         return
+    prune = _PRUNE_DIRS - {seg for seg in pattern.split("/")[:-1] if not _has_magic(seg)}
     if "**" in pattern:
-        matches = _recursive_matches(root, pattern, snapshots)
+        matches = _recursive_matches(root, pattern, snapshots, prune)
     else:
         # Single-level wildcards cannot recurse; a plain glob is bounded.
         matches = root.glob(pattern)
-    literal = _literal_depth(pattern)
     for match in matches:
         # Safety net for the plain-glob paths, which do not prune.
-        if match.is_file() and not _under_pruned(match, root, literal):
+        if match.is_file() and not _under_pruned(match, root, prune):
             yield match
 
 
 def _recursive_matches(
-    root: Path, pattern: str, snapshots: dict[Path, WalkSnapshot]
+    root: Path, pattern: str, snapshots: dict[Path, WalkSnapshot], prune: frozenset[str]
 ) -> Iterable[Path]:
     """A ``**`` pattern split at its first ``**``: a fixed (or shallow-globbed)
     root, and a tail served from the shared snapshot."""
     prefix, _, tail = pattern.partition("**")
     prefix = prefix.rstrip("/")
     tail = tail.lstrip("/") or "*"
-    if _has_magic(prefix):
-        roots = [d for d in root.glob(prefix) if d.is_dir()]
-    elif any(part in _PRUNE_DIRS for part in Path(prefix).parts):
-        # The snapshot never enters a pruned dir, so a root spelled under
-        # one is walked live (still pruning below it).
-        return iter_glob(root / prefix, tail, prune_dirs=_PRUNE_DIRS)
-    else:
-        roots = [root / prefix]
+    roots = [d for d in root.glob(prefix) if d.is_dir()] if _has_magic(prefix) else [root / prefix]
+    if prune != _PRUNE_DIRS:
+        # The snapshot never enters a pruned dir, so a pattern that opts into
+        # one is walked live, entering only the names it spells.
+        return chain.from_iterable(iter_glob(r, tail, prune_dirs=prune) for r in roots)
     if root not in snapshots:
         snapshots[root] = WalkSnapshot(root, prune_dirs=_PRUNE_DIRS)
     snap = snapshots[root]
     return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
 
 
-def _literal_depth(pattern: str) -> int:
-    """How many leading directory segments of *pattern* are spelled literally."""
-    depth = 0
-    for seg in pattern.split("/")[:-1]:
-        if _has_magic(seg):
-            break
-        depth += 1
-    return depth
-
-
-def _under_pruned(match: Path, root: Path, literal: int) -> bool:
-    """Whether *match* sits in a pruned dir below its pattern's literal part."""
+def _under_pruned(match: Path, root: Path, prune: frozenset[str]) -> bool:
+    """Whether *match* sits in a dir its pattern leaves pruned."""
     try:
         rel_parts = match.relative_to(root).parts
     except ValueError:
         rel_parts = match.parts
-    return any(part in _PRUNE_DIRS for part in rel_parts[literal:-1])
+    return any(part in prune for part in rel_parts[:-1])
 
 
 def normalize_report_path(
@@ -1250,25 +1241,6 @@ class ResolvedTestCoverage:
         return mostly_unmapped(mapped, mapped + missed)
 
 
-# Extensions that make a test-id prefix look like a real source path (rather
-# than a bare suite name), so we only try to resolve path-shaped ids.
-_CODE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
-
-
-def _extract_test_file(test_id: str) -> str | None:
-    """Pull a resolvable source path out of a raw test id, or ``None``.
-
-    coverage.py contexts look like ``path/to/test_x.py::Class::test|run``:
-    the file lives before ``::`` (and any ``|phase`` suffix). lcov ``TN:``
-    names are often bare suite labels with no path, which we skip.
-    """
-    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
-    if not head:
-        return None
-    looks_pathy = "/" in head or "\\" in head or head.endswith(_CODE_EXTS)
-    return head if looks_pathy else None
-
-
 def resolve_test_reports(
     report: ContextCoverageReport,
     repo_keys: set[str],
@@ -1315,7 +1287,7 @@ def resolve_test_reports(
             out.matched_suffix += 1
 
         test_key: str | None = None
-        head = rec.test_file or _extract_test_file(rec.test_id)
+        head = rec.test_file or nodeid_test_file(rec.test_id)
         if head:
             tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:
@@ -1323,20 +1295,17 @@ def resolve_test_reports(
                 out.test_files_resolved += 1
         elif report.source_format == "coverage.py":
             raw_id = rec.test_id.split("|", 1)[0].strip()
-            parts = [p for p in raw_id.split(".") if p]
-            if len(parts) >= 2 and all(p.isidentifier() for p in parts):
-                for k in range(len(parts), 1, -1):
-                    candidate = "/".join(parts[:k]) + ".py"
-                    tnorm = normalize_report_path(
-                        candidate, strip_prefix=strip_prefix, path_prefix=path_prefix
-                    )
-                    tkey, ambiguous = _match_key(tnorm, repo_keys, suffix_index)
-                    if ambiguous:
-                        break
-                    if tkey is not None:
-                        test_key = tkey
-                        out.test_files_resolved += 1
-                        break
+            for module, _ in dotted_module_paths(raw_id, min_parts=2):
+                tnorm = normalize_report_path(
+                    module + ".py", strip_prefix=strip_prefix, path_prefix=path_prefix
+                )
+                tkey, ambiguous = _match_key(tnorm, repo_keys, suffix_index)
+                if ambiguous:
+                    break
+                if tkey is not None:
+                    test_key = tkey
+                    out.test_files_resolved += 1
+                    break
 
         out.records.append(
             TestCoverage(

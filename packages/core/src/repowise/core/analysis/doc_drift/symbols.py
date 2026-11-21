@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.git_cat_file import cat_file_batch
+from repowise.core.git_sha import is_full_sha
 from repowise.core.ingestion.change_detector import ChangeDetector
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.models import ParsedFile
@@ -56,7 +57,6 @@ _GIT_TIMEOUT_SECONDS = 60
 _SAFETY_SECONDS = 300.0
 _RENAME_RATIO = 0.8
 
-_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SOURCE_EXTS = REGISTRY.extensions_for(REGISTRY.code_languages())
 
@@ -401,7 +401,7 @@ def _blame(root: Path, doc: str, lines: Sequence[int]) -> dict[int, str] | None:
             return None
         for line in ran[1].decode("utf-8", errors="replace").splitlines():
             parts = line.split(" ")
-            if len(parts) in (3, 4) and _SHA_RE.fullmatch(parts[0]) and parts[2].isdigit():
+            if len(parts) in (3, 4) and is_full_sha(parts[0]) and parts[2].isdigit():
                 shas[int(parts[2])] = parts[0]
     return shas
 

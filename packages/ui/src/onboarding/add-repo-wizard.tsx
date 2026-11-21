@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   FileText,
+  Info,
   Settings,
   XCircle,
 } from "lucide-react";
@@ -62,6 +62,8 @@ export const COST_GATE_USD = 2.0;
 export interface AddRepoPreflightResult {
   provider: {
     ok: boolean;
+    /** False only when no provider is chosen; absent on an older server. */
+    configured?: boolean;
     name: string | null;
     model: string | null;
     error: string | null;
@@ -84,6 +86,12 @@ export interface AddRepoInput {
   wiki_style?: string | undefined;
 }
 
+export interface ProviderStatus {
+  provider: string | null;
+  model: string | null;
+  signedIn?: string[];
+}
+
 export interface AddRepoWizardAdapter {
   /** Register the repo without indexing; resolves to its id. Rejects with a
    * message (e.g. "path is not a git repository") that is shown inline. */
@@ -93,8 +101,10 @@ export interface AddRepoWizardAdapter {
   /** Kick off the first full index; resolves to the job id. */
   startIndex: (repoId: string) => Promise<{ job_id: string }>;
   /** Currently active provider/model, or null when none is configured.
-   * Shown as a readiness hint before the repo is even registered. */
-  getProviderStatus?: () => Promise<{ provider: string | null; model: string | null } | null>;
+   * Shown as a readiness hint before the repo is even registered. With no
+   * provider, `signedIn` names the agent CLIs signed in on this machine
+   * (Claude Code, Codex, OpenCode): offered for the docs, never picked. */
+  getProviderStatus?: () => Promise<ProviderStatus | null>;
   /** Where the provider/API-key settings live, for recovery links. */
   settingsHref?: string;
   /** Called when indexing started (jobId set) or the user chose to finish
@@ -111,6 +121,13 @@ function formatCostRange(est: NonNullable<AddRepoPreflightResult["estimate"]>): 
   return `$${est.estimated_cost_usd.toFixed(2)}`;
 }
 
+/** The offer for signed-in agent CLIs, or null when none is signed in. */
+function signedInLine(names: string[] | undefined): string | null {
+  if (!names?.length) return null;
+  const many = names.length > 1;
+  return `${names.join(", ")} ${many ? "are" : "is"} signed in here: choose ${many ? "one" : "it"} under Models to have it write the docs. `;
+}
+
 export interface AddRepoWizardProps {
   adapter: AddRepoWizardAdapter;
   open: boolean;
@@ -119,9 +136,10 @@ export interface AddRepoWizardProps {
 
 /**
  * Add-repository flow: details (path, style) → preflight (provider smoke
- * test + cost estimate) → auto-start indexing. Cheap runs start quietly;
- * estimates above {@link COST_GATE_USD} stop for an explicit confirm, and a
- * broken provider surfaces its error with recovery paths before any spend.
+ * test + cost estimate) → auto-start indexing. Cheap runs and runs with no
+ * model start quietly; estimates above {@link COST_GATE_USD} stop for an
+ * explicit confirm, and a configured provider that fails its check surfaces
+ * its error with recovery paths before any spend.
  */
 export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProps) {
   const [step, setStep] = useState<Step>("details");
@@ -135,10 +153,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
   const [error, setError] = useState<string | null>(null);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<AddRepoPreflightResult | null>(null);
-  const [providerHint, setProviderHint] = useState<{
-    provider: string | null;
-    model: string | null;
-  } | null>(null);
+  const [providerHint, setProviderHint] = useState<ProviderStatus | null>(null);
   const [starting, setStarting] = useState(false);
   // Guards the preflight effect against firing twice (StrictMode) and
   // against a stale run resolving after the dialog moved on.
@@ -206,7 +221,11 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
         const result = await adapter.preflight(id);
         if (run !== preflightRun.current) return;
         setPreflight(result);
-        if (!result.provider.ok) {
+        // No model configured: index without one, as the CLI does. The
+        // error step is for a configured provider that fails its check. A
+        // server that omits `configured` cannot tell the two apart, so any
+        // failed check stops on the error step there.
+        if (!result.provider.ok && result.provider.configured !== false) {
           setStep("provider-error");
           return;
         }
@@ -267,7 +286,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
         {step === "details" && (
           <>
             <DialogHeader>
-              <DialogTitle>Add Repository</DialogTitle>
+              <DialogTitle>Add repository</DialogTitle>
             </DialogHeader>
 
             <form onSubmit={handleDetailsSubmit} className="space-y-4 py-2 min-w-0">
@@ -308,7 +327,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="repo-url">
                     Remote URL{" "}
@@ -353,30 +372,32 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
                 </Select>
               </div>
 
-              {providerHint !== null && (
-                <p className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
-                  {providerHint.provider ? (
-                    <>
-                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-fresh)]" />
-                      Docs will use {providerHint.provider}
-                      {providerHint.model ? ` · ${providerHint.model}` : ""}
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />
-                      No AI provider configured yet.
+              {providerHint !== null &&
+                (providerHint.provider ? (
+                  <p className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-fresh)]" />
+                    Docs will use {providerHint.provider}
+                    {providerHint.model ? ` · ${providerHint.model}` : ""}
+                  </p>
+                ) : (
+                  <p className="flex items-start gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+                    <Info className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      No model set up, so Repowise indexes the code, health and decisions now
+                      and builds the docs from the code.{" "}
+                      {signedInLine(providerHint.signedIn) ??
+                        "Add a model later to write the how and why. "}
                       {adapter.settingsHref && (
                         <a
                           href={adapter.settingsHref}
                           className="text-[var(--color-accent-primary)] hover:underline"
                         >
-                          Set one up
+                          Models
                         </a>
                       )}
-                    </>
-                  )}
-                </p>
-              )}
+                    </span>
+                  </p>
+                ))}
 
               {error && <p className="text-sm text-[var(--color-outdated)]">{error}</p>}
 
@@ -412,7 +433,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
         {step === "provider-error" && preflight && (
           <>
             <DialogHeader>
-              <DialogTitle>Provider isn&apos;t ready</DialogTitle>
+              <DialogTitle>Model provider isn&apos;t ready</DialogTitle>
             </DialogHeader>
             <div className="space-y-3 py-2">
               <div className="flex items-start gap-2 rounded-md border border-[var(--color-outdated)]/40 bg-[var(--color-outdated)]/10 px-3 py-2 text-sm">
@@ -421,7 +442,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
                   <p className="font-medium text-[var(--color-text-primary)]">
                     {preflight.provider.name
                       ? `${preflight.provider.name} check failed`
-                      : "No AI provider is configured"}
+                      : "The configured model provider could not be loaded"}
                   </p>
                   {preflight.provider.error && (
                     <p className="mt-0.5 break-words text-xs text-[var(--color-text-secondary)]">
@@ -431,8 +452,8 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
                 </div>
               </div>
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                The repository is registered. Fix the provider (usually an API key) and
-                retry, or index without docs now and generate them later.
+                The repository is registered. Fix the provider (usually its API key) and
+                retry the check, or finish now and index it later from its overview.
               </p>
             </div>
             <DialogFooter className="flex-wrap gap-2">

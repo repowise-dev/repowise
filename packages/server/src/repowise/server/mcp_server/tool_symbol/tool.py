@@ -9,6 +9,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -32,7 +33,7 @@ from .callees import _MAX_CALLEE_DEPTH
 from .lookup import _resolve_symbol, _rows_in_scope
 from .misses import _not_found_response
 from .omission import _extract_omission_ref, _resolve_omission_ref
-from .ranges import _range_id_read
+from .ranges import _line_id_target, _range_id_read, _repo_relative_id
 from .text import _elapsed_ms
 
 
@@ -96,8 +97,9 @@ async def _indexed_symbol_read(
         repository = await _get_repo(session)
         rows = await _resolve_symbol(session, repository.id, symbol_id)
 
-    # Before the exclusion spec: it is built from the repo path.
-    if not ctx.path:
+    # Before the exclusion spec: it is built from the repo path. A context
+    # with no checkout has no path and still serves the stored symbol.
+    if not ctx.path and _state.request_context() is None:
         from repowise.server.mcp_server._savings.interaction import error_reply
 
         return error_reply(
@@ -135,20 +137,22 @@ async def get_symbol(
 ) -> dict:
     """Follow-up read of one symbol whose id another response already gave you.
 
-    **Not an entry point.** ``get_answer`` ships ``symbol_bodies``; for a
-    whole file ``get_context(include=["skeleton"])`` or a Read is one call.
+    **Not an entry point.** `get_answer` ships `symbol_bodies`; for a
+    whole file `get_context(include=["skeleton"])` or a Read is one call.
     Never walk a file symbol by symbol. Returns verified, line-numbered
-    source; a truncated result carries the ``continuation`` to pass back.
+    source; a truncated result carries the `continuation` to pass back as
+    symbol_id.
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
-            live range, or an omission ref. A bare file path is not an id.
-        depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
-            it calls, transitively, in ``callee_bodies``.
-        context_lines: extra lines before/after (0-50).
-        query: regex/substring filter on an omission ref's lines.
-        id, reference: aliases for ``symbol_id``.
-        repo: usually omitted.
+            live range, or an omission ref.
+        depth: 1 is this symbol alone; 2-3 also return the bodies it calls,
+            transitively, in `callee_bodies`.
+        context_lines: Extra lines before and after (0-50).
+        query: Regex or substring filter on an omission ref's lines.
+        id: Alias for symbol_id.
+        reference: A `continuation_reference` or `fetch_reference`, unchanged.
+        repo: Usually omitted.
     """
     symbol_id, repo = _reference_arguments(reference, symbol_id, id, repo)
     if repo == "all":
@@ -185,6 +189,9 @@ async def get_symbol(
         routed = await _routed_read(symbol_id, context_lines, query, depth)
         if routed is not None:
             return routed
+    symbol_id = _repo_relative_id(symbol_id, ctx.path)
+    # A "path:line" id reads as the symbol holding that line, or the lines around it.
+    symbol_id = await _line_id_target(symbol_id, ctx) or symbol_id
     ranged = await _range_id_read(symbol_id, context_lines, ctx, t0)
     if ranged is not None:
         return ranged

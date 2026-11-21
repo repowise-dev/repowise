@@ -34,6 +34,7 @@ from ...batches import chunked
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
+from ._notes import KEEP, next_note
 from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
@@ -418,8 +419,12 @@ async def update_refactoring_suggestion_status(
     status: str,
     *,
     reason: str = "user",
+    note: Any = KEEP,
 ) -> RefactoringSuggestion | None:
     """Transition one plan's lifecycle state. The single owner of that write.
+
+    *note* is a person's free-text why (``status_reason`` is the coded cause:
+    ``user`` or ``no_longer_detected``), kept as :func:`._notes.next_note` says.
 
     *suggestion_id* is the storage id or the content-derived public id, because
     the two surfaces that address a plan quote different strings. Returns
@@ -431,6 +436,7 @@ async def update_refactoring_suggestion_status(
     row = await get_refactoring_suggestion(session, repository_id, suggestion_id)
     if row is None:
         return None
+    row.status_note = next_note(row.status, status, row.status_note, note)
     row.status = status
     row.status_reason = reason
     row.status_changed_at = _now_utc()

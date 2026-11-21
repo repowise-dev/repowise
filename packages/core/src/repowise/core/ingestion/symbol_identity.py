@@ -36,6 +36,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 
+from ..ids import SYMBOL_SEP
 from .decorator_names import property_mutator_role
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
@@ -46,6 +47,9 @@ from .type_names import strip_type_arguments, type_argument_count
 _PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?|[A-Za-z_]\w*\(.*\)")
 _COUNT = re.compile(r"\d+")
 _GENERIC_ARITY = re.compile(r"`\d+$")
+
+#: The name of the synthetic per-file symbol that top-level calls hang off.
+MODULE_SYMBOL_NAME = "__module__"
 
 
 def split_symbol_id(symbol_id: str) -> tuple[str, str | None]:
@@ -93,9 +97,30 @@ def id_segment_name(segment: str) -> str:
     return _GENERIC_ARITY.sub("", segment)
 
 
-def symbol_id_path(symbol_id: str) -> str:
-    """The file path an id starts with: ``A.java::A::m`` -> ``A.java``."""
-    return symbol_id.partition("::")[0]
+def make_symbol_id(path: str, *names: str) -> str:
+    """The id of a symbol in *path*: ``make_symbol_id("A.java", "A", "m")`` -> ``A.java::A::m``.
+
+    *names* are the id segments after the path, outermost first; each is
+    joined as given, so a name holding ``.`` or ``#`` keeps it. A path that
+    itself holds ``::`` (legal on POSIX) gives an id :func:`file_of_symbol`
+    cannot split back; ids assume no path does.
+    """
+    return SYMBOL_SEP.join((path, *names))
+
+
+def module_symbol_id(path: str) -> str:
+    """The synthetic symbol that owns *path*'s top-level code: ``a.py::__module__``."""
+    return make_symbol_id(path, MODULE_SYMBOL_NAME)
+
+
+def file_of_symbol(symbol_id: str) -> str:
+    """The file path an id starts with: ``A.java::A::m`` -> ``A.java``; a file id is itself."""
+    return symbol_id.partition(SYMBOL_SEP)[0]
+
+
+def local_symbol_id(symbol_id: str) -> str:
+    """The id after its file: ``m.py::C::m`` -> ``C::m``; a file id gives ``""``."""
+    return symbol_id.partition(SYMBOL_SEP)[2]
 
 
 def outer_scope(scope: str) -> str:
@@ -508,12 +533,17 @@ def _reparent_members(symbols: list[Symbol], owner: Symbol, segment: str) -> Non
 
 
 __all__ = [
+    "MODULE_SYMBOL_NAME",
     "base_symbol_id",
     "clr_parameter_type",
     "disambiguate_colliding_ids",
+    "file_of_symbol",
     "has_overload_identity",
     "id_segment_name",
     "kotlin_erased_type",
+    "local_symbol_id",
+    "make_symbol_id",
+    "module_symbol_id",
     "outer_scope",
     "overload_sets",
     "pair_overloads",
@@ -523,6 +553,5 @@ __all__ = [
     "symbol_discriminator",
     "symbol_id_arity",
     "symbol_id_discriminator",
-    "symbol_id_path",
     "untyped_symbol_id",
 ]

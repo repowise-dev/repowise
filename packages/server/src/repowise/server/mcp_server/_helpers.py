@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud.repository import get_repository_by_path
 from repowise.core.persistence.models import (
     Repository,
@@ -178,7 +179,7 @@ async def _default_repo(session: AsyncSession) -> Repository:
     scoped = await _scoped_repo(session)
     if scoped is not None:
         return scoped
-    served = _state._repo_path
+    served = _state.served_path()
     if served:
         for key in dict.fromkeys((served, str(Path(served).resolve()))):
             obj = await get_repository_by_path(session, key)
@@ -243,11 +244,17 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     In **workspace mode**: resolves the alias via the registry and returns
     the matching ``RepoContext``.
 
+    A caller that embeds the tools sets the context for the request
+    (:func:`_state.serving`); it is returned as is.
+
     Raises ``ValueError`` for ``repo="all"`` — callers must handle that
     case explicitly before calling this helper.
     """
     from repowise.core.workspace.registry import RepoContext
 
+    request = _state.request_context()
+    if request is not None:
+        return request
     registry = _state._registry
     if registry is None:
         # Single-repo mode — validate the repo param against the DB if given
@@ -301,7 +308,7 @@ async def _single_repo_checkout(repo: str) -> Any:
         try:
             await _get_repo(session, repo)
         except LookupError:
-            served = _state._repo_path
+            served = _state.served_path()
             matched = (
                 match_checkout(repo, served) if served and Path(repo).is_absolute() else None
             )
@@ -783,25 +790,62 @@ def read_repo_file_text(
     Source-coordinate readers must set ``allow_extracted=False``. Async callers
     allowing extraction must offload this synchronous reader.
 
-    Classification, containment and conversion belong to the core source reader;
-    this optional serving boundary translates extraction failures to unavailable.
+    Reads go through :func:`source_for`, so a request served with no source
+    reads nothing.
     """
+    source = source_for(repo_root)
+    return source.read(file_path, allow_extracted=allow_extracted) if source is not None else None
+
+
+#: The start of every field's reason on a request served with no source.
+NO_SOURCE_PREFIX = "no source on this server"
+#: A field that needs git history, on a request served without it.
+NO_GIT_REASON = "no git history on this server: run it in your checkout"
+
+
+def no_source_reason(path: str | None = None, start: int | None = None, end: int | None = None) -> str:
+    """The one reason a field gives when its request has no source to read."""
+    if not path:
+        return f"{NO_SOURCE_PREFIX}: read the files from your checkout"
+    where = path if start is None else f"{path}:{start}-{end if end is not None else start}"
+    return f"{NO_SOURCE_PREFIX}: read `{where}` from your checkout"
+
+
+def serves_no_source() -> bool:
+    """Whether this request is served from a context that declares no source."""
+    ctx = _state.request_context()
+    return ctx is not None and ctx.source is None
+
+
+def no_source_field(path: str | None = None, start: int | None = None, end: int | None = None) -> dict:
+    """``complete: false`` and the one reason, for a field its request has no source to fill."""
+    return {"complete": False, "reasons": [no_source_reason(path, start, end)]}
+
+
+def source_for(repo_root: Path | str | None) -> Any:
+    """The ``SourceView`` live reads under *repo_root* go through, or ``None``.
+
+    The request context's source when one is set (``None`` when that server has
+    no checkout), else the checkout on disk at *repo_root*.
+    """
+    ctx = _state.request_context()
+    if ctx is not None:
+        return ctx.source
     if repo_root is None:
         return None
-    from repowise.core.ingestion.document_extractors import DocumentExtractionError
-    from repowise.core.ingestion.source_reader import read_source
+    from repowise.core.ingestion.source_view import DiskSource
 
-    try:
-        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
-        if source is None:
-            return None
-        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (OSError, ValueError, DocumentExtractionError):
+    return DiskSource(repo_root)
+
+
+def _get_exclude_spec(repo_path: Path | str | None) -> Any:
+    """Compile the repo's exclusion rules into a PathSpec, or None.
+
+    None with no checkout: the rules live in its files, and the index already
+    left out what they excluded when it was built.
+    """
+    if repo_path is None:
         return None
-
-
-def _get_exclude_spec(repo_path: Path | str) -> Any:
-    """Compile the repo's exclusion rules into a PathSpec, or None."""
     from repowise.core.exclusion import build_exclude_spec
 
     return build_exclude_spec(repo_path)
@@ -861,7 +905,7 @@ def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     """Shape E: ids look like ``"path::Name"``; match on the file portion."""
     if not spec:
         return ids
-    return [i for i in ids if not is_excluded(i.split("::", 1)[0], spec)]
+    return [i for i in ids if not is_excluded(file_of_symbol(i), spec)]
 
 
 def drop_echoed_target(targets: Any) -> None:

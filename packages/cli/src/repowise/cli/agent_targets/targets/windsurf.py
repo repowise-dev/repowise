@@ -29,7 +29,9 @@ from ..formats.server_entry import (
     RENAME_HINT,
     RemoteServerEntryError,
     ServerSpec,
+    agents_remove_command,
     is_remote_entry,
+    read_servers,
 )
 from ..types import (
     Capability,
@@ -42,6 +44,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -207,6 +210,18 @@ class WindsurfTarget:
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         return [str(config_path())] if scope is Scope.USER else []
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``mcpServers`` in the one user ``mcp_config.json`` Windsurf reads."""
+        path = config_path()
+        return [
+            ServerMap(
+                path,
+                Scope.USER,
+                read_servers(path, "mcpServers"),
+                remove_command=agents_remove_command(ID, "user"),
+            )
+        ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         from ..formats.json_merge import is_damaged

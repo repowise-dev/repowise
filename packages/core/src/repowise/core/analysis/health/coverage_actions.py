@@ -14,8 +14,9 @@ from collections.abc import Collection, Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ...test_paths import names_test_for, paired_test_names
-from ..execution_graph import file_of_symbol
 
 #: The user-authored file that turns a marker off for a path (``health/config.py``).
 HEALTH_RULES_FILE = ".repowise/health-rules.json"

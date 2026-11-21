@@ -668,7 +668,7 @@ async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     await run.progress.drain_and_stop()
 
     elapsed = time.monotonic() - run.start
-    pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
+    pages_generated = await _record_index_completion(run, docs, result, all_pages, elapsed)
     await _write_index_state(
         run,
         docs,
@@ -807,9 +807,13 @@ def _provider_failed_to_load(run: _JobRun) -> bool:
 
 
 async def _record_index_completion(
-    run: _JobRun, result: Any, all_pages: list, elapsed: float
+    run: _JobRun, docs: _DocsPlan, result: Any, all_pages: list, elapsed: float
 ) -> int:
-    """Mark the job completed with its run summary; return the pages generated."""
+    """Mark the job completed with its run summary; return the pages generated.
+
+    ``docs_mode`` says who wrote the docs this run, so a client can call a run
+    with no model an index rather than a generation.
+    """
     from repowise.core.generation.models import count_stub_fallbacks
 
     pages_generated = len(all_pages)
@@ -828,6 +832,7 @@ async def _record_index_completion(
                 "file_count": result.file_count,
                 "symbol_count": result.symbol_count,
                 "pages_generated": pages_generated,
+                "docs_mode": docs.docs_mode,
                 "provider_issue": _provider_issue(
                     all_pages, docs_skipped=_provider_failed_to_load(run)
                 ),

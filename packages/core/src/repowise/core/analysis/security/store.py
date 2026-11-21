@@ -38,9 +38,11 @@ class SecurityScanner:
         file_path: str,
         source: str,
         symbols: list[Any],
+        *,
+        repo_root: str | None = None,
     ) -> list[dict]:
         """Async wrapper over :func:`scan_source`."""
-        return scan_source(file_path, source, symbols)
+        return scan_source(file_path, source, symbols, repo_root=repo_root)
 
     def _uses_sqlite(self) -> bool:
         """True when the bound session talks to SQLite (local/dev backend)."""

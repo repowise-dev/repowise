@@ -236,3 +236,72 @@ def install_hosted(
     result.record(written.path, written.action, written.reason)
     result.server_name = name
     return result
+
+
+def launches_repowise(entry: Mapping) -> bool:
+    """Whether *entry* starts ``repowise mcp`` under a bare or pinned command.
+
+    Both shapes the hosts use: ``command`` plus ``args``, and OpenCode's single
+    ``command`` list. A name other than :data:`LOCAL_NAME` running this is a
+    second copy of the local server, which is what ``doctor`` counts.
+    """
+    import re
+
+    command, args = entry.get("command"), entry.get("args")
+    if isinstance(command, list):
+        command, args = (command[0] if command else None), command[1:]
+    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
+        return False
+    return re.split(r"[\\/]", command)[-1].lower() in ("repowise", "repowise.exe")
+
+
+def read_servers(path: Path, *keys: str) -> dict:
+    """The server map under *keys* in *path*, or ``{}``. Never raises.
+
+    The format follows the suffix: TOML, YAML, else JSON. A file that cannot be
+    read or parsed (a JSONC comment included) contributes nothing, so a doctor
+    count built on this can only miss a copy, never invent one.
+    """
+    import json
+    import tomllib
+
+    from .yaml_merge import load_mapping
+
+    try:
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".toml":
+            data: object = tomllib.loads(text)
+        elif path.suffix in (".yaml", ".yml"):
+            data = load_mapping(text)
+        else:
+            data = json.loads(text)
+    except (OSError, ValueError):
+        # ValueError covers JSON, TOML and YAML parse errors and a file that is
+        # not UTF-8.
+        return {}
+    for key in keys:
+        data = data.get(key) if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def local_servers(servers: Mapping) -> list[str]:
+    """Names in *servers* that load the local repowise server.
+
+    :data:`LOCAL_NAME` without a URL, or any name launching
+    ``repowise mcp``. A remote (hosted) entry is not counted: ``agents add
+    --hosted`` puts it beside a local one on purpose.
+    """
+    return [
+        name
+        for name, entry in servers.items()
+        if isinstance(entry, Mapping)
+        and (
+            launches_repowise(entry)
+            or (name == LOCAL_NAME and remote_url(entry) is None)
+        )
+    ]
+
+
+def agents_remove_command(target_id: str, scope: str) -> str:
+    """The command that drops the entry repowise wrote for *target_id* at *scope*."""
+    return f"repowise agents remove --target={target_id} --scope={scope}"

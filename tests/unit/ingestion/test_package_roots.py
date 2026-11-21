@@ -89,6 +89,54 @@ def test_the_traverser_reads_the_same_list():
     assert package_manifest_names() == _MANIFEST_FILES
 
 
+_CMAKE_BAZEL = (
+    "CMakeLists.txt",
+    "BUILD",
+    "BUILD.bazel",
+    "MODULE.bazel",
+    "WORKSPACE",
+    "WORKSPACE.bazel",
+)
+
+
+def test_cmake_and_bazel_files_are_manifests_but_never_package_roots(tmp_path):
+    """Every CMake subdirectory has a ``CMakeLists.txt`` and every Bazel package
+    a ``BUILD``: recognised as build config, they mark no unit, so monorepo
+    detection, the package-root scan and health's module column all ignore them."""
+    for name in _CMAKE_BAZEL:
+        assert REGISTRY.is_manifest(f"lib/{name}"), name
+        assert not REGISTRY.is_package_manifest(f"lib/{name}"), name
+        assert name not in package_manifest_names(), name
+
+    for i, name in enumerate(_CMAKE_BAZEL):
+        _write(tmp_path, f"src/mod{i}/{name}", "x\n")
+        _write(tmp_path, f"src/mod{i}/a.cpp", "int a();\n")
+    _write(tmp_path, "CMakeLists.txt", "project(x)\n")
+    _write(tmp_path, "web/package.json", '{"name":"web"}')
+
+    roots = scan_package_roots(tmp_path)
+    assert roots == {"web"}
+    assert module_for("src/mod0/a.cpp", roots) != "src/mod0"
+    structure = FileTraverser(tmp_path).get_repo_structure()
+    assert [p.path for p in structure.packages] == ["web"]
+
+
+def test_registry_manifest_queries_follow_one_matching_rule():
+    """Exact names compare as the tool spells them; the ``*.csproj`` glob ignores case."""
+    assert REGISTRY.is_package_manifest("services/api/go.mod")
+    assert REGISTRY.is_package_manifest("Package.swift")
+    assert REGISTRY.is_package_manifest("app\\pubspec.yaml")
+    assert REGISTRY.is_package_manifest("src/Shop/Shop.CSPROJ")
+    assert REGISTRY.is_package_manifest("backend/requirements-dev.txt")
+    assert REGISTRY.is_package_manifest("Requirements.TXT")
+    assert not REGISTRY.is_package_manifest("requirements/base.txt")
+    assert not REGISTRY.is_package_manifest("Cargo.TOML")
+    assert not REGISTRY.is_package_manifest("vite.config.js")
+    assert REGISTRY.is_manifest("vite.config.js")
+    assert not REGISTRY.is_manifest("src/main.py")
+    assert REGISTRY.package_manifest_filenames() <= REGISTRY.manifest_filenames()
+
+
 # ---------------------------------------------------------------------------
 # The disk scan
 # ---------------------------------------------------------------------------

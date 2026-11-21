@@ -216,10 +216,9 @@ async def _index_sample_repo(root: Path):
     A copy, outside any git checkout, so git signals are absent rather than
     whatever the surrounding checkout's history happens to be.
     """
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from repowise.core.persistence import init_db, upsert_repository
+    from repowise.core.persistence import create_engine, init_db, upsert_repository
     from repowise.core.persistence.search import FullTextSearch
     from repowise.core.persistence.vector_store import InMemoryVectorStore
     from repowise.core.pipeline import persist_pipeline_result, run_pipeline
@@ -241,11 +240,12 @@ async def _index_sample_repo(root: Path):
     pages = list(result.generated_pages or [])
     known = {fi.path for fi in result.file_infos}
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    # A file store, as the server opens one: every session gets its own
+    # connection. An in-memory store shares one connection among the legs a
+    # tool call runs at once, and a leg cancelled at its time budget closes
+    # that connection under the others; concurrent closes of one aiosqlite
+    # connection never return, so the test hung on a slow runner.
+    engine = create_engine(f"sqlite+aiosqlite:///{(root / 'wiki.db').as_posix()}")
     await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with factory() as session:

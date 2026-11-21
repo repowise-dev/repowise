@@ -6,6 +6,7 @@ import { healthDeltaKind } from "./health-delta";
 import type { ResponsiveColumn } from "../shared/responsive-table";
 import { formatLOC } from "../lib/format";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
+import { SIZE_AND_SPREAD_LABEL } from "./risk-copy";
 import { RelativeTime } from "../shared/relative-time";
 
 /** The commit list's columns, health first. Split from the table so the list
@@ -107,7 +108,7 @@ export function commitColumns(
     },
     {
       key: "risk",
-      header: "Review priority",
+      header: SIZE_AND_SPREAD_LABEL,
       headerClassName: "w-36",
       priority: 3,
       // Context, not the lead: the diff-shape rank supports the health delta,

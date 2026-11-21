@@ -16,6 +16,7 @@ from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
+from ..symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -662,6 +663,7 @@ class ResolveMixin:
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
             cpp_index=cpp_index,
+            source_map=self._source_map,
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -836,7 +838,7 @@ class ResolveMixin:
         A mention, not a call: running the decorator does not run the function.
         """
         registrar_ids = {
-            f"{path}::{name}"
+            make_symbol_id(path, name)
             for path, parsed in self._parsed_files.items()
             for name in parsed.registrars
         }

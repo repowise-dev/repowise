@@ -73,8 +73,18 @@ async def list_performance_opportunities(
     proof: str | None = Query(
         None,
         description=(
-            "proven (the default) or unproven: causes whose loop nobody measured "
-            "to grow, kept out of the default queue and counted in its summary."
+            "proven (the default: the code or a run shows the cost), unproven (the "
+            "code does not show the loop size and nothing measured it) or "
+            "background_unproven; the last two are kept out of the default queue "
+            "and counted in its summary."
+        ),
+    ),
+    static_cost: str | None = Query(
+        None,
+        description=(
+            "What the code alone shows about the cost: grows_with_data, "
+            "grows_by_shape, per_call_reached, per_call_unreached, bounded or "
+            "size_unknown. Narrows the chosen scope; absent is every value."
         ),
     ),
     role: str | None = Query(
@@ -126,6 +136,7 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionability=actionability,
         proof=proof,
+        static_cost=static_cost,
         role=role,
         view=view,
         sort=sort,

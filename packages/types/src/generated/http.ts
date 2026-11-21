@@ -89,6 +89,25 @@ export interface ActionsResponse {
   summary: Record<string, string>;
   rules: ActionRuleStatus[];
   unavailable: Record<string, string>;
+  setup?: ActionsSetup | null;
+}
+
+/** Setup steps left, and whether the finish-setup agent pass is offered. */
+export interface ActionsSetup {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
 }
 
 /** The provider/model this scope resolves to; ``None`` when unset. */
@@ -1401,6 +1420,8 @@ export interface CostGroupResponse {
   input_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 export interface CostSummaryResponse {
@@ -1409,6 +1430,8 @@ export interface CostSummaryResponse {
   total_input_tokens: number;
   total_output_tokens: number;
   since: string | null;
+  subscription_calls?: number;
+  local_calls?: number;
 }
 
 /** Two areas whose files change together; ``source == target`` for same-area pairs. */
@@ -1621,10 +1644,11 @@ export interface DeadCodeSummaryResponse {
  *
  * ``kind`` is the prompt served: ``discover`` asked with no background
  * records to check comes back as ``add``. ``text`` is empty only for
- * ``agreements`` with none stored, and then a surface offers nothing.
+ * ``agreements`` with none stored and ``review_all`` with no background
+ * record left, and then a surface offers nothing.
  */
 export interface DecisionAgentPromptResponse {
-  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  kind: "discover" | "review_all" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
   text: string;
   ids: string[];
   count: number;
@@ -2115,6 +2139,55 @@ export interface EvidencePreview {
   evidence_line?: number | null;
 }
 
+/** One stored run: its workload, commit, freshness and where its time went. */
+export interface EvidenceRunSummary {
+  run_id: string;
+  kind: string;
+  workload: string;
+  class: string;
+  environment: string;
+  value_kind: string | null;
+  unit: string | null;
+  tool: string | null;
+  tool_version: string | null;
+  commit_sha: string | null;
+  freshness: "current" | "stale" | "unknown";
+  dirty: boolean | null;
+  ingested_at: string | null;
+  units: EvidenceUnits;
+  skipped: Record<string, number> | null;
+  total_value: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  mapping_partial: boolean;
+  tests_failed: number | null;
+}
+
+/** Every stored run, newest first (bounded by the store's prune caps). */
+export interface EvidenceRunsResponse {
+  reference_commit: string | null;
+  runs: EvidenceRunSummary[];
+}
+
+/** The newest run of every workload, and whether anything is ranked. */
+export interface EvidenceStatusResponse {
+  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  reference_commit: string | null;
+  runs_stored: Record<string, number>;
+  workloads: EvidenceRunSummary[];
+}
+
+/** How the run's own entries mapped at ingest; null when the writer did not know. */
+export interface EvidenceUnits {
+  total: number | null;
+  matched: number | null;
+  skipped: number | null;
+  outside_repo: number | null;
+  truncated: number | null;
+}
+
 export interface ExecutionFlowEntry {
   entry_point: string;
   entry_point_name: string;
@@ -2297,6 +2370,22 @@ export interface FileScoreShiftResponse {
   change?: number | null;
 }
 
+/** The summed duration of the timed tests that run one production file. */
+export interface FileTestCost {
+  file_path: string;
+  test_seconds: number;
+  timed_tests: number;
+  tests: number;
+}
+
+export interface FileTestCosts {
+  basis: "measured" | "inferred";
+  files: FileTestCost[];
+  files_total: number;
+  not_production: number;
+  every_test: number;
+}
+
 export interface FileTrendPointResponse {
   taken_at?: string | null;
   score: number;
@@ -2306,6 +2395,28 @@ export interface FileTrendPointResponse {
 export interface FindingStatusUpdate {
   /** open | acknowledged | resolved | false_positive */
   status: string;
+}
+
+export interface FirstLookMarkRequest {
+  status: "done" | "ack" | "false_positive" | "snooze";
+  reason?: string | null;
+  days?: number | null;
+}
+
+export interface FirstLookMarkResponse {
+  id: string;
+  status: "open" | "done" | "acknowledged" | "false_positive" | "snoozed" | "resolved";
+  store: string;
+  reason?: string | null;
+  until?: string | null;
+}
+
+export interface FirstLookResponse {
+  report: Record<string, unknown>;
+  report_prompt: string;
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  can_rewrite: boolean;
+  rewrite_cost_usd?: number | null;
 }
 
 export interface FixAction {
@@ -2455,6 +2566,7 @@ export interface FixVerify {
   command: string | null;
   basis: "measured" | "inferred" | "unknown";
   prerequisite?: string | null;
+  measure?: Record<string, unknown> | null;
 }
 
 /** Optional per-call provider/model overrides, as chat accepts. */
@@ -3011,6 +3123,31 @@ export interface KnowledgeMatrixResponse {
   files: ([number, string, number, number | null, boolean, number, number | null, [number, number][], boolean])[];
 }
 
+/** One agent's MCP config for a repo, as ``repowise agents print-config`` prints it. */
+export interface McpClientConfigResponse {
+  repo_id: string;
+  clients: McpClientRef[];
+  target: string;
+  display_name: string;
+  config: string;
+  docs_url?: string | null;
+  profile?: string | null;
+  tool_count: number;
+  always_load?: boolean | null;
+}
+
+/** An agent repowise can print an MCP config for. */
+export interface McpClientRef {
+  id: string;
+  display_name: string;
+}
+
+/** The tools one agent is listed for this repo, resolved as its server resolves them. */
+export interface McpClientSurface {
+  profile?: string | null;
+  tools?: string[];
+}
+
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -3046,6 +3183,97 @@ export interface McpToolSurfaceResponse {
   profile?: string | null;
   profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
+  command?: string;
+  clients?: Record<string, McpClientSurface>;
+}
+
+/** What runtime evidence says about one function, from its basis run. */
+export interface MeasuredFunction {
+  symbol_id: string;
+  file_path: string;
+  tier: "measured" | "ranked";
+  rank: number | null;
+  self_share: number | null;
+  total_share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  samples: number | null;
+  run_samples: number | null;
+  run_id: string | null;
+  run_count: number | null;
+  workload_name: string | null;
+  workload_class: string | null;
+  value_kind: string | null;
+  ordering_only: boolean | null;
+  freshness: "current" | "body_unchanged" | "stale" | null;
+  evidence_commit_sha: string | null;
+  measured_at: string | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  run_unlisted: number | null;
+}
+
+/** Measured functions of the asked symbol or file; empty means unknown. */
+export interface MeasuredFunctionsResponse {
+  functions: MeasuredFunction[];
+}
+
+export interface MeasuredGroup {
+  runs: MeasuredRun[];
+  rows: MeasuredRow[];
+  total: number;
+}
+
+export interface MeasuredOwner {
+  name: string;
+  commit_pct: number | null;
+}
+
+/** What each workload's newest run ranks, grouped by workload class. */
+export interface MeasuredResponse {
+  basis: "measured" | "unknown";
+  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  command: string | null;
+  measured: MeasuredGroup | null;
+  measured_in_tests: MeasuredGroup | null;
+}
+
+/** One ranked production function of one run. */
+export interface MeasuredRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness: "current" | "body_unchanged" | "stale";
+  callers_total: number | null;
+  callers: string[];
+  owner: MeasuredOwner | null;
+  tests: string[] | null;
+  on_static_findings?: string[];
+}
+
+/** A run's basis: workload, commit, age, samples and where its time went. */
+export interface MeasuredRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  samples: number | null;
+  repo_self_share: number | null;
+  wait_share: number | null;
+  library_share: number | null;
+  outside_production: number | null;
+  value_kind: string | null;
+  ordering_only: boolean;
 }
 
 export interface ModuleEdgeResponse {
@@ -4258,6 +4486,40 @@ export interface SavingsBreakdownRow {
   group?: string | null;
   events?: number;
   saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
+}
+
+/**
+ * One check tool: the calls agents made and what Repowise returned.
+ *
+ * Outcome fields are null when no call in the window recorded one (calls made
+ * before outcomes were kept, or a host that records none) and where a field
+ * does not apply to the tool. ``high``/``medium``/``low`` count changes by
+ * their repo-relative level for ``get_change_risk`` and assessed files for
+ * ``get_risk``. Counts of what was returned, never of what an agent did.
+ */
+export interface SavingsCheckRow {
+  tool: string;
+  calls?: number;
+  outcome_calls?: number;
+  high?: number | null;
+  medium?: number | null;
+  low?: number | null;
+  decisions_accepted?: number | null;
+  decisions_candidate?: number | null;
+  decisions_none?: number | null;
+  findings?: number | null;
+  files?: number | null;
+  items?: number | null;
+  high_confidence?: number | null;
+}
+
+/** Files not opened and tool calls answered in one day, agent or surface. */
+export interface SavingsFilesRow {
+  group?: string | null;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
 }
 
 /** One kind of observed opportunity. Never part of achieved savings. */
@@ -4265,6 +4527,33 @@ export interface SavingsOpportunityRow {
   kind: string;
   observations?: number;
   estimated_potential_input_tokens?: number;
+}
+
+/** Where the output estimate comes from, so the figure is reproducible. */
+export interface SavingsOutputCalibration {
+  source: string;
+  version: string;
+  per_question?: boolean;
+  questions_per_session_cap?: number;
+  formula?: string;
+  sessions?: number;
+  questions?: number;
+  unpriced_output_tokens_saved?: number;
+  per_model?: SavingsOutputModelRow[];
+}
+
+/** The output estimate for sessions on one model and output rate. */
+export interface SavingsOutputModelRow {
+  model?: string | null;
+  basis: string;
+  sessions?: number;
+  questions?: number;
+  mcp_calls_per_question?: number;
+  reduction?: number;
+  output_tokens_per_question?: number;
+  output_tokens_saved?: number;
+  output_rate_usd_per_million?: number | null;
+  output_usd_saved?: number | null;
 }
 
 /**
@@ -4327,6 +4616,21 @@ export interface SavingsResponse {
   missed_window_days?: number;
   reread_events?: number;
   reread_tokens_est?: number;
+  files_not_opened?: number;
+  files_not_opened_tokens?: number;
+  tool_calls_answered?: number;
+  files_per_day?: SavingsFilesRow[];
+  files_per_agent?: SavingsFilesRow[];
+  files_per_surface?: SavingsFilesRow[];
+  subagent_events?: number;
+  subagent_saved_input_tokens?: number;
+  backfilled_saved_input_tokens?: number;
+  backfilled_input_savings_usd?: number;
+  output_tokens_saved_estimated?: number | null;
+  output_usd_saved_estimated?: number | null;
+  total_usd_saved_estimated?: number | null;
+  calibration?: SavingsOutputCalibration | null;
+  checks?: SavingsCheckRow[];
 }
 
 export interface SearchResultResponse {
@@ -4449,6 +4753,7 @@ export interface SettingView {
   key: string;
   type: "bool" | "int" | "float" | "str" | "list" | "mapping";
   default_note?: string | null;
+  cost_note?: string | null;
   description: string;
   area: string;
   scope: "repo" | "user" | "env";
@@ -4536,6 +4841,18 @@ export interface SetupModel {
   configured_providers?: string[];
 }
 
+/**
+ * Whether each Read/search hook surface is on for this repo (``hooks.*`` flags).
+ *
+ * The flags only; the augment hook that carries them is the Claude Code
+ * agent row's hooks.
+ */
+export interface SetupReadHooks {
+  read_skeleton: boolean;
+  read_reread: boolean;
+  search_digest: boolean;
+}
+
 export interface SetupRegistration {
   method: string;
   scope: string;
@@ -4560,6 +4877,10 @@ export interface SetupResponse {
   checks?: SetupCheck[];
   onboarding: OnboardingState;
   writes_allowed: boolean;
+  setup_available?: boolean;
+  setup?: SetupSteps | null;
+  read_hooks_available?: boolean;
+  read_hooks?: SetupReadHooks | null;
 }
 
 export interface SetupRewriteHook {
@@ -4567,9 +4888,45 @@ export interface SetupRewriteHook {
   detail?: string;
 }
 
+/** Setup steps left (the same rows Do next shows) and the agent-pass offer. */
+export interface SetupSteps {
+  /** Visible improve_signal actions: what the pass works through. */
+  open: number;
+  /** Set from the first agent call while steps are left and the pass is not dismissed. */
+  offer: "finish_setup" | null;
+  dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
+  /** Calls to this index from every agent. */
+  agent_calls: number | null;
+  claude_code_calls?: number;
+  first_call_at?: string | null;
+  /** Indexed commits made after the index was first built. */
+  synced_commits: number | null;
+  unlocks: SetupUnlocks;
+  actions?: NextAction[];
+  thresholds: SetupThresholds;
+}
+
 export interface SetupSync {
   installed?: boolean | null;
   detail?: string;
+}
+
+/** The usage each depth row unlocks at. */
+export interface SetupThresholds {
+  agent_calls: number;
+  synced_commits: number;
+}
+
+/**
+ * Depth rows usage has unlocked: Claude Code calls for the first two,
+ * synced commits for the last. Never a calendar.
+ */
+export interface SetupUnlocks {
+  always_load: boolean;
+  distill: boolean;
+  suggested_settings: boolean;
 }
 
 /** What a write did. ``ok`` is the command's own success. */
@@ -4587,6 +4944,26 @@ export interface SiloModule {
   owned_files: number;
   file_count: number;
   share: number;
+}
+
+/** One timed test, at its longest duration across the basis runs. */
+export interface SlowTest {
+  test_id: string;
+  test_file: string | null;
+  duration_s: number;
+  outcome: string | null;
+  first_in_class: boolean | null;
+  workload: string;
+}
+
+/** The slowest tests and the test time per production file, from stored JUnit timings. */
+export interface SuiteCostResponse {
+  status: "measured" | "no_test_timings";
+  command: string | null;
+  runs: EvidenceRunSummary[];
+  slow_tests: SlowTest[];
+  tests_total: number;
+  file_costs: FileTestCosts | null;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */
@@ -4839,6 +5216,11 @@ export interface VersionResponse {
   reindex_command?: string | null;
   highlights?: ChangelogHighlightModel[];
   latest_highlights?: string[];
+}
+
+export interface ViewOpenedRequest {
+  /** A view id, e.g. repo.codeHealth */
+  view: string;
 }
 
 export interface WebhookResponse {
@@ -5475,6 +5857,32 @@ export interface WorkspaceServiceLinksTotal {
   kind: string;
   direction: "a_to_b" | "b_to_a" | "both";
   count: number;
+}
+
+/** One member's setup, as the workspace Setup table shows it. */
+export interface WorkspaceSetupRepo {
+  alias: string;
+  path: string;
+  repo_id: string | null;
+  status: "available" | "not_indexed" | "unavailable";
+  reason?: string;
+  index_state?: "up_to_date" | "behind" | "incomplete" | null;
+  agent_calls?: number | null;
+  first_call_at?: string | null;
+  sync?: boolean | null;
+  coverage?: "on" | "found" | "none" | null;
+  evidence?: "on" | "found" | "none" | null;
+  open?: number;
+  offer?: "finish_setup" | null;
+  essentials_done?: boolean;
+}
+
+export interface WorkspaceSetupResponse {
+  repos: WorkspaceSetupRepo[];
+  essentials_done: number;
+  open: number;
+  offer?: "finish_setup" | null;
+  prompt?: string | null;
 }
 
 export interface WorkspaceSymbolIdentity {

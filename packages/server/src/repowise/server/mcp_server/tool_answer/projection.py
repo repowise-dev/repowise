@@ -11,10 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._helpers import resolve_enum_argument
 from repowise.server.mcp_server.tool_answer.config import (
+    _BODY_NOTE,
+    _BODY_NOTE_TAIL,
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
+    _CUT_BODY_NOTE_TAIL,
     _LARGE_FILE_BYTES,
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
 )
 from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
@@ -35,6 +41,9 @@ _COLLECTIONS = (
 # ``retrieval_quality``, which feeds ``confidence`` and is otherwise not served
 # so the agent reads one trust signal.
 _INCLUDES = frozenset({"evidence", "diagnostics"})
+#: Why a keyless reply ignores ``include=["evidence"]``: it has no expanded
+#: shape, and the files the expansion would quote are already listed.
+_KEYLESS_EVIDENCE_REQUIRES = "an LLM provider; Read candidate_files"
 
 
 def _path(row: Any) -> str | None:
@@ -290,6 +299,30 @@ def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
     return next((row for row in rows if _same_file(_nav_path(row), top)), None)
 
 
+# Generic sentences a keyless ``note`` drops: ``degraded`` and ``answer`` already
+# say synthesis is off, and each field the rest names sits beside it. The cut
+# body sentence stays: it is the prose pointer at a body's continuation.
+_KEYLESS_GENERIC_NOTES = (
+    _NO_SYNTHESIS_NOTE,
+    _RATIONALE_NOTE,
+    _BODY_NOTE,
+)
+
+
+def _trim_keyless_note(payload: dict[str, Any]) -> None:
+    """Drop the generic sentences from a keyless ``note``; a sentence naming a
+    path or continuation is not one of them and stays."""
+    note = payload.get("note")
+    if payload.get("degraded") != "no-llm-provider" or not isinstance(note, str):
+        return
+    for generic in _KEYLESS_GENERIC_NOTES:
+        note = note.replace(generic, "")
+    if note.strip():
+        payload["note"] = note.strip()
+    else:
+        payload.pop("note", None)
+
+
 def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     """Describe only evidence that survived the external projection."""
     reason = payload.get("degraded")
@@ -298,7 +331,7 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     if payload.get("call_path"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}). call_path: the calls "
-            f"{payload.get('call_path_from')} in source order, one per row as caller "
+            f"{payload.get('call_path_from')} in call order, one per row as caller "
             "file:call line -> callee file:definition line, shipped code only; a call "
             "may sit on a branch that does not always run."
         )
@@ -605,8 +638,6 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 # symbol_bodies, a body keeps its leading lines and a continuation to Read.
 _KEYLESS_BODY_CHARS = 2_000
 _KEYLESS_BODY_REASON = "keyless_body_budget"
-_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
-_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
 
 
 def _cut_body(entry: dict[str, Any], chars: int, root: Path | None) -> int:
@@ -782,6 +813,7 @@ def _project(
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
+    _trim_keyless_note(payload)
     ranked = not expanded and _ranked_list_only(payload)
     if ranked:
         _serve_ranked_list(payload)
@@ -795,11 +827,16 @@ def _project(
     )
     if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(asked - _INCLUDES)
+    ignored: list[dict[str, Any]] = []
+    for key in sorted(asked):
+        resolve_enum_argument(key, _INCLUDES, argument="include", ignored=ignored)
     if keyless and "evidence" in asked:
-        unknown.append("evidence")
-    if unknown:
-        payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
+        # Named with its reason and where the files are, so it is not re-asked.
+        ignored.append(
+            {"argument": "include", "values": ["evidence"], "requires": _KEYLESS_EVIDENCE_REQUIRES}
+        )
+    if ignored:
+        payload.setdefault("_meta", {})["ignored_arguments"] = ignored
     return payload, slimmed, ranked
 
 

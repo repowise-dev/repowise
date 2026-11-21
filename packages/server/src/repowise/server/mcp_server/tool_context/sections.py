@@ -42,7 +42,7 @@ from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
 from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import edit_set_block
-from repowise.server.mcp_server._helpers import _decision_body
+from repowise.server.mcp_server._helpers import _decision_body, no_source_field, serves_no_source
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
@@ -59,6 +59,7 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_layer_for_file,
     _find_tour_step_for_file,
 )
+from repowise.server.mcp_server.tool_context.measured import mark_measured_target
 from repowise.server.mcp_server.tool_context.resolution import ResolvedTarget, TargetQuery
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
@@ -222,10 +223,17 @@ async def _triage_section(card: CardState) -> None:
       omitted on files with no counted fixes.
     * ``decision_records``: titles only, pointing to ``get_why``; inlining
       rationale would bloat every cached response.
+    * ``measured``: one line when a stored profile run measured the symbol
+      or a function in the file (``measured.attach_measured``).
     """
     if card.dir_path is not None:
         await _directory_triage(card)
         return
+    resolved = card.resolved
+    # Read after the gather, for every card at once: attach_measured.
+    mark_measured_target(
+        card.data, resolved.target_type, resolved.file_path, resolved.symbol_node_id
+    )
     triage_path = card.git_path
     if not triage_path:
         return
@@ -678,6 +686,8 @@ async def _references_section(card: CardState) -> None:
         card.data["references"] = await edit_set_block(
             card.session, card.repo_id, root, ref_node, card.query.collector, prose=prose
         )
+    elif ref_node is not None and serves_no_source():
+        card.data["references"] = no_source_field()
     else:
         card.data["references_note"] = "references require a symbol target in the graph"
 

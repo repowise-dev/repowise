@@ -48,7 +48,7 @@ def estimate_cost(
     """Estimate token counts and USD cost from a generation plan.
 
     When ``repo_path`` points to a repo with prior generation telemetry
-    in ``.repowise/db.sqlite``, the estimate is calibrated against the
+    in ``.repowise/wiki.db``, the estimate is calibrated against the
     actual averages from that repo. Otherwise the static heuristics in
     :mod:`heuristics` are used and a wider variance bracket is reported.
 
@@ -97,6 +97,20 @@ def estimate_cost(
         estimated_embedding_tokens=embed_tokens,
         embedding_cost_usd=embed_cost,
     )
+
+
+#: The page type of the first-look report's one model call.
+FIRST_LOOK_CALL_TYPE = "first_look"
+
+
+def estimate_first_look_cost(provider_name: str, model_name: str) -> CostEstimate:
+    """What the first-look report's one model call costs on *model_name*.
+
+    One call of a fixed size: the report caps every section, so a bigger repo
+    sends the same amount.
+    """
+    plan = PageTypePlan(page_type=FIRST_LOOK_CALL_TYPE, count=1, level=0)
+    return estimate_cost([plan], provider_name, model_name)
 
 
 def _embedding_cost(pages: int, embedder: str | None, model: str | None) -> tuple[int, float]:

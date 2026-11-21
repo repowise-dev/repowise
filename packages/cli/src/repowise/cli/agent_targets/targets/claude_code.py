@@ -34,7 +34,12 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import ServerSpec
+from ..formats.server_entry import (
+    LOCAL_NAME,
+    ServerSpec,
+    agents_remove_command,
+    read_servers,
+)
 from ..types import (
     Capability,
     DoctorReport,
@@ -46,6 +51,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -789,6 +795,52 @@ class ClaudeCodeTarget:
             paths.append(str(desktop))
         return paths
 
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``~/.claude.json`` (user, and this repo's local scope), ``.mcp.json``, the plugin.
+
+        Not Claude Desktop's config (a separate app) and not ``settings.json``
+        (never read for servers). The plugin's servers are namespaced
+        ``plugin:repowise:``, which is why it loads beside a direct entry.
+        """
+        user_config = user_mcp_config_path()
+        maps = [
+            ServerMap(
+                user_config,
+                Scope.USER,
+                read_servers(user_config, "mcpServers"),
+                remove_command=agents_remove_command(ID, "user"),
+            )
+        ]
+        if repo_path is not None:
+            try:
+                _, local = local_scope_servers(repo_path)
+            except Exception:  # not strict JSON: contributes nothing, never raises
+                local = {}
+            maps.append(ServerMap(user_config, Scope.PROJECT, local))
+            project = project_mcp_config_path(repo_path)
+            maps.append(
+                ServerMap(
+                    project,
+                    Scope.PROJECT,
+                    read_servers(project, "mcpServers"),
+                    remove_command=agents_remove_command(ID, "project"),
+                )
+            )
+        for install in _plugin_installs(repo_path):
+            path = install.get("installPath")
+            servers = read_servers(Path(path) / ".mcp.json", "mcpServers") if path else {}
+            # Every plugin release ships the server; an unreadable cache still loads it.
+            maps.append(
+                ServerMap(
+                    plugin_manifest_path(),
+                    Scope.USER,
+                    servers or {LOCAL_NAME: {"command": "repowise", "args": ["mcp"]}},
+                    name_prefix="plugin:repowise:",
+                    remove_command=PLUGIN_UNINSTALL_COMMAND,
+                )
+            )
+        return maps
+
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Claude Code wiring, with one command to fix it.
 
@@ -855,32 +907,13 @@ class ClaudeCodeTarget:
                 "and will never fire."
             )
 
-        duplicates = [r for r in registrations if r.method == "plugin"] and [
-            r
-            for r in registrations
-            if r.method == "direct" and r.detail not in ("desktop", "legacy")
-        ]
-        if duplicates:
-            where = ", ".join(str(r.config_path) for r in duplicates)
-            issues.append(
-                "repowise is registered twice, once by the plugin and once directly "
-                f"({where}), so its MCP instructions, tool schemas and hooks are "
-                "loaded twice."
-            )
+        # A double registration (plugin beside a direct entry) is the shared
+        # check in ``registry.diagnose``, read from :meth:`server_maps`.
 
         # Reported last and fixed first: an out-of-date plugin ships its own
         # copy of the hooks, so updating it can resolve the matcher issue above
         # as a side effect, where repairing the matcher does nothing for it.
         fix_command = "repowise hook rewrite install"
-        if duplicates:
-            # A project `.mcp.json` is often shared with the team, so when it is
-            # the only other registration, the plugin is the copy to drop.
-            project_only = all(r.scope == Scope.PROJECT for r in duplicates)
-            fix_command = (
-                PLUGIN_UNINSTALL_COMMAND
-                if project_only
-                else "repowise agents remove --target=claude-code"
-            )
         skew = plugin_version_skew()
         if skew:
             from repowise.cli import __version__
@@ -901,10 +934,9 @@ class ClaudeCodeTarget:
             )
             fix_command = "pip install -U repowise" if ahead else PLUGIN_UPDATE_COMMAND
 
-        # Only the stale matcher. The plugin is host-managed and a duplicate
-        # registration is not something refresh removes, so on either of those
-        # alone `--repair` would write global config for a problem it cannot
-        # touch and then report success. But a *skewed plugin alongside* a stale
+        # Only the stale matcher. The plugin is host-managed, so on its own
+        # `--repair` would write global config for a problem it cannot touch
+        # and then report success. But a *skewed plugin alongside* a stale
         # matcher must stay repairable: the matcher is still broken, still
         # rewritable, and the first cut of this let the skew suppress its repair.
         repairable = matcher_stale

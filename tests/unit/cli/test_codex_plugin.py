@@ -138,6 +138,18 @@ def test_codex_plugin_skills_have_metadata_and_neutral_wording() -> None:
         assert not re.search(r"(?<!<!-- )/repowise:", text)
 
 
+#: Codex sends every skill description with every request, so each one is a
+#: per-turn cost. 90 characters keeps a description specific enough to trigger.
+_SKILL_DESCRIPTION_CAP = 90
+
+
+def test_codex_skill_descriptions_stay_short() -> None:
+    for path in sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md")):
+        match = re.search(r"^description: (.+)$", path.read_text(encoding="utf-8"), re.M)
+        assert match, path
+        assert len(match.group(1)) <= _SKILL_DESCRIPTION_CAP, (path.parent.name, len(match.group(1)))
+
+
 def test_codex_plugin_marketplace_entry() -> None:
     marketplace = _load_json(ROOT / ".agents" / "plugins" / "marketplace.json")
     entry = marketplace["plugins"][0]

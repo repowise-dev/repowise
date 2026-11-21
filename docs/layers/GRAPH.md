@@ -9,7 +9,7 @@ an optional upgrade for wiki prose, so the graph is reproducible.
 
 <p>
   <img src="https://img.shields.io/badge/18-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="18 edge types" />
-  <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
+  <img src="https://img.shields.io/badge/40-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="40 resolution origins" />
   <img src="https://img.shields.io/badge/28-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="28 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
 </p>
@@ -55,7 +55,7 @@ An edge is two claims, made in two stages that fail in different ways:
 | Stage | What it does | Fails when | Costs you |
 |---|---|---|---|
 | Capture | A per-language tree-sitter query notices that a call was written | no query covers that call shape | recall: the edge does not exist |
-| Resolution | Turns the captured name and receiver into one declaration in one file; the 39 resolution origins live here | the receiver cannot be typed, or the name is ambiguous | precision if it guesses, recall if it declines |
+| Resolution | Turns the captured name and receiver into one declaration in one file; the 40 resolution origins live here | the receiver cannot be typed, or the name is ambiguous | precision if it guesses, recall if it declines |
 
 A missed capture is silent, so it is measured against a compiler. A bad
 resolution is visible, because the origin on the edge names the strategy, so a
@@ -106,9 +106,9 @@ features disagree about what counts as a dependency:
 ## Every edge says how it got there
 
 Each `calls` and `references` edge is stamped with a **resolution origin**: the
-named strategy that produced it. There are 39, from a closed vocabulary, and
+named strategy that produced it. There are 40, from a closed vocabulary, and
 each one carries exactly one confidence, so the origin distribution and the
-confidence histogram are two views of the same data. The table lists the 18
+confidence histogram are two views of the same data. The table lists the 19
 base origins; the other 21 are [receiver-typing variants](#typing-the-receiver).
 
 | Confidence | Origin | What was established |
@@ -124,13 +124,14 @@ base origins; the other 21 are [receiver-typing variants](#typing-the-receiver).
 | 0.90 | `self_inherited` | `self` / `this` or Python `super()`, found on exactly one ancestor |
 | 0.90 | `enclosing_inherited` | A bare call, found on exactly one ancestor |
 | 0.88 | `package_alias` | Go `pkg.Func`, resolved across the whole package |
-| 0.88 | `module_alias` | The receiver is an imported module |
+| 0.88 | `module_alias` | The receiver is an imported module, or a Rust module path (`crate::index::open_ro()`, `super::f()`, a `mod` the file declares) walked down the module tree |
 | 0.88 | `crate_root` | A Rust crate-scoped reference |
 | 0.88 | `receiver_import` | The receiver's type was found in an imported file |
 | 0.85 | `import_merged` | It is in one of the imported files; which one is unattributed |
 | 0.85 | `same_target` | C/C++: a sibling translation unit of the same build target |
 | 0.75 | `receiver_global` | The `(class, method)` pair exists somewhere in the repo |
 | 0.50 | `global_unique` | The name is unique repo-wide. A guess, and stored as one |
+| 0.50 | `import_elsewhere` | Python: the name is imported only inside another function of the file, and that one import is read here. A guess |
 
 ### How an agent should read confidence
 
@@ -147,7 +148,7 @@ from "this shares a method name with something that breaks".
 
 ## Typing the receiver
 
-21 of the 39 origins read the receiver's declaration and resolve the method on
+21 of the 40 origins read the receiver's declaration and resolve the method on
 that type, instead of matching a bare method name.
 
 ```java
@@ -170,9 +171,19 @@ void handle(UserRepo repo) {     // parameter declares the type
 The families map onto the same scopes as the base origins (same file, same
 package, import, global), and a typed origin shares its untyped twin's
 confidence: the inferred type had to declare the method before any edge was
-emitted. Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift,
+emitted. A Python function whose every `return` hands on an imported module
+(`def load(): import mod; return mod`) types its call as that module, so
+`load().f()` and `m = load(); m.f()` reach `mod.f` under the return-type and
+local-typed origins. Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift,
 TypeScript, Rust and C++. Other languages use the base origins and say so on
 every edge.
+
+A chained call nothing types on the result of a library call or a constructor
+(`Path(p).resolve()`, a library builder) never falls back to a module-level
+function of the same name: that result is a value, and a value's method is a
+method. A repo function's result may be a module (`_lazy_mod().helper()`), so
+it keeps the fallback. Ceiling: a library call that returns a module
+(`importlib.import_module(name).f()`) stays unlinked.
 
 ## Edge types
 
