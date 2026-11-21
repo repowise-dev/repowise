@@ -16,6 +16,7 @@ from repowise.core.build_units.adapters import maven as maven_adapter
 from repowise.core.build_units.adapters import pascal as pascal_adapter
 from repowise.core.build_units.adapters import php as php_adapter
 from repowise.core.build_units.adapters import python as python_adapter
+from repowise.core.build_units.adapters import scala as scala_adapter
 from repowise.core.build_units.adapters import swift as swift_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.graph import build_stem_map
@@ -1724,3 +1725,133 @@ def test_a_pip_application_in_a_subdirectory_is_a_unit(tmp_path):
     })
     assert index.unit("manifest:backend").manifest == "backend/requirements-dev.txt"
     assert _owners(index, "backend/app.py") == ["manifest:backend"]
+
+
+_BUILD_SBT = (
+    'lazy val core = project.in(file("core"))\n'
+    'lazy val app = project.in(file("app")).dependsOn(core)\n'
+    'lazy val root = (project in file(".")).aggregate(core, app)\n'
+)
+
+
+def test_scala_subprojects_linked_by_depends_on(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": _BUILD_SBT,
+        "core/src/main/scala/com/example/Core.scala": "package com.example\nobject Core {}",
+        "app/src/main/scala/com/example/App.scala": "package com.example\nobject App {}",
+    })
+    assert _deps(index) == {"scala:app": ("scala:core",), "scala:core": ()}
+    app = index.unit("scala:app")
+    assert (app.root, app.manifest, app.name, app.source) == ("app", "build.sbt", "app", "sbt")
+    # The aggregate root is no subproject of the index: no scala:root, no manifest: fallback.
+    assert "scala:root" not in index.units
+    assert "manifest:." not in index.units
+    assert _owners(index, "app/src/main/scala/com/example/App.scala") == ["scala:app"]
+    assert [u.id for u in index.dependents("scala:core")] == ["scala:app"]
+
+
+def test_scala_depends_on_config_form_and_unknown_names(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val util = project.in(file("util"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(\n'
+            '  core % "test->test",\n'
+            "  util,\n"
+            "  gone\n"
+            ")\n"
+            # A quoted configuration naming a subproject is no edge:
+            # "core" here is a configuration, not a project ref.
+            'lazy val web = project.in(file("web")).dependsOn(other % "core->core")\n'
+        ),
+        "core/src/main/scala/Core.scala": "object Core {}",
+        "util/src/main/scala/Util.scala": "object Util {}",
+        "app/src/main/scala/App.scala": "object App {}",
+        "web/src/main/scala/Web.scala": "object Web {}",
+    })
+    assert _deps(index) == {
+        "scala:app": ("scala:core", "scala:util"),
+        "scala:core": (),
+        "scala:util": (),
+        "scala:web": (),
+    }
+
+
+def test_scala_aggregate_only_root_with_in_file_is_ruled_out(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core)\n'
+            'lazy val root = project.in(file(".")).aggregate(core, app)\n'
+        ),
+        "core/src/main/scala/Core.scala": "object Core {}",
+        "app/src/main/scala/App.scala": "object App {}",
+    })
+    assert set(index.units) == {"scala:app", "scala:core"}
+    assert "manifest:." not in index.units
+    assert _owners(index, "build.sbt") == []
+
+
+def test_scala_aggregate_root_with_own_sources_is_a_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val root = project.in(file(".")).aggregate(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "object Core {}",
+        "src/main/scala/Root.scala": "object Root {}",
+    })
+    assert _deps(index) == {"scala:core": (), "scala:root": ()}
+    assert index.unit("scala:root").root == ""
+
+
+def test_scala_unreadable_build_sbt_falls_back(tmp_path):
+    _write(tmp_path, {
+        "app/src/main/scala/App.scala": "object App {}",
+    })
+    (tmp_path / "build.sbt").write_bytes(
+        b'lazy val app = project.in(file("app"))\n// caf\xe9\n'
+    )
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:."}
+    assert _owners(index, "app/src/main/scala/App.scala") == ["manifest:."]
+    assert "scala" not in index.failed_ecosystems
+
+
+def test_scala_single_project_build_is_one_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": 'name := "solo"\nscalaVersion := "2.13.12"\n',
+        "src/main/scala/Main.scala": "object Main extends App {}",
+    })
+    assert _deps(index) == {"scala:<root>": ()}
+    solo = index.unit("scala:<root>")
+    assert (solo.root, solo.manifest, solo.name, solo.source) == ("", "build.sbt", "<root>", "sbt")
+    assert "manifest:." not in index.units
+    assert _owners(index, "src/main/scala/Main.scala") == ["scala:<root>"]
+
+
+def test_scala_mill_modules_are_units_without_dep_edges(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sc": (
+            "import mill._, scalalib._\n"
+            "object core extends ScalaModule {}\n"
+            "object app extends ScalaModule { def moduleDeps = Seq(core) }\n"
+        ),
+        "core/src/Core.scala": "package core\nobject Core {}",
+        "app/src/App.scala": "package app\nobject App {}",
+    })
+    # Mill moduleDeps are not read: both modules are units, with no edges.
+    assert _deps(index) == {"scala:app": (), "scala:core": ()}
+    app = index.unit("scala:app")
+    assert (app.root, app.manifest, app.source) == ("app", "build.sc", "mill")
+    assert "manifest:." not in index.units
+
+
+def test_scala_repo_without_build_file_never_builds_the_index(tmp_path, monkeypatch):
+    def boom(_ctx):
+        raise AssertionError("index built for an absent ecosystem")
+
+    monkeypatch.setattr(scala_adapter, "get_or_build_scala_index", boom)
+    index = _collect(tmp_path, {"pkg/Gemfile": "", "pkg/x.rb": ""})
+    assert list(index.units) == ["manifest:pkg"]
+    assert index.failed_ecosystems == frozenset()
