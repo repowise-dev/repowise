@@ -295,3 +295,35 @@ async def test_an_upsert_keeps_one_row_when_git_cannot_answer(tmp_path: Path, mo
         await engine.dispose()
 
     assert _rows(here) == [(repo_id, str(here))]
+
+
+async def test_an_upsert_never_takes_over_a_row_in_a_two_row_store_when_git_cannot_answer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    await _index(built)
+    engine = create_engine(get_db_url_for_repo(built))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await upsert_repository(session, name="second", local_path=str(tmp_path / "second"))
+    finally:
+        await engine.dispose()
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    built.rename(tmp_path / "gone")
+    before = sorted(_rows(here))
+    monkeypatch.setattr(repository, "_has_commit", lambda *_a: None)
+
+    engine = create_engine(get_db_url_for_repo(here))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await upsert_repository(session, name=here.name, local_path=str(here))
+    finally:
+        await engine.dispose()
+
+    after = sorted(_rows(here))
+    assert len(after) == 3
+    assert set(before) <= set(after)
+    assert str(here) in {path for _, path in after}
