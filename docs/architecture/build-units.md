@@ -59,7 +59,8 @@ the same rows.
 1. **Listed files first.** An adapter that knows a unit's exact files lists
    them: a .NET project's compiled sources, a Gradle project's source-set
    directories (which may sit outside the project, `srcDirs("../shared/src")`),
-   a CMake target's sources and declared headers. A listed file is owned by every unit listing it.
+   a CMake target's sources and the headers under its public include
+   directories. A listed file is owned by every unit listing it.
 2. **Otherwise the deepest unit root.** Any other file is owned by the units
    whose `root` is the deepest directory above it.
 3. **Several owners are normal.** Two units at one root (a `Web.csproj` and a
@@ -99,7 +100,7 @@ Which units exist is decided per manifest:
 | Go | `GoPackageIndex` (`ingestion/resolvers/go_workspace.py`) and `scan_go_mod` | One unit per module (`go.mod`), not per package | `require` entries naming another module of the repo |
 | Maven | `load_maven_reactor` (`ingestion/external_systems/maven_model.py`) | One unit per module of the root `pom.xml` reactor, followed recursively, with coordinates inherited from local parents | `<dependencies>` naming another module's `groupId:artifactId`, inherited and at every scope |
 | Python | `pyproject.toml` read with `read_toml_or_none`, names normalised as PyPI does | One unit per `pyproject.toml` naming a distribution (`[project] name`, else `[tool.poetry] name`) | `[project]` dependencies and optional dependencies, Poetry dependencies, uv `workspace = true` sources, matched by name; uv and Poetry `path` sources matched by the directory they point at |
-| CMake | `CppWorkspaceIndex` (`ingestion/resolvers/cpp_workspace.py`), its CMake targets only | One unit per `add_library` / `add_executable` target, rooted at the directory of the `CMakeLists.txt` declaring it; sources and declared headers listed | `target_link_libraries` names matching another target |
+| CMake | `CppWorkspaceIndex` (`ingestion/resolvers/cpp_workspace.py`), its CMake targets only | One unit per `add_library` / `add_executable` target, rooted at the directory of the `CMakeLists.txt` declaring it; sources, named headers and headers under its PUBLIC or INTERFACE include directories listed | `target_link_libraries` names matching another target |
 | Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby, PHP, Swift, Dart and the rest) | None |
 
 ### Ceilings
@@ -124,7 +125,11 @@ answer:
 - **CMake is read without configuring.** Generator expressions, targets and
   deps built in loops, functions or `include()`-d modules, and every `if()`
   branch are read statically. `ALIAS` and `IMPORTED` libraries become units
-  of their own, so a dep on an alias points at an empty unit. A
+  of their own, so a dep on an alias points at an empty unit. An include
+  directory several targets declare gives its headers several owners, since
+  the build gives them none; private include directories are not read. Below
+  the repo root, `${CMAKE_CURRENT_SOURCE_DIR}/x` paths resolve wrongly (and
+  `${PROJECT_SOURCE_DIR}/x` on Windows), so those files are missed. A
   `CMakeLists.txt` is build config, not a package manifest, so the fallback
   never covers a CMake directory. A CMake File API reply in the build tree is
   the upgrade path, and the index already prefers it when present.

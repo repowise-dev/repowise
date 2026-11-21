@@ -701,6 +701,44 @@ def test_cmake_adapter_leaves_bazel_targets_out(tmp_path):
     assert _owners(index, "lib/u.cc") == ["cmake:core"]
 
 
+def test_cmake_headers_under_a_public_include_dir_outside_the_root(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(src/foo)\nadd_subdirectory(src/bar)\n",
+        "src/foo/CMakeLists.txt": (
+            "add_library(foo foo.cpp)\n"
+            "target_include_directories(foo PUBLIC ../../include)\n"
+        ),
+        "src/foo/foo.cpp": "",
+        "src/bar/CMakeLists.txt": "add_library(bar bar.cpp)\n",
+        "src/bar/bar.cpp": "",
+        "include/foo/foo.h": "",
+        "include/foo/detail/impl.hpp": "",
+        "include/README.md": "",
+    })
+    assert _owners(index, "include/foo/foo.h") == ["cmake:foo"]
+    assert _owners(index, "include/foo/detail/impl.hpp") == ["cmake:foo"]
+    assert _owners(index, "include/README.md") == []  # not a header
+
+
+def test_cmake_include_dir_two_targets_declare_gives_both_its_headers(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_subdirectory(src/foo)\nadd_subdirectory(src/bar)\n",
+        "src/foo/CMakeLists.txt": (
+            "add_library(foo foo.cpp)\n"
+            "target_include_directories(foo PUBLIC ../../include/)\n"
+        ),
+        "src/foo/foo.cpp": "",
+        "src/bar/CMakeLists.txt": (
+            "add_library(bar bar.cpp)\n"
+            "target_include_directories(bar INTERFACE ../../include)\n"
+        ),
+        "src/bar/bar.cpp": "",
+        "include/shared.h": "",
+    })
+    assert _owners(index, "include/shared.h") == ["cmake:bar", "cmake:foo"]
+    assert _owners(index, "src/foo/foo.cpp") == ["cmake:foo"]
+
+
 def test_cmake_half_written_file_keeps_its_target_and_its_siblings(tmp_path):
     index = _collect(tmp_path, {
         "CMakeLists.txt": "add_subdirectory(good)\nadd_subdirectory(bad)\n",
