@@ -1108,7 +1108,7 @@ _GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
 #: The .NET SDK's pin file: runner config read on top of the registry's manifests.
 _DOTNET_SDK_PIN = "global.json"
 #: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
-_SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example"})
+_SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example", "data"})
 
 
 @cache

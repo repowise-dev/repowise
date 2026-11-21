@@ -636,6 +636,7 @@
         "origin": {
           "test": "测试文件",
           "docs_example": "文档示例",
+          "data": "数据文件",
           "build": "构建文件",
           "vendored": "第三方文件",
           "generated": "生成的文件",

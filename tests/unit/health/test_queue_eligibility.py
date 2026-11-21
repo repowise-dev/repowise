@@ -6,6 +6,7 @@ import pytest
 
 from repowise.core.analysis.health.queue.eligibility import (
     ELIGIBLE,
+    SCOPE_EXCLUSIONS,
     Tally,
     Verdict,
     finding_verdict,
@@ -248,6 +249,13 @@ def test_real_examples_and_docs_stay_out() -> None:
         "docs_example"
     )
     assert path_verdict("docs/x.py", None).reason == "docs_example"
+
+
+def test_a_data_folders_code_is_out_as_data_not_tooling() -> None:
+    """Only a stored origin knows a content bank: the path alone reads production."""
+    path = "backend/data/problems/two_sum/reference.go"
+    assert path_verdict(path, False, origin="data").reason == "data"
+    assert "data" in SCOPE_EXCLUSIONS
 
 
 def test_unit_verdict_ladder_order() -> None:

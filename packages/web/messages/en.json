@@ -636,6 +636,7 @@
         "origin": {
           "test": "test files",
           "docs_example": "docs examples",
+          "data": "data files",
           "build": "build files",
           "vendored": "vendored files",
           "generated": "generated files",
