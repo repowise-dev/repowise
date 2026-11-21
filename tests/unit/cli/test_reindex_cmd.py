@@ -693,3 +693,73 @@ async def test_a_broken_config_stops_the_reindex_before_it_embeds(
 
     assert getattr(raised.value, "reason", None) == "config_unreadable"
     assert not embedded
+
+
+async def test_a_switch_pins_the_model_set_only_in_the_shell(monkeypatch, tmp_path: Path) -> None:
+    """OLLAMA_EMBEDDING_MODEL in one shell: the MCP server must embed queries with it too."""
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    cfg, _state, changes = await _switch_embedder(
+        monkeypatch, tmp_path, "ollama", config="embedder: mock\n"
+    )
+
+    assert cfg["embedder"] == "ollama"
+    assert cfg["embedding_model"] == "nomic-embed-text"
+    assert not changes.rebuild_required
+
+
+async def test_a_missing_ollama_model_stops_on_the_first_batch_with_the_pull_command(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
+
+    db_url = await _seed_pages(tmp_path, {"a.py": "a.py", "b.py": "b.py", "c.py": "c.py"})
+    missing = OllamaModelMissingError(
+        "Ollama has no model 'embeddinggemma'. Run `ollama pull embeddinggemma`, "
+        "then re-run this command."
+    )
+
+    class _Store:
+        calls = 0
+
+        async def embed_batch(self, items: list[Any]) -> None:
+            _Store.calls += 1
+            raise missing
+
+        async def close(self) -> None:
+            return None
+
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: _Store()
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: object()
+    )
+
+    with pytest.raises(click.ClickException) as exc_info:
+        await reindex_cmd._reindex(tmp_path, "ollama", batch_size=1)
+
+    assert _Store.calls == 1
+    assert not warnings
+    assert exc_info.value.message == str(missing)
+
+
+async def test_an_env_model_that_replaces_a_pin_says_so(monkeypatch, tmp_path: Path) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(reindex_cmd, "warn", warnings.append)
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    cfg, _state, _changes = await _switch_embedder(
+        monkeypatch,
+        tmp_path,
+        "ollama",
+        config="embedder: ollama\nembedding_model: embeddinggemma\n",
+    )
+
+    assert cfg["embedding_model"] == "nomic-embed-text"
+    assert warnings == [
+        "embedding_model in config.yaml changed from embeddinggemma to nomic-embed-text: "
+        "this run embedded with the model the environment names."
+    ]
