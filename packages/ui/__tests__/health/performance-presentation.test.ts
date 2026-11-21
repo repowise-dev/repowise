@@ -7,6 +7,7 @@ import {
   boundaryLabel,
   causeStandingText,
   facetValueLabel,
+  fixStrategyLabel,
   humanizeToken,
   moduleScopeLabel,
   opportunityEvidenceLine,
@@ -49,6 +50,23 @@ describe("performance presentation", () => {
       expect(title.length, marker).toBeGreaterThan(0);
       expect(title[0], marker).toBe(title[0]!.toUpperCase());
     }
+  });
+
+  it("titles a measured hotspot by what found it, not as a static cause", () => {
+    const hotspot = opportunity({
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "pkg/coverage_map.py::_decode_lines",
+    });
+    expect(opportunityTitle(hotspot)).toBe(
+      "Measured hotspot with no static cause in _decode_lines",
+    );
+    expect(whyRankedPhrase({ factor: "measured_rank", value: 1, points: 3 })).toBe(
+      "place 1 in its measured run",
+    );
+    expect(fixStrategyLabel("reduce_measured_self_time")).toBe(
+      "Find and cut the work the run measured",
+    );
   });
 
   it("names an absent boundary rather than leaving it blank", () => {

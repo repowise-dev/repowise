@@ -261,6 +261,7 @@ async def finalize_performance_opportunities(
         hot=measured.hot,
         in_tests=measured.in_tests,
         hot_in_tests=measured.hot_in_tests,
+        ranks=measured.ranks,
         queries=await _query_readings(session, repository_id),
     )
 
@@ -321,6 +322,8 @@ class _Measured(NamedTuple):
     #: The same two for ``unit_test`` runs, kept apart as measured in tests.
     in_tests: dict[str, str]
     hot_in_tests: frozenset[str]
+    #: Function -> its best place in a leading workload's run (1 is the top).
+    ranks: dict[str, int]
 
 
 async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
@@ -369,6 +372,7 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> _Mea
         tuple(sorted(workloads)),
         names(best[False]),
         frozenset(hot[False]),
+        {sid: rank for sid, (rank, _name) in best[True].items()},
     )
 
 
@@ -660,18 +664,30 @@ async def get_performance_opportunity(
 
 
 def _predicates(
-    repository_id: str, *, include_unverified: bool = False, **params: Any
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
+    **params: Any,
 ) -> list[Any]:
     """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table.
 
     Opportunities on a file of a language the registry gates for performance
-    are left out unless ``include_unverified``.
+    are left out unless ``include_unverified``; causes minted from runtime
+    evidence alone (:func:`measured_hotspot_ids`) unless
+    ``include_measured_hotspots``.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
     return [
         PerformanceOpportunity.repository_id == repository_id,
+        *(
+            ()
+            if include_measured_hotspots
+            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+        ),
         ungated(
             "performance",
             PerformanceOpportunity.file_path,
@@ -702,6 +718,7 @@ async def list_performance_opportunities(
     limit: int = 20,
     offset: int = 0,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> tuple[list[PerformanceOpportunity], int]:
     """One page in the requested order, plus the exact total behind it.
 
@@ -722,6 +739,7 @@ async def list_performance_opportunities(
         file_paths=file_paths,
         area_prefix=area_prefix,
         include_unverified=include_unverified,
+        include_measured_hotspots=include_measured_hotspots,
     )
     total = int(
         (
@@ -754,6 +772,7 @@ async def performance_facet_counts(
     include_unverified: bool = False,
     scoped: bool = False,
     area_prefix: str | None = None,
+    include_measured_hotspots: bool = True,
 ) -> list[tuple[Any, ...]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
@@ -775,6 +794,7 @@ async def performance_facet_counts(
                 file_paths=file_paths,
                 area_prefix=area_prefix,
                 include_unverified=include_unverified,
+                include_measured_hotspots=include_measured_hotspots,
             )
         )
         .group_by(*columns)
@@ -797,24 +817,69 @@ class PerformanceHeadline(NamedTuple):
         return self._asdict()
 
 
+async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> frozenset[str]:
+    """The open causes minted from runtime evidence alone
+    (``perf.opportunities.measured_hotspots``), for a surface that shows no
+    evidence. One indexed lookup."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    result = await session.execute(
+        select(PerformanceOpportunity.opportunity_id).where(
+            PerformanceOpportunity.repository_id == repository_id,
+            PerformanceOpportunity.status == "open",
+            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+        )
+    )
+    return frozenset(result.scalars().all())
+
+
+async def measured_hotspot_counts(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> tuple[int, int]:
+    """``(open, in the default queue)`` over the causes runtime evidence alone
+    minted that a language gate does not hold back, for a surface that shows
+    no evidence to take out of a stored rollup. One aggregate."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    row = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
+            ).where(
+                *_predicates(repository_id, include_unverified=include_unverified),
+                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            )
+        )
+    ).one()
+    return int(row[0]), int(row[1])
+
+
 async def performance_headline(
     session: AsyncSession,
     repository_id: str,
     *,
     covered_nloc: int,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> PerformanceHeadline:
     """The one count of open performance causes, read by every surface.
 
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    ``include_measured_hotspots=False`` leaves out the causes runtime evidence alone
+    minted, for a surface that shows no evidence.
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
 
     groups = await performance_facet_counts(
-        session, repository_id, include_unverified=include_unverified, scoped=True
+        session,
+        repository_id,
+        include_unverified=include_unverified,
+        scoped=True,
+        include_measured_hotspots=include_measured_hotspots,
     )
     judged = not await any_unjudged(session, repository_id, "causes")
     scopes = scope_counts(groups, judged=judged)
@@ -1225,6 +1290,7 @@ async def _static_causes_on(
     Only a cause whose evidence runs in production code links: a cause seen
     only from tests says nothing about a production measurement.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....symbol_spans import symbol_at
 
     out: dict[str, set[str]] = {}
@@ -1236,6 +1302,8 @@ async def _static_causes_on(
                 PerformanceOpportunity.repository_id == repository_id,
                 PerformanceOpportunity.status == "open",
                 PerformanceOpportunity.intervention_symbol.in_(batch),
+                # A cause the measurement itself minted is no static cause.
+                PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,
             )
         )
         for symbol_id, opportunity_id in result:
