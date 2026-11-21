@@ -437,6 +437,16 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     return files_written
 
 
+def first_look_provider(run: InitRun) -> Any:
+    """The provider the repo report is written with; ``None`` on a run meant
+    to cost nothing (keyless, ``--no-prose``, a declined cost) or a dry run, even
+    when a key sits in the environment."""
+    opts = run.opts
+    if opts.dry_run or opts.index_only or run.no_provider or run.effective_index_only:
+        return None
+    return run.provider
+
+
 def _write_first_look(run: InitRun, steps: Any) -> Any:
     """Write the repo report from the finished index; ``None`` when off or failed.
 
@@ -480,16 +490,15 @@ async def _first_look(run: InitRun, settings: Any) -> Any:
         report = read_report_file(root)
         if report is not None and not rendered_path(root, ".html").exists():
             await write_files(session, repo_id, root, report, app_url=web)
+        provider = first_look_provider(run)
+        if report is None and provider is not None and run.cost_tracker is not None:
+            provider._cost_tracker = run.cost_tracker
         report = report or await write_first_look(
-            session,
-            repo_id,
-            root,
-            # No model on a run meant to cost nothing.
-            provider=None if run.effective_index_only else run.provider,
-            settings=settings,
-            app_url=web,
+            session, repo_id, root, provider=provider, settings=settings, app_url=web
         )
         statuses = await item_statuses(session, repo_id, report.items())
+    if provider is not None and run.cost_tracker is not None:
+        await run.cost_tracker.flush()
     where = (
         f"{web}/repos/{repo_id}/report"
         if web

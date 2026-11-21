@@ -144,13 +144,17 @@ async def write_first_look(
     *repo_root* when not given); *app_url* is the running web app's origin,
     for links in the rendered files.
 
-    *provider* is the configured model provider; it is accepted and not used
-    yet: every report is written by the template.
+    *provider* is the configured model provider. Given one, with
+    ``report.first_look.llm`` on, one model call rewrites the prose
+    (:func:`.llm.rewrite_prose`) and the stamp names the model and its cost. A
+    run meant to cost nothing passes no provider.
     """
     root = Path(repo_root) if repo_root is not None else None
     if settings is None:
         settings = first_look_settings(root) if root is not None else FirstLookSettings()
     report = await build_report(session, repository_id, root, setup=setup)
+    if provider is not None and settings.enabled and settings.llm:
+        report = await _rewrite(report, provider, settings, root)
     if not (store and settings.enabled):
         return report
     await store_report(session, repository_id, report)
@@ -158,6 +162,28 @@ async def write_first_look(
     if root is not None:
         await write_files(session, repository_id, root, report, app_url=app_url)
     return report
+
+
+async def _rewrite(
+    report: FirstLookReport, provider: Any, settings: FirstLookSettings, root: Path | None
+) -> FirstLookReport:
+    """*report* with the prose one model call wrote, stamped with its model and cost.
+
+    Whatever the model could not write keeps the template text; when none of
+    it could be used the stamp says ``template`` and still carries the spend.
+    """
+    from .llm import rewrite_prose
+
+    prose, outcome = await rewrite_prose(
+        report, provider, template=report.prose, model=settings.model or None, repo_root=root
+    )
+    logger.info("repo report: prose %s", outcome.to_json())
+    stamp = dataclasses.replace(
+        report.stamp,
+        generator=outcome.model if outcome.used else "template",
+        cost=outcome.cost_usd,
+    )
+    return dataclasses.replace(report, prose=prose, stamp=stamp)
 
 
 async def write_files(

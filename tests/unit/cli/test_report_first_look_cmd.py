@@ -217,7 +217,14 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     from repowise.core.report.first_look import write
 
     steps = SimpleNamespace(step=lambda name: contextlib.nullcontext())
-    run = SimpleNamespace(repo_path=indexed, effective_index_only=True, provider=None)
+    run = SimpleNamespace(
+        repo_path=indexed,
+        effective_index_only=True,
+        provider=None,
+        no_provider=True,
+        cost_tracker=None,
+        opts=SimpleNamespace(dry_run=False, index_only=False),
+    )
     # A person at a terminal gets the path; an agent the one instruction.
     monkeypatch.setattr(_finish.sys.stdin, "isatty", lambda: True)
     first_look = _finish._write_first_look(run, steps)
@@ -245,6 +252,79 @@ def test_init_writes_the_report_and_never_fails_on_it(indexed: Path, monkeypatch
     assert _finish._write_first_look(run, steps) is None
 
 
+@pytest.mark.parametrize(
+    ("dry_run", "index_only", "no_provider", "effective_index_only", "passed"),
+    [
+        (False, False, False, False, True),
+        (False, True, False, True, False),  # --no-prose
+        (False, False, True, True, False),  # keyless, whatever the environment holds
+        (False, False, False, True, False),  # the cost was declined
+        (True, False, False, False, False),
+    ],
+    ids=["model-run", "no-prose", "keyless", "declined", "dry-run"],
+)
+def test_init_passes_a_provider_only_on_a_model_run(
+    dry_run, index_only, no_provider, effective_index_only, passed
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd._finish import first_look_provider
+
+    provider = object()
+    run = SimpleNamespace(
+        provider=provider,
+        no_provider=no_provider,
+        effective_index_only=effective_index_only,
+        opts=SimpleNamespace(dry_run=dry_run, index_only=index_only),
+    )
+    assert (first_look_provider(run) is provider) is passed
+
+
+def test_init_plan_line_only_when_the_call_will_run(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.report_first_look_cmd import first_look_plan_line
+
+    provider = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-5-5")
+    line = first_look_plan_line(tmp_path, provider)
+    assert line == "Repo report about $0.003 with claude-haiku-5-5 (one model call)."
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("report:\n  first_look:\n    llm: false\n", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) is None
+    config.write_text("", encoding="utf-8")
+    (tmp_path / ".repowise" / "reports").mkdir()
+    (tmp_path / ".repowise" / "reports" / "first-look.json").write_text("{}", encoding="utf-8")
+    assert first_look_plan_line(tmp_path, provider) == line  # unreadable: init writes anew
+    from repowise.core.report.first_look.store import write_report_file
+    from tests.unit.core.test_first_look import _item, _report
+
+    write_report_file(tmp_path, _report(_item()))
+    assert first_look_plan_line(tmp_path, provider) is None  # a stamped report is kept
+
+
+def test_llm_flag_prints_the_cost_and_writes_with_the_model(indexed: Path, monkeypatch) -> None:
+    from repowise.cli import helpers
+    from tests.unit.persistence.test_first_look_write import EchoProvider
+
+    provider = EchoProvider()
+    monkeypatch.setattr(helpers, "resolve_provider", lambda *a, **k: provider)
+    from repowise.cli.main import cli
+
+    declined = CliRunner().invoke(
+        cli, ["report", "repo", str(indexed), "--llm", "--format", "json"], input="n\n"
+    )
+    assert declined.exit_code == 0, declined.output
+    assert "about $" in declined.output and provider.calls == 0
+
+    result = _run(str(indexed), "--llm", "--yes", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert provider.calls == 1
+    stored = json.loads((indexed / ".repowise" / "reports" / "first-look.json").read_text())
+    assert stored["stamp"]["generator"] == "claude-haiku-5-5"
+    assert stored["prose"]["writer"] == "claude-haiku-5-5"
+
+
 def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> None:
     import os
 
@@ -259,3 +339,41 @@ def test_the_app_address_comes_from_a_live_serve_lock_only(tmp_path: Path) -> No
     assert live_web_url(tmp_path) is None  # API only: no web page to link
     lock.write_text("{not json")
     assert live_web_url(tmp_path) is None
+
+
+def test_reads_and_update_never_call_the_model(indexed: Path, monkeypatch) -> None:
+    """The model writes the wording at init or on --llm only: every read of the
+    report, and `repowise update`, reuse the stored wording or the template."""
+    from repowise.cli import helpers
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.report.first_look import llm
+    from repowise.core.report.first_look.living import build_living
+    from tests.unit.persistence.test_first_look_write import EchoProvider
+
+    provider = EchoProvider()
+    monkeypatch.setattr(helpers, "resolve_provider", lambda *a, **k: provider)
+    assert _run(str(indexed), "--llm", "--yes", "--format", "json").exit_code == 0
+    assert provider.calls == 1  # the explicit request
+
+    async def refused(*args, **kwargs):
+        raise AssertionError("a read called the model")
+
+    monkeypatch.setattr(llm, "rewrite_prose", refused)
+    for args in (["--format", "json"], ["--format", "md"], ["--prompt"], ["--since-last"], []):
+        result = _run(str(indexed), *args)
+        assert result.exit_code == 0, result.output
+
+    async def living():
+        async with repo_index_session(indexed) as (session, repo_id):
+            return await build_living(session, repo_id, indexed, store_missing=True)
+
+    report = run_async(living()).to_json()
+    assert provider.calls == 1
+    # The stored model wording is reused, and says whose it is.
+    assert report["prose_source"]["writer"] == "claude-haiku-5-5"
+    assert report["prose_source"]["written_at"] is not None
+
+    # `repowise update` has no path to the report writer or the model call.
+    update = Path(helpers.__file__).parent / "commands" / "update_cmd"
+    sources = [p.read_text(encoding="utf-8") for p in sorted(update.glob("*.py"))]
+    assert sources and not any("report.first_look" in text for text in sources)

@@ -5,6 +5,7 @@ written from the index when there is none: no model, no network, free) as the
 index has it now, with each item's status (``repowise mark``), what is new and
 what was resolved since. Opens the HTML. ``--format json`` is the
 agent-readable form; ``--since-last`` lists what changed since the report.
+``--llm`` writes a new report whose prose one model call writes, after the estimate.
 """
 
 from __future__ import annotations
@@ -29,6 +30,75 @@ def _web_url(root: Path) -> str | None:
     from repowise.cli.commands.serve_cmd._lock import live_web_url
 
     return live_web_url(root)
+
+
+def first_look_estimate(provider: Any, model: str | None = None) -> str:
+    """``about $0.003 with <model>``: what the report's one model call costs."""
+    from repowise.core.cost_estimator import estimate_first_look_cost
+    from repowise.core.report.first_look.llm import first_look_model
+
+    chosen = first_look_model(provider, model)
+    est = estimate_first_look_cost(provider.provider_name, chosen)
+    return f"about ${est.estimated_cost_usd:.3f} with {chosen}"
+
+
+def first_look_plan_line(repo_path: Path, provider: Any) -> str | None:
+    """Init's cost-plan line for the report's model call; ``None`` when init will
+    not make it (the setting is off, or a stamped report is kept). Init writes
+    a report when :func:`read_report_file` finds none it can read, so this asks
+    the same helper."""
+    from repowise.core.report.first_look.config import first_look_settings
+    from repowise.core.report.first_look.store import read_report_file
+
+    try:
+        settings = first_look_settings(repo_path)
+    except Exception:  # a broken config line must not stop the plan
+        return None
+    if not (settings.enabled and settings.llm) or read_report_file(repo_path) is not None:
+        return None
+    return f"Repo report {first_look_estimate(provider, settings.model)} (one model call)."
+
+
+def _rewrite_with_model(root: Path, yes: bool) -> bool:
+    """Write a new report whose prose one model call writes, after the estimate;
+    ``False`` when the person declines."""
+    import dataclasses
+
+    from repowise.cli.helpers import resolve_provider
+    from repowise.cli.providers import build_cost_tracker, flush_cost_tracker
+    from repowise.core.report.first_look.config import first_look_settings
+    from repowise.core.report.first_look.write import write_first_look
+
+    provider = resolve_provider(None, None, repo_path=root)
+    # Asking for it is the opt-in: the settings only stop the automatic call.
+    settings = dataclasses.replace(first_look_settings(root), enabled=True, llm=True)
+    err_console.print(f"Repo report {first_look_estimate(provider, settings.model)}.")
+    if not yes and not click.confirm("Write it with the model?", default=True, err=True):
+        err_console.print("Not written; the stored report is unchanged.")
+        return False
+    tracker = build_cost_tracker(root, root.name)
+    provider._cost_tracker = tracker
+
+    async def write() -> Any:
+        async with repo_index_session(root) as opened:
+            if opened is None:
+                raise click.ClickException(f"No index for {root}. Run `repowise init` there first.")
+            session, repo_id = opened
+            return await write_first_look(
+                session, repo_id, root, provider=provider, settings=settings, app_url=_web_url(root)
+            )
+
+    try:
+        report = run_async(write())
+    finally:
+        flush_cost_tracker(tracker)
+    stamp = report.stamp
+    cost = f", ${stamp.cost:.3f}" if stamp.cost is not None else ""
+    if stamp.generator == "template":
+        err_console.print(f"The model's reply was unusable; kept the template text{cost}.")
+    else:
+        err_console.print(f"Written by {stamp.generator}{cost}.")
+    return True
 
 
 _WRITING = "[dim]No repo report yet; writing it from the index.[/dim]"
@@ -148,11 +218,23 @@ async def _run(root: Path, fmt: str, since_last: bool, prompt: bool = False) -> 
     is_flag=True,
     help="Print the whole-report agent prompt: the open items with their ids and how to mark each.",
 )
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Rewrite the report at HEAD with one call to the configured model. Prints the cost first.",
+)
+@click.option("--yes", "-y", is_flag=True, help="With --llm, skip the cost confirmation.")
 def first_look_command(
-    path: str | None, fmt: str, out_path: str | None, since_last: bool, prompt: bool
+    path: str | None,
+    fmt: str,
+    out_path: str | None,
+    since_last: bool,
+    prompt: bool,
+    llm: bool,
+    yes: bool,
 ) -> None:
     """The repo report: what Repowise found, most urgent first, as the index has
-    it now, with each item's status. Free: no model.
+    it now, with each item's status. Free unless --llm.
 
     \b
     For an agent: read the items, fix one, then record it by its id
@@ -163,6 +245,8 @@ def first_look_command(
     if prompt and since_last:
         raise click.UsageError("--prompt and --since-last are separate views; pick one.")
     root = Path(path or ".").resolve()
+    if llm and not _rewrite_with_model(root, yes):
+        return
     to_stdout = not out_path and (fmt != "html" or since_last or prompt)
     if to_stdout:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report

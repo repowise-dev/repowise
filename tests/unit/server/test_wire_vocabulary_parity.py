@@ -284,3 +284,73 @@ def test_queue_count_vocabulary_matches_python() -> None:
     assert _union_members("QueueReason", "queue.ts") == {*REASONS, *STORED_REASONS}
     assert _union_members("QueueUnit", "queue.ts") == set(UNITS)
     assert _interface_fields("QueueCounts", "queue.ts") == {f.name for f in fields(QueueCounts)}
+
+
+def test_first_look_vocabularies_and_shapes_match_python() -> None:
+    """The first-look report crosses as core's JSON: its closed sets, its item,
+    section, stamp and staleness fields, and the section cap are pinned here."""
+    from repowise.core.report.first_look import model
+    from repowise.core.report.first_look.staleness import compare
+
+    def unions(alias: str) -> set[str]:
+        return _union_members(alias, "first-look.ts")
+
+    assert unions("FirstLookSectionKey") == set(model.SECTIONS)
+    assert unions("FirstLookBasis") == set(model.BASES)
+    assert unions("FirstLookSeverity") == set(model.SEVERITIES)
+    assert unions("FirstLookConfidence") == set(model.CONFIDENCES)
+    assert unions("FirstLookRouteKey") == set(model.ROUTE_KEYS)
+    assert unions("FirstLookPromptRenderer") == set(model.PROMPT_RENDERERS)
+    efforts = re.search(r"export type FirstLookEffort =(.*?);", (_TYPES_SRC / "first-look.ts").read_text(encoding="utf-8"))
+    assert efforts and set(re.findall(r'"(\w+)"', efforts.group(1))) == set(model.EFFORTS)
+
+    item = model.Item(
+        id="fl_x", section="hygiene", rule="r", title_facts={}, locations=(model.Location("a"),),
+        confidence="high", basis="inferred", severity="plan", effort="S",
+        link=model.file_link("a"), prompt=model.PromptRef("first_look_item"), fingerprint="f",
+    )
+    report = model.FirstLookReport(
+        stamp=model.Stamp("c", None, "2026-11-20T00:00:00+00:00"), repo={},
+        sections=(model.SectionBlock("hygiene", (item,)),),
+        setup=(model.SetupStep("a", "r", "t"),),
+    )
+    shapes = {
+        "FirstLookItem": item.to_json(),
+        "FirstLookLocation": item.locations[0].to_json(),
+        "FirstLookSection": report.sections[0].to_json(),
+        "FirstLookSetupStep": report.setup[0].to_json(),
+        "FirstLookStamp": report.stamp.to_json(),
+        "FirstLookReport": report.to_json(),
+        "FirstLookStaleness": compare(report, ()).to_json(),
+    }
+    for name, payload in shapes.items():
+        assert _interface_fields(name, "first-look.ts") == set(payload), name
+    cap = re.search(r"FIRST_LOOK_SECTION_CAP = (\d+);", (_TYPES_SRC / "first-look.ts").read_text(encoding="utf-8"))
+    assert cap and int(cap.group(1)) == model.SECTION_CAP
+
+
+def test_living_first_look_shapes_match_python() -> None:
+    """The living report's statuses, marks, member stores and the fields each item gains."""
+    from repowise.core.report.first_look import marks, model
+    from repowise.core.report.first_look.marks import ItemStatus
+
+    def unions(alias: str) -> set[str]:
+        return _union_members(alias, "first-look.ts")
+
+    assert unions("FirstLookItemStatus") == set(marks.ITEM_STATUSES)
+    assert unions("FirstLookMark") == set(marks.MARK_STATUSES)
+    assert unions("FirstLookMemberStore") == set(model.MEMBER_STORES)
+    assert _interface_fields("FirstLookMember", "first-look.ts") == set(model.Member("action", "a").to_json())
+    assert _interface_fields("FirstLookLiving", "first-look.ts") == {*ItemStatus().to_json(), "change"}
+    assert _interface_fields("FirstLookBaseline", "first-look.ts") == {"stamp", "resolved"}
+    report = model.FirstLookReport(model.Stamp("c", None, "2026-11-20T00:00:00+00:00"), {}, ())
+    assert _interface_fields("FirstLookProseSource", "first-look.ts") == set(report.prose_source())
+
+    from typing import get_args
+
+    from repowise.server.schemas.reports import FirstLookMarkRequest, FirstLookMarkResponse
+
+    request = FirstLookMarkRequest.model_fields["status"].annotation
+    response = FirstLookMarkResponse.model_fields["status"].annotation
+    assert set(get_args(request)) == set(marks.MARK_STATUSES)
+    assert set(get_args(response)) == set(marks.ITEM_STATUSES)

@@ -47,6 +47,7 @@
     "./platform": "./src/platform.ts",
     "./providers": "./src/providers.ts",
     "./refactoring": "./src/refactoring.ts",
+    "./reports": "./src/reports.ts",
     "./repos": "./src/repos.ts",
     "./risk": "./src/risk.ts",
     "./runtime-evidence": "./src/runtime-evidence.ts",
