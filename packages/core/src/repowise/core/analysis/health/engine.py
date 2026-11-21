@@ -127,9 +127,20 @@ log = structlog.get_logger(__name__)
 # Scala catches, C++ out-of-line methods, F#, Objective-C, Razor and Dart loops
 # (#4832, #5258, #5486, #5487, #5489, #5490, #5494, #5544, #5547).
 #
+# v46 (0.62): code a data folder holds for the product to read is ``data``, and
+# the queues, the health map and the security scan hold it like the other
+# non-production origins (#6009, #6086). A measured share stays inside its own
+# interval (#6058); measured runs, test runs included, admit causes to the perf
+# queue (#6066); a leading run that measured a cold role or name above the bar
+# may lead (#6093); and a measured hotspot with no static cause becomes a perf
+# work item (#6097). ``PERFORMANCE_MODEL_VERSION`` moved with it. The re-score
+# also writes each cause's ``static_cost`` beside ``cost_proof`` (#6112). A
+# third-party import no longer contradicts a test named for a file (#5958), and
+# coverage names the indexed production files a report leaves out (#5917).
+#
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 45
+HEALTH_ANALYZER_VERSION = 46
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
