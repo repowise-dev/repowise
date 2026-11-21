@@ -17,6 +17,7 @@ from repowise.core.pipeline.incremental.repair import (
     _REPAIR_MAX_COMMITS,
     record_repair_marker,
     resolve_repair_base,
+    unchecked_repair_marker,
 )
 
 
@@ -147,3 +148,22 @@ def test_window_past_the_cap_is_given_up_on(linear_repo, monkeypatch):
 
 def test_cap_is_a_real_bound():
     assert _REPAIR_MAX_COMMITS > 0
+
+
+# --- unchecked_repair_marker ----------------------------------------------
+
+_SHA = "a" * 40
+
+
+def test_a_marker_the_base_did_not_widen_to_is_kept():
+    marker = {"from_commit": _SHA, "steps": ["Git persist"]}
+    assert unchecked_repair_marker({"pending_repair": marker}, "b" * 40, None) == marker
+
+
+def test_a_widened_given_up_or_junk_marker_is_not_kept():
+    marker = {"from_commit": _SHA, "steps": ["Git persist"]}
+    assert unchecked_repair_marker({"pending_repair": marker}, _SHA, None) is None
+    assert unchecked_repair_marker({"pending_repair": marker}, "b" * 40, "gone") is None
+    assert unchecked_repair_marker({"pending_repair": {"from_commit": "-x"}}, _SHA, None) is None
+    assert unchecked_repair_marker({"pending_repair": "garbage"}, _SHA, None) is None
+    assert unchecked_repair_marker({}, _SHA, None) is None

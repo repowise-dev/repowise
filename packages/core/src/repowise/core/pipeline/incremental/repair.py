@@ -125,3 +125,23 @@ def resolve_repair_base(
         return base_ref, None
 
     return from_commit, None
+
+
+def unchecked_repair_marker(state: dict, base_ref: str, give_up: str | None) -> dict | None:
+    """The marker a run must keep because it could not re-cover the marker's range.
+
+    Asked after ``resolve_repair_base`` returned *base_ref* and *give_up*. No
+    give-up and no widening means git could not check the marker, so the run
+    diffed from its own base and the range is still unrepaired. A marker that
+    caught up, was given up on, or holds no commit id is not kept.
+    """
+    marker = state.get("pending_repair")
+    repair_from = marker.get("from_commit") if isinstance(marker, dict) else None
+    if (
+        give_up is None
+        and isinstance(repair_from, str)
+        and repair_from != base_ref
+        and is_sha_prefix(repair_from.lower())
+    ):
+        return marker
+    return None
