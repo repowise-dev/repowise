@@ -34,6 +34,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from repowise.cli.ci import (
@@ -439,7 +440,8 @@ def _print_covered(result: dict) -> None:
     table.add_column("Test", style="green")
     table.add_column("Changed file(s) it covers")
     for tid, info in sorted(covered.items()):
-        table.add_row(tid, "\n".join(info["source_files"]))
+        # Paths and test ids are text, not markup: rich drops a Next.js `[slug]` segment.
+        table.add_row(escape(tid), escape("\n".join(info["source_files"])))
     console.print(table)
     console.print(
         f"[green]{len(covered)} test(s)[/green] directly cover the change "
@@ -459,10 +461,10 @@ def _print_inferred(inferred: list[dict]) -> None:
         per_file.setdefault(g["source_file"], []).append(g)
     for rows in per_file.values():
         for g in rows[:_TABLE_CANDIDATES]:
-            table.add_row(g["source_file"], g["test_file"], g["via"])
+            table.add_row(escape(g["source_file"]), escape(g["test_file"]), g["via"])
     for source, rows in per_file.items():
         if len(rows) > _TABLE_CANDIDATES:
-            table.add_row(source, f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
+            table.add_row(escape(source), f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
     console.print(table)
     console.print(
         f"[yellow]{len(inferred)} candidate(s)[/yellow] for {len(per_file)} file(s) "
@@ -482,4 +484,4 @@ def _print_unknown(unknown: list[str]) -> None:
         "reaching them in the graph and no paired test - run the full suite to be safe:"
     )
     for path in unknown:
-        console.print(f"  [red]{path}[/red]")
+        console.print(f"  [red]{escape(path)}[/red]")
