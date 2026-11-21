@@ -87,7 +87,7 @@ jobs:
   repowise:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
@@ -102,6 +102,8 @@ jobs:
 - Pin a release tag, not `main`; `version:` pins the Repowise release.
 - With a shallow checkout, the action fetches the history and target branch
   that coverage, security, health and risk need; `fetch-depth: 0` skips that.
+- The action's steps run on Node 24, so a self-hosted runner needs version
+  2.327.1 or newer. GitHub-hosted runners already are.
 
 | Input | Default | What it does |
 |-------|---------|--------------|
@@ -145,6 +147,8 @@ Include the template and set variables for the gates you use:
 ```yaml
 include:
   - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
+  # or a committed copy, when GitLab cannot reach GitHub:
+  # - local: ci/repowise.gitlab-ci.yml
 
 variables:
   REPOWISE_COVERAGE_REPORT: coverage/lcov.info
@@ -166,8 +170,11 @@ Each job logs its markdown report and keeps it as an artifact; override
 | `repowise-risk` | merge requests, when `REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set | none |
 | `repowise-impacted-tests` | merge requests, when `REPOWISE_IMPACTED_TESTS: "true"` | none |
 | `repowise-code-quality` | the default branch; never fails the pipeline | `gl-code-quality-doc-drift.json` |
+| `repowise-note` | merge requests, when `REPOWISE_GITLAB_TOKEN` is set; never fails the pipeline | none |
 
 - `REPOWISE_VERSION` pins the release; gate variables are in each gate's table.
+- The jobs install Repowise from PyPI (or your package mirror) and download
+  nothing else.
 - Report lists (`REPOWISE_COVERAGE_REPORT`, `REPOWISE_COVERAGE_BASE_REPORT`)
   are space separated and may hold globs and `path=prefix`; Repowise expands
   the globs, not the shell.
@@ -176,6 +183,29 @@ Each job logs its markdown report and keeps it as an artifact; override
 - `repowise-code-quality` publishes the report the widget compares against, so
   only new issues show as new. It covers doc drift only: security judges only
   what a change adds, and the default branch has no change.
+
+**Merge request note.** Set `REPOWISE_GITLAB_TOKEN` and `repowise-note` posts
+one note on the merge request: a table of every gate that ran and each gate's
+findings. Later pipelines edit that note rather than add another, and count the
+findings a push resolved. The note job runs after the gates, whatever they
+decided, and its own failure never fails the pipeline.
+
+- **Token.** The CI job token cannot write merge-request notes, so create a
+  project access token (Settings > Access tokens) with the `api` scope and the
+  Reporter role; a group access token or a personal access token works too.
+  The note is posted as that token's user, and a pipeline edits only a note
+  its own user posted.
+- **Variable.** Add it under Settings > CI/CD > Variables as
+  `REPOWISE_GITLAB_TOKEN`, masked. Leave it unprotected: merge request
+  pipelines run on unprotected branches, where protected variables are empty.
+  Every job of such a pipeline can read it, including code a merge request
+  adds, so keep the token to one project and the Reporter role.
+- **Self-managed GitLab** works the same way: the job talks to
+  `CI_API_V4_URL`, which GitLab sets to your instance's API.
+- **Outside the template**, run `repowise ci-summary DIR --gate NAME=CODE ...
+  --gitlab-note` after gates that ran with `REPOWISE_GATE_SUMMARY_DIR=DIR`
+  and `--format markdown`; outside a merge request pipeline it posts nothing
+  and says so.
 
 <details><summary>Line coverage in the merge request diff</summary>
 
@@ -304,17 +334,17 @@ jobs:
       matrix: {shard: [1, 2, 3]}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: pytest tests/shard${{ matrix.shard }} --cov=src --cov-report=lcov:coverage/lcov.info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: "coverage-${{ matrix.shard }}", path: coverage/lcov.info}
   coverage:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: {pattern: "coverage-*", path: artifacts}
       - uses: repowise-dev/repowise@main
         with:
@@ -457,14 +487,14 @@ GitHub Actions, one job on default-branch pushes and pull requests,
 - if: github.event_name == 'push'
   run: mkdir -p base-coverage && cp coverage/lcov.info base-coverage/
 - if: github.event_name == 'push'
-  uses: actions/cache/save@v4
+  uses: actions/cache/save@v6
   with: {path: base-coverage, key: "coverage-${{ github.sha }}"}
 - if: github.event_name == 'pull_request'
   id: merge-base
   run: echo "sha=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" >> "$GITHUB_OUTPUT"
 - if: github.event_name == 'pull_request'
   id: base
-  uses: actions/cache/restore@v4
+  uses: actions/cache/restore@v6
   with: {path: base-coverage, key: "coverage-${{ steps.merge-base.outputs.sha }}"}
 - if: github.event_name == 'pull_request'
   uses: repowise-dev/repowise@main
@@ -640,21 +670,21 @@ jobs:
   index:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
       - run: pip install repowise
       - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         with: {path: .repowise, key: "repowise-${{ github.sha }}"}
 ```
 
 ```yaml
 # in the pull request workflow
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with: {fetch-depth: 0}
-- uses: actions/cache/restore@v4
+- uses: actions/cache/restore@v6
   with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
 - id: select
   uses: repowise-dev/repowise@main

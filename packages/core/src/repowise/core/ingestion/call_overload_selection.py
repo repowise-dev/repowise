@@ -22,10 +22,10 @@ from .symbol_identity import (
     clr_parameter_type,
     erased_parameter_types,
     erased_type,
+    file_of_symbol,
     pair_overloads,
     parameter_type_arity,
     split_symbol_id,
-    symbol_id_path,
 )
 
 # Languages whose prototypes and bodies pair member by member, and whose
@@ -1020,7 +1020,7 @@ class OverloadSelectionMixin:
         for m in members:
             cached = cache.get(m)
             if cached is None:
-                cached = frozenset(self._java_type_parameters(symbol_id_path(m), m))
+                cached = frozenset(self._java_type_parameters(file_of_symbol(m), m))
                 cache[m] = cached
             result[m] = cached
         return result

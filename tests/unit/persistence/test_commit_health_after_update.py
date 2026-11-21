@@ -18,6 +18,7 @@ import pytest
 import repowise.core.analysis.change_health.commit_scan as scan_mod
 import repowise.core.pipeline.commit_health_drain as drain_mod
 import repowise.core.pipeline.incremental.persist_index as incremental_mod
+import repowise.core.spawn as spawn_mod
 from repowise.core.analysis.change_health.commit_scan import (
     CommitHealthScan,
     current_fingerprint,
@@ -42,6 +43,7 @@ from repowise.core.pipeline.commit_health import (
 )
 from repowise.core.pipeline.incremental import persist_incremental_index
 from repowise.core.update_lock import (
+    read_drain_queue,
     release_commit_health_lock,
     release_update_lock,
     try_acquire_commit_health_lock,
@@ -335,6 +337,51 @@ async def test_a_running_update_holds_the_drain_back(repo) -> None:
     assert try_acquire_update_lock(repo, None) is None
     try:
         assert drain_mod.wait_for_turn(repo, timeout=0) is False
+    finally:
+        release_update_lock(repo)
+
+
+@pytest.mark.parametrize("has_pending", [True, False])
+def test_waiting_drain_timeout_hands_off_pending_commits(repo, monkeypatch, has_pending):
+    async def seed_store() -> str:
+        engine, sf, repo_id = await _store_with_commits(repo)
+        try:
+            if not has_pending:
+                async with get_session(sf) as session:
+                    await upsert_commit_health_bulk(
+                        session, repo_id, [_delta_row(sha, str(repo)) for sha in _SHAS], [], []
+                    )
+            return repo_id
+        finally:
+            await engine.dispose()
+
+    repo_id = asyncio.run(seed_store())
+    started = []
+
+    def record_spawn(argv, cwd):
+        assert read_drain_queue(repo) is None
+        started.append((argv, cwd))
+
+    monkeypatch.setattr(spawn_mod, "spawn_detached", record_spawn)
+    wait_for_turn = drain_mod.wait_for_turn
+
+    def wait_without_delay(repo_path, _timeout=None, **kwargs):
+        return wait_for_turn(repo_path, timeout=0, **kwargs)
+
+    monkeypatch.setattr(drain_mod, "wait_for_turn", wait_without_delay)
+    monkeypatch.setenv(drain_mod.BACKGROUND_ENV, "1")
+    assert try_acquire_update_lock(repo, None) is None
+    try:
+        assert drain_mod.main([str(repo), repo_id]) == 0
+        if has_pending:
+            assert len(started) == 1
+            [(argv, cwd)] = started
+            assert argv[3:] == [drain_mod.__name__, str(repo), repo_id, "--replacement"]
+            assert cwd == str(repo)
+            assert drain_mod.main(argv[4:]) == 0
+            assert len(started) == 1
+        else:
+            assert started == []
     finally:
         release_update_lock(repo)
 

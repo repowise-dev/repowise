@@ -80,14 +80,16 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
                 None,
             )
         if row is None:
-            from repowise.server.mcp_server._savings.interaction import note_error_reason
+            from repowise.server.mcp_server._savings.interaction import error_reply
 
-            note_error_reason("not_found")
-            return {
-                "error": "not_found",
-                "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",
-                "_meta": _build_meta(repository=repository),
-            }
+            return error_reply(
+                "not_found",
+                {
+                    "error": "not_found",
+                    "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",
+                    "_meta": _build_meta(repository=repository),
+                },
+            )
         recommendation = await RefactoringHealthService(
             session, repository.id, ctx.alias or repository.name
         ).plan_recommendation(row)
@@ -119,7 +121,9 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
     try:
         provider = get_chat_provider_instance(repo_path=repo_path, repo_id=repository.id)
     except ValueError as exc:
-        return {"error": "no_provider", "detail": str(exc), "_meta": meta}
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply("no_provider", {"error": "no_provider", "detail": str(exc), "_meta": meta})
 
     result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path, detail=detail)
     payload = result.to_dict()

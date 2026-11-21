@@ -31,26 +31,33 @@ PINNED_IDS = {
     "claude-code-mcp-entry",
     "claude-desktop-mcp-entry",
     "coordinator-drift",
+    "coverage-evidence",
     "database",
     "distill-config",
     "distill-rewrite-hook",
-    "events-config",
+    "evidence-freshness",
     "fts-index-sync",
     "git-repository",
     "grammar-*",
     "hosted-account",
     "index-data",
+    "index-freshness",
     "llm-provider",
     "mcp-responds",
     "omission-store",
+    "oversize-sources",
     "post-commit-hook",
     "provider-config",
     "providers",
     "repowise-dir",
+    "runtime-evidence",
+    "setting-*",
+    "settings",
     "stale-pages",
     "state-json",
     "store-consistency",
     "store-format",
+    "update-lock",
     "vector-store",
     "vector-store-sync",
 }
@@ -217,7 +224,7 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
         doctor_command, [str(_git_repo(tmp_path)), "--no-workspace", "--format", "json"]
     )
     payload = json.loads(result.output[result.output.index("{") :])
-    assert set(payload) == {"ok", "checks"}
+    assert set(payload) == {"ok", "checks", "suggestions"}
     for c in payload["checks"]:
         assert set(c) == {"id", "name", "ok", "level", "detail", "fix"}
     by_id = {c["id"]: c for c in payload["checks"]}

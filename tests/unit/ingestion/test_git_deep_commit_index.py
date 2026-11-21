@@ -186,3 +186,81 @@ async def test_index_repo_uses_deep_index_instead_of_per_file_logs(
                 assert got == pytest.approx(want, rel=1e-9), (fp, field)
             else:
                 assert got == want, (fp, field)
+
+
+def test_regions_read_ahead_match_one_at_a_time(tmp_path, monkeypatch) -> None:
+    """Deep regions are read several at once; the sample is what one region at
+    a time gives, and a region that fails to read sends its files to the
+    per-file walk as before."""
+    import git as gitpython
+
+    from repowise.core.ingestion import git_commit_index
+
+    _build_repo(tmp_path, old_files=4, recent_commits=2)
+    repo = gitpython.Repo(tmp_path)
+    files = {f"old_{i}.py" for i in range(4)} | {"recent.py"}
+
+    def sampled():
+        sample = git_commit_index.load_sampled_commit_index(
+            repo, 2, files, deep_limit=2, deep_threshold=1
+        )
+        commits = {p: [c.sha for c in recs] for p, recs in sample.commits.items()}
+        return commits, sample.fallback_files
+
+    ahead = sampled()
+    monkeypatch.setattr(git_commit_index, "_DEEP_READ_AHEAD", 1)
+    assert sampled() == ahead
+    assert not ahead[1]
+
+    real = git_commit_index._window_records
+
+    def fail_below_the_first_region(repo_, depth, cache_dir, *, skip=0, **kwargs):
+        if skip > 2:
+            raise RuntimeError("git failed")
+        return real(repo_, depth, cache_dir, skip=skip, **kwargs)
+
+    monkeypatch.setattr(git_commit_index, "_window_records", fail_below_the_first_region)
+    _commits, fallback = sampled()
+    assert fallback == {"old_0.py", "old_1.py", "old_2.py"}
+    repo.close()
+
+
+def test_region_reads_never_resolve_head_off_the_calling_thread(tmp_path) -> None:
+    """GitPython answers ``repo.head.commit`` over one ``cat-file`` pipe that
+    two threads must not share, so the cached reads get HEAD from the caller."""
+    import threading
+
+    import git as gitpython
+
+    from repowise.core.ingestion import git_commit_index
+
+    _build_repo(tmp_path, old_files=4, recent_commits=2)
+    repo = gitpython.Repo(tmp_path)
+    caller = threading.current_thread()
+
+    class _CallerOnlyHead:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        @property
+        def head(self):
+            assert threading.current_thread() is caller, "HEAD resolved on a worker thread"
+            return self._inner.head
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    files = {f"old_{i}.py" for i in range(4)} | {"recent.py"}
+    cache = tmp_path / ".repowise"
+    cache.mkdir()
+
+    def sampled(target, cache_dir):
+        sample = git_commit_index.load_sampled_commit_index(
+            target, 2, files, deep_limit=2, deep_threshold=1, cache_dir=cache_dir
+        )
+        return {p: [c.sha for c in recs] for p, recs in sample.commits.items()}
+
+    cold = sampled(_CallerOnlyHead(repo), cache)
+    assert (cache / "commit_deep_cache_3.json").is_file()
+    assert sampled(_CallerOnlyHead(repo), cache) == cold == sampled(repo, None)
+    repo.close()

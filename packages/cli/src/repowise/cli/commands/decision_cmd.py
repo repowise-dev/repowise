@@ -46,6 +46,8 @@ from repowise.core.analysis.decisions.lifecycle import (
     NO_EVIDENCE_BLOCKER,
     NO_RATIONALE_BLOCKER,
     NO_SCOPE_BLOCKER,
+    RULE_DRIFTED,
+    rule_drift_reason,
 )
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
@@ -169,24 +171,33 @@ def _register_config_commands() -> None:
     from repowise.cli.commands.decision_review_cmd import (
         candidates_command,
         dedupe_command,
+        discover_command,
         export_command,
         import_command,
         merge_command,
         migrate_command,
+        pin_command,
         reaffirm_command,
         split_command,
         status_command,
+        unpin_command,
     )
+    from repowise.cli.commands.decision_sync_cmd import pull_command, push_command
 
     for command in (
         migrate_command,
         candidates_command,
+        discover_command,
         reaffirm_command,
+        pin_command,
+        unpin_command,
         merge_command,
         dedupe_command,
         split_command,
         export_command,
         import_command,
+        push_command,
+        pull_command,
         status_command,
     ):
         decision_group.add_command(command)
@@ -218,7 +229,11 @@ class _DecisionFields:
 
 @decision_group.command("add")
 @click.argument("path", required=False, default=None)
-@click.option("--title", default=None, help="Decision title (short).")
+@click.option(
+    "--title",
+    default=None,
+    help="Decision title (short). With --agent, defaults to the decision's first words.",
+)
 @click.option("--context", default=None, help="What forced this decision?")
 @click.option("--decision", "decision_text", default=None, help="What was chosen?")
 @click.option("--rationale", default=None, help="Why it was chosen.")
@@ -265,8 +280,9 @@ def decision_add(
 ) -> None:
     """Add a decision, interactively or from flags.
 
-    With both --title and --decision, records without prompting and prints the
-    new id, so a script or an agent can call it. Everything else is optional.
+    With --title and --decision, records without prompting and prints the new
+    id, so a script or an agent can call it. Everything else is optional. An
+    agent may leave out --title: it defaults to the decision's opening words.
 
     `--kind agreement` records a working agreement: a rule about how the work
     is conducted, which names no file and is not checked against the code.
@@ -285,6 +301,9 @@ def decision_add(
     so review can tell it from one a person typed. It needs the flags.
     """
     signer = _signer(agent, agent_session)
+    # A person running the command with a decision and no title is asked for
+    # the rest; an agent recording what it just did is not asked anything.
+    title = title or (_title_from(decision_text) if agent else None)
     non_interactive = bool(title and decision_text)
     if not non_interactive:
         _refuse_partial_flags(
@@ -325,6 +344,28 @@ def decision_add(
 
     warnings = _collect_add_warnings(repo_path, fields, stored.kind)
     _report_added(repo_path, stored, fmt, warnings=warnings, commits=evidence_commits)
+
+
+#: Longest derived title, in characters.
+_DERIVED_TITLE_CAP = 80
+
+
+def _title_from(decision_text: str | None) -> str | None:
+    """A short title from the decision itself: its opening words, cut at a word.
+
+    A title is how a decision is listed and how a re-add finds the record it
+    updates; it is not part of what puts a decision in force, so deriving it
+    costs the contract nothing and saves the agent a flag. The whole text, not
+    its first sentence, so two decisions share a derived title only when their
+    first :data:`_DERIVED_TITLE_CAP` characters do. Ceiling: two that do fold
+    into one record, as two equal hand-written titles always have.
+    """
+    text = " ".join((decision_text or "").split()).rstrip(".")
+    if not text.strip(".!?;:, "):
+        return None
+    if len(text) <= _DERIVED_TITLE_CAP:
+        return text
+    return text[:_DERIVED_TITLE_CAP].rsplit(" ", 1)[0].rstrip(",;:") + "…"
 
 
 def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
@@ -462,7 +503,7 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
             guidance = (
                 f"Pass {missing_str}, e.g. "
                 '`repowise decision add --title "<what>" --decision "<chosen>" '
-                "[--rationale ...] [--affects <path>]`."
+                "[--rationale ...] [--affects <path>]`; with --agent, --title may be left out."
             )
         else:
             guidance = (
@@ -473,7 +514,7 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
-                "decision without prompting.",
+                "decision without prompting (--decision alone with --agent).",
                 "guidance": guidance,
             },
             fmt,
@@ -790,6 +831,7 @@ def decision_list(
     decisions = _narrow(decisions, proposed=proposed)
     total = len(decisions)
     shown = decisions if show_all else decisions[:limit]
+    delivered = run_async(_deliveries(repo_path, [d.id for d in shown])) if shown else None
 
     if fmt == "json":
         emit_json(
@@ -797,7 +839,7 @@ def decision_list(
                 "repo": str(repo_path),
                 "total": total,
                 "truncated": len(shown) < total,
-                "decisions": [_listed_json(d) for d in shown],
+                "decisions": [_listed_json(d, delivered) for d in shown],
             }
         )
         return
@@ -805,7 +847,7 @@ def decision_list(
     if not shown:
         console.print("[dim]No decisions found.[/dim]")
         return
-    _print_decision_table(shown)
+    _print_decision_table(shown, delivered)
     if len(shown) < total:
         console.print(
             f"[dim]Showing {len(shown)} of {total} decisions; "
@@ -822,7 +864,7 @@ def _narrow(decisions: list, *, proposed: bool) -> list:
     return decisions
 
 
-def _listed_json(d) -> dict:
+def _listed_json(d, delivered=None) -> dict:
     return {
         # Full id, not the table's 8-char prefix: the prefix exists to fit a
         # column, and every id-taking subcommand accepts either.
@@ -833,7 +875,32 @@ def _listed_json(d) -> dict:
         "confidence": d.confidence,
         "staleness_score": d.staleness_score,
         "created_at": d.created_at.isoformat() if d.created_at else None,
+        **_delivery_json(delivered, d.id),
     }
+
+
+def _delivery_json(delivered, decision_id: str) -> dict:
+    """How often agents were shown the record and when last; null when not recorded."""
+    seen = (delivered or {}).get(decision_id)
+    return {
+        "delivered_count": seen.count if seen else None,
+        "last_delivered_at": seen.last_at.isoformat() if seen and seen.last_at else None,
+    }
+
+
+async def _deliveries(repo_path: Path, decision_ids: list[str]):
+    """Per-record delivery counts from the hook ledger, or None when it cannot be read.
+
+    A display extra: a failure here reads as "not recorded", never as a failed command.
+    """
+    from repowise.core.persistence import get_session
+    from repowise.core.sessions.deliveries import decision_deliveries
+
+    try:
+        async with _open_store(repo_path) as sf, get_session(sf) as session:
+            return await decision_deliveries(session, repo_path, decision_ids)
+    except Exception:
+        return None
 
 
 async def _query_decisions(
@@ -871,7 +938,7 @@ _STATUS_COLORS = {
 }
 
 
-def _print_decision_table(decisions: list) -> None:
+def _print_decision_table(decisions: list, delivered=None) -> None:
     table = Table(title="Architectural Decisions")
     table.add_column("ID", style="dim", width=8)
     # Wraps rather than cuts: the title is the record's name.
@@ -880,6 +947,8 @@ def _print_decision_table(decisions: list) -> None:
     table.add_column("Source", style="dim")
     table.add_column("Conf.", justify="right")
     table.add_column("Stale", justify="right")
+    # Times agents were shown it; blank when no hook ledger was readable.
+    table.add_column("Shown", justify="right")
     table.add_column("Created", style="dim")
 
     for d in decisions:
@@ -893,6 +962,7 @@ def _print_decision_table(decisions: list) -> None:
             d.source,
             f"{d.confidence:.0%}",
             stale_str,
+            str(delivered[d.id].count) if delivered and d.id in delivered else "",
             created,
         )
 
@@ -929,10 +999,15 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         evidence_commits=json.loads(rec.evidence_commits_json or "[]"),
         accepted_at=accepted_at,
     )
+    delivered = run_async(_deliveries(repo_path, [rec.id]))
     if fmt == "json":
-        emit_json({"query": decision_id, "decision": _decision_json(rec, signed, currency)})
+        payload = _decision_json(rec, signed, currency) | _delivery_json(delivered, rec.id)
+        emit_json({"query": decision_id, "decision": payload})
         return
     lines = _decision_header_lines(rec, signed, currency) + _decision_body_lines(rec)
+    shown_line = _delivery_line(delivered, rec.id)
+    if shown_line:
+        lines.insert(lines.index(""), shown_line)
     console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
 
 
@@ -942,7 +1017,7 @@ async def _load_decision(repo_path: Path, decision_id: str):
     ``(None, None, None)`` when nothing resolves.
     """
     from repowise.core.persistence import get_decision, get_session
-    from repowise.core.persistence.crud.authority import latest_acceptance
+    from repowise.core.persistence.crud.authority import is_pinned, latest_acceptance
     from repowise.core.persistence.crud.decision_staleness import latest_grant_times
     from repowise.core.persistence.models import DecisionCandidateMeta
 
@@ -951,6 +1026,8 @@ async def _load_decision(repo_path: Path, decision_id: str):
         rec = await get_decision(session, full_id) if full_id else None
         acceptance = await latest_acceptance(session, rec.id) if rec else None
         signed = _describe_signature(acceptance)
+        if signed is not None:
+            signed["pinned"] = await is_pinned(session, rec.id)
         if rec is not None and signed is None:
             # A candidate's dismissal is signed on its review row, not the log.
             signed = _describe_review(rec, await session.get(DecisionCandidateMeta, rec.id))
@@ -987,6 +1064,7 @@ def _decision_json(rec, signed, currency) -> dict:
         "created_at": rec.created_at.isoformat() if rec.created_at else None,
         # Not "accepted_by": the same log records withdrawals.
         "signature": signed,
+        "pinned": bool(signed and signed.get("pinned")),
         "currency": currency,
         "context": rec.context,
         "decision": rec.decision,
@@ -1011,12 +1089,25 @@ def _decision_header_lines(rec, signed, currency) -> list[str]:
     if currency:
         lines.append(f"[dim]{currency}[/dim]")
     # A candidate has no line at all; status already says so.
+    if signed and signed.get("pinned"):
+        lines.append("[bold]Pinned[/bold]: held as law; an agent asks a person before replacing it")
     if signed:
         lines.append(f"{signed['verb']} by: {signed['label']}")
         if signed.get("evidence"):
             lines.append(f"{signed['verb']} on: {', '.join(signed['evidence'])}")
     lines.append("")
     return lines
+
+
+def _delivery_line(delivered, decision_id: str) -> str | None:
+    """``Shown to agents: N times, last <date>``; None when no ledger was readable."""
+    seen = (delivered or {}).get(decision_id)
+    if seen is None:
+        return None
+    text = f"Shown to agents: {seen.count} time{'' if seen.count == 1 else 's'}"
+    if seen.last_at:
+        text += f", last {seen.last_at.date().isoformat()}"
+    return text
 
 
 def _decision_body_lines(rec) -> list[str]:
@@ -1232,6 +1323,12 @@ def decision_confirm(
 @click.argument("decision_ids", nargs=-1)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @click.option("--reason", default="", help="Why it was tombstoned.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Retire a pinned decision. For a person only; an agent asks one first.",
+)
 @_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
@@ -1241,19 +1338,22 @@ def decision_dismiss(
     decision_ids: tuple[str, ...],
     yes: bool,
     reason: str,
+    force: bool,
     agent: str,
     agent_session: str,
     preview: bool,
     fmt: str,
 ) -> None:
-    """Dismiss proposed decisions (kept as tombstones; never re-proposed).
+    """Dismiss decisions (kept as tombstones; never re-proposed).
 
-    Takes one id or many, and an optional repository path after them.
+    Takes one id or many, and an optional repository path after them. A
+    pinned decision is refused unless a person passes ``--force``.
     """
     ids, path = _split_ids_and_path(decision_ids)
     _require_ids(ids, "dismiss", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
+    _refuse_agent_force(force, signer)
 
     if not _dismissal_confirmed(ids, yes=yes, preview=preview, fmt=fmt):
         console.print("[yellow]Cancelled.[/yellow]")
@@ -1269,6 +1369,7 @@ def decision_dismiss(
             accepter=signer.name(repo_path),
             kind=signer.kind,
             accepter_session=signer.session,
+            force=force,
         )
 
     results = run_async(
@@ -1287,6 +1388,15 @@ def decision_dismiss(
         "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]",
         "",
     )
+
+
+def _refuse_agent_force(force: bool, signer: _Signer) -> None:
+    """``--force`` retires a pinned decision, which is a person's call, never an agent's."""
+    if force and signer.agent:
+        raise click.ClickException(
+            "--force is for a person: a pinned decision is replaced only by one. "
+            "Ask them, or have them unpin it with `repowise decision unpin <id>`."
+        )
 
 
 def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) -> bool:
@@ -1311,6 +1421,12 @@ def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) 
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
 @click.option("--reason", default="", help="Why it was retired.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Retire a pinned decision. For a person only; an agent asks one first.",
+)
 @_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what it would do, and write nothing."
@@ -1321,6 +1437,7 @@ def decision_deprecate(
     path: str | None,
     superseded_by: str | None,
     reason: str,
+    force: bool,
     agent: str,
     agent_session: str,
     preview: bool,
@@ -1330,18 +1447,22 @@ def decision_deprecate(
 
     With ``--superseded-by`` this writes an explicit lineage edge; the retired
     id keeps naming its own record. Similarity never writes an edge: one exists
-    because somebody named the successor.
+    because somebody named the successor. A pinned decision is refused unless
+    a person passes ``--force``: an agent asks first.
     """
     from repowise.cli.commands.decision_batch import _RefusedError
 
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
+    _refuse_agent_force(force, signer)
 
     async def _deprecate(session, rec) -> None:
         successor = await _resolve_decision_id(session, superseded_by) if superseded_by else None
         if superseded_by and successor is None:
             raise _RefusedError("decision_not_found", f"Unknown successor: {superseded_by}")
-        await _retire(session, rec, successor, signer=signer, repo_path=repo_path, reason=reason)
+        await _retire(
+            session, rec, successor, signer=signer, repo_path=repo_path, reason=reason, force=force
+        )
 
     results = run_async(
         _review_batch(
@@ -1360,11 +1481,12 @@ def decision_deprecate(
 
 
 async def _retire(
-    session, rec, successor, *, signer: _Signer, repo_path: Path, reason: str
+    session, rec, successor, *, signer: _Signer, repo_path: Path, reason: str, force: bool
 ) -> None:
     """Supersede an accepted record, or mark any other one deprecated."""
     from repowise.cli.commands.decision_batch import _RefusedError
     from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
         deprecate_decision,
         is_accepted,
         supersede_decision,
@@ -1380,7 +1502,10 @@ async def _retire(
                 kind=signer.kind,
                 accepter_session=signer.session,
                 note=reason,
+                force=force,
             )
+        except AcceptanceRefusedError:
+            raise
         except ValueError as exc:
             raise _RefusedError("supersede_refused", str(exc)) from exc
         return
@@ -1393,6 +1518,7 @@ async def _retire(
         accepter=signer.name(repo_path),
         kind=signer.kind,
         accepter_session=signer.session,
+        force=force,
     )
     if successor:
         rec.superseded_by = successor
@@ -1464,6 +1590,13 @@ def _print_health_summary(summary: dict) -> None:
     console.print(stats_table)
 
 
+def _stale_reason(d) -> str:
+    """Why a decision reads stale: what left its rule, else how much of its code moved."""
+    if getattr(d, "rule_check", None) == RULE_DRIFTED:
+        return f"rule changed: {rule_drift_reason(d.rule_check_basis)}"
+    return f"staleness: {d.staleness_score:.2f}"
+
+
 def _print_health_lists(health: dict) -> None:
     """Stale, ungoverned and proposed, each capped so the report stays short."""
     _print_capped(
@@ -1471,7 +1604,7 @@ def _print_health_lists(health: dict) -> None:
         "Stale decisions",
         health["stale_decisions"],
         5,
-        lambda d: f"{d.id[:8]}  {escape(d.title)}  (staleness: {d.staleness_score:.2f})",
+        lambda d: f"{d.id[:8]}  {escape(d.title)}  ({escape(_stale_reason(d))})",
     )
     _print_capped("yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str)
     _print_capped(

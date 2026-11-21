@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -197,11 +197,39 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
     try:
         import yaml
 
+        from repowise.core.settings.model import parse_flag
+
         data = yaml.safe_load(text) or {}
         hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
+        value = hooks.get(flag) if isinstance(hooks, dict) else None
+        if value is None:
+            return default
+        # A value that is neither on nor off reads as off: these fail closed.
+        return parse_flag(value)
     except Exception:
         return False
+
+
+def listed_tools(repo_path: Path, client: str | None, names: Iterable[str]) -> frozenset[str]:
+    """Which of *names* the MCP server here lists to this hook's *client*.
+
+    *client* is the ``--client`` marker (``None`` is Claude Code). The rule is
+    the server's own, over the repo's ``mcp.tools``, so hook text names a tool
+    only when the agent was listed it. A config that cannot be read reads as
+    unset. Called only on paths that already emit text, never per tool call.
+    """
+    from repowise.core.registry.tool_selection import listed_default_tools
+
+    override = None
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        mcp = load_repo_config(repo_path).get("mcp")
+        tools = mcp.get("tools") if isinstance(mcp, dict) else None
+        override = tools if isinstance(tools, (str, list)) else None
+    except Exception:
+        pass
+    return listed_default_tools(names, client=client or "claude_code", override=override)
 
 
 #: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
@@ -255,8 +283,13 @@ def record_saving(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None = None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    *avoided_file* is the repo-relative path whose Read this replacement stood
+    in for, credited once per *session_id* as a file not opened.
 
     Writes the legacy row and the canonical event. The legacy one stays until
     the costs endpoint, the overview headline and ``repowise saved`` read the
@@ -280,7 +313,9 @@ def record_saving(
         try:
             # One version read when current. Repairs a store another process
             # created but had not finished initializing when this one opened it.
-            initialize_savings_schema(con)
+            # A store a newer Repowise owns is left alone.
+            if not initialize_savings_schema(con):
+                return
             _record(
                 con,
                 filter_name=filter_name,
@@ -296,6 +331,8 @@ def record_saving(
                 raw_tokens=raw_tokens,
                 distilled_tokens=distilled_tokens,
                 hook_adapter=hook_adapter,
+                session_id=session_id,
+                avoided_file=avoided_file,
             )
         finally:
             con.close()
@@ -311,6 +348,8 @@ def _record_event(
     raw_tokens: int,
     distilled_tokens: int,
     hook_adapter: str | None,
+    session_id: str | None = None,
+    avoided_file: str | None = None,
 ) -> None:
     """Record the canonical event for one hook replacement. Never raises.
 
@@ -324,7 +363,10 @@ def _record_event(
 
     Attribution is real here rather than ``unknown``. The hook was handed the
     serving agent's own adapter, so which agent saved these tokens is evidence,
-    not a guess.
+    not a guess. The session and subagent ids come from the same hook payload
+    (:func:`.read_state.bind_agent`); a subagent's payload adds an ``agent_id``
+    to its parent's ``session_id``. Ids the event contract would refuse are
+    left out rather than costing the event.
 
     Pricing is read from cache only, never resolved. Detecting the agent's
     model means scanning local transcripts -- around six seconds when the
@@ -341,9 +383,13 @@ def _record_event(
         from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
         from repowise.core.savings.pricing import resolve_pricing_snapshot
 
+        from .read_state import bound_ids
+
         agent = slug_for_hook_adapter(hook_adapter)
+        # Not ``session_id``: that parameter is the host session the files credit keys on.
+        ledger_session_id, subagent_id = (_ledger_id(value) for value in bound_ids())
         event_id = new_event_id()
-        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False, agent=agent)
         recorder.record_event_on(
             connection,
             repo_path,
@@ -354,6 +400,8 @@ def _record_event(
                 "surface": "hook",
                 "integration": agent,
                 "agent": agent,
+                "session_id": ledger_session_id,
+                "subagent_id": subagent_id,
                 "operation": filter_name,
                 "evidence_kind": "measured",
                 "estimator": "chars_per_token_floor_v1",
@@ -363,11 +411,47 @@ def _record_event(
                 "baseline_input_tokens": raw_tokens,
                 "pre_budget_input_tokens": raw_tokens,
                 "delivered_input_tokens": distilled_tokens,
+                "host_session_id": session_id or None,
+                "avoided_files": ((avoided_file, raw_tokens),) if avoided_file else (),
                 **(pricing.as_payload() if pricing else {}),
             },
         )
     except Exception:
         return
+
+
+def record_file_read(repo_path: Path, session_id: str, rel: str) -> None:
+    """Note an agent Read of a path this session was credited as not opening.
+
+    Deferred like :func:`record_saving` and gated by the caller to paths the
+    session state says were credited, so an ordinary Read writes nothing.
+    Never creates the sidecar and never raises. Skips the schema check: a
+    credit to cancel exists only in a ledger already carrying the files tables.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None or not session_id:
+        return
+    try:
+        import sqlite3
+
+        from repowise.core.savings.recorder import record_file_read_on
+
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
+        try:
+            record_file_read_on(con, repo_path, session_id, rel)
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
+#: The event contract's bound on an id. A longer one would reject the event.
+_MAX_LEDGER_ID = 128
+
+
+def _ledger_id(value: str) -> str | None:
+    """*value* as a ledger id, or None when empty or longer than the contract allows."""
+    return value if 0 < len(value) <= _MAX_LEDGER_ID else None
 
 
 def record_forgone(
@@ -392,8 +476,12 @@ def record_forgone(
     try:
         import sqlite3
 
+        from repowise.core.savings.schema import is_newer_store
+
         con = sqlite3.connect(str(db_path), timeout=2)
         try:
+            if is_newer_store(con):
+                return
             con.execute(_FORGONE_TABLE_SQL)
             if "filter" not in {r[1] for r in con.execute("PRAGMA table_info(forgone_savings)")}:
                 con.execute(_FORGONE_MIGRATION_SQL)
@@ -456,8 +544,14 @@ def _record_opportunity(
 
 
 @lru_cache(maxsize=8)
-def _find_repo_root(cwd: Path) -> Path | None:
-    """Walk up from cwd to find a directory with .repowise/.
+def _find_roots(cwd: Path) -> tuple[Path, Path] | None:
+    """``(checkout, store)`` for *cwd*: where its files are, where its index is.
+
+    Walks up to the first directory with ``.repowise/``, which is both. A
+    linked git worktree with no ``.repowise/`` of its own, met on the way up,
+    reads its main checkout's index instead: the checkout is the worktree, the
+    store is the main checkout (see
+    :func:`repowise.cli._helpers.paths.borrowed_index_base`).
 
     ``~/.repowise`` is the user-level config dir and a ``.repowise`` at the
     system temp ROOT is always a stray artifact (a tool that indexed with
@@ -468,16 +562,54 @@ def _find_repo_root(cwd: Path) -> Path | None:
     the walk costs up to 20 ``resolve()``/``is_dir()`` syscall pairs. The
     cache lives only as long as the hook process, so it cannot go stale.
     """
+    from repowise.cli._helpers.paths import borrowed_index_base
+
     current = Path(cwd).resolve()
     try:
         skip = {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}
     except (OSError, RuntimeError):
         skip = set()
     for _ in range(20):
-        if current not in skip and (current / ".repowise").is_dir():
-            return current
+        if current not in skip:
+            if (current / ".repowise").is_dir():
+                return current, current
+            base = borrowed_index_base(current)
+            if base is not None:
+                return current, base
         parent = current.parent
         if parent == current:
             break
         current = parent
     return None
+
+
+def _find_repo_root(cwd: Path) -> Path | None:
+    """The directory whose ``.repowise/`` answers for *cwd*, or ``None``.
+
+    Every read and ledger write goes here. In a linked worktree that borrows
+    its main checkout's index this is the main checkout, so file paths must be
+    made relative to :func:`_checkout_root` instead.
+    """
+    roots = _find_roots(cwd)
+    return roots[1] if roots is not None else None
+
+
+def _checkout_root(cwd: Path, repo_path: Path) -> Path:
+    """Where *cwd*'s files live when *repo_path*'s index answers for it.
+
+    The worktree when it borrows *repo_path*'s index, else *repo_path*.
+    Repo-relative paths, file reads and git commands use this; the index,
+    config and ledger use *repo_path*.
+    """
+    roots = _find_roots(cwd)
+    return roots[0] if roots is not None and roots[1] == repo_path else repo_path
+
+
+def _borrowed_index(cwd: Path, repo_path: Path) -> bool:
+    """True when *cwd* is a worktree reading *repo_path*'s index.
+
+    That index describes the main checkout's indexed commit, not this
+    branch, so surfaces anchored on exact lines or on the index's own
+    freshness stay quiet here.
+    """
+    return _checkout_root(cwd, repo_path) != repo_path

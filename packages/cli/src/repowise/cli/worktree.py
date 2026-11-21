@@ -39,25 +39,12 @@ def _git_output(args: list[str], cwd: Path) -> str:
 def detect_worktree_base(repo_path: Path) -> Path | None:
     """Return the base checkout of a linked git worktree, else None.
 
-    A linked worktree has ``.git`` as a file; ``--git-common-dir`` then points
-    at the base checkout's ``.git`` directory. Submodules also use a ``.git``
-    file, but their common dir is ``<parent>/.git/modules/<name>``, so the
-    ``.git``-named-parent check filters them out along with bare repos.
+    Read from git's own metadata files, without a subprocess; see
+    :func:`repowise.core.git_head.linked_worktree_base`.
     """
-    if not (repo_path / ".git").is_file():
-        return None
-    common_dir = _git_output(["rev-parse", "--git-common-dir"], repo_path)
-    if not common_dir:
-        return None
-    common = Path(common_dir)
-    if not common.is_absolute():
-        common = (repo_path / common).resolve()
-    if common.name != ".git":
-        return None
-    base = common.parent
-    if base.resolve() == repo_path.resolve():
-        return None
-    return base
+    from repowise.core.git_head import linked_worktree_base
+
+    return linked_worktree_base(repo_path)
 
 
 def base_is_seedable(base: Path) -> bool:
@@ -141,27 +128,15 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
         )
         # A page id is ``<type>:<target_path>``, so the id moves with the target:
         # generation writes the new id, and a page left under the old one is
-        # never regenerated and never found by ``generate --page``.
+        # never regenerated and never found by ``generate --page``. The shared
+        # helper carries the pages with their versions, parents and FTS rows.
+        from repowise.core.persistence.crud import repo_level_page_rekey_statements
+
         has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'").fetchone()
-        for page_type in ("repo_overview", "architecture_diagram"):
-            old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
-            conn.execute(
-                "UPDATE wiki_pages SET id = ?, target_path = ? WHERE repository_id = ? AND id = ?",
-                (new_id, dest_repo.name, repo_id, old_id),
-            )
-            conn.execute(
-                "UPDATE wiki_page_versions SET page_id = ? WHERE page_id = ?", (new_id, old_id)
-            )
-            conn.execute(
-                "UPDATE wiki_pages SET parent_page_id = ? "
-                "WHERE repository_id = ? AND parent_page_id = ?",
-                (new_id, repo_id, old_id),
-            )
-            if has_fts:
-                conn.execute(
-                    "UPDATE page_fts SET page_id = ?, target_path = ? WHERE page_id = ?",
-                    (new_id, dest_repo.name, old_id),
-                )
+        for sql, params in repo_level_page_rekey_statements(
+            repo_id, old_name, dest_repo.name, has_page_fts=has_fts is not None
+        ):
+            conn.execute(sql, params)
         conn.commit()
 
 

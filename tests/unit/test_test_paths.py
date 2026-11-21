@@ -120,8 +120,16 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("t/unit/tasks/task_config.py", None, "test"),
     ("t/smoke/workers/dev.py", None, "test"),
     # ...and for another language only a corroborating filename counts
-    ("t/basic.pl", None, ""),
+    ("t/basic.rb", None, ""),
     ("t/unit/helper.go", None, ""),
+    # ...except Perl, whose prove convention makes t/ test material whatever
+    # the name, helpers in t/lib included
+    ("t/basic.t", None, "test"),
+    ("t/basic.pl", None, "test"),
+    ("t/lib/Helper.pm", None, "test"),
+    # ...and a `.t` file is a prove test wherever it sits
+    ("xt/author.t", None, "test"),
+    ("basic.t", "perl", "test"),
     # ...a non-source file under t/ stays as it is without corroboration
     ("t/data/expected.json", None, ""),
     ("t/assets/image.png", None, ""),

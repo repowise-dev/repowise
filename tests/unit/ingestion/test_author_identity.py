@@ -530,3 +530,123 @@ def test_truck_factor_counts_people_not_names() -> None:
     # Automation owns nothing: the bot's 9 files neither count nor move the factor.
     assert people["owner_count"] == 4
     assert people["truck_factor"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Per-file figures and per-commit tallies key on people, not display names
+# ---------------------------------------------------------------------------
+
+_SWATI = [
+    "Swati Ahuja <swati@gmail.com>",
+    "swati510 <swati@gmail.com>",
+    f"Swati Ahuja <35968565+swati510{_NR}>",
+]
+
+
+def _append_commit(repo: Path, author: str, message: str) -> None:
+    with (repo / "f.txt").open("a") as fh:
+        fh.write(f"{message}\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    env = {**os.environ, "GIT_COMMITTER_NAME": "Committer", "GIT_COMMITTER_EMAIL": "c@x.io"}
+    subprocess.run(
+        ["git", "commit", "-q", f"--author={author}", "-m", message],
+        cwd=repo,
+        check=True,
+        env=env,
+    )
+
+
+def _one_person_three_ways(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    authors = [*_SWATI * 3, "Raghav C <raghav@acme.io>"]
+    for n, author in enumerate(authors):
+        _append_commit(repo, author, f"change {n}")
+
+
+@pytest.mark.parametrize("repo_wide", [True, False])
+def test_file_owners_merge_one_person_across_names_and_emails(
+    tmp_path: Path, repo_wide: bool
+) -> None:
+    from repowise.core.ingestion.git_indexer.file_history import index_file
+    from repowise.core.ingestion.git_indexer.records import repo_people
+
+    _one_person_three_ways(tmp_path)
+    repo = git.Repo(tmp_path)
+    meta = index_file(
+        repo,
+        "f.txt",
+        repo_path=tmp_path,
+        commit_limit=100,
+        follow_renames=False,
+        resolve=repo_people(repo) if repo_wide else None,
+    )
+    top = json.loads(meta["top_authors_json"])
+    # Keyed by name: Swati Ahuja 6, swati510 3, Raghav 1, so three
+    # contributors and a bus factor of 2. As people: Swati 9 of 10.
+    assert [(a["name"], a["email"], a["commit_count"]) for a in top] == [
+        ("Swati Ahuja", "swati@gmail.com", 9),
+        ("Raghav C", "raghav@acme.io", 1),
+    ]
+    assert meta["contributor_count"] == 2
+    assert meta["bus_factor"] == 1
+    # Blame credits Swati's lines to the same person and finds her commits.
+    assert meta["primary_owner_name"] == "Swati Ahuja"
+    assert meta["primary_owner_email"] == "swati@gmail.com"
+    assert meta["primary_owner_line_pct"] == pytest.approx(0.9)
+    assert meta["primary_owner_commit_pct"] == pytest.approx(0.9)
+
+
+def test_blame_owner_in_range_merges_names_on_one_email() -> None:
+    from repowise.core.ingestion.git_indexer.function_blame import BlameIndex, owner_in_range
+
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    idx = BlameIndex(
+        lines={1: (a, 1), 2: (a, 1), 3: (b, 1), 4: (b, 1), 5: (c, 1), 6: (c, 1), 7: (c, 1)},
+        authors={
+            a: ("Swati Ahuja", "swati@gmail.com"),
+            b: ("swati510", "swati@gmail.com"),
+            c: ("Raghav C", "raghav@acme.io"),
+        },
+    )
+    # By name Raghav's three lines lead 3-2-2; as one person Swati wrote four.
+    assert owner_in_range(idx, 1, 7) == ("Swati Ahuja", "swati@gmail.com", pytest.approx(4 / 7))
+
+
+def test_commit_experience_counts_one_person_across_emails() -> None:
+    from repowise.core.ingestion.git_indexer.commit_rows import author_experience_by_sha
+
+    commits = [
+        {"sha": "s1", "author_name": "Swati Ahuja", "author_email": "swati@gmail.com", "ts": 1},
+        {"sha": "s2", "author_name": "Swati Ahuja", "author_email": f"9+swati510{_NR}", "ts": 2},
+        {"sha": "s3", "author_name": "swati510", "author_email": "swati@gmail.com", "ts": 3},
+    ]
+    assert author_experience_by_sha(commits) == {"s1": 0, "s2": 1, "s3": 2}
+
+
+def test_action_authors_fold_one_person_and_find_the_owner_by_any_email() -> None:
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.actions.build import build_authors
+
+    old, new = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC)
+    rows = [
+        {"author_name": "Swati Ahuja", "author_email": "swati@gmail.com", "committed_at": old},
+        {"author_name": "Swati Ahuja", "author_email": f"9+swati510{_NR}", "committed_at": new},
+        {"author_name": "Raghav C", "author_email": "raghav@acme.io", "committed_at": new},
+    ]
+    out = build_authors(rows, since=datetime(2026, 5, 1, tzinfo=UTC))
+    assert out["active_authors_90d"] == 2
+    # The owner's stored real email finds her recent noreply commit.
+    assert out["author_last_commit"]["swati@gmail.com"] == new
+
+
+def test_action_authors_find_a_name_only_owner() -> None:
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.actions.build import build_authors
+
+    when = datetime(2026, 6, 1, tzinfo=UTC)
+    out = build_authors(
+        [{"author_name": "Jane Doe", "author_email": "", "committed_at": when}], since=None
+    )
+    assert out["author_last_commit"][author_identity_key("Jane Doe", "")] == when

@@ -244,6 +244,9 @@ repowise/
   install can pick up a newer ruff whose formatter rewrites hundreds of files. That diff
   buries the change you actually made.
 - **TypeScript**: Linted with ESLint (`npm run lint`) and type-checked (`npm run type-check`)
+- Before writing a helper, check [single-sources.md](../docs/architecture/single-sources.md):
+  if a module already owns the concept (file origin, test paths, manifest names, build
+  units, skip directories, commit ids, symbol ids), call or extend it instead of copying it
 - Keep functions small and focused
 - Write docstrings for public APIs
 
@@ -291,6 +294,16 @@ runs and what a failure does. Start from the
 - A test asserting on a `caplog` record sets the level on the module's own logger:
   `caplog.set_level(logging.INFO, logger="<full logger name>")`. Setting the root
   level is not enough, because ancestors such as `repowise.core` set their own.
+
+### How CI runs
+
+[docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
+it checks, when it runs and the command that reproduces it locally. A pull
+request runs the Python 3.12 tests in three shards, plus only the suites its
+changed paths need; `Python tests` is the one Python check that must pass.
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/3`. The
+"Test selection compared" job summary shows which tests `repowise impacted-tests`
+would have picked for your change; it is recorded only and never blocks.
 
 ### Retrieval guard
 
@@ -340,6 +353,12 @@ and commit the budget diff.
 - Write a clear description of what and why
 - Reference any related issues
 - Ensure CI passes before requesting review
+- The [Repowise bot](https://repowise.dev/bot) reviews every PR; its verdict is the `Repowise review` check. If
+  one of its inline points is fixed or wrong, reply in that thread (for example
+  "Fixed in <sha>") and it rechecks and resolves it. A 👍 or 👎 on a point tells it
+  whether the point was useful.
+- Once you have a merged PR here, comment `/rerun` on any open PR to re-run its
+  failed checks, for example a flaky test.
 - All PRs require at least one code owner approval
 - Commits do not list a coding agent as author or co-author (for example a
   `Co-authored-by: Copilot` or `Co-Authored-By: Claude` trailer); maintainers ask

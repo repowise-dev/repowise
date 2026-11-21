@@ -31,6 +31,7 @@ import { BulkGenerateDialogs, BulkWriteButton, NoProseNotice } from "./bulk-gene
 import { useDocsTreeCopy } from "./use-docs-copy";
 import { buildDocsMenuGroups } from "./docs-menu";
 import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
+import { useModelReady } from "@/components/setup/use-setup-actions";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
@@ -112,6 +113,8 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     [pages],
   );
   const hasStubs = stubCount > 0;
+  // Read only where the model ask shows: the landing page, with stubs left.
+  const modelReady = useModelReady(selectedPage?.page_type === "repo_overview" && hasStubs ? repoId : null);
   const bulk = useBulkGenerate(repoId);
   const treeCopy = useDocsTreeCopy();
 
@@ -437,6 +440,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             count={stubCount}
             running={bulk.jobId != null}
             onClick={bulk.open}
+            ready={modelReady}
             className="mx-3 mt-3 sm:mx-6"
           />
         )}

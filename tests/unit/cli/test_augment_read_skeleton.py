@@ -91,9 +91,9 @@ def fake_home(_isolated_home: Path) -> Path:
 @pytest.fixture
 def repo(tmp_path: Path, fake_home: Path) -> Path:
     """An opted-in indexed repo with one large indexed file."""
-    from repowise.cli.commands.augment_cmd._shared import _find_repo_root
+    from repowise.cli.commands.augment_cmd._shared import _find_roots
 
-    _find_repo_root.cache_clear()
+    _find_roots.cache_clear()
     root = tmp_path / "repo"
     (root / ".repowise").mkdir(parents=True)
     (root / "pkg").mkdir()

@@ -135,7 +135,7 @@ def test_fresh_machine_writes_launch_dir_code_entry_and_desktop_path(
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
     assert _stored(desktop)["args"][1] == _arg(repo)
-    assert "Claude Code repowise MCP entry added, will serve the repo it is started in" in out
+    assert "Claude Code repowise MCP entry will be added, serving the repo it is started in" in out
     assert f"Claude Desktop MCP registered for {repo}" in out
 
 
@@ -411,7 +411,7 @@ def test_plan_screen_yes_writes_without_asking_again(home: Path, repo: Path, mon
     out = _register(repo, monkeypatch, yes=False, consent=True)
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
-    assert "repowise MCP entry added, will serve the repo it is started in" in out
+    assert "repowise MCP entry will be added, serving the repo it is started in" in out
 
 
 def test_plan_screen_lists_only_entries_that_change(
@@ -422,8 +422,8 @@ def test_plan_screen_lists_only_entries_that_change(
     desktop = _desktop(home, monkeypatch)
     _write(_code(home), _entry(_arg(other)))
     assert outside_lines(repo) == (
-        "Claude Desktop repowise MCP entry added, "
-        f"will serve {_arg(repo)}",
+        "Claude Desktop repowise MCP entry will be added, "
+        f"serving {_arg(repo)}",
     )
     _write(desktop, _entry(_arg(other)))
     assert outside_lines(repo) == ()
@@ -710,3 +710,53 @@ def test_a_crlf_file_stays_crlf(home: Path, repo: Path, monkeypatch) -> None:
 
     claude_config.uninstall_claude_code_mcp_entry()
     assert _code(home).read_bytes() == _CLAUDE_JSON.replace("\n", "\r\n").encode("utf-8")
+
+
+def test_a_refused_user_config_write_is_reported_not_claimed(
+    home: Path, repo: Path, monkeypatch
+) -> None:
+    """A sandbox can deny ~/.claude.json: say so once, and never print the entry as registered."""
+    _no_desktop(monkeypatch)
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    def _refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(
+        "repowise.cli.agent_targets.formats.json_merge.merge_json_object_member", _refuse
+    )
+
+    out = _register(repo, monkeypatch)
+
+    assert "Claude Code MCP registered" not in out
+    assert "repowise MCP entry added" not in out
+    assert f"Could not write {_code(home)}; this repo's .mcp.json covers it." in " ".join(
+        out.split()
+    )
+
+
+def test_claude_config_dir_moves_every_claude_code_file(
+    home: Path, repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """With CLAUDE_CONFIG_DIR set, Claude Code reads only that folder: write and read there."""
+    from repowise.cli.agent_targets.targets import claude_code
+    from repowise.cli.commands.doctor_cmd._checks.integrations import _claude_json_entries
+
+    custom = tmp_path / "claude-config"
+    custom.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+    _no_desktop(monkeypatch)
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    _register(repo, monkeypatch)
+
+    assert _stored(custom / ".claude.json")["args"] == _LAUNCH_DIR_ARGS
+    assert not _code(home).exists()
+    # Uninstall and doctor read the same helpers.
+    assert claude_code.user_mcp_config_path() == custom / ".claude.json"
+    assert claude_code.settings_path() == custom / "settings.json"
+    assert _claude_json_entries(repo)
+    # The plugin record and the "is Claude Code here" check follow it too.
+    assert claude_code.plugin_manifest_path() == custom / "plugins" / "installed_plugins.json"
+    assert not (home / ".claude").exists()
+    assert claude_code.ClaudeCodeTarget().is_present()

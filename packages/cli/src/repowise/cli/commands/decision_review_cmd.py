@@ -29,13 +29,16 @@ from repowise.core.analysis.decisions.lifecycle import AGENT_ACCEPTANCE_REMEDY
 __all__ = [
     "candidates_command",
     "dedupe_command",
+    "discover_command",
     "export_command",
     "import_command",
     "merge_command",
     "migrate_command",
+    "pin_command",
     "reaffirm_command",
     "split_command",
     "status_command",
+    "unpin_command",
 ]
 
 
@@ -142,9 +145,25 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     "--lane", default=None, help="Only candidates raised by this extraction lane."
 )
 @click.option("--limit", default=30, show_default=True)
+@click.option(
+    "--offset", default=0, show_default=True, help="Skip this many records first, to page the list."
+)
+@click.option(
+    "--background",
+    is_flag=True,
+    default=False,
+    help="Only the records the discovery pass checks (open, not an agreement, not waiting "
+    "for an agent's commit to land, naming a production file), busiest first.",
+)
 @format_option()
 def candidates_command(
-    path: str | None, state: str, lane: str | None, limit: int, fmt: str
+    path: str | None,
+    state: str,
+    lane: str | None,
+    limit: int,
+    offset: int,
+    background: bool,
+    fmt: str,
 ) -> None:
     """List background records: mined or recorded, and not in force.
 
@@ -153,6 +172,8 @@ def candidates_command(
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
+    if background and (state != "open" or lane is not None):
+        raise click.UsageError("--background lists open records only; drop --state and --lane.")
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _run():
@@ -161,18 +182,24 @@ def candidates_command(
             list_candidates,
             record_blockers,
         )
+        from repowise.core.persistence.crud.decision_discovery import background_records
 
         engine, sf = await _open(repo_path)
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                rows = await list_candidates(
-                    session,
-                    repo_id,
-                    review_state=None if state == "all" else state,
-                    lane=lane,
-                    limit=limit,
-                )
+                if background:
+                    found = await background_records(session, repo_id)
+                    rows = [(rec, meta) for rec, meta, _files in found[offset : offset + limit]]
+                else:
+                    rows = await list_candidates(
+                        session,
+                        repo_id,
+                        review_state=None if state == "all" else state,
+                        lane=lane,
+                        limit=limit,
+                        offset=offset,
+                    )
                 return [
                     {
                         "id": rec.id,
@@ -216,6 +243,66 @@ def candidates_command(
         "[dim]Background, not in force. "
         "`repowise decision confirm ID` puts one in force.[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# decision discover
+# ---------------------------------------------------------------------------
+
+
+@click.command("discover")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--agreements",
+    is_flag=True,
+    default=False,
+    help="Instead, the prompt that moves stored working agreements into CLAUDE.md.",
+)
+@click.option(
+    "--all",
+    "review_all",
+    is_flag=True,
+    default=False,
+    help="Instead, the prompt that works through every background record, a page at a time.",
+)
+@format_option()
+def discover_command(path: str | None, agreements: bool, review_all: bool, fmt: str) -> None:
+    """Print a prompt for your agent: check the background records on the busiest files.
+
+    The agent puts the real ones in force, signed as itself with evidence, and
+    dismisses the rest. With no background records it records the decisions
+    behind the busiest files instead. The dashboard's copy button copies the
+    same text.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    if agreements and review_all:
+        raise click.UsageError("--agreements and --all are separate prompts; pass one.")
+    kind = "agreements" if agreements else "review_all" if review_all else "discover"
+    repo_path = _resolve_decision_repo(path, fmt)
+
+    async def _run():
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud.decision_discovery import decision_prompt_for
+
+        engine, sf = await _open(repo_path)
+        try:
+            async with get_session(sf) as session:
+                repo_id = await _repository_id(session, repo_path)
+                return await decision_prompt_for(session, repo_id, kind)
+        finally:
+            await engine.dispose()
+
+    prompt = run_async(_run())
+    if fmt == "json":
+        emit_json(prompt.as_dict())
+        return
+    if not prompt.text:
+        empty = "background records left" if review_all else "working agreements are stored"
+        console.print(f"[dim]No {empty}.[/dim]")
+        return
+    # Plain, not through rich: the text is pasted as is, so no wrapping or markup.
+    click.echo(prompt.text)
 
 
 def _review_signature(meta) -> dict | None:
@@ -262,7 +349,7 @@ def merge_command(
 
     signer = _signer(agent, agent_session)
     repo_path = _resolve_decision_repo(path, fmt)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _merge(session, rec) -> dict:
         from repowise.core.persistence.crud.authority import merge_candidate
@@ -331,7 +418,7 @@ def reaffirm_command(
     _require_ids(ids, "reaffirm", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _reaffirm(session, rec) -> None:
         from repowise.core.persistence.crud.authority import reaffirm_decision
@@ -358,6 +445,86 @@ def reaffirm_command(
         _emit_batch(results, "reaffirmed", "reaffirm", preview, fmt, remedy)
         return
     _emit_single(results[0], ids[0], "reaffirm", fmt, "(governing)", remedy)
+
+
+def _pin_verb(pinned: bool):
+    """``decision pin`` or ``decision unpin``: one body, the state it sets differs."""
+    verb = "pin" if pinned else "unpin"
+    action = "pinned" if pinned else "unpinned"
+
+    def command(
+        decision_ids: tuple[str, ...],
+        reason: str,
+        agent: str,
+        agent_session: str,
+        preview: bool,
+        fmt: str,
+    ) -> None:
+        from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+        ids, path = _split_ids_and_path(decision_ids)
+        _require_ids(ids, verb, fmt)
+        repo_path = _resolve_decision_repo(path, fmt)
+        signer = _signer(agent, agent_session)
+
+        async def _apply(session, rec) -> None:
+            from repowise.core.persistence.crud.authority import set_pinned
+
+            await set_pinned(
+                session,
+                rec,
+                pinned,
+                accepter=signer.name(repo_path),
+                kind=signer.kind,
+                accepter_session=signer.session,
+                reason=reason,
+            )
+
+        results = run_async(
+            _review_batch(
+                repo_path, ids, action=action, verb=verb, preview=preview, apply_one=_apply
+            )
+        )
+        if len(ids) > 1 or preview or fmt == "json":
+            _emit_batch(results, action, verb, preview, fmt)
+            return
+        note = (
+            "(in force; an agent asks a person before replacing it)"
+            if pinned
+            else "(still in force)"
+        )
+        _emit_single(results[0], ids[0], verb, fmt, f"[dim]{note}[/dim]", "")
+
+    command.__name__ = f"{verb}_command"
+    command.__doc__ = (
+        """Pin decisions in force: a person holds them as law.
+
+    An agent that tries to replace or retire a pinned decision is refused and
+    told to ask a person first. Takes one id or many, and an optional
+    repository path after them. ``--agent`` signs as the agent a person asked
+    to pin it.
+    """
+        if pinned
+        else """Unpin decisions. They stay in force; agents may replace them again.
+
+    Takes one id or many, and an optional repository path after them.
+    ``--agent`` signs as the agent a person asked to unpin it.
+    """
+    )
+    command = format_option()(command)
+    command = _preview_option(command)
+    command = _signing_options(command)
+    command = click.option(
+        "--reason",
+        default="",
+        help="Why it is law." if pinned else "Why it no longer is.",
+    )(command)
+    command = click.argument("decision_ids", nargs=-1)(command)
+    return click.command(verb)(command)
+
+
+pin_command = _pin_verb(True)
+unpin_command = _pin_verb(False)
 
 
 # ---------------------------------------------------------------------------
@@ -589,12 +756,19 @@ def export_command(path: str | None, force: bool, fmt: str) -> None:
 @click.command("import")
 @click.argument("path", required=False, default=None)
 @click.option("--dry-run", is_flag=True, default=False, help="Report without writing.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-accept entries even if the store changed since export.",
+)
 @format_option()
-def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
+def import_command(path: str | None, dry_run: bool, force: bool, fmt: str) -> None:
     """Reconcile the store to ``.repowise/decisions.yaml``.
 
-    The file wins: it is what a colleague's commit changes, and the store is the
-    copy. Entries missing a reason or a scope are skipped rather than guessed at.
+    Conflicting edits are skipped if the store changed since export; --force
+    overrides this token check. Older files without tokens keep their previous
+    behaviour. Entries missing a reason or a scope are skipped rather than guessed at.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -611,7 +785,7 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
                 repo_id = await _repository_id(session, repo_path)
                 try:
                     outcome = await import_manifest(
-                        session, repo_id, repo_path, dry_run=dry_run
+                        session, repo_id, repo_path, dry_run=dry_run, force=force
                     )
                 except ManifestConflictError as exc:
                     emit_refusal("manifest_unreadable", str(exc), fmt)
@@ -629,8 +803,12 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         f"reaffirmed {len(result['reaffirmed'])}  unchanged {len(result['unchanged'])}  "
         f"skipped {len(result['skipped'])}  repaired {len(result['repaired'])}"
     )
+    unchecked = set(result["unchecked"])
     for decision_id in result["reaffirmed"]:
-        console.print(f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted")
+        note = " (no base token, not checked for staleness)" if decision_id in unchecked else ""
+        console.print(
+            f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted{note}"
+        )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
     _print_repairs(result["repaired"])
@@ -664,12 +842,41 @@ _STATUS_STYLE = {
 }
 
 
+def _render_recent(recent: dict) -> None:
+    """The decisions put in force this week, newest first, and who put them there."""
+    shown = recent["decisions"]
+    title = f"\nRecent: put in force in the last {recent['days']} days ({recent['count']})"
+    if not shown:
+        console.print(f"{title}\n  [dim]Nothing new is in force.[/dim]")
+        return
+    table = Table(title=title, box=None, pad_edge=False, show_edge=False)
+    for column in ("ID", "Decision", "By", "Commit", "When"):
+        table.add_column(column)
+    for row in shown:
+        who = row["signer"] + (" (agent)" if row["signer_kind"] == "agent" else "")
+        commit = row["commit"][:9] + (f" on {row['landed_on']}" if row["landed_on"] else "")
+        table.add_row(
+            row["id"][:8],
+            ("[bold]pinned[/bold] " if row["pinned"] else "") + row["title"][:60],
+            who,
+            commit or "-",
+            row["at"][:10],
+        )
+    console.print(table)
+    if recent["count"] > len(shown):
+        console.print(
+            f"  [dim]{recent['count'] - len(shown)} more; --format json lists them all.[/dim]"
+        )
+
+
 def _render_status(report: dict) -> None:
     """Render the capture report for a person."""
     policy = report["policy"]
     console.print("[bold]Decision capture[/bold]\n")
+    capture = policy["enabled"] and policy["mode"] == "full"
     console.print(
-        f"  Capture [bold]{'on' if policy['enabled'] else 'off'}[/bold]  ·  "
+        f"  Mode [bold]{policy['mode'].replace('_', '-')}[/bold]  ·  "
+        f"Decision capture [bold]{'on' if capture else 'off'}[/bold]  ·  "
         f"LLM extraction [bold]{'on' if policy['llm'] else 'off'}[/bold]  ·  "
         f"preset [bold]{policy['preset']}[/bold]"
     )
@@ -714,7 +921,8 @@ def _render_status(report: dict) -> None:
     counts = Table(title="\nRecords", show_header=False, box=None, pad_edge=False, show_edge=False)
     counts.add_column("Metric", style="cyan")
     counts.add_column("Value", justify="right")
-    counts.add_row("Governing", str(lanes["governing"]))
+    counts.add_row("In force", str(lanes["governing"]))
+    counts.add_row("Pinned", str(report["recent"]["pinned"]))
     counts.add_row("Active", str(lanes["active"]))
     counts.add_row("Needs review", str(lanes["needs_review"]))
     counts.add_row("Uncheckable", str(lanes["uncheckable"]))
@@ -729,6 +937,7 @@ def _render_status(report: dict) -> None:
         "get_why serves them when asked. A decision an agent records comes into "
         "force when its commit merges.[/dim]"
     )
+    _render_recent(report["recent"])
 
     backlog = report["backlog"]
     if backlog["available"]:
@@ -768,18 +977,30 @@ def status_command(path: str | None, fmt: str) -> None:
     async def _run():
         from repowise.core.analysis.decisions.status import capture_status
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud.authority import pinned_decision_ids
+        from repowise.core.persistence.crud.decision_digest import RECENT_DAYS, recent_decisions
         from repowise.core.providers.llm.registry import provider_available_for_repo
 
         engine, sf = await _open(repo_path)
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                return await capture_status(
+                report = await capture_status(
                     session,
                     repo_id,
                     repo_path,
                     provider_available=provider_available_for_repo(repo_path),
                 )
+                recent, count = await recent_decisions(session, repo_id)
+                # Every one in json, so an agent answers "what did we decide this
+                # week" from one call; the table shows the newest.
+                report["recent"] = {
+                    "days": RECENT_DAYS,
+                    "count": count,
+                    "pinned": len(await pinned_decision_ids(session, repo_id)),
+                    "decisions": [r.as_dict() for r in recent],
+                }
+                return report
         finally:
             await engine.dispose()
 
@@ -794,4 +1015,9 @@ def status_command(path: str | None, fmt: str) -> None:
     if fmt == "json":
         emit_json({"repo": str(repo_path), **report})
         return
+    report["recent"]["decisions"] = report["recent"]["decisions"][:_RECENT_SHOWN]
     _render_status(report)
+
+
+#: Recent decisions the table shows; json lists them all.
+_RECENT_SHOWN = 10

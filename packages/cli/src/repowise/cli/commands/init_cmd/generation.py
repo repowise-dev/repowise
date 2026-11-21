@@ -104,6 +104,7 @@ def estimate_generation(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
     est = estimate_cost(
         plans,
@@ -187,9 +188,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     file, API and symbol pages from the code itself with no provider call. This
     is the one line that says so. Empty string when there are none.
     """
-    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-
-    counts = {p.page_type: p.count for p in plans if p.page_type in STRUCTURAL_PAGE_TYPES}
+    counts = {p.page_type: p.count - p.model_count for p in plans if p.count > p.model_count}
     total = sum(counts.values())
     if not total:
         return ""
@@ -197,7 +196,12 @@ def structural_page_summary(plans: list[Any]) -> str:
     return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
-def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
+def announce_file_page_cap(
+    parsed_files: list[Any],
+    gen_config: Any,
+    *,
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Say so when the file bucket is being bounded, and how to undo it.
 
     A cap the user chose needs no explanation, but the one the size policy applies
@@ -205,12 +209,12 @@ def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
     are printed, since a run that emits fewer pages than there are files should say
     which files it kept and how to ask for all of them.
     """
-    from repowise.core.generation.selection import auto_file_page_cap, count_documentable_files
+    from repowise.core.generation.selection import auto_file_page_cap, count_eligible_file_pages
 
     requested = getattr(gen_config, "max_file_pages", None)
     if requested == 0:
         return  # explicitly uncapped: nothing is being held back
-    documentable = count_documentable_files(parsed_files)
+    documentable = count_eligible_file_pages(parsed_files, git_meta_map)
     cap = requested if requested else auto_file_page_cap(documentable)
     if not cap or cap >= documentable:
         return
@@ -354,7 +358,11 @@ def run_repo_generation(
     from ._generation_persist import run_generation_with_persistence
 
     if verbose:
-        announce_file_page_cap(result.parsed_files, gen_config)
+        announce_file_page_cap(
+            result.parsed_files,
+            gen_config,
+            git_meta_map=getattr(result, "git_meta_map", None),
+        )
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
     # One run, one store: ``init`` builds it before the pipeline and it arrives

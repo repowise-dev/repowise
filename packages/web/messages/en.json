@@ -157,7 +157,8 @@
     "groupUnderstand": "Understand",
     "groupCodeQuality": "Code quality",
     "tests": "Tests",
-    "security": "Security"
+    "security": "Security",
+    "setup": "Setup"
   },
   "breadcrumb": {
     "review": "Review",
@@ -564,7 +565,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Some findings and scores moved. Abstract, interface and extern methods are no longer counted as functions, a switch opens one nesting level and its case arms none, ternary dispatch chains in Java, C, C++, C#, Dart, Objective-C and PHP no longer add nesting, and flat boolean chains and TSX style objects are not counted as complexity or code. C++ operators, destructors and macro-declared functions and Dart constructors get names of their own. Several performance and maintainability findings now fire only on the pattern they describe, repeated nesting is advisory, C and C++ #if blocks count their largest arm, and COBOL GO TO DEPENDING ON is counted correctly. Repo averages leave out tooling, vendored and generated files on every surface, health bars read on the same five bands everywhere, and refactoring gains are priced by rescoring the file. Repos with these patterns can move either way; other repos keep their scores.",
+      "coChangeNoticeBody": "Some findings and scores moved. Code Health now judges each language on the patterns it reads reliably: markers that a blind review of 705 findings found rarely worth acting on in a language are listed as advisory there and deduct nothing, low cohesion is advisory everywhere, duplicate code scores in TypeScript and error handling in Python, and cold-path loop performance markers are listed without scoring. Complexity counts runs of plain guards, optional setters, field copies and simple switch arms once, and literal tables, multi-line strings, builder chains and SwiftUI, Compose and Flutter view trees read as data. Constructors, trait implementations, framework callbacks and compiler-owned signatures are judged on their own terms, Rust trait impls and Ruby mixins are not god classes, idiomatic Python, Go and Rust error handling stays unflagged, Swift, PHP, Dart, Ruby, F#, Objective-C and C++ read parameters and methods more accurately, C++ findings ship without the preview label, and Astro files are measured with their script and markup. Fix first gains count the findings a file still carries. Repos with these patterns can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
@@ -635,6 +636,7 @@
         "origin": {
           "test": "test files",
           "docs_example": "docs examples",
+          "data": "data files",
           "build": "build files",
           "vendored": "vendored files",
           "generated": "generated files",
@@ -680,12 +682,12 @@
       "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
       "ledeNoGovernance": "Nothing is in force yet. A decision an agent records comes into force when the commit it cites merges to the default branch.",
       "ledeCandidates": "{count, plural, one {# background record is} other {# background records are}} below, mined from pull requests, commits, comments and sessions. {count, plural, one {It is} other {They are}} not in force; agents ask about {count, plural, one {it} other {them}} through get_why for the why behind the code.",
-      "ledeAcceptedRecords": "{count, plural, one {# decision is} other {# decisions are}} in force. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeAcceptedRecords": "{count, plural, one {# decision governs} other {# decisions govern}} this repository. An agent editing a file one of them names is told about it before it changes anything.",
       "ledeAcceptedMore": "{count, plural, one {# more is a background record} other {# more are background records}} mined from history. Not in force; agents ask about them through get_why for the why.",
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
-      "reviewTitle": "Records",
-      "reviewDescription": "Every record sits in exactly one tab and the counts add up: what is in force, background mined from history, what has drifted from the code it names, what names nothing at all, and what has been retired."
+      "reviewTitle": "All decisions",
+      "reviewDescription": "What is in force, with pinned decisions first; what your agents decided this week; background mined from history; and what has been retired. Hand any one to your agent to pin, veto or change it."
     },
     "contributors": {
       "title": "Ownership",
@@ -862,29 +864,200 @@
       }
     },
     "costs": {
-      "spendEmptyTitle": "No model calls recorded yet",
-      "spendEmptyDescription": "Nothing has been spent on this repository. Model spend appears here once Repowise generates docs or answers with a model.",
       "title": "Usage & savings",
-      "description": "What agents avoided, what Repowise cost, and how we know.",
+      "description": "What Repowise saved your agents, and what it used to do it.",
+      "rangeLabel": "Time range",
+      "range7": "7 days",
+      "range30": "30 days",
+      "rangeAll": "All time",
       "savingsErrorTitle": "Couldn't load agent savings",
-      "spendTitle": "Repowise model spend",
-      "spendDescription": "What Repowise's own model work cost, reported beside agent savings and never subtracted from them.",
-      "spendErrorTitle": "Couldn't load model spend",
-      "savingsEmptyTitle": "No agent savings recorded yet",
-      "savingsEmptyDescription": "Route noisy commands through repowise distill, or install the rewrite hook with repowise hook rewrite install. Savings appear here on their own once an agent starts using this repository.",
-      "bySourceTitle": "Savings by source",
-      "bySourceDescription": "Which capture surface produced each part of the total.",
-      "opportunitiesTitle": "Observed opportunities",
-      "opportunitiesDescription": "Behaviour that could have been optimised and was not. Never part of the total above.",
-      "detailsTitle": "Details",
-      "detailsDescription": "The same savings, cut by day, operation, pricing model and agent.",
-      "loadingSavings": "Loading agent savings",
-      "loadingSpend": "Loading model spend…",
       "savingsErrorBody": "The savings endpoint did not respond.",
       "savingsErrorBodySpendUnaffected": "The savings endpoint did not respond. Model spend below is unaffected.",
-      "surfaceHeader": "Surface",
-      "surfaceCaption": "Savings by the surface that produced them",
-      "surfaceEmpty": "No savings in this window carry a surface."
+      "spendErrorTitle": "Couldn't load model spend",
+      "loadingSavings": "Loading agent savings",
+      "loadingSpend": "Loading model spend…",
+      "openSetup": "Open setup",
+      "nudgeRewriteTitle": "Trim long command output",
+      "nudgeRewriteBody": "Distill isn't on, so git diffs, test runs and build logs reach your agent in full. In repos with it on, it's usually the biggest source of savings.",
+      "nudgeModelTitle": "Answers are built from code structure only",
+      "nudgeModelBody": "This repo was indexed without AI docs. Adding them gives your agent fuller answers to how and why questions. Uses your model key.",
+      "nudgeDismiss": "Hide this suggestion",
+      "checks": {
+        "title": "Checks your agents ran",
+        "sub": "Before changing code, agents can ask Repowise what a change risks, which decisions govern a file, and what's unhealthy or unused. Here's what those checks turned up.",
+        "riskyLabel": "Risky changes caught",
+        "riskySub": "Changes Repowise rated high risk for this repository, out of {checked} it ranked.",
+        "decisionsLabel": "Decisions surfaced",
+        "decisionsSub": "Lookups that found a recorded decision governing the file about to change.",
+        "problemsLabel": "Problems pointed out",
+        "problemsSub": "Health and file-risk findings your agents received while working.",
+        "tools": {
+          "get_change_risk": {
+            "name": "Checked a change before committing",
+            "does": "It rates a change's risk before your agent commits.",
+            "unit": "checks"
+          },
+          "get_why": {
+            "name": "Looked up why code is the way it is",
+            "does": "It finds the decisions and history behind a file before your agent changes it.",
+            "unit": "lookups"
+          },
+          "get_risk": {
+            "name": "Checked how risky a file is",
+            "does": "It flags hotspots and fragile files before an edit.",
+            "unit": "checks"
+          },
+          "get_health": {
+            "name": "Checked code health",
+            "does": "It points out the unhealthiest code near the change.",
+            "unit": "checks"
+          },
+          "get_dead_code": {
+            "name": "Looked for unused code",
+            "does": "It finds unused files and exports before your agent adds more code.",
+            "unit": "checks"
+          }
+        },
+        "levelHigh": "high",
+        "levelMedium": "medium",
+        "levelLow": "low",
+        "changeHigh": "{n} rated high risk",
+        "unranked": "{n} not ranked",
+        "whyAccepted": "{n} found a governing decision",
+        "whyCandidate": "{n} found candidates only",
+        "whyNone": "{n} found none",
+        "riskHigh": "{n} files flagged as hotspots",
+        "healthFindings": "{n} findings returned",
+        "healthFiles": "across {n} files",
+        "deadItems": "{n} unused items found",
+        "deadHigh": "{n} high confidence",
+        "linkWhy": "See decisions",
+        "linkHealth": "Open in Do next",
+        "linkRisk": "Open Code Health",
+        "linkDeadCode": "See unused code",
+        "notRecorded": "Outcomes are recorded from your next session on",
+        "notUsed": "Not used yet.",
+        "missingFor": "{agents} {count, plural, one {doesn't} other {don't}} have this tool.",
+        "hasIt": "{agent} has it",
+        "lacksIt": "{agent} doesn't",
+        "addFor": "Add it for {agent}",
+        "notListedTo": "Not listed to {agents}",
+        "addInSettings": "Add it in Agents & editors",
+        "listAnd": "{rest} and {last}",
+        "note": "A check counts once per call. Findings are what Repowise returned, not what your agent then fixed.",
+        "oldNote": "Calls before this release were counted, but their outcomes weren't kept.",
+        "empty": "No agent is connected yet. Once your agent calls Repowise, the checks it runs and what they find show up here.",
+        "connect": "Connect an agent",
+        "agentsTitle": "Your agents' tools",
+        "tradeoff": "Agents that load every tool's description on each turn (Cursor, Codex and most others) get the {core} core tools by default, which keeps each turn small. Claude Code loads descriptions only when needed, so it gets all {standard} standard tools. Adding the check tools to another agent roughly doubles the tool descriptions it carries each turn.",
+        "colAgent": "Agent",
+        "colProfile": "Tools",
+        "colTools": "Listed to it",
+        "colLastCall": "Last call",
+        "profilePill": "{profile} · {count}",
+        "customProfile": "custom",
+        "noCalls": "No calls yet",
+        "changeTools": "Change tools in Agents & editors",
+        "changeHint": "Pick a profile (core, lean, standard, all) or switch single tools. Applies when the agent restarts.",
+        "switchHint": "The prompt asks your agent to switch the profile for you."
+      },
+      "heroSince": "Saved since {date}",
+      "heroWindow": "Saved in the last {days} days",
+      "heroUnit": "less for your agents to read",
+      "heroTokensUnit": "tokens your agents didn't read",
+      "heroLede": "Repowise answered {calls} calls your agents would otherwise have spent searching, opening files and reading long output. They read {tokens} fewer tokens.",
+      "heroLedeFiles": "Repowise answered {calls} calls your agents would otherwise have spent searching, opening files and reading long output. They read {tokens} fewer tokens and skipped {files} file opens.",
+      "heroBasis": "Measured per call: what the agent would have read, against what Repowise gave it.",
+      "stripBase": "Without Repowise, same calls",
+      "stripWith": "What your agents read",
+      "stripTokens": "{tokens} tokens",
+      "stripCoverage": "Across {calls} calls where Repowise stood in for a search, a file read or long command output.",
+      "tokensLabel": "Tokens not read",
+      "tokensSub": "Input your agents didn't have to read.",
+      "tokensSubOutput": "Input your agents didn't have to read, plus {output} output tokens they didn't have to write (estimated).",
+      "filesLabel": "Files not opened",
+      "filesSub": "Files your agent got from Repowise and never opened. In our benchmark, agents opened {pct}% fewer files with Repowise.",
+      "filesSinceShort": "since {date}",
+      "billLabel": "Saved on your bill",
+      "billSub": "At each session's own model rates.",
+      "billSubOutput": "At each session's own model rates. Includes {usd} of output, estimated from the benchmark.",
+      "billNone": "No dollar figure: these calls ran on a subscription or carried no model rate. The tokens above still count toward your plan's limits.",
+      "overTimeTitle": "Over time",
+      "lensLabel": "Chart measure",
+      "lensUsd": "Dollars",
+      "lensTokens": "Tokens",
+      "lensFiles": "Files",
+      "lensUsdOff": "No saving in this range carried a model rate.",
+      "lensFilesOff": "No file opens were skipped in this range.",
+      "filesSince": "Counted from {date}, when file tracking started.",
+      "tooFewDays": "One day of savings so far. The trend shows from the second day.",
+      "chartAria": "{lens} saved per day, {days} days.",
+      "jobsTitle": "Where it came from",
+      "jobsSub": "What Repowise did in place of your agent's searches, reads and commands.",
+      "jobs": {
+        "trim": {
+          "name": "Trimmed long command output",
+          "detail": "git diffs, test runs, file listings, shell output"
+        },
+        "search": {
+          "name": "Answered searches",
+          "detail": "search digests and results in place of grep"
+        },
+        "checks": {
+          "name": "Ran risk and review checks",
+          "detail": "change risk, file risk, why, health"
+        },
+        "answers": {
+          "name": "Answered code questions",
+          "detail": "answers, file context, symbols, overview"
+        },
+        "rereads": {
+          "name": "Skipped re-reads",
+          "detail": "files already read this session, served as a note or skeleton"
+        }
+      },
+      "jobTokens": "{tokens} tokens",
+      "jobNotSetUp": "Not set up",
+      "jobNone": "None yet",
+      "usageTitle": "What Repowise used",
+      "usageSub": "Model calls Repowise made on your key to write docs, answer questions and mine decisions. Shown beside savings, never subtracted from them.",
+      "usageGroupLabel": "Group usage by",
+      "groupOperation": "Activity",
+      "groupModel": "Model",
+      "groupDay": "Day",
+      "spent": "Spent",
+      "calls": "Calls",
+      "inputTokens": "Input tokens",
+      "outputTokens": "Output tokens",
+      "cost": "Cost",
+      "total": "Total",
+      "noApiCharges": "No API charges",
+      "onSubscription": "On your subscription",
+      "onMachine": "On your machine",
+      "noModelCalls": "No model calls in this range, so Repowise has cost nothing to run.",
+      "daysCapped": "Latest {shown} days with model calls.",
+      "activities": {
+        "doc_generation": "Writing docs",
+        "answer_synthesis": "Answering questions",
+        "decision_extraction": "Finding decisions",
+        "outline_planning": "Planning the docs"
+      },
+      "methodTitle": "How we count",
+      "measuredTitle": "Measured, {tokens} tokens",
+      "measuredBody": "Command output and file reads Repowise trimmed, where both the full and the delivered text were seen.",
+      "inferredTitle": "Inferred, {tokens} tokens",
+      "inferredBody": "For answers: the reads and searches the agent would have needed, sized from the real files where possible.",
+      "pricedTitle": "Priced per session",
+      "pricedBody": "At each session's own model input rate, recorded when it happened. Output is estimated per question from the paired benchmark.",
+      "benchmarkLink": "The benchmark",
+      "methodLink": "Full accounting",
+      "freshMicro": "Nothing recorded yet",
+      "freshTitle": "Savings start with your agent's first session",
+      "freshBody": "Each time your agent asks Repowise instead of searching, opening files or reading long command output, the difference is counted here.",
+      "costOnlyMicro": "Savings not recorded here yet",
+      "costOnlyTitle": "Savings appear once your agents call Repowise",
+      "costOnlyBody": "They're counted from your agents' calls to Repowise. This repository has model spend but no agent calls yet. Connect an agent and the first numbers show after its next session.",
+      "emptyBase": "Without Repowise"
     },
     "repoSettings": {
       "title": "Settings",
@@ -1008,6 +1181,121 @@
       "explorer": "Explorer",
       "freshness": "Doc freshness",
       "drift": "Doc drift"
+    },
+    "firstLook": {
+      "title": "Repo report",
+      "description": "What the index finds now, measured against the first look.",
+      "empty": "No repo report yet",
+      "emptyHint": "repowise init writes one; repowise report repo writes it again.",
+      "rewriteFailed": "Couldn't write the report",
+      "copy": {
+        "eyebrow": "Repo report",
+        "back": "Overview",
+        "handToAgent": "Hand to agent",
+        "share": "Share",
+        "copyLink": "Copy link",
+        "copyLinkHint": "Opens this report",
+        "copyForAgent": "Copy for your agent",
+        "copyForAgentHint": "Every open item as one prompt",
+        "downloadMarkdown": "Download Markdown",
+        "downloadMarkdownHint": "repo-report.md, no buttons",
+        "savePdf": "Save as PDF",
+        "savePdfHint": "Browser print, clean layout",
+        "downloadJson": "Download JSON",
+        "downloadJsonHint": "For scripts and agents",
+        "previewExport": "Preview export",
+        "previewExportHint": "See it without controls",
+        "exportNote": "Export view: this is what Markdown, PDF and a shared link show.",
+        "exitExport": "Back to the app view",
+        "copied": "Copied. Paste it into your agent.",
+        "copyFailed": "Couldn't copy",
+        "files": "{n} files",
+        "firstLookOn": "first look {date}",
+        "writtenOn": "written {date}",
+        "resolved": "resolved",
+        "acknowledged": "acknowledged",
+        "newSince": "new since the first look",
+        "newSinceDate": "new since {date}",
+        "stripTitle": {
+          "security": "Security",
+          "performance": "Performance",
+          "health": "Health",
+          "tests": "Tests",
+          "dead_code": "Dead code",
+          "docs": "Docs",
+          "decisions": "Decisions",
+          "hygiene": "Hygiene",
+          "ownership": "Ownership"
+        },
+        "stripUnit": {
+          "security": "live secrets",
+          "performance": "worth fixing now",
+          "health": "refactor first",
+          "tests": "lines covered",
+          "dead_code": "safe to remove",
+          "docs": "broken refs",
+          "decisions": "to review",
+          "hygiene": "items",
+          "ownership": "single-owner areas"
+        },
+        "measured": "measured",
+        "startHere": "Start here",
+        "fixWithAgent": "Fix with agent",
+        "fixWithAgentHint": "Copy one prompt for every open item in this section",
+        "copyItemPrompt": "Copy prompt for this item",
+        "moreInApp": "{n} more in the app",
+        "linesCovered": "lines covered",
+        "branchesCovered": "branches covered",
+        "table": {
+          "function": "File",
+          "ccn": "Max CCN",
+          "lines": "Code lines",
+          "importers": "Importers",
+          "changes": "Changes 90d",
+          "document": "Document",
+          "broken": "Broken"
+        },
+        "status": {
+          "open": "open",
+          "done": "done",
+          "acknowledged": "acknowledged",
+          "false_positive": "not an issue",
+          "snoozed": "snoozed",
+          "resolved": "resolved",
+          "new": "new"
+        },
+        "severity": {
+          "act_now": "do now",
+          "plan": "plan",
+          "improve": "improve"
+        },
+        "confidence": "{level} confidence",
+        "effort": "effort {e}",
+        "valuesRedacted": "values redacted",
+        "mark": "Mark",
+        "markDone": "Done",
+        "markDoneHint": "Fixed; the next update confirms it",
+        "markAck": "Acknowledge",
+        "markAckHint": "Real, handled later, with a reason",
+        "markFalsePositive": "Not an issue",
+        "markFalsePositiveHint": "False positive, with a reason",
+        "markSnooze": "Snooze 14 days",
+        "reasonLabel": "Reason",
+        "save": "Save",
+        "cancel": "Cancel",
+        "reportAt": "Report at {sha}",
+        "sinceThen": "Since then:",
+        "writing": "Writing...",
+        "repoReport": "Repo report",
+        "openReport": "Open report",
+        "countOf": "{n} of {total}",
+        "wordingByModel": "Wording by your model, {date}",
+        "wordingTemplate": "Template wording",
+        "rewrite": "Rewrite",
+        "rewriteWithModel": "Rewrite with your model",
+        "approxCost": "~{cost}"
+      },
+      "markFailed": "Couldn't save the mark"
     }
   },
   "settings": {
@@ -1088,6 +1376,14 @@
       "description": "What this browser shows and how it presents it. Nothing here changes the index.",
       "weekendLabel": "Weekend days",
       "weekendHint": "Drives the “on weekends” share on the coding-rhythm heatmap.",
+      "timeZoneLabel": "Time zone",
+      "timeZoneHint": "Every date and time shows in this zone. Auto follows this browser.",
+      "timeZoneAria": "Time zone for dates and times",
+      "timeZoneAuto": "This browser, {zone}",
+      "timeZoneAutoValue": "Auto ({zone})",
+      "timeZoneSearch": "Search time zones",
+      "timeZoneNoMatch": "No time zone matches.",
+      "timeZoneSaved": "Dates now show in {zone}.",
       "chatDockLabel": "Ask Repowise",
       "chatDockHint": "The chat pill in the bottom-right of every repository page. Hiding it also hides the two controls below, and does not affect the full chat page.",
       "chatDockAria": "Show the Ask Repowise chat pill",
@@ -1103,15 +1399,37 @@
       "title": "Editor config",
       "description": "Paste this into Claude Code, Cursor or Cline to let the agent query this codebase. Replace the path with the repo you want served, and index it first so there is something to answer from.",
       "serverLabel": "MCP server",
-      "serverHint": "Goes in your editor's MCP config file."
+      "serverHint": "Pick your agent: the config is in its own format, with the repository's path filled in. Index the repository first so there is something to answer from.",
+      "agent": "Agent",
+      "repo": "Repository",
+      "snippet": "{agent} MCP config",
+      "surface": "{agent} lists {count} tools, the {profile} profile.",
+      "surfaceExact": "{agent} lists {count} tools, the exact list in mcp.tools.",
+      "alwaysLoadOn": "Read tools load from the first turn (mcp.always_load is on).",
+      "alwaysLoadOff": "Read tools load through tool search (mcp.always_load is off).",
+      "docs": "{agent} MCP docs",
+      "loading": "Loading the config...",
+      "loadFailed": "Could not load the config",
+      "noRepos": "Add a repository first: the config points the agent at one."
     },
     "mcpTools": {
       "title": "Tool surface",
-      "description": "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it.",
+      "description": "Which tools the MCP server lists to an agent. Saved to the repo's .repowise/config.yaml as mcp.tools, the same setting as repowise config set mcp.tools and repowise mcp --tools.",
       "workspaceOnly": "workspace only",
-      "summary": "{on} of {total} tools exposed. {mode}",
-      "summaryWorkspace": "Workspace mode, so workspace-only tools are available.",
-      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here.",
+      "profile": "Tools listed",
+      "perClient": "Per client (recommended)",
+      "profileCore": "Core: answer, context, search, symbol, why",
+      "profileLean": "Lean: core plus get_risk",
+      "profileStandard": "Standard: Claude Code's default set",
+      "profileAll": "All: every tool available here",
+      "perClientHint": "Claude Code loads tool schemas only when needed, so it lists {standard} tools. Other clients load every schema each turn, so they list the {core} core tools. Switches below add or remove tools for every client.",
+      "summary": "{on} tools on, about {tokens, number} schema tokens per turn on clients that load schemas up front.",
+      "summaryPerClient": "Claude Code lists {standard} tools. Other clients list {others}, about {tokens, number} schema tokens per turn.",
+      "restart": "Applies when the MCP server next starts: restart it, or your agent.",
+      "coreBadge": "core",
+      "tokens": "~{n} tokens",
+      "sameAs": "Same as",
+      "alwaysLoad": "Load the read tools up front",
       "perRepoLabel": "Tools per repository",
       "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
       "chooseTools": "Choose tools",
@@ -1155,6 +1473,10 @@
       },
       "display": {
         "title": "Display"
+      },
+      "all": {
+        "title": "All settings",
+        "description": "Every repowise setting for this repository: its value, where it came from, and what it does. Changes save to .repowise/config.yaml, the same file repowise config set writes."
       }
     },
     "advanced": "Advanced",
@@ -1169,13 +1491,68 @@
       "defaultModelHint": "Repositories without their own model use the server default.",
       "webhooksLabel": "Webhooks",
       "webhooksHint": "A push on GitHub or GitLab can start a sync. The addresses are the same for every repository."
+    },
+    "registry": {
+      "search": "Search settings",
+      "searchPlaceholder": "Search by name or what it does",
+      "changedOnly": "Changed only",
+      "showInternal": "Show internal settings",
+      "countAll": "{total, plural, one {# setting} other {# settings}}",
+      "count": "{shown} of {total} settings",
+      "noMatches": "No setting matches these filters.",
+      "suggestionsTitle": "Suggested for this repository",
+      "suggestionsDescription": "Values that fit this repository better than the current ones.",
+      "apply": "Apply",
+      "applyAria": "Apply the suggested value for {key}",
+      "suggested": "Suggested: {value}",
+      "changed": "Changed",
+      "defaultValue": "default {value}",
+      "sources": {
+        "default": "Default",
+        "env": "Environment",
+        "repo_file": "Repo file",
+        "user_file": "User file"
+      },
+      "envOverride": "{name} is set in the environment and wins over the file.",
+      "envOnly": "Read from {name} in the server's environment.",
+      "userSetting": "Saved for your user, not this repository. Change it with repowise config set {key} in a terminal.",
+      "lockedReason": "Set above this repository, so it cannot be changed here.",
+      "reset": "Reset",
+      "resetAria": "Reset {key} to its default",
+      "copyPrompt": "Copy prompt",
+      "promptTitle": "Change {key} with your agent",
+      "promptDescription": "Your agent explains the setting, asks before changing it, and gives you the undo command.",
+      "saveFailed": "Could not save",
+      "unset": "unset",
+      "none": "(none)",
+      "listPlaceholder": "a, b",
+      "loading": "Loading settings…",
+      "loadFailed": "Could not load settings.",
+      "retry": "Try again",
+      "moreOn": "More options on the {page} page",
+      "areas": {
+        "account": "Account",
+        "attribution": "AI attribution",
+        "decisions": "Decisions",
+        "distill": "Command output",
+        "editor": "Editor files",
+        "events": "Change events",
+        "evidence": "Runtime evidence",
+        "generation": "Documentation",
+        "health": "Code health",
+        "hooks": "Agent hooks",
+        "indexing": "Indexing",
+        "mcp": "MCP",
+        "providers": "Model providers",
+        "server": "Server"
+      }
     }
   },
   "repos": {
     "addDialog": {
       "toastStarted": "Repository added, indexing started",
       "toastAdded": "Repository added",
-      "trigger": "Add Repository"
+      "trigger": "Add repository"
     },
     "delete": {
       "button": "Delete Repository",
@@ -1277,13 +1654,12 @@
     },
     "explorer": {
       "emptyTitle": "No documentation yet",
-      "emptyBody": "Run a generation job to create AI-powered documentation for this codebase.",
+      "emptyBody": "No pages yet. Indexing this repo builds docs from the code. To have a model write the how and why, add an API key, sign in to Claude Code, Codex or OpenCode, or run a local model.",
       "hideTree": "Hide pages tree",
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
       "askLabel": "Ask about {title}",
       "askPlaceholder": "Ask about this page",
-      "noProse": "This documentation is built from the index: structure, history and signals. A model has not written the prose for {count, plural, one {# page} other {# pages}} yet.",
       "more": "More",
       "menu": {
         "exportPage": "Export this page (Markdown)",
@@ -1291,7 +1667,12 @@
         "exportZip": "Download ZIP archive",
         "present": "Present",
         "readerLevel": "Reader level"
-      }
+      },
+      "modelAsk": "Add a model to write the how and why on these pages.",
+      "modelReady": "A model is ready. {source}.",
+      "modelAskSub": "{count, plural, one {# page is} other {# pages are}} built from the index. Your agent's answers already use the index without one.",
+      "copyPrompt": "Copy prompt",
+      "copied": "Copied"
     },
     "tree": {
       "searchPlaceholder": "Search docs...",
@@ -1653,6 +2034,8 @@
     "pages": "{count, plural, one {# page to write} other {# pages to write}}",
     "counting": "Counting pages",
     "signedInNote": "Uses your {name} sign-in.",
+    "planNote": "Uses your {name} sign-in and plan quota.",
+    "planNoteTimed": "Uses your {name} sign-in and plan quota, about {minutes, plural, one {# minute} other {# minutes}}.",
     "costNote": "About {cost} with this key, shown before anything runs.",
     "pricing": "Pricing with this key",
     "keyNote": "The price shows before anything runs.",
@@ -1673,12 +2056,12 @@
     "steps": {
       "repo": "Your repo",
       "agent": "Your agent",
-      "yours": "Make it yours"
+      "ask": "Ask it",
+      "repos": "Your repos"
     },
     "skip": "Skip the tour",
     "back": "Back",
     "nextAgent": "Next: your agent",
-    "nextYours": "Next: make it yours",
     "finish": "Finish in Setup",
     "repo": {
       "title": "We mapped <em>{name}</em>",
@@ -1736,8 +2119,9 @@
     "agent": {
       "title": "Your agent can read <em>this map</em>",
       "lede": "It asks repowise first, so it reads less and guesses less.",
-      "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
-      "connected": "Connected. Restart it to load the tools.",
+      "none": "No coding agent found on this machine. Install one, then connect it here or run repowise agents add.",
+      "connected": "Connected. Restart it, then ask it one question about this repo.",
+      "coreTools": "Lists the core repowise tools by default. Agents & editors in Settings turns on more.",
       "waiting": "Waiting for its first call",
       "firstCall": "First call {when}",
       "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
@@ -1749,26 +2133,22 @@
       "prompt": "Connect repowise to {name} for this repo. Run `{command}` in the repo root, then restart {name} so it loads the repowise tools. Run `repowise doctor` to check the connection.",
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
-      "askLabel": "Ask it something",
-      "askRisk": "Which files are riskiest to change, and why?",
-      "askHotspot": "Why does {path} change so often?",
-      "askStart": "Where should I start reading this repo?",
+      "tips": {
+        "title": "Not seeing it?",
+        "claudeCode": "In Claude Code, run /mcp: repowise should be listed as connected. If it is not, restart Claude Code in this repo.",
+        "cursor": "Open Cursor Settings, then MCP: repowise should have a green dot. Ask in Agent mode; Ask mode does not call tools.",
+        "vscode": "Run MCP: List Servers from the Command Palette and start repowise. Ask in Copilot Chat's Agent mode.",
+        "codex": "Restart Codex in this repo and trust the folder so it reads .codex/config.toml, then run /mcp to check repowise is listed.",
+        "generic": "Restart {name} in this repo so it loads the repowise tools.",
+        "doctor": "Still nothing? Run <mono>repowise doctor</mono> in this repo to check the connection."
+      },
       "copy": "Copy",
       "copied": "Copied",
       "copyFailed": "Couldn't copy",
-      "copyQuestion": "Copy: {question}"
+      "copyQuestion": "Copy: {question}",
+      "waitingNote": "Waiting for its first call. Ask it anything about this repo."
     },
-    "yours": {
-      "title": "Make it <em>yours</em>",
-      "lede": "Every part is optional. Change any of it later in Settings.",
-      "modelTitle": "Add a model where it helps",
-      "gets": {
-        "docs": "Docs that explain how and why",
-        "chat": "Chat in this dashboard",
-        "answers": "Written answers for your agent",
-        "local": "Your key or sign-in stays here"
-      },
-      "detected": "Found on this machine: {names}.",
+    "ask": {
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",
@@ -1777,13 +2157,53 @@
       "syncOffConfirm": "Turn off",
       "teamTitle": "Running this for a team?",
       "teamBody": "Hosted repowise indexes on every push, reviews pull requests and gives your team one dashboard.",
-      "teamLink": "See hosted"
+      "teamLink": "See hosted",
+      "title": "Now <em>ask it</em> something",
+      "lede": "Paste one into {agent}. Each one is about this repo, so the answer is about your code.",
+      "ledeAny": "Paste one into your agent. Each one is about your code, so the answer is too.",
+      "ledeWorkspace": "Paste it into your agent. It asks across these repos, so the answer shows how they fit together.",
+      "later": "Change any of it later in Setup."
+    },
+    "nextAsk": "Next: ask it",
+    "workspace": {
+      "title": "We mapped <em>{count, plural, one {# repo} other {# repos}}</em> in {name}",
+      "titleNoName": "We mapped <em>{count, plural, one {# repo} other {# repos}}</em>",
+      "lede": "{files, plural, one {# file} other {# files}} and their shared history, read on this machine. Nothing left it.",
+      "agentLede": "One workspace server answers about every repo in it.",
+      "standout": "Across repos",
+      "membersLabel": "Repos in this workspace",
+      "agentUnknown": "The workspace setup could not be read. Run repowise doctor in the workspace root.",
+      "waitingNote": "Waiting for the first call. Ask your agent anything about these repos.",
+      "tip": "Restart your agent in the workspace root so it loads the workspace server.",
+      "contracts": {
+        "label": "Contracts",
+        "unit": "links between repos",
+        "caption": "HTTP routes and shared schemas one repo serves and another calls.",
+        "open": "Open contracts"
+      },
+      "coChanges": {
+        "label": "Co-changes",
+        "unit": "{count, plural, one {work session} other {work sessions}}",
+        "caption": "<mono>{a}</mono> and <mono>{b}</mono> changed together.",
+        "open": "Open co-changes"
+      },
+      "lowest": {
+        "label": "Lowest health",
+        "caption": "<mono>{name}</mono>, the lowest of {count} indexed.",
+        "open": "Open the workspace"
+      },
+      "notIndexed": {
+        "label": "Not indexed",
+        "unit": "{count, plural, one {repo} other {repos}}",
+        "caption": "<mono>{names}</mono>. Contracts that touch {count, plural, one {it} other {them}} are not seen yet.",
+        "open": "Open the workspace"
+      }
     }
   },
   "chat": {
     "addModel": "Add a model",
-    "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
-    "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
+    "noProvider": "Add a model to chat here, or set one in <link>settings</link>. Your agent can still ask the index without one.",
+    "noProviderShort": "Chat needs an API key or a local model, set in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
     "unverifiedFiguresNote": "Figures with a dotted underline were not found in this turn's tool results.",
     "emptySuggestions": {
@@ -1805,7 +2225,10 @@
       "noMatch": "No listed model matches.",
       "configure": "Configure in Settings",
       "needsSetup": "More providers need a key first."
-    }
+    },
+    "modelReady": "A model is ready. {source}.",
+    "copyPrompt": "Copy prompt",
+    "copied": "Copied"
   },
   "codeHealth": {
     "hotspots": {
@@ -1906,6 +2329,14 @@
     "regenFailed": "Couldn't start regeneration"
   },
   "decisions": {
+    "agent": {
+      "agreements": "Move working agreements to CLAUDE.md",
+      "review": "Check with your agent",
+      "edit": "Change with your agent",
+      "veto": "Veto with your agent",
+      "pin": "Pin with your agent",
+      "unpin": "Unpin with your agent"
+    },
     "add": {
       "trigger": "Record a decision",
       "title": "Record a decision",
@@ -1918,14 +2349,35 @@
     "review": {
       "accepted": "In force. It governs the files it names.",
       "dismissed": "Dismissed. Reindexing will not mine it again.",
-      "acceptFailed": "Couldn't accept: {message}",
+      "acceptFailed": "Couldn't put it in force: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
       "reaffirmed": "Reaffirmed. It is current again for the files it names.",
       "reaffirmFailed": "Couldn't reaffirm: {message}",
       "bulkDismissed": "Dismissed {count, plural, one {# record} other {# records}}.",
-      "actionFailed": "The review action failed.",
+      "actionFailed": "That action failed.",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "pinned": "Pinned. An agent asks a person before replacing it.",
+      "unpinned": "Unpinned. It stays in force.",
+      "pinFailed": "Couldn't pin: {message}",
+      "unpinFailed": "Couldn't unpin: {message}"
+    },
+    "hero": {
+      "discoverHeading": "Check {count, plural, one {# background record} other {# background records}} on the busiest files",
+      "discoverDescription": "Your agent reads each record against the code and its commits, puts the real ones in force and dismisses the rest. You see what it did under This week.",
+      "addHeading": "Record the decisions this repository already follows",
+      "addDescription": "Your agent reads the code and history and records the rules it clearly follows, each with the quote and commit it came from. You see each one here as it lands.",
+      "copy": "Copy prompt for your agent",
+      "copied": "Copied. Paste it into your agent.",
+      "copyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "footnote": "Same text as <code>repowise decision discover</code>.",
+      "recordMissed": "Record missed decisions",
+      "addByHand": "Add one by hand",
+      "reviewAll": "Review all records"
+    },
+    "board": {
+      "movedOnly": "Showing the {count, plural, one {# decision} other {# decisions}} in force whose code changed after {count, plural, one {it was} other {they were}} accepted.",
+      "showAll": "Show everything in force"
     }
   },
   "files": {
@@ -1944,7 +2396,10 @@
   "jobs": {
     "completed": "Documentation updated{name}",
     "pagesGenerated": "{count} pages generated",
+    "indexed": "Index ready{name}",
+    "filesIndexed": "{count} files indexed",
     "failed": "Generation failed",
+    "indexFailed": "Indexing failed",
     "unknownError": "Unknown error",
     "cancelled": "Job cancelled",
     "cancelledDescription": "The pipeline was stopped before completion.",
@@ -1953,6 +2408,11 @@
     "completedWithProblems": "Finished with problems{name}",
     "pagesFailed": "{count} pages could not be written.",
     "progress": {
+      "queued": "Queued. Starting soon.",
+      "indexReady": "Index ready",
+      "docsReady": "Generation complete",
+      "indexFailed": "Indexing failed",
+      "docsFailed": "Generation failed",
       "warningTitle": "Finished with problems",
       "noPagesWritten": "No documentation pages were written.",
       "somePagesFailed": "{failed} of {total} pages could not be written. Run it again to retry them.",
@@ -2118,7 +2578,7 @@
     },
     "next": {
       "title": "Do next",
-      "titleCount": "Do next · {count, number}",
+      "titleCount": "Do next · {count, number}{setup, plural, =0 {} one { · # setup step} other { · # setup steps}}",
       "timeFrame": "Time frame",
       "week": "This week",
       "weekHint": "What the last 7 days of commits changed",
@@ -2799,6 +3259,7 @@
     "progress": "{done} of 3 essentials done. Each row also shows its terminal command.",
     "doneLede": "{agent} made its first call {when}. The index updates after each commit.",
     "yourAgent": "Your agent",
+    "askOne": "Ask it:",
     "loading": "Checking this repository's setup. The first check can take about 20 seconds.",
     "loadFailedLabel": "Couldn't check",
     "loadFailed": "The setup check didn't finish. Run repowise doctor in a terminal to see why, or try again.",
@@ -2872,6 +3333,7 @@
         "detailUpToDate": "{files} files indexed at {commit}.",
         "detailIncomplete": "There's no complete index for this repository yet.",
         "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailMissing": "Indexed at {indexed}, a commit this history no longer has (rebased or reset), so pass a commit the index covers with --since.",
         "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
       },
       "agent": {
@@ -2882,10 +3344,11 @@
         "statusNoCalls": "No calls yet",
         "detailCalled": "{agent} made its first call {when}.",
         "detailCalledAnon": "An agent made its first call {when}.",
-        "detailWaiting": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call.",
+        "detailWaiting": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} Restart {count, plural, one {it} other {one}}, then ask it one question about this repo. This ticks on its first call.",
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "coreTools": "{count, plural, one {{agents} lists} other {{agents} list}} the core repowise tools by default. Agents & editors in Settings turns on more.",
         "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
       },
       "sync": {
@@ -2895,7 +3358,8 @@
         "statusUnknown": "Couldn't check",
         "detailOn": "Updates after each commit.",
         "detailOff": "The index updates only when you run repowise update.",
-        "detailUnknown": "The post-commit hook couldn't be read."
+        "detailUnknown": "The post-commit hook couldn't be read.",
+        "behind": "{count, plural, one {# commit} other {# commits}} since the last sync."
       },
       "model": {
         "title": "A model for docs, chat and answers",
@@ -2903,7 +3367,8 @@
         "statusBuilt": "Built from index",
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
-        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model.",
+        "ready": "A model is ready. {source}."
       },
       "coverage": {
         "title": "Test coverage",
@@ -2921,7 +3386,8 @@
         "statusNa": "Needs Claude Code",
         "statusUnknown": "Couldn't check",
         "detail": "Claude Code reads test, build and git output through distill.",
-        "detailNa": "This works with Claude Code, which isn't on this machine."
+        "detailNa": "This works with Claude Code, which isn't on this machine.",
+        "statusSuggested": "Suggested"
       },
       "check": {
         "statusWarn": "Warning",
@@ -2944,8 +3410,74 @@
       "unreadable": {
         "status": "Couldn't check",
         "detail": "Couldn't read this here. Run {command} in a terminal to check."
+      },
+      "evidence": {
+        "title": "Performance evidence",
+        "statusFound": "Found",
+        "statusOn": "On",
+        "statusOff": "None found",
+        "detailFound": "Profiles or benchmark results are on disk. Connecting them lets Repowise rank slow paths by measured time, not only by code shape.",
+        "detailOn": "Runtime evidence is stored, so slow paths are ranked by measured time.",
+        "detailNone": "No profiles or benchmark results found. With them, slow paths are ranked by measured time."
+      },
+      "depth": {
+        "statusSuggested": "Suggested"
       }
     },
-    "changeIn": "Change in {group}"
+    "changeIn": "Change in {group}",
+    "depth": "Suggested from your usage",
+    "hero": {
+      "eyebrow": "{agent} made its first call {when}",
+      "eyebrowNoCall": "Your agent has called this index",
+      "title": "Finish setup with your agent",
+      "body": "It turns on what this repo is missing, adds the coverage reports and benchmark results it finds, and asks you one thing at most.",
+      "copy": "Copy prompt for your agent",
+      "copied": "Copied. Paste it into your agent.",
+      "copyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "footnote": "Same text as <code>repowise next --prompt setup</code>. Or do the rows yourself below.",
+      "notNow": "Not now"
+    },
+    "depthBlock": {
+      "title": "Suggested from your usage",
+      "lede": "Claude Code has made {count, plural, one {# call} other {# calls}} to this index."
+    },
+    "workspace": {
+      "title": "Setup",
+      "description": "What is set up in each repo of this workspace.",
+      "progress": "{done} of {total, plural, one {# repo has} other {# repos have}} every essential done.",
+      "loading": "Reading each repo's setup",
+      "loadFailedLabel": "Couldn't load setup",
+      "loadFailed": "The workspace setup could not be read. Check that the server is running, then try again.",
+      "retry": "Try again",
+      "heroEyebrow": "An agent has called this workspace",
+      "heroTitle": "Finish setup across the workspace with your agent",
+      "heroBody": "One prompt. It runs the setup loop in each repo with steps left and asks you one thing at most.",
+      "heroCopy": "Copy prompt for your agent",
+      "heroCopied": "Copied. Paste it into your agent.",
+      "heroCopyFailed": "Couldn't copy. Select the preview and copy it by hand.",
+      "foot": "Open a repo's Setup for its rows and prompts.",
+      "col": {
+        "repo": "Repo",
+        "index": "Index",
+        "agent": "Agent",
+        "sync": "Sync",
+        "coverage": "Coverage",
+        "evidence": "Evidence"
+      },
+      "cell": {
+        "upToDate": "Up to date",
+        "behind": "Behind",
+        "incomplete": "Incomplete",
+        "notIndexed": "Not indexed",
+        "unreadable": "Couldn't read",
+        "connected": "Connected",
+        "noCalls": "No calls yet",
+        "on": "On",
+        "off": "Off",
+        "found": "Found",
+        "none": "None found",
+        "na": "n/a"
+      }
+    }
   }
 }

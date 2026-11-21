@@ -135,12 +135,15 @@ def _normalize(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # A hot-path mirror of ``repowise.core.test_commands.DISTILL_TEST_RE``,
+    # the one "runs tests" predicate: this hook may not import
+    # ``repowise.core``. ``test_test_commands.py`` asserts the two patterns
+    # are the same string; change both together.
     (
         "test_output",
         re.compile(
-            r"^(pytest\b|py\.test\b|jest\b|vitest\b|cargo (?:test|nextest)\b|"
-            r"go test\b|npm (?:test|run test)\b|pnpm (?:test|run test)\b|"
-            r"yarn (?:test|run test)\b)"
+            r"^(?:pytest\b|py\.test\b|jest\b|vitest\b|cargo(?:\.exe)? (?:test|nextest)\b|"
+            r"go(?:\.exe)? test\b|(?:npm(?:\.cmd)?|pnpm|yarn) (?:test|run test)\b)"
         ),
     ),
     (
@@ -281,7 +284,7 @@ _CHAIN_OPS = frozenset({"&&", "||", ";"})
 #     the lexer would split the command in a place PowerShell would not.
 #   - Defense in depth on the renderer. A PowerShell-dialect command is still
 #     handed to the system shell by ``distill``, and
-#     ``distill_cmd._render_command`` caret-escapes what it gives cmd.exe but
+#     ``command_runner.render_command`` caret-escapes what it gives cmd.exe but
 #     still has to refuse a couple of shapes outright (a ``%NAME%`` cmd would
 #     expand, an embedded newline). A rewrite is auto-allowed, so this side
 #     stays conservative rather than depending on the far side getting every
@@ -554,6 +557,8 @@ def _classify_head(head_command: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _VALID_PERMISSIONS = ("ask", "allow")
+# ``repowise.core.distill.config.PERMISSION_OFF_ALIASES`` plus a bare YAML
+# ``off``; spelled here so importing the hook loads nothing from core.
 _OFF_VALUES = ("off", "deny", "disable", "disabled", "none", False)
 
 
@@ -572,8 +577,20 @@ def _find_repo_root(cwd: str) -> str | None:
         # artifact (a tool that indexed with cwd=$TMP), never an opt-in, and
         # it would otherwise capture every temp-dir cwd on the machine.
         # Repos legitimately created UNDER either directory still match.
-        if current not in (home, temp_root) and os.path.isdir(os.path.join(current, ".repowise")):
-            return current
+        if current not in (home, temp_root):
+            if os.path.isdir(os.path.join(current, ".repowise")):
+                return current
+            # A linked worktree with no index of its own takes its main
+            # checkout's opt-in, config and ledger. Distilling does not read
+            # the index, so nothing here describes the wrong tree.
+            if os.path.isfile(os.path.join(current, ".git")):
+                from pathlib import Path
+
+                from repowise.cli._helpers.paths import borrowed_index_base
+
+                base = borrowed_index_base(Path(current))
+                if base is not None:
+                    return str(base)
         parent = os.path.dirname(current)
         if parent == current:
             break
@@ -608,11 +625,13 @@ def _load_commands_config(repo_root: str) -> tuple[bool, str, dict]:
     distill = data.get("distill")
     if not isinstance(distill, dict):
         return enabled, permission, families
-    if distill.get("enabled") is False:
+    from repowise.core.settings.model import flag
+
+    if not flag(distill.get("enabled"), True):
         enabled = False
     commands = distill.get("commands")
     if isinstance(commands, dict):
-        if commands.get("enabled") is False:
+        if not flag(commands.get("enabled"), True):
             enabled = False
         raw_permission = commands.get("permission")
         if raw_permission in _OFF_VALUES:

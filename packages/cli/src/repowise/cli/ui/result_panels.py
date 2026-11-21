@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Console, Group
-from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -126,9 +125,11 @@ def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str
     )
 
 
-#: What ``repowise serve`` is for at the end of ``init``.
-TOUR_GLOSS = "a guided tour of all this in your browser"
+#: What ``repowise serve`` is for at the end of ``init``, and that it does not return.
+SERVE_GLOSS = "open the dashboard (keeps running; Ctrl+C stops it)"
 
+#: Lists the settings that fit this repository. Doctor and status name it too.
+SUGGESTED_STEP = "repowise config list --suggested"
 
 #: Rows after ``repowise serve``.
 _MAX_FOLLOW_UPS = 2
@@ -137,50 +138,35 @@ _MAX_FOLLOW_UPS = 2
 def build_contextual_next_steps(
     *,
     fast_mode: bool = False,
-    dead_unreachable: int = 0,
-    dead_unused: int = 0,
-    hotspot_count: int = 0,
-    top_hotspot: str = "",
     setup: Any = None,
 ) -> list[tuple[str, str]]:
-    """The dashboard, then the two moves that most need making.
+    """The dashboard, then only what stops this index from being used.
 
     ``repowise serve`` is the headline in every mode: the dashboard is the one
     place the graph, hotspots, dead code, decisions and documentation are all
     browsable, and it is useful before any upgrade.
 
-    The follow-ups are the first two of these that apply, in this order, which
-    is "what is stopping this index from being used at all" before "what is
-    stopping it from being finished" before "what did it find":
+    The follow-ups, in this order, are the ones that block use:
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast);
-    3. the largest concrete finding, or a search row when there is none.
+    2. the index is deliberately partial (fast).
+
+    Findings, decisions, settings and sync are not steps here: they wait as
+    rows in ``repowise next`` and the dashboard, ranked by the actions engine.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
-
-    # Documentation built from the index gets the panel's "add a model" block
-    # instead of a step, so the model command is not named twice.
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     if fast_mode:
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
-    dead = dead_unreachable + dead_unused
-    if dead > 0:
-        noun = "finding" if dead == 1 else "findings"
-        candidates.append(("repowise dead-code", f"explore {dead} dead code {noun}"))
-    elif hotspot_count > 0 and top_hotspot:
-        candidates.append(
-            (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
-        )
-    elif not fast_mode:
-        candidates.append(('repowise search "<query>"', "search the documentation"))
-
-    return [serve_step(gloss=TOUR_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=SERVE_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
 def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:

@@ -126,6 +126,10 @@ async def _settle() -> None:
 
     while setup_status._running:
         await asyncio.gather(*setup_status._running, return_exceptions=True)
+        # gather on tasks that are already done returns without yielding, so
+        # their queued done callbacks, which drop them from _running, would
+        # never run and this loop would spin forever.
+        await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -173,6 +177,9 @@ async def test_setup_payload_shape(
     assert cursor["connected"] is False and cursor["installed"] is True
     assert cursor["first_call_at"] is None
     assert cursor["config_files"]["project"][0].endswith(".cursor/mcp.json")
+    # Claude Code defers schemas and is listed the standard tools; others the core ones.
+    assert claude["default_profile"] == "standard"
+    assert cursor["default_profile"] == "core"
     assert body["calls"] == {
         "first_call_at": "2026-09-30T10:00:00Z",
         "last_call_at": "2026-10-02T10:00:00Z",
@@ -425,6 +432,53 @@ async def test_setup_flags_sections_it_could_not_read(
     assert body["model"]["docs_mode"] == "none"
     # The CLI-backed sections are unaffected.
     assert body["agents_available"] is True and body["checks_available"] is True
+
+
+async def _index_at(app, repo: dict, last_sync: str | None) -> dict:
+    """The index section for a real two-commit repo whose state.json names *last_sync*."""
+    import subprocess
+
+    from repowise.core.persistence.crud import batch_upsert_graph_nodes
+
+    root = Path(repo["local_path"])
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    for n in range(2):
+        (root / "f.txt").write_text(str(n))
+        subprocess.run(["git", "add", "f.txt"], cwd=root, check=True)
+        subprocess.run(["git", *ident, "commit", "-q", "-m", f"c{n}"], cwd=root, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (root / ".repowise").mkdir(exist_ok=True)
+    state = {"last_sync_commit": last_sync or first}
+    (root / ".repowise" / "state.json").write_text(json.dumps(state))
+    async with app.state.session_factory() as session:
+        await batch_upsert_graph_nodes(
+            session, repo["id"], [{"node_id": "f.txt", "node_type": "file", "language": "text"}]
+        )
+        await session.commit()
+    return state
+
+
+@pytest.mark.anyio
+async def test_an_index_behind_head_is_not_reported_missing(
+    app, local: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    await _index_at(app, repo, None)
+    index = (await local.get(f"/api/repos/{repo['id']}/setup")).json()["index"]
+    assert (index["state"], index["indexed_commit_missing"]) == ("behind", False)
+
+
+@pytest.mark.anyio
+async def test_an_indexed_commit_gone_from_history_is_reported_missing(
+    app, local: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    # A rebase leaves state.json naming a commit the history no longer has (#5238):
+    # the page must say so, since plain `repowise update` now refuses it.
+    await _index_at(app, repo, "1234567812345678123456781234567812345678")
+    index = (await local.get(f"/api/repos/{repo['id']}/setup")).json()["index"]
+    assert (index["state"], index["indexed_commit_missing"]) == ("behind", True)
 
 
 # -- writes ----------------------------------------------------------------------
@@ -752,3 +806,42 @@ def test_the_cli_commands_take_the_flags_the_routes_pass(
     assert result.exit_code == 0, result.output
     for flag in flags:
         assert flag in result.output
+
+
+@pytest.mark.anyio
+async def test_setup_carries_the_steps_the_offer_and_the_read_hooks(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.savings import service
+
+    report = Path(repo["local_path"]) / "coverage" / "lcov.info"
+    report.parent.mkdir()
+    report.write_text("TN:\n", encoding="utf-8")
+
+    body = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    assert body["setup_available"] is True
+    steps = body["setup"]
+    assert steps["open"] == len(steps["actions"]) >= 1
+    assert "coverage_found" in {a["rule"] for a in steps["actions"]}
+    assert {a["tier"] for a in steps["actions"]} == {"improve_signal"}
+    # No agent call yet: steps are listed, the pass is not offered.
+    assert steps["offer"] is None and steps["dismissed"] is False
+    assert steps["agent_calls"] == 0
+    assert steps["thresholds"] == {"agent_calls": 20, "synced_commits": 10}
+    assert steps["unlocks"]["always_load"] is False
+    assert body["read_hooks_available"] is True
+    assert body["read_hooks"] == {
+        "read_skeleton": False, "read_reread": False, "search_digest": False
+    }
+
+    monkeypatch.setattr(
+        service,
+        "load_agent_usage",
+        lambda root: {"claude_code": service.AgentUsage("2026-10-01T10:00:00Z", "2026-10-02", 25)},
+    )
+    steps = (await local.get(f"/api/repos/{repo['id']}/setup")).json()["setup"]
+    assert steps["offer"] == "finish_setup"
+    assert steps["agent_calls"] == 25 and steps["claude_code_calls"] == 25
+    assert steps["first_call_at"] == "2026-10-01T10:00:00Z"
+    assert steps["unlocks"]["always_load"] is True
+    assert "always_load_suggested" in {a["rule"] for a in steps["actions"]}

@@ -50,6 +50,10 @@ class CheckContext:
     coord_drift_pct: str = "N/A"
     registration_wedged: bool = False
     agents_need_refresh: bool = False
+    # config.yaml keys holding a value repowise ignores; ``--repair`` resets them.
+    invalid_settings: list[str] = field(default_factory=list)
+    # Retired config.yaml keys still in the file; ``--repair`` removes them.
+    retired_settings: list[str] = field(default_factory=list)
 
 
 async def open_store(repo_path: Path):

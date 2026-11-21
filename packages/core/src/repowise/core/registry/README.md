@@ -24,6 +24,7 @@ needs the collected entries.
 | `mcp_tool_registry` | `mcp_tool_registry` | Collect MCP tool functions; `apply(mcp)` registers them with FastMCP |
 | `pipeline_hooks` | `pipeline_hooks` | Pre/post phase hooks; wrap a `ProgressCallback` with `HookProgressCallback` to fire them |
 | `plugins` | `load_plugins()` | Discover plugins (`repowise.plugins` entry points, `REPOWISE_PLUGINS`); `SeamRegistry` maps a seam to named implementations, `get()` picks one and `all()` returns every one |
+| `instructions` | `server_instructions()` | The MCP server instructions for a served tool set, with no server import |
 | `storage_migrations` | `storage_migrations` | Plugin-owned table revisions; `init_db` applies them after the core schema and records them in `plugin_storage_revisions` |
 
 `PLUGIN_API_VERSION` (exported from `repowise.core.registry`) is bumped on a

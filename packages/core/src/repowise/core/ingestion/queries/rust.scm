@@ -296,6 +296,15 @@
   )
 ) @call.site
 
+; A call inside a macro's arguments: println!("{}", foo()), vec![a::b(x)].
+; Macro arguments parse as bare tokens, so a call is a name with a group after
+; it; the parser checks the group is parenthesised and reads the path or
+; receiver written before the name.
+(token_tree
+  (identifier) @call.target @call.site
+  .
+  (token_tree))
+
 ; Function pointer / callback argument: register(my_handler), vec.iter().map(process)
 ; Captures top-level identifier arguments in call expressions as references
 ; to prevent false-positive dead code flags on functions passed by name.

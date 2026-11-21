@@ -46,6 +46,7 @@ from . import (
     micronaut,
     next_app,
     pytest_edges,
+    python_job_roots,
     quarkus,
     rails,
     remix,
@@ -78,6 +79,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *django.HANDLERS,
     *fastapi.HANDLERS,
     *flask.HANDLERS,
+    *python_job_roots.HANDLERS,  # Celery autodiscover and Airflow DAG modules
     *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
     *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
     *dotnet_roots.HANDLERS,

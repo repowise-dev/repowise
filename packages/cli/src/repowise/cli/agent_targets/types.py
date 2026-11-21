@@ -175,6 +175,25 @@ class Registration:
 
 
 @dataclass(frozen=True)
+class ServerMap:
+    """The MCP servers one config file hands the host, read for ``doctor``.
+
+    What :meth:`AgentTarget.server_maps` returns, one per file the host loads
+    servers from. *name_prefix* is what the host puts before each name it finds
+    here: a plugin's servers are namespaced, which is exactly why a plugin and
+    a direct entry both load instead of one overriding the other.
+    """
+
+    config_path: Path
+    scope: Scope
+    servers: dict
+    name_prefix: str = ""
+    #: The one command that drops this file's repowise entry, or None when
+    #: removing it is a hand edit (an entry repowise did not write).
+    remove_command: str | None = None
+
+
+@dataclass(frozen=True)
 class FileWrite:
     """What happened to one file.
 
@@ -203,6 +222,10 @@ class WriteResult:
     files: list[FileWrite] = field(default_factory=list)
     #: One-line notes surfaced verbatim, e.g. "Restart the editor to apply."
     notes: list[str] = field(default_factory=list)
+    #: The server name a hosted install wrote under (``repowise`` or
+    #: ``repowise-hosted``). ``None`` for every local install, and then absent
+    #: from :meth:`as_dict`, so the long-standing payload keeps its shape.
+    server_name: str | None = None
 
     def record(self, path: Path, action: FileAction, reason: str | None = None) -> None:
         self.files.append(FileWrite(path=path, action=action, reason=reason))
@@ -226,13 +249,16 @@ class WriteResult:
         kept that nothing prints, and only the first is visible to a test that
         checks the projection alone.
         """
-        return {
+        payload: dict = {
             "files": [
                 {"path": str(f.path), "action": f.action.value, "reason": f.reason}
                 for f in self.files
             ],
             "notes": list(self.notes),
         }
+        if self.server_name is not None:
+            payload["server_name"] = self.server_name
+        return payload
 
 
 @dataclass(frozen=True)
@@ -275,6 +301,27 @@ class InstallOptions:
     #: Move a user-level entry that serves another repo to this one. Only an
     #: explicit ``agents add`` sets it; ``init`` and ``refresh`` keep that entry.
     retarget: bool = False
+    #: Write only the hosted server entry, pointing at this URL, instead of the
+    #: local wiring. Set by ``agents add --hosted``; install then runs at
+    #: :attr:`HostedSupport.scope` and touches nothing else.
+    hosted_url: str | None = None
+
+
+@dataclass(frozen=True)
+class HostedSupport:
+    """How a target takes the hosted (remote, OAuth) MCP entry.
+
+    Declared per target because both halves are host facts: which file holds a
+    remote entry that serves one repo, and what the person has to do before the
+    host will use it. ``None`` on a target means its config has no per-repo
+    remote entry repowise writes, and ``agents add --hosted`` says so.
+    """
+
+    #: The scope :meth:`AgentTarget.install` writes the hosted entry at.
+    scope: Scope
+    #: The human step after the write, phrased as an instruction. ``{name}`` is
+    #: filled with the server name the write used.
+    next_step: str
 
 
 @runtime_checkable
@@ -317,6 +364,10 @@ class AgentTarget(Protocol):
     #: the legacy CLI flag mapping can look it up rather than restate it.
     project_file_id: str
 
+    #: Where and how the hosted server entry is written, or ``None`` when this
+    #: host has no per-repo remote entry repowise writes.
+    hosted: HostedSupport | None
+
     def supports_scope(self, scope: Scope) -> bool:
         """Whether this target has a config home at *scope*."""
         ...
@@ -350,6 +401,17 @@ class AgentTarget(Protocol):
         without one — ``doctor`` run from anywhere still wants them. Passing it
         adds the project-scope registrations. Never raises: a probe that cannot
         read a config reports no registration rather than guessing at one.
+        """
+        ...
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """The MCP server maps the host loads together in *repo_path*.
+
+        Every file the host reads servers from at once, whoever wrote it, so
+        ``doctor`` can count repowise entries under different names (each one
+        loads its own copy of the tools and instructions). Not a file the host
+        does not load, such as a config for a separate app. Never raises: an
+        unreadable file contributes an empty map.
         """
         ...
 

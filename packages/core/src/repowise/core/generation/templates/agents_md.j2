@@ -1,3 +1,5 @@
 {% set client = "agents" %}
+{#- Every host that reads AGENTS.md loads tool schemas up front, so it gets the same default list as Codex. -#}
+{% set listed = data.listed_tools("codex") %}
 {% set read_note = "Read a file before you edit it." %}
 {% include "_editor_block.j2" %}

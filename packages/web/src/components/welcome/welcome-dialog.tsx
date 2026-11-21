@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import useSWR from "swr";
 import { useTranslations } from "next-intl";
 import {
   Dialog,
@@ -10,7 +11,8 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { Button } from "@repowise-dev/ui/ui/button";
-import type { SetupResponse } from "@/lib/api/setup";
+import type { FirstPromptFacts } from "@repowise-dev/ui/onboarding/first-prompts";
+import { getRepoSetup, type SetupResponse } from "@/lib/api/setup";
 import type { WelcomeLens } from "@/lib/welcome-moment";
 import {
   MOMENT_BODY,
@@ -24,15 +26,18 @@ import {
   MomentBand,
 } from "@/components/layout/moment-shell";
 import { WelcomeStepRepo } from "./welcome-step-repo";
-import { WelcomeStepAgent } from "./welcome-step-agent";
-import { WelcomeStepYours } from "./welcome-step-yours";
+import { WelcomeStepAgent, waitingForFirstCall } from "./welcome-step-agent";
+import { WelcomeStepAsk } from "./welcome-step-ask";
 
-const STEPS = ["repo", "agent", "yours"] as const;
+const STEPS = ["repo", "agent", "ask"] as const;
+
+/** How often step 2 checks for an agent's first call while it waits. */
+export const FIRST_CALL_POLL_MS = 10_000;
 type Step = (typeof STEPS)[number];
 
 /** One fixed height on a desktop, so the footer stays put between steps;
  *  the body scrolls inside it. A phone gets the full-height sheet. */
-const SIZE = "min-[561px]:h-[min(680px,85vh)] min-[561px]:max-w-[720px]";
+export const SIZE = "min-[561px]:h-[min(680px,85vh)] min-[561px]:max-w-[720px]";
 
 /** 44px on a phone, the compact 36px above. */
 const FOOTER_BUTTON = "h-11 min-[561px]:h-9";
@@ -46,14 +51,14 @@ export interface WelcomeDialogProps {
   years: number | null;
   lenses: WelcomeLens[];
   setup: SetupResponse | null;
-  /** The busiest file, for the second example question. */
-  hotspotPath: string | null;
+  /** Index facts the first prompts name. */
+  promptFacts: FirstPromptFacts;
 }
 
 /** Enter on the dialog itself (not on a control inside it) moves on a step.
  *  Keydowns from portalled children (the model sheet, the sync confirm)
  *  bubble here through React, so the target must sit in this dialog's DOM. */
-function advancesOnEnter(e: KeyboardEvent<HTMLElement>): boolean {
+export function advancesOnEnter(e: KeyboardEvent<HTMLElement>): boolean {
   const modified = [e.shiftKey, e.metaKey, e.ctrlKey, e.altKey, e.nativeEvent.isComposing].some(Boolean);
   if (e.key !== "Enter" || modified) return false;
   const target = e.target as HTMLElement;
@@ -64,8 +69,8 @@ function advancesOnEnter(e: KeyboardEvent<HTMLElement>): boolean {
 }
 
 /**
- * The three-step welcome: what repowise found, the agent that can read it,
- * and the optional parts. Built on the What's new shell with a plum-to-blue
+ * The three-step welcome: what repowise found, the agent that can read it
+ * (waiting for its first call), and the first questions to ask it. Built on the What's new shell with a plum-to-blue
  * band. Esc or the close button ends it at any step; Enter moves on.
  */
 export function WelcomeDialog(props: WelcomeDialogProps) {
@@ -91,6 +96,22 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
   }, [index, open]);
 
   const close = () => onOpenChange(false);
+
+  // Step 2 waits for the first call: while an agent is connected and none has
+  // called, the setup payload is read again every few seconds (the server
+  // serves its cached probe, so this stays cheap) and the rows update.
+  const [polling, setPolling] = useState(false);
+  const { data: live } = useSWR(open ? ["welcome-setup", repoId] : null, () => getRepoSetup(repoId), {
+    fallbackData: props.setup ?? undefined,
+    revalidateOnMount: false,
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+    refreshInterval: polling ? FIRST_CALL_POLL_MS : 0,
+  });
+  const setup = live ?? props.setup;
+  useEffect(() => {
+    setPolling(open && step === "agent" && waitingForFirstCall(setup));
+  }, [open, step, setup]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -119,7 +140,7 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
               <DialogDescription
                 className={`${MOMENT_BODY} mt-3 max-w-[56ch] text-[var(--color-text-secondary)] [text-wrap:pretty]`}
               >
-                <StepLede step={step} fileCount={props.fileCount} years={props.years} />
+                <StepLede step={step} fileCount={props.fileCount} years={props.years} setup={setup} />
               </DialogDescription>
             </div>
           </MomentBand>
@@ -128,29 +149,46 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
             {step === "repo" && (
               <WelcomeStepRepo repoId={repoId} lenses={props.lenses} onNavigate={close} />
             )}
-            {step === "agent" && (
-              <WelcomeStepAgent repoId={repoId} setup={props.setup} hotspotPath={props.hotspotPath} />
+            {step === "agent" && <WelcomeStepAgent repoId={repoId} setup={setup} />}
+            {step === "ask" && (
+              <WelcomeStepAsk
+                repoId={repoId}
+                repoName={props.repoName}
+                setup={setup}
+                promptFacts={props.promptFacts}
+              />
             )}
-            {step === "yours" && <WelcomeStepYours repoId={repoId} setup={props.setup} />}
           </div>
         </div>
 
-        <StepFooter index={index} repoId={repoId} onStep={setIndex} onClose={close} />
+        <StepFooter
+          steps={STEPS}
+          index={index}
+          nextLabel={index === 0 ? t("nextAgent") : t("nextAsk")}
+          finishHref={`/repos/${encodeURIComponent(repoId)}/settings/setup`}
+          onStep={setIndex}
+          onClose={close}
+        />
       </DialogContent>
     </Dialog>
   );
 }
 
 /** Stays put across steps: the step indicator, then Skip or Back and the one
- *  ink primary on the right. */
-function StepFooter({
+ *  ink primary on the right. The last step's primary opens Setup. Shared by
+ *  the repo and workspace welcomes. */
+export function StepFooter({
+  steps,
   index,
-  repoId,
+  nextLabel,
+  finishHref,
   onStep,
   onClose,
 }: {
+  steps: readonly string[];
   index: number;
-  repoId: string;
+  nextLabel: string;
+  finishHref: string;
   onStep: (index: number) => void;
   onClose: () => void;
 }) {
@@ -160,7 +198,7 @@ function StepFooter({
     <footer
       className={`${MOMENT_GUTTER} flex shrink-0 flex-col gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-release-ground)] pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between`}
     >
-      <StepIndicator index={index} />
+      <StepIndicator steps={steps} index={index} />
       <div className="flex gap-2">
         {index === 0 ? (
           <Button variant="ghost" className={FOOTER_BUTTON} onClick={onClose}>
@@ -171,13 +209,13 @@ function StepFooter({
             {t("back")}
           </Button>
         )}
-        {index < STEPS.length - 1 ? (
+        {index < steps.length - 1 ? (
           <Button className={primary} onClick={() => onStep(index + 1)}>
-            {index === 0 ? t("nextAgent") : t("nextYours")}
+            {nextLabel}
           </Button>
         ) : (
           <Button asChild className={primary}>
-            <Link href={`/repos/${encodeURIComponent(repoId)}/settings/setup`} onClick={onClose}>
+            <Link href={finishHref} onClick={onClose}>
               {t("finish")}
             </Link>
           </Button>
@@ -192,13 +230,28 @@ function StepTitle({ step, repoName }: { step: Step; repoName: string }) {
   const em = (chunks: ReactNode) => <span style={MOMENT_EMPHASIS}>{chunks}</span>;
   if (step === "repo") return <>{t.rich("repo.title", { name: repoName, em })}</>;
   if (step === "agent") return <>{t.rich("agent.title", { em })}</>;
-  return <>{t.rich("yours.title", { em })}</>;
+  return <>{t.rich("ask.title", { em })}</>;
 }
 
-function StepLede({ step, fileCount, years }: { step: Step; fileCount: number; years: number | null }) {
+function StepLede({
+  step,
+  fileCount,
+  years,
+  setup,
+}: {
+  step: Step;
+  fileCount: number;
+  years: number | null;
+  setup: SetupResponse | null;
+}) {
   const t = useTranslations("welcome");
   if (step === "agent") return <>{t("agent.lede")}</>;
-  if (step === "yours") return <>{t("yours.lede")}</>;
+  if (step === "ask") {
+    // The agent that called, else the one connected, else a general word.
+    const agents = setup?.agents ?? [];
+    const agent = agents.find((a) => a.first_call_at) ?? agents.find((a) => a.connected);
+    return <>{agent ? t("ask.lede", { agent: agent.display_name }) : t("ask.ledeAny")}</>;
+  }
   return (
     <>
       {years != null
@@ -210,12 +263,12 @@ function StepLede({ step, fileCount, years }: { step: Step; fileCount: number; y
 
 /** Three short segments, filled up to the current step, then the count. The
  *  step names are for screen readers; the heading names the step on screen. */
-function StepIndicator({ index }: { index: number }) {
+function StepIndicator({ steps, index }: { steps: readonly string[]; index: number }) {
   const t = useTranslations("welcome");
   return (
     <div className="flex items-center gap-3">
       <ol aria-label={t("stepsLabel")} className="flex items-center gap-1">
-        {STEPS.map((s, i) => {
+        {steps.map((s, i) => {
           const state = i < index ? "done" : i === index ? "current" : "next";
           return (
             <li key={s} aria-current={state === "current" ? "step" : undefined} className="flex">
@@ -234,7 +287,7 @@ function StepIndicator({ index }: { index: number }) {
         })}
       </ol>
       <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {t("stepOf", { step: index + 1, total: STEPS.length })}
+        {t("stepOf", { step: index + 1, total: steps.length })}
       </span>
     </div>
   );

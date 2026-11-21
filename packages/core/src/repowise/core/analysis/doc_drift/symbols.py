@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.git_cat_file import cat_file_batch
+from repowise.core.git_sha import is_full_sha
 from repowise.core.ingestion.change_detector import ChangeDetector
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.models import ParsedFile
@@ -56,11 +57,13 @@ _GIT_TIMEOUT_SECONDS = 60
 _SAFETY_SECONDS = 300.0
 _RENAME_RATIO = 0.8
 
-_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SOURCE_EXTS = REGISTRY.extensions_for(REGISTRY.code_languages())
 
 _OVER_BUDGET = "over-budget"
+#: Repowise's state directory in the working tree (``persistence.database.REPOWISE_DIRNAME``,
+#: not imported here to keep the database layer out of this module).
+_REPOWISE_DIR = ".repowise"
 
 
 @dataclass(frozen=True)
@@ -340,10 +343,13 @@ def _grep(root: Path, revs: Sequence[str], names: Sequence[str]) -> list[tuple[s
     # pattern, so a line per name costs a pass per name.
     alternation = "|".join(re.escape(n) for n in names)
     pattern = f"(^|[^A-Za-z0-9_])({alternation})([^A-Za-z0-9_]|$)\n".encode()
-    where = list(revs) or ["--untracked"]
+    # The working tree without repowise's own directory: its untracked
+    # artifacts are written from this repository's code and documents, so a
+    # name in them is not a mention, and they can outweigh the tree itself.
+    where = list(revs) or ["--untracked", "--", ".", f":(exclude){_REPOWISE_DIR}"]
     ran = git_run(
         root, "grep", "-E", "-I", "-z", "-f", "-", *where,
-        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS,
+        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS, pathspec_magic=not revs,
     )
     if ran is None or ran[0] not in (0, 1):
         return None
@@ -395,7 +401,7 @@ def _blame(root: Path, doc: str, lines: Sequence[int]) -> dict[int, str] | None:
             return None
         for line in ran[1].decode("utf-8", errors="replace").splitlines():
             parts = line.split(" ")
-            if len(parts) in (3, 4) and _SHA_RE.fullmatch(parts[0]) and parts[2].isdigit():
+            if len(parts) in (3, 4) and is_full_sha(parts[0]) and parts[2].isdigit():
                 shas[int(parts[2])] = parts[0]
     return shas
 

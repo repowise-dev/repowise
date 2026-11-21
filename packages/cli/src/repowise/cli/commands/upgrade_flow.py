@@ -42,6 +42,7 @@ from repowise.cli.commands.decision_lanes import (
 from repowise.cli.commands.upgrade_state import (
     _finish_upgrade_state,
     _mark_transition,
+    _stamp_upgrade_inputs,
     _start_transition,
     _unpack_upgrade_result,
     _upgrade_checkpoint,
@@ -60,6 +61,7 @@ from repowise.cli.helpers import (
 from repowise.cli.providers import is_free_embedder
 from repowise.core.decision_lanes import plan_decision_lanes
 from repowise.core.index_scope import FAST_TO_FULL_COMMAND, file_page_scope
+from repowise.core.settings.model import flag
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
@@ -786,7 +788,7 @@ def upgrade_to_full(
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
         # A whole-repo selection, so the file-page cap chosen at init applies
         # here; without it this run would grow the file layer back.
         max_file_pages=resolve_max_file_pages(config=cfg),
@@ -794,10 +796,14 @@ def upgrade_to_full(
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
     commit_limit = cfg.get("commit_limit")
-    follow_renames = bool(cfg.get("follow_renames", False))
+    follow_renames = flag(cfg.get("follow_renames"), False)
 
     _announce_upgrade(repo_path, provider)
-    embedder_name = _keyless_embedder_name(cfg, repo_path=repo_path) if keyless else _upgrade_embedder_name(cfg, repo_path=repo_path)
+    embedder_name = (
+        _keyless_embedder_name(cfg, repo_path=repo_path)
+        if keyless
+        else _upgrade_embedder_name(cfg, repo_path=repo_path)
+    )
 
     # The same single-flight lock as an incremental update: a concurrent
     # `repowise update` must not race this run's save_state. If another update
@@ -847,9 +853,7 @@ def upgrade_to_full(
             _mark_transition(
                 repo_path,
                 cfg,
-                status="resumable"
-                if isinstance(exc, (KeyboardInterrupt, SystemExit))
-                else "failed",
+                status="resumable" if isinstance(exc, KeyboardInterrupt | SystemExit) else "failed",
                 retryable=True,
                 error=type(exc).__name__,
             )
@@ -865,13 +869,15 @@ def upgrade_to_full(
             outcome=outcome,
             provider_block=provider_block,
         )
-        save_state(repo_path, state, full_index=True)
         if embedder_name and embedder_name != cfg.get("embedder"):
             from repowise.cli.helpers import save_config_partial
 
             # `embedding_model=None` clears a model pinned for the old embedder;
             # passing `embedder` alone does not.
             save_config_partial(repo_path, embedder=embedder_name, embedding_model=None)
+
+        _stamp_upgrade_inputs(repo_path, state, head=head)
+        save_state(repo_path, state, full_index=True)
 
         _report_upgrade(time.monotonic() - start, generated_pages, outcome, keyless=keyless)
     finally:

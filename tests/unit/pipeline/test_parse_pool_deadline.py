@@ -47,14 +47,16 @@ def _run(items: list[str], *, workers: int = 2, timeout: float | None = 5.0) -> 
 def test_a_hung_task_times_out_and_the_rest_finish() -> None:
     items = ["a", "hang", "b", "c", "hang", "d", "e"]
     started = time.monotonic()
-    results = _run(items)
+    # 3 s, as in the all-hung test below: past the child's first import of
+    # this module, which the task clock includes, and short enough to wait twice.
+    results = _run(items, timeout=3.0)
     elapsed = time.monotonic() - started
 
     assert [r for i, r in enumerate(results) if items[i] != "hang"] == ["A", "B", "C", "D", "E"]
     for i, item in enumerate(items):
         if item == "hang":
             assert isinstance(results[i], ParseTimeoutError)
-            assert str(results[i]) == "parse timed out after 5s"
+            assert str(results[i]) == "parse timed out after 3s"
     # Two workers, two hung tasks: one deadline each at most, plus spawn time.
     assert elapsed < 60
 

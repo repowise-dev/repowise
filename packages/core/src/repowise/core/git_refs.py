@@ -24,6 +24,7 @@ __all__ = [
     "branch_with_path",
     "change_base",
     "changed_files",
+    "commit_exists",
     "commit_file_sets",
     "common_dir",
     "current_branch",
@@ -182,6 +183,18 @@ def default_base(repo_path: str) -> str:
         if resolve(repo_path, f"refs/remotes/origin/{name}"):
             return f"origin/{name}"
     return "HEAD"
+
+
+def remote_trunk(repo_path: str, remote: str) -> str | None:
+    """*remote*'s default branch as a short ref, ``None`` when git cannot name one."""
+    remotes_prefix = "refs/remotes/"
+    head = _read(repo_path, ["symbolic-ref", f"{remotes_prefix}{remote}/HEAD"])
+    if head.startswith(remotes_prefix):
+        return head[len(remotes_prefix) :]
+    for name in _FALLBACK_BASES:
+        if resolve(repo_path, f"{remotes_prefix}{remote}/{name}"):
+            return f"{remote}/{name}"
+    return None
 
 
 def default_branch(repo_path: str) -> str | None:
@@ -346,6 +359,25 @@ def ahead_behind(repo_path: str, base: str, head: str) -> tuple[int, int]:
     except ValueError:
         return (0, 0)
     return (ahead, behind)
+
+
+def commit_exists(repo_path: str, sha: str) -> bool | None:
+    """Whether *sha* names a commit in this history; ``None`` when git cannot answer.
+
+    ``rev-parse --verify`` exits 1 for an object git does not have and 128 for
+    no repository, which is what tells a rebased-away sync commit apart from a
+    git that could not be asked.
+    """
+    try:
+        _git(
+            ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{sha}^{{commit}}"],
+            cwd=repo_path,
+        )
+    except subprocess.CalledProcessError as exc:
+        return False if exc.returncode == 1 else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return True
 
 
 def is_ancestor(repo_path: str, older: str, newer: str) -> bool | None:

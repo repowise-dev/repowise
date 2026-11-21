@@ -391,19 +391,32 @@ async def recompute_git_percentiles(
         HOTSPOT_MIN_TEMPORAL_SCORE,
     )
 
-    # First check how many rows exist so we can return the count without an
-    # extra query after the UPDATE.
-    count_result = await session.execute(
-        select(GitMetadata).where(GitMetadata.repository_id == repository_id)
+    row_count = await session.scalar(
+        select(func.count()).select_from(GitMetadata).where(
+            GitMetadata.repository_id == repository_id
+        )
     )
-    rows = count_result.scalars().all()
-    if not rows:
+    if not row_count:
         return 0
 
     # Ties rank by path in code-point order, as the Python ranker sorts them;
     # a Postgres locale collation would order the same paths differently.
+    #
+    # ``ranks`` is computed once and joined by id. A correlated subquery per
+    # column re-runs the CTE scan for every updated row on PostgreSQL, which
+    # is quadratic in the file count (minutes to hours on a large repo).
+    # SQLite keeps the correlated form, which it plans well (86k rows in
+    # about 8 s, as before), since ``UPDATE ... FROM`` needs SQLite 3.33 and
+    # some distro Pythons still predate it.
     bind = session.get_bind()
-    path_order = 'file_path COLLATE "C"' if bind.dialect.name == "postgresql" else "file_path"
+    if bind.dialect.name == "postgresql":
+        path_order = 'file_path COLLATE "C"'
+        rank = "ranks.{}"
+        target = "FROM ranks WHERE git_metadata.id = ranks.id"
+    else:
+        path_order = "file_path"
+        rank = "(SELECT {} FROM ranks WHERE ranks.id = git_metadata.id)"
+        target = "WHERE repository_id = :repo_id"
     sql = """
 WITH ranked AS (
   SELECT id,
@@ -437,26 +450,40 @@ defect_ranked AS (
     PERCENT_RANK() OVER (ORDER BY COALESCE(prior_defect_count, 0)) AS drank
   FROM git_metadata
   WHERE repository_id = :repo_id AND NOT history_only
+),
+ranks AS (
+  SELECT g.id,
+    COALESCE(r.prank, 0.0) AS prank,
+    COALESCE(e.erank, 0.0) AS erank,
+    COALESCE(s.crank, 0.0) AS crank,
+    COALESCE(d.drank, 0.0) AS drank
+  FROM git_metadata g
+  LEFT JOIN ranked r ON r.id = g.id
+  LEFT JOIN entropy_ranked e ON e.id = g.id
+  LEFT JOIN scatter_ranked s ON s.id = g.id
+  LEFT JOIN defect_ranked d ON d.id = g.id
+  WHERE g.repository_id = :repo_id
 )
 UPDATE git_metadata
-SET churn_percentile = COALESCE(
-      (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0),
-    is_hotspot = (COALESCE((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0)
-                  >= 0.75
+SET churn_percentile = {prank},
+    is_hotspot = ({prank} >= 0.75
                   AND git_metadata.commit_count_90d >= :min_commits_90d
                   AND (git_metadata.commit_count_90d >= :high_commits_90d
                        OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
                           >= :min_temporal_score)),
-    change_entropy_pct = COALESCE(
-      (SELECT erank FROM entropy_ranked WHERE entropy_ranked.id = git_metadata.id), 0.0),
-    co_change_scatter_pct = COALESCE(
-      (SELECT crank FROM scatter_ranked WHERE scatter_ranked.id = git_metadata.id), 0.0),
-    prior_defect_pct = COALESCE(
-      (SELECT drank FROM defect_ranked WHERE defect_ranked.id = git_metadata.id), 0.0)
-WHERE repository_id = :repo_id;
+    change_entropy_pct = {erank},
+    co_change_scatter_pct = {crank},
+    prior_defect_pct = {drank}
+{target};
 """
     await session.execute(
-        text(sql.format(path_order=path_order)),
+        text(
+            sql.format(
+                path_order=path_order,
+                target=target,
+                **{col: rank.format(col) for col in ("prank", "erank", "crank", "drank")},
+            )
+        ),
         {
             "repo_id": repository_id,
             "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,
@@ -465,7 +492,7 @@ WHERE repository_id = :repo_id;
         },
     )
     await session.flush()
-    return len(rows)
+    return row_count
 
 
 # ---------------------------------------------------------------------------

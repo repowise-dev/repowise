@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .. import MAX_CHANGE_ANALYSIS_FILE_BYTES as MAX_FILE_BYTES
 from ..change_health.sources import RevisionPair, RevisionSource
 from .detect import detect_diff_risk
 from .models import DiffRiskFinding, FileTexts
 from .paths import is_relevant
-
-#: Larger files are bundles or data, not hand-written code.
-MAX_FILE_BYTES = 1_000_000
 
 
 def read_change_texts(source: RevisionSource, pair: RevisionPair) -> list[FileTexts]:

@@ -135,7 +135,8 @@ def project(payload: dict) -> dict:
                         tool substitutes when nothing governs the
                         path: git_archaeology (summary plus the head
                         of each of its three layers), code_rationale
-                        and target_context
+                        (head, with the tool's total) and
+                        target_context
     dashboard kept      summary, counts, and the head of each of
                         stale_decisions / proposed_awaiting_review /
                         ungoverned_hotspots / conflicts /
@@ -219,6 +220,18 @@ def project(payload: dict) -> dict:
     if episodes:
         out["episodes"] = [_project_episode(e) for e in _capped(episodes)]
 
+    # Path mode leads with what is in force; background records and the
+    # history pointer come beside it. Without them an ungoverned path printed
+    # "Nothing recorded" while the tool had answered.
+    candidates = payload.get("candidates")
+    if candidates:
+        out["candidates"] = [_project_decision(c) for c in _capped(candidates)]
+        if len(candidates) > len(out["candidates"]):
+            out["candidates_total"] = len(candidates)
+    for key in ("candidates_note", "more"):
+        if payload.get(key):
+            out[key] = payload[key]
+
     # The three blocks the tool substitutes when decisions are silent. Losing
     # them empties exactly the mode this tool exists to never leave empty:
     # `get_why` sets git_archaeology and code_rationale *because* nothing
@@ -232,6 +245,10 @@ def project(payload: dict) -> dict:
             )
             for entry in _capped(payload["code_rationale"])
         ]
+        # The tool caps the list itself, so its own total is the real count.
+        total = max(payload.get("code_rationale_total") or 0, len(payload["code_rationale"]))
+        if total > len(out["code_rationale"]):
+            out["code_rationale_total"] = total
     if payload.get("target_context"):
         out["target_context"] = {
             target: _project_target_entry(entry)
@@ -286,8 +303,11 @@ def why_command(
 
     QUERY is a question ("why is auth using JWT?"), a file path (its governing
     decisions, origin story and alignment score), or omitted for the decision
-    health dashboard — or for repeatable --target paths, when named. Falls back to
-    git archaeology when a path has no decisions, so it is never empty.
+    health dashboard — or for repeatable --target paths, when named. A path
+    leads with the decisions in force and the background records beside them;
+    when there are none, it falls back to the path's git history and the
+    rationale comments in its source. --full adds the origin story and git
+    history to any path.
     """
     fmt = _ta.resolve_format_for(fmt, full)
     repo_path = _ta.resolve_indexed_repo(
@@ -298,12 +318,26 @@ def why_command(
         command="why",
     )
 
-    def _factory():
-        from repowise.server.mcp_server.tool_why import get_why
+    def _run(history: bool) -> dict:
+        arguments = {
+            "query": query,
+            "targets": list(targets) or None,
+            "include": ["history"] if history else None,
+        }
 
-        return get_why(query=query, targets=list(targets) or None)
+        def _factory():
+            from repowise.server.mcp_server.tool_why import get_why
 
-    payload = _ta.run(repo_path, _factory, "get_why")
+            return get_why(**arguments)
+
+        return _ta.run(repo_path, _factory, "get_why", arguments=arguments)
+
+    # --full is the whole answer, so it asks for the history too.
+    payload = _run(full)
+    if not full and _only_points_at_history(payload):
+        # Nothing governs the path, so the default answer is a bare pointer.
+        # Fall back to its git history and rationale comments, as documented.
+        payload = _run(True)
 
     if full:
         _ta.emit_full(payload)
@@ -315,6 +349,17 @@ def why_command(
         return
     _render(projected)
     _ta.print_index_note(payload, fmt)
+
+
+def _only_points_at_history(payload: dict) -> bool:
+    """Whether a path answer holds no record, only the pointer to its history."""
+    return (
+        payload.get("mode") == "path"
+        and bool(payload.get("more"))
+        and not payload.get("decisions")
+        and not payload.get("candidates")
+        and not payload.get("target_context")
+    )
 
 
 def _render(projected: dict) -> None:
@@ -386,6 +431,10 @@ def _render(projected: dict) -> None:
             where = f":{lines[0]}" if lines else ""
             console.print(f"  [cyan]{entry.get('path', '')}{where}[/cyan]")
             console.print(f"    [dim]{entry.get('comment', '')}[/dim]")
+        if projected.get("code_rationale_total"):
+            console.print(
+                f"  [dim]{len(rationale)} of {projected['code_rationale_total']} shown.[/dim]"
+            )
 
     for target, entry in (projected.get("target_context") or {}).items():
         console.print(f"\n[bold]Target[/bold] [cyan]{target}[/cyan]")
@@ -419,6 +468,25 @@ def _render(projected: dict) -> None:
             )
         if entry.get("git_archaeology"):
             _render_archaeology(console, entry["git_archaeology"], indent="  ")
+
+    candidates = projected.get("candidates") or []
+    if candidates:
+        console.print("\n[bold]Candidates, not in force[/bold]")
+        if projected.get("candidates_note"):
+            console.print(f"  [dim]{projected['candidates_note']}[/dim]")
+        for candidate in candidates:
+            console.print(
+                f"  [dim]candidate:[/dim] {candidate.get('title', '')} "
+                f"[dim]({candidate.get('status', '')})[/dim]"
+            )
+        _print_more(console, projected, "candidates", len(candidates))
+    if projected.get("more"):
+        # The tool's pointer names the MCP call; on the CLI --full asks for
+        # the same history.
+        console.print(
+            "\n[dim]Origin story, commits, episodes and contributors: "
+            "pass --full.[/dim]"
+        )
 
     for label, key in (
         ("Stale decisions", "stale_decisions"),
@@ -470,6 +538,7 @@ _RENDERABLE_BLOCKS = (
     "counts",
     "alignment",
     "decisions",
+    "candidates",
     "origin_story",
     "git_archaeology",
     "code_rationale",

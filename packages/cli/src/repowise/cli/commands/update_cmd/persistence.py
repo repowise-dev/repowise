@@ -9,8 +9,10 @@ state-file updates and console reporting stay here.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,6 @@ import structlog
 
 from repowise.cli.commands._index_outcome import refresh_read_snapshots  # noqa: F401 (re-export)
 from repowise.cli.helpers import (
-    as_commit_id,
     console,
     err_console,
     head_commit_ts,
@@ -26,8 +27,10 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.pipeline.incremental.repair import record_repair_marker
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
     RescoreCoverage,
     rescore_health_from_store,
@@ -167,6 +170,77 @@ def accept_landed_decisions(repo_path: Path) -> int:
     return accepted
 
 
+def keep_decisions_current(repo_path: Path) -> None:
+    """Bring the repo's shared decision copies in step after an update.
+
+    Two copies, each only where the user asked for it: the repo's copy on
+    repowise.dev when ``decisions.sync`` is on (see ``decision_sync_cmd``), and
+    a committed ``.repowise/decisions.yaml`` when one exists. Sync runs first
+    so a decision it brings down reaches the file in the same update. Neither
+    calls a model, and neither can fail the update.
+    """
+    from repowise.cli.commands.decision_sync_cmd import sync_on_update
+
+    sync_on_update(Path(repo_path))
+    refresh_decisions_manifest(Path(repo_path))
+
+
+def refresh_decisions_manifest(repo_path: Path) -> str:
+    """Rewrite an existing ``decisions.yaml`` from the store; never create one.
+
+    The file is opt-in (``decision export`` writes the first one), so an
+    absent file stays absent. One that holds something the store has not read
+    is left alone with one line saying how to reconcile it. Returns the
+    outcome of :func:`~repowise.core.persistence.decision_manifest.refresh_manifest`,
+    or ``"absent"`` / ``"failed"``.
+    """
+    from repowise.core.analysis.decisions.manifest import manifest_path
+
+    if not manifest_path(repo_path).is_file():
+        return "absent"
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.policy_store import load_policy
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.decision_manifest import refresh_manifest
+
+    async def _run() -> tuple[str, int]:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await refresh_manifest(session, repo.id, repo_path)
+        finally:
+            await engine.dispose()
+
+    try:
+        policy = load_policy(repo_path).policy
+        if not has_db_store(Path(repo_path)) or not (policy.enabled and policy.delivers):
+            return "absent"
+        outcome, count = run_async(_run())
+    except Exception as exc:
+        log.debug("decisions_manifest_refresh_failed", error=str(exc))
+        return "failed"
+    if outcome == "written":
+        console.print(f"[dim]Decisions: updated .repowise/decisions.yaml ({count}).[/dim]")
+    elif outcome == "held":
+        console.print(
+            "[dim]Decisions: .repowise/decisions.yaml has changes this index has not "
+            "read; left as is. [bold]repowise decision import[/bold] reconciles it.[/dim]"
+        )
+    return outcome
+
+
 async def _persist_partial_health(
     session: Any, repo_id: str, report: Any, repo_path: Any = None
 ) -> None:
@@ -271,121 +345,6 @@ def heal_commit_offsets(repo_path: Any) -> None:
         run_async(_run())
 
 
-# A repair window that has grown past this many commits stopped being a repair
-# and became a re-index: the diff it forces every update to walk is no longer
-# change-sized. Bounding it is what stops a step that fails on every run from
-# pinning the window open forever.
-_REPAIR_MAX_COMMITS = 500
-
-
-def record_repair_marker(new_state: dict, prior_state: dict, failed_steps: list[str]) -> None:
-    """Record, or clear, the commit range this update failed to fully persist.
-
-    ``last_sync_commit`` advances whether or not the persist steps succeeded, so
-    a failed step used to take its commit range with it: nothing ever revisited
-    those commits, and their git metadata, health rows, symbols or edges were
-    skipped permanently and announced exactly once in the completion panel. The
-    marker keeps the *old* pointer so the next update diffs from there and
-    re-covers the range, while the pointer itself stays current for every other
-    reader of the state file.
-
-    Carrying the oldest unrepaired commit forward rather than the newest is the
-    part that makes it hold: three failed runs in a row still have to re-cover
-    all three ranges, not just the last one.
-
-    Only range-scoped failures land here (see ``persist_incremental_index``),
-    so a repo-wide step that fails on every single run cannot keep the marker
-    alive: it heals itself on the next update instead.
-    """
-    if not failed_steps:
-        new_state.pop("pending_repair", None)
-        return
-    prior = prior_state.get("pending_repair")
-    if not isinstance(prior, dict):  # a hand-edited or truncated state file
-        prior = {}
-    from_commit = prior.get("from_commit") or prior_state.get("last_sync_commit")
-    if not from_commit:
-        # Nothing to diff back to (a first index, or a state file with no
-        # pointer). Widening from an unknown base is not something we can do
-        # safely, so leave no marker rather than a broken one.
-        new_state.pop("pending_repair", None)
-        return
-    # Union, not replace: the marker names one range, so it has to name
-    # everything still unrepaired in it. Run 1 failing the git persist and run 2
-    # failing only the health persist leaves both unrepaired over the same span.
-    prior_steps = prior.get("steps")
-    prior_steps = prior_steps if isinstance(prior_steps, list) else []
-    new_state["pending_repair"] = {
-        "from_commit": from_commit,
-        "steps": sorted({*prior_steps, *failed_steps}),
-    }
-
-
-def resolve_repair_base(
-    repo_path: Any, state: dict, base_ref: str, head: str | None
-) -> tuple[str, str | None]:
-    """Widen *base_ref* back to an unrepaired range, or report giving up on it.
-
-    Returns ``(base_ref, give_up_reason)``. The reason is non-None exactly when
-    the marker should be dropped without being honoured, and it is written for
-    the user rather than the log.
-
-    Three things have to hold before the marker is honoured, and each one closes
-    a way this could go wrong:
-
-    * the recorded commit still resolves and is an *ancestor* of the current
-      base, so honouring it can only ever move the diff backwards. Without the
-      ancestry check a rebase, a branch switch or a docs-mode base that is
-      already older would let the marker move the base *forward* and skip the
-      very commits it exists to re-cover;
-    * the range is still bounded (see ``_REPAIR_MAX_COMMITS``);
-    * it differs from the base we already have, so a marker that has effectively
-      caught up costs nothing.
-    """
-    import subprocess
-
-    marker = state.get("pending_repair")
-    from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
-    if not from_commit or from_commit == base_ref:
-        return base_ref, None
-    if as_commit_id(from_commit) is None or as_commit_id(base_ref) is None:
-        return base_ref, None
-
-    def _git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", "-C", str(repo_path), *args], capture_output=True, timeout=30, text=True
-        )
-
-    try:
-        if (
-            _git(
-                "merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref
-            ).returncode
-            != 0
-        ):
-            # Non-zero covers both "not an ancestor" (rebased, force-pushed,
-            # branch switched) and "cannot resolve that object" (gc'd, or a
-            # shallow clone that never fetched it), and git does not
-            # distinguish them by exit code. Say both rather than assert one.
-            return base_ref, (
-                f"the recorded commit {from_commit[:8]} is not an ancestor of this "
-                "branch's history, or is not present in this clone"
-            )
-        counted = _git(
-            "rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}"
-        )
-        if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
-            return base_ref, (
-                f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
-                "a re-index rather than a repair"
-            )
-    except Exception:
-        # git being unavailable is not a reason to widen blindly.
-        return base_ref, None
-
-    return from_commit, None
-
-
 def _rescore_stale_findings(
     repo_path: Any,
     graph_builder: Any,
@@ -395,6 +354,7 @@ def _rescore_stale_findings(
     parsed_files: list | None,
     exclude_patterns: list[str] | None,
     force_full_rescore: bool,
+    git_persisted: bool,
     timings: PhaseTimings | None,
 ) -> tuple[Any, Any, Any]:
     """Re-score health and rescan security repo-wide when they are stale.
@@ -420,7 +380,9 @@ def _rescore_stale_findings(
                 exclude_patterns or [],
                 timings=timings,
             )
-    if rescored:
+    # The re-score reads git rows from the store: scored over rows that did not
+    # land, it is not stamped, so the next update re-scores after the repair.
+    if rescored and git_persisted:
         # Only the time gate reads this, and it treats a non-numeric value as
         # "never re-scored", so leave a real stamp alone rather than writing
         # None over it when git gave us no timestamp.
@@ -645,8 +607,9 @@ def _persist_index_only_update(
     history_window_changed: bool = False,
     deferred_page_scope: str | None = None,
     deferred_page_paths: list[str] | None = None,
-    stamp_config: bool = True,
+    stale_config_buckets: Collection[str] = (),
     timings: PhaseTimings | None = None,
+    unchecked_repair: dict | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -658,6 +621,11 @@ def _persist_index_only_update(
 
     ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
     re-render a renderer change asked for failed, so the next run retries it.
+
+    ``stale_config_buckets`` names dependency buckets whose work this run did
+    not finish (a deferred-docs run leaves ``generation`` stale): their hashes
+    are kept from the stored state so the next run sees exactly those buckets
+    as changed, instead of the whole config (#5944).
 
     ``timings`` is the run's phase table. Its ``run`` row is closed here, at
     the state write, and the whole table lands in ``state.json`` as
@@ -674,6 +642,12 @@ def _persist_index_only_update(
     # (which also collects repo-wide and non-DB failures) because only these
     # strand data the advancing sync pointer would otherwise skip forever.
     failed_steps: list[str] = []
+    # The deleted-file prune can stop without failing: it refuses a change that
+    # looks like a broken run rather than a commit and leaves the rows alone.
+    # That is not an error and no step was skipped, so it does not belong in
+    # ``degraded`` — but it does stop the sync pointer below, because the index
+    # no longer agrees with the commit about to be recorded (#5410).
+    prune_refusals: list[str] = []
     degraded_before_persist = len(degraded)
     run_async(
         persist_incremental_index(
@@ -699,6 +673,7 @@ def _persist_index_only_update(
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals,
             timings=timings,
         )
     )
@@ -711,6 +686,7 @@ def _persist_index_only_update(
     from repowise.core.repo_config import config_dependency_fingerprints
 
     from .command import _current_renderer_fingerprint
+    from .config_changes import retain_stale_buckets
 
     last_full_rescore_at, health_analyzer_version, security_scanner_version = (
         _rescore_stale_findings(
@@ -721,8 +697,19 @@ def _persist_index_only_update(
             parsed_files=parsed_files,
             exclude_patterns=exclude_patterns,
             force_full_rescore=force_full_rescore,
+            git_persisted="Git persist" not in failed_steps,
             timings=timings,
         )
+    )
+    stored_dependency_fps = state.get("config_dependency_fingerprints")
+    stamped_dependency_fps = retain_stale_buckets(
+        stored_dependency_fps,
+        (
+            dependency_fingerprints
+            if dependency_fingerprints is not None
+            else config_dependency_fingerprints(repo_path)
+        ),
+        stale_config_buckets,
     )
     new_state = {
         **state,
@@ -730,16 +717,8 @@ def _persist_index_only_update(
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": (
-            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
-        ),
-        "config_dependency_fingerprints": (
-            state.get("config_dependency_fingerprints")
-            if not stamp_config
-            else dependency_fingerprints
-            if dependency_fingerprints is not None
-            else config_dependency_fingerprints(repo_path)
-        ),
+        "config_fingerprint": config_fingerprint(repo_path),
+        "config_dependency_fingerprints": stamped_dependency_fps,
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
         # at its old value, so ``renderer_changed`` stays true and every later
@@ -757,6 +736,25 @@ def _persist_index_only_update(
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
     record_repair_marker(new_state, state, failed_steps)
+    # A clean run clears the marker only if it re-covered the marker's range.
+    if unchecked_repair is not None and "pending_repair" not in new_state:
+        new_state["pending_repair"] = unchecked_repair
+    if prune_refusals:
+        # The prune refused to apply part of this change set, so the index is
+        # behind the commit it would be recorded against. Leave the pointer
+        # where it is and record the range, exactly like a failed step: the
+        # next update re-covers it, and the repair marker is what stops it
+        # being skipped forever (#5410).
+        record_repair_marker(new_state, state, [*failed_steps, "Deleted-file prune (refused)"])
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
+        console.print(
+            "[yellow]The deleted-file prune refused part of this change and left "
+            "those rows in place; the sync pointer has not advanced, so the next "
+            "update re-covers this range.[/yellow]"
+        )
+        for refusal in prune_refusals:
+            console.print(f"[yellow]{refusal}[/yellow]")
     if failed_steps:
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
@@ -907,6 +905,7 @@ def _persist_full_update(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -954,6 +953,7 @@ def _persist_full_update(
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals if prune_refusals is not None else [],
             timings=timings,
         )
     )
@@ -986,6 +986,7 @@ async def _persist_full_update_async(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     from .full_persist import FullUpdatePersist, write_full_update
@@ -1026,6 +1027,7 @@ async def _persist_full_update_async(
         log=console.print,
         degraded=degraded,
         failed_steps=failed_steps,
+        prune_refusals=prune_refusals if prune_refusals is not None else [],
         timings=timings,
     )
     return await write_full_update(ctx)
@@ -1158,7 +1160,10 @@ def _full_rescore_interval_days() -> float:
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
-            return max(0.0, float(raw))
+            days = float(raw)
+            if math.isnan(days) or days == math.inf:
+                raise ValueError(raw)
+            return max(0.0, days)
         except ValueError:
             if not _FULL_RESCORE_WARNING_SENT:
                 _FULL_RESCORE_WARNING_SENT = True
@@ -1222,21 +1227,6 @@ def parser_changed(repo_path: Path) -> bool:
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-
-
-def health_analyzer_changed(state: dict) -> bool:
-    """Whether the stored health rows were written by a different analyzer.
-
-    A legacy state file with no stamp is **not** a change: the rows it wrote
-    are no more suspect than any other pre-upgrade rows, and treating absence
-    as drift would re-score every existing install once on upgrade for no
-    stated defect. They pick the stamp up on their first re-score from any
-    other trigger.
-    """
-    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-
-    stored = state.get("health_analyzer_version")
-    return stored is not None and stored != HEALTH_ANALYZER_VERSION
 
 
 def security_scanner_changed(state: dict) -> bool:

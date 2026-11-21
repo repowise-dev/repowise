@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.analysis.decisions.lifecycle import status_rank
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -83,12 +82,11 @@ def _cap_affected_files(
 
 def _merge_decisions(
     keyword_matches: list[tuple[Any, list[str]]],
-    decision_results: list,
     lineage_by_id: dict[str, list[dict]],
     collector: OmissionCollector | None = None,
     accepted: set[str] | None = None,
 ) -> list[dict]:
-    """Project collapsed keyword hits, then append semantic hits not already in.
+    """Project collapsed keyword hits, best-first.
 
     *keyword_matches* arrives from :func:`_collapse_restatements`, so the folded
     ids ride along on ``restates``: nothing becomes unaddressable and the store
@@ -120,23 +118,35 @@ def _merge_decisions(
         if folded:
             entry["restates"] = folded
         merged_decisions.append(entry)
-
-    for r in decision_results:
-        # Strip the "decision:" prefix so the returned id matches the SQL primary key.
-        real_id = r.page_id[len(DECISION_VECTOR_PREFIX) :]
-        if real_id in seen_ids:
-            continue
-        seen_ids.add(real_id)
-        merged_decisions.append(
-            {
-                "id": real_id,
-                "title": r.title,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-                "authority": _authority_of(real_id, accepted or set()),
-            }
-        )
     return merged_decisions
+
+
+#: A quoted rule or background claim. Enough for the ruling; the rest is one id call away.
+_QUOTED_DECISION_CHARS = 300
+
+#: What a background row leaves out: it is context, not a rule, so it stays small.
+_BACKGROUND_DETAIL_FIELDS = (
+    "context",
+    "consequences",
+    "alternatives",
+    "staleness_score",
+    "review_state",
+)
+
+
+def bounded(text: str) -> str:
+    """*text* cut to :data:`_QUOTED_DECISION_CHARS`, marked when cut."""
+    if len(text) > _QUOTED_DECISION_CHARS:
+        return text[: _QUOTED_DECISION_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def trim_background(rows: list[dict]) -> None:
+    """Drop the detail fields from every row not in force, in place."""
+    for row in rows:
+        if isinstance(row, dict) and row.get("authority") != "accepted":
+            for key in _BACKGROUND_DETAIL_FIELDS:
+                row.pop(key, None)
 
 
 #: The lanes whose rows are decision records.

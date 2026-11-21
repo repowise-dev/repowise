@@ -207,7 +207,10 @@ def _emit_gitlab(v: _Verdict) -> None:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.health_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.result, reproduce=v.reproduce))
 
 
 def _emit_github(v: _Verdict) -> None:

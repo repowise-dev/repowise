@@ -149,7 +149,11 @@ def test_freshness_states_both_commits(checkouts, call) -> None:
     untouched = _meta.freshness_from_repo(row, targets=["pkg/b.py"], root=str(checkouts.repo))
     assert "stale_warning" not in untouched
 
-    repo_level = _meta.freshness_from_repo(row, targets=None, root=str(checkouts.repo))
+    quiet = _meta.freshness_from_repo(row, targets=None, root=str(checkouts.repo))
+    assert "stale_warning" not in quiet and quiet["index_behind"] is True
+    repo_level = _meta.freshness_from_repo(
+        row, targets=None, root=str(checkouts.repo), repo_level=True
+    )
     assert f"is at {checkouts.wt_head[:12]}" in repo_level["stale_warning"]
 
     assert "stale_warning" not in _meta.freshness_from_repo(
@@ -174,7 +178,11 @@ def test_unknown_diff_is_not_called_a_file_change(checkouts, call, monkeypatch) 
     out = _meta.freshness_from_repo(
         _row(checkouts), targets=["pkg/b.py"], root=str(checkouts.repo)
     )
-    assert "differs in" not in out["stale_warning"]
+    assert "stale_warning" not in out
+    repo_level = _meta.freshness_from_repo(
+        _row(checkouts), targets=None, root=str(checkouts.repo), repo_level=True
+    )
+    assert "differs in" not in repo_level["stale_warning"]
 
 
 def test_envelope_names_the_served_checkout(checkouts, call) -> None:

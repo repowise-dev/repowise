@@ -37,3 +37,15 @@ def scoped_idempotency_key(repository_id: str, surface: str, *parts: object) -> 
     ):
         raise ValueError("repository, surface, and evidence are required")
     return _digest(repository_id, surface, *(str(part) for part in parts))
+
+
+def file_session_key(session: object) -> str:
+    """Key one host session for the files-not-opened count, alike on every surface.
+
+    Unlike the stored ``session_id``, which is hashed per surface, this key
+    leaves the surface out: the MCP server and the hooks see the same host
+    session, and a file is credited once per session whichever served it. The
+    repository is left out too: the ledger is already per repository, and the
+    two surfaces can spell its root differently.
+    """
+    return hash_correlation_evidence("files_session", session)

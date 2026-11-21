@@ -33,7 +33,7 @@ function FindingRow({ f, fileHref }: { f: HealthCheckFinding; fileHref: ((path: 
   return (
     <li className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
       {f.severity && SEVERITIES.includes(f.severity) ? (
-        <SeverityMark severity={f.severity as Severity} compact />
+        <SeverityMark severity={f.severity as Severity} />
       ) : (
         <span className="text-[11px] text-[var(--color-text-tertiary)]">{f.level}</span>
       )}
@@ -57,6 +57,12 @@ function FindingRow({ f, fileHref }: { f: HealthCheckFinding; fileHref: ((path: 
 /** A revspec with each full sha cut to 8 characters; the whole one stays in the tooltip. */
 export function shortRevspec(revspec: string): string {
   return revspec.replace(/\b[0-9a-f]{40}\b/g, (sha) => sha.slice(0, 8));
+}
+
+/** The verdict and its counts in one sentence, for a screen reader. */
+function verdictSummary(result: ChangeHealthCheckResponse): string {
+  const { verdict, failing_count: failing, warning_count: warnings } = result.gate;
+  return `Health check: ${VERDICT[verdict].word}, ${failing} failing, ${warnings} ${warnings === 1 ? "warning" : "warnings"}.`;
 }
 
 function Result({ result, fileHref }: { result: ChangeHealthCheckResponse; fileHref: ((path: string) => string) | undefined }) {
@@ -163,10 +169,18 @@ export function HealthCheckPanel({
   if (!state) return null;
   const running = state.status === "running";
   return (
-    <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5" aria-busy={running} aria-live="polite">
+    <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5" aria-busy={running}>
       <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">Health check</h3>
+      {/* Only the outcome is announced, not every finding row. */}
+      <p role="status" className="sr-only">
+        {state.status === "done" ? verdictSummary(state.result) : ""}
+      </p>
       {running && <p className="text-xs text-[var(--color-text-tertiary)]">Reading both sides of every changed file...</p>}
-      {state.status === "error" && <p className="text-xs text-[var(--color-error)]">{state.message}</p>}
+      {state.status === "error" && (
+        <p role="alert" className="text-xs text-[var(--color-error)]">
+          {state.message}
+        </p>
+      )}
       {state.status === "done" && <Result result={state.result} fileHref={fileHref} />}
     </section>
   );

@@ -28,6 +28,38 @@ def _has_skill_frontmatter(text: str) -> bool:
     return "name:" in frontmatter and "description:" in frontmatter
 
 
+def _frontmatter(path: Path) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1]) or {}
+
+
+#: Claude Code lists every model-invocable skill and command in context on every
+#: turn. A person types a command; the agent runs the CLI or calls the MCP tool
+#: it wraps, so only setup stays listed for the model.
+_MODEL_LISTED_COMMANDS = {"init"}
+#: One short line each: the listing is paid per turn, the body only on use.
+_SKILL_DESCRIPTION_CHARS = 90
+
+
+def test_only_setup_commands_are_listed_for_the_model() -> None:
+    listed = {
+        p.stem
+        for p in (PLUGIN_ROOT / "commands").glob("*.md")
+        if not _frontmatter(p).get("disable-model-invocation")
+    }
+    assert listed == _MODEL_LISTED_COMMANDS
+
+
+def test_skill_descriptions_are_one_short_line() -> None:
+    skills = sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
+    assert skills
+    for path in skills:
+        description = _frontmatter(path)["description"]
+        assert "\n" not in description.strip(), path
+        assert len(description) <= _SKILL_DESCRIPTION_CHARS, path
+
+
 def test_claude_plugin_manifest_paths() -> None:
     manifest_path = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
     manifest = _load_json(manifest_path)
@@ -408,6 +440,7 @@ def test_claude_plugin_skills_have_metadata() -> None:
         "codebase-exploration",
         "dead-code-cleanup",
         "pre-modification",
+        "settings",
     }
 
     for path in skill_paths:

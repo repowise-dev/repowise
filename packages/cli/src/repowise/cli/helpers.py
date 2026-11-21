@@ -31,6 +31,9 @@ from repowise.cli._helpers.config import (
     load_config as load_config,
 )
 from repowise.cli._helpers.config import (
+    load_config_for_write as load_config_for_write,
+)
+from repowise.cli._helpers.config import (
     resolve_max_file_pages as resolve_max_file_pages,
 )
 from repowise.cli._helpers.config import (
@@ -95,9 +98,6 @@ from repowise.cli._helpers.db import (
 )
 from repowise.cli._helpers.db import (
     repo_index_session as repo_index_session,
-)
-from repowise.cli._helpers.git import (
-    _COMMIT_ID_RE as _COMMIT_ID_RE,
 )
 from repowise.cli._helpers.git import (
     as_commit_id as as_commit_id,

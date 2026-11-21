@@ -25,7 +25,7 @@ from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 
 from .facts import ObservationFacts, detail_map, is_performance, observation_facts
 
-PERFORMANCE_MODEL_VERSION = 3
+PERFORMANCE_MODEL_VERSION = 4
 """Version of the identity, grouping, actionability, and ranking semantics.
 
 From version 2 the version is the id prefix rather than a hash input, so a
@@ -38,6 +38,14 @@ Version 3 keys a cause by its intervention, not by the sink it reaches: one
 loop reaching three sinks was three opportunities under version 2. It also
 classes schema migrations as ``tooling`` in :func:`execution_context`, a kernel
 input.
+
+Version 4 lets measured runs admit and order causes: test runs count, labelled
+(#6066), a cold role or name a leading run measured above the bar may lead
+(#6093), and a function a leading run measured that no static cause owns
+becomes a ``measured_hotspot`` cause (#6097). The kernel's fields are
+unchanged, so most ids move only their prefix. A file whose origin is ``data``
+now reads as ``unknown`` in :func:`execution_context`, not ``production``, so
+its causes get new ids (#6009).
 """
 
 ExecutionContext = Literal["production", "tooling", "test", "unknown"]
@@ -57,7 +65,7 @@ _ID_PATTERN = re.compile(rf"^{_ID_PREFIX}(\d*)_[0-9a-f]{{20}}$")
 # Origins whose code may or may not ship: a copied library, a generator's
 # output, a docs tree. Calling such code production would assert an exposure
 # the tree does not support, which is the one thing the fallback must not do.
-_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example"})
+_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example", "data"})
 _TOOLING_ORIGINS = frozenset({"tooling", "build"})
 # Example, demo and docs trees at any depth. Not ``website/``: a site can serve
 # a shipped installer script.

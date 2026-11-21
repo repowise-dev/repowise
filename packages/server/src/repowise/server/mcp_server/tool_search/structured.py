@@ -46,7 +46,14 @@ from .ordering import (
     _protect_named_symbols,
 )
 from .retrieval import _neg_score, _per_repo, _search_single_repo
-from .serve import _page_language, _result_paths, _serve_snippets, _slim_served_rows
+from .serve import (
+    _page_language,
+    _result_paths,
+    _serve_snippets,
+    _slim_served_rows,
+    attach_unique_body,
+    unique_exact_row,
+)
 
 
 def _lead_candidates(response: dict, issue: IssueFiles | None, limit: int) -> None:
@@ -156,9 +163,7 @@ async def _search_one_repo(
     paths: list[str] = []
     c: list[dict] = []
     if plan.mode in ("symbol", "hybrid"):
-        s = await _pkg.search_symbols_single(
-            ctx, plan.symbol_query, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
-        )
+        s = await _symbol_rows(ctx, plan)
     if plan.mode == "path":
         f = await search_paths_single(ctx, plan.query, plan.limit)
         async with get_session(ctx.session_factory) as session:
@@ -177,6 +182,31 @@ async def _search_one_repo(
     for rows in (s, f, c):
         _tag_repo(rows, ctx, plan.multi)
     return s, f, paths, c
+
+
+async def _symbol_rows(ctx: Any, plan: _SearchPlan) -> list[dict]:
+    """Symbol rows for the plan, best first.
+
+    Two or more names (``a|b``, or a question naming both) are searched one
+    at a time: scored as one string, each name's exact symbol loses to
+    neighbours sharing words with both, and the reply then says the name is
+    not indexed.
+    """
+    names = _embedded_identifiers(plan.query, plan.names) if plan.mode == "hybrid" else []
+    queries = list(dict.fromkeys(names)) if len(set(names)) > 1 else [plan.symbol_query]
+    if len(queries) == 1:
+        return await _pkg.search_symbols_single(
+            ctx, queries[0], plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+        )
+    rows: dict[Any, dict] = {}
+    for q in queries:
+        for row in await _pkg.search_symbols_single(
+            ctx, q, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+        ):
+            key = row.get("symbol_id") or id(row)
+            if key not in rows or (row.get("score") or 0) > (rows[key].get("score") or 0):
+                rows[key] = row
+    return sorted(rows.values(), key=_neg_score("score"))
 
 
 def _vector_store_loaded(ctx: Any) -> bool:
@@ -272,14 +302,32 @@ def _named_directory(query: str, paths: list[str]) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def _directory_action(plan: _SearchPlan, pools: _Pools) -> list[str]:
-    """The get_context call listing a directory's files, for a path query naming one."""
+def _directory_action(plan: _SearchPlan, pools: _Pools) -> str | None:
+    """The directory a path query names, else None."""
     if plan.mode != "path" or plan.multi:
-        return []
-    folder = _named_directory(plan.query, pools.indexed_paths)
-    if folder is None:
-        return []
-    return [f'get_context(targets=["{folder}"], include=["files"]): its files and their tests']
+        return None
+    return _named_directory(plan.query, pools.indexed_paths)
+
+
+def _add_directory_hit(response: dict, folder: str, limit: int) -> None:
+    """Lead ``results`` with the directory the query names, and say how to list it."""
+    row = {"type": "directory", "path": folder, "next": "get_context"}
+    response["results"] = [row, *response.get("results", [])][:limit]
+    action = f'get_context(targets=["{folder}"], include=["files"]): its files and their tests'
+    response["next_actions"] = [action, *response.get("next_actions", [])]
+
+
+async def attach_directory_hit(response: dict, query: str, repo: str | None, limit: int) -> None:
+    """A one-word query naming an indexed directory (``tool_search``,
+    ``dead-code``) and no symbol gets that directory as its first hit."""
+    q = query.strip()
+    if len(q) < 3 or any(ch in q for ch in " /\\|*?") or response.get("exact_match"):
+        return
+    ctx = await _pkg._resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
+    if folder := _named_directory(q, list(paths)):
+        _add_directory_hit(response, folder, limit)
 
 
 async def _single_repository(contexts: list[Any], multi: bool) -> Any:
@@ -290,6 +338,27 @@ async def _single_repository(contexts: list[Any], multi: bool) -> Any:
         return await _get_repo(session)
 
 
+def _filter_note(filtered: tuple[str, list[str]]) -> str:
+    """Names the filter hid: they are indexed, so the spelling is not in doubt."""
+    label, hidden = filtered
+    shown = ", ".join(repr(c) for c in hidden[:3])
+    verb, them = ("is", "it") if len(hidden) == 1 else ("are", "them")
+    return f"{shown} {verb} indexed but not as {label}; drop that filter to see {them}."
+
+
+def _missing_note(missing: list[str], has_results: bool, grep_hint: str | None) -> str:
+    """Names no indexed symbol carries."""
+    shown = ", ".join(repr(c) for c in missing[:3])
+    # An empty window's grep_hint already carries the sweep advice.
+    pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
+    sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
+    return (
+        f"No indexed symbol is named {shown}, so no symbol is returned "
+        f"for it.{pages} Recheck the spelling, or search a shorter part "
+        f"of the name.{sweep}"
+    )
+
+
 def _exact_match_note(
     candidates: list[str],
     exact: bool,
@@ -297,32 +366,32 @@ def _exact_match_note(
     fuzzy_omitted: int,
     has_results: bool,
     grep_hint: str | None,
+    filtered: tuple[str, list[str]] | None = None,
 ) -> str | None:
-    """The note qualifying an identifier query's results, if one is owed."""
+    """The note qualifying an identifier query's results, if one is owed.
+
+    *filtered* is the call's filter and the named symbols it removed.
+    """
+    hidden = filtered[1] if filtered else []
+    notes = [_filter_note(filtered)] if filtered and hidden else []
+    missing = [c for c in missing if c not in hidden]
     if missing:
-        shown = ", ".join(repr(c) for c in missing[:3])
-        # An empty window's grep_hint already carries the sweep advice.
-        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
-        sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
-        return (
-            f"No indexed symbol is named {shown}, so no symbol is returned "
-            f"for it.{pages} Recheck the spelling, or search a shorter part "
-            f"of the name.{sweep}"
-        )
-    if not exact:
+        notes.append(_missing_note(missing, has_results, grep_hint))
+    # Rows served beside a hidden name are other symbols of the filtered kind.
+    elif not exact and candidates and (has_results or not hidden):
         shown = ", ".join(repr(c) for c in candidates[:3])
-        return (
+        notes.append(
             f"No indexed symbol exactly matches {shown}. The results are "
             "fuzzy neighbours ranked by token overlap — confirm a hit names "
             "what you meant before relying on it. If you expected an exact "
             "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
         )
-    if fuzzy_omitted:
-        return (
+    elif fuzzy_omitted and not hidden:
+        notes.append(
             f"{fuzzy_omitted} other symbols contain this name; search a "
             "longer or partial name to list them."
         )
-    return None
+    return " ".join(notes) or None
 
 
 def _match_named(
@@ -342,12 +411,33 @@ def _match_named(
     return exact, missing
 
 
+def _filtered_names(
+    plan: _SearchPlan, pools: _Pools, candidates: list[str]
+) -> tuple[str, list[str]] | None:
+    """The call's kind filter and the named symbols it removed: indexed names
+    no returned symbol matches. None without a filter or such a name."""
+    label = ", ".join(
+        f"{arg}={value}"
+        for arg, value in (("kind", plan.kind), ("symbol_kind", plan.symbol_kind))
+        if value
+    )
+    if not label or plan.names is None:
+        return None
+    hidden = [
+        c
+        for c in candidates
+        if c in plan.names and not _has_exact_symbol([c], pools.symbols + pools.spare)
+    ]
+    return (label, hidden) if hidden else None
+
+
 def _attach_match_notes(
     response: dict,
     candidates: list[str],
     exact: bool,
     missing: list[str],
     grep_hint: str | None,
+    filtered: tuple[str, list[str]] | None = None,
 ) -> None:
     """Exact-match flag, its note, and the grep fallback for an empty window."""
     results = response["results"]
@@ -361,6 +451,7 @@ def _attach_match_notes(
             response.get("fuzzy_omitted", 0),
             bool(results),
             grep_hint,
+            filtered,
         )
         if note:
             response["note"] = note
@@ -418,12 +509,20 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    if actions := _directory_action(plan, pools):
-        response["next_actions"] = actions
+    if folder := _directory_action(plan, pools):
+        _add_directory_hit(response, folder, limit)
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
-    _attach_match_notes(response, candidates, exact, missing, grep_hint)
+    _attach_match_notes(
+        response, candidates, exact, missing, grep_hint, _filtered_names(plan, pools, candidates)
+    )
+    # Symbol mode ranks every candidate, so its pool can tell one definition
+    # from two; hybrid fetches a window and cannot.
+    if plan.mode == "symbol" and repository is not None and response.get("exact_match"):
+        row = unique_exact_row(candidates, results, pools.symbols + pools.spare)
+        if row is not None:
+            await attach_unique_body(response, row, pools.contexts[0], repository)
     if fed is not None:
         fed.annotate(response, results)
     # Last: slims fields the steps above still read.

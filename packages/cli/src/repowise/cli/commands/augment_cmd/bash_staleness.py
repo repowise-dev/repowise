@@ -8,7 +8,7 @@ from pathlib import Path
 
 from repowise.core.docs_mode import resolve_docs_mode
 
-from ._shared import _find_repo_root
+from ._shared import _borrowed_index, _find_repo_root
 
 _GIT_COMMIT_PATTERNS = (
     "git commit",
@@ -54,7 +54,8 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
         return None
 
     repo_path = _find_repo_root(Path(cwd))
-    if repo_path is None:
+    # A worktree's commit does not age its main checkout's index.
+    if repo_path is None or _borrowed_index(Path(cwd), repo_path):
         return None
 
     state_path = repo_path / ".repowise" / "state.json"

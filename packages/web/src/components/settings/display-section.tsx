@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { browserTimeZone } from "@repowise-dev/ui/lib/format";
 import {
   Select,
   SelectContent,
@@ -9,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
-import { SettingsRow, SettingsRows, useSaveState } from "@repowise-dev/ui/settings";
+import { SettingsRow, SettingsRows, TimeZoneField, useSaveState } from "@repowise-dev/ui/settings";
 import { Switch } from "@repowise-dev/ui/ui/switch";
 import { DEFAULT_WEEKEND_PRESET, WEEKEND_PRESETS } from "@repowise-dev/ui/stats";
 import {
@@ -19,6 +22,14 @@ import {
   setChatDockHidden,
   setChatSelectionAskHidden,
 } from "@/lib/config";
+import {
+  AUTO_TIME_ZONE,
+  DETECTED_TIME_ZONE_COOKIE,
+  TIME_ZONE_COOKIE,
+  readCookie,
+  resolveViewerTimeZone,
+  timeZoneCookie,
+} from "@/i18n/time-zone";
 
 /** Keys of the three chat switches, in the order a reader meets them: the dock
  *  first, then the two controls it gates. The copy lives under
@@ -50,6 +61,9 @@ const CHAT_SWITCH_BEHAVIOUR: Record<
 /** Reader-local display preferences for the stats surfaces. */
 export function DisplaySection() {
   const [weekend, setWeekend] = useState(DEFAULT_WEEKEND_PRESET.id);
+  const [timeZone, setTimeZone] = useState(AUTO_TIME_ZONE);
+  const [detectedZone, setDetectedZone] = useState("UTC");
+  const router = useRouter();
   const [chatShown, setChatShown] = useState<Record<ChatSwitchKey, boolean>>({
     dock: true,
     ask: true,
@@ -93,6 +107,8 @@ export function DisplaySection() {
   // Read after mount so SSR and the first client render agree.
   useEffect(() => {
     setWeekend(config.getWeekend() || DEFAULT_WEEKEND_PRESET.id);
+    setTimeZone(resolveViewerTimeZone(readCookie(TIME_ZONE_COOKIE), undefined).preference);
+    setDetectedZone(browserTimeZone());
   }, []);
 
   // The same two listeners the affordances themselves use: `storage` covers
@@ -129,6 +145,20 @@ export function DisplaySection() {
   }
 
 
+  /** The zone lives in cookies the server reads, so a refresh re-renders every
+   *  date, server and client, in the new zone. That redraw remounts this page
+   *  (see `DisplayTimeZone`), so a toast confirms it instead of the row tick. */
+  function handleTimeZoneChange(next: string) {
+    setTimeZone(next);
+    document.cookie = timeZoneCookie(TIME_ZONE_COOKIE, next);
+    const shown = next === AUTO_TIME_ZONE ? browserTimeZone() : next;
+    if (next === AUTO_TIME_ZONE) {
+      document.cookie = timeZoneCookie(DETECTED_TIME_ZONE_COOKIE, shown);
+    }
+    toast.success(t("display.timeZoneSaved", { zone: shown }));
+    router.refresh();
+  }
+
   function handleChatChange(
     entry: { key: ChatSwitchKey; write: (shown: boolean) => void },
     shown: boolean,
@@ -143,6 +173,26 @@ export function DisplaySection() {
 
   return (
       <SettingsRows>
+        <SettingsRow
+          label={t("display.timeZoneLabel")}
+          htmlFor="time-zone"
+          hint={t("display.timeZoneHint")}
+        >
+          <TimeZoneField
+            id="time-zone"
+            ariaLabel={t("display.timeZoneAria")}
+            value={timeZone}
+            detected={detectedZone}
+            onChange={handleTimeZoneChange}
+            labels={{
+              auto: (zone) => t("display.timeZoneAuto", { zone }),
+              autoValue: (zone) => t("display.timeZoneAutoValue", { zone }),
+              placeholder: t("display.timeZoneSearch"),
+              noMatch: t("display.timeZoneNoMatch"),
+            }}
+            className="w-full sm:w-64"
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("display.weekendLabel")}
           htmlFor="weekend-preset"
