@@ -338,6 +338,27 @@ async def _single_repository(contexts: list[Any], multi: bool) -> Any:
         return await _get_repo(session)
 
 
+def _filter_note(filtered: tuple[str, list[str]]) -> str:
+    """Names the filter hid: they are indexed, so the spelling is not in doubt."""
+    label, hidden = filtered
+    shown = ", ".join(repr(c) for c in hidden[:3])
+    verb, them = ("is", "it") if len(hidden) == 1 else ("are", "them")
+    return f"{shown} {verb} indexed but not as {label}; drop that filter to see {them}."
+
+
+def _missing_note(missing: list[str], has_results: bool, grep_hint: str | None) -> str:
+    """Names no indexed symbol carries."""
+    shown = ", ".join(repr(c) for c in missing[:3])
+    # An empty window's grep_hint already carries the sweep advice.
+    pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
+    sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
+    return (
+        f"No indexed symbol is named {shown}, so no symbol is returned "
+        f"for it.{pages} Recheck the spelling, or search a shorter part "
+        f"of the name.{sweep}"
+    )
+
+
 def _exact_match_note(
     candidates: list[str],
     exact: bool,
@@ -349,30 +370,14 @@ def _exact_match_note(
 ) -> str | None:
     """The note qualifying an identifier query's results, if one is owed.
 
-    *filtered* is the call's filter and the named symbols it removed: those
-    are indexed, so the note says the filter hid them rather than doubt the
-    spelling.
+    *filtered* is the call's filter and the named symbols it removed.
     """
     hidden = filtered[1] if filtered else []
-    notes = []
-    if hidden:
-        shown = ", ".join(repr(c) for c in hidden[:3])
-        verb, them = ("is", "it") if len(hidden) == 1 else ("are", "them")
-        notes.append(
-            f"{shown} {verb} indexed but not as {filtered[0]}; drop that filter to see {them}."
-        )
-        candidates = [c for c in candidates if c not in hidden]
-        missing = [c for c in missing if c not in hidden]
+    notes = [_filter_note(filtered)] if filtered and hidden else []
+    candidates = [c for c in candidates if c not in hidden]
+    missing = [c for c in missing if c not in hidden]
     if missing:
-        shown = ", ".join(repr(c) for c in missing[:3])
-        # An empty window's grep_hint already carries the sweep advice.
-        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if has_results else ""
-        sweep = "" if (grep_hint and not has_results) else " " + EXHAUSTIVE_SWEEP_HINT
-        notes.append(
-            f"No indexed symbol is named {shown}, so no symbol is returned "
-            f"for it.{pages} Recheck the spelling, or search a shorter part "
-            f"of the name.{sweep}"
-        )
+        notes.append(_missing_note(missing, has_results, grep_hint))
     elif not exact and candidates:
         shown = ", ".join(repr(c) for c in candidates[:3])
         notes.append(
