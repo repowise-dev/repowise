@@ -260,3 +260,136 @@ def test_a_project_named_for_tests_runs_its_own_files_only(tmp_path: Path) -> No
         # The name vouches only for the project's own files, not a library it uses.
         "tests/Helpers/FakeClock.cs": None,
     }
+
+
+def test_explicit_is_test_project_false_wins_over_test_package_for_runner(tmp_path: Path) -> None:
+    """An explicit IsTestProject=false prevents the runner from treating it as a test project."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        "  <PropertyGroup>\n"
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {"src/Sample/SampleTests.cs": None}
+
+
+def test_conditioned_opt_out_does_not_override_test_package_for_runner(tmp_path: Path) -> None:
+    """A conditioned IsTestProject=false is ignored by the runner planner."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">\n'
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {
+        "src/Sample/SampleTests.cs": "src/Sample/Sample.csproj"
+    }
+
+
+def test_package_reference_update_and_package_version_recognized_by_runner(
+    tmp_path: Path,
+) -> None:
+    """PackageReference Update and PackageVersion are recognized by the runner."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        "  <ItemGroup>\n"
+        '    <PackageReference Update="xunit.v3" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {
+        "src/Sample/SampleTests.cs": "src/Sample/Sample.csproj"
+    }
+
+
+def test_shared_package_reference_update_does_not_declare_tests(tmp_path: Path) -> None:
+    """An Update in Directory.Build.props adds no reference, so it makes no project a test project."""
+    _build_props(tmp_path, "src", '<ItemGroup><PackageReference Update="xunit.v3" /></ItemGroup>')
+    _project(tmp_path, "src/Shop/Shop.csproj")
+    assert _targets(tmp_path, ["src/Shop/Cart.cs"]) == {"src/Shop/Cart.cs": None}
+
+
+def test_multi_target_conditioned_test_packages_run_tests(tmp_path: Path) -> None:
+    """A project's own per-TFM test packages still plan dotnet test."""
+    project = tmp_path / "src/Lib.Checks/Lib.Checks.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <ItemGroup Condition="\'$(TargetFramework)\' == \'net8.0\'">\n'
+        '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.0.0" />\n'
+        '    <PackageReference Include="xunit" Version="2.9.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Lib.Checks/Checks.cs"]) == {
+        "src/Lib.Checks/Checks.cs": "src/Lib.Checks/Lib.Checks.csproj"
+    }
+
+
+def test_parse_csproj_reads_each_property_and_reference_kind(tmp_path: Path) -> None:
+    """parse_csproj keeps reading every literal property, reference and condition rule."""
+    from repowise.core.ingestion.resolvers.dotnet.msbuild import parse_csproj
+
+    path = tmp_path / "Lib" / "Lib.csproj"
+    path.parent.mkdir()
+    path.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        "  <PropertyGroup>\n"
+        "    <RootNamespace>Acme.Lib</RootNamespace>\n"
+        "    <AssemblyName>Acme.Lib.Dll</AssemblyName>\n"
+        "    <PackageId>Acme.Lib.Pkg</PackageId>\n"
+        "    <ImplicitUsings>enable</ImplicitUsings>\n"
+        "    <IsPackable>false</IsPackable>\n"
+        "    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>\n"
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n"
+        "    <IsTestProject>true</IsTestProject>\n"
+        "    <Secret>x</Secret>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <ProjectReference Include="..\\Core\\Core.csproj" />\n'
+        '    <Compile Include="Extra\\A.cs;Gen\\*.cs" />\n'
+        '    <PackageReference Include="Newtonsoft.Json" />\n'
+        '    <PackageReference Update="xunit.v3" />\n'
+        '    <PackageReference Include="Cond" Condition="\'$(X)\' == \'1\'" />\n'
+        '    <Using Include="System.Linq" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    project = parse_csproj(path)
+    assert project is not None
+    assert (project.root_namespace, project.assembly_name, project.package_id) == (
+        "Acme.Lib",
+        "Acme.Lib.Dll",
+        "Acme.Lib.Pkg",
+    )
+    assert project.implicit_usings is True
+    assert project.is_packable is False
+    assert project.generate_package_on_build is True
+    assert project.is_test_project is False  # the conditioned true is ignored
+    assert "secret" not in project.properties
+    assert project.project_references == [(tmp_path / "Core" / "Core.csproj").resolve()]
+    assert project.compile_includes == ["Extra/A.cs"]
+    assert project.package_references == {"Newtonsoft.Json", "xunit.v3", "Cond"}
+    assert project.unconditional_package_references == {"Newtonsoft.Json"}
+    assert project.project_usings == {"System.Linq"}
