@@ -162,3 +162,42 @@ def test_a_renamed_managed_file_is_read_as_its_two_paths(tmp_path: Path) -> None
     git("mv", "opencode.json", "opencode.jsonc")
 
     assert generated_worktree_paths(str(tmp_path)) == ("/opencode.json", "/opencode.jsonc")
+
+
+@pytest.mark.parametrize(
+    ("path", "section"),
+    [
+        (".mcp.json", "mcpServers"),
+        (".cursor/mcp.json", "mcpServers"),
+        (".kiro/settings/mcp.json", "mcpServers"),
+        (".vscode/mcp.json", "servers"),
+        ("opencode.json", "mcp"),
+        ("opencode.jsonc", "mcp"),
+        (".codex/config.toml", "mcp_servers"),
+    ],
+)
+def test_server_entries_do_not_hide_user_keys(path: str, section: str) -> None:
+    def config(value: str) -> str:
+        if path.endswith(".toml"):
+            return f'[{section}.other.env]\nrepowise = "{value}"\n'
+        return json.dumps({section: {"other": {"env": {"repowise": value}}}})
+
+    assert not only_repowise_differs(path, config("old"), config("new"))
+    ours = (
+        f'[{section}.repowise]\ncommand = "repowise"\n'
+        if path.endswith(".toml")
+        else json.dumps({section: {"repowise": {"command": "repowise"}}})
+    )
+    assert only_repowise_differs(path, "", ours)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"repowise": "user value"},
+        {"custom": {"mcpServers": {"repowise": {"command": "user server"}}}},
+        {"mcpServers": {"other": {"mcpServers": {"repowise": "user value"}}}},
+    ],
+)
+def test_other_repowise_keys_are_user_content(document: dict) -> None:
+    assert not only_repowise_differs(".mcp.json", "", json.dumps(document))
