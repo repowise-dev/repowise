@@ -2563,3 +2563,27 @@ async def test_repo_all_on_a_single_repo_server_searches_that_repo(setup_mcp):
     one = await search_codebase("authentication service")
     assert every["results"] == one["results"]
     assert not [r for r in every["results"] if "repo" in r]
+
+
+def test_rows_beside_a_filtered_name_are_marked_as_other_symbols():
+    from repowise.server.mcp_server.tool_search.structured import _exact_match_note
+
+    filtered = ("kind=test", ["isLockStale"])
+    served = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, True, None, filtered)
+    assert "'isLockStale' is indexed but not as kind=test" in served
+    assert "fuzzy neighbours" in served
+    assert "No indexed symbol is named" not in served
+    empty = _exact_match_note(["isLockStale"], False, ["isLockStale"], 0, False, None, filtered)
+    assert "fuzzy neighbours" not in empty
+
+
+def test_a_name_served_from_the_spare_pool_is_not_called_filtered():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_search.structured import _filtered_names
+
+    plan = SimpleNamespace(kind="test", symbol_kind=None, names={"isLockStale"})
+    row = {"name": "isLockStale"}
+    assert _filtered_names(plan, SimpleNamespace(symbols=[], spare=[row]), ["isLockStale"]) is None
+    hidden = _filtered_names(plan, SimpleNamespace(symbols=[], spare=[]), ["isLockStale"])
+    assert hidden == ("kind=test", ["isLockStale"])

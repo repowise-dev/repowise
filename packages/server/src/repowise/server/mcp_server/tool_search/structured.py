@@ -374,11 +374,11 @@ def _exact_match_note(
     """
     hidden = filtered[1] if filtered else []
     notes = [_filter_note(filtered)] if filtered and hidden else []
-    candidates = [c for c in candidates if c not in hidden]
     missing = [c for c in missing if c not in hidden]
     if missing:
         notes.append(_missing_note(missing, has_results, grep_hint))
-    elif not exact and candidates:
+    # Rows served beside a hidden name are other symbols of the filtered kind.
+    elif not exact and candidates and (has_results or not hidden):
         shown = ", ".join(repr(c) for c in candidates[:3])
         notes.append(
             f"No indexed symbol exactly matches {shown}. The results are "
@@ -424,7 +424,9 @@ def _filtered_names(
     if not label or plan.names is None:
         return None
     hidden = [
-        c for c in candidates if c in plan.names and not _has_exact_symbol([c], pools.symbols)
+        c
+        for c in candidates
+        if c in plan.names and not _has_exact_symbol([c], pools.symbols + pools.spare)
     ]
     return (label, hidden) if hidden else None
 
