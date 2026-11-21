@@ -64,7 +64,7 @@ def without_evidence(view: dict[str, Any], ids: frozenset[str]) -> dict[str, Any
             by_tier[action["tier"]] = by_tier.get(action["tier"], 0) - 1
         horizons[name] = {
             **horizon,
-            "actions": [a for a in actions if a not in gone],
+            "actions": [a for a in actions if not ids.intersection(a.get("evidence_ids") or ())],
             "total": horizon.get("total", 0) - len(gone),
             "by_tier": {k: v for k, v in by_tier.items() if v > 0},
         }
