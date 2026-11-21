@@ -8,6 +8,8 @@ the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
 ``package main`` packages (:func:`~repowise.core.analysis.published_packages.go_main_packages`)
 and ``package.json`` ``bin`` files (:func:`~repowise.core.ingestion.always_run.own_code`).
+A Python web app's entry file that builds an ASGI app at module level is
+served under uvicorn, for the agent to drive with requests.
 Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchmark_function`
 accepts.
 
@@ -443,17 +445,37 @@ def _python_targets(
             continue
         run = f"sys.argv=['{module}']+sys.argv[1:];import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
         out.append(profiled("entry_point", f"python -m {module}", run))
+    for module, app in _asgi_apps(repo_root, root, roots, inputs.entry_files):
+        # uvicorn imports the app by name and serves it until Ctrl-C (or SIGTERM),
+        # then returns, so the profile is written as for any clean exit.
+        run = f"import uvicorn;uvicorn.run('{module}:{app}')"
+        server = launcher.replace("--with pyinstrument", "--with pyinstrument --with uvicorn")
+        workload, profile = _named(root, f"serve {module}:{app}", ".speedscope.json")
+        out.append({
+            **_target("entry_point", workload, cwd=cwd, command=_pyinstrument(server, _from(root, profile), run),
+                      profile=profile, commit=commit, input_format="speedscope",
+                      prerequisites=[*needs, *([f"{launcher} -m pip install uvicorn"] if needs else [])]),
+            "serves": True,
+        })
+        # Its ingest line stands; the reason keeps it from leading ``next_call``, as an
+        # entry point waiting for its arguments is kept.
+        out[-1]["reason"] = out[-1]["reason"] or _SERVE_REASON
     out = out[:PER_CLASS]
 
     if _declares_pytest_benchmark(repo_root, root):
         out.append(_pytest_benchmark(stack, repo_root, commit))
     if stack.test:
         # The paths the unit's coverage command runs (``tests/unit`` beside
-        # ``tests/integration``), so the profile never collects slower suites.
+        # ``tests/integration``), so the profile never collects slower suites,
+        # unless the arguments name a path of their own (``tests/api``, a node
+        # id; not an option's value, as in ``--ignore tests/slow``): then they
+        # pick what runs. The plugin keeps the failed count for
+        # the profile (``n``).
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
-        # The plugin keeps the failed count for the profile (``n``).
         run = (
-            f"import pytest;sys.exit(pytest.main({paths!r}+sys.argv[1:],plugins=[type('R',(),"
+            "a=sys.argv[1:];"
+            f"import pytest;sys.exit(pytest.main(([] if any(os.path.exists(x.split('::')[0]) and not (j and a[j-1][:1]=='-') for j,x in enumerate(a)) "
+            f"else {paths!r})+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
         # A launcher outside uv whose installs do not bring pytest installs it here.
@@ -463,6 +485,45 @@ def _python_targets(
         )
         out.append(profiled("unit_test", "python tests", run, extra))
     return out
+
+
+#: A module-level ASGI application: ``app = FastAPI(...)`` or ``Starlette(...)``, annotated or not.
+_ASGI_APP = re.compile(
+    r"(?m)^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:fastapi\.|starlette\.applications\.)?(?:FastAPI|Starlette)\s*\("
+)
+_SERVE_REASON = (
+    "Send the requests of a representative workload to the server while it runs (your client, a "
+    "load tool or the app's own scripts), then stop it with Ctrl-C; an idle server measures only "
+    "its startup."
+)
+
+
+def _asgi_apps(
+    repo_root: Path, root: str, roots: Collection[str], entry_files: Sequence[str]
+) -> list[tuple[str, str]]:
+    """``(module, app)`` for each stored entry file of the unit that builds an ASGI app at module level.
+
+    Read from disk; the entry-point flag already names a web app's ``main.py``,
+    ``app.py``, ``server.py`` and ``asgi.py``. Ceiling: an app made by a
+    factory function (``create_app()``) or under another framework is not
+    found, and the server's own settings (host, port, reload) are uvicorn's
+    defaults.
+    """
+    found: list[tuple[str, str]] = []
+    for path in entry_files:
+        rel = _owned(root, roots, path)
+        if rel is None or not rel.endswith(".py") or rel.endswith("/__main__.py"):
+            continue
+        module = rel.removeprefix("src/").removesuffix(".py").replace("/", ".")
+        if not _MODULE.fullmatch(module):
+            continue
+        try:
+            text = (repo_root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if (m := _ASGI_APP.search(text)) is not None:
+            found.append((module, m.group(1)))
+    return found[:PER_CLASS]
 
 
 def _pytest_benchmark(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:
@@ -655,11 +716,12 @@ def runtime_targets(
     unit's. A unit whose root a shell could misread gets none.
     """
     found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
-    return [_awaiting_args({k: v for k, v in t.items() if k not in _INTERNAL}) for t in found]
+    return [{k: v for k, v in _awaiting_args(t).items() if k not in _INTERNAL} for t in found]
 
 
-#: Target keys for the callers in this package, never printed.
-_INTERNAL = frozenset({"timed", "format"})
+#: Target keys for the callers in this package, never printed. ``serves``: a
+#: server, run with no arguments and driven by requests instead.
+_INTERNAL = frozenset({"timed", "format", "serves"})
 
 
 def offered_targets(
@@ -718,7 +780,7 @@ def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
     Its ingest line names the workload per arguments (``app <args>``), so an
     ``init`` run and an ``update`` run of one program never share a history.
     """
-    if target["class"] != "entry_point" or not target["command"]:
+    if target["class"] != "entry_point" or not target["command"] or target.get("serves"):
         return target
     ingest = target["ingest"]
     if ingest:
