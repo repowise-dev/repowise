@@ -69,6 +69,22 @@ class TestCargoWorkspaceIndex:
         ctx = _ctx(tmp_path, [])
         assert get_or_build_cargo_workspace_index(ctx) is None
 
+    def test_a_renamed_lib_is_found_by_its_lib_name(self, tmp_path: Path) -> None:
+        """``[lib] name`` is the import name Cargo uses (issue #5991)."""
+        _write_workspace(tmp_path, ["crates/core"])
+        crate_dir = tmp_path / "crates/core"
+        (crate_dir / "src").mkdir(parents=True)
+        (crate_dir / "src/lib.rs").write_text("pub mod engine;\n")
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "lev-core"\nversion = "0.1.0"\n\n'
+            '[lib]\nname = "leviathan"\npath = "src/lib.rs"\n'
+        )
+        ctx = _ctx(tmp_path, ["crates/core/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup("leviathan") == "crates/core/src"
+        assert idx.lookup("lev_core") == "crates/core/src"
+
 
 class TestCargoWorkspaceGlobExpansion:
     def test_glob_member_pattern(self, tmp_path: Path) -> None:
@@ -191,6 +207,44 @@ class TestRustWorkspaceResolution:
         ctx.parsed_files = {p: None for p in ctx.path_set}
         result = resolve_rust_import("serde::Serialize", "crates/foo/src/main.rs", ctx)
         assert result is not None and result.startswith("external:")
+
+    def test_root_crate_with_a_renamed_lib_resolves_its_own_use(self, tmp_path: Path) -> None:
+        """Issue #5991's repro: a single-crate manifest whose binary uses its lib."""
+        (tmp_path / "Cargo.toml").write_text(
+            '[package]\nname = "lev-core"\nversion = "0.1.0"\n\n'
+            '[lib]\nname = "leviathan"\npath = "src/lib.rs"\n'
+        )
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src/lib.rs").write_text("pub mod engine;\n")
+        (tmp_path / "src/engine.rs").write_text("pub fn start() {}\n")
+        (tmp_path / "src/main.rs").write_text("use leviathan::engine::start;\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/engine.rs", "src/main.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("leviathan::engine::start", "src/main.rs", ctx)
+        assert result == "src/engine.rs"
+
+    def test_member_crate_with_a_renamed_lib_resolves_from_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        _write_workspace(tmp_path, ["crates/app", "crates/core"])
+        _write_member_crate(tmp_path, "crates/app", "app")
+        core = tmp_path / "crates/core"
+        (core / "src").mkdir(parents=True)
+        (core / "src/lib.rs").write_text("pub mod engine;\n")
+        (core / "src/engine.rs").write_text("pub fn start() {}\n")
+        (core / "Cargo.toml").write_text(
+            '[package]\nname = "lev-core"\nversion = "0.1.0"\n\n[lib]\nname = "leviathan"\n'
+        )
+        ctx = _ctx(tmp_path, [
+            "crates/app/src/lib.rs",
+            "crates/app/src/main.rs",
+            "crates/core/src/lib.rs",
+            "crates/core/src/engine.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("leviathan::engine::start", "crates/app/src/main.rs", ctx)
+        assert result == "crates/core/src/engine.rs"
 
     def test_no_workspace_unaffected(self, tmp_path: Path) -> None:
         # Single-crate Cargo.toml without [workspace] — existing path still wins
