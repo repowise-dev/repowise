@@ -879,10 +879,15 @@ def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
     assert f"4.50s  {slowest['test_id']}" in table.stdout
 
 
-def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(indexed) -> None:
+@pytest.mark.parametrize("elsewhere", [False, True])
+def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
+    indexed, tmp_path_factory: pytest.TempPathFactory, elsewhere: bool
+) -> None:
     from repowise.core.persistence.models import EvidenceTestTiming
 
     root, head = indexed
+    # The run may come from another checkout of the repository (--checkout-root).
+    checkout = tmp_path_factory.mktemp("checkout") if elsewhere else root
 
     async def index_test_file() -> None:
         engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
@@ -895,14 +900,15 @@ def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(indexed) -
 
     asyncio.run(index_test_file())
     # Vitest ran in web/ and names its files from there.
-    (root / "web").mkdir()
-    (root / "web" / "junit.xml").write_text(
+    (checkout / "web").mkdir()
+    (checkout / "web" / "junit.xml").write_text(
         '<testsuites><testsuite name="src/cart.test.ts">'
         '<testcase classname="src/cart.test.ts" name="cart &gt; adds" time="0.5"/></testsuite></testsuites>'
     )
 
-    result = _add(str(root / "web" / "junit.xml"), "--workload", "web: vitest tests", "--class",
-                  "unit_test", "--commit", head)
+    where = ["--checkout-root", str(checkout)] if elsewhere else []
+    result = _add(str(checkout / "web" / "junit.xml"), "--workload", "web: vitest tests", "--class",
+                  "unit_test", "--commit", head, *where)
 
     assert result.exit_code == 0, result.output
 
