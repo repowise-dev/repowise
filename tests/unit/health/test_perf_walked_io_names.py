@@ -36,3 +36,13 @@ def test_a_file_the_walk_found_no_functions_in_collects_its_own() -> None:
     fcx = walk_file("a.py", "python", b"import requests\n")
 
     assert walked_io_names(fcx) is None
+
+
+def test_every_perf_dialect_runs_the_walks_perf_pass() -> None:
+    # A dialect whose language map has no call kinds would skip the walk's perf
+    # pass and leave an empty map that the passes would read as "no I/O imports".
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.analysis.health.complexity.perf_walk import perf_pass_runs
+    from repowise.core.analysis.health.perf.dialects import PERF_DIALECTS
+
+    assert all(perf_pass_runs(lang, get_language_map(lang)) for lang in PERF_DIALECTS)
