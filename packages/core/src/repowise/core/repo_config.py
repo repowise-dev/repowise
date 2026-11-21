@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import sys
@@ -145,32 +144,20 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     bytes intact rather than a truncated config, which every reader would take
     for "no provider, no coverage settings, defaults everywhere".
     """
-    import os
-    import tempfile
 
     import yaml  # type: ignore[import-untyped]
 
-    from repowise.core.fsutils import replace_with_retry
+    from repowise.core.fsutils import atomic_write_text
 
     cfg_dir = get_repowise_dir(repo_path)
     cfg_dir.mkdir(parents=True, exist_ok=True)
     target = cfg_dir / CONFIG_FILENAME
     payload = yaml.dump(config, default_flow_style=False, sort_keys=False)
 
-    fd, tmp_name = tempfile.mkstemp(dir=str(cfg_dir), prefix=".config.", suffix=".tmp")
-    try:
-        # No explicit newline: the previous writer used the platform default,
-        # and config_fingerprint hashes raw bytes, so pinning LF here would
-        # move the fingerprint of every existing Windows config on first save.
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        replace_with_retry(tmp_name, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+    # No explicit newline: the previous writer used the platform default,
+    # and config_fingerprint hashes raw bytes, so pinning LF here would
+    # move the fingerprint of every existing Windows config on first save.
+    atomic_write_text(target, payload, fsync=True)
     # Drop the resolver's parsed copy. Looked up, not imported: when the
     # resolver was never loaded there is no cache, and importing it here would
     # pull the provider stack into every config write.
