@@ -463,6 +463,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "function_signature": "function",
             "getter_signature": "function",
             "setter_signature": "function",
+            "constructor_signature": "method",
+            "factory_constructor_signature": "method",
+            "constant_constructor_signature": "method",
             "type_alias": "type_alias",
         },
         import_node_types=[

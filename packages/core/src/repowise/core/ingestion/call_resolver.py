@@ -1647,6 +1647,18 @@ class CallResolver(
             return None
         if symbol.kind in _TYPE_KINDS:
             return symbol.name
+        if (
+            language == "dart"
+            and symbol.kind == "method"
+            and symbol.parent_name is not None
+            and (
+                symbol.name == symbol.parent_name
+                or symbol.name.startswith(f"{symbol.parent_name}.")
+            )
+        ):
+            # A Dart constructor (``A`` / ``A.named``) yields an instance of
+            # its enclosing class, so a chained member call lands on the class.
+            return symbol.parent_name
 
         raw_return = declared_return_type(symbol.signature or "")
         type_name = normalize_return_type(raw_return, language) if raw_return else None
