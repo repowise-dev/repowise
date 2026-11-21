@@ -50,7 +50,7 @@ def _resolve_nested_subpackage(dir_posix: str, sub: str, ctx: ResolverContext) -
     for target in targets or ():
         if target.endswith(_DECLARATION_SUFFIXES):
             continue
-        cand = _probe_path(f"{sub_dir}/{target.lstrip('./')}", ctx.path_set)
+        cand = _probe_path(f"{sub_dir}/{target.removeprefix('./')}", ctx.path_set)
         if cand is not None:
             return cand
 
@@ -59,7 +59,7 @@ def _resolve_nested_subpackage(dir_posix: str, sub: str, ctx: ResolverContext) -
         return cand
     main = _entry_hint(sub_pkg_data)
     if isinstance(main, str):
-        cand = _probe_path(f"{sub_dir}/{main.lstrip('./')}", ctx.path_set)
+        cand = _probe_path(f"{sub_dir}/{main.removeprefix('./')}", ctx.path_set)
         if cand is not None:
             return cand
     for source_root in ("src", "lib"):
@@ -130,14 +130,14 @@ class _WorkspaceProbe:
         return _probe_path(f"{self.dir_posix}/{rel}", self.ctx.path_set)
 
     def probe_target(self, target: str) -> str | None:
-        return self.probe(target.lstrip("./"))
+        return self.probe(target.removeprefix("./"))
 
     def index_entry(self) -> str | None:
         return self.probe("index")
 
     def main_entry(self) -> str | None:
         main = self.pkg.get("main")
-        return self.probe(main.lstrip("./")) if isinstance(main, str) else None
+        return self.probe(main.removeprefix("./")) if isinstance(main, str) else None
 
     def source_root_index(self) -> str | None:
         for source_root in ("src", "lib"):

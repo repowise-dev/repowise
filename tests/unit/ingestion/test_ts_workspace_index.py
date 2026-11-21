@@ -108,6 +108,23 @@ class TestExportsWildcardEntries:
         index = build_ts_workspace_index(ctx)
         assert "root" in index.packages
 
+    def test_dot_directory_export_and_wildcard_targets_added(self, tmp_path: Path) -> None:
+        _write(tmp_path, "package.json", '{"workspaces":["packages/*"]}')
+        _write(
+            tmp_path,
+            "packages/gen/package.json",
+            '{"name":"@acme/gen","exports":{"./util":"./.generated/util.js","./all/*":"./.generated/*.js"}}',
+        )
+        _write(tmp_path, "packages/gen/.generated/util.js", "export const u = 1;\n")
+        _write(tmp_path, "packages/gen/.generated/extra.js", "export const e = 2;\n")
+        ctx = _ctx(
+            tmp_path,
+            ["packages/gen/.generated/util.js", "packages/gen/.generated/extra.js"],
+        )
+        index = build_ts_workspace_index(ctx)
+        assert "packages/gen/.generated/util.js" in index.exports_entry_paths
+        assert "packages/gen/.generated/extra.js" in index.exports_entry_paths
+
 
 class TestVitestIncludeScanner:
     def test_runtime_tests_glob_matches(self, tmp_path: Path) -> None:
@@ -264,6 +281,26 @@ class TestNpmScriptEntryScanner:
         ctx = _ctx(tmp_path, [])
         # No source files referenced — empty set, no crashes from ``-`` tokens.
         assert find_npm_script_entry_targets(ctx) == set()
+
+    def test_dot_directory_source_and_glob_tokens_resolve(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "package.json",
+            '{"scripts":{"gen":"node .scripts/gen.mjs","story":"prettier \\".storybook/**/*.ts\\""}}',
+        )
+        _write(tmp_path, ".scripts/gen.mjs", "")
+        _write(tmp_path, ".storybook/main.ts", "")
+        _write(tmp_path, ".storybook/addons/theme.ts", "")
+        ctx = _ctx(
+            tmp_path,
+            [".scripts/gen.mjs", ".storybook/main.ts", ".storybook/addons/theme.ts"],
+        )
+        targets = find_npm_script_entry_targets(ctx)
+        assert targets == {
+            ".scripts/gen.mjs",
+            ".storybook/main.ts",
+            ".storybook/addons/theme.ts",
+        }
 
 
 class TestGrafanaPluginEntries:
