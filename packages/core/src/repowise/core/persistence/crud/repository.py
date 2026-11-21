@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -92,7 +93,8 @@ async def upsert_repository(
     repo = result.scalar_one_or_none()
     relocated = False
     if repo is None:
-        repo = await _relocated_row(session, local_path)
+        # A write must not split the store when git cannot answer.
+        repo = await _relocated_row(session, local_path, adopt_undecided=True)
         relocated = repo is not None
 
     stamping = repo is None or stamp_head or head_commit is not None
@@ -254,24 +256,50 @@ def _store_dir(session: AsyncSession) -> Path | None:
     return db_file.parent.parent
 
 
-async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
+#: ``(store dir, row id, checkout path, checkout HEAD)`` whose row git said is
+#: another repo's, with when git said so. A miss on every path-keyed read does
+#: not rerun the git checks; a new HEAD or a re-indexed store misses the entry,
+#: and an entry older than _REJECTION_TTL_S is checked again, since a fetch can
+#: bring the indexed commit in without moving HEAD.
+_REJECTED_ROWS: dict[tuple[str, str, str, str], float] = {}
+_REJECTION_TTL_S = 60.0
+
+
+async def _relocated_row(
+    session: AsyncSession, local_path: str, *, adopt_undecided: bool = False
+) -> Repository | None:
     """The single row of ``local_path``'s own store, re-pointed at ``local_path``.
 
     A repo moved, renamed or copied together with its ``.repowise`` keeps the
     old ``local_path`` in its row. Adding a second row there split the index:
     servers resolving "the" repository picked the stale one. Only a store that
     lives in ``local_path`` and holds exactly one row is re-pointed, and only
-    when that row is this checkout's: the old directory is gone, or it shares
-    the remote url or the indexed commit. Any other store (a configured or
-    shared database, a server registry) keeps one row per path.
+    when that row is this checkout's (see :func:`_same_checkout`). Any other
+    store (a configured or shared database, a server registry) keeps one row
+    per path. When git could not run, ``adopt_undecided`` decides: a write
+    (``upsert_repository``) adopts instead of adding a second row, a read
+    reports the repo unindexed for that call and asks again next time.
     """
     store_dir = _store_dir(session)
     if store_dir is None or not _same_dir(store_dir, local_path):
         return None
     rows = (await session.scalars(select(Repository).limit(2))).all()
-    if len(rows) != 1 or not await asyncio.to_thread(_same_checkout, rows[0], local_path):
+    if len(rows) != 1:
         return None
     repo = rows[0]
+    # The checkout's HEAD is in the key: a pull or checkout that brings the
+    # indexed commit in moves it, and the row is checked again.
+    key = (str(store_dir), repo.id, local_path, _read_head_commit(local_path) or "")
+    rejected_at = _REJECTED_ROWS.get(key)
+    if rejected_at is not None and time.monotonic() - rejected_at < _REJECTION_TTL_S:
+        return None
+    same = await asyncio.to_thread(_same_checkout, repo, local_path)
+    if same is False:
+        # Only git's own answer is remembered; a failed git call is retried.
+        _REJECTED_ROWS[key] = time.monotonic()
+        return None
+    if same is None and not adopt_undecided:
+        return None
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path
     return repo
@@ -291,27 +319,35 @@ async def _adopt_savings_ledger(session: AsyncSession, local_path: str) -> None:
     await asyncio.to_thread(relocate_ledger, local_path)
 
 
-def _same_checkout(repo: Repository, local_path: str) -> bool:
-    """Whether *repo*'s row describes the checkout at *local_path*."""
-    old = repo.local_path or ""
-    if not old or not Path(old).exists():
-        return True
+def _same_checkout(repo: Repository, local_path: str) -> bool | None:
+    """Whether *repo*'s row describes the checkout at *local_path*, None when git failed.
+
+    Called only for the single row of *local_path*'s own store, so the row is
+    this checkout's unless git says otherwise: when the row names an indexed
+    commit and *local_path* is a git checkout, they must share that commit,
+    the remote url, or history (the indexed commit is reachable here). Where
+    the old directory sits plays no part: an index built on another machine
+    names a path that never exists here, and an unrelated repo's index copied
+    in is still another repo.
+    """
     head = repo.head_commit
-    if head and head == _read_head_commit(local_path):
+    current = _read_head_commit(local_path)
+    if not head or not current or head == current:
         return True
     remote = read_remote_url(local_path)
     if repo.url and remote and strip_credentials(remote) == repo.url:
         return True
-    return bool(head) and _has_commit(local_path, head)
+    return _has_commit(local_path, head)
 
 
-def _has_commit(local_path: str, sha: str) -> bool:
+def _has_commit(local_path: str, sha: str) -> bool | None:
+    """Whether *sha* is a commit in *local_path*, or None when git could not run."""
     from ...analysis.git_cli import run_git
 
     try:
         return run_git(["cat-file", "-e", f"{sha}^{{commit}}"], cwd=local_path).returncode == 0
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
 
 
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
@@ -384,55 +420,64 @@ async def get_repository(session: AsyncSession, repo_id: str) -> Repository | No
 
 
 async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repository | None:
-    """Return a Repository by local_path, or None."""
+    """Return the Repository at *local_path*, or None.
+
+    A row whose ``local_path`` equals *local_path* wins. On a miss, the single
+    row of *local_path*'s own store is adopted when it is this checkout's (see
+    :func:`_relocated_row`): an index built in one directory and moved or
+    copied to another (another machine, a renamed folder) still names the old
+    path, and every reader keyed on the path would call the repo unindexed.
+    The row is re-pointed at *local_path* and its repo-level pages re-keyed to
+    the folder name there (#5366), once, so later lookups hit the exact path.
+    A configured or shared store, a store with two or more rows, or a row from
+    another repo is never adopted.
+    """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
-    return result.scalar_one_or_none()
+    repo = result.scalar_one_or_none()
+    if repo is not None:
+        return repo
+    return await _adopt_relocated_row(session, local_path)
+
+
+async def _adopt_relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
+    """Re-point and return the store's only row when it is *local_path*'s, else None.
+
+    Runs inside a savepoint: a read-only caller (the MCP server, status,
+    doctor) that cannot write, say because an update holds the lock, gets
+    ``None`` as before the store was moved, never a storage error or a
+    half-done move. The savings ledger follows only after the row moved.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        async with session.begin_nested():
+            repo = await _relocated_row(session, local_path)
+            if repo is None:
+                return None
+            old_name, new_name = repo.name, Path(local_path).name
+            if old_name != new_name:
+                # The folder the repo-level page ids are built from moved with
+                # the store; re-key now, before the exact-path lookup stops
+                # missing and the name change becomes invisible (#5366).
+                await rekey_repo_level_pages(
+                    session, repository_id=repo.id, old_name=old_name, new_name=new_name
+                )
+                repo.name = new_name
+    except (SQLAlchemyError, OSError) as exc:
+        _log.debug("Could not adopt the moved index's row for %s: %s", local_path, exc)
+        return None
+    await _adopt_savings_ledger(session, local_path)
+    return repo
 
 
 async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repository | None:
     """Return the repository row for *local_path*, adopting a moved store's only row.
 
-    A copied or moved checkout carries its repo-local store with it, and that
-    store still names the old ``local_path``. Matching by exact path alone
-    would miss it, and :func:`upsert_repository` would then insert a second
-    row, after which no single-row rule can tell which row is the served one.
-
-    Resolution, which is the same rule the CLI read side applies in
-    ``repo_index_session``:
-
-    1. A row whose ``local_path`` equals *local_path* is returned as is.
-    2. Otherwise, in a repo-local store (no configured ``REPOWISE_DB_URL``)
-       holding exactly one row, that row is the moved repository: its
-       ``local_path`` is rewritten to *local_path*, its repo-level pages are
-       re-keyed to the folder name there (see
-       :func:`rekey_repo_level_pages`, #5366) and it is returned.
-    3. Anything else returns ``None``. A configured or shared store, or a
-       store with two or more rows, never infers identity from a path miss.
+    Kept for the update path, which adopts before it writes so
+    :func:`upsert_repository` never inserts a second row. The rule lives in
+    :func:`get_repository_by_path`, which every reader shares.
     """
-    from ..database import get_configured_db_url
-
-    repo = await get_repository_by_path(session, local_path)
-    if repo is not None:
-        return repo
-    if get_configured_db_url() is not None:
-        return None
-    rows = (await session.scalars(select(Repository).limit(2))).all()
-    if len(rows) != 1:
-        return None
-    repo = rows[0]
-    new_name = Path(local_path).name
-    if repo.name != new_name:
-        # The folder the repo-level page ids are built from moved with the
-        # store; re-key now, before any exact-path lookup stops missing and
-        # the name change becomes invisible (#5366).
-        await rekey_repo_level_pages(
-            session, repository_id=repo.id, old_name=repo.name, new_name=new_name
-        )
-    repo.local_path = local_path
-    repo.updated_at = _now_utc()
-    await _adopt_savings_ledger(session, local_path)
-    await session.flush()
-    return repo
+    return await get_repository_by_path(session, local_path)
 
 
 async def adopt_moved_repository_best_effort(root: Path) -> bool:
@@ -462,9 +507,10 @@ async def adopt_moved_repository_best_effort(root: Path) -> bool:
     try:
         engine = create_engine(resolve_db_url(root))
         async with get_session(create_session_factory(engine)) as session:
-            if await get_repository_by_path(session, str(root)) is not None:
+            exact = select(Repository.id).where(Repository.local_path == str(root))
+            if (await session.execute(exact)).first() is not None:
                 return False
-            return await adopt_moved_repository(session, str(root)) is not None
+            return await _adopt_relocated_row(session, str(root)) is not None
     except (SQLAlchemyError, OSError):
         return False
     finally:
