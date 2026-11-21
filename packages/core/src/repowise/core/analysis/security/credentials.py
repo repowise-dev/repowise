@@ -92,8 +92,9 @@ def _is_own_name_value(value: str, name: str) -> bool:
     """Whether a letter-only constant holds its own name or a suffix of it."""
     if not _OWN_NAME_VALUE.fullmatch(value):
         return False
-    normalized_name = re.sub(r"[_$-]", "", name).lower()
-    normalized_value = re.sub(r"[_$-]", "", value).lower()
+    # ``$`` is kept: ``pass$word`` is not the name ``password``.
+    normalized_name = re.sub(r"[_-]", "", name).lower()
+    normalized_value = re.sub(r"[_-]", "", value).lower()
     return bool(normalized_name) and normalized_name.endswith(normalized_value)
 
 

@@ -1261,6 +1261,15 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" in self._kinds(f'const $api_key = "{value}";\n', "a.js")
 
     @pytest.mark.parametrize(
+        ("source", "path"),
+        [('password = "pass$word"\n', "config.py"), ('$password = "pass$word";\n', "config.php")],
+    )
+    def test_a_dollar_inside_a_password_does_not_make_it_the_name(
+        self, source: str, path: str
+    ) -> None:
+        assert "hardcoded_password" in self._kinds(source, path)
+
+    @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
     )
