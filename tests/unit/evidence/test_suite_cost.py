@@ -111,7 +111,7 @@ async def test_a_file_every_timed_test_runs_is_counted_not_listed(session) -> No
     # Test setup imports src/config.py: every timed test runs it, so its sum is the whole
     # suite's time, which would lead the list and say nothing of the file.
     repo = await insert_repo(session)
-    await _timings(session, repo.id, [_t(SLOW, 3.0), _t(FAST, 0.5)])
+    await _timings(session, repo.id, [_t(SLOW, 3.0), _t(FAST, 0.5), _t(OTHER, 1.0)])
     await save_test_coverage(
         session,
         repo.id,
@@ -120,6 +120,8 @@ async def test_a_file_every_timed_test_runs_is_counted_not_listed(session) -> No
             TestCoverage(FAST, "src/config.py", [1], test_file="tests/test_app.py"),
             TestCoverage(SLOW, "src/app.py", [1], test_file="tests/test_app.py"),
             TestCoverage(FAST, "src/util.py", [1], test_file="tests/test_app.py"),
+            # A timed test that runs only a test helper does not keep config.py listed.
+            TestCoverage(OTHER, "tests/conftest.py", [1], test_file="tests/test_app.py"),
         ],
         source_format="coverage.py",
     )
