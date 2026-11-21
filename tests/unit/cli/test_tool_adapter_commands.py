@@ -256,7 +256,7 @@ def _spy_run(payload: dict, calls: list):
     rather than awaited — running it would need a database.
     """
 
-    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
         coro = factory()
         calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
@@ -1178,7 +1178,7 @@ def _workspace(tmp_path):
 def _workspace_roots(monkeypatch, args):
     seen: list = []
 
-    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
         factory().close()
         seen.append((repo_path, workspace_root))
         return {"answer": "x", "_meta": {}}
@@ -1243,7 +1243,7 @@ WHY_POINTER_ONLY_PAYLOAD = {
 def _sequence_run(payloads: list[dict], calls: list):
     """``_spy_run`` over several calls, answering each with the next payload."""
 
-    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
         coro = factory()
         calls.append(coro.cr_frame.f_locals["include"])
         coro.close()
