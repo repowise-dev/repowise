@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
-from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS, shown_snippet
 from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -183,11 +183,15 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [
-            {"kind": r[0], "severity": r[1], "snippet": r[2]}
-            for r in rows.all()
-            if r[0] not in SYMBOL_NAME_KINDS
-        ]
+        signals = []
+        for kind, severity, snippet in rows.all():
+            if kind in SYMBOL_NAME_KINDS:
+                continue
+            signal = {"kind": kind, "severity": severity}
+            if shown := shown_snippet(kind, snippet):
+                signal["snippet"] = shown
+            signals.append(signal)
+        return signals
     except Exception:
         return []
 
@@ -464,7 +468,8 @@ async def _assess_one_target(
     Enriches each result with:
     - test_gap: bool, True when nothing shows a test reaches this file
       (``pr_blast.untested_files``: coverage, the reach walk, or a test named for it).
-    - security_signals: list of {kind, severity, snippet} from security_findings.
+    - security_signals: list of {kind, severity, snippet} from security_findings;
+      a secret has no snippet.
     """
     repo_id = repository.id
     repo_root = served_root(repository, repo_root)
