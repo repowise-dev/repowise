@@ -520,9 +520,9 @@ coverage map (`repowise coverage add` with per-test contexts) names the timed
 tests, and `inferred` from each function's nearest tests on the call graph
 otherwise.
 Only production files are listed; files of other origins run by timed tests are
-counted under `not_production`. A production file every timed test runs (one
-the test setup imports) would show the whole timed suite, so it is counted
-under `every_test` instead of listed, unless no other file is. With nothing stored, `status` is
+counted under `not_production`. A production file run by every timed test that
+reaches production code (one the test setup imports) would show all of their time,
+so it is counted under `every_test` instead of listed, unless no other file is. With nothing stored, `status` is
 `no_test_timings` and `command` is `repowise evidence setup`, which prints how
 each unit's tests write JUnit XML. Timing orders tests and files; it never
 gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.

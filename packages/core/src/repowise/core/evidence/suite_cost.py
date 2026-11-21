@@ -10,9 +10,9 @@ Test time per file is the summed duration of the timed tests that run it.
 file (``test_coverage_sources``); ``inferred`` from each function's nearest tests
 on the call graph (``function_facts.tests_json``) without it. Only production
 files (:mod:`repowise.core.code_origin`) are listed; others are counted. A file
-that every timed test runs (a module the test setup imports) would show the
-whole timed suite, which says nothing of that file: it is counted, not listed,
-unless every listed file is one.
+that every timed test reaching production code runs (a module the test setup
+imports) would show those tests' whole time, which says nothing of that file: it
+is counted, not listed, unless every listed file is one.
 Timing orders tests and files, it never gates anything.
 """
 

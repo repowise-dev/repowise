@@ -890,4 +890,4 @@ def test_tests_says_how_many_files_every_timed_test_runs() -> None:
 
     text = " ".join(evidence_cmd._tests_lines(payload))
 
-    assert "src/app.py" in text and "3 more run in every timed test" in text
+    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text

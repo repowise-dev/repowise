@@ -832,7 +832,7 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
         )
     if costs["every_test"]:
         lines.append(
-            f"[dim]{costs['every_test']:,} more run in every timed test (the test setup imports them), "
-            "so their time is the whole suite's; not listed.[/dim]"
+            f"[dim]{costs['every_test']:,} more run in every timed test that reaches production code "
+            "(the test setup imports them), so their time is all of those tests'; not listed.[/dim]"
         )
     return lines
