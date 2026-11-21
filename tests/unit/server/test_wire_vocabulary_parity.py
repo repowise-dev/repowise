@@ -194,6 +194,12 @@ def test_performance_cost_proofs_match_python() -> None:
     assert _union_members("PerformanceCostProof", "health.ts") == set(QUEUE_PROOFS)
 
 
+def test_performance_static_costs_match_python() -> None:
+    from repowise.core.analysis.health.worth import STATIC_COSTS
+
+    assert _union_members("PerformanceStaticCost", "health.ts") == set(STATIC_COSTS)
+
+
 def test_performance_execution_roles_match_python() -> None:
     from repowise.core.analysis.execution_roles import EXECUTION_ROLES
 

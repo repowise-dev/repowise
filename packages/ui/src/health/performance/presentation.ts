@@ -7,6 +7,7 @@ import {
   type PerformanceOpportunity,
   type PerformanceOpportunityConfidence,
   type PerformanceOpportunitySibling,
+  type PerformanceStaticCost,
   type PerformanceWhyRanked,
 } from "@repowise-dev/types/health";
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
@@ -76,16 +77,26 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   actionability: "Actionability",
   plan_state: "Plan",
   proof: "Cost",
+  static_cost: "Loop size",
   role: "Runs in",
 };
 
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
-  // Static: the code shows how the cost scales (a loop that grows with data or
-  // is bounded, a per-call cost, or a shape that grows by itself). Nothing
-  // timed it, so this never says "measured".
-  proven: "Loop size known",
+  // The code shows how the cost scales, or a run measured it; the static part
+  // alone is the "Loop size" facet (STATIC_COST_LABEL).
+  proven: "Loop size known or measured",
   unproven: "Unproven: loop size unknown",
   background_unproven: "Unproven: scheduled job, growth not shown",
+};
+
+// What the code alone shows. Nothing timed it, so none of these says "measured".
+const STATIC_COST_LABEL: Record<PerformanceStaticCost, string> = {
+  grows_with_data: "Grows with the data",
+  grows_by_shape: "Grows by its shape",
+  per_call_reached: "Per call, entry point reaches it",
+  per_call_unreached: "Per call, no entry point reaches it",
+  bounded: "Bounded",
+  size_unknown: "Unknown in the code",
 };
 
 // "Stored plan", not "Plan ready": that name belongs to the actionability
@@ -207,6 +218,8 @@ export function facetValueLabel(facet: PerformanceFacetKey, value: string): stri
   if (facet === "actionability")
     return ACTIONABILITY_LABEL[value as PerformanceActionabilityState] ?? humanizeToken(value);
   if (facet === "proof") return PROOF_LABEL[value as PerformanceCostProof] ?? humanizeToken(value);
+  if (facet === "static_cost")
+    return STATIC_COST_LABEL[value as PerformanceStaticCost] ?? humanizeToken(value);
   if (facet === "role") return humanizeToken(value);
   return PLAN_STATE_LABEL[value] ?? humanizeToken(value);
 }
