@@ -96,16 +96,15 @@ _generate_counts: dict[str, asyncio.Task[int | None]] = {}
 async def _count_generate_calls(factory: Any, repo_id: str, repo_path: str) -> int | None:
     from repowise.core.generation.scope import generate_model_calls
 
+    deadline = asyncio.timeout(_COUNT_CEILING_S)
     try:
-        async with get_session(factory) as session:
-            calls = await asyncio.wait_for(
-                generate_model_calls(session, repo_id, repo_path), _COUNT_CEILING_S
-            )
-    except TimeoutError:
-        # Close the session and retain the completed task, so a stuck count is not retried.
-        logger.debug("providers: generate call count gave up after %ss", _COUNT_CEILING_S)
-        return None
-    except Exception:
+        async with get_session(factory) as session, deadline:
+            calls = await generate_model_calls(session, repo_id, repo_path)
+    except Exception as exc:
+        if isinstance(exc, TimeoutError) and deadline.expired():
+            # Retain the completed task only when this count hit its own ceiling.
+            logger.debug("providers: generate call count gave up after %ss", _COUNT_CEILING_S)
+            return None
         logger.warning(
             "providers: could not count generate's calls for %s", repo_id, exc_info=True
         )

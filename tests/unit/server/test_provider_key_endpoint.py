@@ -395,7 +395,10 @@ async def test_stuck_plan_count_releases_session_and_is_not_repeated(
     assert started == ["r1"]
 
 
-async def test_failed_plan_count_retries_and_caches_zero(plan_route_env, monkeypatch) -> None:
+@pytest.mark.parametrize("failure", [ValueError, TimeoutError])
+async def test_failed_plan_count_retries_and_caches_zero(
+    plan_route_env, monkeypatch, failure
+) -> None:
     from repowise.core.generation import scope
 
     providers, request, _closed = plan_route_env
@@ -404,7 +407,7 @@ async def test_failed_plan_count_retries_and_caches_zero(plan_route_env, monkeyp
     async def count(_session, repo_id, _path):
         started.append(repo_id)
         if len(started) == 1:
-            raise ValueError("synthetic count failure")
+            raise failure("synthetic count failure")
         return 0
 
     monkeypatch.setattr(scope, "generate_model_calls", count)
