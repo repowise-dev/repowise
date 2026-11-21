@@ -140,8 +140,10 @@ def migrate_codex_rewrite_hook() -> bool:
 
 
 def _codex_hooks_path() -> Path:
-    """The user-level Codex hooks file (~/.codex/hooks.json)."""
-    return Path.home() / ".codex" / "hooks.json"
+    """The user-level Codex hooks file (``$CODEX_HOME/hooks.json``)."""
+    from repowise.core.sessions.adapters.codex import codex_home
+
+    return codex_home() / "hooks.json"
 
 
 # ---------------------------------------------------------------------------

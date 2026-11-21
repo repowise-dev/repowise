@@ -135,7 +135,7 @@ def user_prompts_dir() -> Path:
     Global and flat. It is shared with every other tool the user has installed,
     which is why every file we put there is prefixed ``repowise-``.
     """
-    return Path.home() / ".codex" / "prompts"
+    return user_hooks_path().parent / "prompts"
 
 
 # ---------------------------------------------------------------------------
@@ -1110,7 +1110,7 @@ class CodexTarget:
         answer: the setup path warns when it writes config for a CLI that is
         installed and signed out.
         """
-        return IDENTITY.is_installed() or (Path.home() / ".codex").is_dir()
+        return IDENTITY.is_installed() or user_hooks_path().parent.is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
