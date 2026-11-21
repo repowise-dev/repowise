@@ -373,14 +373,34 @@ _KOTLIN_HEAD = re.compile(
 )
 # A C or Java declaration led by its type: ``static int parse(``, ``public
 # List<Foo> items =``, ``char *name;``. The name follows the type; a line led
-# by a statement keyword (``return f(x);``) declares nothing.
+# by a statement keyword (``return f(x);``) declares nothing. Two words alone
+# (``if f(x):``, ``cd dir;``) are a declaration only where the first reads as
+# a type: see ``_reads_as_type``.
 _TYPED_HEAD = re.compile(
-    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS}|const)\s+)*(?:<[^>]*>\s*)?"
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?P<mods>(?:(?:{_MODIFIERS}|const)\s+)*)(?:<[^>]*>\s*)?"
     r"(?!(?:return|new|else|throw|case|goto|delete|await|yield|sizeof|typeof|package|import"
     r"|go|defer|raise|assert|del|not|and|or|in|is|print|puts|echo|then|do)\b)"
-    r"[A-Za-z_][\w.]*(?:\s*<[^;=(){}]*>)?(?:\s*\[\s*\])*[\s*&]+"
+    r"(?P<type>[A-Za-z_][\w.]*)(?P<shape>(?:\s*<[^;=(){}]*>)?(?:\s*\[\s*\])*[\s*&]+)"
     r"(?P<names>[A-Za-z_]\w*)\s*(?=[(=;,\[])"
 )
+_C_TYPE_WORDS = frozenset(
+    {"void", "int", "char", "long", "short", "float", "double", "bool", "boolean", "byte",
+     "signed", "unsigned", "auto", "var", "string", "size_t"}
+)
+
+
+def _reads_as_type(head: re.Match[str]) -> bool:
+    """Whether a typed head's first word is a type: after a modifier, a builtin
+    or ``_t`` name, a capitalised name (``List``, ``java.util.Map``), or one
+    spelled with generics, an array or a pointer."""
+    if head.group("mods") or head.group("shape").strip():
+        return True
+    word = head.group("type").rsplit(".", 1)[-1]
+    return (
+        word in _C_TYPE_WORDS
+        or word.endswith("_t")
+        or (word[0].isupper() and any(c.islower() for c in word))
+    )
 
 
 def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
@@ -393,9 +413,11 @@ def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
     def check(line: str) -> bool:
         head = _DECLARATION_HEAD.match(line)
         if head is None:
-            named = _KOTLIN_HEAD.match(line) or _TYPED_HEAD.match(line)
+            named = _KOTLIN_HEAD.match(line)
             if named is None:
-                return False
+                named = _TYPED_HEAD.match(line)
+                if named is None or not _reads_as_type(named):
+                    return False
             start, end = named.span("names")
             return any(start <= m.start() < end for m in pattern.finditer(line))
         start, end = head.span("receiver")
