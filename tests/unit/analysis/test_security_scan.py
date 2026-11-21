@@ -1241,6 +1241,26 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     @pytest.mark.parametrize(
+        "line",
+        [
+            '  SECRETS$ADD_SECRET = "SECRETS$ADD_SECRET",\n',
+            '  SETTINGS$LLM_API_KEY = "SETTINGS$LLM_API_KEY",\n',
+            '  FEEDBACK$PASSWORD = "FEEDBACK$PASSWORD",\n',
+        ],
+    )
+    def test_an_enum_member_holding_its_own_dollar_joined_name_is_not_a_secret(
+        self, line: str
+    ) -> None:
+        # i18n key enums join a namespace to the key with ``$``.
+        source = "export enum I18nKey {\n" + line + "}\n"
+        kinds = set(self._kinds(source, "declaration.ts"))
+        assert not {"hardcoded_secret", "hardcoded_password"} & kinds
+
+    def test_a_dollar_name_holding_a_different_value_is_still_a_secret(self) -> None:
+        value = "Zq8" + "vR2mT9xLp4"
+        assert "hardcoded_secret" in self._kinds(f'const $api_key = "{value}";\n', "a.js")
+
+    @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
     )
