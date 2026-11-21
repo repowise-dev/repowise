@@ -14,6 +14,19 @@ import re
 SECURITY_SCANNER_VERSION = 7
 
 
+def security_scanner_changed(state: dict) -> bool:
+    """Whether the stored security findings were written by a different scanner.
+
+    *state* is the repo's ``state.json``. Unlike ``health_analyzer_changed``, a
+    state file with no stamp **is** a change: the stamp arrived after 0.55.0
+    (#3086), so an unstamped store was written by an older scanner. Reading
+    absence as current would also keep it unstamped forever, since only the
+    rescan this gates writes the stamp. ``init`` stamps every fresh index, so
+    a new install never reads as stale.
+    """
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
 # ---------------------------------------------------------------------------
