@@ -794,6 +794,83 @@ def test_a_pip_application_in_a_subdirectory_runs_its_tests():
     assert backend.test.startswith("pytest --cov=")
 
 
+def _backend(**changed: str):
+    files = {**_MONOREPO, **{f"backend/{k.replace('__', '/').replace('_dot_', '.')}": v for k, v in changed.items()}}
+    (backend,) = [s for s in detect_stacks(sorted(files), files) if s.root == "backend"]
+    return backend
+
+
+def test_a_tests_directory_is_named_when_other_test_files_would_be_collected():
+    # A script folder's test_*.py beside backend/tests/ would join a bare pytest run.
+    backend = _backend(scripts__test_seed_dot_py="")
+    assert backend.test.startswith("pytest tests --cov=") and backend.test_paths == ("tests",)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "services__tests__test_billing_dot_py",  # a package's own suite keeps running
+        "vendor__lib__test_lib_dot_py",  # a vendored file is not ours
+        "test_smoke_dot_py",  # a root test file keeps running
+    ],
+)
+def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other):
+    backend = _backend(**{other: ""})
+    assert backend.test_paths == ()
+
+
+def test_xdist_named_only_outside_the_install_adds_no_flag():
+    backend = _backend(**{"tox_dot_ini": "[testenv]\ndeps = pytest-xdist\n"})
+    assert "-n auto" not in backend.test
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "flag"),
+    [
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest-xdist"]\n', True),
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest"]\nperf = ["pytest-xdist"]\n', False),
+        ('[dependency-groups]\ndev = ["pytest-xdist"]\n', True),
+        ('[dependency-groups]\nlint = ["pytest-xdist"]\n', False),
+        ('[tool.poetry.group.dev.dependencies]\npytest-xdist = "*"\n', True),
+    ],
+)
+def test_xdist_counts_only_where_the_install_brings_it(pyproject, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest\n", "pyproject_dot_toml": pyproject})
+    assert ("-n auto" in backend.test) is flag
+
+
+def test_pytests_own_testpaths_keep_deciding():
+    backend = _backend(scripts__test_seed_dot_py="", pytest_dot_ini="[pytest]\ntestpaths = tests\n")
+    assert backend.test.startswith("pytest --cov=") and backend.test_paths == ()
+
+
+def test_conflicting_pins_install_one_requirements_file_at_a_time():
+    backend = _backend(**{"requirements_dot_txt": "fastapi\npytest==9.1.1\n",
+                          "requirements-dev_dot_txt": "pytest==8.3.4\npytest-cov\n"})
+    assert backend.requires == (
+        "python -m pip install -r requirements.txt",
+        "python -m pip install -r requirements-dev.txt pytest pytest-cov",
+    )
+    assert [line for line in backend.setup if "pip install" in line] == [
+        "- run: pip install -r requirements.txt   # adjust to your install",
+        "- run: pip install -r requirements-dev.txt pytest pytest-cov   # adjust to your install",
+    ]
+    assert any("pin pytest to different versions" in note for note in backend.notes)
+
+
+@pytest.mark.parametrize(("dev", "flag"), [("pytest-xdist==3.6\n", True), ("pytest_xdist\n", True), ("pytest\n", False)])
+def test_a_declared_xdist_spreads_the_coverage_run(dev, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": dev})
+    assert (" -n auto " in backend.test) is flag
+    # The suite profile runs in one process: its paths never carry the flag.
+    assert backend.test_paths == ()
+
+
+def test_a_configured_worker_count_is_left_alone():
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest-xdist\n", "pytest_dot_ini": "[pytest]\naddopts = -n 4\n"})
+    assert "-n auto" not in backend.test
+
+
 def test_the_build_unit_index_names_the_same_pip_applications():
     roots = ("backend", "backend/deploy", "scripts/avatar")
     index = BuildUnitIndex.from_units(

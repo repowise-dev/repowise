@@ -52,13 +52,22 @@ read, a program with no profiler flag).
   uncaught exception or a nonzero exit writes nothing, and an older profile is
   removed first, so a crashed run is never stored. The unit-test suite runs the
   test paths the unit's coverage command runs (`tests/unit` when integration
-  tests sit beside it). Its profile is kept when tests fail (pytest exit 1),
+  tests sit beside it, `tests` when test files elsewhere would be collected
+  too); a path in its arguments (`tests/api`, a node id) replaces them. Its profile is kept when tests fail (pytest exit 1),
   with the failed count recorded on the run (`tests_failed`, shown by `evidence
   status`); a suite that could not run (exit 2 to 5) writes nothing. A run
   stopped with Ctrl-C still writes what it collected, so a subset of the suite
   is enough. SIGTERM, which a timeout sends, writes the profile and ends the
   process with exit code 143; a Windows kill sends no SIGTERM, so there a
   killed run leaves nothing.
+- A Python entry file that builds a FastAPI or Starlette app at module level
+  (`app = FastAPI()`) is served under uvicorn and the profiler (`serve
+  app.main:app`). Its `reason` asks for representative requests while it runs,
+  then Ctrl-C; it is named under `next_call.optional`, never a step.
+- A Python coverage command adds `-n auto` when the printed install brings
+  pytest-xdist and the config sets no worker count. When two requirements
+  files pin a package to different versions, each installs on its own, the
+  test requirements last.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and its ingest
   line; a TypeScript `bin` gets a reason only. The command writes into a
   directory of its own (`.repowise/node-bin-cli-js`), cleaned first, where

@@ -1486,7 +1486,8 @@ writes nothing.
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
   `ingest` line (run from the repository root). Then its `runtime` targets: entry points
-  (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
+  (console scripts, `python -m` packages, a FastAPI or Starlette app served under uvicorn, Go
+  `package main`, `package.json` `bin`), benchmarks
   (Go `Benchmark*`, profiled and, as `go bench results`, their printed results with allocations
   per op; pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
@@ -1501,7 +1502,8 @@ writes nothing.
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
   stores nothing. An entry point's `command` ends in `<args>`: replace it with the
-  arguments of a representative run, since a bare run measures only the usage screen. A target with
+  arguments of a representative run, since a bare run measures only the usage screen; a served app
+  waits for representative requests instead, then Ctrl-C. A target with
   no `command`, no `ingest`, or something left to fill says why in `reason` (`go run` takes no
   profiler flag; TypeScript positions are in the compiled JavaScript; this build does not read the
   format the recipe writes; `<args>` to fill). Only a target with an `ingest` line and no `reason`

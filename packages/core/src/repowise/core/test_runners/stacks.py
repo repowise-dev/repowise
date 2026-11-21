@@ -252,8 +252,9 @@ _SLOW_DIRS = ("integration", "integration_tests", "e2e")
 
 
 def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
-    """``tests/unit`` (or ``tests/unit_tests``) when unit and integration tests sit side by side,
-    else pytest's own choice."""
+    """``tests/unit`` (or ``tests/unit_tests``) when unit and integration tests sit side by side;
+    ``tests`` when test files outside it would be collected too (a script folder's or another
+    package's); else pytest's own choice."""
     for base in ("tests", "test"):
         unit = next((d for d in _UNIT_DIRS if any(p.startswith(f"{base}/{d}/") for p in paths)), None)
         other = any(p.startswith(f"{base}/{d}/") for d in _SLOW_DIRS for p in paths)
@@ -262,6 +263,29 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
             if testpaths and base not in testpaths:
                 return ""  # pytest's testpaths already decide what runs
             return f" {base}/{unit}"
+    return "" if _testpaths(files) else _tests_dir(paths, files)
+
+
+def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
+    """``tests`` (or ``test``) when it holds test files and a bare run would collect others too.
+
+    Only our own files count (:func:`~repowise.core.code_origin.path_origin`
+    production or test): a vendored or example ``test_*.py`` is no reason to
+    narrow. A unit that keeps a ``tests/`` directory inside a package as well
+    (``pkg/tests/``), or a test file at its root, is left to pytest, so those
+    tests keep running. Ceiling: a test file inside a package outside any
+    tests directory is left out once ``tests`` is named.
+    """
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)
+                 and path_origin(p) in ("production", "test")]
+    for base in ("tests", "test"):
+        outside = [p for p in collected if not p.startswith(f"{base}/")]
+        if len(outside) == len(collected) or not outside:
+            continue
+        if any("/" not in p or f"/{d}/" in f"/{p}" for p in outside for d in ("tests", "test")):
+            return ""
+        return f" {base}"
     return ""
 
 
@@ -317,15 +341,48 @@ def _installable(root: set[str], paths: list[str], pyproject: dict) -> bool:
     )
 
 
-def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> str:
+#: An exact pin in a requirements file: ``name==version`` (extras and markers allowed).
+_PIN = re.compile(r"(?m)^\s*([A-Za-z0-9][\w.-]*)\s*(?:\[[^\]]*\])?\s*===?\s*([^\s;#,]+)")
+
+
+def _pins(text: str) -> dict[str, str]:
+    """The exact pins of one requirements file, by normalized name (PEP 503)."""
+    return {re.sub(r"[-_.]+", "-", m.group(1)).lower(): m.group(2) for m in _PIN.finditer(text)}
+
+
+def _conflicting_pins(requirements: list[str], files: dict[str, str]) -> list[str]:
+    """Packages two of *requirements* pin to different versions, sorted.
+
+    Ceiling: only exact pins in the files themselves; a range that excludes
+    another file's pin, and files they include with ``-r``, are not read.
+    """
+    seen: dict[str, set[str]] = {}
+    for path in requirements:
+        for name, version in _pins(files.get(path, "")).items():
+            seen.setdefault(name, set()).add(version)
+    return sorted(name for name, versions in seen.items() if len(versions) > 1)
+
+
+def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> tuple[str, ...]:
     """The ``pip install`` arguments a unit's tests need: the project with its test extra,
-    its requirements and test requirements files, then pytest and pytest-cov."""
+    its requirements and test requirements files, then pytest and pytest-cov.
+
+    One install, unless two requirements files pin a package to different
+    versions: pip refuses that as one resolve, so each file installs on its
+    own, ``requirements.txt`` first and the test files after it, whose pins
+    the tests were written against and so win.
+    """
     parts = []
     if _installable(root, paths, pyproject):
         extra = _first(_extras(pyproject, files.get("setup.cfg", "")), (*_TEST_SETS, "dev"))
         parts.append(f'-e ".[{extra}]"' if extra else "-e .")
-    parts += [f"-r {p}" for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]
-    return " ".join([*parts, "pytest pytest-cov"])
+    requirements = [p for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]
+    if not _conflicting_pins(requirements, files):
+        return (" ".join([*parts, *(f"-r {p}" for p in requirements), "pytest pytest-cov"]),)
+    ordered = sorted(requirements, key=lambda p: (p != "requirements.txt", p))
+    # A conflict needs two files, so ``rest`` is never empty.
+    first, *rest = (f"-r {p}" for p in ordered)
+    return (" ".join([*parts, first]), *rest[:-1], f"{rest[-1]} pytest pytest-cov")
 
 
 def _python_tool(
@@ -354,10 +411,11 @@ def _python_tool(
                  "- run: hatch run pip install pytest pytest-cov")
         # Hatch's environment installs the project; it still needs the test tools.
         return "hatch", setup, f"hatch run pytest{args}", ("hatch run python -m pip install pytest pytest-cov",)
-    install = _pip_install(root, paths, files, toml)
-    setup = ("- uses: actions/setup-python@v5", *version, f"- run: pip install {install}   # adjust to your install")
+    installs = _pip_install(root, paths, files, toml)
+    setup = ("- uses: actions/setup-python@v5", *version,
+             *(f"- run: pip install {i}   # adjust to your install" for i in installs))
     # The CI install lives in ``setup``; a workstation needs the same install.
-    return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
+    return "pip", setup, f"pytest{args}", tuple(f"python -m pip install {i}" for i in installs)
 
 
 def _has_pytest_suite(root: set[str], paths: list[str], files: dict[str, str]) -> bool:
@@ -387,14 +445,50 @@ def _configures_pytest(files: dict[str, str]) -> bool:
     return "" in read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES).by_dir
 
 
+def _installs_xdist(paths: list[str], files: dict[str, str]) -> bool:
+    """Whether the unit's printed install brings pytest-xdist.
+
+    Read from the requirements files the pip line names and the pyproject
+    tables each tool installs by default: the project's dependencies, the
+    test or dev extra pip installs, uv's dev and test groups, Poetry's groups
+    and PDM's dev dependencies. Ceiling: a Hatch environment's dependencies
+    are not read, so a Hatch unit never gets the flag.
+    """
+    toml = parse_toml_or_none(files.get("pyproject.toml", "")) or {}
+    project = toml.get("project") or {}
+    extras = project.get("optional-dependencies") or {}
+    groups = toml.get("dependency-groups") or {}
+    tool = toml.get("tool") or {}
+    poetry = tool.get("poetry") or {}
+    chosen = _first(_keys(extras), (*_TEST_SETS, "dev"))
+    tables = [
+        project.get("dependencies"),
+        extras.get(chosen) if chosen else None,
+        *(groups.get(g) for g in ("dev", *_TEST_SETS)),
+        poetry.get("dev-dependencies"),
+        *((g or {}).get("dependencies") for g in (poetry.get("group") or {}).values() if isinstance(g, dict)),
+        (tool.get("pdm") or {}).get("dev-dependencies"),
+        *(files.get(p, "") for p in paths if _TEST_REQUIREMENTS.fullmatch(p)),
+    ]
+    return any(re.search(r"pytest[-_]xdist", json.dumps(t)) for t in tables if t)
+
+
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
     args = _pytest_args(paths, files)
-    tool, setup, base, installs = _python_tool(root, paths, files, args)
+    # pytest-xdist where the printed install brings it spreads the coverage run over
+    # every core (pytest-cov combines the workers' data), unless the config already
+    # picks a worker count.
+    xdist = _installs_xdist(paths, files) and not re.search(
+        r"(?<![\w-])(?:-n|--numprocesses)(?:=|\s|\d)", texts)
+    tool, setup, base, installs = _python_tool(root, paths, files, args + (" -n auto" if xdist else ""))
     notes: list[str] = []
+    if tool == "pip" and (pinned := _conflicting_pins([p for p in paths if _TEST_REQUIREMENTS.fullmatch(p)], files)):
+        notes.append(f"Requirements files pin {', '.join(pinned)} to different versions, so pip installs "
+                     "them one at a time and the test requirements' pins win.")
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
                      "checkout; narrow `--cov` to your source directory if you like.")
