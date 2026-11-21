@@ -1845,6 +1845,14 @@ class CallResolver(
         # a fallback for names no top-level symbol claims (class-scoped
         # bindings live there alone).
         language = self._language_of(file_path)
+        if language == "rust":
+            item = self._rust_block_call(file_path, call, caller_id)
+            if item is not None:
+                return True, (
+                    None
+                    if item == caller_id and not self._is_bare_recursion(file_path, call, caller_id)
+                    else ResolvedCall(caller_id, item, 0.95, call.line, "same_file")
+                )
         if language in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES or (
             language in _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES
             and call.target_name in self._file_top_level.get(file_path, {})
@@ -1864,6 +1872,19 @@ class CallResolver(
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         # A method no bare name reaches here (Python, Go, Rust) is not this call's target.
         return False, None
+
+    def _rust_block_call(self, file_path: str, call: CallSite, caller_id: str) -> str | None:
+        """The inline block item a Rust call written bare names, else None.
+
+        Written bare on its line: a chained ``a().f()`` reaches here without
+        its receiver.
+        """
+        if call.receiver_name or call.scope_name:
+            return None
+        item = self._rust_block_item(file_path, call.line, call.target_name)
+        if item is None or not _called_bare_on_line(self._lines_of(file_path), call):
+            return None
+        return item
 
     def _bare_name_reaches_caller(self, file_path: str, call: CallSite, own: str | None) -> bool:
         """Is a bare call the flat index answers with its own caller recursion?
@@ -2705,6 +2726,29 @@ def _declaration_pattern(name: str) -> re.Pattern[str]:
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,
 # typically into ``::dup``.
 _MACRO_OPENING = re.compile(r"\b[A-Z][A-Z0-9_]+\s*\([^()]*$")
+
+
+def _called_bare_on_line(lines: list[str], call: CallSite) -> bool:
+    """Does *call*'s line call its name with no receiver or path before it?
+
+    Char literals, strings and a trailing ``//`` comment are blanked first; a turbofish
+    (``bar::<Vec<u8>>()``) still reads as a call.
+    """
+    if not 0 < call.line <= len(lines):
+        return False
+    text = lines[call.line - 1]
+    for pattern, blank in ((_CHAR_LITERAL, "' '"), (_STRING_LITERAL, '""'), (_RUST_LINE_COMMENT, "")):
+        text = pattern.sub(blank, text)
+    called = re.compile(rf"\b{re.escape(call.target_name)}\b\s*(?:::\s*<|\()")
+    return any(
+        not text[: m.start()].rstrip().endswith((".", "::", "->")) for m in called.finditer(text)
+    )
+
+
+_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
+_RUST_LINE_COMMENT = re.compile(r"//.*$")
+# A char literal, blanked first: ``'"'`` would otherwise open a string.
+_CHAR_LITERAL = re.compile(r"'(?:\\.|[^'\\])'")
 
 
 def _unqualified(before: str) -> bool:
