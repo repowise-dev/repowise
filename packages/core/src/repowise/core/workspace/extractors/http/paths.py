@@ -139,8 +139,12 @@ def absolute_host(url: str) -> str | None:
 # or ``${apiUrl}/v1/users``. The captured group is the inner expression, used to
 # resolve the call's target service (see :func:`base_token_identifier`). Anchored
 # at the start so interior expressions (real path params like ``/users/${id}``)
-# are untouched.
-_LEADING_BASE_EXPR_RE = re.compile(r"^\s*\$\{([^}]+)\}")
+# are untouched. A scheme placeholder may lead an authority that is one too,
+# ``${location.protocol}//${location.host}/users``: the whole base goes, and the
+# host's expression is the token, since it names the service.
+_LEADING_BASE_EXPR_RE = re.compile(
+    r"^\s*\$\{([^}]+)\}(?://\$\{([^}]+)\}(?::(?:\$\{[^}]+\}|\d+))?)?"
+)
 
 
 def strip_leading_base_expr(path: str) -> tuple[str, str]:
@@ -159,7 +163,10 @@ def strip_leading_base_expr(path: str) -> tuple[str, str]:
     new_path = path[m.end() :]
     if not new_path.startswith("/"):
         new_path = "/" + new_path
-    return new_path, m.group(1).strip()
+    if m.group(2) is None:
+        return new_path, m.group(1).strip()
+    # ``${env.API_HOST || location.host}``: the configured name comes first.
+    return new_path, re.split(r"\|\||\?\?", m.group(2))[0].strip()
 
 
 # A trailing interpolated suffix, e.g. ``/repos${qs}``. Anchored, and required

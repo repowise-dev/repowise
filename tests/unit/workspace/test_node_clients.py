@@ -103,6 +103,25 @@ class TestInstances:
         repo = _write(tmp_path, {"src/client/index.ts": index, "src/pages/p.ts": caller})
         assert _calls(repo) == {("ky", "GET", "/api/things", "")}
 
+    def test_a_base_built_from_scheme_and_host_placeholders(self, tmp_path: Path) -> None:
+        http = (
+            "import axios from 'axios';\n"
+            "export const api = axios.create({\n"
+            "  baseURL: `${window.location.protocol}//"
+            "${import.meta.env.VITE_BACKEND_HOST || window?.location.host}`,\n"
+            "});\n"
+        )
+        caller = (
+            "import { api } from './http';\n"
+            'export const a = () => api.get<unknown>("/api/keys");\n'
+            "export const b = () => api.post<R>(`/api/conversations/${id}/start`, {});\n"
+        )
+        repo = _write(tmp_path, {"src/api/http.ts": http, "src/api/keys.ts": caller})
+        assert _calls(repo) == {
+            ("axios", "GET", "/api/keys", "VITE_BACKEND_HOST"),
+            ("axios", "POST", "/api/conversations/{param}/start", "VITE_BACKEND_HOST"),
+        }
+
     def test_got_extend_ofetch_create_and_class_fields(self, tmp_path: Path) -> None:
         text = (
             "import got from 'got';\nimport { ofetch } from 'ofetch';\n"
