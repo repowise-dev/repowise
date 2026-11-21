@@ -37,8 +37,46 @@ async def test_public_definitions_match_the_live_server_byte_for_byte(
             for t in await server.list_tools()
         ]
         served = [tool["name"] for tool in listed]
-        assert json.dumps(tool_definitions(served)) == json.dumps(listed)
+        assert json.dumps(tool_definitions(served, workspace=workspace)) == json.dumps(listed)
+        assert any("repo" in t["inputSchema"]["properties"] for t in listed) is workspace
         assert server.instructions == server_instructions(served, workspace=workspace)
+    finally:
+        if _tool_selection._full_surface is not None:
+            mcp._tool_manager._tools = dict(_tool_selection._full_surface)
+        _tool_selection._selected_surface = None
+
+
+def test_a_single_repo_listing_drops_repo_from_schema_and_args() -> None:
+    names = ["get_answer", "get_risk", "get_overview"]
+    single = {t["name"]: t for t in tool_definitions(names)}
+    workspace = {t["name"]: t for t in tool_definitions(names, workspace=True)}
+    for name in names:
+        assert "repo" in workspace[name]["inputSchema"]["properties"], name
+        assert "repo" not in single[name]["inputSchema"]["properties"], name
+        lines = single[name]["description"].splitlines()
+        assert not [line for line in lines if line.strip().startswith("repo:")], name
+        # Only the repo entry goes: every other property and line stays.
+        ws_props = dict(workspace[name]["inputSchema"]["properties"])
+        ws_props.pop("repo")
+        assert single[name]["inputSchema"]["properties"] == ws_props, name
+    assert "repo:" in workspace["get_risk"]["description"]
+    ws_lines = workspace["get_risk"]["description"].splitlines()
+    assert single["get_risk"]["description"].splitlines() == [
+        line for line in ws_lines if not line.strip().startswith("repo:")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_single_repo_server_still_accepts_repo(tmp_path: Any, monkeypatch: Any) -> None:
+    from repowise.server.mcp_server import _tool_selection, create_mcp_server
+
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
+    try:
+        server = create_mcp_server(str(tmp_path), tools="core")
+        tool = server._tool_manager.get_tool("get_answer")
+        assert "repo" not in tool.parameters["properties"]
+        assert "repo" in tool.fn_metadata.arg_model.model_fields
+        tool.fn_metadata.arg_model.model_validate({"question": "q", "repo": "x"})
     finally:
         if _tool_selection._full_surface is not None:
             mcp._tool_manager._tools = dict(_tool_selection._full_surface)

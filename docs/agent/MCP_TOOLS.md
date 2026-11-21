@@ -160,7 +160,7 @@ A parameter marked "Accepted, not advertised" below is left out of the schema `t
 | How coupled is the whole system? | `get_architecture` (workspace, opt-in) |
 | Does the system obey our declared dependency rules? | `get_conformance` (workspace, opt-in) |
 
-Every `repo` parameter takes a workspace repo alias and defaults to the default repo; `"all"` support is in [Workspace mode](#workspace-mode).
+Every `repo` parameter takes a workspace repo alias and defaults to the default repo; `"all"` support is in [Workspace mode](#workspace-mode). A single-repo server does not list `repo` in its tool schemas, and accepts it when passed.
 
 ---
 

@@ -210,9 +210,11 @@ def apply_tool_selection(
     # still puts get_answer first.
     source = _full_surface if _full_surface is not None else dict(registered)
     registered.clear()
+    from repowise.server.mcp_server import _single_repo_form
+
     for name in sorted(source):
         if name in enabled:
-            registered[name] = source[name]
+            registered[name] = source[name] if is_workspace else _single_repo_form(source[name])
 
     return enabled
 

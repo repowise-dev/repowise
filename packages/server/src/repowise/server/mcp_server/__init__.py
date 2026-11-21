@@ -400,6 +400,28 @@ def _slim_tool(tool: Any) -> None:
         tool.description = _lift_args(tool.description, properties)
 
 
+def _single_repo_form(tool: Any) -> Any:
+    """A copy of *tool* as a single-repo server lists it: no ``repo`` parameter.
+
+    The parameter only picks a repository in a workspace; with one repository
+    it is a no-op an agent pays for on every turn. The property and its
+    ``Args:`` entry leave the listing, and a caller that passes it anyway is
+    still served, since arguments are validated against the function.
+    """
+    import re
+
+    properties = tool.parameters.get("properties", {})
+    if "repo" not in properties:
+        return tool
+    parameters = {
+        **tool.parameters,
+        "properties": {name: prop for name, prop in properties.items() if name != "repo"},
+    }
+    # The entry line and any deeper-indented lines that continue it.
+    description = re.sub(r"\n( +)repo: .*(?:\n\1 +\S.*)*", "", tool.description or "")
+    return tool.model_copy(update={"parameters": parameters, "description": description})
+
+
 def _annotations(safety: str) -> Any:
     """The ``ToolAnnotations`` a tool of this safety kind is listed with.
 
@@ -439,13 +461,14 @@ def _register_tools() -> None:
     load_plugins()  # plugin tools register before the surface is attached
 
 
-def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
+def tool_definitions(names: Iterable[str], *, workspace: bool = False) -> list[dict[str, Any]]:
     """The ``tools/list`` entries for *names*, byte for byte as the server lists them.
 
     Built from the tool registry with the server's own wrapping and schema
     slimming, without creating or starting a server. Sorted by name, as the
-    server lists them; a name with no registered tool is skipped. The
-    ``mcp.always_load`` hint is a per-repository setting, so it is not here;
+    server lists them; a name with no registered tool is skipped. Without
+    *workspace*, the entries are the single-repo form (:func:`_single_repo_form`).
+    The ``mcp.always_load`` hint is a per-repository setting, so it is not here;
     a server that honours it adds it per session (``mark_always_loaded``).
     """
     from mcp.server.fastmcp.tools import Tool
@@ -463,7 +486,7 @@ def tool_definitions(names: Iterable[str]) -> list[dict[str, Any]]:
                 registered_tool(entry.fn), annotations=_annotations(entry.safety)
             )
             _slim_tool(tool)
-            tools[entry.name] = tool
+            tools[entry.name] = tool if workspace else _single_repo_form(tool)
     return [
         MCPTool(
             name=tool.name,
