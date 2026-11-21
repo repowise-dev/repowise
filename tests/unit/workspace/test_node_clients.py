@@ -382,3 +382,12 @@ def test_a_node_request_call_links_to_the_service_it_names(tmp_path: Path) -> No
     contracts = HttpExtractor().extract(catalogue, "catalogue") + HttpExtractor().extract(cart, "cart")
     links = {(link.provider_repo, link.consumer_repo, link.contract_id) for link in match_contracts(contracts)}
     assert links == {("catalogue", "cart", "http::GET::/product/{param}")}
+
+
+def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_leading_base_expr
+
+    assert strip_leading_base_expr("${a}//literal.host/x") == ("//literal.host/x", "a")
+    assert strip_leading_base_expr("${a}//${b}:${PORT}/x") == ("/x", "b")
+    assert strip_leading_base_expr("${a}//${env.HOST ?? location.host}/x") == ("/x", "env.HOST")
+    assert strip_leading_base_expr("${API}/users/${id}") == ("/users/${id}", "API")
