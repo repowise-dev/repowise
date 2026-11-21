@@ -19,8 +19,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
@@ -132,6 +130,26 @@ public class FieldCaller
 }
 """
 
+# A field typed as a delegate holds a function, so the bare call is kept.
+CS_DELEGATE_FIELD_ONLY = """
+namespace App;
+
+public class Holder
+{
+    public System.Func<int, int> Amount;
+}
+"""
+
+# A nullable delegate field (`Func<..>?`, `Action?`) still holds a function.
+CS_NULLABLE_DELEGATE_FIELD = """
+namespace App;
+
+public class Holder
+{
+    public Func<int>? Amount;
+}
+"""
+
 
 # A getter and its setter are two declarations under one id. That reads as an
 # overload set and is not one: the name is an attribute, not a callable.
@@ -204,12 +222,6 @@ class TestOverloadSetIsOneSymbol:
             f"the inherited tier must keep this site, not the global rung; edges: {edges}"
         )
 
-    @pytest.mark.xfail(
-        reason="_NON_CALLABLE_KINDS is {'property'} while C# extracts a field "
-        "or property as kind 'variable', so the data-member refusal never "
-        "reaches C#. Pre-existing, and unchanged by this collapse.",
-        strict=True,
-    )
     def test_a_non_callable_symbol_is_still_refused(self, tmp_path: Path) -> None:
         parsed = _parse_all(
             tmp_path,
@@ -221,6 +233,36 @@ class TestOverloadSetIsOneSymbol:
         edges = _edges(parsed, tmp_path)
         assert not [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
             f"a data member must not be the unique answer; edges: {edges}"
+        )
+
+    def test_a_delegate_typed_field_is_still_callable(self, tmp_path: Path) -> None:
+        """A `Func<..>` field declaration itself holds the invoked function."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_DELEGATE_FIELD_ONLY),
+                "src/FieldCaller.cs": ("csharp", CS_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a delegate-typed field keeps its bare-name call; edges: {edges}"
+        )
+
+    def test_a_nullable_delegate_typed_field_is_still_callable(
+        self, tmp_path: Path
+    ) -> None:
+        """A `Func<..>?` field declaration also holds the invoked function."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_NULLABLE_DELEGATE_FIELD),
+                "src/FieldCaller.cs": ("csharp", CS_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a nullable delegate-typed field keeps its bare-name call; edges: {edges}"
         )
 
     def test_a_property_getter_and_setter_are_not_an_overload_set(
