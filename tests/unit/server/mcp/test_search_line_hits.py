@@ -1076,6 +1076,8 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
         ("fun <T : Comparable<T>> sortAll(items: List<T>) {", r"sortAll", "definition"),
         ("    Returns foo(x) when the cache is warm.", r"foo", "match"),
         ("obj. foo(1);", r"foo", "match"),
+        ("data frame load(path) reads it", r"load", "match"),
+        ("    public <T extends Comparable<T>> void sort(List<T> xs) {", r"sort", "definition"),
         ("    width * compute(x) +", r"compute", "match"),
         ("ready && validate(input);", r"validate", "match"),
         ("int& ref_to(int x);", r"ref_to", "definition"),

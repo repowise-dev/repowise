@@ -379,7 +379,7 @@ _KOTLIN_HEAD = re.compile(
 # (``if f(x):``, ``cd dir;``) are a declaration only where the first reads as
 # a type: see ``_reads_as_type``.
 _TYPED_HEAD = re.compile(
-    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?P<mods>(?:(?:{_MODIFIERS}|const)\s+)*)(?:<[^>]*>\s*)?"
+    rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS}|const)\s+)*(?:{_GENERICS}\s*)?"
     r"(?!(?:return|new|else|throw|case|goto|delete|await|yield|sizeof|typeof|package|import"
     r"|go|defer|raise|assert|del|not|and|or|in|is|print|puts|echo|then|do)\b)"
     r"(?P<type>[A-Za-z_][\w.]*)(?P<shape>(?:\s*<[^;=(){}]*>)?(?:\s*\[\s*\])*[\s*&]+)"
@@ -392,21 +392,21 @@ _C_TYPE_WORDS = frozenset(
 
 
 def _reads_as_type(head: re.Match[str], line: str) -> bool:
-    """Whether a typed head's first word is a type: after a modifier, a builtin
-    or ``_t`` name, a capitalised name (``List``, ``java.util.Map``), or one
-    spelled with generics, an array or a pointer. Two bare words also need
-    the line to end as a declaration does, so prose (``Returns foo(x) when``)
-    is no declaration. A pointer or reference abuts the type or the name
+    """Whether a typed head's first word is a type: one spelled with generics
+    or an array, or, on a line that ends as a declaration does (so prose such
+    as ``Returns foo(x) when`` or ``data frame load(path)`` is none), a
+    builtin or ``_t`` name, a capitalised name (``List``, ``java.util.Map``)
+    or one with a pointer or reference. That mark abuts the type or the name
     (``char *p``, ``int& r``); ``a * f(x)`` and ``ok && f(x)`` are operators."""
     shape = head.group("shape")
-    if head.group("mods") or "<" in shape or "[" in shape:
-        return True
-    marks = shape.strip()
-    if marks and "&&" not in marks and not (shape[0].isspace() and shape[-1].isspace()):
+    if "<" in shape or "[" in shape:
         return True
     word = head.group("type").rsplit(".", 1)[-1]
     if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
         return False
+    marks = shape.strip()
+    if marks and "&&" not in marks and not (shape[0].isspace() and shape[-1].isspace()):
+        return True
     return (
         word in _C_TYPE_WORDS
         or word.endswith("_t")
