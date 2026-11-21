@@ -67,7 +67,7 @@ Notes:
 
 ## On the wire
 
-- `structuredContent` is `{"result": <payload>}`; tools advertise an `outputSchema`.
+- `structuredContent` is `{"result": <payload>}`. Tools advertise no `outputSchema`.
 - The text block is the same payload as compact JSON, so clients that forward it send fewer tokens.
 - `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
 
@@ -111,13 +111,13 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
+| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given, `limit` over 20 | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
 - **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
-- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
+- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`; a `limit` entry carries `"clamped_to": 20`, the value the call ran with.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
 ---

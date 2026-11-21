@@ -533,7 +533,7 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 39 values in
+with a `ResolutionOrigin`, a closed vocabulary of 40 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and

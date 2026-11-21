@@ -272,6 +272,37 @@ _ROW_KEY = {
 }
 
 
+def rebase_test_entries(
+    doc: EvidenceDocument, files: Collection[str], base: str
+) -> EvidenceDocument:
+    """*doc* with each test file the index does not hold read from *base*, when the index holds that.
+
+    *base* is the repo-relative directory the report was read from. A runner in a
+    package below the repository root names test files from where it ran and writes
+    its report there (Vitest, which has no option to prefix them). The joined path wins
+    when the index holds it, even beside a root file of the same name; a path that is
+    already repo-relative (``web/src/x.test.ts``) joins to none and is kept.
+    """
+    if doc.kind != "test_timing" or not base:
+        return doc
+    entries = []
+    for entry in doc.entries:
+        path = entry.get("test_file")
+        moved = f"{base}/{path}" if path else None
+        test_id = entry["test_id"]
+        # The id names the file first (``path::name``); one that does not is left whole.
+        if moved in files and test_id.startswith(f"{path}::"):
+            location = entry.get("location")
+            entry = {
+                **entry,
+                "test_id": moved + test_id[len(path) :],
+                "test_file": moved,
+                "location": {**location, "path": moved} if location else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
+
+
 def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
     """*doc* with each test named only by a dotted ``classname`` placed on its file.
 
@@ -328,10 +359,15 @@ def cap_rows(
 
 
 def run_key(
-    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+    text: str,
+    provenance: RunProvenance,
+    kind: str,
+    index_commit: str | None = None,
+    report_dir: str = "",
 ) -> str:
     """One measurement's identity: its content, everything the run row records,
-    and the index it was joined against (a later index joins it afresh)."""
+    the index it was joined against (a later index joins it afresh), and the
+    directory its test paths were read from (:func:`rebase_test_entries`)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
@@ -344,6 +380,8 @@ def run_key(
         provenance.source,
         # Only when known, so a run that never reports it keeps its key.
         *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
+        # Only test paths are read from it (rebase_test_entries), so other kinds keep their key.
+        *((f"report_dir={report_dir}",) if report_dir and kind == "test_timing" else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -534,6 +572,7 @@ __all__ = [
     "load_origins",
     "load_symbols",
     "place_test_entries",
+    "rebase_test_entries",
     "resolve_location",
     "run_fields",
     "run_key",

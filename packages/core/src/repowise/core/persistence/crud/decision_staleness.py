@@ -196,7 +196,7 @@ def _evidence_landings(
 
 #: Origins whose files never carry a decision's rule: a test edit or a docs
 #: rewrite is not the governed code moving.
-_NOT_RULE_ORIGINS = frozenset({"test", "docs_example"})
+_NOT_RULE_ORIGINS = frozenset({"test", "docs_example", "data"})
 
 
 async def _rule_scopes(

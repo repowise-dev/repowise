@@ -125,3 +125,61 @@ class C {
             "loop": (["@tailrec"], "def loop(n: Int) -> Int"),
             "stacked": (["@deprecated", "@inline"], "def stacked(a: Int) -> Int"),
         }
+
+
+SCALA_VISIBILITY_SOURCE = b"""\
+class K {
+  private val a = 1
+  protected def b(): Int = 2
+  private class Inner
+  def d(): Int = 4
+  private[this] var e = 1
+  private[pkg] def f(): Int = 3
+  @deprecated private def g(): Int = 5
+  @deprecated def h(): Int = 6
+}
+private object Hidden
+private trait Secret
+@deprecated private class Old
+"""
+
+
+class TestScalaVisibility:
+    def _visibility(self, parser: ASTParser) -> dict[str, str]:
+        fi = _make_file_info("scala_pkg/Visibility.scala", "scala")
+        result = parser.parse_file(fi, SCALA_VISIBILITY_SOURCE)
+        return {s.name: s.visibility for s in result.symbols}
+
+    def test_access_modifiers(self, parser: ASTParser) -> None:
+        vis = self._visibility(parser)
+        assert vis["a"] == "private"
+        assert vis["b"] == "protected"
+        assert vis["Inner"] == "private"
+        assert vis["Hidden"] == "private"
+        assert vis["Secret"] == "private"
+
+    def test_unmodified_symbols_stay_public(self, parser: ASTParser) -> None:
+        vis = self._visibility(parser)
+        assert vis["K"] == "public"
+        assert vis["d"] == "public"
+
+    def test_qualified_private_reads_as_private(self, parser: ASTParser) -> None:
+        vis = self._visibility(parser)
+        assert vis["e"] == "private"
+        assert vis["f"] == "private"
+
+    def test_annotated_symbols_keep_annotations_and_visibility(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Visibility.scala", "scala")
+        result = parser.parse_file(fi, SCALA_VISIBILITY_SOURCE)
+        by_name = {s.name: s for s in result.symbols}
+        assert by_name["g"].visibility == "private"
+        assert by_name["h"].visibility == "public"
+        assert by_name["Old"].visibility == "private"
+        assert any("deprecated" in d for d in by_name["g"].decorators)
+        assert any("deprecated" in d for d in by_name["h"].decorators)
+
+    def test_no_duplicate_symbols(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Visibility.scala", "scala")
+        result = parser.parse_file(fi, SCALA_VISIBILITY_SOURCE)
+        names = [s.name for s in result.symbols]
+        assert len(names) == len(set(names))

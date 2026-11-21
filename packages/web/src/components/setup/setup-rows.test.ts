@@ -226,6 +226,14 @@ describe("deriveSetup", () => {
     expect(coverage!.command).toBe("repowise coverage add coverage/lcov.info");
     expect(rewrite!.action).toEqual({ kind: "hook", hook: "rewrite", enabled: false, unavailable: false });
   });
+
+  it("points at coverage setup, not a placeholder, when no report is on disk", () => {
+    const s = setupFixture();
+    const none = deriveSetup({ ...s, coverage: { ...s.coverage, discovered: [] } }, OPTS).optional[1]!;
+    expect(none.tone).toBe("off");
+    expect(none.command).toBe("repowise coverage setup");
+    expect(none.prompt?.command).toBe("repowise coverage setup");
+  });
 });
 
 describe("sections the server could not read", () => {

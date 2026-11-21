@@ -198,6 +198,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "method_declaration": "method",
             "method_elem": "method",  # interface method spec; bodiless
             "type_spec": "struct",  # refined in post-processing
+            "type_alias": "type_alias",  # type Old = int
             "const_spec": "variable",  # const MaxRetries = 3
             "var_spec": "variable",  # var ErrNotFound = errors.New(...)
         },

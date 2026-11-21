@@ -6,7 +6,8 @@ re-derive is unchanged. Source files are compared through their parses
 configs, lockfiles, assets and data files.
 
 - A file no build step opens or looks for cannot change the graph. Lockfiles,
-  images, ``requirements.txt`` and CI workflow files are of this kind.
+  images and CI workflow files are of this kind. A file the build only looks
+  for (``requirements.txt``) changes it when added or removed, not when edited.
   :func:`presence_read` names the files some step opens or looks for, by name,
   glob or directory, from the readers under ``ingestion/`` (resolvers,
   warmups, framework edges, dynamic hints) plus the traverser, the tech stack
@@ -273,6 +274,11 @@ def inputs_refusal(
 _LOCKFILE_NAMES = frozenset(
     {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum", "cargo.lock", "poetry.lock", "uv.lock"}
 )
+# Package manifests the graph build only looks for: the package-root scan and
+# the build-unit fallback check that they exist, and no graph step opens them
+# (their dependencies feed the external-systems refresh, which runs on its own).
+# Adding or removing one is refused as a presence change; an edit in place is not.
+_PRESENCE_ONLY_GLOBS = ("requirements*.txt",)
 
 
 def _unread_unindexed(path: str) -> bool:
@@ -280,10 +286,13 @@ def _unread_unindexed(path: str) -> bool:
 
     Live walks read unindexed files of known source extensions (an oversized
     ``.cs``, a gitignored ``.rb``), so only files the language registry cannot
-    name, and lockfiles, qualify.
+    name, lockfiles, and manifests the build only looks for, qualify.
     """
     from repowise.core.ingestion.languages.registry import REGISTRY
 
+    name = PurePosixPath(path.lower()).name
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _PRESENCE_ONLY_GLOBS):
+        return True
     if presence_read(path):
         return False
     pure = PurePosixPath(path)

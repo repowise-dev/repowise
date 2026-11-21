@@ -64,7 +64,8 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     indexed last, breaking workspace mode.
 
     If ``repo_path`` lives inside a workspace (``.repowise-workspace.yaml`` in
-    any ancestor), return the workspace root instead so the MCP server is
+    any ancestor) and is not a git repo of its own outside the workspace's
+    members, return the workspace root instead so the MCP server is
     invoked in workspace mode and ``repo="<alias>"`` queries work across all
     repos. Otherwise fall back to the per-repo path, preserving single-repo
     behavior.

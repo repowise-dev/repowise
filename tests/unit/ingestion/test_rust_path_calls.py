@@ -35,6 +35,11 @@ def _callees(tmp_path: Path, files: dict[str, str], caller: str) -> set[tuple[st
     }
 
 
+def _rust_calls(tmp_path: Path, files: dict[str, str]) -> set[tuple[str, str]]:
+    parsed = _parse_all(tmp_path, {rel: ("rust", body) for rel, body in files.items()})
+    return {(src, callee) for src, callee, _conf, _origin in _edges(parsed, tmp_path)}
+
+
 def test_a_crate_path_reaches_a_function_no_use_names(tmp_path: Path) -> None:
     files = {
         "src/lib.rs": "mod index;\nmod source;\n",
@@ -112,6 +117,51 @@ def test_super_out_of_an_inline_module_stays_in_the_file(tmp_path: Path) -> None
     assert callees == {"src/util.rs::helper"}
 
 
+_NESTED = (
+    "pub fn helper() -> u8 { 0 }\n"
+    "\n"
+    "mod outer {\n"
+    "    pub mod inner {\n"
+    "        pub fn helper() -> u8 { 1 }\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "mod m {\n"
+    "    pub struct S;\n"
+    "\n"
+    "    impl S {\n"
+    "        pub fn new() -> S { S }\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def test_a_path_walks_through_nested_inline_modules(tmp_path: Path) -> None:
+    files = {"src/lib.rs": _NESTED + "\nfn top() -> u8 {\n    outer::inner::helper()\n}\n"}
+    callees = {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")}
+    assert callees == {"src/lib.rs::inner::helper"}
+
+
+def test_a_path_reaches_a_method_of_a_type_in_an_inline_module(tmp_path: Path) -> None:
+    files = {"src/lib.rs": _NESTED + "\nfn top() {\n    m::S::new();\n}\n"}
+    assert ("src/lib.rs::S::new", "module_alias") in _callees(tmp_path, files, "src/lib.rs::top")
+
+
+def test_a_crate_path_walks_through_an_inline_module_of_another_file(tmp_path: Path) -> None:
+    files = {
+        "src/lib.rs": "mod a;\nmod b;\n",
+        "src/a.rs": _NESTED,
+        "src/b.rs": "fn top() {\n    crate::a::m::S::new();\n}\n",
+    }
+    assert ("src/a.rs::S::new", "module_alias") in _callees(tmp_path, files, "src/b.rs::top")
+
+
+def test_an_item_missing_from_the_inline_module_binds_nothing(tmp_path: Path) -> None:
+    # ``outer::helper`` does not exist; the file's top-level ``helper`` is not it.
+    files = {"src/lib.rs": _NESTED + "\nfn top() -> u8 {\n    outer::helper()\n}\n"}
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")} == set()
+
+
 def test_a_self_method_call_is_not_read_as_a_path(tmp_path: Path) -> None:
     files = {
         "src/lib.rs": (
@@ -172,3 +222,105 @@ def test_an_external_path_binds_nothing(tmp_path: Path) -> None:
     }
     callees = {c for c, _o in _callees(tmp_path, files, "src/lib.rs::go")}
     assert "src/io.rs::read" not in callees
+
+
+def test_blocks_named_alike_in_two_parents_bind_nothing(tmp_path: Path) -> None:
+    # Both ``inner`` blocks key their ``helper`` alike, so neither can be told apart.
+    files = {
+        "src/lib.rs": (
+            "mod a {\n    pub mod inner {\n        pub fn helper() {}\n    }\n}\n"
+            "mod b {\n    pub mod inner {\n        pub fn helper() {}\n    }\n}\n"
+            "fn top() {\n    a::inner::helper();\n}\n"
+        )
+    }
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::top")} == set()
+
+
+def test_a_self_path_in_a_block_does_not_fall_back_to_the_file(tmp_path: Path) -> None:
+    files = {"src/lib.rs": "fn f() {}\n\nmod a {\n    pub fn g() {\n        self::f();\n    }\n}\n"}
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::a::g")} == set()
+
+
+def test_a_self_path_to_a_type_named_like_a_top_level_one_binds_nothing(tmp_path: Path) -> None:
+    files = {
+        "src/lib.rs": (
+            "pub struct S;\n\nimpl S {\n    pub fn new() -> S { S }\n}\n\n"
+            "mod m {\n    pub struct S;\n\n    impl S {\n        pub fn new() -> S { S }\n    }\n\n"
+            "    fn g() {\n        self::S::new();\n    }\n}\n"
+        )
+    }
+    assert {c for c, _o in _callees(tmp_path, files, "src/lib.rs::m::g")} == set()
+
+
+def test_a_bare_call_in_an_inline_mod_names_the_blocks_own_item(tmp_path: Path) -> None:
+    lib = (
+        "fn bar() {}\n\n"
+        "mod inner {\n    fn bar() {}\n    pub fn run() {\n        bar();\n    }\n}\n\n"
+        "mod tests {\n    use super::*;\n    fn check() {\n        bar();\n    }\n}\n"
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert ("src/lib.rs::inner::run", "src/lib.rs::inner::bar") in edges
+    assert ("src/lib.rs::inner::run", "src/lib.rs::bar") not in edges
+    # A block that declares no such item still reaches the file's own.
+    assert ("src/lib.rs::tests::check", "src/lib.rs::bar") in edges
+
+
+def test_the_block_item_check_reads_a_turbofish_and_skips_strings(tmp_path: Path) -> None:
+    lib = (
+        "fn bar<T>() {}\n\n"
+        "mod inner {\n    fn bar<T>() {}\n"
+        "    pub fn run() {\n        bar::<Vec<u8>>();\n    }\n"
+        '    pub fn chained() {\n        make().bar(); let s = "bar()";\n    }\n}\n'
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert ("src/lib.rs::inner::run", "src/lib.rs::inner::bar") in edges
+    assert ("src/lib.rs::inner::chained", "src/lib.rs::inner::bar") not in edges
+
+
+def test_calls_inside_macro_arguments_are_edges(tmp_path: Path) -> None:
+    lib = (
+        "mod util;\n"
+        "fn foo() -> i32 { 1 }\n"
+        "struct S;\n"
+        "impl S {\n    fn name(&self) -> i32 { 1 }\n"
+        "    fn show(&self) {\n        println!(\"{}\", self.name());\n    }\n}\n"
+        "pub fn top() {\n"
+        "    println!(\"{}\", foo());\n"
+        "    let _v = vec![util::helper(2)];\n"
+        "}\n"
+        "#[cfg(all(unix))]\n"
+        "pub fn gated() {}\n"
+        "macro_rules! m { () => { foo() } }\n"
+        "pub fn declares() {\n"
+        "    thing! { fn foo(a: i32) {} struct S(u8); let g: Box<dyn Fn(i32)> = h; }\n"
+        "}\n"
+    )
+    edges = _rust_calls(
+        tmp_path, {"src/lib.rs": lib, "src/util.rs": "pub fn helper(x: i32) -> i32 { x }\n"}
+    )
+    assert ("src/lib.rs::top", "src/lib.rs::foo") in edges
+    assert ("src/lib.rs::top", "src/util.rs::helper") in edges
+    assert ("src/lib.rs::S::show", "src/lib.rs::S::name") in edges
+    # A macro definition is a template and an attribute calls nothing.
+    assert not any(caller.endswith("::m") or "all" in callee for caller, callee in edges)
+    # Nor does a name a macro's tokens declare.
+    assert not any(caller == "src/lib.rs::declares" for caller, _callee in edges)
+
+
+def test_a_char_literal_quote_does_not_hide_a_block_call(tmp_path: Path) -> None:
+    lib = (
+        "fn bar() {}\n\n"
+        "mod inner {\n    fn bar() {}\n"
+        "    pub fn run() {\n        let q = '\"'; bar(); let s = \"x\";\n    }\n}\n"
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert ("src/lib.rs::inner::run", "src/lib.rs::inner::bar") in edges
+
+
+def test_an_attribute_in_macro_tokens_calls_nothing(tmp_path: Path) -> None:
+    lib = (
+        "fn cfg() {}\nfn all() {}\nfn derive() {}\n"
+        "pub fn top() {\n    thing! { #[cfg(all(unix))] #[derive(Debug)] fn f() {} }\n}\n"
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert not any(caller == "src/lib.rs::top" for caller, _callee in edges)

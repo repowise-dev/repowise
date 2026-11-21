@@ -331,4 +331,4 @@ async def test_tests_lists_slow_tests_with_their_basis_run(
     assert out["status"] == "measured"
     assert [t["test_id"] for t in out["slow_tests"]] == ["tests/test_a.py::test_2", "tests/test_a.py::test_1"]
     assert out["runs"][0]["freshness"] == "current"
-    assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0}
+    assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0, "every_test": 0}

@@ -222,17 +222,19 @@ def context_command(
         command="context",
     )
 
+    arguments = {
+        "targets": list(targets),
+        "include": list(include) or None,
+        "compact": not no_compact,
+        "symptom": symptom,
+    }
+
     def _factory():
         from repowise.server.mcp_server.tool_context import get_context
 
-        return get_context(
-            targets=list(targets),
-            include=list(include) or None,
-            compact=not no_compact,
-            symptom=symptom,
-        )
+        return get_context(**arguments)
 
-    payload = _ta.run(repo_path, _factory, "get_context")
+    payload = _ta.run(repo_path, _factory, "get_context", arguments=arguments)
 
     if full:
         _ta.emit_full(payload)

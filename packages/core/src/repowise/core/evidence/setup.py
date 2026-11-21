@@ -361,7 +361,8 @@ def _with_optional(
 def _optional_entry_points(
     planned: Sequence[dict[str, Any]], done: Collection[str]
 ) -> dict[str, Any] | None:
-    """Entry points waiting for their arguments and not measured here, by workload.
+    """Entry points waiting for their arguments, or servers waiting for requests,
+    not measured here, by workload.
 
     Never a step, so named here. An entry point counts as measured once any
     run of it is stored at this commit (``app`` or ``app build``), but not one
@@ -371,7 +372,7 @@ def _optional_entry_points(
     """
     workloads = [
         t["workload"] for u in planned for t in u.get("runtime", ())
-        if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+        if t["class"] == "entry_point" and t["command"] and t["ingest"] and t["reason"]
         and not any(
             (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
             for d in done
@@ -381,7 +382,8 @@ def _optional_entry_points(
         return None
     return {
         "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
-        "representative run, then run each command and its ingest line.",
+        "representative run, or send a server representative requests while it runs, then run "
+        "each command and its ingest line.",
         "workloads": workloads,
     }
 

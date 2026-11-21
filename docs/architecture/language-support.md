@@ -500,7 +500,7 @@ The tiers, highest evidence first:
 | 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
 | 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+| 0.50 | `global_unique`, `import_elsewhere` | The name is unique repo-wide, or (Python) imported only inside another function of the file. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
 because they are three different scans over three different scopes:

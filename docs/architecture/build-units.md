@@ -120,7 +120,8 @@ answer:
   unresolved `${...}`, a POM that does not parse, and any repo without a root
   `pom.xml` fall back to `manifest:` units.
 - **Python names come from `pyproject.toml`.** A `setup.py` or `setup.cfg`
-  project, and a `pyproject.toml` naming no distribution, fall back. PEP 735
+  project, a pip application whose directory holds only `requirements*.txt`,
+  and a `pyproject.toml` naming no distribution, fall back. PEP 735
   `[dependency-groups]` are seen only through their uv source.
 - **Cargo crates outside the root workspace** are units with the path
   dependencies their own manifest declares.

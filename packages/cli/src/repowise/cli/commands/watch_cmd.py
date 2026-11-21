@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -67,26 +66,6 @@ def _event_paths(
     return found
 
 
-def _release_own_update_lock(repo_path: Path) -> None:
-    """Drop the repo's single-flight update lock if this process owns it.
-
-    ``run_update`` takes that lock and only gives it back through ``atexit``,
-    which is correct for the one-shot CLI runs every other caller makes and
-    wrong for a watcher: the process outlives the update, so the *next* save
-    finds a lock whose PID is alive (its own), reports "another update is
-    already running", and defers. Every save after the first would be a no-op
-    for the rest of the session.
-
-    Ownership is checked rather than assumed, so a lock a genuinely concurrent
-    ``repowise update`` holds is never deleted out from under it.
-    """
-    from repowise.core.update_lock import read_update_lock, release_update_lock
-
-    payload = read_update_lock(repo_path)
-    if payload is not None and payload.get("pid") == os.getpid():
-        release_update_lock(repo_path)
-
-
 def is_watchable_path(
     rel_path: str, repo_path: Path | None = None, output_dirs: dict[Path, bool] | None = None
 ) -> bool:
@@ -125,6 +104,7 @@ def _watch_single_repo(
     from watchdog.observers import Observer
 
     from repowise.cli.commands.update_cmd.command import run_update
+    from repowise.core.update_lock import release_own_update_lock
 
     ensure_repowise_dir(repo_path)
 
@@ -172,7 +152,8 @@ def _watch_single_repo(
             except Exception as e:
                 console.print(f"[red]Update failed: {e}[/red]")
             finally:
-                _release_own_update_lock(repo_path)
+                # run_update frees its lock only at exit; the watcher outlives it.
+                release_own_update_lock(repo_path)
 
     class RepowiseHandler(FileSystemEventHandler):
         def on_any_event(self, event):

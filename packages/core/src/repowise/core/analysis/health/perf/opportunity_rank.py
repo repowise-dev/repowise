@@ -309,15 +309,15 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
 def evidence_state(facets: Mapping[str, Any]) -> str | None:
     """What runtime evidence says about a cause, in one precedence: exact
     evidence first. ``confirmed``; ``counter_evidence`` (query counts stayed
-    flat as the items grew); ``measured`` (a leading workload ranks its loop
-    owner); ``ran`` (query counts that settle nothing); ``None`` with no
-    evidence facet."""
+    flat as the items grew); ``measured`` (a leading workload, or a unit-test
+    run, ranks its loop owner); ``ran`` (query counts that settle nothing);
+    ``None`` with no evidence facet."""
     if facets.get("confirmed"):
         return "confirmed"
     queries = facets.get("queries")
     if queries == "flat":
         return "counter_evidence"
-    if facets.get("measured"):
+    if facets.get("measured") or facets.get("measured_in_tests"):
         return "measured"
     return "ran" if queries else None
 
@@ -327,9 +327,10 @@ def evidence_tier(facets: Mapping[str, Any]) -> int:
     confirmed, ``1`` measured, ``2`` otherwise (:func:`evidence_state`). Every
     cause of a repository with no runtime evidence is ``2``, so its order is
     the static one. Counter-evidence demotes nothing, and a cause measured
-    against its cold name (``measured_overrides``) is kept, never led, even
-    when evidence confirms it: both stay among the rest, in static order."""
-    if facets.get("measured_overrides"):
+    against its cold name (``measured_overrides``) is kept, never led, unless
+    a leading workload measured it above the lead bar (``confirmed``
+    ``measured``): both stay among the rest, in static order."""
+    if facets.get("measured_overrides") and facets.get("confirmed") != "measured":
         return 2
     state = evidence_state(facets)
     if state == "confirmed":

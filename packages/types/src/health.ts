@@ -301,7 +301,7 @@ export interface HealthFileMetric {
   is_test?: boolean;
   /**
    * Where the file's code comes from (`production`, `test`, `vendored`,
-   * `generated`, `docs_example`, `tooling`, `build`). `null` on rows scored
+   * `generated`, `docs_example`, `tooling`, `build`, `data`). `null` on rows scored
    * before the column existed; absent on payloads that do not carry it.
    */
   code_origin?: string | null;
@@ -468,8 +468,11 @@ export interface PerformanceOpportunityFacets {
   execution_role?: PerformanceExecutionRole;
   /** The workload whose stored run measured the cause's function; absent when none did. */
   measured?: string;
-  /** What confirmed the cause: a measured run, or query counts that grow. Absent otherwise. */
-  confirmed?: "measured" | "query_count";
+  /** The unit-test workload that measured it, when no leading workload did. */
+  measured_in_tests?: string;
+  /** What confirmed the cause: a measured run, a measured test run, or query
+   *  counts that grow. Absent otherwise. */
+  confirmed?: "measured" | "measured_in_tests" | "query_count";
 }
 
 /**
@@ -531,10 +534,11 @@ export type PerformanceEvidenceState =
 
 export interface PerformanceEvidenceMark {
   state: PerformanceEvidenceState;
-  /** `query_count` or `measured` for `confirmed`; `query_count` for
-   *  `counter_evidence` and `ran`. */
-  basis?: "query_count" | "measured";
-  /** The leading workload that ranks the cause's loop owner (`measured`). */
+  /** `query_count`, `measured` or `measured_in_tests` for `confirmed`;
+   *  `measured_in_tests` for `measured` when only a unit-test run ranks it;
+   *  `query_count` for `counter_evidence` and `ran`. */
+  basis?: "query_count" | "measured" | "measured_in_tests";
+  /** The workload that ranks the cause's loop owner (`measured`). */
   workload?: string;
   /** The leading workloads that ran and never reached it (`not_exercised`). */
   workloads?: string[];
@@ -669,15 +673,33 @@ export type PerformanceFacetKey =
   | "actionability"
   | "plan_state"
   | "proof"
+  | "static_cost"
   | "role";
 
 /**
- * Whether anything measured that a cause's cost grows with the data
- * (`eligibility.QUEUE_PROOFS`). The queue holds `proven` causes unless asked
- * for another value. `background_unproven` is a scheduled job whose loop is
- * not shown to grow; neither unproven kind leads.
+ * Whether the code or a run shows a cause's cost (`eligibility.QUEUE_PROOFS`).
+ * The queue holds `proven` causes unless asked for another value. `unproven`
+ * is a loop whose size the code does not show and nothing measured;
+ * `background_unproven` is a scheduled job whose loop is not shown to grow;
+ * neither unproven kind leads. What the code alone shows is
+ * {@link PerformanceStaticCost}.
  */
 export type PerformanceCostProof = "proven" | "unproven" | "background_unproven";
+
+/**
+ * What the code alone shows about a cause's cost (`worth.STATIC_COSTS`),
+ * never what a run measured: a loop that grows with the data, a shape that
+ * grows by itself, a per-call cost an entry point does or does not reach, a
+ * bounded loop, or a loop whose size the code does not show. Counted only on
+ * the dashboard's scoped facets.
+ */
+export type PerformanceStaticCost =
+  | "grows_with_data"
+  | "grows_by_shape"
+  | "per_call_reached"
+  | "per_call_unreached"
+  | "bounded"
+  | "size_unknown";
 
 export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
 
@@ -704,6 +726,8 @@ export type PerformanceOpportunityQuery = {
   /** Absent means `proven`; `unproven` lists the causes the default queue leaves out;
    *  `all` lifts the proof filter. */
   proof?: PerformanceCostProof | "all";
+  /** Narrows to one static cost inside the chosen scope; absent is every value (REST only). */
+  static_cost?: PerformanceStaticCost;
   /** Keep to the default queue's stored verdict whatever state is chosen (REST only). */
   queue?: boolean;
   /** One area (a directory) at any depth (REST only). */

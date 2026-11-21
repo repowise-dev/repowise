@@ -46,6 +46,7 @@ def server_instructions(
     repo_line: str | None = None,
     workspace: bool = False,
     extra: Iterable[str] | None = None,
+    brief: bool = False,
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
@@ -53,8 +54,12 @@ def server_instructions(
     names every core tool but no workspace tool. *repo_line* says what get_why
     holds for the served repository. *workspace* says the server serves a
     workspace, the only place the workspace tools are named. *extra* lines
-    follow everything else, verbatim.
+    follow everything else, verbatim. *brief* keeps only the first line and
+    *extra*, for a host that repeats the instructions under every tool it
+    lists, where each tool's own description already says when to call it.
     """
+    if brief:
+        return "\n".join([_HEAD, *(extra or ())])
     names = set(served) if served is not None else set(TOOL_LINES) | set(CHECK_CLAUSES)
     lines = [_HEAD]
     lines += [line for name, line in TOOL_LINES.items() if name in names]

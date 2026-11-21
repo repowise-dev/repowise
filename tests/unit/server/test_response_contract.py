@@ -30,6 +30,7 @@ WAIVED: dict[tuple[str, str], str] = {
     ("GET", "/api/graph/{repo_id}/c4/mermaid"): "text/plain diagram source",
     ("GET", "/api/graph/{repo_id}/c4/structurizr"): "text/plain diagram source",
     ("GET", "/api/repos/{repo_id}/blast-radius/change.md"): "text/markdown review for agents",
+    ("GET", "/api/repos/{repo_id}/reports/first-look/export.md"): "text/markdown repo report download",
     ("GET", "/metrics"): "Prometheus text exposition",
     ("POST", "/api/providers/{provider_id}/key"): "204, no body",
     ("DELETE", "/api/providers/{provider_id}/key"): "204, no body",

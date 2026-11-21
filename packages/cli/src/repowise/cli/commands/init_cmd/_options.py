@@ -132,6 +132,8 @@ class InitRun:
     #: The finish panel's findings (StoodOut) and its first question for the agent.
     stood_out: Any = None
     first_prompt: str | None = None
+    #: The repo report this run wrote or kept (``ui.finish_panel.FirstLook``); None when none.
+    first_look: Any = None
 
 
 def resolve_structural_flags(opts: InitOptions) -> InitOptions:

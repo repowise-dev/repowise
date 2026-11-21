@@ -904,6 +904,33 @@ def queue_view(
     return replace(full, items=items, totals=replace(full.totals, shown=len(items)))
 
 
+def without_sources(queue: FixFirstQueue, opportunity_ids: frozenset[str]) -> FixFirstQueue:
+    """*queue* less the items built on *opportunity_ids*, re-ranked and recounted.
+
+    The agent surfaces (MCP, generated agent files) show no runtime evidence
+    yet, so a cause minted from a measurement alone stays on the people's
+    surfaces (REST, CLI, web). An item
+    taken out leaves the candidates and the eligible count, so the totals
+    describe the items listed.
+    """
+    kept = [i for i in queue.items if i.source.opportunity_id not in opportunity_ids]
+    dropped = len(queue.items) - len(kept)
+    if not dropped:
+        return queue
+    improves = dict(queue.by_improves)
+    for item in queue.items:
+        if item.source.opportunity_id in opportunity_ids:
+            improves[item.improves] = improves.get(item.improves, 0) - 1
+    totals = replace(
+        queue.totals,
+        candidates=queue.totals.candidates - dropped,
+        eligible=queue.totals.eligible - dropped,
+        shown=len(kept),
+    )
+    items = tuple(replace(item, rank=rank) for rank, item in enumerate(kept, 1))
+    return replace(queue, items=items, totals=totals, by_improves=improves)
+
+
 async def _build(
     session: AsyncSession,
     repository_id: str,
@@ -958,5 +985,6 @@ __all__ = [
     "load_fix_first",
     "queue_view",
     "stored_item_counts",
+    "without_sources",
     "write_fix_first_snapshot",
 ]
