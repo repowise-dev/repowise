@@ -10,12 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
-
-### Fixed
-
-- `impacted-tests` on an index older than the change's base runs the tests of a file changed in between only when its new imports or strings may lead to the change, instead of whenever its imports moved.
-
 ## [0.61.0] - 2026-11-13
 
 repowise 0.61 makes the agent surface lighter and sharper. Each client gets a tool list sized to how it loads tools: clients that send every schema with every request carry the five core tools in 1,836 tokens instead of 4,131, and the fixed Repowise text Claude Code holds on every turn drops from about 1,870 tokens to 657. Each call returns more of what an agent acts on. `get_context` lists every edit site of a symbol as line numbers per file, with recall up from 20% to 91% at 98% precision. `get_symbol` adds a one-line fact row and the tests that run the function, `search_codebase` reads grep alternations and regexes as written, and a keyless `get_answer` returns the call path for a flow question and reaches Markdown documents and synced tickets. A repeated `get_answer` returns in 0.09 s, a provider answer takes a median 8.3 s instead of 12.6 s, and the grading step after synthesis takes 0.5 s instead of 6.4 s.
