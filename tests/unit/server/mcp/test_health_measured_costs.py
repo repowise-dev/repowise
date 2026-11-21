@@ -285,8 +285,18 @@ async def test_a_measured_only_cause_stays_off_the_agent_surface(setup_mcp, sess
     assert _size(plain) == default
     assert minted not in json.dumps(plain)
     after = await get_health(include=["performance"], limit=50)
-    assert minted not in json.dumps(after["performance_opportunities"])
-    assert after["fix_first"] == performance["fix_first"]
+    assert minted not in json.dumps(after)
+    # Items, totals, facets and the summary all leave it out: only the
+    # existing measured block is new.
+    for block in (after, performance):
+        block.pop("performance_measured", None)
+        block.pop("_meta", None)
+    # A rebuild writes its plans anew, so only their ids may differ.
+    def plain(block: dict) -> str:
+        return re.sub(r'"plan_id": "[0-9a-f]{32}"', '"plan_id": ""', json.dumps(block))
+
+    assert plain(after) == plain(performance)
+    assert len(json.dumps(after)) == len(json.dumps(performance))
     shown = await get_overview()
     assert _size(shown) == overview
     assert minted not in json.dumps(shown)

@@ -718,6 +718,7 @@ async def list_performance_opportunities(
     limit: int = 20,
     offset: int = 0,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> tuple[list[PerformanceOpportunity], int]:
     """One page in the requested order, plus the exact total behind it.
 
@@ -738,6 +739,7 @@ async def list_performance_opportunities(
         file_paths=file_paths,
         area_prefix=area_prefix,
         include_unverified=include_unverified,
+        include_measured_hotspots=include_measured_hotspots,
     )
     total = int(
         (
@@ -829,6 +831,28 @@ async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> fro
         )
     )
     return frozenset(result.scalars().all())
+
+
+async def measured_hotspot_counts(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> tuple[int, int]:
+    """``(open, in the default queue)`` over the causes runtime evidence alone
+    minted that a language gate does not hold back, for a surface that shows
+    no evidence to take out of a stored rollup. One aggregate."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    row = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
+            ).where(
+                *_predicates(repository_id, include_unverified=include_unverified),
+                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            )
+        )
+    ).one()
+    return int(row[0]), int(row[1])
 
 
 async def performance_headline(
@@ -1266,6 +1290,7 @@ async def _static_causes_on(
     Only a cause whose evidence runs in production code links: a cause seen
     only from tests says nothing about a production measurement.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....symbol_spans import symbol_at
 
     out: dict[str, set[str]] = {}
@@ -1277,6 +1302,8 @@ async def _static_causes_on(
                 PerformanceOpportunity.repository_id == repository_id,
                 PerformanceOpportunity.status == "open",
                 PerformanceOpportunity.intervention_symbol.in_(batch),
+                # A cause the measurement itself minted is no static cause.
+                PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,
             )
         )
         for symbol_id, opportunity_id in result:

@@ -338,7 +338,12 @@ async def _read_pillars(
     linkage, and facets are the shared service's; this tool caps the
     collection, pages it, and serializes what comes back."""
     performance_service = PerformanceHealthService(
-        session, repository.id, reference_repository, include_unverified=req.include_unverified
+        session,
+        repository.id,
+        reference_repository,
+        include_unverified=req.include_unverified,
+        # No runtime evidence on the agent surface (``without_sources``).
+        include_measured_hotspots=False,
     )
     refactoring_service = RefactoringHealthService(
         session, repository.id, reference_repository, include_unverified=req.include_unverified
@@ -371,8 +376,6 @@ async def _read_pillars(
         actionability=req.performance_actionability,
         sort=req.performance_sort,
     )
-    if performance.page is not None:
-        performance = replace(performance, page=_without_measured_hotspots(performance.page))
     # Repository-wide, so a targeted call leaves it out.
     if "performance" in req.include_set and req.wants("performance_measured") and not pop.scoped:
         performance = replace(
@@ -535,17 +538,5 @@ async def _read_fix_first(
     full = await load_fix_first(session, repository.id, limit=None)
     full = without_sources(full, await measured_hotspot_ids(session, repository.id))
     return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full
-
-
-def _without_measured_hotspots(page: Any) -> Any:
-    """The queue page less the causes minted from a measurement alone
-    (:func:`without_sources` says why). Ceiling: the page's total, facet and
-    summary counts still include them; a count is no evidence to read."""
-    from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
-
-    kept = [i for i in page.items if i.get("biomarker_type") != MEASURED_HOTSPOT]
-    if len(kept) == len(page.items):
-        return page
-    return replace(page, items=kept)
 
 
