@@ -135,12 +135,15 @@ def _normalize(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # A hot-path mirror of ``repowise.core.test_commands.DISTILL_TEST_RE``,
+    # the one "runs tests" predicate: this hook may not import
+    # ``repowise.core``. ``test_test_commands.py`` asserts the two patterns
+    # are the same string; change both together.
     (
         "test_output",
         re.compile(
-            r"^(pytest\b|py\.test\b|jest\b|vitest\b|cargo (?:test|nextest)\b|"
-            r"go test\b|npm (?:test|run test)\b|pnpm (?:test|run test)\b|"
-            r"yarn (?:test|run test)\b)"
+            r"^(?:pytest\b|py\.test\b|jest\b|vitest\b|cargo(?:\.exe)? (?:test|nextest)\b|"
+            r"go(?:\.exe)? test\b|(?:npm(?:\.cmd)?|pnpm|yarn) (?:test|run test)\b)"
         ),
     ),
     (

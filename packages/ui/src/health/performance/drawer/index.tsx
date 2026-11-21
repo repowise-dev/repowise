@@ -8,7 +8,7 @@ import { AiPromptButton } from "../../ai-prompt-button";
 import type { PerformanceViewAdapter } from "../adapter";
 import { useOpportunityDetail } from "../cache";
 import { RawObservations } from "../evidence";
-import { opportunityTitle } from "../presentation";
+import { isMeasuredHotspot, opportunityTitle } from "../presentation";
 import {
   CodeSection,
   FixSummary,
@@ -99,13 +99,16 @@ export default function OpportunityDrawer({
           {/* The row's place in the queue: a lookup by id has no list. */}
           <WhyRankedSection current={current} position={opportunity.rank_position} />
           <CallerPathsSection current={current} adapter={adapter} />
-          <RawObservations
-            opportunityId={current.opportunity_id}
-            preview={current.evidence}
-            previewTruncated={current.evidence_truncated}
-            total={current.observations_total}
-            adapter={adapter}
-          />
+          {/* A measured hotspot has no static observation: "Runs that measured it" is its evidence. */}
+          {isMeasuredHotspot(current) ? null : (
+            <RawObservations
+              opportunityId={current.opportunity_id}
+              preview={current.evidence}
+              previewTruncated={current.evidence_truncated}
+              total={current.observations_total}
+              adapter={adapter}
+            />
+          )}
           <AgentHandoffSection current={current} resolved={resolved} />
         </div>
 

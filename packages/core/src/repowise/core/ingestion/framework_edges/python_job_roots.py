@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Any
 
+from ...pyparse import parse_python
 from ..decorator_names import decorator_base
 from ..source_text import source_bytes
 from .base import DetectionContext, FrameworkHandler
@@ -74,7 +75,7 @@ def _autodiscover_calls(blob: bytes) -> list[tuple[list[str] | None, str]]:
     if _AUTODISCOVER.encode() not in blob:
         return []
     try:
-        tree = ast.parse(blob)
+        tree = parse_python(blob)
     except _PARSE_ERRORS:
         return []
     return [
@@ -136,7 +137,7 @@ def _is_dag_file(blob: bytes) -> bool:
     if b"airflow" not in blob:
         return False
     try:
-        tree = ast.parse(blob)
+        tree = parse_python(blob)
     except _PARSE_ERRORS:
         return False
     return _imports_airflow(tree) and _builds_a_dag(tree)

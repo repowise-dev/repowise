@@ -1560,6 +1560,8 @@ export interface CoverageSummary {
   ingested_commit_sha: string | null;
   report_paths: CoverageReportPaths | null;
   freshness: CoverageSummaryFreshness | null;
+  unreported_file_count: number;
+  unreported_files: string[];
 }
 
 /** Whether the coverage was measured at the commit the index describes. */

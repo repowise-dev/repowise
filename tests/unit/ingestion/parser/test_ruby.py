@@ -98,3 +98,28 @@ class TestRubyReceiverlessTwin:
         )
         assert sites == [(3, "conn"), (4, None), (5, None), (5, "conn")]
         assert all(c.bare_name_fallback for c in result.calls if c.receiver_name == "conn")
+
+
+def test_operator_and_setter_methods_are_symbols(parser: ASTParser) -> None:
+    source = (
+        b"class V\n"
+        b"  def ==(other); true; end\n"
+        b"  def <=>(o); 0; end\n"
+        b"  def [](i); end\n"
+        b"  def []=(i, v); end\n"
+        b"  def +(o); end\n"
+        b"  def -@; end\n"
+        b"  def name=(v); end\n"
+        b"  def valid?; end\n"
+        b"  def self.[](x); end\n"
+        b"  def self.config=(c); end\n"
+        b"end\n"
+    )
+    result = parser.parse_file(_make_file_info("lib/v.rb", "ruby"), source)
+    methods = [s for s in result.symbols if s.parent_name == "V"]
+    names = [s.name for s in methods]
+    for name in ("==", "<=>", "[]", "[]=", "+", "-@", "name=", "valid?", "config="):
+        assert name in names, name
+    assert names.count("[]") == 2  # the instance and the singleton method
+    ids = {s.id for s in methods}
+    assert {"lib/v.rb::V::==", "lib/v.rb::V::[]=", "lib/v.rb::V::name="} <= ids

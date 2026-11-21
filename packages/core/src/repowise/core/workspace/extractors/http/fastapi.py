@@ -13,6 +13,7 @@ import re
 import textwrap
 from typing import TYPE_CHECKING
 
+from ....pyparse import parse_python
 from ..base import line_at
 from ..calls import code_matches
 from ..langs import PYTHON
@@ -162,7 +163,7 @@ def _python_imports(content: str) -> dict[str, tuple[str, str | None]]:
     module-level name to another module reads as the module-level one.
     """
     try:
-        tree = ast.parse(textwrap.dedent(content))
+        tree = parse_python(textwrap.dedent(content))
     except (SyntaxError, ValueError):
         return {}
     nested: list[ast.AST] = []

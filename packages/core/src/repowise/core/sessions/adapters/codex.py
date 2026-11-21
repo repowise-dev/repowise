@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, ClassVar
 
+from repowise.core.codex_home import codex_home
 from repowise.core.fs_walk import iter_glob
 from repowise.core.sessions.adapters.base import (
     INTENT_EDIT_CALLS,
@@ -102,7 +103,7 @@ class CodexAdapter(HarnessAdapter):
         ``cwd`` threaded out of ``session_meta``, which is what the miners
         scope on, so returning the full set here is correct rather than lazy.
         """
-        root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
+        root = projects_root if projects_root is not None else codex_home() / "sessions"
         if not root.is_dir():
             return []
         return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())

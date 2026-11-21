@@ -924,7 +924,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -1420,9 +1419,14 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
+        or run.config.generation_changed
         or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
@@ -2103,7 +2107,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 

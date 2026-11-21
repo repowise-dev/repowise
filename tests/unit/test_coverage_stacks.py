@@ -906,6 +906,56 @@ def test_the_build_unit_index_names_the_same_pip_applications():
     assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
 
 
+_NESTED = {
+    "pyproject.toml": '[project]\nname = "app"\n',
+    "app/__init__.py": "",
+    "tests/test_app.py": "",
+    # A unit of its own whose conftest imports what only its own install brings.
+    "enterprise/pyproject.toml": '[project]\nname = "enterprise"\n',
+    "enterprise/__init__.py": "",
+    "enterprise/server/__init__.py": "",
+    "enterprise/tests/unit/conftest.py": "import server\n",
+    "enterprise/tests/unit/test_server.py": "",
+}
+
+
+def _python_by_root(tree: dict[str, str]) -> dict[str, object]:
+    paths = sorted(tree)
+    files = {p: tree[p] for p in files_to_read(paths) if p in tree}
+    return {s.root: s for s in detect_stacks(paths, files) if s.language == "python"}
+
+
+def test_the_root_unit_ignores_a_nested_unit_and_covers_only_its_own_packages():
+    found = _python_by_root(_NESTED)
+    assert set(found) == {"", "enterprise"}
+    root = found[""]
+    assert root.test == "pytest --ignore=enterprise --cov=app --cov-report=xml --cov-context=test"
+    assert (root.test_paths, root.test_ignores) == ((), ("enterprise",))
+    # The nested unit keeps its own run and its own packages.
+    assert found["enterprise"].test.startswith("pytest --cov=server ")
+    assert found["enterprise"].test_ignores == ()
+
+
+def test_a_named_tests_directory_needs_no_ignore():
+    # A script's test file makes the root name tests/, which the nested unit is not under.
+    found = _python_by_root({**_NESTED, "scripts/test_seed.py": ""})
+    assert found[""].test.startswith("pytest tests --cov=app ") and found[""].test_ignores == ()
+
+
+def test_a_root_whose_only_tests_are_a_nested_units_prints_no_run():
+    # A root pytest.ini marks a suite, but every test sits in the nested unit.
+    tree = {**{p: t for p, t in _NESTED.items() if p != "tests/test_app.py"}, "pytest.ini": "[pytest]\n"}
+    assert set(_python_by_root(tree)) == {"enterprise"}
+
+
+def test_a_workspace_member_the_root_runs_is_not_ignored():
+    tree = {**_NESTED, "pyproject.toml": '[project]\nname = "app"\n[tool.uv.workspace]\nmembers = ["enterprise"]\n',
+            "uv.lock": ""}
+    found = _python_by_root(tree)
+    assert set(found) == {""} and found[""].test_ignores == ()
+    assert "--cov=enterprise" in found[""].test
+
+
 def test_a_root_requirements_file_keeps_its_pytest_guess():
     """The repository root's requirements file is the project's; only units below it need a suite."""
     paths = ["requirements.txt", "main.py", "test_main.py"]
