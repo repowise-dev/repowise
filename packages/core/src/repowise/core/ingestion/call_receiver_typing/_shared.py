@@ -16,8 +16,9 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 #: order: one file's calls read the bindings and declarations of the files its
 #: callees live in, so a handful missed nearly every lookup (99.5% of
 #: ``_bindings_for`` calls rescanned a file on a 24-file update of this
-#: repository). Ceiling: 256 files of scan results and source text, about 5 MB
-#: per resolver at 20 KB a file; a larger repository still rescans past it.
+#: repository). Ceiling: each of the dozen or so caches sized by this keeps up
+#: to 256 files of source text or scan results, tens of MB per resolver at
+#: worst; a larger repository still rescans past it.
 _SOURCE_CACHE_FILES = 256
 
 _K = TypeVar("_K")
