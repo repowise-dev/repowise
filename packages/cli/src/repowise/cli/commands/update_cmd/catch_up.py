@@ -71,6 +71,10 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
     console.print(f"[bold]repowise update --full[/bold]: bringing {repo_path} fully up to date")
 
     def update() -> Any:
+        from repowise.core.update_lock import release_own_update_lock
+
+        # A pass before this one holds the lock until the process exits.
+        release_own_update_lock(repo_path)
         return run_update(
             path=str(repo_path),
             provider_name=opts.provider_name,

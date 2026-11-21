@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from repowise.cli.commands import watch_cmd
 from repowise.cli.helpers import CommandTarget
 from repowise.cli.main import cli
+from repowise.core.update_lock import release_own_update_lock
 
 
 @pytest.mark.parametrize(
@@ -231,7 +232,7 @@ class TestReleaseOwnUpdateLock:
         assert try_acquire_update_lock(tmp_path, "abc123") is None
         assert update_lock_path(tmp_path).exists()
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert not update_lock_path(tmp_path).exists()
 
@@ -250,12 +251,12 @@ class TestReleaseOwnUpdateLock:
             encoding="utf-8",
         )
 
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
         assert lock.exists()
 
     def test_no_lock_is_not_an_error(self, tmp_path) -> None:
-        watch_cmd._release_own_update_lock(tmp_path)
+        release_own_update_lock(tmp_path)
 
 
 class TestEventPaths:
