@@ -391,21 +391,26 @@ _C_TYPE_WORDS = frozenset(
 )
 
 
+_C_CONST_TYPE = re.compile(
+    rf"^\s*(?:(?:{_MODIFIERS})\s+)*const\s+(?:{'|'.join(sorted(_C_TYPE_WORDS))})\b"
+)
+
+
 def _reads_as_type(head: re.Match[str], line: str) -> bool:
-    """Whether a typed head's first word is a type: one spelled with generics
-    or an array, or, on a line that ends as a declaration does (so prose such
-    as ``Returns foo(x) when`` or ``data frame load(path)`` is none), a
-    builtin or ``_t`` name, a capitalised name (``List``, ``java.util.Map``)
-    or one with a pointer or reference. That mark abuts the type or the name
-    (``char *p``, ``int& r``); ``a * f(x)`` and ``ok && f(x)`` are operators."""
+    """Whether a typed head's first word is a type, on a line that ends as a
+    declaration does (prose such as ``Returns foo(x) when`` does not): one
+    spelled with generics or an array, a pointer mark before the name
+    (``char *p``), a builtin or ``_t`` name, or a capitalised name (``List``,
+    ``java.util.Map``). ``a * f(x)``, ``a*f(x)`` and ``ok && f(x)`` are
+    operators."""
     shape = head.group("shape")
-    if "<" in shape or "[" in shape:
-        return True
     word = head.group("type").rsplit(".", 1)[-1]
     if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
         return False
+    if shape[:1] in ("<", "["):  # spelled on the type: ``List<T>``, ``int[]``
+        return True
     marks = shape.strip()
-    if marks and "&&" not in marks and not (shape[0].isspace() and shape[-1].isspace()):
+    if marks and "&&" not in marks and shape[0].isspace() and not shape[-1].isspace():
         return True
     return (
         word in _C_TYPE_WORDS
@@ -422,7 +427,8 @@ def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
     led by a C or Java type, or by a Kotlin ``fun``, declares only its name."""
 
     def check(line: str) -> bool:
-        head = _DECLARATION_HEAD.match(line)
+        # ``const char *name(`` leads with a type, not a ``const`` binding.
+        head = None if _C_CONST_TYPE.match(line) else _DECLARATION_HEAD.match(line)
         if head is None:
             named = _KOTLIN_HEAD.match(line)
             if named is None:
