@@ -576,6 +576,62 @@ async def test_adding_owner_line_pct_with_nothing_to_move_succeeds(tmp_path: Pat
     assert "primary_owner_line_pct" in _table_columns(db_path, "git_metadata")
 
 
+@pytest.mark.asyncio
+async def test_adding_static_cost_fills_it_from_each_rows_own_facets(tmp_path: Path) -> None:
+    """A store written before ``static_cost`` gets the column filled from each
+    opportunity's stored marker and facets, with no analysis rerun."""
+    import json
+
+    from repowise.core.persistence import create_session_factory, crud, get_session
+    from repowise.core.persistence.models import PerformanceOpportunity
+
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    stored = {
+        "grows": ("io_in_loop", {"loop_magnitude": "grows_with_data"}),
+        "unknown": ("io_in_loop", {"loop_magnitude": "unknown"}),
+        "per_call": ("hot_path_sync_io", {"exposure": "entry_reachable"}),
+        "no_facets": ("io_in_loop", None),
+    }
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await crud.upsert_repository(session, name="r", local_path=str(tmp_path))
+            session.add_all(
+                PerformanceOpportunity(
+                    repository_id=repo.id,
+                    opportunity_id=name,
+                    biomarker_type=marker,
+                    details_json=json.dumps({} if facets is None else {"facets": facets}),
+                )
+                for name, (marker, facets) in stored.items()
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, 'ALTER TABLE "performance_opportunities" DROP COLUMN "static_cost"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    got = dict(
+        _fetchall(db_path, "SELECT opportunity_id, static_cost FROM performance_opportunities")
+    )
+    assert got == {
+        "grows": "grows_with_data",
+        "unknown": "size_unknown",
+        "per_call": "per_call_reached",
+        "no_facets": "size_unknown",
+    }
+
+
 def test_postgres_reconcile_ignores_pgvector_type_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     import warnings
     from types import SimpleNamespace

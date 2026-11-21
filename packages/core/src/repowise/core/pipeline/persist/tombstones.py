@@ -307,27 +307,26 @@ async def tombstone_absent_file_pages(
 
     Returns the page ids marked, so the caller can drop them from the
     full-text index once its session has closed, on the same terms as
-    :func:`mark_tombstone_pages`.
+    :func:`mark_tombstone_pages`. Symbols from the same absent files are
+    removed in this transaction too.
     """
-    from sqlalchemy import select
+    from sqlalchemy import delete, select
 
-    from repowise.core.persistence.models import Page
+    from repowise.core.persistence.models import Page, WikiSymbol
 
     root = Path(repo_path)
     res = await session.execute(
         select(Page).where(
             Page.repository_id == repo_id,
             Page.page_type.in_(FILE_BACKED_PAGE_TYPES),
-            Page.freshness_status != "tombstone",
         )
     )
-    live = list(res.scalars().all())
+    pages = list(res.scalars().all())
+    live = [page for page in pages if page.freshness_status != "tombstone"]
     if not live:
         return []
 
-    absent = [p for p in live if not (root / (p.target_path or "")).exists()]
-    if not absent:
-        return []
+    absent_live = [page for page in live if not (root / (page.target_path or "")).exists()]
 
     # Every page absent means the paths are not being resolved against the
     # tree they were written from — a wrong root, a bare-repo checkout, a
@@ -335,7 +334,7 @@ async def tombstone_absent_file_pages(
     # on that reading is worse than leaving it, and unlike a partial mistake
     # it is not recoverable by re-indexing a file. Refuse, loudly, and let the
     # rest of the run proceed.
-    if len(absent) == len(live):
+    if len(absent_live) == len(live):
         _log.error(
             "tombstone_sweep_refused repo_id=%s file_pages=%d root=%s: every file "
             "page's path is missing from the checkout, which reads as a wrong "
@@ -346,8 +345,23 @@ async def tombstone_absent_file_pages(
         )
         return []
 
+    absent_paths = {
+        page.target_path
+        for page in pages
+        if page.target_path and not (root / page.target_path).exists()
+    }
+    if not absent_paths:
+        return []
+
+    await session.execute(
+        delete(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_(absent_paths),
+        )
+    )
+
     marked: list[str] = []
-    for page in absent:
+    for page in absent_live:
         # Deleted, not renamed: rename detection is the diff-driven sweep's
         # job and it has evidence this one does not.
         _tombstone(page, [])
@@ -357,7 +371,7 @@ async def tombstone_absent_file_pages(
         "file_pages_tombstoned_absent",
         repo_id=repo_id,
         count=len(marked),
-        sample=[p.target_path for p in absent[:3]],
+        sample=[page.target_path for page in absent_live[:3]],
     )
     return marked
 

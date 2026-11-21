@@ -17,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.incremental.persist_index import (
+    BUILD_UNITS_STEP,
     IncrementalPersist,
     capture_commits,
     mark_tombstones,
@@ -377,6 +378,7 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
     Step("External systems refresh", refresh_externals, range_scoped=True),
     # Last of the store writes: the steps above upsert rows for deleted paths
     # too. Reports its own failures, one sub-step at a time.

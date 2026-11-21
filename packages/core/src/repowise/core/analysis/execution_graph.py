@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol, module_symbol_id
 
-UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
+UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique", "import_elsewhere"})
 # Not a test classifier: flows also leave out demos, examples, scripts and
 # benchmarks, which are no more product code than tests are.
 _NON_PRODUCT_FLOW_PATH_RE = re.compile(
@@ -36,16 +37,6 @@ _NON_PRODUCT_FLOW_PATH_RE = re.compile(
 )
 CallTargetBasis = Literal["call-site", "name-fallback"]
 _KeyT = TypeVar("_KeyT", bound=Hashable)
-
-
-def file_of_symbol(symbol_id: str) -> str:
-    """Return the file component of a ``path::symbol`` node id."""
-    return symbol_id.split("::", 1)[0]
-
-
-def module_node_id(path: str) -> str:
-    """Return the synthetic module-scope symbol id for *path*."""
-    return f"{path}::__module__"
 
 
 def is_reliable_execution_edge(edge_type: str | None, resolution_origin: str | None = None) -> bool:
@@ -326,7 +317,7 @@ class ExecutionGraphIndex:
         answer the same node for all of them.
         """
         if func_start == 0:
-            module = module_node_id(path)
+            module = module_symbol_id(path)
             return module if module in self.nodes else None
         exact = self._by_file_line.get((path, func_start))
         if exact is not None and (func_end is None or self._span_end.get(exact, func_end) <= func_end):
@@ -507,12 +498,11 @@ __all__ = [
     "UNRELIABLE_EXECUTION_ORIGINS",
     "ExecutionGraphIndex",
     "ReachInfo",
-    "file_of_symbol",
+    "file_of_symbol",  # re-exported for code outside this package
     "is_excluded_execution_path",
     "is_reliable_call_edge",
     "is_reliable_execution_edge",
     "is_walkable_execution_edge",
-    "module_node_id",
     "path_to_sink",
     "reachable_to_sink",
 ]

@@ -1,4 +1,4 @@
-"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
+"""DeadCodeAnalyzer — pure graph + git-metadata dead-code detection.
 
 All analysis is graph traversal + SQL. No LLM calls. Must complete in
 < 10 seconds.
@@ -145,7 +145,7 @@ _IDENTIFIER_RE = IDENTIFIER_RE
 #: omission is the bug.
 
 #: Read budgets for the unindexed scan. These files are skipped *because* they
-#: are large â€” one corpus repo ships a 104 MB generated parser â€” so the scan is
+#: are large — one corpus repo ships a 104 MB generated parser — so the scan is
 #: bounded per file and in total. Tree-sitter costs ~95 MB of RSS per MB of
 #: source; this pass is a byte scan and costs far less, but the bound is what
 #: keeps it from ever becoming the expensive thing.
@@ -187,7 +187,7 @@ class DeadCodeAnalyzer:
         self.git_meta_map = git_meta_map or {}
         # Source files ingestion could not read (currently: dropped on size).
         # An unread importer is invisible to the graph, so "no importers" stops
-        # meaning "unused" and starts meaning "we did not look" â€” which is how
+        # meaning "unused" and starts meaning "we did not look" — which is how
         # one skipped entry point turned into 38 deletion-ready components at
         # high confidence (#1237). ``(path, reason)`` pairs; the reason rides
         # along so the evidence line can say why.
@@ -233,7 +233,7 @@ class DeadCodeAnalyzer:
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
             parsed_files or {}, source_map
         )
-        # Files substituted in via bundler ``resolve.alias`` config â€” named
+        # Files substituted in via bundler ``resolve.alias`` config — named
         # by the config, never imported by path.
         self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(
             parsed_files or {}, source_map
@@ -250,7 +250,7 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
-        # Cache for JSX prop-guard extraction: maps pred_file â†’ list of
+        # Cache for JSX prop-guard extraction: maps pred_file → list of
         # (parent_fn, child_component, guard_prop) triples. Populated lazily
         # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
         # disk and parsed by tree-sitter at most once per analysis run.
@@ -325,8 +325,9 @@ class DeadCodeAnalyzer:
         cfg = config or {}
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
         # Machine output known only by its content (a webpack chunk, a minified
-        # bundle) joins the whitelist, which every pass already honours.
-        whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
+        # bundle) and code a data folder holds join the whitelist, which every
+        # pass already honours.
+        whitelist = set(cfg.get("whitelist", [])) | self._unjudged_by_origin()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
         # The settle passes rescan every file's text; an unchanged file's
@@ -587,7 +588,7 @@ class DeadCodeAnalyzer:
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
             # internal one is a name collision rather than evidence. That is
-            # not hypothetical â€” a published API dump lists a public `add`, and
+            # not hypothetical — a published API dump lists a public `add`, and
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
@@ -793,17 +794,21 @@ class DeadCodeAnalyzer:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _content_machine_output(self) -> set[str]:
-        """Files ``code_origin`` reads as generated or vendored from their bytes.
+    def _unjudged_by_origin(self) -> set[str]:
+        """Files ``code_origin`` reads as generated, vendored or data.
 
-        The path-only rules are asked per candidate by ``never_flag_path``.
-        ``is_test=False`` skips the test-path check, which cannot change
-        either answer and is half the cost.
+        Generated and vendored are read from the file's bytes; the path-only
+        rules are asked per candidate by ``never_flag_path``. Data is code a
+        content folder holds for the product to read by path, which no import
+        reaches. ``is_test=False`` skips the test-path check, half the cost: a
+        test file is never judged anyway, so whether it reads as test or as
+        data here changes nothing.
         """
         return {
             path
             for path, data in self._source_map.items()
-            if code_origin(path, data, is_test=False) in ("generated", "vendored")
+            if code_origin(path, data, is_test=False, repo_root=self._repo_root)
+            in ("generated", "vendored", "data")
         }
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:
@@ -818,9 +823,9 @@ class DeadCodeAnalyzer:
             return True
         if never_flag_path(path):
             return True
-        # Workspace-driven never-flag â€” set by language warmups that read
+        # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo
-        # ``[[example]]`` / ``[[bench]]`` targets, â€¦). Lets each language
+        # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
         # learn conventions from its own build files instead of us
         # extending the hardcoded glob list every time a repo defines a
         # custom source set like ``testFixtures`` / ``javaPoet`` /

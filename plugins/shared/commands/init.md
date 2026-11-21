@@ -1,12 +1,22 @@
 ---
 frontmatter: |
     description: Set up Repowise for this codebase (install, options, indexing).
-    allowed-tools: Bash(repowise --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
+    allowed-tools: Bash(repowise --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(repowise generate:*), Bash(repowise doctor:*), Bash(repowise decision:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
 ---
 
 # Repowise Init
 
 You are helping the user set up Repowise for their codebase. Follow this sequence precisely.
+
+Only these steps may need the user, and only when they apply:
+
+1. Installing repowise, if it is missing (Step 1).
+2. A model for the documentation, if they want one (Step 3). The default needs
+   no answer: no key, no spend.
+3. Approving the cost estimate, only after they chose a model (Step 6).
+4. Restarting the agents init names (Step 7). You cannot do this yourself.
+
+Ask nothing else unless a step fails and tells you to.
 
 ## Step 1: Check if repowise is installed
 
@@ -57,23 +67,27 @@ key. I'll run `repowise init --yes --no-prose` unless you want to pick:
 
 1. **Built from code** (default, no key): the full index, health, dead code,
    and documentation built from code. No model calls, no cost.
-2. **Written by a model**: a model writes the documentation and reads
-   decisions from PRs, git history and code comments. Needs a provider, and
-   shows the estimated cost before any model call. You can start with option 1
-   and add this later with `repowise generate`.
+2. **Written by a model**: indexes with option 1 first, then a model writes
+   the documentation with `repowise generate`. Needs a provider, and shows the
+   estimated cost before any model call.
 3. **Index only**: graph and essential git history, no documentation. For very
    large repos; `repowise update --full` adds the rest later.
 4. **Show me the flags.**"
 
 If the user does not answer, or you are running unattended, take option 1.
 
-- **Built from code:** skip provider selection. The command is
-  `repowise init --yes --no-prose`. Go to Step 3b.
-- **Written by a model:** go to Step 3b, then Step 4.
+- **Built from code:** the command is `repowise init --yes --no-prose`.
+  Go to Step 3b.
+- **Written by a model:** the same command; Step 6 adds the model after it.
+  Go to Step 3b.
 - **Index only:** the command is `repowise init --yes --no-prose --mode fast`.
   Go to Step 3b.
 - **Show me the flags:** print the reference below, then ask whether you
   should build the command or they will.
+
+If the user names directories to leave out (`vendor/`, `generated/`, data or
+build output), add each as `-x 'PATTERN'`. `.gitignore` is already respected.
+Do not ask about this separately.
 
 ```
 repowise init [PATH]
@@ -169,15 +183,14 @@ Whichever you pick, say which in one line so the user can correct you. If
 `init` prints the old and new target of the global entry, relay it: the user
 may want it pointed back.
 
-Then continue to Step 4 for documentation written by a model, or Step 5
-otherwise.
+Then continue to Step 5. Step 4 is used only by Step 6, for a model.
 
 ## Step 4: Provider selection (written by a model only)
 
 **Skip this entire step unless the user chose documentation written by a
-model.** A missing key is not a blocker. If the user has no key, do not stop and
-do not ask again: run `repowise init --yes --no-prose` and tell the user they can
-add a model later with `repowise generate`.
+model.** Step 6 runs it, after Step 5 has built the index. A missing key is not a
+blocker: if the user has no key, do not stop and do not ask again. Tell them they
+can add a model later with `repowise generate`, and go to Step 7.
 
 Do not read, test or print the user's environment variables or key values
 yourself. `repowise init` picks up a provider key from the environment and
@@ -207,66 +220,63 @@ Every provider SDK ships with `repowise` itself, so there is no per-provider
 package to install. If a provider import fails, the install is broken:
 reinstall repowise with the same installer and run `repowise doctor`.
 
-## Step 5: Exclusions
+## Step 5: Run init
 
-Before running the command, ask:
+The command is `repowise init --yes --no-prose --progress json --source plugin_command`
+plus any flags from Steps 3 and 3b. `--yes` answers every prompt with its
+default; `--no-prose` makes sure nothing is spent. In a folder that holds
+several repos, `--yes` indexes all of them; `--repos a,b` picks some.
 
-"Any directories or patterns you want to exclude from indexing? Common ones to skip: `vendor/`, `generated/`, large data directories, build artifacts. Your `.gitignore` is already respected automatically. Press Enter to skip."
-
-Add any exclusions as `-x` flags.
-
-## Step 6: Run it
-
-The unattended command is `repowise init --yes --no-prose`. `--yes` answers
-every prompt with its default and pre-approves the cost; `--no-prose` makes sure
-nothing is spent. Without `--no-prose`, `--yes` uses a model whenever a key is
-set; a logged-in agent CLI only with `--provider`. In a folder that holds
-several repos, `--yes` indexes all of them; `--repos a,b` picks some. A model run passes `--yes` only after the user approved the estimate
-(`repowise init --dry-run` prints it).
-
-Show the user the exact command you're about to run. Ask for confirmation.
+Show the command in one line and run it. Do not wait for a confirmation: it
+spends nothing.
 
 Run it in the background. A small repo takes under a minute; a few thousand
 files can take several minutes, longer than many tool timeouts. Wait for the
 process to exit instead of relying on a fixed timeout, then read its exit code:
 
 - `0`: ready.
-- `2`: finished with gaps. Everything is saved; the last line names what is
-  missing and the command that adds it.
+- `2`: finished with gaps. Everything is saved; the summary's `warnings` name
+  what is missing and the command that adds it.
 - `130`: interrupted. `repowise init --resume` (same flags) continues it.
 - anything else: failed. Run `repowise doctor`.
 
-With `--progress json`, init writes one JSON event per line to stdout and ends
-on a summary line with the status, mode, spend and next commands.
+stdout is one JSON event per line; the last line is the summary. Keep it for
+Step 7: `restart_required`, `restart_hosts`, `connect`, `mcp_tools`,
+`findings`, `mode`, `files_written`, `long_running` and `first_prompt`.
 
 `repowise status` reports a first run as incomplete until it exits, so read it
 after the process ends. Ctrl+C is safe at any point: running `{{cmd:init}}` again
 resumes with `--resume`.
 
+## Step 6: A model, only if the user chose one
+
+Run Step 4, then `repowise generate --dry-run` and show the estimate in one
+line. Wait for a yes. On yes, run `repowise generate --yes`. If the user
+declines, or says nothing, stop here: the index and the documentation built
+from code are complete, and `repowise generate` adds the model later.
+
 ## Step 7: Post-setup
 
-After init exits with `0` or `2`:
+After init exits with `0` or `2`, from the summary line:
 
-1. Run `repowise status` to show the summary.
-2. Tell the user:
-   - "Run `repowise serve` to open the dashboard. It needs Node.js 20+, and the
-     first run downloads the UI. It starts on port 3000, or the next free port."
-   - "The MCP tools appear after you restart your agent, or run `/mcp` in
-     Claude Code. They are not active in this session yet."
-     **Only if you did not pass `--no-editor-setup`.** With that flag nothing was
-     registered and no editor files were written, so say instead: "The index is
-     built. I did not register it as your global MCP server and wrote no editor
-     files into the repo (this looked like a temporary checkout). To wire it up,
-     re-run `repowise init` without `--no-editor-setup`."
-   - "After the restart, try asking me 'give me a tour of this codebase' or
-     'what depends on utils.py?'"
-   - "Run `{{cmd:status}}` anytime to check the index, and `{{cmd:update}}`
-     after code changes to keep it in sync."
-3. If the documentation was built from code, add one line: "`repowise generate`
-   has a model write the documentation and read decisions from PRs and
-   history, with a cost estimate first." For an Index only run, name
-   `repowise update --full` instead.
-4. If CLAUDE.md was generated (default): "I've also generated a CLAUDE.md with codebase context that I'll read on every session."
-5. Offer the decision check in one line: "I can check the decisions mined from
+1. **Restart.** If `restart_required` is true, tell the user: "Restart
+   {names from `restart_hosts`} or reload the window, then tell me. In Claude
+   Code, `/mcp` also works." You cannot do this yourself; wait for them. If it
+   is false, the tools are already loaded.
+   With `--no-editor-setup` nothing was registered; say instead: "The index is
+   built. I did not register it with your agents and wrote no editor files
+   (this looked like a temporary checkout). Re-run `repowise init` without
+   `--no-editor-setup` to wire it up."
+2. **Report in at most six lines:** what the codebase is, its health and lowest
+   file, up to three findings, the docs mode (`mode.label`), what each agent
+   lists (`mcp_tools`, one line each), and the files init added. If `connect`
+   names agents, add their `command` in one line. End with: "Run `repowise
+   serve` to open the dashboard (needs Node.js 20+)." Never run a command in
+   `long_running` in the foreground: it does not return.
+3. Offer one next step: after the restart, ask `first_prompt`. For documentation built from code, `repowise generate` has a
+   model write it, with a cost estimate first; for an Index only run, name
+   `repowise update --full` instead. `{{cmd:status}}` checks the index and
+   `{{cmd:update}}` keeps it in sync.
+4. Offer the decision check in one line: "I can check the decisions mined from
    this repository's history on its busiest files, and keep the real ones. Want
    me to?" On yes, run `repowise decision discover` and follow what it prints.

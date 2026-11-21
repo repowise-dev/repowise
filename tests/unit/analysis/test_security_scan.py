@@ -644,11 +644,34 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    def test_match_fstring_sql_helper_branches(self) -> None:
+        from repowise.core.analysis.security.patterns import _PATTERNS
+        from repowise.core.analysis.security.scanner import _match_fstring_sql
+
+        pattern = next(p for p, k, _ in _PATTERNS if k == "fstring_sql")
+        # Case 1: Match starts in masked code (e.g. comment) -> returns None
+        line = '# f"SELECT * FROM users WHERE id = {user_id}"'
+        masked = " " * len(line)
+        assert _match_fstring_sql(pattern, line, masked, [line], 1) is None
+
+        # Case 2: No match in line -> returns None
+        line_no_match = "x = 42"
+        assert _match_fstring_sql(pattern, line_no_match, line_no_match, [line_no_match], 1) is None
+
+        # Case 3: Match valid in unmasked code -> returns Match
+        line_valid = 'q = f"{p}" + f"SELECT * FROM users WHERE id = {uid}"'
+        match = _match_fstring_sql(pattern, line_valid, line_valid, [line_valid], 1)
+        assert match is not None
+        assert "SELECT" in match.group()
 
     @pytest.mark.parametrize(
         ("line", "kind"),
@@ -1218,6 +1241,40 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     @pytest.mark.parametrize(
+        "line",
+        [
+            '  SECRETS$ADD_SECRET = "SECRETS$ADD_SECRET",\n',
+            '  SETTINGS$LLM_API_KEY = "SETTINGS$LLM_API_KEY",\n',
+            '  FEEDBACK$PASSWORD = "FEEDBACK$PASSWORD",\n',
+        ],
+    )
+    def test_an_enum_member_holding_its_own_dollar_joined_name_is_not_a_secret(
+        self, line: str
+    ) -> None:
+        # i18n key enums join a namespace to the key with ``$``.
+        source = "export enum I18nKey {\n" + line + "}\n"
+        kinds = set(self._kinds(source, "declaration.ts"))
+        assert not {"hardcoded_secret", "hardcoded_password"} & kinds
+
+    def test_a_dollar_name_holding_a_different_value_is_still_a_secret(self) -> None:
+        value = "Zq8" + "vR2mT9xLp4"
+        assert "hardcoded_secret" in self._kinds(f'const $api_key = "{value}";\n', "a.js")
+
+    @pytest.mark.parametrize(
+        ("source", "path"),
+        [('password = "pass$word"\n', "config.py"), ('$password = "pass$word";\n', "config.php")],
+    )
+    def test_a_dollar_inside_a_password_does_not_make_it_the_name(
+        self, source: str, path: str
+    ) -> None:
+        assert "hardcoded_password" in self._kinds(source, path)
+
+    @pytest.mark.parametrize("name", ["publicKeyToken", "$publicKeyToken", "ASSEMBLY$publicKeyToken"])
+    def test_an_excluded_key_name_stays_excluded_behind_a_dollar(self, name: str) -> None:
+        source = f'{name} = "b03f5f7f11d50a3a"\n'
+        assert "hardcoded_secret" not in self._kinds(source, "a.js")
+
+    @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
     )
@@ -1484,6 +1541,9 @@ class TestSecretPrecision:
             ("aura/Pay/Pay.cmp", '<c:pay token="{#v.sessionToken}"/>\n'),
             ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
             ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
+            ("src/tree.ts", "const TOKEN = '^(-?\\\\d{1,2}|null)$';\n"),
+            ("src/ids.py", 'SESSION_TOKEN = r"^tok_(\\w+|anon)_session$"\n'),
+            ("src/ids.py", 'API_KEY = "^(live|test)_key$"\n'),
         ],
     )
     def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
@@ -1526,6 +1586,11 @@ class TestSecretPrecision:
         [
             ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
             ('TOKEN = "Zx9[a]+Qw8Rt5Yu3"\n', "hardcoded_secret"),
+            ('TOKEN = "^Zx9Qw8Rt5Yu3$"\n', "hardcoded_secret"),
+            ('password = "Zx9\\dQw8Rt5"\n', "hardcoded_password"),
+            ('password = "Zx9\\s+Qw8Rt5"\n', "hardcoded_password"),
+            ('password = "Zx9\\s+Qw8Rt5$"\n', "hardcoded_password"),
+            ('password = "^(Zx9Qw8Rt5)$"\n', "hardcoded_password"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
@@ -1654,6 +1719,24 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = 'import { execSync } from "child_process";\nexecSync(cmd);\n'
         assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
         assert self._found("src/run.ts", source) == [("exec_call", "high")]
+
+    def test_a_sink_in_a_data_folders_code_is_low_once_the_root_is_known(self, tmp_path) -> None:
+        """A data folder is read off disk, so the origin needs the repository root."""
+        for i in range(4):
+            item = tmp_path / "backend" / "data" / "problems" / f"p{i}"
+            item.mkdir(parents=True)
+            for n in range(12):
+                (item / f"case{n}.json").write_text("{}")
+            for name in ("python.py", "Solution.java", "go.go"):
+                (item / name).write_text("")
+        path = "backend/data/problems/p0/python.py"
+        source = "import os\nos.system(cmd)\n"
+        assert self._found(path, source) == [("os_system", "high")]
+        info = SimpleNamespace(path=path, abs_path=str(tmp_path / path))
+        found, _ = scan_source_map(
+            [SimpleNamespace(file_info=info, symbols=[])], {path: source.encode()}
+        )
+        assert [(f["kind"], f["severity"]) for f in found[path]] == [("os_system", "low")]
 
     def test_a_secret_in_a_script_stays_high(self) -> None:
         source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'
@@ -1812,3 +1895,63 @@ def test_verbatim_interpolation_trailing_backslash_preserves_following_code(pref
         + "\nNext();\n"
     )
     assert len(masked) == len(source)
+
+
+@pytest.mark.parametrize("strings", [False, True])
+def test_csharp_plain_verbatim_string_preserves_following_code(strings: bool) -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    literal = r'"C:\var\log\""quoted"""'
+    source = f"var logDir = @{literal}; DangerousCall(); // comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("App.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var logDir = @{expected_literal}; DangerousCall(); "
+        + " " * len("// comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)
+
+    secret_src = 'var logDir = @"C:\\var\\log\\";\nvar apiKey = "real_prod_key_123456";\n'
+    findings = scan_source("App.cs", secret_src)
+    assert any(f["kind"] == "hardcoded_secret" for f in findings)
+
+
+def test_objc_nsstring_literal_preserves_backslash_escape() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    source = 'NSString *s = @"hello \\"world\\"";\nint x = 42;\n'
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("main.m")
+    )
+    assert "int x = 42;" in masked
+    assert masked == 'NSString *s = @                 ;\nint x = 42;\n'
+
+
+def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    source = (
+        "fn process<'a>(input: &'static str, extra: &'a str) -> char {\n"
+        "    'outer: loop {\n"
+        "        let quote = '\\'';\n"
+        '        let password = "real_secret_value_1234";\n'
+        "        return 'x';\n"
+        "    }\n"
+        "}\n"
+    )
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("src/lib.rs")
+    )
+    assert "let password = " in masked
+    assert "real_secret_value_1234" not in masked
+    assert "return    ;" in masked
+    assert len(masked) == len(source)
+
+    findings = scan_source("src/lib.rs", source)
+    assert any(f["kind"] == "hardcoded_password" for f in findings)
+

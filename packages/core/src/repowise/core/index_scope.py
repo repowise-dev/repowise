@@ -82,7 +82,8 @@ def answers_upgrade_line(
 ) -> str | None:
     """How an index with no model-written prose gets answers and docs; None once it has them.
 
-    The one wording the MCP server, ``status`` and ``doctor`` share. With
+    The one wording the MCP server, ``status`` and ``doctor`` share, as a
+    whole sentence. With
     *route* it names the signed-in CLI and its plan quota, else it falls back
     to :data:`NO_FREE_ROUTE`. The server resolves its provider at start, hence
     the restart.
@@ -95,13 +96,13 @@ def answers_upgrade_line(
     command = fast or MODEL_COMMAND
     if route is not None:
         return (
-            f"answers and docs: `{command} --provider {route.provider}` {route.uses()}; "
-            "then restart the MCP server"
+            f"For answers and docs, run `{command} --provider {route.provider}`; "
+            f"it {route.uses()}. Then restart the MCP server."
         )
     no_reindex = "" if fast else " (no re-index)"
     return (
-        f"answers and docs: `{command}`{no_reindex} with {NO_FREE_ROUTE}, "
-        "then restart the MCP server"
+        f"For answers and docs, run `{command}`{no_reindex} with {NO_FREE_ROUTE}, "
+        "then restart the MCP server."
     )
 
 
@@ -109,13 +110,12 @@ def answers_key_line(route: FreeRoute | None = None) -> str:
     """For an index a model already wrote, served with no model: what answers need."""
     if route is not None:
         return (
-            "answers are not synthesized without a model: "
-            f"`repowise config set provider {route.provider}` {route.uses(timed=False)}; "
-            "then restart the MCP server"
+            f"Answers need a model: `repowise config set provider {route.provider}` "
+            f"{route.uses(timed=False)}. Then restart the MCP server."
         )
     return (
-        f"answers are not synthesized without a model: set {NO_FREE_ROUTE} "
-        "(`repowise config set provider`), then restart the MCP server"
+        f"Answers need a model: set {NO_FREE_ROUTE} "
+        "(`repowise config set provider`), then restart the MCP server."
     )
 
 

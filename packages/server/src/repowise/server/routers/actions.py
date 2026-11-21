@@ -22,6 +22,7 @@ from repowise.server.schemas.actions import (
     ActionStateResponse,
 )
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
+from repowise.server.services import setup_status
 
 router = APIRouter(tags=["actions"], dependencies=[Depends(verify_api_key)])
 
@@ -32,9 +33,15 @@ async def get_actions(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Both horizons in one response, so switching between them costs nothing."""
-    await _require_repo(session, repo_id)
-    return await load_actions_view(session, repo_id, **cross_repo_cut_inputs(request, repo_id))
+    """Both horizons in one response, so switching between them costs nothing.
+
+    The live setup steps join the list when the checkout is on this machine.
+    """
+    repo = await _require_repo(session, repo_id)
+    setup = await setup_status.setup_facts(session, repo)
+    return await load_actions_view(
+        session, repo_id, setup=setup, **cross_repo_cut_inputs(request, repo_id)
+    )
 
 
 async def _require_repo(session: AsyncSession, repo_id: str) -> Repository:
@@ -57,7 +64,10 @@ async def get_action_prompt(
 ) -> AgentPromptResponse:
     """One action as the prompt an agent starts from, worded for its harness."""
     repo = await _require_repo(session, repo_id)
-    action = await load_action(session, repo_id, action_id, **cross_repo_cut_inputs(request, repo_id))
+    setup = await setup_status.setup_facts(session, repo)
+    action = await load_action(
+        session, repo_id, action_id, setup=setup, **cross_repo_cut_inputs(request, repo_id)
+    )
     if action is None:
         raise HTTPException(status_code=404, detail="No action with that id")
     return AgentPromptResponse(flavor=flavor, text=render_action(action.as_dict(), flavor, repo.name))

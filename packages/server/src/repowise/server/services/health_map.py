@@ -71,6 +71,7 @@ _ORIGIN_TIER: dict[str, int] = {
     "build": 1,
     "test": 2,
     "docs_example": 3,
+    "data": 3,
     "vendored": 4,
     "generated": 4,
 }

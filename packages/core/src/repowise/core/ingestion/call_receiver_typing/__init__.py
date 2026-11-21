@@ -311,6 +311,8 @@ class ReceiverTypingMixin(
         # {file: {class_id: {field: container spelling}}}
         self._container_fields: dict[str, dict[str, dict[str, str | None]]] = {}
         self._module_types: dict[str, dict[str, str | None]] = {}
+        # {python function id: module file every return of it hands on, or None}
+        self._returned_modules: dict[str, str | None] = {}
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
@@ -573,8 +575,9 @@ class ReceiverTypingMixin(
         written = id_segment_name(type_name)
 
         # An import statement binds the name outright, so it settles which type
-        # this is before any scope search.
-        bound = self._import_names.get(file_path, {}).get(written)
+        # this is before any scope search. A Python import in a function binds
+        # there, and elsewhere only where every such import agrees.
+        bound = self._import_maps.source_at(file_path, written, call.line)
         if bound is not None and not bound.startswith("external:"):
             sym_id = self._import_bound_method(file_path, bound, key)
             return None if sym_id is None else (sym_id, "import")

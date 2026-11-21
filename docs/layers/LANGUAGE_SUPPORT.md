@@ -1,6 +1,6 @@
 # Language Support
 
-**28 languages parsed to a full AST, 42 on the five-rung support ladder, and
+**29 languages parsed to a full AST, 43 on the five-rung support ladder, and
 framework-aware edges where an ecosystem handler exists.** Every language lands
 on one rung, and the rung tells you which parts of the pipeline produce real
 output for it. Files in any other language still appear in the wiki and are
@@ -18,7 +18,7 @@ resolution and health markers are all static.
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" /> <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" /> <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" /> <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" /> <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" /> <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" /> <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
-  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" /> <img src="https://img.shields.io/badge/Perl-39457E?style=flat-square&logo=perl&logoColor=white" alt="Perl" />
 </p>
 <p>
   <strong>Partial tier &nbsp;</strong>
@@ -29,21 +29,21 @@ resolution and health markers are all static.
 [How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Good** (12) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C, Perl | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F#, Objective-C and Perl get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-Tree-sitter parsing covers the first three rungs: those are the **28 languages
+Tree-sitter parsing covers the first three rungs: those are the **29 languages
 parsed to a full AST**. The bottom two rungs come from git history and import
-extraction, and all five together make the **42** on the ladder.
+extraction, and all five together make the **43** on the ladder.
 
 [SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder, because
 neither fits a rung: SQL gets symbols and health markers but no call graph, and
@@ -153,15 +153,15 @@ vocabulary, and every origin has exactly one confidence:
 | `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
 | `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
 | `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path such as `crate::index::open_ro()` that needs no `use` |
 | `crate_root` | 0.88 | The reference is scoped to its Rust crate |
 | `receiver_import` | 0.88 | The receiver's class was found in an imported file |
-| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
 | `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
 | `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
 | `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
 | `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
-| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
 | `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
 | `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
 | `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
@@ -171,8 +171,9 @@ vocabulary, and every origin has exactly one confidence:
 | `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
 | `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
 | `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+| `import_elsewhere` | 0.50 | Python: the name is imported only inside another function of the file, and that one import is read here. **A guess** |
 
-That is the complete vocabulary of 39. You can filter a graph by confidence, and
+That is the complete vocabulary of 40. You can filter a graph by confidence, and
 both the MCP tools and the web UI surface which origin produced an edge, so an
 agent reading an execution flow can tell a fact from an inference. Receiver
 typing, execution-flow terminations and the edge types are in
@@ -286,6 +287,7 @@ This table is why a language is Full and not Good.
 | F#, Objective-C | ✅ | ✅ | no | no | no | no | no |
 | Apex | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
+| Perl | ✅ | no | no | no | no | no | no |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
 
@@ -302,6 +304,34 @@ Extract Method waits on its grammar:
 [architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
 Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 
+## Runtime evidence
+
+Coverage reports and profiles add measured runtime to the static graph.
+`repowise evidence setup` prints, per build unit, the test command that writes
+coverage and the commands that profile it; `coverage add` and `evidence add`
+read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
+Go cover profile format is read for any language, from any tool. A profile
+joins to code only for Python, Go and JavaScript frames.
+
+| Language | Coverage command from setup | Profiles and benchmarks read |
+|----------|-----------------------------|------------------------------|
+| Python | pytest with pytest-cov | Speedscope (pyinstrument, py-spy), collapsed stacks (py-spy), pytest-benchmark JSON |
+| JavaScript | Jest, Vitest or Bun; c8 around other runners | Speedscope |
+| TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
+| Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
+| Java / Kotlin | Maven or Gradle with JaCoCo | no |
+| Rust | `cargo llvm-cov` | no |
+| C# | `dotnet test` with coverlet | no |
+| Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
+| PHP | PHPUnit or Pest | no |
+| Apex | none; the Salesforce CLI test-run JSON is read | no |
+| Object Pascal | none | no |
+| Every other language | none | no |
+
+Formats, the join rules and the workload classes:
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
+[TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
+
 ## Limits
 
 - Template dialects (Django/Jinja, Go templates, ERB, Handlebars, Blade,
@@ -312,6 +342,7 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
 - COBOL dynamic `CALL` targets and free-format source produce no edges.
+- Perl method calls are typed only from `$self`-style invocants, package names and constructor assignments (by variable name within the calling sub, so an inner `my $o` shadowing an outer one is not told apart); `use mro 'c3'` is read as the default depth-first order, and `use Foo;` as importing all of Foo's subs, since its `@EXPORT` list is not read. An imported sub is reached only by its bare name (not as `App::helper()` or as a method of the importing package), and a package's own sub wins over an import of the same name wherever the two sit in the file. Perl 5.38 `class` blocks own their methods, but a `:isa(Parent)` attribute is not read as inheritance.
 - C has no performance risk support.
 - Salesforce references are followed when the name is literal: runtime-built
   names and objects with no metadata file in the repository get no edge.
@@ -330,7 +361,7 @@ The full list per language, with the mechanics behind each gap, is in
 | Object Pascal | Form files (`.dfm`, `.fmx`) binding event handlers |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
-| F#, Objective-C | Health markers beyond complexity |
+| F#, Objective-C, Perl | Health markers beyond complexity |
 | SQL / dbt | Column-level blast radius |
 | Shell | Shebang detection for extensionless executables |
 

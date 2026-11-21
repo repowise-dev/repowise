@@ -182,6 +182,19 @@ class TestLanguageDetection:
         f.write_text("#!/usr/bin/env python3\nprint('hi')")
         assert _detect_language(f) == "python"
 
+    @pytest.mark.parametrize("name", ["backup.txt", "notes.rst", "settings.cfg"])
+    def test_shebang_in_a_data_or_doc_file_is_not_code(self, tmp_path: Path, name: str) -> None:
+        f = tmp_path / name
+        f.write_text("#!/usr/bin/env python3\ndef f():\n    pass\n")
+        assert _detect_language(f) == "unknown"
+
+    def test_shebang_txt_backup_is_not_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("#!/usr/bin/env python3\ndef f():\n    pass\n")
+        (tmp_path / "run").write_text("#!/usr/bin/env python3\nprint('hi')\n")
+        files = {info.path: info.language for info in FileTraverser(tmp_path).traverse()}
+        assert "a.txt" not in files
+        assert files["run"] == "python"
+
 
 class TestIncLanguageDetection:
     @pytest.mark.parametrize("suffix", [".inc", ".INC"])
@@ -399,6 +412,31 @@ class TestFileTraverser:
         paths = {f.path for f in FileTraverser(tmp_path).traverse()}
 
         assert paths == {"app.py"}
+
+    def test_tool_state_dirs_are_not_indexed(self, tmp_path: Path) -> None:
+        """Every never-source dir the shared walk prunes is skipped by the index too."""
+        files = {
+            ".yarn/plugins/@yarnpkg/plugin-workspace-tools.cjs": "module.exports = {};\n",
+            ".yarn/releases/yarn-4.0.0.cjs": "module.exports = {};\n",
+            ".nox/tests/bin/activate_this.py": "x = 1\n",
+            ".turbo/cache/run.js": "var a = 1;\n",
+            ".nuxt/app.js": "var a = 1;\n",
+            ".pnpm-store/v3/index.js": "var a = 1;\n",
+            "packages/web/.parcel-cache/a.js": "var a = 1;\n",
+            ".eggs/pkg/setup.py": "x = 1\n",
+            "vendor/lib/dep.py": "x = 1\n",
+            "tests/fixtures/sample.py": "x = 1\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert paths == {"app.py"}
+        for rel in files:
+            assert in_blocked_dir(rel)
 
     def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
@@ -663,11 +701,17 @@ class TestFileTraverser:
         assert traverser.stats.skipped_oversized == 0
 
     def test_oversize_source_indexed_with_symbols(self, tmp_path: Path) -> None:
-        # #5280: a 3 MB Swift file is indexed with symbols; a 10 MB one is still skipped.
-        swift_3mb = tmp_path / "AppScreen.swift"
-        swift_3mb.write_bytes(b"struct AppScreen {\n" + (b"    func action() {}\n" * 150_000) + b"}\n")  # ~3.1 MB
-        swift_10mb = tmp_path / "Monolith.swift"
-        swift_10mb.write_bytes(b"struct Monolith {\n" + (b"    func action() {}\n" * 500_000) + b"}\n")  # ~10.5 MB
+        # #5280: a Swift file over the pool ceiling is indexed with symbols
+        # (parsed serially); one over the hard ceiling is still skipped. Each
+        # sits just past its threshold, which keeps the serial parse short.
+        pool_max = traverser_mod._SOURCE_POOL_MAX_FILE_SIZE_BYTES
+        hard_max = traverser_mod._SOURCE_MAX_FILE_SIZE_BYTES
+        line = b"    func action() {}\n"
+        serial = tmp_path / "AppScreen.swift"
+        serial.write_bytes(b"struct AppScreen {\n" + line * (pool_max // len(line) + 500) + b"}\n")
+        too_big = tmp_path / "Monolith.swift"
+        too_big.write_bytes(b"struct Monolith {\n" + line * (hard_max // len(line) + 500) + b"}\n")
+        assert pool_max < serial.stat().st_size < hard_max < too_big.stat().st_size
 
         traverser = FileTraverser(tmp_path)
         infos = {f.path: f for f in traverser.traverse()}
@@ -675,10 +719,10 @@ class TestFileTraverser:
         assert "Monolith.swift" not in infos
         assert traverser.stats.skipped_oversized == 1
 
-        # Ingestion parse_guarded parses the 3 MB file serially
+        # Ingestion parse_guarded parses the over-pool file serially
         from repowise.core.pipeline.phases.ingestion import parse_guarded
         fi = infos["AppScreen.swift"]
-        to_parse = [(0, (fi, swift_3mb.read_bytes()), "hash123")]
+        to_parse = [(0, (fi, serial.read_bytes()), "hash123")]
         results = parse_guarded(to_parse)
         assert len(results) == 1
         assert not isinstance(results[0], tuple | Exception)

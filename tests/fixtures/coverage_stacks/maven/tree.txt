@@ -1,0 +1,2 @@
+src/main/java/A.java
+src/test/java/ATest.java

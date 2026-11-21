@@ -258,7 +258,11 @@ def _dead_code_counts(
     if changed_paths is not None:
         scope = set(changed_paths)
         findings = [f for f in findings if f.file_path in scope]
-    unreachable = sum(1 for f in findings if f.kind.value == "unreachable_file")
+    from repowise.core.analysis.dead_code.serving import headline_unreachable
+
+    # No stored origins in hand here: the path decides, as it does in init
+    # for a file without a health row.
+    unreachable = headline_unreachable(findings, {})
     unused = sum(1 for f in findings if f.kind.value == "unused_export")
     return unreachable, unused
 

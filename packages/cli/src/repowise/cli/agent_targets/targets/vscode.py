@@ -34,7 +34,13 @@ from repowise.core.agents import identity
 # Defined in core: change risk tells this recommendation from a user's edit.
 from repowise.core.owned_paths import EXTENSION_ID
 
-from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
+from ..formats.server_entry import (
+    RENAME_HINT,
+    RemoteServerEntryError,
+    ServerSpec,
+    agents_remove_command,
+    read_servers,
+)
 from ..types import (
     Capability,
     DoctorReport,
@@ -46,6 +52,7 @@ from ..types import (
     InstallOptions,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -469,6 +476,24 @@ class VSCodeTarget:
             str(mcp_config_path(repo)),
             str(extensions_config_path(repo)),
             str(instructions_path(repo)),
+        ]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """The workspace ``.vscode/mcp.json`` (``servers``), the one file repowise writes.
+
+        A user-profile ``mcp.json`` is not read: its location depends on the
+        VS Code profile, so a second copy there goes uncounted.
+        """
+        if repo_path is None:
+            return []
+        project = mcp_config_path(repo_path)
+        return [
+            ServerMap(
+                project,
+                Scope.PROJECT,
+                read_servers(project, "servers"),
+                remove_command=agents_remove_command(ID, "project"),
+            )
         ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:

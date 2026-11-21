@@ -39,6 +39,7 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "same_target",
   "receiver_global",
   "global_unique",
+  "import_elsewhere",
   "receiver_typed_same_file",
   "receiver_typed_same_package",
   "receiver_typed_import",
@@ -113,6 +114,7 @@ describe("isNameMatch", () => {
     expect(marked.sort()).toEqual(
       [
         "global_unique",
+        "import_elsewhere",
         "receiver_extension_global",
         "receiver_field_global",
         "receiver_framework_global",

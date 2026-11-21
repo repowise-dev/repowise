@@ -19,6 +19,7 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 from repowise.core.ingestion.symbol_use import NO_SYMBOL_USE, SymbolUse
 
+from ..api_contract_detector import detect_code_api_contracts
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
     _humanise,
@@ -946,7 +947,12 @@ def select_pages(inputs: SelectionInputs) -> Selection:
 
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
+
+    Route detection runs first (it is idempotent), so every caller gets the
+    same api_contract and file_page split, including init, generate and
+    restyle, which do not run the pipeline's generation phase.
     """
+    detect_code_api_contracts(inputs.parsed_files)
     scored_files = _score_code_files(inputs)
     files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(
         inputs, scored=scored_files
@@ -998,8 +1004,6 @@ def selected_file_keyed_paths(parsed_files: Iterable[Any]) -> dict[str, set[str]
     detection runs first (it is idempotent): a run that skipped generation never
     flagged its route files, and judging them unflagged would retire their pages.
     """
-    from ..api_contract_detector import detect_code_api_contracts
-
     parsed = list(parsed_files)
     detect_code_api_contracts(parsed)
     return {

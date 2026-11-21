@@ -67,7 +67,7 @@ Notes:
 
 ## On the wire
 
-- `structuredContent` is `{"result": <payload>}`; tools advertise an `outputSchema`.
+- `structuredContent` is `{"result": <payload>}`. Tools advertise no `outputSchema`.
 - The text block is the same payload as compact JSON, so clients that forward it send fewer tokens.
 - `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
 
@@ -111,12 +111,13 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
-| `get_answer` | `include` | `_meta.ignored_arguments` map: `{"include": [...]}` |
+| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given, `limit` over 20 | Top-level list |
+| `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
-- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
+- **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
+- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`; a `limit` entry carries `"clamped_to": 20`, the value the call ran with.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
 ---
@@ -175,7 +176,7 @@ Notes:
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
-- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` and no recovery is offered.
+- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` with `"requires": "an LLM provider; Read candidate_files"`, and no recovery is offered.
 - **Evidence by grade** (`include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
 - **Retrieval** fuses full-text and vector search over wiki pages with the symbol index (keyed on the question's content words) by reciprocal rank. The symbol leg reaches private helpers a page's symbol table omits.
 
@@ -195,6 +196,7 @@ Per target, under `targets`:
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
 | `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records; `get_why` serves them |
+| `measured` | Symbol or file a stored profile run measured: one line with rank among repo code, workload class and name (`in tests` for a unit-test run), share of samples with its interval (`ordering only` for a tracer), how much of the run repo code explains, and age. A file names up to 3 functions from one run and counts the rest, with other runs and stale ones counted apart. `stale:` when the body changed since the run. Rows are per function, so a class card has none. Absent with no runtime evidence |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
 | `file_preview` | File with no symbols: `lines`, `chars`, and `heading_count` + 3 `headings` (markdown, reST) or 3 lines as `head` |
 | `resolved_to`, `note` | A `path::Name` miss answered with the file's card |
@@ -207,6 +209,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 - **symbols:** compact cards list the top 15: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules), then functions and methods, then the rest, each by centrality. A budget trim below 15 keeps symbols by kind and name match. `include=["symbols"]` lists all.
 - **`symbol_id`:** absent means `path::name`; methods and overloads carry theirs.
 - **`fix_history`:** age is measured to the indexed commit.
+- **`measured`:** absence means unknown, never fast. Rank orders functions within one run; it is not a claim that the function is slow.
 - **`*_basis`:** an empty list means no resolved edge, not proof of none.
 
 ### Context opt-in blocks
@@ -230,11 +233,13 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call`, `reference` or `string` (a string holding only the name or a dotted path to it, such as a mock patch target, a `getattr` name or an `__all__` entry; a rename edits it, a caller list skips it). A `call` line is one the graph binds to the symbol; for a method it is also a call of it on any receiver in code (`db.name(...)`), in languages whose comments and strings are read, outside files whose own class defines that member. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why, and `hint` gives the `search_codebase` regex query that lists the live lines naming the symbol (left out when the only reason is the response budget, which names where the rest are). Three more kinds follow the code sites:
 
 - `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
 - `doc`: the first line of each document naming the symbol, with `mentions` counting them when there are more; release notes are skipped
+
+In get_context each file maps kinds to line numbers, plus, in production files, `in`: the indexed symbol (`Owner.member`) holding each listed line other than a `definition`, `same_name` or `doc` line. Module-level lines are in no symbol and not listed there. Names come from the index, lines from live files.
 
 Never complete for:
 
@@ -242,15 +247,16 @@ Never complete for:
 - over 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
+- a file that hands on, as a whole value, a module holding the symbol (`return mod`, `m = mod`, `const m = ns`) and uses the name on an object no import binds
 - over 50 documents naming it
-- over 3 plain `reference` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
+- over 3 plain `reference` or `string` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 
 ### changes
 
 `recent_changes`: the newest five Change Records touching the file, each `{id, ref, title, merged_at, category, provenance}`; `recent_changes_total` when more exist.
 
 - `ref` is the forge number (`#123`, `!12`), absent for an unnamed change.
-- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label or attribution is off.
+- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label, when coverage is below 30% (where the file and overview shares are withheld too), or when attribution is off.
 - Only the newest 500 changes are read and a change stores its first 1,000 files, so a file past either limit can be missing.
 
 ### provenance
@@ -274,10 +280,15 @@ On a directory or module card: every indexed file under it (git rows and graph f
 
 ### suspects
 
-One top-level block: `window` (`since`, `until`), `candidates` (changes merged in the last 14 days), `texts_missing` (unreadable changes, ranked on title and files), `symptom_files` (targets mapped to files at HEAD), `note`, and `suspects`.
+One top-level block: `window` (`since`, `until`), `candidates` (changes merged in the last 14 days), `candidates_capped`, `texts_missing` (unreadable changes, ranked on title and files), `symptom_files` (targets mapped to files at HEAD), `note`, and `suspects`.
+
+- The window is fixed at the 14 days before the call. `repowise suspects --since <date>` reads further back.
+- `candidates_capped: true` means the window holds at least `commit_limit` changes, so older changes in it may not be indexed. It is left out when false.
+- `note` says the order is where to start reading, never a cause.
+- An empty window returns `window`, `candidates`, `suspects` and `note` only.
 
 - `suspects`: at most 5 rows of `{id, ref, title, merged_at, category, head_sha, files_changed, rank, signals}`, ranked against the targets' files and path words, or the `symptom` text.
-- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`.
+- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`. A `trace` row reads `frame <symbol id>` when a Python frame resolved to the indexed function it ran in (its file sits under the checkout and matches the indexed commit) and the change edited that function; other frames give `frame file <path>` and `frame function <name>`.
 - A reading order, never a cause: no score or probability.
 
 ### Component targets
@@ -333,6 +344,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `facts`, `tests` | Function and symbol facts; see [symbol facts](#symbol-facts) |
 | `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
+| `kind: "file"`, `symbols`, `symbols_total` | A bare file path: its top-level symbol names in source order (15 max; `symbols_total` when there are more), no source |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
@@ -361,8 +373,8 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 
 | Row | Fields |
 |-----|--------|
-| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"` |
-| File | `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
+| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`; `source` on a unique exact hit |
+| File | `type: "file"`, `page_id`, `path`, `title`, `score`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
 | Concept | `page_type`, `path` if the page names a file, `symbol_id` on a symbol page, `relevance_score`, `snippet`, `sources` |
 
 Row notes:
@@ -373,11 +385,15 @@ Row notes:
 - **`symbols`:** on a symbol hit outside `symbol` mode, up to 5 other matches in the file as `name:line`, then `+N more`. On a page row, up to 3 query-matching `name:line` (`Owner.member`).
 - **`matched_lines`:** on the first three page rows with a match, up to 3 live `{line, text}` sharing the most query words, code before comments and imports. Never every match.
 - **`sources`:** `fts`, `vector`, `symbol`, or a mix; omitted when `["fts"]` and `_meta.semantic_search` is `false`.
+- **`signature`:** omitted where `lines` holds the symbol's live definition line with its whole parameter list.
+- **`source`:** the live numbered body, when the query names one identifier, exactly one indexed symbol has that name and its body is at most 20 lines. It replaces `signature`, sets `_meta.complete`, and makes a `get_symbol` call for that symbol unnecessary. A longer body, two definitions of the name (overloads included) or a workspace-wide search serve none.
 
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
+- `in` names the indexed symbol (`Owner.member`) a non-definition row in a production file sits in, on the first row of each run in one file and one symbol; the rows after it in the same file without `in` are in the same symbol. A module-level row after such a run says `<module>`. The names come from the index, the lines from live files.
+- When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
+- Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
 - An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
@@ -479,7 +495,7 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 - **Directive order:** gating findings (high or critical, not performance) lead the reasons, inspect actions and `top_findings`; the count reads "N of M" when others are lower. The headline ends with the code's health on both sides.
 - **`include=["scales"]`** adds each field's unit and calibration, and the `review_priority` tercile with `classification` (`Below-typical`, `Typical`, `Above-typical diff size`).
 - **`include=["diagnostics"]`** adds `score` (raw 0 to 10), `fallback_band`, `risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`, `features`, `drivers`, `fix_history` `density` and `percentile`, and `health_delta.analyzer` (rules fingerprint; `context` is `index_dependents` when centrality gates read the index's dependents counts on both sides, `changed_files` with no index), `.base`, `.head` (resolved revisions), `.limits`.
-- **`include=["findings"]`** lists every finding with its expand call as `inspect`. `evidence` adds the evidence checklist; `tests` adds `impacted_tests.why` and `basis_by_file`.
+- **`include=["findings"]`** lists every finding with its expand call as `inspect`, and `health_delta.changed_symbols`: each symbol the diff touched, finding or not, with `path`, `symbol` (`Class::method`), `change` (`added`, `edited`, `deleted`, `moved`), `lines` as `[start, end]` (base side for `deleted`) and `moved_from` (`path` and the bare `symbol` name), up to 50, with `changed_symbols_total`; both are absent when nothing was touched. An edit names the innermost symbol only. `evidence` adds the evidence checklist; `tests` adds `impacted_tests.why` and `basis_by_file`.
 - **`per_commit=true`** (a range only) replaces the review with `commits`: one row per non-merge commit, oldest first, up to 30, each with `sha`, `subject`, `files`, `lines`, `risk_percentile` (or `fallback_band`), up to two `drivers` that raised it, `fix_prone` files and `is_fix`. Every row ranks against the same history (`ranked_against`, read at the range's merge-base), so a row can differ slightly from that commit scored alone. `review` names the full-review calls, `merges_skipped` counts merge commits, and `more` carries the call for the commits past the cap (on a range with merged branches it can repeat a few rows, and it ranks against its own start). `include=["diagnostics"]` adds each row's `score`.
 
 ### health_delta
@@ -727,8 +743,10 @@ Findings carry `health_impact: 0` and never blend into the score. `perf_rank` is
 
 - Bare `get_health()` ranks them in `fix_first` as `perf_fix`. `opportunity_id="perf..."` adds `plan_steps`, `validation`, `siblings`; `only=["performance_evidence"]` + `cursor` pages evidence; rows carry a public `finding_id`.
 - Ids are stable per model version; older ones resolve to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`.
-- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unmeasured) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
+- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unknown) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
 - The `growth_source` facet (`loop`, `registry`, `cold_path`, `none`, `n/a`) names the loop showing growth. `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or per-call causes an entry point reaches); `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
+- `performance_measured` (dashboard only) lists what each workload's newest stored profile run measured, ranked by self time: what a function costs itself, built-ins and libraries it calls included, time blocked in waits (event-loop selects, joins, queue gets, sleeps) excluded. `basis: "measured"`: `rows` (workload classes that may lead) and `in_tests` (`unit_test` runs, never leading) give each function's `rank` in its run, `share` (its self time) with its interval (`share_low`, `share_high`), `inclusive` (with its callees, context only), `samples`, `lines` (`"start-end"`), `freshness`, `callers_total` (callers outside test code) and, when an open static cause with production evidence sits on it, `on_static_findings` (cause ids for `get_health(opportunity_id=...)`). A function two workloads rank is listed under each. `runs` gives each row's basis: `workload_class`, `workload_name`, `commit`, `age_days`, `samples`, where the run's time went (`repo_self_share` in production repo code itself, `wait_share`, `library_share`; `null` for a run stored before they were recorded), `outside_production` (functions counted, not listed) and, for a tracer's run only, `ordering_only: true` (order, no share). Three rows per run, `limit` up to 10. Without ranked evidence: `basis: "unknown"` and `status` `no_runtime_data` or `stale` (both with `command`, the setup call), `needs_update` (an index from before the per-workload view; `command` is `repowise update`), or `not_ranked` (too few samples in production code).
+- With the queue in the same response, `performance_summary` drops its `next_call` (it would return that queue).
 
 ### Coverage
 

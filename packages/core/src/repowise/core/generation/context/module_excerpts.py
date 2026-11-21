@@ -14,15 +14,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from .evidence import EvidenceSelection, select_symbol_evidence
 from .token_budget import estimate_tokens, items_within_budget
 
 _PER_FILE = 3
 _MAX_LINES = 60
-
-
-def _file_of(symbol: Any) -> str:
-    return symbol.id.split("::", 1)[0]
 
 
 def _symbol(parsed: Mapping[str, Any], path: str, symbol_id: str) -> Any | None:
@@ -52,7 +50,7 @@ def excerpt_candidates(
             out.append(sym)
             seen.add(sym.id)
     for path in ranked_paths:
-        room = per_file - sum(1 for s in out if _file_of(s) == path)
+        room = per_file - sum(1 for s in out if file_of_symbol(s.id) == path)
         for s in _by_weight(_worth_excerpting(parsed.get(path)), weight):
             if room <= 0:
                 break
@@ -96,7 +94,7 @@ def module_excerpts(
     candidates = excerpt_candidates(public_api, parsed, ranked_paths, weight, per_file)
     by_file: dict[str, list[Any]] = {}
     for s in candidates:
-        by_file.setdefault(_file_of(s), []).append(s)
+        by_file.setdefault(file_of_symbol(s.id), []).append(s)
     lines = {path: _declared_line(path, syms) for path, syms in by_file.items()}
     # Signatures outrank bodies, but claim at most half so central files still show code.
     _, reserved = items_within_budget(lines.values(), 0, budget // 2, estimate_tokens)

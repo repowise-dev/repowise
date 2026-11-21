@@ -244,6 +244,67 @@ def test_update_store_matches_init_at_the_same_commit(
     bad = [table for table, rows in expected.items() if actual[table] != rows]
     assert not bad, bad
     _assert_centrality_matches(control, incremental)
+    assert _views(incremental) == _views(control)
+
+
+def _views(repo: Path) -> dict[str, object]:
+    """The graph and C4 views a reader of this store is served, repo id masked."""
+    import asyncio
+    from dataclasses import asdict
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from repowise.core.persistence import Repository
+    from repowise.server.services import c4_builder
+    from repowise.server.services.c4_builder.serialize import build_architecture_view_response
+    from repowise.server.services.graph_views import (
+        Population,
+        build_architecture_graph,
+        build_community_slice,
+    )
+
+    everything = Population(include_tests=True, include_examples=True, include_docs=True)
+
+    async def read() -> dict[str, object]:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+        try:
+            async with async_sessionmaker(engine, class_=AsyncSession)() as session:
+                repo_id = (await session.execute(select(Repository.id))).scalar_one()
+                arch = await build_architecture_graph(session, repo_id, population=everything)
+                l2 = await c4_builder.build_l2(session, repo_id)
+                views: dict[str, object] = {
+                    "architecture": arch.model_dump(mode="json"),
+                    "slices": [
+                        (
+                            await build_community_slice(
+                                session, repo_id, node.community_id, population=everything
+                            )
+                        ).model_dump(mode="json")
+                        for node in arch.nodes
+                    ],
+                    "l1": asdict(await c4_builder.build_l1(session, repo_id)),
+                    "l2": asdict(l2),
+                    "l3": [
+                        asdict(await c4_builder.build_l3(session, repo_id, c.id))
+                        for c in l2.containers
+                    ],
+                    "view": (
+                        await build_architecture_view_response(
+                            session, repo_id, include_symbols=False
+                        )
+                    ).model_dump(mode="json"),
+                }
+        finally:
+            await engine.dispose()
+        masked = json.loads(json.dumps(views, default=str).replace(repo_id, "<repo>"))
+        # The architecture view lists nodes and edges in row order, which follows
+        # the order the rows were written in, not what they hold.
+        for key in ("nodes", "edges"):
+            masked["view"][key] = sorted(masked["view"][key], key=json.dumps)
+        return masked
+
+    return asyncio.run(read())
 
 
 def _centrality(repo: Path) -> dict[str, dict[str, tuple]]:

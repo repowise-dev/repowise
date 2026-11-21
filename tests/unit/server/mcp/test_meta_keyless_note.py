@@ -84,8 +84,8 @@ async def test_a_signed_in_plan_is_named_with_its_quota(tmp_path, monkeypatch) -
     _signed_in(monkeypatch, CLAUDE_MAX)
     note = await _note(_repo(tmp_path, "deterministic"))
     assert note == (
-        "answers and docs: `repowise generate --provider claude_cli` uses your Claude Code "
-        "sign-in and plan quota; then restart the MCP server"
+        "For answers and docs, run `repowise generate --provider claude_cli`; it uses your "
+        "Claude Code sign-in and plan quota. Then restart the MCP server."
     )
 
 

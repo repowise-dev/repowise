@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildSetupAiPrompt, type SetupPromptRow } from "../../src/health/ai-prompt-builder.js";
+import {
+  buildConnectEvidencePrompt,
+  buildFinishSetupPrompt,
+  buildSetupAiPrompt,
+  CONNECT_EVIDENCE,
+  FINISH_SETUP,
+  type SetupPromptRow,
+} from "../../src/health/ai-prompt-builder.js";
 
 const SYNC: SetupPromptRow = {
   repoName: "orbit-api",
@@ -62,5 +69,27 @@ describe("buildSetupAiPrompt", () => {
 
   it("opens with the flavor's role", () => {
     expect(buildSetupAiPrompt(SYNC, "claude-code").startsWith("You are Claude Code")).toBe(true);
+  });
+});
+
+describe("buildConnectEvidencePrompt", () => {
+  it("opens with the role, then hands the agent the setup loop", () => {
+    const prompt = buildConnectEvidencePrompt("claude-code");
+    expect(prompt).toBe(`You are Claude Code in this repository.\n\n${CONNECT_EVIDENCE}`);
+    expect(prompt).toContain("`repowise evidence setup --format json`");
+    expect(prompt).toContain("`next_call`");
+    expect(prompt).not.toMatch(/pytest|go test|npm /);
+  });
+});
+
+describe("buildFinishSetupPrompt", () => {
+  it("opens with the role, then hands the agent the repowise next loop", () => {
+    const prompt = buildFinishSetupPrompt("claude-code");
+    expect(prompt).toBe(`You are Claude Code in this repository.
+
+${FINISH_SETUP}`);
+    expect(prompt).toContain("`repowise next --format json`");
+    expect(prompt).toContain("`repowise next --dismiss setup`");
+    expect(prompt).not.toMatch(/pytest|npm /);
   });
 });

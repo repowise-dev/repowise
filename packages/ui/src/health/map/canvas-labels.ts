@@ -27,6 +27,7 @@ export interface MapCanvasLabels {
 const ORIGIN_NAMES: Record<string, string> = {
   test: "test files",
   docs_example: "docs examples",
+  data: "data files",
   build: "build files",
   vendored: "vendored files",
   generated: "generated files",

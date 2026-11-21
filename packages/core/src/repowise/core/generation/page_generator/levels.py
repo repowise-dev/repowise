@@ -18,7 +18,7 @@ import structlog
 from repowise.core.ids import is_external
 from repowise.core.ingestion.package_roots import package_roots_from_paths
 
-from ...analysis.public_api import compute_public_api
+from ...analysis.public_api import _Resolver, compute_public_api
 from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
@@ -377,12 +377,24 @@ def _execution_flows(graph_builder: Any) -> list[Any]:
         return []
 
 
+def _repo_indexes(run: _GenerationRun) -> tuple[dict[str, Any], set[str], _Resolver, dict]:
+    """The whole-repo lookups every module page reads, built once per call, not per page."""
+    from ..context.graph_intelligence import build_symbol_index
+
+    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
+    return (
+        parsed_by_path,
+        package_roots_from_paths(set(parsed_by_path)),
+        _Resolver(parsed_by_path),
+        build_symbol_index(run.graph),
+    )
+
+
 def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> list[tuple[str, Any]]:
     """Level 4 (module_page) for *groups* (default: every selected group), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
-    package_roots = package_roots_from_paths(set(parsed_by_path))
+    parsed_by_path, package_roots, api_resolver, symbol_index = _repo_indexes(run)
     flows = _execution_flows(run.graph_builder)
     heads = _heads(run.sel_module_groups)
     for mg in run.sel_module_groups if groups is None else groups:
@@ -446,10 +458,13 @@ def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> 
                         {"path": path, "files": count}
                         for path, count in package_file_counts(mg.file_paths, mg.packages)
                     ],
-                    public_api=compute_public_api(material, parsed_by_path, package_roots),
+                    public_api=compute_public_api(
+                        material, parsed_by_path, package_roots, resolver=api_resolver
+                    ),
                     parsed_files=parsed_by_path,
                     source_map=run.source_map,
                     execution_flows=flows,
+                    symbol_index=symbol_index,
                 ),
             )
         )

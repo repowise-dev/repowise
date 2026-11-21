@@ -1960,3 +1960,57 @@ async def test_workspace_indexed_at_comes_from_the_member_store(tmp_path: Path) 
     by_alias = {r["alias"]: r["indexed_at"] for r in repos}
     # backend: the store stamp over the config's 2026-04-12; frontend has no store.
     assert by_alias == {"backend": "2026-10-20T19:21:15+00:00", "frontend": None}
+
+
+# ---------------------------------------------------------------------------
+# Tests — GET /api/workspace/setup
+# ---------------------------------------------------------------------------
+
+
+class TestGetWorkspaceSetup:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        transport = ASGITransport(app=_make_workspace_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/setup")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_aggregates_members_and_names_those_with_steps_left(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from repowise.server.schemas.actions import WorkspaceSetupRepo
+
+        rows = {
+            "backend": WorkspaceSetupRepo(
+                alias="backend", path="./backend", repo_id="r1", status="available",
+                index_state="up_to_date", agent_calls=3, sync=True, coverage="on",
+                evidence="found", open=2, offer="finish_setup", essentials_done=True,
+            ),
+            "frontend": WorkspaceSetupRepo(
+                alias="frontend", path="./frontend", repo_id=None, status="not_indexed",
+                reason="Not indexed yet.",
+            ),
+        }  # fmt: skip
+
+        async def member(request, r, repo_id):
+            return rows[r.alias]
+
+        monkeypatch.setattr(workspace, "_member_setup", member)
+        monkeypatch.setattr(workspace, "_member_stats", lambda *a, **k: {})
+        app = _make_workspace_app(ws_config=_make_ws_config(), workspace_root=str(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            data = (await c.get("/api/workspace/setup", params={"flavor": "claude-code"})).json()
+        assert [r["alias"] for r in data["repos"]] == ["backend", "frontend"]
+        assert data["essentials_done"] == 1 and data["open"] == 2
+        assert data["offer"] == "finish_setup"
+        assert data["prompt"].startswith("You are Claude Code")
+        assert "this workspace: `./backend`." in data["prompt"]
+        assert "`./frontend`" not in data["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_an_unindexed_member_is_named_not_read(self) -> None:
+        member = _make_ws_config().repos[1]
+        row = await workspace._member_setup(MagicMock(), member, None)
+        assert row.status == "not_indexed" and row.open == 0 and not row.essentials_done

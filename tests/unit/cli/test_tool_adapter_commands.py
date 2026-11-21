@@ -256,7 +256,7 @@ def _spy_run(payload: dict, calls: list):
     rather than awaited — running it would need a database.
     """
 
-    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
         coro = factory()
         calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
@@ -471,6 +471,22 @@ def test_symbol_projection_keeps_the_did_you_mean_list():
     """The error ends 'retry with one of these exact symbol_ids'."""
     out = project_symbol(SUGGESTION_PAYLOAD)
     assert out["suggestions"] == ["a/b.py::login", "c/d.py::login"]
+
+
+def test_symbol_projection_keeps_a_files_symbol_names():
+    """A bare file path answers with names to pass back; dropping them leaves only the note."""
+    payload = {
+        "symbol_id": "a.py",
+        "file": "a.py",
+        "kind": "file",
+        "symbols": ["f", "g"],
+        "symbols_total": 20,
+        "note": 'A file, not a symbol. One symbol: get_symbol("a.py::<name>").',
+        "_meta": {},
+    }
+    out = project_symbol(payload)
+    assert out["symbols"] == ["f", "g"]
+    assert out["symbols_total"] == 20
 
 
 def test_why_path_projection_caps_lists_and_says_what_it_capped():
@@ -696,6 +712,27 @@ def test_a_tool_error_is_rewritten_into_commands_a_cli_user_can_run(monkeypatch,
     printed = result.stdout + (result.stderr or "")
     assert "repowise context" in printed
     assert "get_context" not in printed
+
+
+def test_a_bare_file_path_prints_its_symbol_names(monkeypatch, repo):
+    """Text output names the file's symbols, not just the note."""
+    payload = {
+        "symbol_id": "a.py",
+        "file": "a.py",
+        "kind": "file",
+        "symbols": ["alpha", "beta"],
+        "symbols_total": 20,
+        "note": 'A file, not a symbol. One symbol: get_symbol("a.py::<name>").',
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, symbol_command, ["a.py"], repo, payload)
+    lines = result.stdout.splitlines()
+    assert "alpha" in lines and "beta" in lines
+    assert "2 of 20 shown." in result.stdout
+
+    payload["file"] = "app/[id]/page.tsx"
+    result = _invoke(monkeypatch, symbol_command, ["app/[id]/page.tsx"], repo, payload)
+    assert "app/[id]/page.tsx" in result.stdout
 
 
 def test_the_json_error_payload_keeps_the_tools_own_vocabulary(monkeypatch, repo):
@@ -1141,7 +1178,7 @@ def _workspace(tmp_path):
 def _workspace_roots(monkeypatch, args):
     seen: list = []
 
-    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
         factory().close()
         seen.append((repo_path, workspace_root))
         return {"answer": "x", "_meta": {}}
@@ -1192,3 +1229,63 @@ def test_why_path_with_only_background_records_is_not_empty(monkeypatch, repo):
     assert "Candidates, not in force" in result.stdout
     assert "List core tools for eager-schema clients" in result.stdout
     assert "--full" in result.stdout
+
+
+WHY_POINTER_ONLY_PAYLOAD = {
+    "mode": "path",
+    "path": "a.py",
+    "decisions": [],
+    "more": 'Origin story, commits, episodes and contributors: get_why(targets=["a.py"], include=["history"])',
+    "_meta": {},
+}
+
+
+def _sequence_run(payloads: list[dict], calls: list):
+    """``_spy_run`` over several calls, answering each with the next payload."""
+
+    def _run(repo_path, factory, tool_name, *, workspace_root=None, **_kwargs):
+        coro = factory()
+        calls.append(coro.cr_frame.f_locals["include"])
+        coro.close()
+        return payloads[len(calls) - 1]
+
+    return _run
+
+
+def test_why_on_an_ungoverned_path_falls_back_to_its_history_and_rationale(monkeypatch, repo):
+    """No record names the path: the default answer is the history, not a bare pointer."""
+    history = {
+        **WHY_UNGOVERNED_PAYLOAD,
+        "code_rationale": WHY_UNGOVERNED_PAYLOAD["code_rationale"] * 5,
+        "code_rationale_total": 14,
+    }
+    calls: list = []
+    monkeypatch.setattr(_ta, "run", _sequence_run([WHY_POINTER_ONLY_PAYLOAD, history], calls))
+    result = CliRunner(mix_stderr=False).invoke(
+        why_command, ["a.py", "--path", str(repo), "--no-workspace"]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [None, ["history"]]
+    assert "Nothing recorded" not in result.stdout
+    assert "Rationale comments in the code" in result.stdout
+    assert "why it is this way" in result.stdout
+    assert "5 of 14 shown." in result.stdout
+    assert "Git archaeology" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "first"),
+    [
+        (["a.py"], WHY_CANDIDATES_ONLY_PAYLOAD),
+        (["a.py"], WHY_PATH_PAYLOAD),
+        (["a.py", "--full"], WHY_POINTER_ONLY_PAYLOAD),
+    ],
+)
+def test_why_asks_for_history_once_when_the_answer_holds_records(monkeypatch, repo, args, first):
+    calls: list = []
+    monkeypatch.setattr(_ta, "run", _sequence_run([first], calls))
+    result = CliRunner(mix_stderr=False).invoke(
+        why_command, [*args, "--path", str(repo), "--no-workspace"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1

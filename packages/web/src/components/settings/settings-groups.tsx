@@ -60,6 +60,12 @@ export function repoSettingsHref(repoId: string, group: SettingsGroupId): string
   return `${repoSettingsBase(repoId)}/${group}`;
 }
 
+/** A repo's Setup page. Here rather than beside the Setup pill so a server
+ *  module can build the link without importing a client component's file. */
+export function setupHref(repoId: string): string {
+  return repoSettingsHref(repoId, "setup");
+}
+
 /** Anchors from when settings was one long page, and where each lives now. */
 const LEGACY_ANCHORS: Record<string, SettingsGroupId> = { provider: "models" };
 

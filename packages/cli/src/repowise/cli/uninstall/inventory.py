@@ -188,30 +188,12 @@ def _index_blocked(repo_path: Path) -> str | None:
 def _serve_lock_is_live(lock: Path) -> bool:
     """Whether ``serve.lock.json`` names a process that still exists.
 
-    A stale lock is the common case: ``serve`` only removes a lock it owns, so
-    a killed server leaves one behind forever. Treating a stale lock as live
-    would make the index permanently undeletable, which is a worse failure than
-    the one this guard prevents.
+    Treating a stale lock as live would make the index permanently
+    undeletable, which is a worse failure than the one this guard prevents.
     """
-    import json
+    from repowise.cli.commands.serve_cmd._lock import live_serve_lock
 
-    if not lock.exists():
-        return False
-    try:
-        payload = json.loads(lock.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    pid = payload.get("pid")
-    if not isinstance(pid, int):
-        return False
-    try:
-        from repowise.core.procutils import pid_alive
-
-        return bool(pid_alive(pid))
-    except Exception:
-        # Without a liveness probe, assume it is stale rather than blocking the
-        # user out of their own directory on the strength of a leftover file.
-        return False
+    return live_serve_lock(lock) is not None
 
 
 #: Read in chunks rather than whole, with an overlap so the marker cannot be

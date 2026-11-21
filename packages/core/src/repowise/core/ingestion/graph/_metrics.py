@@ -22,6 +22,7 @@ import structlog
 
 from ..cohesion import cannot_close_cycle
 from ..models import NON_CODE_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from ..symbol_identity import file_of_symbol
 from ..symbol_use import SymbolUse, symbol_use_counts
 
 log = structlog.get_logger(__name__)
@@ -716,7 +717,12 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def execution_flows(self, config: Any | None = None) -> Any:
-        """Trace execution flows from entry-point symbols (cached when ``config`` is None)."""
+        """Trace execution flows from entry-point symbols (cached when ``config`` is None).
+
+        With the disk cache attached, a default trace is reused across runs on an
+        exact ``execution_flow_signature`` match, except on a build with
+        ``fresh_communities`` set, which traces afresh and replaces it.
+        """
         from repowise.core.analysis.execution_flows import (
             ExecutionFlowReport,
             trace_execution_flows,
@@ -735,9 +741,15 @@ class MetricsMixin:
 
         for node_id in self._graph.nodes():
             if node_id not in merged_cd and "::" in node_id:
-                file_path = node_id.split("::")[0]
+                file_path = file_of_symbol(node_id)
                 if file_path in file_cd:
                     merged_cd[node_id] = file_cd[file_path]
+
+        signature = self._flow_signature(merged_cd) if config is None else None
+        stored = self._reusable_flows(signature)
+        if stored is not None:
+            self._execution_flow_cache = stored
+            return stored
 
         try:
             report = trace_execution_flows(self._graph, merged_cd, config)
@@ -748,9 +760,44 @@ class MetricsMixin:
                 total_flows=0,
                 flows=[],
             )
+            signature = None
         if config is None:
             self._execution_flow_cache = report
+            if signature is not None:
+                self._store_flows(signature, report)
         return report
+
+    def _flow_signature(self, community_map: dict[str, int]) -> str | None:
+        """The disk cache key of a default trace, or ``None`` without a cache or on failure."""
+        if getattr(self, "_centrality_cache", None) is None:
+            return None
+        from repowise.core.analysis.execution_flows import execution_flow_signature
+
+        try:
+            return execution_flow_signature(self._graph, community_map)
+        except Exception as exc:
+            log.debug("execution_flow_signature_failed", error=str(exc))
+            return None
+
+    def _reusable_flows(self, signature: str | None) -> Any | None:
+        """The report stored for *signature*, unless this build asked for fresh analysis."""
+        if signature is None or self.fresh_communities:
+            return None
+        try:
+            report = self._centrality_cache.lookup_flows(signature=signature)
+        except Exception as exc:
+            log.debug("execution_flow_cache_lookup_failed", error=str(exc))
+            return None
+        if report is not None:
+            log.info("execution_flows_reused_from_cache")
+        return report
+
+    def _store_flows(self, signature: str, report: Any) -> None:
+        """Persist a default trace; best-effort like every cache write."""
+        try:
+            self._centrality_cache.put_flows(signature=signature, report=report)
+        except Exception as exc:
+            log.debug("execution_flow_cache_store_failed", error=str(exc))
 
     async def compute_metrics_parallel(self) -> None:
         """Eagerly populate all metric caches with fan-out parallelism.

@@ -21,13 +21,20 @@ engine can pick it up when building each ``FileContext``.
 from __future__ import annotations
 
 import time
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from repowise.core.git_sha import is_full_sha
+
 from ._constants import _MAX_BLAME_SIZE_BYTES
+
+if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +47,7 @@ __all__ = [
     "owner_in_range",
     "recent_commits_in_range",
     "recent_distinct_commits_in_range",
+    "top_blame_identity",
 ]
 
 # Files with fewer than this many total commits have no useful signal — the
@@ -78,11 +86,67 @@ class BlameIndex:
     # real signal, not an artifact.
     boundary_shas: frozenset[str] = field(default_factory=frozenset)
     is_shallow: bool = False
+    # The people resolver owners are keyed on: the repo's, set by the indexer,
+    # else built once from this file's own blame authors on first use.
+    resolve: IdentityResolver | None = field(default=None, repr=False, compare=False)
 
 
 def blame_as_of(idx: BlameIndex) -> int:
     """Reference 'now' for *idx*: its anchor, or wall clock when built without one."""
     return idx.as_of_ts if idx.as_of_ts is not None else int(time.time())
+
+
+def _resolver(idx: BlameIndex) -> IdentityResolver:
+    if idx.resolve is None:
+        from repowise.core.author_identity import build_identity_resolver
+
+        idx.resolve = build_identity_resolver(idx.authors.values())
+    return idx.resolve
+
+
+def _tally(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[Counter[str], dict[str, str]]:
+    """Blamed lines per identity, and the first name each identity was seen under."""
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
+    resolve = _resolver(idx)
+    shas: Counter[str] = Counter()
+    for ln in line_nos:
+        entry = idx.lines.get(ln)
+        if entry is not None and entry[0] not in excluded:
+            shas[entry[0]] += 1
+    counts: Counter[str] = Counter()
+    names: dict[str, str] = {}
+    for sha, n in shas.items():
+        name, email = idx.authors.get(sha, ("unknown", ""))
+        key = resolve(name, email)
+        counts[key] += n
+        names.setdefault(key, name)
+    return counts, names
+
+
+def top_blame_identity(idx: BlameIndex, line_nos: Iterable[int]) -> tuple[str | None, float | None]:
+    """``(identity key, share)`` of the person who wrote most of *line_nos*.
+
+    Lines are credited to people, not display names (see :attr:`BlameIndex.resolve`),
+    so one person's two names or emails never split their share. Shallow-clone
+    boundary lines are left out; ``(None, None)`` when no line is attributable.
+    """
+    counts, _names = _tally(idx, line_nos)
+    if not counts:
+        return None, None
+    key, top_count = counts.most_common(1)[0]
+    return key, top_count / sum(counts.values())
+
+
+def _blame_owner(
+    idx: BlameIndex, line_nos: Iterable[int]
+) -> tuple[str | None, str | None, float | None]:
+    counts, names = _tally(idx, line_nos)
+    if not counts:
+        return None, None, None
+    key, top_count = counts.most_common(1)[0]
+    resolve = _resolver(idx)
+    share = top_count / sum(counts.values())
+    return resolve.display_name(key, names[key]), resolve.email(key), share
 
 
 def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float | None]:
@@ -95,25 +159,7 @@ def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float
     """
     if not idx.lines:
         return None, None, None
-    from collections import Counter
-
-    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
-    counts: Counter[str] = Counter()
-    for sha, _ts in idx.lines.values():
-        if sha in excluded:
-            continue
-        name = idx.authors.get(sha, ("unknown", ""))[0]
-        counts[name] += 1
-    if not counts:
-        return None, None, None
-    total = sum(counts.values())
-    top_name, top_count = counts.most_common(1)[0]
-    top_email = ""
-    for _sha, (name, email) in idx.authors.items():
-        if name == top_name and email:
-            top_email = email
-            break
-    return top_name, top_email, top_count / total if total else None
+    return _blame_owner(idx, idx.lines)
 
 
 def owner_in_range(
@@ -128,26 +174,8 @@ def owner_in_range(
     """
     if not idx.lines or start_line > end_line:
         return None, None, None
-    from collections import Counter
-
-    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
-    counts: Counter[str] = Counter()
-    for ln in range(start_line, end_line + 1):
-        entry = idx.lines.get(ln)
-        if entry is None or entry[0] in excluded:
-            continue
-        name = idx.authors.get(entry[0], ("unknown", ""))[0]
-        counts[name] += 1
-    if not counts:
-        return None, None, None
-    total = sum(counts.values())
-    top_name, top_count = counts.most_common(1)[0]
-    top_email = ""
-    for _sha, (name, email) in idx.authors.items():
-        if name == top_name and email:
-            top_email = email
-            break
-    return top_name, top_email or None, (top_count / total if total else None)
+    name, email, share = _blame_owner(idx, range(start_line, end_line + 1))
+    return name, email or None, share
 
 
 def _parse_porcelain(
@@ -222,10 +250,10 @@ def _parse_porcelain(
                 boundary_shas.add(current_sha)
             continue
         # Header lines are space-separated; only the very first header of a
-        # block starts with a 40-char hex sha. Other headers start with
+        # block starts with a full hex sha. Other headers start with
         # alphabetic keywords (author, committer, summary, previous, filename).
         head, _, _rest = line.partition(" ")
-        if len(head) == 40 and all(c in "0123456789abcdef" for c in head):
+        if is_full_sha(head):
             parts = line.split(" ")
             current_sha = parts[0]
             if len(parts) >= 3:

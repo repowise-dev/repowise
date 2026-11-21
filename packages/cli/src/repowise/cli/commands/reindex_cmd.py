@@ -77,9 +77,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from repowise.cli.helpers import load_config_for_write
     from repowise.core.persistence.database import create_engine, init_db
     from repowise.core.persistence.models import Page
 
+    # The run ends by writing config.yaml: refuse a file that does not parse
+    # now, not after vectors from the new embedder are in the table.
+    load_config_for_write(Path(repo_path))
     embedder_name, embedder_impl = _embedder_for(repo_path, embedder_name)
 
     # --- Create LanceDB vector store ---
@@ -263,7 +267,8 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     if provider_circuit_error is not None:
         raise click.ClickException(
             "Embedding provider failed in two consecutive batches; stopped the reindex "
-            f"before the outage multiplied across the corpus. Last error: {provider_circuit_error}"
+            "so the same failure is not repeated across the corpus. "
+            f"Last error: {provider_circuit_error}"
         )
 
     # Record the embedder we actually built the table with. Without this, a
@@ -277,24 +282,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # a run where every item failed has nothing to describe, and claiming
     # otherwise would point later writers at a width the table does not have.
     if indexed:
-        from repowise.cli.helpers import save_config_partial
-
-        save_config_partial(Path(repo_path), embedder=embedder_name)
-
-    # The run that clears a failed embed must say so: init and update mark the
-    # semantic leg unavailable and point here, and nothing else flips it back.
-    if indexed and not failed and embedder_name != "mock":
-        from repowise.cli.helpers import load_config, load_state, save_state
-        from repowise.core.index_scope import stamp_index_scope
-
-        state = load_state(Path(repo_path))
-        if "index_scope" in state:
-            stamp_index_scope(
-                state,
-                load_config(Path(repo_path)),
-                search={"semantic": "available", "next_command": None},
-            )
-            save_state(Path(repo_path), state)
+        _record_embedder(Path(repo_path), embedder_name, clean=not failed)
 
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
@@ -313,6 +301,66 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # failure is visible in the exit status, not just in the printed count.
     if indexed == 0 and failed > 0:
         raise click.Abort()
+
+
+def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
+    """Make config.yaml and state.json describe the embedder the table now holds."""
+    from repowise.cli.helpers import load_config_for_write, save_config_partial
+    from repowise.core.repo_config import (
+        carry_config_fingerprints,
+        config_dependency_fingerprints,
+        config_fingerprint,
+    )
+
+    # Read as a write reads it: a file broken during the embed stops here.
+    config = load_config_for_write(repo_path)
+    pinned = str(config.get("embedder") or "").strip().lower()
+    before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
+    # A model pinned for the old embedder would be read as the new one's; the
+    # same embedder keeps its pin (#2627).
+    changed = pinned != embedder_name
+    save_config_partial(
+        repo_path, embedder=embedder_name, **({"embedding_model": None} if changed else {})
+    )
+    model = str(config.get("embedding_model") or "").strip()
+    if changed and model:
+        # A pin binds to the embedder named beside it, so the embed never read it.
+        warn(
+            f"Removed embedding_model: {model} from config.yaml: it was pinned for "
+            f"{pinned or 'no embedder'}, so this run did not use it."
+        )
+    # The embed this config change asks `update` for has just been done, but
+    # only in full on a clean run. After a partial switch the stale fingerprint
+    # makes `update` rebuild; a partial run with the same embedder changes no
+    # config, so it leaves `update` no signal.
+    if clean:
+        carry_config_fingerprints(repo_path, before)
+    _stamp_scope(repo_path, embedder_name, clean=clean)
+
+
+def _stamp_scope(repo_path, embedder_name: str, *, clean: bool) -> None:
+    """Name the embedder in the index scope, and what it leaves of semantic search."""
+    from repowise.cli.helpers import load_config, load_state, save_state
+    from repowise.cli.providers import semantic_search_command
+    from repowise.core.index_scope import stamp_index_scope
+
+    state = load_state(repo_path)
+    if "index_scope" not in state:
+        return
+    # The stored embedder outranks the config in the scope, so name it here.
+    updates: dict = {"provider": {"embedder": embedder_name}}
+    if embedder_name == "mock":
+        # Test vectors answer no query: say so, the way init does.
+        updates["search"] = {
+            "semantic": "unavailable",
+            "next_command": semantic_search_command(repo_path),
+        }
+    elif clean:
+        # The run that clears a failed embed must say so: init and update mark the
+        # semantic leg unavailable and point here, and nothing else flips it back.
+        updates["search"] = {"semantic": "available", "next_command": None}
+    stamp_index_scope(state, load_config(repo_path), **updates)
+    save_state(repo_path, state)
 
 
 def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:

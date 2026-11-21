@@ -5,7 +5,7 @@ import { SWRConfig } from "swr";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupResponse } from "@/lib/api/setup";
-import { setupFixture } from "./setup-fixture";
+import { setupFixture, stepFixture, stepsFixture } from "./setup-fixture";
 
 const mocks = vi.hoisted(() => ({
   getRepoSetup: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock("@/components/model-upgrade/model-upgrade", () => ({
   useModelUpgrade: () => ({ openSheet: vi.fn(), sheet: null }),
 }));
 
-import { RepoAgentRows, RepoSetupRows } from "./setup-settings";
+import { RepoAgentRows, RepoDepthRows, RepoSetupRows } from "./setup-settings";
 
 function wrap(setup: SetupResponse, node: React.ReactNode) {
   mocks.getRepoSetup.mockResolvedValue(setup);
@@ -94,5 +94,33 @@ describe("Agents settings rows", () => {
     const connect = await screen.findByRole("button", { name: "Connect Cursor" });
     expect(connect.hasAttribute("disabled")).toBe(true);
     expect(screen.getByText("Claude.ai and ChatGPT")).toBeTruthy();
+  });
+});
+
+describe("Suggested from your usage", () => {
+  it("renders nothing until usage unlocks a row", async () => {
+    const { container } = wrap(setupFixture({ setup: stepsFixture([]) }), <RepoDepthRows repoId="r1" repoName="orbit-api" />);
+    await waitFor(() => expect(mocks.getRepoSetup).toHaveBeenCalled());
+    expect(container.textContent).toBe("");
+  });
+
+  it("lists the unlocked rows with the call count and a copy button each", async () => {
+    wrap(
+      setupFixture({
+        setup: stepsFixture(
+          [
+            stepFixture("always_load_suggested", { title: "Load the four read tools up front", command: "repowise config set mcp.always_load true" }),
+            stepFixture("distill_suggested"),
+          ],
+          { claude_code_calls: 214 },
+        ),
+      }),
+      <RepoDepthRows repoId="r1" repoName="orbit-api" />,
+    );
+    expect(await screen.findByText("Suggested from your usage")).toBeTruthy();
+    expect(screen.getByText("Claude Code has made 214 calls to this index.")).toBeTruthy();
+    expect(screen.getByText("Load the four read tools up front")).toBeTruthy();
+    expect(screen.getByText("Shorter command output")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Copy prompt/ })).toHaveLength(2);
   });
 });

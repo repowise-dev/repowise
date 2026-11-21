@@ -59,3 +59,36 @@ def _remove_serve_lock(lock_path: Path) -> None:
             lock_path.unlink()
     except (OSError, ValueError):
         pass
+
+
+def live_serve_lock(lock_path: Path) -> dict | None:
+    """The lockfile's payload when it names a process that still exists, else ``None``.
+
+    A stale lock is the common case: ``serve`` only removes a lock it owns, so
+    a killed server leaves one behind forever. Without a liveness probe the
+    lock reads as stale.
+    """
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = payload.get("pid") if isinstance(payload, dict) else None
+    if not isinstance(pid, int):
+        return None
+    try:
+        from repowise.core.procutils import pid_alive
+
+        return payload if pid_alive(pid) else None
+    except Exception:
+        return None
+
+
+def live_web_url(repo_path: Path) -> str | None:
+    """The web app's address while ``repowise serve`` runs it for *repo_path*."""
+    lock = _serve_lock_path(repo_path)
+    payload = live_serve_lock(lock) if lock is not None else None
+    ui_port = (payload or {}).get("ui_port")
+    if not isinstance(ui_port, int):
+        return None
+    # The web UI listens on loopback whatever the API binds; the browser opener uses this too.
+    return f"http://localhost:{ui_port}"

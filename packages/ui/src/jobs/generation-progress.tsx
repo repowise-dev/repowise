@@ -8,7 +8,7 @@ import { ActivityDot } from "../ui/activity-dot";
 import { Button } from "../ui/button";
 import { JobLog, type JobLogEntry } from "./job-log";
 import { formatTokens, formatNumber } from "../lib/format";
-import { jobOutcome, providerIssue, type ProviderIssue } from "./job-outcome";
+import { jobOutcome, jobRunKind, providerIssue, type ProviderIssue } from "./job-outcome";
 
 /** Subset of the Job shape this presentational shell renders. */
 export interface GenerationProgressJob {
@@ -49,6 +49,14 @@ export interface GenerationProgressProps {
 }
 
 export interface GenerationProgressLabels {
+  /** Heading while the job waits for the worker. */
+  queued: string;
+  /** Heading for a clean run, by what ran (see `jobRunKind`). */
+  indexReady: string;
+  docsReady: string;
+  /** Heading for a failed run, by what ran. */
+  indexFailed: string;
+  docsFailed: string;
   /** Heading for a run that completed but lost pages or skipped docs. */
   warningTitle: string;
   /** No page was written; every one fell back to a placeholder. */
@@ -62,6 +70,11 @@ export interface GenerationProgressLabels {
 }
 
 export const DEFAULT_GENERATION_PROGRESS_LABELS: GenerationProgressLabels = {
+  queued: "Queued. Starting soon.",
+  indexReady: "Index ready",
+  docsReady: "Generation complete",
+  indexFailed: "Indexing failed",
+  docsFailed: "Generation failed",
   warningTitle: "Finished with problems",
   noPagesWritten: "No documentation pages were written.",
   somePagesFailed: (failed, total) =>
@@ -119,6 +132,7 @@ export function GenerationProgress({
   const failedPages = job?.failed_pages ?? 0;
   const isFailed = job?.status === "failed";
   const isCancelled = job?.status === "cancelled";
+  const wroteDocs = jobRunKind(job) === "docs";
   // A failure may be the provider's; a warning only offers it when it was.
   const showSettings = isFailed || issue !== null;
   // Rerunning only helps a warning that lost pages; skipped docs need setup.
@@ -138,12 +152,12 @@ export function GenerationProgress({
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
         {isCancelled && <Ban className="h-4 w-4 text-[var(--color-text-tertiary)] shrink-0" />}
 
-        <span className="text-sm font-medium text-[var(--color-text-primary)]">
-          {isPending && "Queued — waiting for worker…"}
+        <span role="status" className="text-sm font-medium text-[var(--color-text-primary)]">
+          {isPending && l.queued}
           {isRunning && `${phaseLabel}…`}
-          {isDone && "Generation complete"}
+          {isDone && (wroteDocs ? l.docsReady : l.indexReady)}
           {isWarning && l.warningTitle}
-          {isFailed && "Generation failed"}
+          {isFailed && (wroteDocs ? l.docsFailed : l.indexFailed)}
           {isCancelled && "Cancelled"}
         </span>
 
@@ -157,7 +171,7 @@ export function GenerationProgress({
             variant="ghost"
             onClick={onCancel}
             disabled={cancelling}
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-xs max-[560px]:h-11"
             aria-label="Cancel job"
           >
             <X className="h-3.5 w-3.5 mr-1" />
@@ -235,18 +249,22 @@ export function GenerationProgress({
 
       {(isDone || isWarning) && job && (
         <div className="grid grid-cols-3 gap-2">
-          <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
-            <p className="text-lg font-semibold text-[var(--color-text-primary)]">
-              {formatNumber(job.completed_pages)}
-            </p>
-            <p className="text-xs text-[var(--color-text-tertiary)]">pages</p>
-          </div>
-          <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
-            <p className="text-lg font-semibold text-[var(--color-text-primary)]">
-              {formatTokens((job.config?.total_input_tokens as number) ?? 0)}
-            </p>
-            <p className="text-xs text-[var(--color-text-tertiary)]">tokens in</p>
-          </div>
+          {(wroteDocs
+            ? [
+                [formatNumber(job.completed_pages), "pages"],
+                [formatTokens((job.config?.total_input_tokens as number) ?? 0), "tokens in"],
+              ]
+            : [
+                // No model ran: what the index holds, not a zero token count.
+                [formatNumber(Number(job.config?.file_count ?? job.completed_pages)), "files"],
+                [formatNumber(Number(job.config?.symbol_count ?? 0)), "symbols"],
+              ]
+          ).map(([value, label]) => (
+            <div key={label} className="rounded border border-[var(--color-border-default)] p-2 text-center">
+              <p className="text-lg font-semibold text-[var(--color-text-primary)]">{value}</p>
+              <p className="text-xs text-[var(--color-text-tertiary)]">{label}</p>
+            </div>
+          ))}
           <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
             <p className="text-lg font-semibold text-[var(--color-text-primary)]">
               {elapsedStr}
@@ -273,13 +291,13 @@ export function GenerationProgress({
         (showRetry || onDismiss || (showSettings && settingsHref)) && (
         <div className="flex flex-wrap gap-2">
           {showRetry && (
-            <Button size="sm" variant="outline" onClick={onRetry} className="h-7 px-2 text-xs">
+            <Button size="sm" variant="outline" onClick={onRetry} className="h-7 px-2 text-xs max-[560px]:h-11">
               <RotateCw className="h-3.5 w-3.5 mr-1" />
               {isCancelled ? l.startAgain : l.retry}
             </Button>
           )}
           {showSettings && settingsHref && (
-            <Button size="sm" variant="ghost" asChild className="h-7 px-2 text-xs">
+            <Button size="sm" variant="ghost" asChild className="h-7 px-2 text-xs max-[560px]:h-11">
               <a href={settingsHref}>
                 <Settings className="h-3.5 w-3.5 mr-1" />
                 {l.providerSettings}
@@ -287,7 +305,7 @@ export function GenerationProgress({
             </Button>
           )}
           {onDismiss && (
-            <Button size="sm" variant="ghost" onClick={onDismiss} className="h-7 px-2 text-xs">
+            <Button size="sm" variant="ghost" onClick={onDismiss} className="h-7 px-2 text-xs max-[560px]:h-11">
               <X className="h-3.5 w-3.5 mr-1" />
               {l.dismiss}
             </Button>

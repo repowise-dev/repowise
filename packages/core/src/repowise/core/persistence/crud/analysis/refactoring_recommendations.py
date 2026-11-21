@@ -17,11 +17,6 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import (
-    TestRuns,
-    js_root_runs,
-    runs_for_tests,
-)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -54,6 +49,11 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.ingestion.package_roots import scan_package_manifests
+from repowise.core.test_runners.packages import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
 from .._shared import _BATCH_SIZE
@@ -178,6 +178,7 @@ async def validation_inputs(
     *in_degree* is the stored fan-in a caller already read; without it, read here.
     With the *checkout*, each test's package is read, for the plans to store;
     without it, JS/TS tests run from the repository root and others get no command.
+    The checkout also names the workload each performance plan is timed with.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -233,6 +234,7 @@ async def validation_inputs(
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
             test_runs=runs,
+            timed=await _timed_targets(session, repository_id, checkout, suggestions),
         ),
     )
     return ValidationInputs(
@@ -286,6 +288,30 @@ async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
     # The health pass already scanned this commit's package roots; this reuses it.
     manifests = await asyncio.to_thread(scan_package_manifests, root)
     return await asyncio.to_thread(runs_for_tests, root, manifests, test_files)
+
+
+async def _timed_targets(
+    session: AsyncSession,
+    repository_id: str,
+    checkout: str | None,
+    suggestions: Sequence[RefactoringSuggestion],
+) -> dict[str, dict[str, Any]]:
+    """The workload ``perf measure`` times for each performance plan's file:
+    the entry point or benchmark ``evidence setup`` names for its unit."""
+    paths = sorted(
+        {s.file_path for s in suggestions if s.refactoring_type == "performance_fix" and s.file_path}
+    )
+    root = Path(checkout) if checkout else None
+    if not paths or root is None or not root.is_dir():
+        return {}
+    from repowise.core.evidence.runtime_setup import load_runtime_inputs
+    from repowise.core.evidence.setup import timed_targets
+
+    from ..build_units import load_build_units
+
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(timed_targets, root, paths, units=units, runtime=runtime)
 
 
 async def _symbol_spans(

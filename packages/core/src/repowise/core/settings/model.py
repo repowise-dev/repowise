@@ -174,6 +174,9 @@ class Setting:
     #: How the default is decided when it is not one fixed value: detected
     #: from the machine, or set by another setting. ``default`` is then ``None``.
     default_note: str | None = None
+    #: What turning it on costs, in a few words, for a surface that offers it
+    #: beside a switch (``init``, ``agents add``, the settings page).
+    cost_note: str | None = None
     env: Env | None = None
     #: The file the key lives in when it is not the scope's usual one.
     file: str | None = None
@@ -224,6 +227,7 @@ class Setting:
             "type": self.type,
             "default": _jsonable(self.default),
             "default_note": self.default_note,
+            "cost_note": self.cost_note,
             "description": self.description,
             "area": self.area,
             "scope": self.scope,

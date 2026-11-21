@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
 from repowise.core.co_change import CoChangePartner, parse_partners
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GitMetadata, GraphNode
 from repowise.core.workspace.cross_repo import _is_noise_path
@@ -35,24 +36,6 @@ BRANCH_SCAN_LIMIT = 50
 # History rows corroborate a direct hit, they do not compete with it: past a
 # few, one file that pairs with everything drowns out the files truly shared.
 CO_CHANGE_ROWS_PER_BRANCH = 3
-
-# Every dependency bump edits the manifest, so sharing one says nothing about
-# the work. Kept here rather than in the shared noise list, which is counted on.
-_MANIFEST_NAMES = frozenset(
-    {
-        "go.mod",
-        "package.json",
-        "pyproject.toml",
-        "Cargo.toml",
-        "Gemfile",
-        "composer.json",
-        "requirements.txt",
-        "setup.py",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-    }
-)
 
 # Git serves concurrent reads, and the exact diffs are the only per-hit cost left.
 _DIFF_WORKERS = 4
@@ -157,7 +140,8 @@ def _signal(paths: Iterable[str]) -> frozenset[str]:
         for path in paths
         if path
         and not _is_noise_path(path)
-        and path.replace("\\", "/").rsplit("/", 1)[-1] not in _MANIFEST_NAMES
+        # Every dependency bump edits the manifest, so sharing one says nothing.
+        and not _LANG_REGISTRY.is_package_manifest(path)
     )
 
 

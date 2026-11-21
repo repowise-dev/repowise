@@ -7,7 +7,7 @@ import re
 
 from ..models import CallSite, Symbol
 from ..return_types import declared_return_type
-from ..symbol_identity import outer_scope, symbol_id_path
+from ..symbol_identity import file_of_symbol, make_symbol_id, outer_scope
 from ..type_names import bare_type_name, strip_type_arguments, type_qualifier
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 
@@ -106,13 +106,13 @@ class JavaTypeVisibility:
         Twins share the id past the file path; the caller's own platform's
         ``actual`` outranks the ``expect`` (see ``_most_visible``).
         """
-        path = symbol_id_path(expect_id)
+        path = file_of_symbol(expect_id)
         scoped = expect_id[len(path) :]
         name = self._symbols_by_id[expect_id].name
         twins = (
-            (symbol_id_path(sym_id), sym_id)
+            (file_of_symbol(sym_id), sym_id)
             for sym_id in self._global_symbols.get(name, ())
-            if sym_id[len(symbol_id_path(sym_id)) :] == scoped
+            if sym_id[len(file_of_symbol(sym_id)) :] == scoped
             and self._platform_twin(expect_id, sym_id)
         )
         return self._most_visible(file_path, twins)
@@ -126,8 +126,8 @@ class JavaTypeVisibility:
         if "actual" not in symbol.modifiers and (owner is None or "actual" not in owner.modifiers):
             return False
         index = self._get_jvm_index()
-        expect_path = symbol_id_path(expect_id)
-        return index is not None and symbol_id_path(sym_id) in index.same_package_files(expect_path)
+        expect_path = file_of_symbol(expect_id)
+        return index is not None and file_of_symbol(sym_id) in index.same_package_files(expect_path)
 
     def _visible_java_type(self, file_path: str, bare: str, type_file: str) -> bool:
         """Whether Java lets *file_path* write *bare* for the type in *type_file*.
@@ -172,7 +172,7 @@ class JavaTypeVisibility:
         """The top-level type *name* of the Java package *package* that *from_file* may use."""
         index = self._get_jvm_index()
         files = index.files_for_fqn(f"{package}.{name}") if index is not None else ()
-        type_id = f"{files[0]}::{name}" if len(files) == 1 else ""
+        type_id = make_symbol_id(files[0], name) if len(files) == 1 else ""
         return type_id if self._accessible_type(type_id, from_file) else None
 
     def _enclosing_member_type(self, file_path: str, scope_id: str, name: str) -> str | None:
@@ -242,7 +242,7 @@ class JavaTypeVisibility:
         symbol = self._symbols_by_id.get(type_id)
         if symbol is None or symbol.kind not in _TYPE_KINDS:
             return False
-        type_file = symbol_id_path(type_id)
+        type_file = file_of_symbol(type_id)
         if symbol.visibility == "private":
             return type_file == from_file
         if symbol.visibility == "internal":
@@ -259,7 +259,7 @@ class JavaTypeVisibility:
         ids = {
             identity[0]
             for path, identity, _ in self._declared_types_named(name)
-            if identity[0] == f"{path}::{name}" and self._visible_java_type(file_path, name, path)
+            if identity[0] == make_symbol_id(path, name) and self._visible_java_type(file_path, name, path)
         }
         return next(iter(ids)) if len(ids) == 1 else None
 
@@ -272,7 +272,7 @@ class JavaTypeVisibility:
         )
         if sym_id is None:
             return None
-        type_file = symbol_id_path(type_id)
+        type_file = file_of_symbol(type_id)
         if type_file == file_path:
             return sym_id, "same_file"
         if posixpath.dirname(type_file) == posixpath.dirname(file_path):
@@ -322,7 +322,7 @@ class JavaTypeVisibility:
         if symbol is None or not symbol.parent_name:
             return False
         returned = declared_return_type(symbol.signature or "") or ""
-        path = symbol_id_path(callee_id)
+        path = file_of_symbol(callee_id)
         owner = self._symbols_by_id.get(self._only_type_in(path, symbol.parent_name) or "")
         if owner is None or not returned.isidentifier():
             return False

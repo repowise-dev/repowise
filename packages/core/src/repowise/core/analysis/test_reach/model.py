@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 # How many call hops a test may take and still be said to reach a file. The walk
@@ -158,15 +159,15 @@ def rank_reaching(
     the one mirroring more of its directories, and the path. Targets, tests
     and *changed* may be ``path::name`` ids; every key reads the file part.
     """
-    path_of = target.split("::", 1)[0]
+    path_of = file_of_symbol(target)
     names = paired_test_names(path_of)
     dirs = set(path_of.split("/")[:-1])
     reach = reach or {}
     if edited is None:
-        edited = {c.split("::", 1)[0] for c in changed}
+        edited = {file_of_symbol(c) for c in changed}
 
     def key(test: str) -> tuple[bool, bool, int, bool, int, bool, int, str]:
-        path = test.split("::", 1)[0]
+        path = file_of_symbol(test)
         distance = reach.get(test) or reach.get(path)
         return (
             path not in edited,

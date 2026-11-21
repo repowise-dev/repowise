@@ -98,6 +98,43 @@
   ]
 ) @symbol.def
 
+; Function assigned to a property, named by the property: ``obj.a = function
+; a() {}``, ``exports.d = ...``, ``module.exports.x = ...``,
+; ``Foo.prototype.e = ...``, function or arrow. See javascript.scm.
+(assignment_expression
+  left: (member_expression
+    object: [(identifier) (member_expression)]
+    property: (property_identifier) @symbol.name) @_assigned_lhs
+  right: [
+    (function_expression parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameter: (identifier) @symbol.params)
+  ]
+  (#not-eq? @_assigned_lhs "module.exports")
+) @symbol.def
+
+; Top-level ``var`` bound to a function: ``var h = function h() {}``,
+; ``var k = () => 2``. See javascript.scm.
+(program
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: [(function_expression) (arrow_function)]
+    ) @symbol.def
+  )
+)
+
+(program
+  (export_statement
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name
+        value: [(function_expression) (arrow_function)]
+      ) @symbol.def
+    )
+  )
+)
+
 ; Top-level const/let bindings — module constants and call-expression
 ; bindings. The declarator (not the lexical_declaration) is @symbol.def so
 ; the kind map can distinguish it from the arrow-function pattern above.

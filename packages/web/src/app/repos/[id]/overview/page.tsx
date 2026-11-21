@@ -8,6 +8,7 @@ import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
+import { RepoReportCardHost } from "@/components/reports/repo-report-card-host";
 import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
@@ -165,6 +166,7 @@ export default async function OverviewPage({ params }: Props) {
         header: (
           <>
             {header}
+            <RepoReportCardHost repoId={id} />
             <ReviewNudgeHost repoId={id} />
             {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
             <WelcomeMoment
@@ -173,6 +175,8 @@ export default async function OverviewPage({ params }: Props) {
               fileCount={stats.file_count}
               figures={welcomeFigures(summary)}
               hotspotPath={summary.top_hotspots[0]?.file_path ?? null}
+              worstPath={health.worst_performer_path}
+              decisionTitle={summary.recent_decisions[0]?.title ?? null}
             />
           </>
         ),

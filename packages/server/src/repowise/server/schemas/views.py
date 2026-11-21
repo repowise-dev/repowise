@@ -22,6 +22,7 @@ from typing import Annotated, ClassVar, Literal, get_args
 
 from pydantic import Field, RootModel, field_validator, model_validator
 
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
 from repowise.server.schemas.evidence import (
     MAX_WIRE_NUMBER,
     CardBasis,
@@ -117,7 +118,7 @@ class ViewProvenance(StrictContract):
     basis: CardBasis
     coverage: ViewCoverage | None = None
     stale: bool
-    as_of: Annotated[str, Field(pattern=r"^[0-9a-f]{7,64}$")] | None
+    as_of: Annotated[str, Field(pattern=f"^{SHA_PREFIX_PATTERN}$")] | None
 
 
 class ViewColumn(StrictContract):

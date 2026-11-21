@@ -32,8 +32,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...symbol_spans import symbol_at
 from ..framework_routes import spring_routes
 from ..resolvers import ResolverContext
+from ..symbol_identity import module_symbol_id
 from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
@@ -171,17 +173,9 @@ def _owner_at_offset(parsed: Any, text: str, offset: int) -> str | None:
     outer class -- and finds nothing at all in a file whose stem names no type.
     """
     line = text.count("\n", 0, offset) + 1
-    best: str | None = None
-    best_span = None
-    for sym in parsed.symbols:
-        if sym.kind not in ("class", "interface", "record", "enum"):
-            continue
-        if not (sym.start_line <= line <= sym.end_line):
-            continue
-        span = sym.end_line - sym.start_line
-        if best_span is None or span < best_span:
-            best, best_span = sym.id, span
-    return best
+    types = (s for s in parsed.symbols if s.kind in ("class", "interface", "record", "enum"))
+    best = symbol_at(types, line)
+    return best.id if best is not None else None
 
 
 def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
@@ -229,10 +223,9 @@ def _add_route_handler_edges(
             line = text.count("\n", 0, route.offset) + 1
             # A JVM method's span starts at its annotations, so the innermost
             # method holding the annotation's line is the one it sits on.
-            holders = [s for s in methods if s.start_line <= line <= s.end_line]
-            if holders:
-                handler = max(holders, key=lambda s: s.start_line)
-                count += add_symbol_edge(graph, f"{path}::__module__", handler.id)
+            handler = symbol_at(methods, line)
+            if handler is not None:
+                count += add_symbol_edge(graph, module_symbol_id(path), handler.id)
     return count
 
 

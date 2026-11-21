@@ -53,6 +53,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "history_only": 1,
         "vendored": 0,
         "docs_example": 0,
+        "data": 0,
         "deprecated": 0,
         "gated_off": 0,
         "cold_path": 0,

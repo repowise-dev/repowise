@@ -244,7 +244,11 @@ def _migrate_repo_selection(repo_id: str | None, repo_path: str | Path | None) -
 
 
 def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any]) -> None:
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
+    from repowise.core.repo_config import (
+        carry_config_fingerprints,
+        config_dependency_fingerprints,
+        config_fingerprint,
+    )
 
     before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
     base_url = validate_base_url(selection.get("base_url"))
@@ -256,38 +260,7 @@ def _write_migrated_selection(repo_path: str | Path, selection: Mapping[str, Any
     )
     if base_url:
         trust_base_url(repo_path, base_url)
-    _carry_fingerprints(repo_path, before)
-
-
-def _carry_fingerprints(repo_path: str | Path, before: tuple[str, dict[str, str]]) -> None:
-    """Move state.json's config fingerprints past the migration's own write.
-
-    Only a fingerprint that still matched the pre-migration config moves, so a
-    real config change waiting for the next update is still seen.
-    """
-    from repowise.core.fsutils import atomic_write_text
-    from repowise.core.repo_config import config_dependency_fingerprints, config_fingerprint
-
-    state_path = Path(repo_path) / ".repowise" / "state.json"
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(state, dict):
-        return
-    old_fp, old_deps = before
-    changed = False
-    if state.get("config_fingerprint") == old_fp:
-        state["config_fingerprint"] = config_fingerprint(repo_path)
-        changed = True
-    stored = state.get("config_dependency_fingerprints")
-    if isinstance(stored, dict):
-        for bucket, value in config_dependency_fingerprints(repo_path).items():
-            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
-                stored[bucket] = value
-                changed = True
-    if changed:
-        atomic_write_text(state_path, json.dumps(state, indent=2))
+    carry_config_fingerprints(repo_path, before)
 
 
 def resolve_for_repo(
