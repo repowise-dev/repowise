@@ -534,7 +534,11 @@ def _dev_install(pm: str, pkg: str, workspace: str) -> tuple[str, ...]:
 
 
 def _yarn_berry(root: set[str], package: dict) -> bool:
-    """Whether Yarn here is Berry (2 or later): its config file, or ``packageManager`` naming it."""
+    """Whether Yarn here is Berry (2 or later): its config file, or ``packageManager`` naming it.
+
+    Ceiling: a Berry project with neither (a global Berry install) reads as classic; the
+    lockfile's ``__metadata`` header would tell, but lockfiles are not read here.
+    """
     return ".yarnrc.yml" in root or bool(_YARN_BERRY.match(str(package.get("packageManager") or "")))
 
 
