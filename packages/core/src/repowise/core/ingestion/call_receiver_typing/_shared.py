@@ -28,8 +28,10 @@ _V = TypeVar("_V")
 def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
     """Store *value*, evicting *cache*'s oldest entry once it holds *cap* entries.
 
-    Oldest by insertion (a hit does not move an entry), so a full cache drops
-    one file instead of every file the current lookups keep returning to.
+    Oldest by insertion, so a full cache drops one file instead of all of them.
+    Ceiling: a hit does not move an entry, so a file read often but cached
+    first is rescanned once *cap* newer files have arrived; moving it on a hit
+    means touching every getter.
     Each resolver is built for one resolution pass, so nothing outlives the
     files it read.
     """
