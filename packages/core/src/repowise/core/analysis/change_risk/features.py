@@ -236,7 +236,7 @@ def working_tree_is_dirty(repo_path: str) -> bool:
     status = _git(["status", "--porcelain", "--", ":(exclude).repowise"], repo_path, check=False)
     if not status.strip():
         return False
-    ours = [f":(top,exclude){p.lstrip('/')}" for p in generated_worktree_paths(repo_path)]
+    ours = [f":(top,exclude,literal){p.lstrip('/')}" for p in generated_worktree_paths(repo_path)]
     if not ours:
         return True
     status = _git(
