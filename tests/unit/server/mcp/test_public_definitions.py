@@ -69,6 +69,18 @@ def test_a_single_repo_listing_drops_repo_from_schema_and_args() -> None:
     ]
 
 
+def test_schema_tokens_count_the_form_each_mode_lists() -> None:
+    from repowise.server.mcp_server._tool_selection import schema_tokens
+
+    for workspace in (False, True):
+        listed = tool_definitions(["get_risk"], workspace=workspace)[0]
+        keys = ("name", "description", "inputSchema", "outputSchema")
+        body = {k: listed[k] for k in keys if k in listed}
+        size = len(json.dumps(body, separators=(",", ":"))) // 4
+        assert abs(schema_tokens("get_risk", workspace=workspace) - size) <= 1, workspace
+    assert schema_tokens("get_risk") < schema_tokens("get_risk", workspace=True)
+
+
 @pytest.mark.asyncio
 async def test_a_single_repo_server_still_accepts_repo(tmp_path: Any, monkeypatch: Any) -> None:
     from repowise.server.mcp_server import _tool_selection, create_mcp_server

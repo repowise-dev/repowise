@@ -421,7 +421,7 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
             "default": row["name"] in default_surface,
             "eligible": row["name"] in eligible,
             "enabled": row["name"] in enabled,
-            "schema_tokens": schema_tokens(row["name"]),
+            "schema_tokens": schema_tokens(row["name"], workspace=is_workspace),
         }
         for row in rows
     ]
@@ -471,15 +471,18 @@ def client_tool_surface(repo_path: str | None, client: str) -> dict[str, Any]:
     }
 
 
-def schema_tokens(name: str) -> int:
+def schema_tokens(name: str, *, workspace: bool = False) -> int:
     """About how many tokens a client that loads schemas up front pays for *name*.
 
-    The compact JSON of what ``tools/list`` sends for it, at four characters a
-    token: an estimate for comparing tools, not a tokenizer count.
+    The compact JSON of what ``tools/list`` sends for it in that mode, at four
+    characters a token: an estimate for comparing tools, not a tokenizer count.
     """
     tool = (_full_surface or {}).get(name)
     if tool is None:
         return 0
+    from repowise.server.mcp_server import _single_repo_form
+
+    tool = tool if workspace else _single_repo_form(tool)
     listed = {
         "name": tool.name,
         "description": tool.description,
