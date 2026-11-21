@@ -374,6 +374,30 @@ def test_truncate_drops_files_whole_only_when_the_floor_cannot_fit():
     assert "docs.files" in out.get("dropped_blocks", {}).get(name, [])
 
 
+def test_truncate_stage_2a_keeps_target_that_fits_after_file_trim():
+    """Stage 2a eviction sizes survivors with files trimmed, not full.
+
+    Three modules whose identity cards bust the budget: with symbols alone
+    trimmed the two survivors still look over budget, so the old sizing
+    evicted a second target; with the files cut to their floor as well they
+    fit, so only one target goes and the survivors keep their file prefix.
+    """
+    names = [f"pkg/mod_{i}" for i in range(3)]
+    targets = {name: _module_target(name, 15, summary_len=3000) for name in names}
+    out = truncate_to_budget({"targets": targets}, char_budget=8500, record_counts=True)
+
+    assert out.get("dropped_targets") == ["pkg/mod_0"]
+    assert sorted(out["targets"]) == ["pkg/mod_1", "pkg/mod_2"]
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 8500
+    for target in out["targets"].values():
+        docs = target["docs"]
+        assert len(docs["symbols"]) >= entitled_floor(10)
+        assert len(docs["files"]) >= entitled_floor(15)
+        assert docs["files_total"] == 15
+        assert docs["files_emitted"] == len(docs["files"])
+        assert docs["files_reduced_reason"] == "response_budget"
+
+
 # ---------------------------------------------------------------------------
 # fit_to_budget — the block-shedding ceiling
 # ---------------------------------------------------------------------------

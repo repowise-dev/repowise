@@ -602,13 +602,28 @@ def _identity_card(tgt: dict[str, Any]) -> dict[str, Any]:
 
 
 def _symbols_trimmed(tgt: dict[str, Any]) -> dict[str, Any]:
-    """*tgt* with its symbols cut to their entitled floor, for sizing only."""
+    """*tgt* with its symbols and files cut to their entitled floors, for sizing only.
+
+    The files cut mirrors :func:`_fit_target`: the floor is the list the
+    budgeter holds, not the pre-cap population, so a floor from
+    ``files_total`` would exceed the rows present and the trim could never
+    shed one. Without it stage 2a sizes the survivors with full file lists
+    and evicts targets that would fit once stage 2b trims those lists.
+    """
     docs = tgt.get("docs")
-    symbols = docs.get("symbols") if isinstance(docs, dict) else None
-    if not isinstance(symbols, list):
+    if not isinstance(docs, dict):
         return tgt
-    floor = entitled_floor(max(len(symbols), int(docs.get("symbols_total") or 0)))
-    return {**tgt, "docs": {**docs, "symbols": symbols[:floor]}}
+    trimmed = dict(docs)
+    symbols = docs.get("symbols")
+    if isinstance(symbols, list):
+        floor = entitled_floor(max(len(symbols), int(docs.get("symbols_total") or 0)))
+        trimmed["symbols"] = symbols[:floor]
+    files = docs.get("files")
+    if isinstance(files, list):
+        trimmed["files"] = files[: entitled_floor(len(files))]
+    if trimmed == docs:
+        return tgt
+    return {**tgt, "docs": trimmed}
 
 
 def _fit_target(
