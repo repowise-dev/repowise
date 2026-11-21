@@ -453,6 +453,16 @@ _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 _PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
+#: A trailing shell comment: the arguments a package manager appends land inside it.
+_SCRIPT_COMMENT = re.compile(r"(?:^|\s)#.*\Z", re.S)
+#: ``packageManager`` naming Yarn 2 or later (Berry).
+_YARN_BERRY = re.compile(r"yarn@(?:[2-9]|\d\d)")
+
+
+def _uncommented(script: str) -> tuple[str, bool]:
+    """*script* without a trailing shell comment, and whether it had one."""
+    bare = _SCRIPT_COMMENT.sub("", script).rstrip()
+    return bare, bare != script.rstrip()
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
@@ -470,6 +480,7 @@ def _node_runner(script: str) -> str | None:
     In ``a && b`` the runner must be the last command: npm, pnpm, yarn and bun add a
     script's extra arguments at its end, so the coverage flags reach only that command.
     """
+    script = _uncommented(script)[0]
     if not script or re.search(r"\|\||;", script) or _DELEGATES.search(script):
         return None
     *before, last = script.split("&&")
@@ -477,9 +488,14 @@ def _node_runner(script: str) -> str | None:
     return None if runner is None or any(_command_runner(cmd) for cmd in before) else runner
 
 
+def _command_words(command: str) -> list[str]:
+    """One simple command's words from the runner on: environment and exec wrapper left out."""
+    return _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
+
+
 def _command_runner(command: str) -> str | None:
     """:func:`_node_runner` for one simple command."""
-    words = _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
+    words = _command_words(command)
     head = words[0] if words else ""
     if head in ("c8", "nyc"):
         # Both default to text and html reports; without lcov, their report step writes it.
@@ -501,15 +517,30 @@ def _runner_of(head: str, words: list[str]) -> str | None:
     return None
 
 
-def _dev_install(pm: str, pkg: str, workspace: bool) -> tuple[str, ...]:
-    """The workflow step that installs *pkg* for the run (npm leaves ``package.json`` as it is)."""
-    # pnpm refuses to add to a workspace root without -w.
-    add = "add -D -w" if pm == "pnpm" and workspace else "add -D"
+def _dev_install(pm: str, pkg: str, workspace: str) -> tuple[str, ...]:
+    """The workflow step that installs *pkg* for the run (npm leaves ``package.json`` as it is).
+
+    *workspace* is the flag the package manager needs to add to a workspace root
+    (:func:`_root_add_flag`), ``""`` elsewhere.
+    """
+    add = f"add -D {workspace}" if workspace else "add -D"
     cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} {add} {pkg}")
     return (f"- run: {cmd}",)
 
 
-def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str, ...]:
+def _yarn_berry(root: set[str], package: dict) -> bool:
+    """Whether Yarn here is Berry (2 or later): its config file, or ``packageManager`` naming it."""
+    return ".yarnrc.yml" in root or bool(_YARN_BERRY.match(str(package.get("packageManager") or "")))
+
+
+def _root_add_flag(pm: str, workspace: bool, berry: bool) -> str:
+    """The flag *pm* needs to add a package to a workspace root: pnpm and Yarn classic refuse without it."""
+    if not workspace:
+        return ""
+    return {"pnpm": "-w", "yarn": "" if berry else "-W"}.get(pm, "")
+
+
+def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
         return ()
     spec = str(deps.get("vitest") or "")
@@ -520,18 +551,16 @@ def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str,
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
 
 
-def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict, workspace: bool) -> CommandEdit:
+def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict, workspace: str) -> CommandEdit:
     """Coverage flags right after a runner called directly (``npx jest``, ``bun test``)."""
     prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
     return CommandEdit(_insert(line, (m.end(), " " + _NODE_FLAGS[runner])), "coverage/lcov.info", prepare)
 
 
 def _edit_script(
-    line: str, m: re.Match, runner: str, *, end: int, after: str, pm: str, deps: dict, workspace: bool
+    line: str, m: re.Match, runner: str, *, end: int, after: str, pm: str, deps: dict, workspace: str
 ) -> CommandEdit:
     """Coverage for a package script whose *runner* is known."""
-    if runner == "covered":
-        return CommandEdit(line, _COVERED_REPORTS)
     if runner == "c8":
         return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
     if runner.startswith("report:"):
@@ -546,15 +575,18 @@ def _edit_script(
     sep = " --" if tool == "npm" and not dashes else ""
     # pnpm: before a ``--`` the line already has, where the runner still reads them.
     at = m.end() + dashes.start() - 1 if tool == "pnpm" and dashes else end
-    edits = [(at, f"{sep} {_NODE_FLAGS[runner]}")]
+    # A script that measures already gets no flags, only the form that hands the script
+    # the JUnit flag appended later.
+    covered = runner == "covered"
+    edits = [(at, sep + ("" if covered else f" {_NODE_FLAGS[runner]}"))]
     if tool == "pnpm" and not run:
         edits.append((m.start(3), "run "))
     prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
-    return CommandEdit(_insert(line, *edits), "coverage/lcov.info", prepare)
+    return CommandEdit(_insert(line, *edits), _COVERED_REPORTS if covered else "coverage/lcov.info", prepare)
 
 
 def _edit_node(
-    line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict, workspace: bool = False
+    line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict, workspace: str = ""
 ) -> CommandEdit | None:
     _, end, continued = _segment(line, m)
     after = line[m.end():end]
@@ -563,9 +595,13 @@ def _edit_node(
         return CommandEdit(line, _COVERED_REPORTS)
     if direct or (tool == "bun" and not run):  # the runner itself, or bun's own runner
         return _edit_direct_runner(line, m, direct or "bun", pm, deps, workspace)
-    runner = _node_runner(str(scripts.get(script) or ""))
+    text = str(scripts.get(script) or "")
+    runner = _node_runner(text)
     if continued or _MONOREPO_ARGS.search(after.split(" -- ")[0]) or runner is None:
         return None
+    if runner == "covered" and _measuring_runner(text) not in _NODE_JUNIT_FLAGS:
+        # Measures already, and no JUnit flag is appended later: the line stays as it is.
+        return CommandEdit(line, _COVERED_REPORTS)
     return _edit_script(line, m, runner, end=end, after=after, pm=pm, deps=deps, workspace=workspace)
 
 
@@ -584,14 +620,14 @@ def _node_package(files: dict[str, str]) -> tuple[dict, dict, dict]:
     return package, scripts, deps
 
 
-def _node_manager(root: set[str]) -> tuple[str, str]:
+def _node_manager(root: set[str], package: dict) -> tuple[str, str]:
     """The package manager the lockfile names, and its install command."""
     if "bun.lockb" in root or "bun.lock" in root:
         return "bun", "bun install --frozen-lockfile"
     if "pnpm-lock.yaml" in root:
         return "pnpm", "pnpm install --frozen-lockfile"
     if "yarn.lock" in root:
-        return "yarn", "yarn install --immutable" if ".yarnrc.yml" in root else "yarn install --frozen-lockfile"
+        return "yarn", "yarn install --immutable" if _yarn_berry(root, package) else "yarn install --frozen-lockfile"
     return "npm", "npm ci" if "package-lock.json" in root else "npm install"
 
 
@@ -675,8 +711,9 @@ def _direct_base(pm: str, scripts: dict, name: str) -> tuple[str, tuple[str, ...
     first. ``("", ())`` otherwise, and the script stays.
     """
     hooks = tuple(h for h in (f"pre{name}", f"post{name}") if scripts.get(h))
-    script = str(scripts.get(name) or "").strip()
-    if hooks and _PLAIN_RUNNER.fullmatch(script):
+    # A trailing comment would swallow the flags the package manager appends, so it runs directly too.
+    script, commented = _uncommented(str(scripts.get(name) or "").strip())
+    if (hooks or commented) and _PLAIN_RUNNER.fullmatch(script):
         return f"{_NODE_EXEC[pm]} {script}", hooks
     return "", ()
 
@@ -688,6 +725,12 @@ def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tup
     name, runner = _test_script(scripts)
     if name:
         direct, hooks = _direct_base(pm, scripts, name)
+        if not direct and _uncommented(str(scripts[name]))[1]:
+            # ceiling: a commented script that is not the runner alone (an environment, a chain)
+            # gets no command; through the script, every appended flag would land in the comment.
+            runner = None
+        elif runner == "covered":
+            runner = _measuring_runner(str(scripts[name]))
         return direct or _script_command(pm, name), runner, hooks
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
     if runner is None:
@@ -695,7 +738,18 @@ def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tup
     return f"{_NODE_EXEC[pm]} {runner}" + (" run" if runner == "vitest" else ""), runner, ()
 
 
-def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, deps: dict, workspace: bool) -> tuple[str, ...]:
+def _measuring_runner(script: str) -> str:
+    """The runner a script that measures coverage already runs (``jest --coverage``), else ``covered``.
+
+    Named so its test timings get the runner's JUnit flag. Ceiling: a runner behind c8 or nyc
+    stays ``covered``.
+    """
+    words = _command_words(_uncommented(script)[0].split("&&")[-1])
+    runner = _runner_of(words[0] if words else "", words)
+    return runner if runner in _NODE_FLAGS else "covered"
+
+
+def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, deps: dict, workspace: str) -> tuple[str, ...]:
     """The step that installs jest-junit for test timings, when Jest runs and the package lacks it."""
     if test is None or runner != "jest" or "jest-junit" in deps:
         return ()
@@ -752,15 +806,16 @@ def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
-    pm, install = _node_manager(root)
+    pm, install = _node_manager(root, package)
     base, runner, hooks = _node_base(pm, scripts, deps)
     workspace = _node_workspace(package, PNPM_WORKSPACE_FILENAME in root)
     if not base and not workspace:
         return None
-    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=workspace)
+    add_flag = _root_add_flag(pm, workspace, _yarn_berry(root, package))
+    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=add_flag)
     test = editor(base, _NODE.search(base)) if runner else None
     # Test timings need the reporter in node_modules, beside the runner.
-    reporter = _reporter_install(test, runner, pm, deps, workspace)
+    reporter = _reporter_install(test, runner, pm, deps, add_flag)
     prepare = (*test.prepare, *reporter) if test else ()
     return Stack(
         "node", runner, pm, test.reports if test else "coverage/lcov.info",

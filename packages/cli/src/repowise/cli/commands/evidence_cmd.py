@@ -587,6 +587,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    # The reason is the last note when there is no command; the rest say what the command installs or skips.
+    lines += [f"  [dim]note: {escape(n)}[/dim]" for n in cov["notes"] if n != cov["reason"]]
     if cov["found"]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
@@ -600,6 +602,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"{head}: [cyan]{escape(target['command'])}[/cyan]")
         if target["reason"]:
             lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
+        if target.get("note"):
+            lines.append(f"    [dim]note: {escape(target['note'])}[/dim]")
         if target["ingest"]:
             lines.append(f"    then: [cyan]{escape(target['ingest'])}[/cyan]")
     return lines
