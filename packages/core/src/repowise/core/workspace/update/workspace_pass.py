@@ -38,6 +38,11 @@ from ...ingestion.git_indexer import (
     GIT_HISTORY_VERSION_KEY,
 )
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+from ...pipeline.incremental.prune import (
+    PRUNE_REFUSED_AT,
+    clear_prune_refusal,
+    record_prune_refusal,
+)
 from ..config import RepoEntry, WorkspaceConfig
 from .phases import analysis_config_changed, run_cross_repo_hooks
 from .repo import RepoUpdateResult, _has_persisted_repo_index, update_single_repo_index
@@ -236,6 +241,8 @@ async def _select_stale_repos(
 
 async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bool, str | None]:
     """Return ``(is_stale, current_head)`` for one workspace member."""
+    from repowise.core.ingestion.git_indexer import git_history_stale
+
     from ...repo_config import config_fingerprint
 
     # Check staleness against stored commit in state.json
@@ -263,7 +270,12 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     # the work the watcher woke up for.
     if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
         is_stale = True
-    return is_stale, current_head
+
+    # Rows written under older git history rules: one full walk refreshes
+    # them, as the single-repo update does, even with HEAD unmoved.
+    if not is_stale and git_history_stale(state) and await _has_persisted_repo_index(abs_path):
+        is_stale = True
+    return is_stale or PRUNE_REFUSED_AT in state, current_head
 
 
 def _defer_to_running_workspace_update(
@@ -331,6 +343,12 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
                 )
                 if result.updated and result.phase_timings is None:
                     result.phase_timings = {"run": time.monotonic() - update_started}
+                if result.prune_refused:
+                    from ...fsutils import atomic_write_text
+
+                    state = read_repo_state(path)
+                    record_prune_refusal(state, result.failed_steps)
+                    atomic_write_text(path / ".repowise" / "state.json", _json.dumps(state, indent=2))
             finally:
                 _release_lock(path)
             result.alias = alias
@@ -338,13 +356,8 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
 
             if result.updated and new_head:
                 _write_repo_state(path, alias, new_head, first_time, result)
-                # Keep the DB freshness stamp in lockstep with last_sync_commit.
-                # The no-relevant-changes incremental path returns updated=True
-                # without re-running DB persistence, so the row would otherwise
-                # lag HEAD; a no-op when persistence already stamped it.
+                # A no-relevant-changes result did not run the DB writer.
                 await reconcile_repo_head_commit(path, new_head)
-                # Drop any stale pending marker now that we've advanced to
-                # new_head (a bailed sibling update may have written one).
                 clear_stale_update_pending(path, new_head)
 
             # Update workspace config entry
@@ -408,6 +421,7 @@ def _write_repo_state(
     """Advance ``state.json`` to *new_head* after a successful repo update."""
     state_path = path / ".repowise" / "state.json"
     state = read_repo_state(path)
+    clear_prune_refusal(state)
 
     # Falsy, not absent: an explicit null survives a
     # membership test and strands the pointer permanently.

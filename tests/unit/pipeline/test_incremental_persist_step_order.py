@@ -15,7 +15,6 @@ from repowise.core.pipeline.incremental import persist_incremental_index
 from tests.unit._persist_step_recorders import (
     FAILURE,
     GIT_META,
-    REFUSAL,
     SWEPT,
     TOMBSTONED,
     StepRecorder,
@@ -178,7 +177,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
     }
     fail = frozenset(label for label in HAPPY_ORDER if label not in survivors)
     rec = StepRecorder(monkeypatch, fail=fail)
-    install_shared_steps(rec, prune_ret=(1, [REFUSAL]))
+    install_shared_steps(rec)
 
     degraded, failed_steps = await _persist(repo, rec)
 
@@ -238,8 +237,6 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
                 "Decision purge",
             )
         ),
-        # A prune refusal is reported verbatim, not as a skipped step.
-        REFUSAL,
         f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
         f"Git rollups: {FAILURE}",

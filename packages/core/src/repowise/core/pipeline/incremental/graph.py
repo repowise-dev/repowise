@@ -883,6 +883,7 @@ async def _index_git_metadata(
     *,
     git_tier: str | None,
     force_full_git: bool,
+    retry_prune: bool,
     git_summary_sink: list[Any] | None,
     idle_decay_sink: dict[str, dict] | None,
     log: LogFn,
@@ -931,6 +932,10 @@ async def _index_git_metadata(
             )
     except Exception as exc:
         log(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+        if retry_prune:
+            from .prune import PruneHoldError
+
+            raise PruneHoldError(["Git re-index"]) from exc
         if force_full_git:
             raise
     finally:
@@ -1065,6 +1070,7 @@ async def rebuild_graph_and_git(
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
     force_full_git: bool = False,
+    retry_prune: bool = False,
     git_summary_sink: list[Any] | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
@@ -1170,6 +1176,7 @@ async def rebuild_graph_and_git(
         source_map,
         git_tier=git_tier,
         force_full_git=force_full_git,
+        retry_prune=retry_prune,
         git_summary_sink=git_summary_sink,
         idle_decay_sink=idle_decay_sink,
         log=log,

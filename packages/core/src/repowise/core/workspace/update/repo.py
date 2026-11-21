@@ -6,12 +6,17 @@ import asyncio
 import json as _json
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from ...ingestion.git_indexer import git_history_stale
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+from ...pipeline.incremental.prune import (
+    PRUNE_HOLD_MESSAGE,
+    PRUNE_REFUSED_AT,
+    PruneHoldError,
+)
 from .state import commit_exists, get_head_commit, read_repo_state
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -147,6 +152,8 @@ class RepoUpdateResult:
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
     graph_update: dict[str, Any] | None = None
+    prune_refused: bool = False
+    failed_steps: list[str] = field(default_factory=list)
     # The state.json "pending_repair" marker this run leaves: the range a
     # range-scoped persist step failed on, so the next update re-covers it.
     # None clears the marker.
@@ -220,7 +227,12 @@ async def _incremental_repo_update(
         file_diffs, working_tree_paths = await asyncio.to_thread(
             _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
         )
-    if not file_diffs and not force_full_git and not rescore_health:
+    if (
+        not file_diffs
+        and not force_full_git
+        and not rescore_health
+        and PRUNE_REFUSED_AT not in state
+    ):
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever. A re-score
         # still runs: it is owed for every file, changed or not.
@@ -253,6 +265,7 @@ async def _incremental_repo_update(
         include_nested_repos=bool(state.get("include_nested_repos", False)),
         idle_decay_sink=git_decay_map,
         force_full_git=force_full_git,
+        retry_prune=PRUNE_REFUSED_AT in state,
         git_summary_sink=full_git_summaries,
         log=_log.info,
         # Same switch as the CLI update: it also invalidates the seed snapshot
@@ -312,6 +325,7 @@ async def _incremental_repo_update(
         git_decay_map=git_decay_map,
         full_git_summary=full_git_summaries[0] if full_git_summaries else None,
         failed_steps=failed_steps,
+        retry_prune=PRUNE_REFUSED_AT in state,
         log=_log.info,
         timings=timings,
     )
@@ -658,6 +672,9 @@ async def update_single_repo_index(
             return incremental_result
         reason = "update_failed"
 
+    # A recorded refusal is never a reason to silently switch to a full index.
+    if PRUNE_REFUSED_AT in state:
+        return RepoUpdateResult(alias=alias, updated=False, error=PRUNE_HOLD_MESSAGE, prune_refused=True)
     if not full_index_fallback:
         _log.info("workspace_update: %s needs a full index (%s)", alias, reason)
         return RepoUpdateResult(
@@ -774,14 +791,15 @@ async def _try_incremental_update(
             products_sink=products_sink,
             rescore_health=rescore_health,
         )
+    except PruneHoldError as exc:
+        return RepoUpdateResult(
+            alias=repo_path.name, updated=False, error=str(exc),
+            prune_refused=True, failed_steps=list(exc.failed_steps),
+        ), None
     except DocumentExtractionError:
         raise
     except Exception as exc:
-        _log.warning(
-            "Incremental update failed for %s — falling back to the full pipeline",
-            repo_path,
-            exc_info=True,
-        )
+        _log.warning("Incremental update failed for %s", repo_path, exc_info=True)
         return None, f"{type(exc).__name__}: {exc}"
     return result, None
 

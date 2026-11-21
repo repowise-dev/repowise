@@ -143,6 +143,7 @@ def test_a_no_change_run_after_a_deferred_one_is_not_nothing_to_do() -> None:
         stale_db_paths: ClassVar[list] = []
         stale_deterministic_ids: ClassVar[list] = []
         fill_file_pages: ClassVar[list] = []
+        state: ClassVar[dict] = {}
 
     def rework_pending(run, **_):
         return False

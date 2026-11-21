@@ -9,6 +9,58 @@ from repowise.core.pipeline.phase_timing import PhaseTimings, timed
 
 from ._common import LogFn
 
+PRUNE_REFUSED_AT = "prune_refused_at"
+PRUNE_REFUSAL_STEP = "Deleted-file prune (refused)"
+PRUNE_RECOVERY = (
+    "Check that the checkout is complete, then retry the update. If the bulk deletion is "
+    "intentional, run a fresh `repowise init --no-workspace` in this repo (not `--resume`) "
+    "to reconcile the index."
+)
+PRUNE_HOLD_MESSAGE = f"The deleted-file prune is unresolved. Sync pointers held. {PRUNE_RECOVERY}"
+PRUNE_FAILURE_STEP = "Deleted-file prune"
+
+
+REQUIRED_PRUNE_RETRY_STEPS = frozenset({
+    "Config scope reconciliation", "Git persist", "Commit capture", "Graph nodes persist",
+    "Graph edges persist", PRUNE_FAILURE_STEP,
+})
+
+
+class PruneHoldError(RuntimeError):
+    """Abort a write that cannot bring a refused prune to a consistent sync."""
+
+    def __init__(self, failed_steps: Iterable[str] = ()) -> None:
+        super().__init__(PRUNE_HOLD_MESSAGE)
+        self.failed_steps = tuple(failed_steps)
+
+
+def record_prune_refusal(state: dict, failed_steps: Iterable[str] = ()) -> None:
+    """Keep the hold and the oldest repair range, including other failed steps."""
+    state[PRUNE_REFUSED_AT] = state.get("last_sync_commit")
+    marker = state.get("pending_repair")
+    prior = marker if isinstance(marker, dict) else {}
+    base = prior.get("from_commit") or state.get("last_sync_commit")
+    if base:
+        steps = prior.get("steps")
+        prior_steps = steps if isinstance(steps, list) else []
+        state["pending_repair"] = {
+            "from_commit": base,
+            "steps": sorted({*prior_steps, *failed_steps, PRUNE_REFUSAL_STEP}),
+        }
+
+
+def clear_prune_refusal(state: dict) -> None:
+    """A successful prune or authoritative rebuild resolves only the prune debt."""
+    state.pop(PRUNE_REFUSED_AT, None)
+    marker = state.get("pending_repair")
+    steps = marker.get("steps") if isinstance(marker, dict) else None
+    if isinstance(steps, list) and PRUNE_REFUSAL_STEP in steps:
+        remaining = [step for step in steps if step != PRUNE_REFUSAL_STEP]
+        if remaining:
+            state["pending_repair"] = {**marker, "steps": remaining}
+        else:
+            state.pop("pending_repair")
+
 
 async def prune_deleted_files(
     session: Any,
@@ -72,7 +124,7 @@ async def prune_deleted_files(
                 # pointer must not advance past (#5410).
                 prune_refusals.append(refusal)
     except Exception as exc:
-        skip("Deleted-file prune", exc)
+        skip(PRUNE_FAILURE_STEP, exc)
 
     # The liveness prune above never judges `external:` / `framework:` nodes;
     # the rebuilt graph does.
