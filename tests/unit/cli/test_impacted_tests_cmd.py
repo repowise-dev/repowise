@@ -193,13 +193,15 @@ def _move_main(repo, files: dict[str, str]) -> None:
 
 
 def test_an_index_behind_the_base_adds_the_tests_reaching_the_gap(repo) -> None:
-    # src/c.py was added since, so no test in the index reaches it.
+    # src/c.py was added since, so no test in the index reaches it; src/b.py's
+    # new import leads nowhere near the change.
     _move_main(repo, {"src/b.py": "import os\n\nB = 2\n", "src/c.py": "C = 1\n"})
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == "tests/test_a.py\n"
-    assert "The index predates 1 changed file(s) outside this change; the tests reaching" in (
-        _err(result)
-    )
+    assert (
+        "The index predates 1 changed file(s) outside this change; none of their new "
+        "imports or strings leads to it."
+    ) in _err(result)
 
 
 def test_a_lockfile_changed_after_the_index_runs_everything(repo) -> None:
@@ -416,7 +418,10 @@ async def _add_to_index(root: Path, test: str, source: str) -> None:
     ("b_after", "expected"),
     [
         ("B = 2\n", "tests/test_a.py\n"),
-        ("import os\n\nB = 2\n", "tests/test_a.py tests/test_b.py\n"),
+        # A new import leading nowhere near the change adds nothing.
+        ("import os\n\nB = 2\n", "tests/test_a.py\n"),
+        # One onto the change: test_b.py now reaches it through src/b.py.
+        ("from src import a\n\nB = 2\n", "tests/test_a.py tests/test_b.py\n"),
     ],
 )
 def test_only_files_whose_imports_moved_since_the_index_add_their_tests(
