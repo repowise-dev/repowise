@@ -83,7 +83,13 @@ CONTRACTS_FILENAME = "contracts.json"
 # An HTTP or gRPC consumer whose id two or more repos serve, with nothing
 # placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 # Version 16 adds Temporal task queues (workers and clients).
-CONTRACTS_VERSION = 16
+# Version 17 scopes a FastAPI include_router prefix to the router it mounts and
+# keys Express mounts by module; reads a client call's method from its options
+# and a typed wrapper; composes a base left to a class field or a wrapper, drops
+# the prefix a wrapper's own inner call yields, and reads a static field through
+# ``this``; and leaves contract ends in test, docs, tooling, generated and
+# vendored code out (#6005, #6012, #6014, #6015, #6089).
+CONTRACTS_VERSION = 17
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
