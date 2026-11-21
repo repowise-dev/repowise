@@ -734,3 +734,25 @@ def test_a_refused_user_config_write_is_reported_not_claimed(
         out.split()
     )
 
+
+def test_claude_config_dir_moves_every_claude_code_file(
+    home: Path, repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """With CLAUDE_CONFIG_DIR set, Claude Code reads only that folder: write and read there."""
+    from repowise.cli.agent_targets.targets import claude_code
+    from repowise.cli.commands.doctor_cmd._checks.integrations import _claude_json_entries
+
+    custom = tmp_path / "claude-config"
+    custom.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+    _no_desktop(monkeypatch)
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    _register(repo, monkeypatch)
+
+    assert _stored(custom / ".claude.json")["args"] == _LAUNCH_DIR_ARGS
+    assert not _code(home).exists()
+    # Uninstall and doctor read the same helpers.
+    assert claude_code.user_mcp_config_path() == custom / ".claude.json"
+    assert claude_code.settings_path() == custom / "settings.json"
+    assert _claude_json_entries(repo)

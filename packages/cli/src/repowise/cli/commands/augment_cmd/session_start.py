@@ -157,7 +157,9 @@ def _distill_off_path_note() -> str:
     if shutil.which("repowise") is not None:
         return ""
     try:
-        settings = (Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8")
+        from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
+
+        settings = _claude_code_settings_path().read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
     return _DISTILL_OFF_PATH if "repowise-rewrite" in settings else ""

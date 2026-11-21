@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def _claude_code_settings_path() -> Path:
     Hooks and ``env`` live here. MCP servers do not: Claude Code ignores
     ``mcpServers`` in this file (see :func:`_claude_code_user_config_path`).
     """
-    return Path.home() / ".claude" / "settings.json"
+    return _claude_config_dir() / "settings.json"
 
 
 def _claude_code_user_config_path() -> Path:
@@ -51,7 +52,20 @@ def _claude_code_user_config_path() -> Path:
     Claude Code owns this file and rewrites it often, so repowise only ever
     edits its own ``repowise`` member and leaves every other byte alone.
     """
-    return Path.home() / ".claude.json"
+    custom = _claude_config_dir_override()
+    return custom / ".claude.json" if custom else Path.home() / ".claude.json"
+
+
+def _claude_config_dir() -> Path:
+    """Claude Code's config folder: ``$CLAUDE_CONFIG_DIR`` when set, else ``~/.claude``."""
+    return _claude_config_dir_override() or Path.home() / ".claude"
+
+
+def _claude_config_dir_override() -> Path | None:
+    """``$CLAUDE_CONFIG_DIR``, where Claude Code then reads ``settings.json`` and
+    ``.claude.json`` instead of the copies under the home directory."""
+    custom = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return Path(custom).expanduser() if custom else None
 
 
 def _resolve_mcp_target(repo_path: Path) -> Path:
