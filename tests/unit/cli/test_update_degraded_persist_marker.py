@@ -242,3 +242,61 @@ def test_update_prunes_legacy_degraded_notices_from_state(tmp_path: Path, monkey
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert "degraded" not in state
 
+
+
+def test_a_marker_git_could_not_check_survives_a_clean_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No widening happened, so the marker's range is still unrepaired: keep it."""
+    import asyncio
+
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.update_cmd.command import release_update_lock
+    from repowise.cli.helpers import save_state
+    from repowise.cli.main import cli
+    from repowise.core.pipeline.full_index import index_repo_full
+    from repowise.core.pipeline.incremental import repair
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "c0")
+    c0 = _git(repo, "rev-parse", "HEAD")
+    (repo / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "c1")
+    asyncio.run(index_repo_full(repo))
+    head = _git(repo, "rev-parse", "HEAD")
+    save_state(repo, {"last_sync_commit": head, "last_docs_commit": head, "docs_mode": "none"})
+    # A first update records every stamp, so the next one has nothing to redo.
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    release_update_lock(repo)
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    marker = {"from_commit": c0, "steps": ["Git persist"]}
+    save_state(repo, {**state, "pending_repair": marker})
+    # Git cannot answer the ancestry check: the base stays where it was.
+    monkeypatch.setattr(repair, "resolve_repair_base", lambda _r, _s, base, _h: (base, None))
+
+    # A commit that changes no file: the no-change path.
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "c2")
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    assert "No changed files" in result.output
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["pending_repair"] == marker
+
+    # A change on top: the persist path, clean, still re-covered nothing of the range.
+    (repo / "a.py").write_text("def a():\n    return 3\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "c3")
+    release_update_lock(repo)
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["last_sync_commit"] == _git(repo, "rev-parse", "HEAD")
+    assert state["pending_repair"] == marker

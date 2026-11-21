@@ -940,9 +940,13 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from repowise.core.pipeline.incremental.repair import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import (
+        resolve_repair_base,
+        unchecked_repair_marker,
+    )
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
+    run.unchecked_repair = unchecked_repair_marker(run.state, repaired_ref, give_up)
     if give_up is not None:
         console.print(
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
@@ -1436,8 +1440,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
-    # is: another base says nothing about the marker's range.
-    if opts.since is None and run.index_only:
+    # is: another base says nothing about the marker's range, and a marker git
+    # could not check widened nothing.
+    if opts.since is None and run.index_only and run.unchecked_repair is None:
         persisted.pop("pending_repair", None)
     if not run.index_only and head:
         persisted["last_docs_commit"] = head
@@ -2072,6 +2077,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         head_ts=run.head_ts,
         force_full_rescore=config.health_changed,
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
+        unchecked_repair=run.unchecked_repair,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
