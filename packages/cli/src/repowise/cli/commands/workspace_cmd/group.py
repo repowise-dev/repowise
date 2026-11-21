@@ -303,8 +303,11 @@ def workspace_remove(alias: str) -> None:
     multiple=True,
     metavar="GLOB",
     help=(
-        "Skip discovered repos whose path matches this glob, relative to the "
-        "workspace root (e.g. 'test-repos/*'). Repeatable."
+        "Skip discovered repos whose path matches this glob, matched like "
+        ".gitignore (e.g. 'test-repos/*'). A slashless name such as 'legacy' "
+        "now matches at any depth (older versions skipped only the top-level "
+        "one), and 'legacy/' does too; write '/legacy' for the top-level one "
+        "only. Repeatable."
     ),
 )
 @click.option(
@@ -339,14 +342,19 @@ def workspace_scan(
     ]
 
     if exclude_globs:
-        from fnmatch import fnmatchcase
+        # The one engine for user-written globs (#5779): gitignore semantics,
+        # as in health rules and exclude patterns. Backslashes are separators.
+        from repowise.core.analysis.health.config import _compile_glob
+
+        matchers = [_compile_glob(g.replace("\\", "/")) for g in exclude_globs]
 
         def _excluded(repo_path: Path) -> bool:
             try:
                 rel = repo_path.relative_to(ws_root).as_posix()
             except ValueError:
                 rel = repo_path.as_posix()
-            return any(fnmatchcase(rel, g) for g in exclude_globs)
+            # A repo is a directory: a trailing-slash pattern names it too.
+            return any(m.match_file(rel) or m.match_file(f"{rel}/") for m in matchers)
 
         before = len(new_repos)
         new_repos = [r for r in new_repos if not _excluded(r.path)]

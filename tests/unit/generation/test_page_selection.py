@@ -105,6 +105,57 @@ def test_path_glob_matches_prefix_and_glob() -> None:
     assert result.page_ids == {"file_page:src/a.py", "file_page:src/b.py"}
 
 
+def _paths(*target_paths: str) -> list[PageRecord]:
+    return [PageRecord(f"file_page:{t}", "file_page", t, is_template=True) for t in target_paths]
+
+
+def test_path_glob_uses_gitignore_semantics() -> None:
+    # The same engine as health rules and exclude patterns (#5779): a lone
+    # ``*`` stops at one directory, and ``**/`` also matches at the root.
+    records = _paths("src/a.py", "src/a/b.py", "b.py", "lib/b.py")
+    result = resolve_page_selection(records, PageSelectionIntent(path_globs=("src/*.py",)))
+    assert result.page_ids == {"file_page:src/a.py"}
+    result = resolve_page_selection(records, PageSelectionIntent(path_globs=("**/b.py",)))
+    assert result.page_ids == {"file_page:b.py", "file_page:lib/b.py", "file_page:src/a/b.py"}
+
+
+def test_path_glob_agrees_with_the_shared_glob_engine() -> None:
+    from repowise.core.analysis.health.config import _compile_glob
+
+    cases = [("src/*.py", "src/a/b.py"), ("**/b.py", "b.py"), ("src/*/x.py", "src/a/b/x.py")]
+    for pattern, path in cases:
+        selected = resolve_page_selection(_paths(path), PageSelectionIntent(path_globs=(pattern,)))
+        assert bool(selected.page_ids) == _compile_glob(pattern).match_file(path), (pattern, path)
+
+
+def test_path_glob_keeps_bare_prefixes_trailing_slashes_and_backslashes() -> None:
+    records = [
+        *_paths("packages/cli/main.py", "packages/cli/sub/deep.py", "packages/core/x.py"),
+        PageRecord("module_page:packages/cli", "module_page", "packages/cli", is_template=True),
+    ]
+    expected = {
+        "file_page:packages/cli/main.py",
+        "file_page:packages/cli/sub/deep.py",
+        "module_page:packages/cli",
+    }
+    for pattern in ("packages/cli", "packages/cli/", "packages\\cli"):
+        result = resolve_page_selection(records, PageSelectionIntent(path_globs=(pattern,)))
+        assert result.page_ids == expected, pattern
+
+
+def test_directory_only_glob_never_selects_a_file_page() -> None:
+    # ``x/`` means "the directory x" in gitignore; a file page is never one.
+    records = [
+        *_paths("src/a.py"),
+        PageRecord("module_page:src", "module_page", "src", is_template=True),
+    ]
+    for pattern in ("src/a.py/", "*.py/"):
+        result = resolve_page_selection(records, PageSelectionIntent(path_globs=(pattern,)))
+        assert result.page_ids == set(), pattern
+    result = resolve_page_selection(records, PageSelectionIntent(path_globs=("src/",)))
+    assert result.page_ids == {"file_page:src/a.py", "module_page:src"}
+
+
 def test_explicit_ids_report_unknown() -> None:
     intent = PageSelectionIntent(page_ids=("file_page:src/a.py", "file_page:does/not/exist.py"))
     result = resolve_page_selection(_records(), intent)

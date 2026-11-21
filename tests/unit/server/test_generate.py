@@ -40,7 +40,7 @@ from tests.unit.server.conftest import create_test_repo
         ),
         (
             {"selection": {"kind": "path_prefix", "path_prefix": "src/"}},
-            PageSelectionIntent(path_globs=("src/",)),
+            PageSelectionIntent(path_prefixes=("src",)),
         ),
         ({}, PageSelectionIntent(unwritten=True)),
         (
@@ -53,6 +53,59 @@ from tests.unit.server.conftest import create_test_repo
 )
 def test_build_generate_intent(config: dict, expected: PageSelectionIntent) -> None:
     assert _build_generate_intent(config) == expected
+
+
+@pytest.mark.parametrize("prefix", ["src", "src/", "/src", "src\\"])
+def test_path_prefix_selection_stays_root_anchored(prefix: str) -> None:
+    """A server path prefix selects under the root directory only (#5849 review).
+
+    The shared gitignore engine matches a bare name at any depth, so the prefix
+    is anchored before it reaches it: ``src`` must not pull in ``vendor/src`` or
+    ``lib/src``, which would regenerate pages (LLM calls) nobody asked for.
+    """
+    from repowise.core.generation.page_selection import resolve_page_selection
+
+    records = [
+        PageRecord("module_page:src", "module_page", "src", is_template=False),
+        PageRecord("file_page:src/a.py", "file_page", "src/a.py", is_template=False),
+        PageRecord("file_page:vendor/src/b.py", "file_page", "vendor/src/b.py", is_template=False),
+        PageRecord("module_page:lib/src", "module_page", "lib/src", is_template=False),
+        PageRecord("file_page:srcs/c.py", "file_page", "srcs/c.py", is_template=False),
+    ]
+    intent = _build_generate_intent({"selection": {"kind": "path_prefix", "path_prefix": prefix}})
+    selected = resolve_page_selection(records, intent).page_ids
+    assert set(selected) == {"module_page:src", "file_page:src/a.py"}
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [
+        # A trailing space is part of the directory name, not trimmed away.
+        ("src ", {"module_page:src "}),
+        ("src /", {"module_page:src "}),
+        # Brackets are literal: ``[id]`` is not a character class.
+        ("app/[id]", {"module_page:app/[id]", "file_page:app/[id]/page.tsx"}),
+        # A reversed range is a valid name, not a pattern that fails to compile.
+        ("app/[z-a]", {"module_page:app/[z-a]"}),
+        # ``src`` does not reach a name that only starts with it plus a newline.
+        ("src", {"module_page:src"}),
+    ],
+)
+def test_path_prefix_is_a_literal_directory(prefix: str, expected: set[str]) -> None:
+    """The server prefix is a directory name, not a glob (#5849 review)."""
+    from repowise.core.generation.page_selection import resolve_page_selection
+
+    records = [
+        PageRecord("module_page:src", "module_page", "src", is_template=False),
+        PageRecord("module_page:src ", "module_page", "src ", is_template=False),
+        PageRecord("module_page:src\n", "module_page", "src\n", is_template=False),
+        PageRecord("module_page:app/[id]", "module_page", "app/[id]", is_template=False),
+        PageRecord("file_page:app/[id]/page.tsx", "file_page", "app/[id]/page.tsx", is_template=False),
+        PageRecord("module_page:app/i", "module_page", "app/i", is_template=False),
+        PageRecord("module_page:app/[z-a]", "module_page", "app/[z-a]", is_template=False),
+    ]
+    intent = _build_generate_intent({"selection": {"kind": "path_prefix", "path_prefix": prefix}})
+    assert set(resolve_page_selection(records, intent).page_ids) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -455,3 +508,13 @@ async def test_sync_regen_receives_vector_store_and_prior_pages(session_factory,
     regen_mock.assert_awaited_once()
     assert "vector_store" in regen_mock.await_args.kwargs
     assert "prior_pages" in regen_mock.await_args.kwargs
+
+
+def test_page_selection_intent_keeps_positional_order() -> None:
+    """Adding ``path_prefixes`` must not shift the earlier positional fields."""
+    from repowise.core.generation.page_selection import resolve_page_selection
+
+    records = [PageRecord("module_page:src", "module_page", "src", is_template=False)]
+    intent = PageSelectionIntent(False, False, False, (), ("module_page:src",))
+    assert resolve_page_selection(records, intent).page_ids == {"module_page:src"}
+
