@@ -157,6 +157,36 @@ class TestClassMethodWrapper:
         assert all(c.meta[EXTRACTION_LAYER_KEY] == "index" for c in contracts)
         assert LAYER_INDEX == "index"
 
+
+class TestWrapperBodiesAndStaticFields:
+    """A wrapper's own request names no route; a static method reads static fields."""
+
+    def test_a_wrappers_inner_call_is_no_route(self):
+        source = (
+            "async function baseFetch(url: string, init?: RequestInit) {\n"
+            "  return fetch(url, init);\n"
+            "}\n"
+            "export async function apiFetch(endpoint: string) {\n"
+            "  return baseFetch(`/api/v1${endpoint}`);\n"
+            "}\n"
+            "export const apiGet = (endpoint: string) => fetch(`/api/v2${endpoint}`);\n"
+            "export function getUser(id: string) { return fetch(`/users/${id}`); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/users/{param}"}
+
+    def test_this_in_a_static_method_is_the_class(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static getUsers() {\n"
+            "    return fetch(this.BASE + '/users');\n"
+            "  }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/api/users"}
+
     def test_the_regex_dialect_alone_cannot_see_these(self):
         """Fails before this change: the generic type argument breaks the regex.
 

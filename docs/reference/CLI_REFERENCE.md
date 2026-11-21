@@ -1486,7 +1486,8 @@ writes nothing.
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
   `ingest` line (run from the repository root). Then its `runtime` targets: entry points
-  (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
+  (console scripts, `python -m` packages, a FastAPI or Starlette app served under uvicorn, Go
+  `package main`, `package.json` `bin`), benchmarks
   (Go `Benchmark*`, profiled and, as `go bench results`, their printed results with allocations
   per op; pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
@@ -1501,7 +1502,8 @@ writes nothing.
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
   stores nothing. An entry point's `command` ends in `<args>`: replace it with the
-  arguments of a representative run, since a bare run measures only the usage screen. A target with
+  arguments of a representative run, since a bare run measures only the usage screen; a served app
+  waits for representative requests instead, then Ctrl-C. A target with
   no `command`, no `ingest`, or something left to fill says why in `reason` (`go run` takes no
   profiler flag; TypeScript positions are in the compiled JavaScript; this build does not read the
   format the recipe writes; `<args>` to fill). Only a target with an `ingest` line and no `reason`
@@ -1882,6 +1884,8 @@ items new since, and the items resolved since the first look.
 | `--out` | Output file. | stdout for `md` and `json` |
 | `--since-last` | What was fixed, changed or found new since the report was written, from the index now (text, or JSON with `--format json`). | off |
 | `--prompt` | Print the whole-report agent prompt (the web page's "Hand to agent"): the open items with their ids and the `repowise mark` commands. | off |
+| `--llm` | Write a new report at HEAD whose prose one call to the configured model writes. Prints the cost first and asks. | off |
+| `--yes`, `-y` | With `--llm`, skip the cost question. | off |
 
 ```bash
 repowise report --format json && repowise mark fl_3a91c0d2e4f1 done --json
@@ -1900,6 +1904,8 @@ repowise report --format json && repowise mark fl_3a91c0d2e4f1 done --json
 - A secret shows its place only, never its value. Owners are counted, never named.
 - Links point into the app while `repowise serve` runs, else items show plain `path:line`.
 - `init` writes it once (`report.first_look.enabled`); a later `init` keeps it, and the finish panel names it on one line.
+- With a provider and prose on, `init` lets one model call write the prose (`report.first_look.llm`, model `report.first_look.model`) and shows its cost in the plan before the run. Keyless and `--no-prose` runs never call a model.
+- Model text is plain text checked against the facts: links, paths and prompts come from the items, never from the model. A sentence that names a number, path or secret-shaped value the facts do not hold keeps the template text.
 
 ---
 

@@ -20,9 +20,10 @@ from repowise.core.analysis.health.perf.serving import evidence_mark
         # even where a workload measured it.
         ({"queries": "flat"}, 2),
         ({"queries": "flat", "measured": "api"}, 2),
-        # Measured against its cold name: kept, never led.
+        # Ranked against its cold name: kept, never led. Measured above the
+        # lead bar by a leading workload, it leads: the name was a guess.
         ({"measured": "api", "measured_overrides": "cold_path"}, 2),
-        ({"confirmed": "measured", "measured": "api", "measured_overrides": "cold_path"}, 2),
+        ({"confirmed": "measured", "measured": "api", "measured_overrides": "cold_path"}, 0),
         ({"queries": "ran"}, 2),
         ({}, 2),
     ],

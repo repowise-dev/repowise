@@ -922,3 +922,17 @@ def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
 
     (row,) = asyncio.run(stored())
     assert (row.test_id, row.test_file) == ("web/src/cart.test.ts::cart > adds", "web/src/cart.test.ts")
+
+
+def test_tests_says_how_many_files_every_timed_test_runs() -> None:
+    payload = {
+        "runs": [], "tests_total": 2, "slow_tests": [],
+        "file_costs": {
+            "basis": "measured", "files_total": 1, "not_production": 0, "every_test": 3,
+            "files": [{"file_path": "src/app.py", "test_seconds": 3.0, "timed_tests": 1, "tests": 1}],
+        },
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text

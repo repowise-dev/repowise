@@ -2383,6 +2383,7 @@ export interface FileTestCosts {
   files: FileTestCost[];
   files_total: number;
   not_production: number;
+  every_test: number;
 }
 
 export interface FileTrendPointResponse {
@@ -2394,6 +2395,28 @@ export interface FileTrendPointResponse {
 export interface FindingStatusUpdate {
   /** open | acknowledged | resolved | false_positive */
   status: string;
+}
+
+export interface FirstLookMarkRequest {
+  status: "done" | "ack" | "false_positive" | "snooze";
+  reason?: string | null;
+  days?: number | null;
+}
+
+export interface FirstLookMarkResponse {
+  id: string;
+  status: "open" | "done" | "acknowledged" | "false_positive" | "snoozed" | "resolved";
+  store: string;
+  reason?: string | null;
+  until?: string | null;
+}
+
+export interface FirstLookResponse {
+  report: Record<string, unknown>;
+  report_prompt: string;
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  can_rewrite: boolean;
+  rewrite_cost_usd?: number | null;
 }
 
 export interface FixAction {

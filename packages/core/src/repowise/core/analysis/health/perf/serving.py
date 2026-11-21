@@ -584,7 +584,7 @@ def evidence_mark(facets: Mapping[str, Any], workloads: Sequence[str]) -> dict[s
     ``measured_in_tests``) and ``measured`` (``workload`` names the workload
     that ranks its loop owner, with ``basis`` ``measured_in_tests`` when only a
     unit-test run does) say what the evidence found; the queue puts them first
-    (``opportunity_rank.evidence_tier``) unless the cause was measured
+    (``opportunity_rank.evidence_tier``) unless the cause was only ranked
     against its cold name, which keeps its static place.
     ``counter_evidence``: query counts stayed flat as the items grew. ``ran``:
     query counts reached it and settle nothing. ``not_exercised``: no run

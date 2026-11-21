@@ -252,8 +252,9 @@ _SLOW_DIRS = ("integration", "integration_tests", "e2e")
 
 
 def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
-    """``tests/unit`` (or ``tests/unit_tests``) when unit and integration tests sit side by side,
-    else pytest's own choice."""
+    """``tests/unit`` (or ``tests/unit_tests``) when unit and integration tests sit side by side;
+    ``tests`` when test files outside it would be collected too (a script folder's or another
+    package's); else pytest's own choice."""
     for base in ("tests", "test"):
         unit = next((d for d in _UNIT_DIRS if any(p.startswith(f"{base}/{d}/") for p in paths)), None)
         other = any(p.startswith(f"{base}/{d}/") for d in _SLOW_DIRS for p in paths)
@@ -262,6 +263,29 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
             if testpaths and base not in testpaths:
                 return ""  # pytest's testpaths already decide what runs
             return f" {base}/{unit}"
+    return "" if _testpaths(files) else _tests_dir(paths, files)
+
+
+def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
+    """``tests`` (or ``test``) when it holds test files and a bare run would collect others too.
+
+    Only our own files count (:func:`~repowise.core.code_origin.path_origin`
+    production or test): a vendored or example ``test_*.py`` is no reason to
+    narrow. A unit that keeps a ``tests/`` directory inside a package as well
+    (``pkg/tests/``), or a test file at its root, is left to pytest, so those
+    tests keep running. Ceiling: a test file inside a package outside any
+    tests directory is left out once ``tests`` is named.
+    """
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)
+                 and path_origin(p) in ("production", "test")]
+    for base in ("tests", "test"):
+        outside = [p for p in collected if not p.startswith(f"{base}/")]
+        if len(outside) == len(collected) or not outside:
+            continue
+        if any("/" not in p or f"/{d}/" in f"/{p}" for p in outside for d in ("tests", "test")):
+            return ""
+        return f" {base}"
     return ""
 
 
@@ -317,15 +341,48 @@ def _installable(root: set[str], paths: list[str], pyproject: dict) -> bool:
     )
 
 
-def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> str:
+#: An exact pin in a requirements file: ``name==version`` (extras and markers allowed).
+_PIN = re.compile(r"(?m)^\s*([A-Za-z0-9][\w.-]*)\s*(?:\[[^\]]*\])?\s*===?\s*([^\s;#,]+)")
+
+
+def _pins(text: str) -> dict[str, str]:
+    """The exact pins of one requirements file, by normalized name (PEP 503)."""
+    return {re.sub(r"[-_.]+", "-", m.group(1)).lower(): m.group(2) for m in _PIN.finditer(text)}
+
+
+def _conflicting_pins(requirements: list[str], files: dict[str, str]) -> list[str]:
+    """Packages two of *requirements* pin to different versions, sorted.
+
+    Ceiling: only exact pins in the files themselves; a range that excludes
+    another file's pin, and files they include with ``-r``, are not read.
+    """
+    seen: dict[str, set[str]] = {}
+    for path in requirements:
+        for name, version in _pins(files.get(path, "")).items():
+            seen.setdefault(name, set()).add(version)
+    return sorted(name for name, versions in seen.items() if len(versions) > 1)
+
+
+def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> tuple[str, ...]:
     """The ``pip install`` arguments a unit's tests need: the project with its test extra,
-    its requirements and test requirements files, then pytest and pytest-cov."""
+    its requirements and test requirements files, then pytest and pytest-cov.
+
+    One install, unless two requirements files pin a package to different
+    versions: pip refuses that as one resolve, so each file installs on its
+    own, ``requirements.txt`` first and the test files after it, whose pins
+    the tests were written against and so win.
+    """
     parts = []
     if _installable(root, paths, pyproject):
         extra = _first(_extras(pyproject, files.get("setup.cfg", "")), (*_TEST_SETS, "dev"))
         parts.append(f'-e ".[{extra}]"' if extra else "-e .")
-    parts += [f"-r {p}" for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]
-    return " ".join([*parts, "pytest pytest-cov"])
+    requirements = [p for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]
+    if not _conflicting_pins(requirements, files):
+        return (" ".join([*parts, *(f"-r {p}" for p in requirements), "pytest pytest-cov"]),)
+    ordered = sorted(requirements, key=lambda p: (p != "requirements.txt", p))
+    # A conflict needs two files, so ``rest`` is never empty.
+    first, *rest = (f"-r {p}" for p in ordered)
+    return (" ".join([*parts, first]), *rest[:-1], f"{rest[-1]} pytest pytest-cov")
 
 
 def _python_tool(
@@ -354,10 +411,11 @@ def _python_tool(
                  "- run: hatch run pip install pytest pytest-cov")
         # Hatch's environment installs the project; it still needs the test tools.
         return "hatch", setup, f"hatch run pytest{args}", ("hatch run python -m pip install pytest pytest-cov",)
-    install = _pip_install(root, paths, files, toml)
-    setup = ("- uses: actions/setup-python@v5", *version, f"- run: pip install {install}   # adjust to your install")
+    installs = _pip_install(root, paths, files, toml)
+    setup = ("- uses: actions/setup-python@v5", *version,
+             *(f"- run: pip install {i}   # adjust to your install" for i in installs))
     # The CI install lives in ``setup``; a workstation needs the same install.
-    return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
+    return "pip", setup, f"pytest{args}", tuple(f"python -m pip install {i}" for i in installs)
 
 
 def _has_pytest_suite(root: set[str], paths: list[str], files: dict[str, str]) -> bool:
@@ -387,14 +445,50 @@ def _configures_pytest(files: dict[str, str]) -> bool:
     return "" in read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES).by_dir
 
 
+def _installs_xdist(paths: list[str], files: dict[str, str]) -> bool:
+    """Whether the unit's printed install brings pytest-xdist.
+
+    Read from the requirements files the pip line names and the pyproject
+    tables each tool installs by default: the project's dependencies, the
+    test or dev extra pip installs, uv's dev and test groups, Poetry's groups
+    and PDM's dev dependencies. Ceiling: a Hatch environment's dependencies
+    are not read, so a Hatch unit never gets the flag.
+    """
+    toml = parse_toml_or_none(files.get("pyproject.toml", "")) or {}
+    project = toml.get("project") or {}
+    extras = project.get("optional-dependencies") or {}
+    groups = toml.get("dependency-groups") or {}
+    tool = toml.get("tool") or {}
+    poetry = tool.get("poetry") or {}
+    chosen = _first(_keys(extras), (*_TEST_SETS, "dev"))
+    tables = [
+        project.get("dependencies"),
+        extras.get(chosen) if chosen else None,
+        *(groups.get(g) for g in ("dev", *_TEST_SETS)),
+        poetry.get("dev-dependencies"),
+        *((g or {}).get("dependencies") for g in (poetry.get("group") or {}).values() if isinstance(g, dict)),
+        (tool.get("pdm") or {}).get("dev-dependencies"),
+        *(files.get(p, "") for p in paths if _TEST_REQUIREMENTS.fullmatch(p)),
+    ]
+    return any(re.search(r"pytest[-_]xdist", json.dumps(t)) for t in tables if t)
+
+
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
     args = _pytest_args(paths, files)
-    tool, setup, base, installs = _python_tool(root, paths, files, args)
+    # pytest-xdist where the printed install brings it spreads the coverage run over
+    # every core (pytest-cov combines the workers' data), unless the config already
+    # picks a worker count.
+    xdist = _installs_xdist(paths, files) and not re.search(
+        r"(?<![\w-])(?:-n|--numprocesses)(?:=|\s|\d)", texts)
+    tool, setup, base, installs = _python_tool(root, paths, files, args + (" -n auto" if xdist else ""))
     notes: list[str] = []
+    if tool == "pip" and (pinned := _conflicting_pins([p for p in paths if _TEST_REQUIREMENTS.fullmatch(p)], files)):
+        notes.append(f"Requirements files pin {', '.join(pinned)} to different versions, so pip installs "
+                     "them one at a time and the test requirements' pins win.")
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
                      "checkout; narrow `--cov` to your source directory if you like.")
@@ -453,6 +547,21 @@ _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 _PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
+#: Where a trailing shell comment starts: the arguments a package manager appends land inside it.
+_SCRIPT_COMMENT = re.compile(r"(?:^|\s)#")
+#: ``packageManager`` naming Yarn 2 or later (Berry).
+_YARN_BERRY = re.compile(r"yarn@(?:[2-9]|\d\d)")
+
+
+def _uncommented(script: str) -> tuple[str, bool]:
+    """*script* without a trailing shell comment, and whether it had one.
+
+    Ceiling: a ``#`` after any quote is left alone, since it may sit inside the quotes.
+    """
+    m = _SCRIPT_COMMENT.search(script)
+    if m is None or re.search(r"['\"`]", script[: m.start()]):
+        return script.rstrip(), False
+    return script[: m.start()].rstrip(), True
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
@@ -470,6 +579,7 @@ def _node_runner(script: str) -> str | None:
     In ``a && b`` the runner must be the last command: npm, pnpm, yarn and bun add a
     script's extra arguments at its end, so the coverage flags reach only that command.
     """
+    script = _uncommented(script)[0]
     if not script or re.search(r"\|\||;", script) or _DELEGATES.search(script):
         return None
     *before, last = script.split("&&")
@@ -477,9 +587,14 @@ def _node_runner(script: str) -> str | None:
     return None if runner is None or any(_command_runner(cmd) for cmd in before) else runner
 
 
+def _command_words(command: str) -> list[str]:
+    """One simple command's words from the runner on: environment and exec wrapper left out."""
+    return _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
+
+
 def _command_runner(command: str) -> str | None:
     """:func:`_node_runner` for one simple command."""
-    words = _EXEC_WRAPPER.sub("", re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command)).split()
+    words = _command_words(command)
     head = words[0] if words else ""
     if head in ("c8", "nyc"):
         # Both default to text and html reports; without lcov, their report step writes it.
@@ -501,15 +616,34 @@ def _runner_of(head: str, words: list[str]) -> str | None:
     return None
 
 
-def _dev_install(pm: str, pkg: str, workspace: bool) -> tuple[str, ...]:
-    """The workflow step that installs *pkg* for the run (npm leaves ``package.json`` as it is)."""
-    # pnpm refuses to add to a workspace root without -w.
-    add = "add -D -w" if pm == "pnpm" and workspace else "add -D"
+def _dev_install(pm: str, pkg: str, workspace: str) -> tuple[str, ...]:
+    """The workflow step that installs *pkg* for the run (npm leaves ``package.json`` as it is).
+
+    *workspace* is the flag the package manager needs to add to a workspace root
+    (:func:`_root_add_flag`), ``""`` elsewhere.
+    """
+    add = f"add -D {workspace}" if workspace else "add -D"
     cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} {add} {pkg}")
     return (f"- run: {cmd}",)
 
 
-def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str, ...]:
+def _yarn_berry(root: set[str], package: dict) -> bool:
+    """Whether Yarn here is Berry (2 or later): its config file, or ``packageManager`` naming it.
+
+    Ceiling: a Berry project with neither (a global Berry install) reads as classic; the
+    lockfile's ``__metadata`` header would tell, but lockfiles are not read here.
+    """
+    return ".yarnrc.yml" in root or bool(_YARN_BERRY.match(str(package.get("packageManager") or "")))
+
+
+def _root_add_flag(pm: str, workspace: bool, berry: bool) -> str:
+    """The flag *pm* needs to add a package to a workspace root: pnpm and Yarn classic refuse without it."""
+    if not workspace:
+        return ""
+    return {"pnpm": "-w", "yarn": "" if berry else "-W"}.get(pm, "")
+
+
+def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
         return ()
     spec = str(deps.get("vitest") or "")
@@ -520,18 +654,16 @@ def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str,
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
 
 
-def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict, workspace: bool) -> CommandEdit:
+def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict, workspace: str) -> CommandEdit:
     """Coverage flags right after a runner called directly (``npx jest``, ``bun test``)."""
     prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
     return CommandEdit(_insert(line, (m.end(), " " + _NODE_FLAGS[runner])), "coverage/lcov.info", prepare)
 
 
 def _edit_script(
-    line: str, m: re.Match, runner: str, *, end: int, after: str, pm: str, deps: dict, workspace: bool
+    line: str, m: re.Match, runner: str, *, end: int, after: str, pm: str, deps: dict, workspace: str
 ) -> CommandEdit:
     """Coverage for a package script whose *runner* is known."""
-    if runner == "covered":
-        return CommandEdit(line, _COVERED_REPORTS)
     if runner == "c8":
         return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
     if runner.startswith("report:"):
@@ -546,15 +678,18 @@ def _edit_script(
     sep = " --" if tool == "npm" and not dashes else ""
     # pnpm: before a ``--`` the line already has, where the runner still reads them.
     at = m.end() + dashes.start() - 1 if tool == "pnpm" and dashes else end
-    edits = [(at, f"{sep} {_NODE_FLAGS[runner]}")]
+    # A script that measures already gets no flags, only the form that hands the script
+    # the JUnit flag appended later.
+    covered = runner == "covered"
+    edits = [(at, sep + ("" if covered else f" {_NODE_FLAGS[runner]}"))]
     if tool == "pnpm" and not run:
         edits.append((m.start(3), "run "))
     prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
-    return CommandEdit(_insert(line, *edits), "coverage/lcov.info", prepare)
+    return CommandEdit(_insert(line, *edits), _COVERED_REPORTS if covered else "coverage/lcov.info", prepare)
 
 
 def _edit_node(
-    line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict, workspace: bool = False
+    line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict, workspace: str = ""
 ) -> CommandEdit | None:
     _, end, continued = _segment(line, m)
     after = line[m.end():end]
@@ -563,9 +698,13 @@ def _edit_node(
         return CommandEdit(line, _COVERED_REPORTS)
     if direct or (tool == "bun" and not run):  # the runner itself, or bun's own runner
         return _edit_direct_runner(line, m, direct or "bun", pm, deps, workspace)
-    runner = _node_runner(str(scripts.get(script) or ""))
+    text = str(scripts.get(script) or "")
+    runner = _node_runner(text)
     if continued or _MONOREPO_ARGS.search(after.split(" -- ")[0]) or runner is None:
         return None
+    if runner == "covered" and _measuring_runner(text) not in _NODE_JUNIT_FLAGS:
+        # Measures already, and no JUnit flag is appended later: the line stays as it is.
+        return CommandEdit(line, _COVERED_REPORTS)
     return _edit_script(line, m, runner, end=end, after=after, pm=pm, deps=deps, workspace=workspace)
 
 
@@ -584,14 +723,14 @@ def _node_package(files: dict[str, str]) -> tuple[dict, dict, dict]:
     return package, scripts, deps
 
 
-def _node_manager(root: set[str]) -> tuple[str, str]:
+def _node_manager(root: set[str], package: dict) -> tuple[str, str]:
     """The package manager the lockfile names, and its install command."""
     if "bun.lockb" in root or "bun.lock" in root:
         return "bun", "bun install --frozen-lockfile"
     if "pnpm-lock.yaml" in root:
         return "pnpm", "pnpm install --frozen-lockfile"
     if "yarn.lock" in root:
-        return "yarn", "yarn install --immutable" if ".yarnrc.yml" in root else "yarn install --frozen-lockfile"
+        return "yarn", "yarn install --immutable" if _yarn_berry(root, package) else "yarn install --frozen-lockfile"
     return "npm", "npm ci" if "package-lock.json" in root else "npm install"
 
 
@@ -675,8 +814,9 @@ def _direct_base(pm: str, scripts: dict, name: str) -> tuple[str, tuple[str, ...
     first. ``("", ())`` otherwise, and the script stays.
     """
     hooks = tuple(h for h in (f"pre{name}", f"post{name}") if scripts.get(h))
-    script = str(scripts.get(name) or "").strip()
-    if hooks and _PLAIN_RUNNER.fullmatch(script):
+    # A trailing comment would swallow the flags the package manager appends, so it runs directly too.
+    script, commented = _uncommented(str(scripts.get(name) or "").strip())
+    if (hooks or commented) and _PLAIN_RUNNER.fullmatch(script):
         return f"{_NODE_EXEC[pm]} {script}", hooks
     return "", ()
 
@@ -688,6 +828,12 @@ def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tup
     name, runner = _test_script(scripts)
     if name:
         direct, hooks = _direct_base(pm, scripts, name)
+        if not direct and _uncommented(str(scripts[name]))[1]:
+            # ceiling: a commented script that is not the runner alone (an environment, a chain)
+            # gets no command; through the script, every appended flag would land in the comment.
+            runner = None
+        elif runner == "covered":
+            runner = _measuring_runner(str(scripts[name]))
         return direct or _script_command(pm, name), runner, hooks
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
     if runner is None:
@@ -695,7 +841,18 @@ def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None, tup
     return f"{_NODE_EXEC[pm]} {runner}" + (" run" if runner == "vitest" else ""), runner, ()
 
 
-def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, deps: dict, workspace: bool) -> tuple[str, ...]:
+def _measuring_runner(script: str) -> str:
+    """The runner a script that measures coverage already runs (``jest --coverage``), else ``covered``.
+
+    Named so its test timings get the runner's JUnit flag. Ceiling: a runner behind c8 or nyc
+    stays ``covered``.
+    """
+    words = _command_words(_uncommented(script)[0].split("&&")[-1])
+    runner = _runner_of(words[0] if words else "", words)
+    return runner if runner in _NODE_FLAGS else "covered"
+
+
+def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, deps: dict, workspace: str) -> tuple[str, ...]:
     """The step that installs jest-junit for test timings, when Jest runs and the package lacks it."""
     if test is None or runner != "jest" or "jest-junit" in deps:
         return ()
@@ -752,15 +909,16 @@ def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
-    pm, install = _node_manager(root)
+    pm, install = _node_manager(root, package)
     base, runner, hooks = _node_base(pm, scripts, deps)
     workspace = _node_workspace(package, PNPM_WORKSPACE_FILENAME in root)
     if not base and not workspace:
         return None
-    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=workspace)
+    add_flag = _root_add_flag(pm, workspace, _yarn_berry(root, package))
+    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=add_flag)
     test = editor(base, _NODE.search(base)) if runner else None
     # Test timings need the reporter in node_modules, beside the runner.
-    reporter = _reporter_install(test, runner, pm, deps, workspace)
+    reporter = _reporter_install(test, runner, pm, deps, add_flag)
     prepare = (*test.prepare, *reporter) if test else ()
     return Stack(
         "node", runner, pm, test.reports if test else "coverage/lcov.info",

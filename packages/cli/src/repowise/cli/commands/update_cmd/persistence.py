@@ -608,6 +608,7 @@ def _persist_index_only_update(
     deferred_page_paths: list[str] | None = None,
     stamp_config: bool = True,
     timings: PhaseTimings | None = None,
+    unchecked_repair: dict | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -726,6 +727,9 @@ def _persist_index_only_update(
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
     record_repair_marker(new_state, state, failed_steps)
+    # A clean run clears the marker only if it re-covered the marker's range.
+    if unchecked_repair is not None and "pending_repair" not in new_state:
+        new_state["pending_repair"] = unchecked_repair
     if prune_refusals:
         # The prune refused to apply part of this change set, so the index is
         # behind the commit it would be recorded against. Leave the pointer

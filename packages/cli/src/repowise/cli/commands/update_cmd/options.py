@@ -56,6 +56,9 @@ class UpdateRun:
     base_ref: str = field(init=False, repr=False)
     defer_docs: bool = False
     head: str | None = None
+    # The repair marker this run could not check, so it keeps it (see
+    # ``unchecked_repair_marker``).
+    unchecked_repair: dict | None = None
     config: ConfigChanges = field(init=False, repr=False)
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""

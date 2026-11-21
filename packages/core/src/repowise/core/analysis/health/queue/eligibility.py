@@ -528,10 +528,12 @@ def _unconfirmed(item: Any) -> bool:
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
     with no known role, an entry point or a leading workload's run must reach
     it (a unit-test run reaches everything it imports). Only a ``plan_ready``
-    cause qualifies, and never one whose role or name is cold: a measurement
-    keeps such a cause in the queue (:func:`_role_reason`,
+    cause qualifies, and never one whose role or name is cold: a run that
+    merely ranks it keeps such a cause in the queue (:func:`_role_reason`,
     ``actionability.expected_reason``), it does not make it the work to lead
-    with.
+    with. A leading workload that measured its loop owner above the lead bar
+    (``confirmed`` ``measured``) does: the role and the name were guesses
+    that the run's cost answers. A unit-test run never does.
     """
     # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
     # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
@@ -543,7 +545,8 @@ def _unconfirmed(item: Any) -> bool:
         return True
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
         return True
-    if execution_role(item) in COLD_ROLES or facets.get("measured_overrides"):
+    cold = execution_role(item) in COLD_ROLES or facets.get("measured_overrides")
+    if cold and facets.get("confirmed") != "measured":
         return True
     reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
     return execution_role(item) == "unknown" and not reached

@@ -308,7 +308,11 @@ def test_a_custom_pattern_finds_and_masks_on_a_changed_line_only(repo):
         2,
         "high",
     )
-    assert finding["snippet"] == "U = 'itk_****'"
+    # Masked for the fingerprint; a secret is shown by kind and place only.
+    assert finding["fingerprint"] == fingerprint_of(
+        "old.py", "custom:internal_token", "U = 'itk_****'"
+    )
+    assert finding["snippet"] == ""
     assert OTHER_TOKEN not in json.dumps(scan.findings)
 
 
@@ -317,7 +321,9 @@ def test_the_whole_match_is_masked_even_with_a_capture_group(repo):
     _commit(repo, "add")
     scan = _scan(repo, patterns=(_pattern(r"(itk|xtk)_[A-Za-z0-9]{32}"),))
     (finding,) = scan.findings
-    assert finding["snippet"] == "id itk_**** end"
+    assert finding["fingerprint"] == fingerprint_of(
+        "cfg.txt", "custom:internal_token", "id itk_**** end"
+    )
 
 
 def test_overlapping_matches_are_masked_as_one_span(repo):
@@ -325,7 +331,9 @@ def test_overlapping_matches_are_masked_as_one_span(repo):
     _commit(repo, "add")
     patterns = _patterns({"name": "a", "regex": "abcdefgh"}, {"name": "b", "regex": "efghijklmnop"})
     scan = _scan(repo, patterns=patterns)
-    assert {f["snippet"] for f in scan.findings} == {"k abcd**** z"}
+    assert {f["fingerprint"] for f in scan.findings} == {
+        fingerprint_of("cfg.txt", kind, "k abcd**** z") for kind in ("custom:a", "custom:b")
+    }
 
 
 def test_custom_severity_is_kept_under_a_test_path(repo):

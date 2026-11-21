@@ -482,7 +482,6 @@ def schema_tokens(name: str) -> int:
         "name": tool.name,
         "description": tool.description,
         "inputSchema": tool.parameters,
-        "outputSchema": tool.output_schema,
     }
     return len(json.dumps(listed, separators=(",", ":"))) // 4
 

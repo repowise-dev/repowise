@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....evidence.query_counts import strongest
-from ...execution_roles import ENTRY_ROLES, hottest_role
+from ...execution_roles import COLD_ROLES, ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
     ActionabilityState,
@@ -266,22 +266,29 @@ def _facets(
         # Only with runtime evidence, so a repo without any stores what it did.
         **({"measured": r.measured} if r.measured else {}),
         **({"measured_in_tests": r.in_tests} if r.in_tests else {}),
-        # The name said it runs once and a run said otherwise: kept, never led.
+        # The name said it runs once and a run said otherwise: kept, never
+        # led, unless the run measured it above the lead bar (``confirmed``).
         **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
         **_query_facets(r.queries),
         **({"confirmed": confirmed} if confirmed else {}),
     }
 
 
-def _confirmed(r: _Reading, hot: frozenset[str], hot_in_tests: frozenset[str]) -> str | None:
+def _confirmed(
+    r: _Reading, hot: frozenset[str], hot_in_tests: frozenset[str], cold: bool = False
+) -> str | None:
     """What confirms the cause, or ``None``: exact evidence at its call path
     (``query_count``: statements grow with the items), else a live member's
     loop owner a leading workload measured above the lead bar
     (``lead_candidate``, ``measured``), else one a unit-test run did
-    (``measured_in_tests``)."""
+    (``measured_in_tests``). For a *cold* cause (its role or name says it runs
+    once per process) the measurement comes first: it is what answers that
+    guess, and query counts say nothing about how often the code runs."""
+    owners = {f.details.get("role_owner") for f in r.live}
+    if cold and owners & hot:
+        return "measured"
     if r.queries is not None and r.queries.verdict == "grows":
         return "query_count"
-    owners = {f.details.get("role_owner") for f in r.live}
     if owners & hot:
         return "measured"
     if owners & hot_in_tests:
@@ -357,7 +364,8 @@ def _assemble(
         provenance=r.provenance,
         magnitude=r.magnitude,
     )
-    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot, hot_in_tests))
+    cold = cold_name or r.role in COLD_ROLES
+    facets = _facets(r, acted.confidence, cold_name, _confirmed(r, hot, hot_in_tests, cold))
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,

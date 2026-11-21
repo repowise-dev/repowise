@@ -93,7 +93,9 @@ class FirstLook:
     def line(self) -> str:
         if self.agent:
             return AGENT_LINE
-        if self.generator == "template":
+        if self.generator == "template" and self.cost:
+            how = f"template: the model's reply was unusable, ${self.cost:.3f}"
+        elif self.generator == "template":
             how = "template, free"
         else:
             how = f"written by {self.generator}" + (

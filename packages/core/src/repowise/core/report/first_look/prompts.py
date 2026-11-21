@@ -5,7 +5,7 @@ Every prompt comes from ``core/agent_prompts``: an action through
 performance cause through ``render_perf_opportunity`` and anything else
 through ``render_first_look_item``. The payload is read again by its id, so a
 prompt says what the index holds now. A secret's prompt never carries its
-value: the stored snippet is dropped from the action before it renders.
+value: the ``live_secret`` action holds its location and kind only.
 """
 
 from __future__ import annotations
@@ -22,17 +22,6 @@ from repowise.core.agent_prompts import (
 )
 
 from .model import SECTION_CAP, FirstLookReport, Item
-
-#: Rules whose evidence ``reason`` is a stored snippet of a credential.
-_SNIPPET_RULES = frozenset({"live_secret"})
-
-
-def action_for_prompt(action: Any) -> dict[str, Any]:
-    """*action*'s wire dict with any credential snippet removed."""
-    data = action.as_dict()
-    if data["rule"] in _SNIPPET_RULES:
-        data["details"] = [{**d, "reason": ""} for d in data["details"]]
-    return data
 
 
 def perf_detail(row: Any) -> dict[str, Any]:
@@ -99,7 +88,7 @@ async def render_item_prompt(
             else await load_action(session, repository_id, ref.payload_ref, setup=setup)
         )
         if action is not None:
-            return render_action(action_for_prompt(action), flavor, repo_name)
+            return render_action(action.as_dict(), flavor, repo_name)
     elif ref.renderer == "fix_item" and ref.payload_ref:
         from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 
@@ -137,4 +126,4 @@ def render_report_prompt(
     return render_first_look_report(items, flavor, repo_name or report.repo.get("name"))
 
 
-__all__ = ["action_for_prompt", "perf_detail", "render_item_prompt", "render_report_prompt"]
+__all__ = ["perf_detail", "render_item_prompt", "render_report_prompt"]
