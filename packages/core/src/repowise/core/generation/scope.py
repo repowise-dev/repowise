@@ -27,7 +27,11 @@ from repowise.core.generation.cascade import (
     build_page_dependencies,
     expand_cascade,
 )
-from repowise.core.generation.models import GENERATION_LEVELS, compute_page_id
+from repowise.core.generation.models import (
+    GENERATION_LEVELS,
+    MODEL_WRITTEN_PAGE_TYPES,
+    compute_page_id,
+)
 from repowise.core.generation.page_selection import (
     PageRecord,
     PageSelectionIntent,
@@ -82,7 +86,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             meta = json.loads(getattr(p, "metadata_json", None) or "{}")
         except ValueError:
             meta = {}
-        is_template = not meta.get("model_free") and (
+        model_free = bool(meta.get("model_free"))
+        is_template = not model_free and (
             getattr(p, "provider_name", "") == "template" or bool(meta.get("deterministic"))
         )
         records.append(
@@ -93,6 +98,7 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
                 is_template=is_template,
                 freshness_status=getattr(p, "freshness_status", "fresh"),
                 pinned=bool(getattr(p, "pinned", False)),
+                model_free=model_free,
             )
         )
     return records
@@ -106,7 +112,6 @@ async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
     """
     from sqlalchemy import select
 
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
     from repowise.core.persistence.models import Page
 
     rows = (
@@ -340,6 +345,32 @@ def build_cost_plans(generate_ids: set[str]) -> list[PageTypePlan]:
         PageTypePlan(page_type=ptype, count=n, level=GENERATION_LEVELS.get(ptype, 2))
         for ptype, n in sorted(counts.items(), key=lambda kv: GENERATION_LEVELS.get(kv[0], 2))
     ]
+
+
+def narrow_to_model_written(plan: ScopePlan, records: list[PageRecord]) -> ScopePlan:
+    """Keep the pages a model writes, in the generate set and the fallout, and re-price.
+
+    A structural page has no model to write it, and neither has a ``model_free``
+    one: ``repowise update`` refreshes the first from code, ``repowise update
+    --full`` the second. Kept, they would be counted and priced as model pages.
+    An id with no record yet is judged by its type alone.
+    """
+    model_free = {r.page_id for r in records if r.model_free}
+
+    def written(ids: set[str]) -> set[str]:
+        return {
+            pid
+            for pid in ids
+            if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES and pid not in model_free
+        }
+
+    gen = written(plan.generate_ids)
+    return replace(
+        plan,
+        generate_ids=gen,
+        stale_ids=written(plan.stale_ids),
+        cost_plans=build_cost_plans(gen),
+    )
 
 
 def resolve_scope(

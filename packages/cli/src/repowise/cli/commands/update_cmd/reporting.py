@@ -82,7 +82,7 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 
 # The structural and the model page counts, by `stale_remedy`. `model` says
 # nothing per count: there `--full` writes the whole wiki, in one priced run.
-_STRUCTURAL_PAGES = "{n} structural pages (file / cycle)"
+_STRUCTURAL_PAGES = "{n} structural pages"
 _CASCADE_PAGES = {
     "llm": (
         f"{_STRUCTURAL_PAGES}, no model needed",
