@@ -539,17 +539,7 @@ def string_constants(
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
     if syntax is JS_SYNTAX and "static" in content:
-        # `Api.BASE` reads a static field from anywhere in the file, unless the file
-        # also writes it from outside (`Api.BASE = x`, `Api[k] = x`, `Object.assign(Api, ...)`).
-        for cls in js_class_fields(content):
-            for field_name, rhs in cls.static_fields.items():
-                key = cls.name + field_name.removeprefix("this")
-                unsettled = (
-                    key in seen
-                    or resolve_string(rhs, syntax) is None
-                    or _static_rebinding_re(key).search(text) is not None
-                )
-                seen[key] = None if unsettled else rhs
+        _record_class_statics(content, text, seen)
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
         seen[m.group(1)] = None
@@ -557,6 +547,24 @@ def string_constants(
         for name in m.group(1).replace(" ", "").split(","):
             seen[name.lstrip("$")] = None
     return {name: text for name, text in seen.items() if text is not None}
+
+
+def _record_class_statics(content: str, text: str, seen: dict[str, str | None]) -> None:
+    """Record each class's static fields as ``Name.field``, read from anywhere in the file.
+
+    Runs after the object literals fold, so a ``const Api = {...}`` beside a class
+    ``Api`` retires the key. A field the file also writes from outside
+    (``Api.BASE = x``, ``Api[k] = x``, ``Object.assign(Api, ...)``) is no constant.
+    """
+    for cls in js_class_fields(content):
+        for field_name, rhs in cls.static_fields.items():
+            key = cls.name + field_name.removeprefix("this")
+            unsettled = (
+                key in seen
+                or resolve_string(rhs, JS_SYNTAX) is None
+                or _static_rebinding_re(key).search(text) is not None
+            )
+            seen[key] = None if unsettled else rhs
 
 
 def _static_rebinding_re(key: str) -> re.Pattern[str]:
