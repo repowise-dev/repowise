@@ -667,6 +667,26 @@ def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
     assert _split({"tests/test_d.py": [[], [], []]}) == (["tests/test_d.py"], [])
 
 
+def test_a_file_added_since_the_index_is_read_whole() -> None:
+    from repowise.core.analysis.import_drift import Rewiring
+
+    def split(new_imports):
+        # src/b.py imports src/new.py (added since, so the index has no edges for it).
+        rewirings = {
+            "src/b.py": Rewiring(imports=frozenset({"src/new.py"})),
+            "src/new.py": Rewiring(imports=frozenset(new_imports)),
+        }
+        plan = GapPlan(candidates=("src/b.py",))
+        return split_rewired(
+            plan, ["src/b.py"], rewirings, [_INDEX], ["src/a.py"], _FILES, (), ["src/new.py"]
+        )
+
+    # The added file imports only what reaches nothing changed: b.py's tests stay out.
+    assert split({"src/y.py"}) == ([], ["src/b.py"])
+    # It imports the change: b.py's tests now reach it through the added file.
+    assert split({"src/a.py"}) == (["src/b.py"], [])
+
+
 def test_a_gap_route_through_an_unimported_helper_runs_everything() -> None:
     sel = _behind(
         ["src/b.py"], inferred=[_inferred("src/b.py", "tests/helpers.py", "import-graph")]

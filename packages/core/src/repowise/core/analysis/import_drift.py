@@ -164,14 +164,16 @@ class Rewiring:
     *imports* are the repository files the imports it gained resolve to;
     *names* the words of the strings it gained, any of which may name a module
     or file; *dirs* those of the strings that may name a directory (a path, a
-    templated load, a Django app or URLconf); *held* the words of every string
-    it holds, gained or not, read only against files added since the index.
+    templated load, a Django app or URLconf); *held* and *held_dirs* the same
+    for every string it holds, gained or not, read only against files added
+    since the index.
     """
 
     imports: frozenset[str] = frozenset()
     names: frozenset[str] = frozenset()
     dirs: frozenset[str] = frozenset()
     held: frozenset[str] = frozenset()
+    held_dirs: frozenset[str] = frozenset()
 
 
 #: Resolves one parsed import of a file, ``(import, path, language)``, to its targets.
@@ -198,36 +200,38 @@ def rewiring(
     added since the index (*added_files*) can make an import or string that did
     not change resolve, so then every import resolves again (those landing on
     an added file count as gained) and every string's words are kept (*held*).
+    A file added since is read with ``b""`` as *before*.
     Ceiling: a string's words are matched to file names, so a string reaching
     a file through an alias the words do not spell is not seen.
     """
     language = _language(path)
     if before is None or after is None or language not in _IMPORT_WORD:
         return None
-    held: set[str] = set()
+    held: set[tuple[str, bool]] = set()
     try:
         added = _added_strings(path, language, before, after)
         targets = _gained_targets(path, language, before, after, resolve)
         if added_files and targets is not None:
             every = _gained_targets(path, language, b"", after, resolve) or set()
             targets |= every & set(added_files)
-            held = {w for text in _held_strings(path, language, after) for w in _words(text)}
+            held = _held_strings(path, language, after)
     except Exception:  # a reader that fails tells nothing: unknown, so the file stays
         return None
     if added is None or targets is None:
         return None
+    return Rewiring(frozenset(targets), *_name_words(added), *_name_words(held))
+
+
+def _name_words(strings: set[tuple[str, bool]]) -> tuple[frozenset[str], frozenset[str]]:
+    """The words of *strings*, and those of the ones that may name a directory."""
     names: set[str] = set()
     dirs: set[str] = set()
-    for text, may_name_dir in added:
-        words = _words(text)
+    for text, may_name_dir in strings:
+        words = {w for w in _WORD_SPLIT.split(text) if w}
         names |= words
         if may_name_dir or "/" in text or "{" in text:
             dirs |= words
-    return Rewiring(frozenset(targets), frozenset(names), frozenset(dirs), frozenset(held))
-
-
-def _words(text: str) -> set[str]:
-    return {w for w in _WORD_SPLIT.split(text) if w}
+    return frozenset(names), frozenset(dirs)
 
 
 def _gained_targets(
@@ -272,14 +276,15 @@ def _literals(source: bytes) -> set[bytes]:
     return {n for n in found if b"." in n or b"/" in n} | set(path_literals(source))
 
 
-def _held_strings(path: str, language: str, source: bytes) -> set[str]:
-    """Every string of *source* any edge producer :func:`_added_strings` compares reads."""
-    held: set[bytes | str] = set(_literals(source))
+def _held_strings(path: str, language: str, source: bytes) -> set[tuple[str, bool]]:
+    """Every string of *source* the edge producers :func:`_added_strings` compares
+    read, each with whether it may name a directory."""
+    held: set[tuple[bytes | str, bool]] = {(s, False) for s in _literals(source)}
     if language == "python":
         _, found, live, _ = string_inputs(path, source)
-        held |= {s for s, _ in found} | set(live)
-        held |= _leaves(django_hints.edge_strings(path, source) or ())
-    return {s.decode("utf-8", "replace") if isinstance(s, bytes) else s for s in held}
+        held |= {(s, False) for s, _ in found} | {(s, False) for s in live}
+        held |= {(s, True) for s in _leaves(django_hints.edge_strings(path, source) or ())}
+    return _decoded(held)
 
 
 # Loads whose target a literal does not spell: a glob, a directory listing,

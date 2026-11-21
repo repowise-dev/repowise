@@ -1250,8 +1250,10 @@ def split_rewired(
     *seeds* are the files whose tests the selection runs; *tests* the index's
     test files, which the selection's walks never pass through, so neither
     does this one; *added* the files added since the index, which it has no
-    edges for: they seed the walk, and a rewired file naming one in any string
-    stays.
+    edges for. One with a rewiring (read whole, every import and string
+    gained) joins the walk like a rewired file; one without seeds it. A
+    rewired file joins too when any of its imports or strings, gained or not,
+    reaches an added file the walk holds.
 
     A route the index cannot see must leave the first rewired file on it by an
     edge the index lacks, and the rest of the route is again either in the
@@ -1261,8 +1263,7 @@ def split_rewired(
     file that does, or a gained string whose words name one. Stays too, and
     counts as reaching the change, a file whose rewiring is unknown, a
     production ``__init__.py`` (it stands for every module under it), a test
-    file or test helper, and one whose imports or strings, gained or not,
-    reach a file in *added*. The rest
+    file or test helper. The rest
     add no route to the change, so their tests are left out. Ceiling, as for a
     file whose imports did not move: a call or framework binding gained with
     no import or string is not seen.
@@ -1270,50 +1271,55 @@ def split_rewired(
     reach: set[str] = set()
     stems: set[str] = set()
     dirs: set[str] = set()
-
     leaves = set(tests)
+    new_files = set(added)
+    # The words naming the added files the walk holds.
+    added_stems: set[str] = set()
+    added_dirs: set[str] = set()
 
     def grow(start: Iterable[str]) -> None:
         frontier = [f for f in dict.fromkeys(start) if f not in reach]
         while frontier:
             reach.update(frontier)
             _add_words(frontier, stems, dirs)
+            _add_words([f for f in frontier if f in new_files], added_stems, added_dirs)
             fresh = [d for node in frontier for edges in importers for d in edges.get(node, ())]
             frontier = [d for d in dict.fromkeys(fresh) if d not in reach]
             # A test is reached, never passed through.
             reach.update(d for d in frontier if d in leaves)
             frontier = [d for d in frontier if d not in leaves]
 
-    known = set(indexed_files)
-    added_stems: set[str] = set()
-    added_dirs: set[str] = set()
-    _add_words(added, added_stems, added_dirs)
-    added_words = added_stems | added_dirs
+    known = set(indexed_files) | new_files
     pending = {
         p: rw
-        for p in rewired
+        for p in dict.fromkeys([*rewired, *added])
         if p not in plan.packages
         # A test runs only itself, and may now walk a tree or spawn a process.
         and not is_test_related_path(p)
         and (rw := rewirings.get(p)) is not None
         and rw.imports <= known
-        and not rw.held & added_words
     }
     # A kept file may lead to the change by edges unseen, so it seeds the walk;
     # a kept test runs only itself, so nothing reaches the change through it.
-    grow([*seeds, *added, *(p for p in rewired if p not in pending and p not in leaves)])
+    unknown = [p for p in dict.fromkeys([*rewired, *added]) if p not in pending]
+    grow([*seeds, *(p for p in unknown if p not in leaves)])
     while True:
         joined = [
             p
             for p, rw in pending.items()
-            if p in reach or rw.imports & reach or _names(p, rw.names) & stems or rw.dirs & dirs
+            if p in reach
+            or rw.imports & reach
+            or _names(p, rw.names) & stems
+            or rw.dirs & dirs
+            or _names(p, rw.held) & added_stems
+            or rw.held_dirs & added_dirs
         ]
         if not joined:
             break
         for p in joined:
             del pending[p]
         grow(joined)
-    return sorted(p for p in rewired if p not in pending), sorted(pending)
+    return sorted(p for p in rewired if p not in pending), sorted(p for p in rewired if p in pending)
 
 
 # A module a name reaches through its directory: ``pkg`` names pkg/__init__.py.

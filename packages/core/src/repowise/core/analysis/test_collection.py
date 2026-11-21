@@ -550,18 +550,23 @@ def _rewired_gap(
 def _rewirings(
     repo_path, base: str, gap: Collection[str], indexed: Collection[str], pairs: Mapping
 ) -> tuple[dict[str, Any], set[str]]:
-    """:func:`~.import_drift.rewiring` for each ``{path: (indexed text, base text)}``,
-    and the files added since the index; none when git cannot list the base."""
-    from .import_drift import import_resolver, rewiring
-    from .test_selection import is_documentation
+    """:func:`~.import_drift.rewiring` for each ``{path: (indexed text, base text)}``
+    and for each code file added since the index (read whole), and the files
+    added since (code only); none when git cannot list the base."""
+    from .change_health.sources import read_blobs
+    from .import_drift import import_resolver, may_carry_edges, rewiring
 
     listed = sorted(gap)
     flags = _are_blobs(repo_path, [(base, f"./{p}") for p in listed])
     if flags is None:
         return {}, set()
     present = {p for p, is_blob in zip(listed, flags, strict=True) if is_blob}
-    added = {p for p in present - set(indexed) if not is_documentation(p)}
+    # Data and prose added since import nothing, so they lead nowhere.
+    added = {p for p in present - set(indexed) if may_carry_edges(p)}
     resolve = import_resolver(repo_path, (set(indexed) - set(gap)) | present)
+    code = sorted(added)
+    blobs = read_blobs(str(repo_path), [(base, f"./{p}") for p in code]) or {}
+    pairs = {**pairs, **{p: (b"", blobs.get((base, f"./{p}"))) for p in code}}
     return {
         p: rewiring(p, before, after, resolve, frozenset(added))
         for p, (before, after) in pairs.items()
