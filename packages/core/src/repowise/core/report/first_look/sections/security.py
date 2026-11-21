@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from repowise.core.analysis.actions.model import fingerprint
+from repowise.core.analysis.actions.model import ActionDetail, fingerprint
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS, live_secret
 from repowise.core.analysis.security_gate import fingerprint_of
 
@@ -58,6 +58,12 @@ async def collect(ctx: FirstLookContext) -> Collected:
     outcome = live_secret(ctx.facts, ctx.rules)
     if outcome.status == "unavailable":
         raise UnavailableError(outcome.reason)
+    # The action holds no snippet; the masked one keys the gate's fingerprint.
+    snippets = {(s.file_path, s.kind, s.line): s.snippet for s in ctx.facts.secrets}
+
+    def snippet(d: ActionDetail) -> str:
+        return snippets.get((d.path, d.marker or "", d.line), "")
+
     items = []
     for action in outcome.actions:
         path = action.target_path
@@ -81,7 +87,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
                 # The security gate's own fingerprint per finding, hashed again:
                 # it moves when a value or its line set changes, and holds none.
                 fingerprint=fingerprint(
-                    *sorted(fingerprint_of(d.path, d.marker or "", d.reason) for d in action.details)
+                    *sorted(fingerprint_of(d.path, d.marker or "", snippet(d)) for d in action.details)
                 ),
                 origin=ctx.origin(path),
                 priority=action.effective_priority,
@@ -89,7 +95,7 @@ async def collect(ctx: FirstLookContext) -> Collected:
             )
         )
     listed = {
-        (d.path, d.marker or "", d.reason) for action in outcome.actions for d in action.details
+        (d.path, d.marker or "", snippet(d)) for action in outcome.actions for d in action.details
     }
     return Collected(tuple(items), {"history_only": await _history_only(ctx, listed)})
 

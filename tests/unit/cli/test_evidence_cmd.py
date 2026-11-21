@@ -877,3 +877,17 @@ def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
     table = _tests()
     assert table.exit_code == 0
     assert f"4.50s  {slowest['test_id']}" in table.stdout
+
+
+def test_tests_says_how_many_files_every_timed_test_runs() -> None:
+    payload = {
+        "runs": [], "tests_total": 2, "slow_tests": [],
+        "file_costs": {
+            "basis": "measured", "files_total": 1, "not_production": 0, "every_test": 3,
+            "files": [{"file_path": "src/app.py", "test_seconds": 3.0, "timed_tests": 1, "tests": 1}],
+        },
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text

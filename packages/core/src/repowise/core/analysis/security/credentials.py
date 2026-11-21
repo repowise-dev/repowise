@@ -163,8 +163,12 @@ def _is_plain_word(value: str) -> bool:
     )
 
 
+#: Characters of a value its redaction keeps, before the marker.
+_KEPT = 4
+
+
 def _redaction(val: str) -> str:
-    return (val[:4] + "****") if len(val) >= 4 else "****"
+    return (val[:_KEPT] + "****") if len(val) >= _KEPT else "****"
 
 
 # ``public_env_secret`` has no capture group, so its value is found here. In
@@ -312,6 +316,24 @@ def holds_secret(text: str) -> bool:
     )
 
 
+#: Kinds whose snippet is a credential's own line. ``public_env_secret`` sits
+#: outside ``SECRET_KINDS`` only because its value is found differently.
+_CREDENTIAL_KINDS = SECRET_KINDS | {"public_env_secret"}
+
+
+def shown_snippet(kind: str, snippet: str | None) -> str:
+    """What any surface may show of a stored *snippet*: nothing of a secret's.
+
+    A masked value keeps its first characters and the rest of its line, so a
+    credential finding, or any snippet with a masked value on it, is shown by
+    kind and location only. The stored snippet stays for line checks and
+    fingerprints. A line with a literal ``****`` is hidden too: failing closed.
+    """
+    if not snippet or kind in _CREDENTIAL_KINDS or _MARKER in snippet:
+        return ""
+    return snippet
+
+
 def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 
@@ -320,8 +342,10 @@ def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     text = _mask_line(line, extra).strip()
     cut = _SNIPPET_MAX
     if len(text) > cut:
-        # Never end inside a marker: a bare ``*`` run defeats line verification.
-        marker = text.rfind(_MARKER, 0, cut + len(_MARKER) - 1)
-        if marker != -1 and marker < cut < marker + len(_MARKER):
-            cut = marker
+        # Never end inside a redaction: kept characters cut off from their
+        # marker read as plain text, and a bare ``*`` run defeats line
+        # verification. So a redaction the cut crosses is dropped whole.
+        marker = text.find(_MARKER, cut - _KEPT + 1, cut + _KEPT - 1 + len(_MARKER))
+        if marker != -1:
+            cut = max(0, marker - _KEPT)
     return text[:cut]

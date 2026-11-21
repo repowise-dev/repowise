@@ -186,6 +186,20 @@ def strip_trailing_query_expr(path: str) -> str:
     return _TRAILING_QUERY_EXPR_RE.sub("", path)
 
 
+_HOLE_NAME_RE = re.compile(r"\$\{\s*([A-Za-z_$][\w$]*)\s*\}")
+
+
+def trailing_glued_name(path: str) -> str | None:
+    """The name of the one bare-name hole glued onto *path*'s last segment.
+
+    ``/api/v1${endpoint}`` gives ``endpoint``; a parameter segment
+    (``/users/${id}``), an expression hole, or two holes give None.
+    """
+    m = _TRAILING_QUERY_EXPR_RE.search(path)
+    hole = _HOLE_NAME_RE.fullmatch(m.group()) if m else None
+    return hole.group(1) if hole else None
+
+
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

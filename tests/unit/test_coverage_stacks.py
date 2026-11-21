@@ -584,6 +584,31 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
 
 
+@pytest.mark.parametrize(
+    ("extra", "package_manager", "install", "add"),
+    [
+        # Yarn classic refuses to add to a workspace root without -W.
+        ({}, None, "yarn install --frozen-lockfile", "yarn add -D -W"),
+        # Yarn Berry has no -W; its config file or packageManager field says it is Berry.
+        ({".yarnrc.yml": "nodeLinker: node-modules\n"}, None, "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@4.5.0", "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@1.22.22", "yarn install --frozen-lockfile", "yarn add -D -W"),
+    ],
+)
+def test_a_yarn_workspace_root_adds_with_the_flag_its_yarn_needs(tmp_path, extra, package_manager, install, add):
+    fields = {"workspaces": ["packages/*"], **({"packageManager": package_manager} if package_manager else {})}
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "vitest": "1"}, **fields),
+             **extra}
+    (stack,) = detect_stacks(["yarn.lock", *files], files)
+    assert stack.requires == (install, f"{add} jest-junit@16")
+
+
+def test_a_yarn_member_adds_without_the_root_flag():
+    files = {"web/package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1"})}
+    (stack,) = detect_stacks(["yarn.lock", "web/package.json"], files)
+    assert stack.requires[-1] == 'yarn add -D "@vitest/coverage-v8@1"'
+
+
 # ---------------------------------------------------------------------------
 # Fixtures, stubs and samples are not units
 # ---------------------------------------------------------------------------
@@ -769,6 +794,83 @@ def test_a_pip_application_in_a_subdirectory_runs_its_tests():
     assert backend.test.startswith("pytest --cov=")
 
 
+def _backend(**changed: str):
+    files = {**_MONOREPO, **{f"backend/{k.replace('__', '/').replace('_dot_', '.')}": v for k, v in changed.items()}}
+    (backend,) = [s for s in detect_stacks(sorted(files), files) if s.root == "backend"]
+    return backend
+
+
+def test_a_tests_directory_is_named_when_other_test_files_would_be_collected():
+    # A script folder's test_*.py beside backend/tests/ would join a bare pytest run.
+    backend = _backend(scripts__test_seed_dot_py="")
+    assert backend.test.startswith("pytest tests --cov=") and backend.test_paths == ("tests",)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "services__tests__test_billing_dot_py",  # a package's own suite keeps running
+        "vendor__lib__test_lib_dot_py",  # a vendored file is not ours
+        "test_smoke_dot_py",  # a root test file keeps running
+    ],
+)
+def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other):
+    backend = _backend(**{other: ""})
+    assert backend.test_paths == ()
+
+
+def test_xdist_named_only_outside_the_install_adds_no_flag():
+    backend = _backend(**{"tox_dot_ini": "[testenv]\ndeps = pytest-xdist\n"})
+    assert "-n auto" not in backend.test
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "flag"),
+    [
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest-xdist"]\n', True),
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest"]\nperf = ["pytest-xdist"]\n', False),
+        ('[dependency-groups]\ndev = ["pytest-xdist"]\n', True),
+        ('[dependency-groups]\nlint = ["pytest-xdist"]\n', False),
+        ('[tool.poetry.group.dev.dependencies]\npytest-xdist = "*"\n', True),
+    ],
+)
+def test_xdist_counts_only_where_the_install_brings_it(pyproject, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest\n", "pyproject_dot_toml": pyproject})
+    assert ("-n auto" in backend.test) is flag
+
+
+def test_pytests_own_testpaths_keep_deciding():
+    backend = _backend(scripts__test_seed_dot_py="", pytest_dot_ini="[pytest]\ntestpaths = tests\n")
+    assert backend.test.startswith("pytest --cov=") and backend.test_paths == ()
+
+
+def test_conflicting_pins_install_one_requirements_file_at_a_time():
+    backend = _backend(**{"requirements_dot_txt": "fastapi\npytest==9.1.1\n",
+                          "requirements-dev_dot_txt": "pytest==8.3.4\npytest-cov\n"})
+    assert backend.requires == (
+        "python -m pip install -r requirements.txt",
+        "python -m pip install -r requirements-dev.txt pytest pytest-cov",
+    )
+    assert [line for line in backend.setup if "pip install" in line] == [
+        "- run: pip install -r requirements.txt   # adjust to your install",
+        "- run: pip install -r requirements-dev.txt pytest pytest-cov   # adjust to your install",
+    ]
+    assert any("pin pytest to different versions" in note for note in backend.notes)
+
+
+@pytest.mark.parametrize(("dev", "flag"), [("pytest-xdist==3.6\n", True), ("pytest_xdist\n", True), ("pytest\n", False)])
+def test_a_declared_xdist_spreads_the_coverage_run(dev, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": dev})
+    assert (" -n auto " in backend.test) is flag
+    # The suite profile runs in one process: its paths never carry the flag.
+    assert backend.test_paths == ()
+
+
+def test_a_configured_worker_count_is_left_alone():
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest-xdist\n", "pytest_dot_ini": "[pytest]\naddopts = -n 4\n"})
+    assert "-n auto" not in backend.test
+
+
 def test_the_build_unit_index_names_the_same_pip_applications():
     roots = ("backend", "backend/deploy", "scripts/avatar")
     index = BuildUnitIndex.from_units(
@@ -843,8 +945,10 @@ def test_other_runners_need_no_junit_environment():
         # Not the runner alone: the script stays, hooks and all.
         ("package-lock.json", "cross-env CI=1 jest", "npm test -- --coverage --coverageReporters=lcov"),
         ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
-        # A shell comment would swallow the flags appended after it.
-        ("package-lock.json", "jest # unit tests", "npm test -- --coverage --coverageReporters=lcov"),
+        # A shell comment would swallow the flags appended after it, so the runner runs directly.
+        ("package-lock.json", "jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        # Not the runner alone and commented: no command, since every flag would land in the comment.
+        ("package-lock.json", "cross-env CI=1 jest # unit tests", None),
         # A bare -- would turn the flags appended after it into test patterns.
         ("package-lock.json", "jest --", "npm test -- --coverage --coverageReporters=lcov"),
     ],
@@ -853,9 +957,53 @@ def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command
     scripts = {"pretest": "node scripts/check-tokens.js", "test": script}
     deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
     (stack,) = detect_stacks(["package.json", lock], {"package.json": _package(scripts, devDependencies=deps)})
-    assert stack.test == command
-    direct = not command.startswith("npm test")
+    assert stack.test == (command or "")
+    direct = command is not None and not command.startswith("npm test")
     assert any("would also run the `pretest` script" in n for n in stack.notes) is direct
+
+
+@pytest.mark.parametrize(
+    ("script", "command"),
+    [
+        ("jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        ("vitest run  # CI", f"npx vitest run {_VITEST}"),
+        # The comment is not read as the script's own flags.
+        ("jest # add --coverage later", "npx jest --coverage --coverageReporters=lcov"),
+        ("cross-env CI=1 jest # unit tests", ""),
+        # A # inside quotes is no comment: the script stays.
+        ('jest -t "a #b"', "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_commented_test_script_runs_the_runner_without_the_comment(script, command):
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"],
+                             {"package.json": _package({"test": script}, devDependencies=deps)})
+    assert stack.test == command
+    # No hooks were skipped, so no hooks note.
+    assert not any("would also run" in n for n in stack.notes)
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest --coverage", "npm test --"),
+        ("pnpm-lock.yaml", "jest --coverage", "pnpm run test"),
+        ("yarn.lock", "jest --coverage --ci", "yarn test"),
+    ],
+)
+def test_a_jest_script_that_measures_coverage_still_writes_test_timings(lock, script, command):
+    files = {"package.json": _package({"test": script}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    # The command takes the JUnit flag appended to it: npm needs its separator, pnpm its run form.
+    assert (stack.runner, stack.test) == ("jest", command)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    assert stack.requires[-1].endswith("jest-junit@16")
+
+
+def test_a_script_that_measures_behind_c8_keeps_no_junit_flag():
+    files = {"package.json": _package({"test": "c8 --reporter=lcov mocha"}, devDependencies={"mocha": "10"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert (stack.runner, stack.junit_flag) == ("covered", "")
 
 
 def test_a_test_script_without_hooks_stays_the_script():
