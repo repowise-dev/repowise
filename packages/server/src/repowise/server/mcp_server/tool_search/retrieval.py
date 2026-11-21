@@ -31,6 +31,7 @@ from repowise.server.mcp_server._helpers import (
     vector_search_timeout_s,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._origin_rank import file_origins
 from repowise.server.mcp_server._page_paths import (
     PAGELESS_FILE,
     file_candidates,
@@ -283,12 +284,14 @@ async def _search_single_repo(
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
     minor: set[str] = set()
+    origins: dict[str, str] = {}
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
             repo_id = (await _get_repo(session)).id
             path_index = await file_path_index(session, repo_id)
             minor = await _minor_spotlights(session, output, query, repo_id)
+            origins = await file_origins(session, repo_id, page_info.values())
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
@@ -300,8 +303,8 @@ async def _search_single_repo(
             score_key="relevance_score",
         )
 
-    _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query, minor)
+    _downweight_test_pages(output, query, origins)
+    _sort_demoting_noise(output, query, minor, origins)
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)

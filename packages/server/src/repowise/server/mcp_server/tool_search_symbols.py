@@ -34,7 +34,7 @@ from repowise.core.stack_trace import (
     map_to_repo_paths,
     parse_trace,
 )
-from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
@@ -42,6 +42,11 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     escape_like,
     is_excluded,
+)
+from repowise.server.mcp_server._origin_rank import (
+    demoted_origins,
+    file_origins,
+    is_demoted_path,
 )
 from repowise.server.mcp_server._query_shape import (
     _name_lookup_keys,
@@ -62,6 +67,13 @@ from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 # caps how many rows we pull. Generous enough that the true top-`limit` is
 # always inside the window, bounded so a pathological LIKE can't load the table.
 _MAX_CANDIDATES = 400
+
+# An exact match scores at least 160 and any other match at most about 110, so
+# these reorder symbols inside their tier without crossing it: an exact test
+# match (130) still beats every fuzzy production match, even one in a file
+# the query names (125).
+_DEMOTED_SYMBOL_PENALTY = 30.0
+_NAMED_FILE_BOOST = 15.0
 
 
 def _tokens(text: str | None) -> set[str]:
@@ -109,13 +121,24 @@ def _singulars(word: str) -> set[str]:
     return out
 
 
-def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:
+def _score_symbol(
+    row: WikiSymbol,
+    gnode: GraphNode | None,
+    qtokens: set[str],
+    qnorm: str,
+    *,
+    demoted: bool = False,
+    in_named_file: bool = False,
+) -> float:
     """Rank a candidate symbol against the query (higher = better).
 
     Tiers, in priority order: exact name / qualified-name match, the query's
     leaf token naming the symbol, query-token coverage, substring fallback,
-    then graph-centrality and entry-point boosts. Non-exact tests are penalised
-    so a non-test definition ranks above its test unless the caller asked for tests.
+    then graph-centrality and entry-point boosts. *demoted* (a test, generated
+    or vendored file by ``code_origin`` the query does not ask for) costs a
+    symbol enough to rank below production code of its own tier, exact
+    matches included, but never below a weaker production match.
+    *in_named_file* (the query names the symbol's file) lifts it within its tier.
     """
     name = (row.name or "").lower()
     qn = _qual_norm(row.qualified_name)
@@ -149,16 +172,10 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
         if gnode.is_entry_point:
             score += 3.0
 
-    # Tests only, not test support: a fixture or a conftest helper is often what
-    # the query was after, so it keeps its score. The flag is read first for the
-    # same reason everywhere else does, but note it decides nothing here today —
-    # it is stamped on file nodes and these are symbol nodes, so the path rules
-    # are what answer in practice. Exact matches skip it: the shared key ranks
-    # kind before test path for them.
-    if not exact and (
-        (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language)
-    ):
-        score -= 5.0
+    if demoted:
+        score -= _DEMOTED_SYMBOL_PENALTY
+    if in_named_file:
+        score += _NAMED_FILE_BOOST
     return score
 
 
@@ -363,8 +380,17 @@ async def search_symbols_single(
     *,
     symbol_kind: str | None = None,
     kind: str | None = None,
+    context: str | None = None,
 ) -> list[dict]:
-    """Symbol search against one repo context. Returns ranked result dicts."""
+    """Symbol search against one repo context. Returns ranked result dicts.
+
+    *context* is the whole query *query* was taken from (one name of several):
+    whether it asks about tests (or generated or vendored code), and the files
+    it names, are read from it.
+    """
+    context = context or query
+    demoted = demoted_origins(context)
+    named_files = [_norm_path(t) for t in path_tokens(context)]
     qnorm = query.strip().lower()
     qtokens = _tokens(query)
     clause = _candidate_filter(qtokens, qnorm)
@@ -401,6 +427,11 @@ async def search_symbols_single(
         gmap = {g.node_id: g for g in gres.scalars().all()}
 
         deleted = await deleted_file_paths(session, repository.id, {r.file_path for r in rows})
+        origins = (
+            await file_origins(session, repository.id, {r.file_path for r in rows})
+            if demoted
+            else {}
+        )
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, WikiSymbol]] = []
@@ -415,7 +446,15 @@ async def search_symbols_single(
         )
         if not _symbol_kind_for_request_kind(kind, is_test):
             continue
-        scored.append((_score_symbol(row, g, qtokens, qnorm), row))
+        score = _score_symbol(
+            row,
+            g,
+            qtokens,
+            qnorm,
+            demoted=is_demoted_path(row.file_path or "", demoted, origins),
+            in_named_file=_in_named_file(row.file_path or "", named_files),
+        )
+        scored.append((score, row))
 
     def _rank(pair: tuple[float, WikiSymbol]) -> tuple:
         score, row = pair
@@ -437,6 +476,16 @@ async def search_symbols_single(
     # Highest score first; equal scores (every exact match) by the shared key.
     scored.sort(key=_rank)
     return [_symbol_result(row, score) for score, row in scored[:limit]]
+
+
+def _norm_path(path: str) -> str:
+    return path.lower().replace("\\", "/").removeprefix("./")
+
+
+def _in_named_file(path: str, named: list[str]) -> bool:
+    """Whether *path* is a file the query names, whole or by its trailing segments."""
+    p = _norm_path(path)
+    return any(p == n or p.endswith("/" + n) for n in named)
 
 
 def _path_score(target_path: str, qnorm: str) -> float:

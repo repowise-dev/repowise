@@ -418,23 +418,25 @@ class TestNoiseDemotion:
         # Only file pages classify as test pages, never decision/concept pages.
         assert not _is_test_page({"page_type": "decision_record", "target_path": ""})
 
-    def test_is_test_page_keeps_support_and_lookalikes_ranked(self):
-        """Demotion is tests only, and only real tests (#1103).
+    def test_is_test_page_follows_code_origin(self):
+        """Test code by ``code_origin``, support included; lookalikes stay (#1103).
 
         The substring token list this used to run on demoted every production
-        file whose path merely contained "test_", and demoted the fixtures a
-        "where are the shared fixtures" query is asking for.
+        file whose path merely contained "test_". A query that wants fixtures
+        or mocks names them, which ranks every test row naturally.
         """
-        from repowise.server.mcp_server.tool_search import _is_test_page
+        from repowise.server.mcp_server.tool_search import _is_test_page, _is_test_query
 
         def page(path: str) -> dict:
             return {"page_type": "file_page", "target_path": path}
 
-        # Test support keeps its rank: it is often the answer. Leading segments
-        # on purpose — the token list this replaced anchored on "/tests/", so a
-        # root-level path would pass for the wrong reason.
-        assert not _is_test_page(page("packages/core/tests/conftest.py"))
-        assert not _is_test_page(page("packages/core/tests/factories/user.py"))
+        # Test support is test code; a fixtures query is a test query.
+        assert _is_test_page(page("packages/core/tests/conftest.py"))
+        assert _is_test_page(page("test/mocks/router/router_filter_interface.h"))
+        assert _is_test_query("where are the shared fixtures")
+        assert _is_test_query("router filter mocks")
+        # A stored origin wins over the path.
+        assert not _is_test_page(page("tests/helpers.py"), {"tests/helpers.py": "production"})
         # Production code that merely spells "test".
         assert not _is_test_page(page("src/analysis/missing_test_signal.py"))
         assert not _is_test_page(page("src/latest/api.py"))
@@ -590,18 +592,12 @@ class TestClassifyHitKind:
         assert _classify_hit_kind("pyproject.toml", "file_page") == "config"
         assert _classify_hit_kind("docs/guide.md", "file_page") == "doc"
 
-    def test_kind_test_covers_support_unlike_the_demotion(self):
-        """``kind`` splits the repo in two, so a fixture lands on the test side.
-
-        Deliberately a different answer from ``_is_test_page``: nobody asking
-        for ``kind="implementation"`` wants a conftest back, but a fixture page
-        should still rank normally on an ordinary query.
-        """
-        from repowise.server.mcp_server.tool_search import _classify_hit_kind, _is_test_page
+    def test_kind_test_covers_support(self):
+        """``kind`` splits the repo in two, so a fixture lands on the test side."""
+        from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
         for path in ("packages/core/tests/conftest.py", "packages/core/tests/factories/user.py"):
             assert _classify_hit_kind(path, "file_page") == "test"
-            assert not _is_test_page({"page_type": "file_page", "target_path": path})
         # Config beats test: a workflow named for tests is still a workflow.
         assert _classify_hit_kind(".github/workflows/tests.yml", "file_page") == "config"
         # Case-sensitive rules survive: the classifier must not see a lowercased
@@ -690,42 +686,48 @@ class TestDecisionDemotionAndRescue:
 
 
 class TestSymbolTestPenalty:
-    """The -5 a symbol takes for living in a test file (#1103)."""
+    """What a symbol in demoted code (test, generated, vendored) costs."""
 
     @staticmethod
-    def _score(path: str, language: str = "python", query: str = "build index") -> float:
+    def _score(query: str = "build index", **kw) -> float:
         from repowise.core.persistence.models import WikiSymbol
-        from repowise.server.mcp_server.tool_search_symbols import _score_symbol
+        from repowise.server.mcp_server.tool_search_symbols import _score_symbol, _tokens
 
         row = WikiSymbol(
-            name="build_index",
-            qualified_name="build_index",
-            file_path=path,
-            language=language,
+            name="build_index", qualified_name="build_index", file_path="a.py", language="python"
         )
-        # No graph node: symbol nodes never carry `is_test`, so the path rules
-        # are what decide here in practice.
-        return _score_symbol(row, None, {"build", "index"}, query)
+        return _score_symbol(row, None, _tokens(query), query.lower(), **kw)
 
-    def test_tests_are_penalised_and_support_is_not(self):
-        base = self._score("src/indexing/build.py")
-        assert self._score("packages/core/tests/test_build.py") == base - 5.0
-        # An exact match is left to the shared rank key, which puts kind first.
-        exact = self._score("src/indexing/build.py", query="build_index")
-        assert self._score("packages/core/tests/test_build.py", query="build_index") == exact
-        assert self._score("myapp/tests.py") == base - 5.0
-        # A fixture factory is often what the query was after.
-        assert self._score("packages/core/tests/conftest.py") == base
-        assert self._score("packages/core/tests/factories/user.py") == base
-        # Production code that merely spells "test".
-        assert self._score("src/analysis/missing_test_signal.py") == base
+    def test_demoted_code_ranks_below_its_tier_but_not_across_it(self):
+        fuzzy, exact = self._score(), self._score("build_index")
+        assert self._score(demoted=True) == fuzzy - 30.0
+        # Exact matches pay too, so production code of the same name leads...
+        assert self._score("build_index", demoted=True) == exact - 30.0
+        # ...but an exact demoted match still beats any fuzzy production one.
+        assert self._score("build_index", demoted=True) > fuzzy + 15.0
+        assert self._score(in_named_file=True) == fuzzy + 15.0
 
-    def test_language_decides_the_ambiguous_spec_dir(self):
-        base = self._score("src/indexing/build.py")
-        # RSpec for Ruby, a specifications folder for anything else — the same
-        # call the traverser made when it stamped the file's flag.
-        assert self._score("spec/models/user.rb", language="ruby") == base - 5.0
-        assert self._score("spec/openapi/users.py", language="python") == base
+    def test_demoted_origins_follow_the_query(self):
+        from repowise.server.mcp_server._origin_rank import demoted_origins
+
+        assert demoted_origins("how does routing work") == {"test", "generated", "vendored"}
+        assert "test" not in demoted_origins("where are the router mocks")
+        assert "test" not in demoted_origins("decodeHeaders in test/common/router/router_test.cc")
+        assert "generated" not in demoted_origins("where is the generated deepcopy code")
+        assert "generated" not in demoted_origins("zz_generated.deepcopy.go DeepCopyInto")
+        assert "vendored" not in demoted_origins("the vendored yaml parser")
+
+    def test_stored_origin_wins_over_the_path(self):
+        from repowise.server.mcp_server._origin_rank import is_demoted_path
+
+        demoted = frozenset({"test", "generated"})
+        assert is_demoted_path("test/mocks/router/mocks.h", demoted)
+        # Generated code is mostly known by its banner, which only the stored origin saw.
+        gen = "pkg/apis/v1/zz_generated.deepcopy.go"
+        assert is_demoted_path(gen, demoted, {gen: "generated"})
+        assert not is_demoted_path("src/router.cc", demoted)
+        assert not is_demoted_path("spec/openapi/users.py", demoted, {"spec/openapi/users.py": "production"})
+        assert is_demoted_path("lib/fake_clock.py", demoted, {"lib/fake_clock.py": "test"})
 
 
 def test_symbol_coverage_folds_plurals_on_both_sides():
@@ -1810,10 +1812,10 @@ async def test_a_bare_name_search_leads_with_the_class_over_a_docs_constant(
     assert res["results"][0]["symbol_id"] == "src/gizmo/core.py::Gizmos"
 
 
-async def test_an_exact_test_class_outranks_an_exact_code_function(
+async def test_an_exact_code_function_outranks_an_exact_test_class(
     session, populated_db, setup_mcp
 ) -> None:
-    """For exact matches the shared key decides, and it ranks kind before test path."""
+    """Exact matches in test code rank below exact production matches, whatever the kind."""
     from repowise.core.persistence.models import WikiSymbol
     from repowise.server.mcp_server.tool_search import search_codebase
 
@@ -1830,9 +1832,12 @@ async def test_an_exact_test_class_outranks_an_exact_code_function(
 
     res = await search_codebase(query="Widgets", limit=5)
     assert [r["symbol_id"] for r in res["results"][:2]] == [
-        "tests/test_widget.py::Widgets",
         "src/widget/core.py::Widgets",
+        "tests/test_widget.py::Widgets",
     ]
+    # Asking about tests ranks them naturally again: the shared key puts kind first.
+    res = await search_codebase(query="Widgets tests", limit=5, mode="symbol")
+    assert res["results"][0]["symbol_id"] == "tests/test_widget.py::Widgets"
 
 
 def _add_symbols(session, rid, rows):
@@ -2625,3 +2630,12 @@ async def test_a_declaration_keyword_before_an_indexed_plain_word_stays_a_search
 
     result = await search_codebase("type checking")
     assert result.get("mode") != "symbol"
+
+
+def test_a_symbol_in_a_file_the_query_names_is_matched_by_suffix():
+    from repowise.server.mcp_server.tool_search_symbols import _in_named_file
+
+    assert _in_named_file("source/common/router/router.cc", ["source/common/router/router.cc"])
+    assert _in_named_file("source/common/router/router.cc", ["router/router.cc"])
+    assert not _in_named_file("source/common/router/router.h", ["router/router.cc"])
+    assert not _in_named_file("src/myrouter.cc", ["router.cc"])
