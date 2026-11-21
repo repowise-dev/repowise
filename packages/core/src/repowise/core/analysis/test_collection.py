@@ -450,7 +450,12 @@ async def _gap_routes(
     the change or a scope route (:func:`~.test_selection.split_rewired`), are
     walked. When the graph cannot be read to tell, every such file is.
     """
-    from .test_reach.db import cached_call_importers, cached_file_paths, cached_import_graphs
+    from .test_reach.db import (
+        cached_call_importers,
+        cached_file_paths,
+        cached_import_graphs,
+        cached_test_files,
+    )
     from .test_selection import split_rewired, with_rewired
 
     try:
@@ -470,10 +475,11 @@ async def _gap_routes(
         try:
             imports = (await cached_import_graphs(session, repo_id))[1]
             calls = await cached_call_importers(session, repo_id)
+            tests = await cached_test_files(session, repo_id)
             # A file added since has no edges in the index, so it may reach the change.
             seeds = [*change.files, *change.deleted, *scope_routes, *added]
             rewired, unreached = split_rewired(
-                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed
+                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed, tests
             )
         except Exception as exc:  # unsplit: every rewired file is walked
             log.debug("gap_split_skipped", error=str(exc))

@@ -1239,13 +1239,16 @@ def split_rewired(
     importers: Collection[Mapping[str, Collection[str]]],
     seeds: Collection[str],
     indexed_files: Collection[str],
+    tests: Collection[str] = (),
 ) -> tuple[list[str], list[str]]:
     """*rewired* split into the files a test may now reach *seeds* through, and the rest.
 
     *rewirings* (:func:`~.import_drift.rewiring`) say what each file's new
     version may reach that the index does not record; *importers* map a file
     to the files depending on it in the index (imports, package inits, calls);
-    *seeds* are the files whose tests the selection runs.
+    *seeds* are the files whose tests the selection runs; *tests* the index's
+    test files, which the selection's walks never pass through, so neither
+    does this one.
 
     A route the index cannot see must leave the first rewired file on it by an
     edge the index lacks, and the rest of the route is again either in the
@@ -1265,6 +1268,8 @@ def split_rewired(
     stems: set[str] = set()
     dirs: set[str] = set()
 
+    leaves = set(tests)
+
     def grow(start: Iterable[str]) -> None:
         frontier = [f for f in dict.fromkeys(start) if f not in reach]
         while frontier:
@@ -1272,6 +1277,9 @@ def split_rewired(
             _add_words(frontier, stems, dirs)
             fresh = [d for node in frontier for edges in importers for d in edges.get(node, ())]
             frontier = [d for d in dict.fromkeys(fresh) if d not in reach]
+            # A test is reached, never passed through.
+            reach.update(d for d in frontier if d in leaves)
+            frontier = [d for d in frontier if d not in leaves]
 
     known = set(indexed_files)
     pending = {
@@ -1283,7 +1291,9 @@ def split_rewired(
         and (rw := rewirings.get(p)) is not None
         and rw.imports <= known
     }
-    grow([*seeds, *(p for p in rewired if p not in pending)])
+    # A kept file may lead to the change by edges unseen, so it seeds the walk;
+    # a kept test runs only itself, so nothing reaches the change through it.
+    grow([*seeds, *(p for p in rewired if p not in pending and p not in leaves)])
     while True:
         joined = [
             p

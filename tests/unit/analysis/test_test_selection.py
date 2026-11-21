@@ -599,12 +599,13 @@ _INDEX |= {"src/d.py": ("tests/test_d.py",)}
 _FILES = {*_INDEX, *(t for ts in _INDEX.values() for t in ts), "src/y.py"}
 
 
-def _split(rewirings, packages=()):
+def _split(rewirings, packages=(), index=_INDEX):
     from repowise.core.analysis.import_drift import Rewiring
 
     plan = GapPlan(candidates=tuple(rewirings), packages=frozenset(packages))
     found = {p: None if r is None else Rewiring(*map(frozenset, r)) for p, r in rewirings.items()}
-    return split_rewired(plan, list(rewirings), found, [_INDEX], ["src/a.py"], _FILES)
+    tests = [f for f in _FILES if f.startswith("tests/")]
+    return split_rewired(plan, list(rewirings), found, [index], ["src/a.py"], _FILES, tests)
 
 
 def test_a_rewired_gap_file_whose_new_edges_miss_the_change_adds_no_tests() -> None:
@@ -642,6 +643,13 @@ def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
     # A file reaching one that cannot be told may reach the change through it.
     unknown = {"src/d.py": None, "src/b.py": [["src/d.py"], [], []]}
     assert _split(unknown) == (["src/b.py", "src/d.py"], [])
+    # A route never passes through a test: src/d.py depending on test_c.py
+    # (which reaches the change) does not reach it.
+    through_a_test = {**_INDEX, "tests/test_c.py": ("src/d.py",)}
+    assert _split({"src/b.py": [["src/d.py"], [], []]}, index=through_a_test) == (
+        [],
+        ["src/b.py"],
+    )
     # One already on a route in the index keeps its tests whatever it gained.
     assert _split({"src/c.py": [[], [], []]}) == (["src/c.py"], [])
     # A test runs only itself, and may now walk a tree or spawn a process.
