@@ -107,7 +107,7 @@ def _read(ctx: ResolverContext) -> tuple[dict[str, _Mix], dict[str, str], frozen
 
 def _apps_dir(root: str, apps_path: str) -> str:
     """The umbrella's apps directory: ``apps`` at the repo root, ``<root>/apps`` below it."""
-    return f"{root}/{apps_path}" if root else apps_path
+    return posixpath.normpath(f"{root}/{apps_path}" if root else apps_path)
 
 
 def _umbrella_sibling(root: str, dep: str, umbrellas: dict[str, str]) -> str | None:

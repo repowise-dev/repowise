@@ -1364,6 +1364,16 @@ def test_elixir_umbrella_apps_linked_by_in_umbrella(tmp_path):
     assert [u.id for u in index.dependents("elixir:core")] == ["elixir:web"]
 
 
+@pytest.mark.parametrize("apps_path", ["apps/", "./apps"])
+def test_elixir_umbrella_apps_path_written_loosely(tmp_path, apps_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_UMBRELLA_ROOT.replace('"apps"', f'"{apps_path}"'),
+        "apps/web/mix.exs": _MIX_WEB,
+        "apps/core/mix.exs": _MIX_CORE,
+    })
+    assert _deps(index) == {"elixir:web": ("elixir:core",), "elixir:core": ()}
+
+
 def test_elixir_path_dep_links_in_repo_app(tmp_path):
     index = _collect(tmp_path, {
         "app/mix.exs": (
