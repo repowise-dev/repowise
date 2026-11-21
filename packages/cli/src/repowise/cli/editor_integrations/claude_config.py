@@ -186,18 +186,32 @@ def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Pat
     kept, the plugin serves it, or the write failed.
     """
     migrate_claude_code_mcp_entry()
-    if claude_code_plugin_installed():
+    entry = _planned_code_entry(repo_path, retarget=retarget)
+    if entry is None:
         return None
     config_path = _claude_code_user_config_path()
-    entry = planned_global_entry(
-        _stored_repowise_entry(config_path),
+    return config_path if _upsert_user_entry(config_path, entry) else None
+
+
+def claude_code_entry_pending(repo_path: Path) -> bool:
+    """Whether registration still has a user-scope entry to write for *repo_path*.
+
+    True right after :func:`register_with_claude_code` returned None only when
+    its write was refused (an unwritable or unparseable ~/.claude.json).
+    """
+    return _planned_code_entry(repo_path, retarget=False) is not None
+
+
+def _planned_code_entry(repo_path: Path, *, retarget: bool) -> dict | None:
+    """The entry registration would write to ~/.claude.json, or None when none is due."""
+    if claude_code_plugin_installed():
+        return None
+    return planned_global_entry(
+        _stored_repowise_entry(_claude_code_user_config_path()),
         repo_path,
         follows_launch_dir=True,
         retarget=retarget,
     )
-    if entry is None:
-        return None
-    return config_path if _upsert_user_entry(config_path, entry) else None
 
 
 def claude_code_plugin_installed(repo_path: Path | None = None) -> bool:

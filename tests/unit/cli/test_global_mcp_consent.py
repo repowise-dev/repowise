@@ -135,7 +135,7 @@ def test_fresh_machine_writes_launch_dir_code_entry_and_desktop_path(
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
     assert _stored(desktop)["args"][1] == _arg(repo)
-    assert "Claude Code repowise MCP entry added, will serve the repo it is started in" in out
+    assert "Claude Code repowise MCP entry will be added, serving the repo it is started in" in out
     assert f"Claude Desktop MCP registered for {repo}" in out
 
 
@@ -411,7 +411,7 @@ def test_plan_screen_yes_writes_without_asking_again(home: Path, repo: Path, mon
     out = _register(repo, monkeypatch, yes=False, consent=True)
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
-    assert "repowise MCP entry added, will serve the repo it is started in" in out
+    assert "repowise MCP entry will be added, serving the repo it is started in" in out
 
 
 def test_plan_screen_lists_only_entries_that_change(
@@ -422,8 +422,8 @@ def test_plan_screen_lists_only_entries_that_change(
     desktop = _desktop(home, monkeypatch)
     _write(_code(home), _entry(_arg(other)))
     assert outside_lines(repo) == (
-        "Claude Desktop repowise MCP entry added, "
-        f"will serve {_arg(repo)}",
+        "Claude Desktop repowise MCP entry will be added, "
+        f"serving {_arg(repo)}",
     )
     _write(desktop, _entry(_arg(other)))
     assert outside_lines(repo) == ()
@@ -710,3 +710,27 @@ def test_a_crlf_file_stays_crlf(home: Path, repo: Path, monkeypatch) -> None:
 
     claude_config.uninstall_claude_code_mcp_entry()
     assert _code(home).read_bytes() == _CLAUDE_JSON.replace("\n", "\r\n").encode("utf-8")
+
+
+def test_a_refused_user_config_write_is_reported_not_claimed(
+    home: Path, repo: Path, monkeypatch
+) -> None:
+    """A sandbox can deny ~/.claude.json: say so once, and never print the entry as registered."""
+    _no_desktop(monkeypatch)
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    def _refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(
+        "repowise.cli.agent_targets.formats.json_merge.merge_json_object_member", _refuse
+    )
+
+    out = _register(repo, monkeypatch)
+
+    assert "Claude Code MCP registered" not in out
+    assert "repowise MCP entry added" not in out
+    assert f"Could not write {_code(home)}; this repo's .mcp.json covers it." in " ".join(
+        out.split()
+    )
+

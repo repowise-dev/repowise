@@ -56,3 +56,27 @@ def test_atomic_write_replaces_the_file_and_leaves_no_temp(tmp_path: Path) -> No
 
     assert target.read_text(encoding="utf-8") == "new"
     assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_temp_file_is_private_like_mkstemp(tmp_path: Path) -> None:
+    fd, path = make_temp_file(tmp_path)
+    os.close(fd)
+
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_a_failed_write_leaves_no_temp_and_keeps_the_old_file(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "config.json"
+    target.write_text("old", encoding="utf-8")
+
+    def _refuse_replace(self: Path, _dst: Path) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(Path, "replace", _refuse_replace)
+
+    with pytest.raises(PermissionError):
+        atomic_write_text(target, "new")
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
