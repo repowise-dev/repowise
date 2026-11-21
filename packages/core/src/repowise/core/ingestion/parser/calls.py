@@ -581,10 +581,24 @@ def _rust_tokens_run(node: Node) -> bool:
     """Whether a token sits in code that runs, outside a macro definition or attribute."""
     parent = node.parent
     while parent is not None:
-        if parent.type in _RUST_NON_CODE_TOKEN_TREES:
+        if parent.type in _RUST_NON_CODE_TOKEN_TREES or _rust_token_attribute(parent):
             return False
         parent = parent.parent
     return True
+
+
+def _rust_token_attribute(node: Node) -> bool:
+    """Whether *node* is the ``[...]`` of an attribute written as macro tokens.
+
+    Inside a macro's tokens ``#[cfg(all(unix))]`` is a ``#`` (``#!`` for an
+    inner one) before a bracket group, never an attribute node.
+    """
+    if node.type != "token_tree" or node.child(0) is None or node.child(0).type != "[":
+        return False
+    before = node.prev_sibling
+    if before is not None and before.type == "!":
+        before = before.prev_sibling
+    return before is not None and before.type == "#"
 
 
 def _rust_token_receiver(joint: Node) -> str | None:

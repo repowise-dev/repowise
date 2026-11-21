@@ -305,3 +305,22 @@ def test_calls_inside_macro_arguments_are_edges(tmp_path: Path) -> None:
     assert not any(caller.endswith("::m") or "all" in callee for caller, callee in edges)
     # Nor does a name a macro's tokens declare.
     assert not any(caller == "src/lib.rs::declares" for caller, _callee in edges)
+
+
+def test_a_char_literal_quote_does_not_hide_a_block_call(tmp_path: Path) -> None:
+    lib = (
+        "fn bar() {}\n\n"
+        "mod inner {\n    fn bar() {}\n"
+        "    pub fn run() {\n        let q = '\"'; bar(); let s = \"x\";\n    }\n}\n"
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert ("src/lib.rs::inner::run", "src/lib.rs::inner::bar") in edges
+
+
+def test_an_attribute_in_macro_tokens_calls_nothing(tmp_path: Path) -> None:
+    lib = (
+        "fn cfg() {}\nfn all() {}\nfn derive() {}\n"
+        "pub fn top() {\n    thing! { #[cfg(all(unix))] #[derive(Debug)] fn f() {} }\n}\n"
+    )
+    edges = _rust_calls(tmp_path, {"src/lib.rs": lib})
+    assert not any(caller == "src/lib.rs::top" for caller, _callee in edges)
