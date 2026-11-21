@@ -27,7 +27,9 @@ async def _store(repo_path: Path) -> None:
     from repowise.core.persistence.crud import upsert_changes
 
     (repo_path / ".repowise").mkdir(exist_ok=True)
-    engine = create_engine(f"sqlite+aiosqlite:///{(repo_path / '.repowise' / 'wiki.db').as_posix()}")
+    engine = create_engine(
+        f"sqlite+aiosqlite:///{(repo_path / '.repowise' / 'wiki.db').as_posix()}"
+    )
     try:
         await init_db(engine)
         async with get_session(create_session_factory(engine)) as session:
@@ -81,7 +83,9 @@ def test_list_and_show_formats(tmp_path):
     assert table.exit_code == 0 and "#5" in table.output
 
     shown = json.loads(
-        runner.invoke(changes_group, ["show", "pr-5", "--path", str(root), "--format", "json"]).output
+        runner.invoke(
+            changes_group, ["show", "pr-5", "--path", str(root), "--format", "json"]
+        ).output
     )
     assert shown["schema_version"] == 1 and shown["files"][0]["path"] == "a.py"
 
@@ -105,6 +109,16 @@ def test_no_index_exits_non_zero(tmp_path):
     assert result.exit_code == 1 and "No index" in result.output
 
 
+def test_no_index_format_json_outputs_error_object(tmp_path):
+    root = tmp_path / "bare"
+    (root / ".git").mkdir(parents=True)
+    result = CliRunner().invoke(changes_group, ["list", "--path", str(root), "--format", "json"])
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert "error" in data
+    assert "No index found" in data["error"]
+
+
 def _fake_evidence(monkeypatch):
     """Stand in for the review: these tests are about the command, not the evidence."""
     from repowise.core.changes import collect
@@ -119,8 +133,24 @@ def _fake_evidence(monkeypatch):
             revspec=row.head_sha,
             generated_at="2026-10-14T00:00:00+00:00",
             items=[
-                EvidenceItem("owners", "Declared owners", "attention", "declared", ["@core"], [], "CODEOWNERS"),
-                EvidenceItem("risk_score", "Diff size rank", "ok", "measured", {"percentile": 40.0}, [], "change risk"),
+                EvidenceItem(
+                    "owners",
+                    "Declared owners",
+                    "attention",
+                    "declared",
+                    ["@core"],
+                    [],
+                    "CODEOWNERS",
+                ),
+                EvidenceItem(
+                    "risk_score",
+                    "Diff size rank",
+                    "ok",
+                    "measured",
+                    {"percentile": 40.0},
+                    [],
+                    "change risk",
+                ),
             ],
         )
 
@@ -138,17 +168,24 @@ def test_show_carries_the_checklist_unless_asked_not_to(tmp_path, monkeypatch):
     runner = CliRunner()
 
     shown = json.loads(
-        runner.invoke(changes_group, ["show", "pr-5", "--path", str(root), "--format", "json"]).output
+        runner.invoke(
+            changes_group, ["show", "pr-5", "--path", str(root), "--format", "json"]
+        ).output
     )
     assert shown["evidence"]["schema_version"] == 1
     assert [i["kind"] for i in shown["evidence"]["items"]] == ["owners", "risk_score"]
 
     table = runner.invoke(changes_group, ["show", "pr-5", "--path", str(root)])
-    assert table.exit_code == 0 and "Evidence checklist" in table.output and "attention" in table.output
+    assert (
+        table.exit_code == 0
+        and "Evidence checklist" in table.output
+        and "attention" in table.output
+    )
 
     bare = json.loads(
         runner.invoke(
-            changes_group, ["show", "pr-5", "--path", str(root), "--format", "json", "--no-evidence"]
+            changes_group,
+            ["show", "pr-5", "--path", str(root), "--format", "json", "--no-evidence"],
         ).output
     )
     assert "evidence" not in bare and calls == ["pr-5", "pr-5"]
@@ -175,7 +212,10 @@ def test_export_windows_and_formats(tmp_path, monkeypatch):
     csv_out = runner.invoke(changes_group, ["export", "--path", str(root), "--format", "csv"])
     lines = csv_out.stdout.strip().splitlines()
     assert lines[0] == "change_id,merged_at,title,kind,label,status,basis,value,source"
-    assert lines[1].startswith("pr-5,2026-03-01") and ",owners,Declared owners,attention,declared," in lines[1]
+    assert (
+        lines[1].startswith("pr-5,2026-03-01")
+        and ",owners,Declared owners,attention,declared," in lines[1]
+    )
     assert len(lines) == 3
 
 
@@ -185,7 +225,9 @@ async def _keep_checklist(repo_path: Path, status: str) -> None:
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
 
-    engine = create_engine(f"sqlite+aiosqlite:///{(repo_path / '.repowise' / 'wiki.db').as_posix()}")
+    engine = create_engine(
+        f"sqlite+aiosqlite:///{(repo_path / '.repowise' / 'wiki.db').as_posix()}"
+    )
     try:
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
@@ -193,7 +235,9 @@ async def _keep_checklist(repo_path: Path, status: str) -> None:
                 change_id="pr-5",
                 revspec=HEAD,
                 generated_at="2026-10-14T00:00:00+00:00",
-                items=[EvidenceItem("owners", "Declared owners", status, "declared", None, [], "test")],
+                items=[
+                    EvidenceItem("owners", "Declared owners", status, "declared", None, [], "test")
+                ],
             )
             await save_evidence(session, repo.id, "pr-5", evidence)
     finally:
@@ -223,9 +267,26 @@ def test_outcomes_read_in_their_words_and_never_as_a_cause():
         "kind": "outcomes",
         "status": "attention",
         "details": [
-            {"kind": "revert", "sha": "b" * 40, "change_id": "pr-9", "evidence": 'Revert "x"', "in_force": False},
-            {"kind": "fix_reference", "sha": "c" * 40, "change_id": None, "evidence": "regression from #5"},
-            {"kind": "file_fix_rate", "files": 4, "files_fixed": 1, "days": 30, "window_complete": False},
+            {
+                "kind": "revert",
+                "sha": "b" * 40,
+                "change_id": "pr-9",
+                "evidence": 'Revert "x"',
+                "in_force": False,
+            },
+            {
+                "kind": "fix_reference",
+                "sha": "c" * 40,
+                "change_id": None,
+                "evidence": "regression from #5",
+            },
+            {
+                "kind": "file_fix_rate",
+                "files": 4,
+                "files_fixed": 1,
+                "days": 30,
+                "window_complete": False,
+            },
         ],
     }
     assert outcome_lines(item) == [
@@ -262,7 +323,7 @@ def test_csv_cells_that_open_as_formulas_are_quoted():
         },
     }
     (row,) = csv.reader(io.StringIO(_csv_rows(record)))
-    assert row[2] == "'=HYPERLINK(\"http://x\")" and row[4] == "'@label"
+    assert row[2] == '\'=HYPERLINK("http://x")' and row[4] == "'@label"
     assert row[7] == "'-1" and row[8] == "'+git" and row[0] == "pr-1"
 
 
