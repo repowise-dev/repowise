@@ -416,13 +416,16 @@ async def persist_result(
         await engine.dispose()
         raise
 
-    # After commit, so the scan never holds the write lock; the rest drains in the background.
+    # After commit, so the scan never holds the write lock. No background drain:
+    # an init that has returned must leave wiki.db alone, since callers archive or
+    # cache it at once (a drain wrote into the store for minutes after a workspace
+    # init exited). What the inline budget leaves, the next update scans.
     if not index_done:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
             await refresh_commit_health_after_update(
-                sf, persisted_repo_id, str(repo_path), background=True
+                sf, persisted_repo_id, str(repo_path), background=False
             )
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that

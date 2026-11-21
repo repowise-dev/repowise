@@ -178,3 +178,36 @@ def test_a_path_that_cannot_be_resolved_matches_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(workspace_selection.Path, "resolve", _fail)
     assert workspace_selection._resolved(tmp_path) is None
+
+
+def _git_repo(path: Path, files: int) -> SimpleNamespace:
+    import subprocess
+
+    path.mkdir(parents=True)
+    for i in range(files):
+        (path / f"f{i}.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    return SimpleNamespace(path=path, name=path.name, alias=path.name)
+
+
+def test_default_primary_is_the_largest_repo_not_the_first(tmp_path):
+    repos = [_git_repo(tmp_path / "api", 1), _git_repo(tmp_path / "kube", 3)]
+    assert _workspace_repos.default_primary(repos, cwd=tmp_path) == "kube"
+
+
+def test_default_primary_is_the_repo_the_user_ran_from(tmp_path):
+    repos = [_git_repo(tmp_path / "api", 1), _git_repo(tmp_path / "kube", 3)]
+    (tmp_path / "api" / "sub").mkdir()
+    assert _workspace_repos.default_primary(repos, cwd=tmp_path / "api" / "sub") == "api"
+
+
+def test_yes_makes_the_largest_repo_primary(tmp_path, monkeypatch):
+    repos = [_git_repo(tmp_path / "api", 1), _git_repo(tmp_path / "kube", 3)]
+    monkeypatch.chdir(tmp_path)
+    pick = select_workspace_repos(
+        SimpleNamespace(root=tmp_path, repos=repos), repo_names=[], select_all=True
+    )
+    assert pick.primary_alias == "kube"
+    assert pick.primary_repo is repos[1]
+    assert pick.primary_picked is False

@@ -225,7 +225,7 @@ def run_workspace_plan_screen(
 
     ``None`` when nobody can answer (EOF on the first read or inside a
     question): the caller runs the non-interactive defaults, every repo
-    with the first as primary. Ctrl-C still stops the run.
+    with :func:`default_primary` as primary. Ctrl-C still stops the run.
     """
     from repowise.cli.editor_setup import is_editor_setup_disabled
     from repowise.cli.ui.provider_selection import _detect_provider_status
