@@ -628,7 +628,8 @@ def fill_static_costs(connection: Any) -> int:
         except ValueError:
             details = {}
         facets = details.get("facets") if isinstance(details, dict) else None
-        fills.append({"id": row_id, "cost": static_cost(marker, facets or {})})
+        facets = facets if isinstance(facets, dict) else {}
+        fills.append({"id": row_id, "cost": static_cost(marker, facets)})
     if fills:
         connection.execute(
             text("UPDATE performance_opportunities SET static_cost = :cost WHERE id = :id"),
