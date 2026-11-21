@@ -201,6 +201,51 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     return found
 
 
+def _python_call_name(node: ast.Call) -> str | None:
+    """Return the ``eval``/``exec`` name this call uses, else ``None``."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        name = func.id
+    elif isinstance(func, ast.Attribute):
+        # Only the builtin executes a string: ``obj.eval(x)`` is a method
+        # call (e.g. a PyTorch ``model.eval()`` mode switch), so a Python
+        # attribute ``eval`` counts only on ``builtins.eval`` (#6028).
+        # ``exec`` keeps both shapes.
+        if func.attr == "eval":
+            value = func.value
+            if not (isinstance(value, ast.Name) and value.id == "builtins"):
+                return None
+        name = func.attr
+    else:
+        return None
+    return name if name in {"eval", "exec"} else None
+
+
+def _ast_call_findings(tree: ast.Module, source: str) -> list[dict]:
+    """Collect high-severity findings for builtin ``eval``/``exec`` calls."""
+    lines = source_lines(source)
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _python_call_name(node)
+        if call_name is None:
+            continue
+        findings.append(
+            {
+                "kind": f"{call_name}_call",
+                "severity": "high",
+                # ast also breaks lines on a lone ``\r``, which git does
+                # not; such a line number can outrun the split.
+                "snippet": _snippet(lines[node.lineno - 1])
+                if node.lineno <= len(lines)
+                else "",
+                "line": node.lineno,
+            }
+        )
+    return findings
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -221,42 +266,7 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         except SyntaxError:
             pass
         else:
-            lines = source_lines(source)
-            findings = []
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if isinstance(node.func, ast.Name):
-                    call_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    # Only the builtin executes a string: ``obj.eval(x)`` is a
-                    # method call (e.g. a PyTorch ``model.eval()`` mode switch),
-                    # so a Python attribute ``eval`` counts only on
-                    # ``builtins.eval`` (#6028). ``exec`` keeps both shapes.
-                    if node.func.attr == "eval":
-                        value = node.func.value
-                        if not (
-                            isinstance(value, ast.Name) and value.id == "builtins"
-                        ):
-                            continue
-                    call_name = node.func.attr
-                else:
-                    continue
-                if call_name not in {"eval", "exec"}:
-                    continue
-                findings.append(
-                    {
-                        "kind": f"{call_name}_call",
-                        "severity": "high",
-                        # ast also breaks lines on a lone ``\r``, which git does
-                        # not; such a line number can outrun the split.
-                        "snippet": _snippet(lines[node.lineno - 1])
-                        if node.lineno <= len(lines)
-                        else "",
-                        "line": node.lineno,
-                    }
-                )
-            return findings
+            return _ast_call_findings(tree, source)
 
     masked_source = masked()
     lines = source_lines(source)
