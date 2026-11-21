@@ -196,12 +196,17 @@ async def _symbol_rows(ctx: Any, plan: _SearchPlan) -> list[dict]:
     queries = list(dict.fromkeys(names)) if len(set(names)) > 1 else [plan.symbol_query]
     if len(queries) == 1:
         return await _pkg.search_symbols_single(
-            ctx, queries[0], plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+            ctx,
+            queries[0],
+            plan.fetch,
+            symbol_kind=plan.symbol_kind,
+            kind=plan.kind,
+            context=plan.query,
         )
     rows: dict[Any, dict] = {}
     for q in queries:
         for row in await _pkg.search_symbols_single(
-            ctx, q, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+            ctx, q, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind, context=plan.query
         ):
             key = row.get("symbol_id") or id(row)
             if key not in rows or (row.get("score") or 0) > (rows[key].get("score") or 0):

@@ -103,3 +103,38 @@ def test_a_test_file_defining_a_named_symbol_keeps_its_rank():
 
 def test_empty_hits_noop():
     assert demote_noise_hits([], "anything", is_why=False) == []
+
+
+def test_test_support_demoted_by_code_origin():
+    """A mock header is test code: it ranks below the file it stands in for."""
+    hits = [
+        _hit("file_page", "test/mocks/router/router_filter_interface.h"),
+        _hit("file_page", "source/common/router/router.cc"),
+    ]
+    out = demote_noise_hits(hits, "how does the router filter pick a route", is_why=False)
+    assert out[0]["target_path"] == "source/common/router/router.cc"
+    out = demote_noise_hits(hits, "where is the router filter mock", is_why=False)
+    assert out[0]["target_path"] == "test/mocks/router/router_filter_interface.h"
+
+
+def test_generated_and_vendored_files_demoted_unless_asked_for():
+    hits = [
+        _hit("file_page", "pkg/apis/v1/zz_generated.deepcopy.go"),
+        _hit("file_page", "vendor/github.com/x/y/y.go"),
+        _hit("file_page", "pkg/apis/v1/types.go"),
+    ]
+    # Generated code is known by its banner, which the stored origin saw.
+    origins = {"pkg/apis/v1/zz_generated.deepcopy.go": "generated"}
+    q = "what types define a resource"
+    out = demote_noise_hits(list(hits), q, is_why=False, origins=origins)
+    assert out[0]["target_path"] == "pkg/apis/v1/types.go"
+    q = "where is the generated deepcopy code"
+    out = demote_noise_hits(list(hits), q, is_why=False, origins=origins)
+    assert out[0]["target_path"] == "pkg/apis/v1/zz_generated.deepcopy.go"
+
+
+def test_stored_origin_decides_over_the_path():
+    hits = [_hit("file_page", "src/fake_clock.py"), _hit("file_page", "src/clock.py")]
+    origins = {"src/fake_clock.py": "test", "src/clock.py": "production"}
+    out = demote_noise_hits(hits, "how does the clock tick", is_why=False, origins=origins)
+    assert out[0]["target_path"] == "src/clock.py"

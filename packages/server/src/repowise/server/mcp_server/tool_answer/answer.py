@@ -116,6 +116,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._origin_rank import load_row_origins
 from repowise.server.mcp_server._savings.interaction import timed_stage
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
@@ -362,9 +363,14 @@ async def _run_retrieval_pipeline(
     if not traced:
         with contextlib.suppress(Exception):
             hits = await _expand_via_parent_page(hits, question, ctx)
-    # Demote noise (decisions on non-why, test pages on non-test questions)
+    # Demote noise (decisions on non-why, test/generated/vendored files the
+    # question does not ask for)
     # below real pages. Non-dropping; after anchoring, which never injects noise.
-    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    origins: dict[str, str] = {}
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            origins = await load_row_origins(session, repo_id, hits)
+    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question), origins=origins)
     # Files on a pasted stack trace lead; files defining a named identifier
     # join just below the top three. No-op when the question has neither.
     try:
