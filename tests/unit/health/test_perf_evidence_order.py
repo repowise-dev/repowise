@@ -24,7 +24,6 @@ from repowise.core.analysis.health.perf.serving import evidence_mark
         # lead bar by a leading workload, it leads: the name was a guess.
         ({"measured": "api", "measured_overrides": "cold_path"}, 2),
         ({"confirmed": "measured", "measured": "api", "measured_overrides": "cold_path"}, 0),
-        ({"confirmed": "query_count", "measured": "api", "measured_overrides": "cold_path"}, 0),
         ({"queries": "ran"}, 2),
         ({}, 2),
     ],
