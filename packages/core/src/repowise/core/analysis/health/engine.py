@@ -133,7 +133,8 @@ log = structlog.get_logger(__name__)
 # interval (#6058); measured runs, test runs included, admit causes to the perf
 # queue (#6066); a leading run that measured a cold role or name above the bar
 # may lead (#6093); and a measured hotspot with no static cause becomes a perf
-# work item (#6097). ``PERFORMANCE_MODEL_VERSION`` moved with it.
+# work item (#6097). ``PERFORMANCE_MODEL_VERSION`` moved with it. The re-score
+# also writes each cause's ``static_cost`` beside ``cost_proof`` (#6112).
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
