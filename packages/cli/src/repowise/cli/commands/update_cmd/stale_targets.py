@@ -73,14 +73,77 @@ def structure_ids_to_render(run: UpdateRun, existing_ids: object) -> set[str]:
     """The whole-repo structure pages a rendering update renders by id.
 
     The stale ones, plus the cycle, API-contract and infra pages the rebuilt
-    graph selects that the store (*existing_ids*) lacks or whose file changed.
+    graph selects that the store (*existing_ids*) lacks or whose file changed,
+    plus the selected flow pages the store has no visible row for. The flow
+    term lives here, not in the shared selector: a flow page calls the model
+    unless the template renderer writes it, and the server sync renders the
+    shared ids with a model.
     """
     from repowise.core.generation.selection.selector import structure_ids_for_incremental_run
 
     rendered = run.affected.regenerate if run.affected is not None else []
-    return set(run.stale_deterministic_ids) | structure_ids_for_incremental_run(
-        run.parsed_files or [], run.graph_builder, existing_ids or (), rendered
+    return (
+        set(run.stale_deterministic_ids)
+        | structure_ids_for_incremental_run(
+            run.parsed_files or [], run.graph_builder, existing_ids or (), rendered
+        )
+        | _unwritten_flow_ids(run)
     )
+
+
+def _unwritten_flow_ids(run: UpdateRun) -> set[str]:
+    """The selected flow pages the store has no visible row for.
+
+    Read from the store here, not taken from the caller's page map: that map is
+    empty after a failed read and, on a model wiki, leaves out the pages whose
+    model call failed, and rendering either kind would put template text over a
+    page a model wrote or over the failure marker ``doctor`` reads. A store
+    that cannot be read therefore adds no page.
+    """
+    from repowise.cli.helpers import run_async
+    from repowise.core.generation.flow_pages import selected_flow_page_ids
+
+    selected = selected_flow_page_ids(run.graph_builder, run.parsed_files or [])
+    if not selected:
+        return set()
+    try:
+        written = run_async(_visible_flow_page_ids(run.repo_path))
+    except Exception as exc:
+        run.degraded.append(f"New flow pages: {exc}")
+        return set()
+    return set() if written is None else selected - written
+
+
+async def _visible_flow_page_ids(repo_path: object) -> set[str] | None:
+    """Ids of the flow pages a reader can open, ``None`` for an unregistered repository.
+
+    A tombstone is left out: it hides the page of an entry a full generation
+    dropped, and an entry selected again needs a page before the row expires.
+    """
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            rows = await session.execute(
+                select(Page.id).where(
+                    Page.repository_id == repo.id,
+                    Page.page_type == "flow_page",
+                    # shortcut: a model-written tombstone is re-rendered, restore to reuse its prose
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            return set(rows.scalars())
+    finally:
+        await engine.dispose()
 
 
 def stale_flow_pages(run: UpdateRun) -> int:
