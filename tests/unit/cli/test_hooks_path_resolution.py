@@ -63,6 +63,21 @@ def test_plain_repo_resolves_to_git_hooks(git_repo):
     assert _hooks_dir(git_repo) == git_repo / ".git" / "hooks"
 
 
+def test_hooks_dir_git_call_does_not_read_stdin(git_repo, monkeypatch):
+    # Under the stdio MCP server stdin is the protocol pipe; a git child that
+    # inherits it waited there until the timeout (10 s per get_overview).
+    seen = []
+    real_run = subprocess.run
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("stdin"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    assert _hooks_dir(git_repo) == git_repo / ".git" / "hooks"
+    assert seen == [subprocess.DEVNULL]
+
+
 def test_core_hooks_path_is_honoured(git_repo):
     """A hook written to .git/hooks would never run when hooksPath is set."""
     _git("config", "core.hooksPath", "my-hooks", cwd=git_repo)
