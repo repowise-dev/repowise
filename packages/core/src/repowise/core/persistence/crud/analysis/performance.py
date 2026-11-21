@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -117,6 +117,7 @@ def _row_kwargs(
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.counts import perf_judgement
     from ....analysis.health.queue.eligibility import queue_proof
+    from ....analysis.health.worth import static_cost
 
     fix = opportunity.fix
     row = {
@@ -132,6 +133,7 @@ def _row_kwargs(
         "evidence_confidence": opportunity.confidence,
         "plan_state": plan_state,
         "cost_proof": queue_proof(opportunity),
+        "static_cost": static_cost(opportunity.biomarker_type, opportunity.facets),
         "execution_role": opportunity.facets.get("execution_role", "unknown"),
         "fix_strategy": fix.strategy if fix else None,
         "fix_safety": fix.safety if fix else None,
@@ -603,6 +605,38 @@ async def _reconcile_opportunities(
     return verdicts
 
 
+def fill_static_costs(connection: Any) -> int:
+    """Store ``static_cost`` on every opportunity row written before the column.
+
+    Read from each row's own marker and stored facets, the inputs the writer
+    uses, so no analysis reruns. Sync so both Alembic and the SQLite schema
+    reconciler can run it, once, when the column is added. Returns the number
+    of rows filled.
+    """
+    from ....analysis.health.worth import static_cost
+
+    rows = connection.execute(
+        text(
+            "SELECT id, biomarker_type, details_json FROM performance_opportunities "
+            "WHERE static_cost IS NULL"
+        )
+    ).all()
+    fills: list[dict[str, Any]] = []
+    for row_id, marker, details_json in rows:
+        try:
+            details = json.loads(details_json or "{}")
+        except ValueError:
+            details = {}
+        facets = details.get("facets") if isinstance(details, dict) else None
+        fills.append({"id": row_id, "cost": static_cost(marker, facets or {})})
+    if fills:
+        connection.execute(
+            text("UPDATE performance_opportunities SET static_cost = :cost WHERE id = :id"),
+            fills,
+        )
+    return len(fills)
+
+
 async def _write_summary(
     session: AsyncSession,
     repository_id: str,
@@ -710,6 +744,7 @@ async def list_performance_opportunities(
     confidence: str | None = None,
     actionabilities: frozenset[str] | None = None,
     proofs: frozenset[str] | None = None,
+    static_costs: frozenset[str] | None = None,
     roles: frozenset[str] | None = None,
     queue_eligible: bool | None = None,
     file_paths: tuple[str, ...] | None = None,
@@ -734,6 +769,7 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionabilities=actionabilities,
         proofs=proofs,
+        static_costs=static_costs,
         roles=roles,
         queue_eligible=queue_eligible,
         file_paths=file_paths,
@@ -1487,6 +1523,7 @@ def _measured_row(
 
 __all__ = [
     "PerformanceHeadline",
+    "fill_static_costs",
     "finalize_performance_opportunities",
     "gated_performance_counts",
     "get_health_finding_by_public_id",

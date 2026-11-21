@@ -31,7 +31,7 @@ from repowise.core.analysis.health.queue.eligibility import (
 )
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
-from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, STATIC_COSTS
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
@@ -126,6 +126,7 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("confidence", "evidence_confidence", "eq", "set"),
     FilterRule("actionabilities", "actionability_state", "in", "set"),
     FilterRule("proofs", "cost_proof", "in", "set"),
+    FilterRule("static_costs", "static_cost", "in", "set"),
     FilterRule("roles", "execution_role", "in", "set"),
     FilterRule("file_paths", "file_path", "in", "set"),
     # One area at any depth, as ``<area>/``; the root area is no filter.
@@ -147,11 +148,16 @@ FACETS: tuple[Facet, ...] = (
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
 
+#: What the code alone shows about each cause's cost (``worth.STATIC_COSTS``),
+#: apart from ``proof``, which a run can also settle. Counted for the
+#: dashboard's scoped facets only, so the agent surface's facets do not grow.
+_STATIC_COST_FACET: Facet = ("static_cost", "static_cost", "static_costs")
+
 #: The stored default-queue verdict, grouped beside the facet fields so a
 #: scope's facets can be counted inside the scope (:func:`fold_scoped_facets`).
 #: Never emitted as a facet of its own.
 _QUEUE_FACET: Facet = ("queue", "queue_eligible", "queue_eligible")
-SCOPED_GROUP_FIELDS = (*FACET_FIELDS, "queue_eligible")
+SCOPED_GROUP_FIELDS = (*FACET_FIELDS, "static_cost", "queue_eligible")
 
 
 def sort_keys(sort: str | None) -> SortKeys:
@@ -180,6 +186,7 @@ def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
             None if query.actionability in (None, ANY) else frozenset({query.actionability})
         ),
         "proofs": None if query.proof in (None, ANY) else frozenset({query.proof}),
+        "static_costs": query.static_costs,
         "roles": None if query.role in (None, "all") else frozenset({query.role}),
     }
 
@@ -213,7 +220,7 @@ def fold_scoped_facets(
     }
     folded = queue_rules.fold_facets(
         groups,
-        (*FACETS, _QUEUE_FACET),
+        (*FACETS, _STATIC_COST_FACET, _QUEUE_FACET),
         rules=FILTERS,
         selection=selection,
         null=NULL_VALUE,
@@ -345,6 +352,9 @@ class PerformanceQuery:
     confidence: str | None = None
     actionability: str | None = None
     proof: str | None = None
+    #: One ``worth.STATIC_COSTS`` value; narrows like ``boundary``, so the
+    #: default queue keeps its stored verdict.
+    static_cost: str | None = None
     role: str | None = None
     view: str = "detail"
     sort: str = DEFAULT_SORT
@@ -400,6 +410,7 @@ class PerformanceQuery:
             if live
             else self.actionabilities,
             "proofs": (self.proofs or DEFAULT_QUEUE_PROOFS) if live else self.proofs,
+            "static_costs": self.static_costs,
             "roles": (self.roles or QUEUE_ROLES) if live else self.roles,
             "queue_eligible": None if live else self.queue_eligible,
             "file_paths": self.file_paths,
@@ -427,6 +438,10 @@ class PerformanceQuery:
         if self.proof is None:
             return DEFAULT_QUEUE_PROOFS
         return frozenset({self.proof})
+
+    @property
+    def static_costs(self) -> frozenset[str] | None:
+        return None if self.static_cost is None else frozenset({self.static_cost})
 
     @property
     def roles(self) -> frozenset[str] | None:
@@ -471,6 +486,7 @@ def parse_query(
     confidence: str | None = None,
     actionability: str | None = None,
     proof: str | None = None,
+    static_cost: str | None = None,
     role: str | None = None,
     view: str | None = None,
     sort: str | None = None,
@@ -514,6 +530,7 @@ def parse_query(
             proof=pick(
                 "performance_proof", proof, (*QUEUE_PROOFS, ANY) if lift_defaults else QUEUE_PROOFS
             ),
+            static_cost=pick("performance_static_cost", static_cost, STATIC_COSTS),
             role=pick("performance_role", role, ROLES),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,

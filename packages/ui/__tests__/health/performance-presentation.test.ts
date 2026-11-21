@@ -117,9 +117,11 @@ describe("performance presentation", () => {
     expect(facetValueLabel("boundary", "none")).toBe("In-process");
   });
 
-  it("names a static cost proof by loop size, never as measured", () => {
-    expect(facetValueLabel("proof", "proven")).toBe("Loop size known");
+  it("names a proven cost as known or measured, and a static cost never as measured", () => {
+    expect(facetValueLabel("proof", "proven")).toBe("Loop size known or measured");
     expect(facetValueLabel("proof", "unproven")).toBe("Unproven: loop size unknown");
+    expect(facetValueLabel("static_cost", "size_unknown")).toBe("Unknown in the code");
+    expect(facetValueLabel("static_cost", "grows_with_data")).toBe("Grows with the data");
   });
 
   it("separates a plan that exists from one that needs a refresh and from none", () => {

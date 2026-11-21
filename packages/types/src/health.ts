@@ -673,15 +673,33 @@ export type PerformanceFacetKey =
   | "actionability"
   | "plan_state"
   | "proof"
+  | "static_cost"
   | "role";
 
 /**
- * Whether anything measured that a cause's cost grows with the data
- * (`eligibility.QUEUE_PROOFS`). The queue holds `proven` causes unless asked
- * for another value. `background_unproven` is a scheduled job whose loop is
- * not shown to grow; neither unproven kind leads.
+ * Whether the code or a run shows a cause's cost (`eligibility.QUEUE_PROOFS`).
+ * The queue holds `proven` causes unless asked for another value. `unproven`
+ * is a loop whose size the code does not show and nothing measured;
+ * `background_unproven` is a scheduled job whose loop is not shown to grow;
+ * neither unproven kind leads. What the code alone shows is
+ * {@link PerformanceStaticCost}.
  */
 export type PerformanceCostProof = "proven" | "unproven" | "background_unproven";
+
+/**
+ * What the code alone shows about a cause's cost (`worth.STATIC_COSTS`),
+ * never what a run measured: a loop that grows with the data, a shape that
+ * grows by itself, a per-call cost an entry point does or does not reach, a
+ * bounded loop, or a loop whose size the code does not show. Counted only on
+ * the dashboard's scoped facets.
+ */
+export type PerformanceStaticCost =
+  | "grows_with_data"
+  | "grows_by_shape"
+  | "per_call_reached"
+  | "per_call_unreached"
+  | "bounded"
+  | "size_unknown";
 
 export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
 
@@ -708,6 +726,8 @@ export type PerformanceOpportunityQuery = {
   /** Absent means `proven`; `unproven` lists the causes the default queue leaves out;
    *  `all` lifts the proof filter. */
   proof?: PerformanceCostProof | "all";
+  /** Narrows to one static cost inside the chosen scope; absent is every value (REST only). */
+  static_cost?: PerformanceStaticCost;
   /** Keep to the default queue's stored verdict whatever state is chosen (REST only). */
   queue?: boolean;
   /** One area (a directory) at any depth (REST only). */

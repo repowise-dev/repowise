@@ -2258,12 +2258,17 @@ class PerformanceOpportunity(QueueVerdict, Base):
     # writer that also decides whether a plan row exists.
     plan_state: Mapped[str] = mapped_column(String(16), nullable=False, default="no_safe_plan")
     # ``eligibility.QUEUE_PROOFS`` (``proven`` | ``unproven`` |
-    # ``background_unproven``): whether anything measured that the cost grows.
-    # A store written before the column reads ``proven`` until its next
-    # analysis, as it was served then.
+    # ``background_unproven``): whether the code or a run shows the cost, as
+    # the queue judges it. Still written for readers that predate
+    # ``static_cost``. A store written before the column reads ``proven``
+    # until its next analysis, as it was served then.
     cost_proof: Mapped[str] = mapped_column(
         String(32), nullable=False, default="proven", server_default="proven"
     )
+    # ``worth.STATIC_COSTS``: what the code alone shows about the cost, never
+    # what a run measured (that stays in the details' facets). NULL only
+    # between the column's addition and ``fill_static_costs``.
+    static_cost: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ``execution_roles.ExecutionRole`` of the hottest member's loop owner, so
     # the queue can leave out startup, CLI, tooling and test loops in SQL.
     execution_role: Mapped[str] = mapped_column(
