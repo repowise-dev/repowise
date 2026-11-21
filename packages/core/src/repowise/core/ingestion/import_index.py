@@ -56,10 +56,11 @@ class ImportNameMaps:
         spans = self.local_scopes.get(path, {}).get(name or "")
         if spans is None:
             return None
-        # The innermost function holding *line* starts last.
+        # The innermost function holding *line* starts last; within one
+        # function the later import (an ``except ImportError`` fallback) wins.
         held = [s for s in spans if line is not None and s[0] <= line <= s[1]]
         if held:
-            return max(held, key=lambda s: s[0])[2], False
+            return sorted(held, key=lambda s: s[0])[-1][2], False
         bound = {(b.source_file, b.exported_name, b.is_module_alias) for _, _, b in spans}
         return (spans[0][2] if len(bound) == 1 else None), True
 

@@ -175,3 +175,11 @@ def test_heritage_reads_another_functions_import_as_a_guess(tmp_path: Path) -> N
     assert {pair: data["confidence"] for pair, data in extends.items()} == {
         ("app.py::Child", "pkg/util.py::Base"): 0.5
     }
+
+
+def test_no_guess_for_a_bare_call_to_a_parameter(tmp_path: Path) -> None:
+    app = (
+        "def first():\n    from pkg.util import work\n    work()\n\n"
+        "def second(work):\n    work()\n"
+    )
+    assert _guesses(tmp_path, app) == {}

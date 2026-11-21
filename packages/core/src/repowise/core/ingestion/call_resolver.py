@@ -2373,7 +2373,11 @@ class CallResolver(
         return _guessed(hit) if guessed else hit
 
     def _python_parameter_at(self, file_path: str, line: int, name: str | None) -> bool:
-        """Is *name* a parameter of a Python function whose span holds *line*?"""
+        """Is *name* a parameter of a Python function whose span holds *line*?
+
+        Ceiling: a nested ``def`` or a lambda is no symbol, so its parameters
+        are not seen here.
+        """
         parsed = self._parsed_files.get(file_path)
         for symbol in parsed.symbols if parsed else ():
             if symbol.kind in ("function", "method") and symbol.start_line <= line <= symbol.end_line:
