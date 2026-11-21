@@ -16,6 +16,7 @@ from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
     GitCommitFile,
+    GraphNode,
     GraphNodeMembership,
     HealthFileMetric,
     PerformanceOpportunity,
@@ -171,6 +172,24 @@ async def test_every_section_reads_the_rows_next_reads(async_session) -> None:
 
     assert "ownership" not in sections
     assert "decisions" not in sections
+
+
+async def test_the_file_count_leaves_out_import_targets(async_session) -> None:
+    rid = await _seed(async_session)
+    async_session.add_all(
+        [
+            GraphNode(repository_id=rid, node_id="src/one.py", node_type="file", language="python"),
+            GraphNode(repository_id=rid, node_id="web/two.ts", node_type="file", language="typescript"),
+            # Packages and unparsed paths an import names are file nodes too.
+            GraphNode(repository_id=rid, node_id="external:requests", node_type="file",
+                      language="external"),
+            GraphNode(repository_id=rid, node_id="gen/missing.py", node_type="file",
+                      language="unknown"),
+        ]
+    )
+    await async_session.commit()
+    report = await collect_first_look(async_session, rid, now=NOW)
+    assert report.repo["files"] == 2
 
 
 async def test_history_only_leaves_out_a_secret_still_in_the_working_tree(async_session) -> None:
