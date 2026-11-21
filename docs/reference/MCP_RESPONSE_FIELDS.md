@@ -67,7 +67,7 @@ Notes:
 
 ## On the wire
 
-- `structuredContent` is `{"result": <payload>}`; tools advertise an `outputSchema`.
+- `structuredContent` is `{"result": <payload>}`. Tools advertise no `outputSchema`.
 - The text block is the same payload as compact JSON, so clients that forward it send fewer tokens.
 - `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
 

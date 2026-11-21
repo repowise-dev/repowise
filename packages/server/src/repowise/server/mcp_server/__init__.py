@@ -262,18 +262,18 @@ def wire_result(payload: Any) -> Any:
     FastMCP renders the text with ``indent=2`` beside a structured copy that is
     already compact. The same ``fallback=str`` keeps a value JSON cannot hold
     rendering as before, and the structured copy is converted exactly as
-    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
-    is left to FastMCP's own conversion.
+    FastMCP converts it. ``REPOWISE_MCP_PRETTY_JSON=1`` indents the text again.
+    Anything but a dict is left to FastMCP's own conversion.
     """
     import os
 
-    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-    if pretty or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return payload
     import pydantic_core
     from mcp.types import CallToolResult, TextContent
 
-    text = pydantic_core.to_json(payload, fallback=str).decode()
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    text = pydantic_core.to_json(payload, fallback=str, indent=2 if pretty else None).decode()
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
@@ -380,9 +380,14 @@ def _slim_tool(tool: Any) -> None:
     core tool's ``Args:`` block onto its properties. Hosts re-send the tool
     list on every turn. Arguments are still validated against the function
     signature, not this dict, so an unlisted parameter keeps working.
+
+    Also drops the output schema FastMCP derives from the return annotation:
+    every tool's says only "an object under ``result``". Without one the spec
+    makes ``structuredContent`` optional, and :func:`wire_result` still sends it.
     """
     from repowise.core.registry.tool_selection import CORE_TOOLS
 
+    tool.fn_metadata.output_schema = None
     params = tool.parameters
     params.pop("title", None)
     properties = params.get("properties", {})
