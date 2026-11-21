@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChangelogEntry } from "@/lib/api/meta";
 import { WhatsNewModal } from "./whats-new-modal";
 
@@ -50,7 +50,13 @@ vi.mock("@/lib/hooks/use-meta-version", () => ({
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/repos/r1/overview" }));
 
+afterEach(cleanup);
+
 describe("WhatsNewModal", () => {
+  beforeEach(() => {
+    expect(document.querySelectorAll("[role=dialog]")).toHaveLength(0);
+  });
+
   it("asks for newer releases only when told to", () => {
     changelogCalls.length = 0;
     const { unmount } = render(<WhatsNewModal open onOpenChange={() => {}} />);

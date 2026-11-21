@@ -52,6 +52,7 @@ class _RecordingStore:
 
 def _fake_run(store) -> SimpleNamespace:
     return SimpleNamespace(
+        render_budget=None,
         semaphore=asyncio.Semaphore(4),
         job_system=None,
         job_id=None,
