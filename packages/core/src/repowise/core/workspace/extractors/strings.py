@@ -585,7 +585,11 @@ def _static_rebinding_re(key: str) -> re.Pattern[str]:
     )
 
 
-_CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)[^{;]*\{")
+# The header stops at another `class` word, so `// the base class` above a
+# declaration does not take the next word (`export`) as the class name.
+_CLASS_OPEN_RE = re.compile(
+    r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)(?:(?!\bclass\b)[^{;])*\{"
+)
 # A class field and what it is set to: a declaration on its own line
 # (`private base = x`, `base: string = x`) or `this.base = x` anywhere, with
 # `op` set for a compound assignment (`this.base += x`).
