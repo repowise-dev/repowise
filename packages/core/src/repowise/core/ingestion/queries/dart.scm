@@ -37,6 +37,22 @@
   (formal_parameter_list) @symbol.params
 ) @symbol.def
 
+; Constructors: A(), A.named(), factory A.f(), const A.c(). A named one has
+; two identifiers and a const one leads with a keyword, so a signature can match
+; more than once; the parser names each ``A`` / ``A.named`` from the whole
+; signature (as the health layer does, #4782), which folds the extra matches.
+(constructor_signature
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(factory_constructor_signature
+  (identifier) @symbol.name
+) @symbol.def
+
+(constant_constructor_signature
+  (identifier) @symbol.name
+) @symbol.def
+
 (getter_signature
   (identifier) @symbol.name
 ) @symbol.def
