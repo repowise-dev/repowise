@@ -82,18 +82,27 @@ pull request, push to `main` and nightly run, beside the full run, without
 skipping any.
 
 - `Repowise index (main)` builds the Repowise index on each push to `main`
-  (`repowise update --index-only` on the previous one) and caches the three
-  newest. It builds beside the tests, then waits for the three Python 3.12
-  shards (not 3.11 or 3.13), combines their `.coverage` data and adds the
-  per-test coverage map with `repowise coverage add` before saving. When a
-  shard did not pass it saves the index with the map it restored, since a
-  map missing a shard's tests would leave them out of every selection.
+  (`repowise update --index-only` on the previous one) and saves it twice.
+  Right after the build it saves `repowise-index-<sha>-early`, which carries
+  the per-test map it restored. It then waits for the three Python 3.12
+  shards (not 3.11 or 3.13), combines their `.coverage` data, adds the
+  per-test coverage map with `repowise coverage add` and saves
+  `repowise-index-<sha>-full`. When a shard did not pass there is no full
+  save, since a map missing a shard's tests would leave them out of every
+  selection. It keeps the entries of the three newest commits, drops an early
+  entry once its full one exists, and keeps an early entry with no full one
+  while its job may still save it. It sets
+  `REPOWISE_COMMIT_HEALTH_BACKGROUND=0`: a detached commit-health drain still
+  writing `.repowise` makes the cache save fail.
 - On pushes to `main` the shards record which test ran which lines
   (`--cov-context=test`, on the C tracer, since sysmon drops contexts). Pull
   requests and the nightly run keep sysmon without contexts, so their wall
   time does not change.
-- `Test selection (recorded only)` restores that index and runs
+- `Test selection (recorded only)` restores the base's full index, else its
+  early one, else the newest older one, and runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
+  The record's `index_cache` says which: `full`, `early`, `older` or `none`
+  (record version 2).
 - `Test selection compared (recorded only)` reads the shards' JUnit reports
   and writes its job summary: selected test files out of those that ran, the
   test time the selection would have saved, every failing test the selection

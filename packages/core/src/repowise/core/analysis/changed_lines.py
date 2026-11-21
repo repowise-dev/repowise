@@ -459,9 +459,10 @@ def diff_since(
     What moves a line number read at one commit (an index's symbol spans) to
     the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
     *paths* and the keys are relative to *repo_path*, as the index names them.
+    Each path is compared with itself: a file renamed in between reads as added.
     """
     tail = [until] if until else []
-    args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
+    args = ["diff", "--unified=0", "--no-renames", *DIFF_ARGS, since, *tail, "--", *paths]
     diffs = checkout_relative(repo_path, parse_unified_diff(_diff(repo_path, args)))
     return {p: replace(d, path=p) for p, d in diffs.items()}
 

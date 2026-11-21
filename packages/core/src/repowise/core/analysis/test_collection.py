@@ -351,7 +351,8 @@ async def collect(
         )
     )
     routes = sorted({*routes, *scope_routes})
-    lines = query_lines(change, measured)
+    # git runs off the event loop when the map's commit needs moving to the base.
+    out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
     functions = (
         await function_scoped_lines(
             session, repo_id, repo_path, change, measured_side(change, measured), lines
@@ -372,6 +373,13 @@ async def collect(
         groups=scope_groups,
         cancelled=cancelled,
         functions=functions,
+    )
+    # Changed files with lines whose covering tests were matched by file all the same.
+    covered = {f for row in out["covered"].values() for f in row["source_files"]}
+    out["matched_by_file"] = sorted(
+        p
+        for p, diff in change.files.items()
+        if diff.hunks and lines[p] is None and p in covered
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -491,18 +499,79 @@ def _unread(repo_path, specs: list[tuple[str, str]], blobs: Mapping | None) -> s
     return {path for (_, path), line in zip(missing, lines, strict=True) if line == "blob"}
 
 
-def query_lines(change, measured: str | None) -> dict[str, set[int] | None]:
-    """The lines to look up per file, on the side of the diff the map was measured at.
+def query_lines(change, measured: str | None, repo_path=None) -> dict[str, set[int] | None]:
+    """The lines to look up per file, in the line numbers of the commit the map was measured at.
 
     Coverage measured at the change's base is keyed in the old file's line
-    numbers, at its head in the new file's. Measured anywhere else, or for a
-    deleted or hunkless file, only the file can be matched (``None``).
+    numbers, at its head in the new file's. Measured at an ancestor of the
+    base, the base-side lines move back to that commit through one
+    ``git diff`` of the changed files (with *repo_path*); a file with a
+    touched line in, or right beside, code edited between the two is matched
+    by file. Measured anywhere else, or for a deleted or hunkless file, only
+    the file can be matched (``None``).
     """
     side = measured_side(change, measured)
+    since = None if side else _diffs_since(repo_path, change, measured)
     lines: dict[str, set[int] | None] = dict.fromkeys(change.deleted)
     for path, diff in change.files.items():
-        lines[path] = _touched_lines(diff.hunks, side) if side and diff.hunks else None
+        if not diff.hunks:
+            lines[path] = None
+        elif side:
+            lines[path] = _touched_lines(diff.hunks, side)
+        elif since is not None:
+            moved = since.get(path)
+            lines[path] = _moved_back(
+                moved.hunks if moved else (), _touched_lines(diff.hunks, "old")
+            )
+        else:
+            lines[path] = None
     return lines
+
+
+def _diffs_since(repo_path, change, measured: str | None) -> dict | None:
+    """The changed files' diffs from *measured* to the change's base, when it is an ancestor.
+
+    ``None`` when there is no checkout, the map's commit is not an ancestor
+    of the base (or not in the clone), or git fails: then every file is
+    matched by file.
+    """
+    import subprocess
+
+    from ..git_refs import is_ancestor
+    from .changed_lines import diff_since
+
+    base = change.base
+    paths = sorted(p for p, diff in change.files.items() if diff.hunks)
+    if repo_path is None or not (measured and base and paths):
+        return None
+    if not is_ancestor(str(repo_path), measured, base):
+        return None
+    try:
+        return diff_since(str(repo_path), measured, base, paths)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        # A path list too long for one command line lands here too: by file.
+        log.debug("map_line_move_failed", error=str(exc))
+        return None
+
+
+def _moved_back(hunks, lines: set[int]) -> set[int] | None:
+    """*lines* on the new side of a diff with these *hunks*, at their old-side numbers.
+
+    ``None`` when a line sits in code the diff added or rewrote, or beside
+    code it removed: the old side has no one line it was, so the file is
+    matched whole.
+    """
+    from .changed_lines import map_old_line
+
+    for _, _, new_start, new_count in hunks:
+        edited = (
+            range(new_start, new_start + new_count) if new_count else (new_start, new_start + 1)
+        )
+        if any(line in edited for line in lines):
+            return None
+    # The diff read backwards: its new side is the old one.
+    back = [(n, nc, o, oc) for o, oc, n, nc in hunks]
+    return {map_old_line(back, line) for line in lines}
 
 
 def measured_side(change, measured: str | None) -> str | None:
@@ -530,6 +599,10 @@ def empty_result(changed_files: int) -> dict:
         "map_current": True,
         "map_truncated": False,
         "measured_commit": None,
+        # changed file -> the lines its per-test map lookup asks for (``query_lines``);
+        # the changed files with lines whose covering tests are matched by file
+        "query_lines": {},
+        "matched_by_file": [],
         "indexed_commit": None,
         "index_problem": None,
         "index_gap": None,
@@ -951,7 +1024,6 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             config=config,
             index_available=not result["no_index"],
             label=change.label,
-            map_current=result["map_current"],
             map_truncated=result["map_truncated"],
             index_gap=result["index_gap"],
             gap=result["gap"],

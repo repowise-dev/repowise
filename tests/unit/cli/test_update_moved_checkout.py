@@ -84,15 +84,16 @@ async def test_copied_checkout_keeps_one_row_pointing_at_the_copy(tmp_path):
     assert await _rows(orig) == [(orig_id, str(orig))]
 
 
-async def test_without_adoption_the_update_would_add_a_second_row(tmp_path):
-    """Pins the failure the adoption step exists to prevent."""
+async def test_upserts_alone_keep_one_row(tmp_path):
+    """The upsert re-points the row by the same rule as the adoption step."""
     orig, moved = tmp_path / "orig", tmp_path / "moved"
     await _init_store(orig)
     shutil.copytree(orig, moved)
+    ((orig_id, _),) = await _rows(orig)
 
     await _update_style_upserts(moved)
 
-    assert len(await _rows(moved)) == 2
+    assert await _rows(moved) == [(orig_id, str(moved))]
 
 
 async def test_already_current_checkout_is_left_alone(tmp_path):

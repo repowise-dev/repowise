@@ -89,7 +89,7 @@ def test_run_order_and_first_rank() -> None:
 
 
 def test_record_lists_failures_outside_the_selection() -> None:
-    meta = {"base": "b0", "selector_exit": 0, "selector_seconds": 12.5, "index_cache": "exact"}
+    meta = {"base": "b0", "selector_exit": 0, "selector_seconds": 12.5, "index_cache": "full"}
     rec = shadow.build_record(SELECTION, meta, shadow.read_junit(JUNIT), {"pr": 7})
     assert rec["missed"] == ["tests/unit/sub/test_c.py", "tests/unit/test_d.py"]
     assert rec["selected_ran_files"] == 3
@@ -99,7 +99,7 @@ def test_record_lists_failures_outside_the_selection() -> None:
     assert rec["estimated_seconds_saved"] == 6.5
     assert rec["first_failing_rank"] == 1
     assert rec["order_length"] == 5
-    assert rec["pr"] == 7 and rec["base"] == "b0" and rec["index_cache"] == "exact"
+    assert rec["pr"] == 7 and rec["base"] == "b0" and rec["index_cache"] == "full"
     # One JSON line per run, for aggregation.
     assert "\n" not in json.dumps(rec)
     text = shadow.render_summary(rec)
@@ -242,8 +242,15 @@ def test_bad_selection_output_keeps_the_selector_facts(tmp_path, monkeypatch) ->
 def test_an_older_index_is_noted() -> None:
     rec = shadow.build_record(SELECTION, {"index_cache": "older"}, None, {})
     assert "index predates the base" in shadow.render_summary(rec)
-    rec = shadow.build_record(SELECTION, {"index_cache": "exact"}, None, {})
+    rec = shadow.build_record(SELECTION, {"index_cache": "full"}, None, {})
     assert "predates" not in shadow.render_summary(rec)
+    assert "per-test map" not in shadow.render_summary(rec)
+
+
+def test_an_early_index_is_noted() -> None:
+    rec = shadow.build_record(SELECTION, {"index_cache": "early"}, None, {})
+    summary = shadow.render_summary(rec)
+    assert "saved before its per-test map" in summary and "predates" not in summary
 
 
 def test_context_reads_the_change_number_from_the_ci() -> None:

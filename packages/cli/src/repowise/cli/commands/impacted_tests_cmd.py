@@ -386,6 +386,7 @@ def _render_selection(
             "unknown_files": result["unknown"],
             "indexed_commit": result["indexed_commit"],
             "map_current": result["map_current"],
+            "matched_by_file": result.get("matched_by_file", []),
             "run_all": run_all,
             "reasons": reasons,
             "selected": selected,
@@ -424,10 +425,11 @@ def _print_map_state(result: dict) -> None:
             "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
-    elif not result["map_current"]:
+    elif by_file := result.get("matched_by_file"):
         console.print(
             "[yellow]The test-to-code map was measured at another commit[/yellow], so "
-            "covering tests are matched by file, not by changed line."
+            f"covering tests of {len(by_file)} changed file(s) are matched by file, not "
+            f"by changed line (e.g. {escape(by_file[0])})."
         )
 
 
