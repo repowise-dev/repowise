@@ -473,7 +473,12 @@ function coverageState(s: SetupResponse, o: DeriveOptions): SetupRow {
       detail: msg("coverage.detailOn", { when: o.relative(stored) }),
       action: report ? { kind: "coverage", path: report.path } : null,
       command,
-      prompt: { ...prompt, state: "Coverage is stored for this repository. Refresh it from the newest report." },
+      prompt: {
+        ...prompt,
+        state: report
+          ? "Coverage is stored for this repository. Refresh it from the newest report."
+          : "Coverage is stored for this repository, and no report is on disk to refresh it from. Collect a fresh one.",
+      },
     };
   }
   if (report) {
