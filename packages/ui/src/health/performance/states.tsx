@@ -61,7 +61,34 @@ export function UnavailableQueue({ summary }: { summary: PerformanceOpportunityS
  * (profiles and benchmark results) and hands the agent the one prompt that
  * collects them; `found` names files already on disk, when there are any.
  */
-export function ConnectEvidenceState({ found }: { found?: readonly string[] | null | undefined }) {
+export function ConnectEvidenceState({
+  found,
+  variant = "empty",
+}: {
+  found?: readonly string[] | null | undefined;
+  /**
+   * `row` is the slim form above a queue that has causes: the queue keeps its
+   * place above the fold, and the row says why nothing in it is measured.
+   */
+  variant?: "empty" | "row";
+}) {
+  if (variant === "row") {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2.5 border-y border-[var(--color-border-default)] py-3">
+        <p className="max-w-[70ch] text-sm text-[var(--color-text-secondary)]">
+          <strong className="font-semibold text-[var(--color-text-primary)]">
+            Ranked by code shape.
+          </strong>{" "}
+          No profile or benchmark is connected, so nothing here is measured. One prompt has your
+          agent run the repo&apos;s own benchmarks and add the results.
+        </p>
+        <AiPromptButton
+          label="Copy prompt for your agent"
+          copyText={() => buildConnectEvidencePrompt()}
+        />
+      </div>
+    );
+  }
   const shown = found?.slice(0, 3) ?? [];
   const more = (found?.length ?? 0) - shown.length;
   return (
@@ -93,6 +120,21 @@ export function ConnectEvidenceState({ found }: { found?: readonly string[] | nu
       </div>
     </EmptyState>
   );
+}
+
+/**
+ * The slim connect row above a queue that has causes, shown only when the
+ * host knows no runtime evidence is connected.
+ */
+export function ConnectEvidenceRow({
+  runtimeEvidence,
+  hasCauses,
+}: {
+  runtimeEvidence: { connected: boolean } | null;
+  hasCauses: boolean;
+}) {
+  if (!runtimeEvidence || runtimeEvidence.connected || !hasCauses) return null;
+  return <ConnectEvidenceState variant="row" />;
 }
 
 /**
@@ -135,7 +177,8 @@ export function FilteredEmpty({ onClear }: { onClear: () => void }) {
   );
 }
 
-function Notice({
+/** A one-line notice on a hairline: warning ink for a caveat, neutral otherwise. */
+export function Notice({
   tone,
   children,
 }: {

@@ -23,6 +23,7 @@ export type QueueReason =
   | "history_only"
   | "vendored"
   | "docs_example"
+  | "data"
   | "deprecated"
   | "gated_off"
   | "cold_path"
@@ -49,7 +50,7 @@ export type QueueUnit = "findings" | "causes" | "plans" | "items";
 
 /**
  * `inventory` every open unit; `in_scope` those whose code is in scope (not
- * test, tooling, vendored, generated or docs); `eligible` those a default
+ * test, tooling, vendored, generated, docs or data); `eligible` those a default
  * queue holds; `due` eligible units in tier now or next; `shown` what the
  * response carries; `excluded` the non-zero reasons; `gated` the units a
  * language gate holds back, counted there only, so the levels add up.

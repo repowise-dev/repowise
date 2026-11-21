@@ -93,6 +93,7 @@ from .sweeps import (
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
     sweep_deselected_file_keyed_pages,
+    sweep_deselected_flow_pages,
     sweep_deselected_pages,
     sweep_retired_pages,
     sweep_store_hygiene,

@@ -37,12 +37,6 @@ BRANCH_SCAN_LIMIT = 50
 # few, one file that pairs with everything drowns out the files truly shared.
 CO_CHANGE_ROWS_PER_BRANCH = 3
 
-# Every dependency bump edits the manifest, so sharing one says nothing about
-# the work. Package manifests come from the language registry; a pip
-# requirements file is a dependency list no spec declares as a manifest. Kept
-# here rather than in the shared noise list, which is counted on.
-_DEPENDENCY_LISTS = frozenset({"requirements.txt"})
-
 # Git serves concurrent reads, and the exact diffs are the only per-hit cost left.
 _DIFF_WORKERS = 4
 
@@ -146,8 +140,8 @@ def _signal(paths: Iterable[str]) -> frozenset[str]:
         for path in paths
         if path
         and not _is_noise_path(path)
+        # Every dependency bump edits the manifest, so sharing one says nothing.
         and not _LANG_REGISTRY.is_package_manifest(path)
-        and path.replace("\\", "/").rsplit("/", 1)[-1] not in _DEPENDENCY_LISTS
     )
 
 

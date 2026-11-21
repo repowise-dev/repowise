@@ -17,6 +17,12 @@ import {
 } from "@/lib/api/code-health";
 import { getRefactoringPlan, getRefactoringPlanPrompt } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
+import {
+  getEvidenceTests,
+  getMeasured,
+  getMeasuredFunctions,
+  listEvidenceRuns,
+} from "@/lib/api/runtime-evidence";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 import { useRuntimeEvidence } from "@/components/setup/use-setup-actions";
 
@@ -48,6 +54,10 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
         getPerformanceOpportunity(repoId, opportunityId, options),
       getPerformanceOpportunityFindings: (opportunityId, options) =>
         getPerformanceOpportunityFindings(repoId, opportunityId, options),
+      getMeasured: (options) => getMeasured(repoId, options),
+      listEvidenceRuns: () => listEvidenceRuns(repoId),
+      getMeasuredFunctions: (target) => getMeasuredFunctions(repoId, target),
+      getEvidenceTests: (options) => getEvidenceTests(repoId, options),
       getRefactoringPlan: (planId) => getRefactoringPlan(repoId, planId),
       getRefactoringPlanPrompt: async (planId, flavor) =>
         (await getRefactoringPlanPrompt(repoId, planId, { flavor })).text,

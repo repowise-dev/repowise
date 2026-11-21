@@ -62,12 +62,8 @@ LOG_FILENAME = ".coverage.log"
 #: stood for crashed or finished long ago.
 QUEUED_STALE_AFTER_SECONDS = 10 * 60
 
-#: Test runners the rewrite hook's ``test_output`` family does not name.
-#: ``coverage run`` is a wrapper, peeled off before matching.
-_EXTRA_TEST_RE = re.compile(
-    r"^(?:cargo llvm-cov\b|mvn test\b|gradlew? test\b|bun test\b|npm run test[\w:-]*)"
-)
 _SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;\n]")
+#: ``coverage run`` is a wrapper, peeled off before matching.
 _PREFIX_RE = re.compile(r"^(?:time|timeout\s+\S+|coverage run(?:\s+-m)?)\s+")
 _DISTILL_RE = re.compile(r"^repowise distill(?:\s+--source\s+\S+)?\s+(?P<rest>.+)$", re.DOTALL)
 
@@ -143,16 +139,16 @@ def _undistill(segment: str) -> str | None:
 
 def _segment_kind(segment: str) -> str | None:
     """``"full"`` or ``"partial"`` for a test command, ``None`` for anything else."""
-    from repowise.cli.rewrite_hook import FAMILY_PATTERNS, _normalize
+    from repowise.cli.rewrite_hook import _normalize
+    from repowise.core.test_commands import TEST_COMMAND_RE
 
-    test_re = dict(FAMILY_PATTERNS)["test_output"]
     cmd = segment
     for _ in range(4):
         previous = cmd
         cmd = _PREFIX_RE.sub("", _normalize(cmd))
         if cmd == previous:
             break
-    match = test_re.match(cmd) or _EXTRA_TEST_RE.match(cmd)
+    match = TEST_COMMAND_RE.match(cmd)
     if match is None:
         return None
     # A script suffix glued to the match (``npm run test:unit``) is still the name.
@@ -161,7 +157,8 @@ def _segment_kind(segment: str) -> str | None:
         tokens = _original_case(shlex.split(args), segment)
     except ValueError:
         return "partial"  # cannot tell, so do not replace full-suite coverage
-    runner = match.group(0).split()[0]
+    # ``go.exe`` takes the same value flags as ``go``.
+    runner = match.group(0).split()[0].removesuffix(".exe")
     return "partial" if _targets_some(tokens, _VALUE_FLAGS.get(runner, frozenset())) else "full"
 
 

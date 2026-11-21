@@ -55,7 +55,7 @@ export function promptPeek(prompt: string, lines = PEEK_LINES): string {
   return kept.length > lines ? `${head}\n...` : head;
 }
 
-async function writeClipboard(value: string): Promise<boolean> {
+export async function writeClipboard(value: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(value);
     return true;

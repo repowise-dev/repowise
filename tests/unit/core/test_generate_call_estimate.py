@@ -175,3 +175,34 @@ async def test_a_missing_graph_counts_the_pages_without_failing(tmp_path: Path) 
     pages, shared = await _shared_count(tmp_path, repo_id)
 
     assert shared == pages + 1
+
+
+async def test_the_lane_count_is_planned_once_per_indexed_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import repowise.core.pipeline.upgrade as upgrade
+
+    _write_repo(tmp_path)
+    state_path = tmp_path / ".repowise" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state_path.write_text(json.dumps({**state, "last_sync_commit": "a" * 40}), encoding="utf-8")
+    repo_id = await _seed(tmp_path)
+    _, first = await _shared_count(tmp_path, repo_id)
+
+    loads = []
+    real = upgrade.rehydrate_graph_builder
+
+    async def counting(*args, **kwargs):
+        loads.append(1)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(upgrade, "rehydrate_graph_builder", counting)
+
+    # A second reader at the same commit reuses the count, without the graph.
+    assert (await _shared_count(tmp_path, repo_id))[1] == first
+    assert loads == []
+
+    # A new index plans again.
+    state_path.write_text(json.dumps({**state, "last_sync_commit": "b" * 40}), encoding="utf-8")
+    assert (await _shared_count(tmp_path, repo_id))[1] == first
+    assert loads == [1]

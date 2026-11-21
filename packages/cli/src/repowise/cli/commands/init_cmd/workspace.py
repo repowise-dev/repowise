@@ -70,6 +70,7 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import pages
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -643,6 +644,10 @@ def _repo_state(
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
+    # Same ledger write the single-repo paths make (#6031).
+    mining_state.record_extraction_report(
+        state, getattr(result, "decision_report", None), head
+    )
     _stamp_repo_scope(state, repo_path, ctx, index, docs)
     keep_prior_documentation(state, load_state(repo_path), ctx.run_mode)
     kg = getattr(result, "knowledge_graph_result", None)

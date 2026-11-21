@@ -51,6 +51,7 @@ Reason = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",
@@ -127,11 +128,13 @@ class Tally:
 # --- where the code lives ------------------------------------------------------
 
 #: Code origins that do not ship, by the reason each counts as. A build script
-#: is tooling to a reader choosing what to fix.
+#: is tooling to a reader choosing what to fix. ``data`` is code a data folder
+#: holds for the product to read by path, never a module anyone fixes.
 ORIGIN_EXCLUSION: dict[str, Reason] = {
     "test": "test",
     "vendored": "vendored",
     "docs_example": "docs_example",
+    "data": "data",
     "generated": "generated",
     "tooling": "tooling",
     "build": "tooling",
@@ -526,11 +529,14 @@ def _unconfirmed(item: Any) -> bool:
     Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
-    with no known role, an entry point must reach it. Only a ``plan_ready``
-    cause qualifies, and never one whose role or name is cold: a measurement
-    keeps such a cause in the queue (:func:`_role_reason`,
+    with no known role, an entry point or a leading workload's run must reach
+    it (a unit-test run reaches everything it imports). Only a ``plan_ready``
+    cause qualifies, and never one whose role or name is cold: a run that
+    merely ranks it keeps such a cause in the queue (:func:`_role_reason`,
     ``actionability.expected_reason``), it does not make it the work to lead
-    with.
+    with. A leading workload that measured its loop owner above the lead bar
+    (``confirmed`` ``measured``) does: the role and the name were guesses
+    that the run's cost answers. A unit-test run never does.
     """
     # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
     # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
@@ -542,9 +548,11 @@ def _unconfirmed(item: Any) -> bool:
         return True
     if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
         return True
-    if execution_role(item) in COLD_ROLES or facets.get("measured_overrides"):
+    cold = execution_role(item) in COLD_ROLES or facets.get("measured_overrides")
+    if cold and facets.get("confirmed") != "measured":
         return True
-    return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
+    reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
+    return execution_role(item) == "unknown" and not reached
 
 
 def perf_confident_verdict(

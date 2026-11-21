@@ -1,4 +1,4 @@
-"""One origin per file: production, test, vendored, docs_example, generated, tooling, build."""
+"""One origin per file: production, test, vendored, docs_example, generated, tooling, build, data."""
 
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def test_path_rules(path: str, expected: str) -> None:
     assert code_origin(path) == expected
 
 
-def test_every_answer_is_one_of_the_seven() -> None:
+def test_every_answer_is_one_of_the_eight() -> None:
     assert set(CODE_ORIGINS) == {
         "production",
         "test",
@@ -212,6 +212,7 @@ def test_every_answer_is_one_of_the_seven() -> None:
         "generated",
         "tooling",
         "build",
+        "data",
     }
 
 
@@ -1195,3 +1196,53 @@ def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
     assert code_origin("t/smoke/workers/dev.py") == "test"
     assert code_origin("t/smoke/tasks.py") == "test"
     assert code_origin("t/basic.rb") == "production"
+
+
+def _bank(root, problems: int = 4) -> None:
+    """``backend/data``: per-problem JSON plus a solution in three languages."""
+    for i in range(problems):
+        item = root / "backend" / "data" / "problems" / f"p{i}"
+        (item / "solutions").mkdir(parents=True)
+        for n in range(12):
+            (item / f"case{n}.json").write_text("{}")
+        for name in ("python.py", "Solution.java", "go.go"):
+            (item / "solutions" / name).write_text("")
+
+
+def test_code_in_a_data_folder_of_mostly_data_in_several_languages_is_data(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/problems/p1/solutions/go.go", repo_root=tmp_path) == "data"
+
+
+def test_data_needs_the_folder_on_disk(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py") == "production"
+
+
+def test_a_data_folder_of_one_language_stays_production(tmp_path) -> None:
+    # ``lib/data/*.ts`` beside JSON is an app's own data modules, imported as code.
+    data = tmp_path / "frontend" / "lib" / "data"
+    data.mkdir(parents=True)
+    for i in range(12):
+        (data / f"set{i}.json").write_text("{}")
+    for name in ("index.ts", "loader.ts"):
+        (data / name).write_text("")
+    assert code_origin("frontend/lib/data/index.ts", repo_root=tmp_path) == "production"
+
+
+def test_a_data_folder_mostly_of_code_stays_production(tmp_path) -> None:
+    data = tmp_path / "app" / "data"
+    data.mkdir(parents=True)
+    for name in ("repo.py", "models.ts", "Store.java", "seed.json"):
+        (data / name).write_text("")
+    assert code_origin("app/data/repo.py", repo_root=tmp_path) == "production"
+
+
+def test_a_test_under_a_data_folder_stays_a_test(tmp_path) -> None:
+    _bank(tmp_path)
+    for n in range(10):  # keep the folder a bank with the test file in it
+        (tmp_path / "backend" / "data" / f"extra{n}.json").write_text("{}")
+    (tmp_path / "backend" / "data" / "test_bank.py").write_text("")
+    assert code_origin("backend/data/problems/p0/solutions/go.go", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/test_bank.py", repo_root=tmp_path) == "test"

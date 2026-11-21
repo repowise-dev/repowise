@@ -52,13 +52,27 @@ read, a program with no profiler flag).
   uncaught exception or a nonzero exit writes nothing, and an older profile is
   removed first, so a crashed run is never stored. The unit-test suite runs the
   test paths the unit's coverage command runs (`tests/unit` when integration
-  tests sit beside it). Its profile is kept when tests fail (pytest exit 1),
+  tests sit beside it, `tests` when test files elsewhere would be collected
+  too); a path in its arguments (`tests/api`, a node id) replaces them. Its profile is kept when tests fail (pytest exit 1),
   with the failed count recorded on the run (`tests_failed`, shown by `evidence
   status`); a suite that could not run (exit 2 to 5) writes nothing. A run
   stopped with Ctrl-C still writes what it collected, so a subset of the suite
   is enough. SIGTERM, which a timeout sends, writes the profile and ends the
   process with exit code 143; a Windows kill sends no SIGTERM, so there a
   killed run leaves nothing.
+- A Python entry file that builds a FastAPI or Starlette app at module level
+  (`app = FastAPI()`) is served under uvicorn and the profiler (`serve
+  app.main:app`). Its `reason` asks for representative requests while it runs,
+  then Ctrl-C; it is named under `next_call.optional`, never a step.
+- A Python coverage command adds `-n auto` when the printed install brings
+  pytest-xdist and the config sets no worker count. When two requirements
+  files pin a package to different versions, each installs on its own, the
+  test requirements last.
+- A Python unit keeps out each Python unit below it that runs its own tests
+  (a directory with its own `pyproject.toml`, say): a coverage command and
+  unit-test profile that collect from the unit's root pass `--ignore=<dir>`
+  for it, and `--cov` leaves its packages out. A uv workspace member the root
+  runs stays the root's.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and its ingest
   line; a TypeScript `bin` gets a reason only. The command writes into a
   directory of its own (`.repowise/node-bin-cli-js`), cleaned first, where
@@ -342,8 +356,10 @@ The format is detected from the content, never the file name;
   `src/test/java/com/acme/CartTest.java`) among the files the health index
   holds. A name that leads to no file, or to two, keeps its timing under the
   runner's name, counted under `unlinked` as `unplaced`. jest-junit names files
-  only with its `addFileAttribute` option set, so `setup` prints no flag for
-  jest. A path outside the repository (an absolute `file`) is not stored: the
+  only through its options, so `setup` gives a jest unit the environment
+  `JEST_JUNIT_CLASSNAME={filepath}` (plus `JEST_JUNIT_FILE_PATH_PREFIX` with the
+  unit's directory below the root), which makes each classname the test's
+  repo-relative file. A path outside the repository (an absolute `file`) is not stored: the
   test is placed by its classname, or keeps only its own name when the
   classname is that path.
 - A single report that declares a document type is refused.
@@ -518,7 +534,9 @@ coverage map (`repowise coverage add` with per-test contexts) names the timed
 tests, and `inferred` from each function's nearest tests on the call graph
 otherwise.
 Only production files are listed; files of other origins run by timed tests are
-counted under `not_production`. With nothing stored, `status` is
+counted under `not_production`. A production file run by every timed test that
+reaches production code (one the test setup imports) would show all of their time,
+so it is counted under `every_test` instead of listed, unless no other file is. With nothing stored, `status` is
 `no_test_timings` and `command` is `repowise evidence setup`, which prints how
 each unit's tests write JUnit XML. Timing orders tests and files; it never
 gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.

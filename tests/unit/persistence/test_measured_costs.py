@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import insert
 
 from repowise.core.analysis.function_test_map import MappedTest, encode_tests
-from repowise.core.persistence.crud import measured_costs, replace_workload_hotness
+from repowise.core.persistence.crud import (
+    measured_costs,
+    replace_symbol_hotness,
+    replace_workload_hotness,
+)
 from repowise.core.persistence.models import (
     EvidenceRun,
     FunctionFact,
@@ -352,7 +357,7 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
         repo.id,
         [
             {**_hot("x"), "symbol_id": "src/startup.py::warm_cache", "tier": "lead_candidate"},
-            # A unit-test run says nothing about production.
+            # A unit-test run marks apart, and never lifts a cold role.
             {
                 **_hot("x", run="r3"),
                 "symbol_id": "src/startup.py::load_settings",
@@ -372,9 +377,9 @@ async def test_finalize_marks_a_cause_a_leading_workload_measured(async_session)
     # Above the lead bar in a leading workload: the cause inside it is confirmed.
     assert measured["confirmed"] == "measured"
     assert by_owner["warm_cache"].queue_eligible
-    unmeasured = json.loads(by_owner["load_settings"].details_json)["facets"]
-    assert "measured" not in unmeasured
-    assert "confirmed" not in unmeasured
+    in_tests = json.loads(by_owner["load_settings"].details_json)["facets"]
+    assert "measured" not in in_tests
+    assert (in_tests["measured_in_tests"], in_tests["confirmed"]) == ("w-r3", "measured_in_tests")
     assert not by_owner["load_settings"].queue_eligible
     assert "measured" not in json.loads(by_owner["seed_defaults"].details_json)["facets"]
 
@@ -458,10 +463,149 @@ async def test_without_evidence_the_order_and_rows_are_the_static_ones(async_ses
     assert all("runtime_evidence" not in item for item in rest)
 
 
-async def test_unit_test_evidence_alone_changes_nothing(async_session) -> None:
+async def test_unit_test_evidence_alone_orders_and_marks_apart(async_session) -> None:
     repo = await insert_repo(async_session)
     await _two_startup_causes(async_session, repo.id, evidence=True, unit_tests_only=True)
     order, rest, summary = await _queue_and_rows(async_session, repo.id)
-    assert order == ["aaa_first", "zzz_measured"]
+    assert order == ["zzz_measured", "aaa_first"]
+    # A test run is no workload a cause was "not exercised in".
     assert "evidence_workloads" not in summary
-    assert all("runtime_evidence" not in item for item in rest)
+    marks = {i["intervention_symbol"].rpartition(":")[2]: i.get("runtime_evidence") for i in rest}
+    assert marks == {
+        "zzz_measured": {"state": "confirmed", "basis": "measured_in_tests"},
+        "aaa_first": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("evidence", "unit_tests_only", "admitted"),
+    [(False, False, False), (True, False, True), (True, True, True)],
+)
+async def test_a_cost_measured_above_the_bar_admits_an_unsized_loop(
+    async_session, evidence, unit_tests_only, admitted
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    repo = await insert_repo(async_session)
+    await _two_startup_causes(
+        async_session, repo.id, evidence=evidence, unit_tests_only=unit_tests_only
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    eligible = {r.intervention_symbol.rpartition(":")[2]: r.queue_eligible for r in rows}
+    # Its loop size is unknown: only a measured cost above the bar admits it.
+    assert eligible == {"aaa_first": True, "zzz_measured": admitted}
+
+
+async def test_a_measured_function_no_static_cause_owns_becomes_one_item(async_session) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, without_sources
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _two_startup_causes(async_session, repo.id, evidence=True)
+    await replace_workload_hotness(
+        async_session,
+        repo.id,
+        [
+            # Owned by a static cause: that cause is promoted, no second item.
+            {**_hot("x"), "symbol_id": "src/svc.py::zzz_measured", "tier": "lead_candidate"},
+            # No static cause: a measured hotspot.
+            {**_hot("load", rank=2), "tier": "lead_candidate"},
+            # Ranked below the bar, or above it in a unit-test run: nothing.
+            {**_hot("helper", rank=3)},
+            {**_hot("thin", run="r3"), "tier": "lead_candidate"},
+        ],
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    hotspots = [r for r in rows if r.biomarker_type == "measured_hotspot"]
+    assert [r.intervention_symbol for r in hotspots] == [f"{APP}::load"]
+    (item,) = hotspots
+    assert (item.file_path, item.execution_context) == (APP, "production")
+    assert (item.plan_state, item.fix_strategy, item.cost_proof) == (
+        "available",
+        "reduce_measured_self_time",
+        "proven",
+    )
+    assert item.queue_eligible
+    assert json.loads(item.details_json)["facets"]["confirmed"] == "measured"
+
+    queue = await load_fix_first(async_session, repo.id, limit=None)
+    assert item.opportunity_id in {i.source.opportunity_id for i in queue.items}
+
+    # The agent surfaces' cut: the item goes, the rest re-rank and recount.
+    hidden = without_sources(queue, frozenset({item.opportunity_id}))
+    assert item.opportunity_id not in {i.source.opportunity_id for i in hidden.items}
+    assert [i.rank for i in hidden.items] == list(range(1, len(queue.items)))
+    assert hidden.totals.eligible == queue.totals.eligible - 1
+    assert hidden.by_improves["performance"] == queue.by_improves["performance"] - 1
+
+
+async def test_a_measured_hotspots_evidence_on_rest_is_the_run_that_measured_it(
+    async_session,
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.server.routers.code_health.performance_routes import (
+        get_performance_opportunity_detail,
+        list_performance_opportunity_findings,
+    )
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _two_startup_causes(async_session, repo.id, evidence=True)
+    await replace_workload_hotness(
+        async_session, repo.id, [{**_hot("load", rank=2), "tier": "lead_candidate"}]
+    )
+    # The function's basis row, the one the drawer's measured runs read.
+    await replace_symbol_hotness(
+        async_session,
+        repo.id,
+        [
+            {
+                **_hot("load", rank=2),
+                "tier": "lead_candidate",
+                "workload_name": "w-r1",
+                "workload_class": "entry_point",
+                "measured_at": NOW,
+            }
+        ],
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    (item,) = [r for r in rows if r.biomarker_type == "measured_hotspot"]
+    static = next(r for r in rows if r.biomarker_type != "measured_hotspot")
+
+    page = await list_performance_opportunity_findings(
+        repo.id, item.opportunity_id, limit=50, offset=0, session=async_session
+    )
+    assert (page["total"], page["has_more"]) == (1, False)
+    (row,) = page["items"]
+    assert (row["file_path"], row["function_name"]) == (APP, "load")
+    # Function, rank, share with its interval and the workload, from the run.
+    assert row["reason"].startswith("Measured: rank 2 ")
+    assert "w-r1" in row["reason"] and "10%" in row["reason"]
+    assert (
+        await list_performance_opportunity_findings(
+            repo.id, item.opportunity_id, limit=50, offset=1, session=async_session
+        )
+    )["items"] == []
+
+    detail = await get_performance_opportunity_detail(
+        repo.id, item.opportunity_id, evidence_limit=8, evidence_offset=0, session=async_session
+    )
+    assert detail["evidence_total"] == 1
+    assert detail["evidence"][0]["reason"] == row["reason"]
+
+    # A static cause keeps its own observations and is never given a run.
+    other = await list_performance_opportunity_findings(
+        repo.id, static.opportunity_id, limit=50, offset=0, session=async_session
+    )
+    assert all(r["biomarker_type"] != "measured_hotspot" for r in other["items"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,10 @@ class _FakeSummary:
     findings_inserted: int = 1
     by_severity: dict[str, int] = field(default_factory=lambda: {"high": 1})
     by_kind: dict[str, int] = field(default_factory=lambda: {"hardcoded_secret": 1})
+
+
+async def _fake_init_db(_engine: object) -> None:
+    return None
 
 
 class _FakeScanner:
@@ -110,6 +115,7 @@ def test_security_scan_history_json_wires_secrets_only_default(
     monkeypatch.setattr(history_scan, "HistorySecurityScanner", _FakeScanner)
     monkeypatch.setattr(persistence, "create_engine", lambda _url: object())
     monkeypatch.setattr(persistence, "create_session_factory", lambda _engine: object())
+    monkeypatch.setattr(persistence, "init_db", _fake_init_db)
     monkeypatch.setattr(persistence, "get_session", lambda _sf: _FakeSessionCtx())
     monkeypatch.setattr(crud, "get_repository_by_path", _fake_get_repository_by_path)
 
@@ -179,6 +185,7 @@ def test_security_scan_history_all_patterns_disables_secrets_only(
     monkeypatch.setattr(history_scan, "HistorySecurityScanner", _FakeScanner)
     monkeypatch.setattr(persistence, "create_engine", lambda _url: object())
     monkeypatch.setattr(persistence, "create_session_factory", lambda _engine: object())
+    monkeypatch.setattr(persistence, "init_db", _fake_init_db)
     monkeypatch.setattr(persistence, "get_session", lambda _sf: _FakeSessionCtx())
     monkeypatch.setattr(crud, "get_repository_by_path", _fake_get_repository_by_path)
 
@@ -204,3 +211,40 @@ def test_security_scan_history_all_patterns_disables_secrets_only(
     assert _FakeScanner.last_kwargs.get("secrets_only") is False
     assert _FakeScanner.last_kwargs.get("since") == "v1.0.0"
     assert _FakeScanner.last_kwargs.get("to") == "HEAD"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_security_scan_history_runs_in_a_repo_that_was_never_indexed(tmp_path: Path) -> None:
+    """#5978: the history scan used to query ``repositories`` before any table existed."""
+    repo = tmp_path / "c"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "m.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "i")
+
+    result = CliRunner().invoke(
+        security_command,
+        ["scan", "--history", "--path", str(repo), "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    payload = json.loads(result.output)
+    assert payload["commits_scanned"] == 1
+    assert payload["findings_inserted"] == 0
+
+    # The store left behind is a real one, so the next command can read it.
+    again = CliRunner().invoke(
+        security_command,
+        ["scan", "--history", "--path", str(repo), "--format", "json"],
+    )
+    assert again.exit_code == 0, again.output

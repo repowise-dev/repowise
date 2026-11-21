@@ -45,6 +45,19 @@ def cli(ctx: click.Context) -> None:
         except Exception:
             pass
 
+    # A one-shot command prints its own output, so library info lines (graph
+    # rehydration, metric loads) only interleave with it. Quiet them for this
+    # invocation; a command's own -v turns them back on, and the previous
+    # levels return when the command closes. Long-running servers keep their
+    # logs, and augment is the hook hot path.
+    if ctx.invoked_subcommand not in _KEEPS_LOGS:
+        from repowise.cli.helpers import silence_logs_for_machine_output_until_close
+
+        silence_logs_for_machine_output_until_close()
+
+
+#: Commands whose log lines are part of what the user watches.
+_KEEPS_LOGS = frozenset({"augment", "serve", "watch", "mcp"})
 
 _COMMANDS_PKG = "repowise.cli.commands"
 
@@ -101,6 +114,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("next", "next_cmd:next_command"),
+    ("mark", "mark_cmd:mark_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("grammars", "grammars_cmd:grammars_group"),
     ("watch", "watch_cmd:watch_command"),

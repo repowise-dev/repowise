@@ -22,6 +22,8 @@ export type {
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  SlowTest,
+  SuiteCostResponse,
 } from "./generated/http.js";
 
 import type { EvidenceStatusResponse } from "./generated/http.js";

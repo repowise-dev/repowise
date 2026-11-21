@@ -63,23 +63,25 @@ def _target_risk(
         command="risk",
     )
 
+    arguments = {
+        "targets": list(targets),
+        "changed_files": list(changed_files) or None,
+        # Every block the card prints; --format json also keeps the PR blast radius.
+        "include": [
+            "churn",
+            "owners",
+            "blast",
+            # Orientation for a multi-file question; beside one named file it is noise.
+            *(["hotspots"] if len(targets) > 1 and not changed_files else []),
+        ],
+    }
+
     def _factory():
         from repowise.server.mcp_server.tool_risk.get_risk import get_risk
 
-        return get_risk(
-            targets=list(targets),
-            changed_files=list(changed_files) or None,
-            # Every block the card prints; --format json also keeps the PR blast radius.
-            include=[
-                "churn",
-                "owners",
-                "blast",
-                # Orientation for a multi-file question; beside one named file it is noise.
-                *(["hotspots"] if len(targets) > 1 and not changed_files else []),
-            ],
-        )
+        return get_risk(**arguments)
 
-    payload = _ta.run(repo, _factory, "get_risk")
+    payload = _ta.run(repo, _factory, "get_risk", arguments=arguments)
 
     if full:
         _ta.emit_full(payload)

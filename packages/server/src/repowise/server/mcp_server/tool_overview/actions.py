@@ -42,6 +42,39 @@ def _compact(action: dict[str, Any], *, full: bool) -> dict[str, Any]:
     return row
 
 
+def without_evidence(view: dict[str, Any], ids: frozenset[str]) -> dict[str, Any]:
+    """*view* less the actions that rest on *ids*, each horizon recounted.
+
+    The agent surface carries no runtime evidence yet, so an action on a
+    cause minted from a measurement alone stays on the people's surfaces.
+    The head refills: a horizon holds ``KEEP_PER_HORIZON`` ranked actions and
+    the overview shows the first ``_PER_HORIZON`` left. Ceiling: the Fix-first
+    rule stores actions for its top ``FIX_FIRST_ACTIONS`` items only, so a
+    hidden one there is not replaced by the next Fix-first item; another
+    rule's action takes the place. Keeping a spare would grow the stored view
+    every surface reads.
+    """
+    if not ids:
+        return view
+    horizons = {}
+    for name, horizon in (view.get("horizons") or {}).items():
+        actions = horizon.get("actions") or []
+        gone = [a for a in actions if ids.intersection(a.get("evidence_ids") or ())]
+        if not gone:
+            horizons[name] = horizon
+            continue
+        by_tier = dict(horizon.get("by_tier") or {})
+        for action in gone:
+            by_tier[action["tier"]] = by_tier.get(action["tier"], 0) - 1
+        horizons[name] = {
+            **horizon,
+            "actions": [a for a in actions if not ids.intersection(a.get("evidence_ids") or ())],
+            "total": horizon.get("total", 0) - len(gone),
+            "by_tier": {k: v for k, v in by_tier.items() if v > 0},
+        }
+    return {**view, "horizons": horizons}
+
+
 def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str, Any]:
     """The head of each horizon plus its totals, from a ``load_actions_view`` result.
 
@@ -89,6 +122,7 @@ async def _build_next_actions(
     """
     # Imported here so ``compact_actions_view`` stays free of persistence.
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
     from repowise.server.mcp_server._helpers import _cross_repo_cut
 
     try:
@@ -97,7 +131,8 @@ async def _build_next_actions(
             view = await load_actions_view(
                 session, repository.id, setup=setup, **_cross_repo_cut(alias)
             )
-        return compact_actions_view(view, full=full), None
+            hidden = await measured_hotspot_ids(session, repository.id)
+        return compact_actions_view(without_evidence(view, hidden), full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)
         return {}, f"Next actions could not be read from this index ({type(exc).__name__})."

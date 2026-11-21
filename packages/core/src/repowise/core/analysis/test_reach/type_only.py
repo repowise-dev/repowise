@@ -14,6 +14,7 @@ import ast
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 
+from repowise.core.pyparse import parse_python
 from repowise.core.test_paths import is_test_related_path
 
 _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
@@ -164,7 +165,7 @@ def _ts_type_export(node) -> bool:
 
 def _python_type_only(source: bytes) -> bool:
     try:
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except (SyntaxError, ValueError):
         return False
     # Imports, a docstring and ``__all__`` alone are no code of their own either.

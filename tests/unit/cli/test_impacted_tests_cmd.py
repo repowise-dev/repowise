@@ -666,3 +666,49 @@ def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"], data
+
+
+def test_the_tables_print_bracketed_paths_as_written(monkeypatch) -> None:
+    """#6032: rich read a Next.js `[slug]` segment as markup and dropped it."""
+    from rich.console import Console
+
+    from repowise.cli.commands import impacted_tests_cmd as mod
+
+    record = Console(record=True, width=240, color_system=None)
+    monkeypatch.setattr(mod, "console", record)
+    page = "app/blog/[slug]/page.tsx"
+    many = [
+        {"source_file": page, "test_file": f"__tests__/[id]/t{i}.test.tsx", "via": "call-graph"}
+        for i in range(mod._TABLE_CANDIDATES + 1)
+    ]
+    mod._print_covered(
+        {"covered": {"tests/[slug].test.ts::renders": {"source_files": [page]}}, "map_empty": False}
+    )
+    mod._print_inferred(many)
+    mod._print_unknown(["app/[locale]/layout.tsx"])
+
+    out = record.export_text()
+    assert "tests/[slug].test.ts::renders" in out
+    assert out.count(page) == mod._TABLE_CANDIDATES + 2  # covered, each row, and the "more" row
+    assert "__tests__/[id]/t0.test.tsx" in out
+    assert "app/[locale]/layout.tsx" in out
+    assert "app/blog//page.tsx" not in out
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

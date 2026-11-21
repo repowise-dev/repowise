@@ -38,8 +38,11 @@ def _repo_root(path: str | None) -> Path:
     return Path(target.repo_path).resolve()
 
 
-def _no_index() -> None:
-    console.print("No index found. Run `repowise init` first.")
+def _no_index(fmt: str = "table") -> None:
+    if fmt in ("json", "in-toto"):
+        emit_json({"error": "No index found. Run `repowise init` first."})
+    else:
+        console.print("No index found. Run `repowise init` first.")
     raise SystemExit(1)
 
 
@@ -61,7 +64,7 @@ async def _list(
         return [change_record(r, attribution=on) for r in rows], total
 
 
-async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict | None | bool:
+async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict | bool | None:
     from repowise.core.attribution import attribution_enabled
     from repowise.core.changes.collect import change_evidence
     from repowise.core.changes.record import change_record
@@ -175,7 +178,7 @@ def outcome_lines(item: dict) -> list[str]:
             lines.append(f"reverted by {later}{held}: {row['evidence']}")
         elif row["kind"] == "fix_reference":
             lines.append(
-                f"referenced as the cause by a later fix, {later} (their words): \"{row['evidence']}\""
+                f'referenced as the cause by a later fix, {later} (their words): "{row["evidence"]}"'
             )
         elif row["kind"] == "file_fix_rate":
             open_ = "" if row["window_complete"] else " (window still open)"
@@ -184,7 +187,9 @@ def outcome_lines(item: dict) -> list[str]:
                 f" within {row['days']} days{open_}"
             )
     if not any(r["kind"] in ("revert", "fix_reference") for r in item["details"]):
-        lines.insert(0, "no later commit in this history reverts this change or names it as a cause")
+        lines.insert(
+            0, "no later commit in this history reverts this change or names it as a cause"
+        )
     return lines
 
 
@@ -238,7 +243,10 @@ def changes_group() -> None:
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd).")
 @click.option("--category", default=None, help="Only this category (feature, fix, ...).")
 @click.option(
-    "--shape", type=click.Choice(["merge", "squash", "commit"]), default=None, help="Only this shape."
+    "--shape",
+    type=click.Choice(["merge", "squash", "commit"]),
+    default=None,
+    help="Only this shape.",
 )
 @click.option("--grep", "q", default=None, help="Substring of the title, id or a file path.")
 @click.option(
@@ -264,11 +272,9 @@ def changes_list(
 
     root = _repo_root(repo)
     where = ChangeFilter(category=category, shape=shape, q=q)
-    got = run_async(
-        _list(root, where, limit=limit, offset=offset, needs_attention=needs_attention)
-    )
+    got = run_async(_list(root, where, limit=limit, offset=offset, needs_attention=needs_attention))
     if got is None:
-        _no_index()
+        _no_index(fmt)
     records, total = got
     if fmt == "json":
         for r in records:
@@ -316,7 +322,7 @@ def changes_show(ref: str, repo: str | None, fmt: str, evidence: bool, refresh: 
         silence_logs_for_machine_output_until_close()
     record = run_async(_show(root, ref, evidence=evidence, refresh=refresh))
     if record is False:
-        _no_index()
+        _no_index(fmt)
     if record is None:
         console.print(f"No change {ref!r} in the index.")
         raise SystemExit(1)
@@ -396,4 +402,4 @@ def changes_export(
             click.echo(json.dumps(record, default=str))
 
     if run_async(_export(root, since, until, refresh, emit)) is None:
-        _no_index()
+        _no_index(fmt)

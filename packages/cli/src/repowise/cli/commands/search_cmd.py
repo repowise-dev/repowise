@@ -296,14 +296,18 @@ def search_command(
 def _run_search(repo_path, query: str, limit: int, tool_mode: str) -> dict:
     """One ``search_codebase`` call against one repo."""
 
+    arguments = {"query": query, "limit": limit, "mode": tool_mode}
+
     def _factory():
         from repowise.server.mcp_server.tool_search import search_codebase
 
-        return search_codebase(query=query, limit=limit, mode=tool_mode)
+        return search_codebase(**arguments)
 
     # Symbol and path search are SQL lookups: neither reads the vector store.
     reads_vectors = tool_mode not in ("symbol", "path")
-    return _ta.run(repo_path, _factory, "search_codebase", reads_vectors=reads_vectors)
+    return _ta.run(
+        repo_path, _factory, "search_codebase", reads_vectors=reads_vectors, arguments=arguments
+    )
 
 
 def _warn_if_lexical_only(payload: dict, requested: str, notices, repo_path=None) -> None:

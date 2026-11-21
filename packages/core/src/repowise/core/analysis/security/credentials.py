@@ -60,9 +60,16 @@ _TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)|\{[!#].*?\}")
 _SCHEME_TEMPLATE_VALUE = re.compile(
     r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
-# A character range with a quantifier is a regular expression (``(_D[0-9]+D_)``).
-_REGEX_VALUE = re.compile(r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]")
-_OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
+# A regular expression, not a key: a character range with a quantifier
+# (``(_D[0-9]+D_)``), or a pattern anchored at both ends around a group with an
+# alternation (``^(-?\\d{1,2}|null)$``). The anchors and the alternation together
+# keep a password that merely holds ``\s+``, ``^``, ``$`` or ``(...)`` reportable.
+_REGEX_VALUE = re.compile(
+    r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]"
+    r"|\A\^.*\([^()]*\|[^()]*\).*\$\Z"
+)
+# ``$`` joins a namespace to a key in JavaScript names (``SECRETS$ADD_SECRET``).
+_OWN_NAME_VALUE = re.compile(r"[A-Za-z_$-]+")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # Uppercase env-var names and sentinels can have short version numbers. Four
@@ -85,6 +92,7 @@ def _is_own_name_value(value: str, name: str) -> bool:
     """Whether a letter-only constant holds its own name or a suffix of it."""
     if not _OWN_NAME_VALUE.fullmatch(value):
         return False
+    # ``$`` is kept: ``pass$word`` is not the name ``password``.
     normalized_name = re.sub(r"[_-]", "", name).lower()
     normalized_value = re.sub(r"[_-]", "", value).lower()
     return bool(normalized_name) and normalized_name.endswith(normalized_value)
@@ -92,7 +100,7 @@ def _is_own_name_value(value: str, name: str) -> bool:
 
 def _assignment_name(prefix: str) -> str:
     """Name assigned to the literal immediately following *prefix*."""
-    assignment = re.search(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", prefix)
+    assignment = re.search(r"([A-Za-z_$][A-Za-z0-9_$-]*)\s*=\s*['\"]?$", prefix)
     return assignment.group(1) if assignment else ""
 
 
@@ -116,7 +124,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
-    if name.lower() in _KEYWORD_EXCLUDED_NAMES:
+    if name.lower().rsplit("$", 1)[-1] in _KEYWORD_EXCLUDED_NAMES:
         return False
     value = val.strip()
     if kind == "hardcoded_secret" and (
@@ -157,8 +165,12 @@ def _is_plain_word(value: str) -> bool:
     )
 
 
+#: Characters of a value its redaction keeps, before the marker.
+_KEPT = 4
+
+
 def _redaction(val: str) -> str:
-    return (val[:4] + "****") if len(val) >= 4 else "****"
+    return (val[:_KEPT] + "****") if len(val) >= _KEPT else "****"
 
 
 # ``public_env_secret`` has no capture group, so its value is found here. In
@@ -295,6 +307,35 @@ def masked_snippet(line: str, spans: Iterable[tuple[int, int]] = ()) -> str:
     return _snippet(line, spans)
 
 
+def holds_secret(text: str) -> bool:
+    """Whether any line of *text* holds a value :func:`masked_snippet` would mask.
+
+    For text written outside the scan (a model's prose) that must never carry one.
+    """
+    return any(
+        _PEM_BODY_LINE.search(line) or (_SECRET_PREFILTER.search(line) and _secret_spans(line))
+        for line in text.splitlines()
+    )
+
+
+#: Kinds whose snippet is a credential's own line. ``public_env_secret`` sits
+#: outside ``SECRET_KINDS`` only because its value is found differently.
+_CREDENTIAL_KINDS = SECRET_KINDS | {"public_env_secret"}
+
+
+def shown_snippet(kind: str, snippet: str | None) -> str:
+    """What any surface may show of a stored *snippet*: nothing of a secret's.
+
+    A masked value keeps its first characters and the rest of its line, so a
+    credential finding, or any snippet with a masked value on it, is shown by
+    kind and location only. The stored snippet stays for line checks and
+    fingerprints. A line with a literal ``****`` is hidden too: failing closed.
+    """
+    if not snippet or kind in _CREDENTIAL_KINDS or _MARKER in snippet:
+        return ""
+    return snippet
+
+
 def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 
@@ -303,8 +344,10 @@ def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     text = _mask_line(line, extra).strip()
     cut = _SNIPPET_MAX
     if len(text) > cut:
-        # Never end inside a marker: a bare ``*`` run defeats line verification.
-        marker = text.rfind(_MARKER, 0, cut + len(_MARKER) - 1)
-        if marker != -1 and marker < cut < marker + len(_MARKER):
-            cut = marker
+        # Never end inside a redaction: kept characters cut off from their
+        # marker read as plain text, and a bare ``*`` run defeats line
+        # verification. So a redaction the cut crosses is dropped whole.
+        marker = text.find(_MARKER, cut - _KEPT + 1, cut + _KEPT - 1 + len(_MARKER))
+        if marker != -1:
+            cut = max(0, marker - _KEPT)
     return text[:cut]

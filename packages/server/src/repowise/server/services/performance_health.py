@@ -51,6 +51,7 @@ from repowise.core.persistence.crud import (
     performance_area_counts,
     performance_facet_counts,
 )
+from repowise.core.persistence.crud.analysis.performance import measured_hotspot_counts
 from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
 
 from ..mcp_server._references import refactoring_plan_id
@@ -80,7 +81,9 @@ class PerformanceHealthService:
     """Query, page, detail, facets, plan linkage, and recovery, in one place.
 
     Lists, counts, facets and the headline leave out what a language gate holds
-    back unless ``include_unverified``; a lookup by id never does.
+    back unless ``include_unverified``; a lookup by id never does. They leave
+    out the causes runtime evidence alone minted unless
+    ``include_measured_hotspots`` (the agent surface shows no evidence).
     """
 
     def __init__(
@@ -90,11 +93,13 @@ class PerformanceHealthService:
         repository: str,
         *,
         include_unverified: bool = False,
+        include_measured_hotspots: bool = True,
     ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
         self._include_unverified = include_unverified
+        self._include_measured_hotspots = include_measured_hotspots
 
     # -- collection --------------------------------------------------------
 
@@ -137,6 +142,7 @@ class PerformanceHealthService:
             limit=query.limit,
             offset=query.offset,
             include_unverified=self._include_unverified,
+            include_measured_hotspots=self._include_measured_hotspots,
         )
         links = await self._plan_links(rows)
         evidence = await self._evidence_for(rows, evidence_per_item)
@@ -190,6 +196,7 @@ class PerformanceHealthService:
                     shown=len(items),
                     file_paths=query.file_paths,
                     include_unverified=self._include_unverified,
+                    include_measured_hotspots=self._include_measured_hotspots,
                 )
             ).as_dict(),
             gated=await self.gated(),
@@ -237,12 +244,14 @@ class PerformanceHealthService:
             file_paths=query.file_paths,
             area_prefix=filters["area_prefix"],
             include_unverified=self._include_unverified,
+            include_measured_hotspots=self._include_measured_hotspots,
             scoped=True,
         )
         by_file = await performance_area_counts(
             self._session,
             self._repository_id,
             include_unverified=self._include_unverified,
+            include_measured_hotspots=self._include_measured_hotspots,
             **filters,
         )
         # The scope sizes describe the whole repository, so an opened area
@@ -255,6 +264,7 @@ class PerformanceHealthService:
                 self._repository_id,
                 file_paths=query.file_paths,
                 include_unverified=self._include_unverified,
+                include_measured_hotspots=self._include_measured_hotspots,
                 scoped=True,
             )
         )
@@ -272,6 +282,7 @@ class PerformanceHealthService:
             self._repository_id,
             file_paths=query.file_paths,
             include_unverified=self._include_unverified,
+            include_measured_hotspots=self._include_measured_hotspots,
         )
         return fold_facets(grouped, query)
 
@@ -301,14 +312,30 @@ class PerformanceHealthService:
         base = summary_payload(await get_performance_summary(self._session, self._repository_id))
         if base["status"] == "unavailable":
             return base
+        hidden, queued = (0, 0)
+        if not self._include_measured_hotspots:
+            hidden, queued = await measured_hotspot_counts(
+                self._session, self._repository_id, include_unverified=self._include_unverified
+            )
+            base["total"] -= hidden
+            if "default_queue" in base:
+                # Ceiling: a minted cause the queue left out stays in its
+                # exclusion count; one is plan ready, so it is queued.
+                base["default_queue"] = {
+                    **base["default_queue"],
+                    "total": base["default_queue"]["total"] - queued,
+                }
         base["repository_total"] = base["total"]
         gated = await self.gated()
-        if contexts is None and not gated:
+        if contexts is None and not gated and not hidden:
             return base
         # The stored rollup counts gated rows too, so with any held back the
         # headline is recounted from the same gated facet aggregate.
         grouped = await performance_facet_counts(
-            self._session, self._repository_id, include_unverified=self._include_unverified
+            self._session,
+            self._repository_id,
+            include_unverified=self._include_unverified,
+            include_measured_hotspots=self._include_measured_hotspots,
         )
         if contexts is None:
             contexts = frozenset(group[0] for group in grouped)

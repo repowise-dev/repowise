@@ -122,6 +122,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(persist, "sweep_absent_cycle_pages", ret=[])
     rec.patch(persist, "sweep_absent_symbol_spotlights", ret=[])
     rec.patch(persist, "sweep_deselected_pages", ret=[])
+    rec.patch(persist, "sweep_deselected_flow_pages", ret=[])
     # One value for both persisters, so their sweep inputs compare equal.
     rec.monkeypatch.setattr(persist_index, "_generation_config", lambda _path: "config")
     rec.patch(persist, "tombstone_candidates", ret=[], sync=True)

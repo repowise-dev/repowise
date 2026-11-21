@@ -28,6 +28,7 @@ from repowise.server.mcp_server._references import (
     source_reference,
     symbol_identity,
 )
+from repowise.server.repo_paths import repo_relative_path
 
 from .text import _number_lines, _read_file_text, _slice_text
 
@@ -160,6 +161,23 @@ async def _resolve_range_read(
 
     declare_replaced(response, read_credit(repo_root, path, text))
     return response
+
+
+def _repo_relative_id(symbol_id: str, repo_root: Any) -> str:
+    """*symbol_id* with an absolute path inside *repo_root* made repo-relative.
+
+    Editors, shells and stack traces hand over the full path, in any of the
+    id forms. A path outside the checkout is left as given, so its miss names
+    what the caller passed.
+    """
+    raw = symbol_id.strip()
+    head, sep, _ = raw.partition("::")
+    located = None if sep else (_RANGE_ID_RE.match(head) or _LINE_ID_RE.match(head))
+    path = located.group("path") if located else head
+    if not repo_root or not Path(path).is_absolute():
+        return symbol_id
+    relative = repo_relative_path(path, str(repo_root))
+    return symbol_id if relative is None else relative + raw[len(path) :]
 
 
 async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:

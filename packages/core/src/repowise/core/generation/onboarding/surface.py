@@ -27,6 +27,7 @@ from ..flow_entries import (
     declared_entries,
     doc_mentions,
     entry_cite,
+    file_paths,
     program_name,
     python_scripts,
     text_commands,
@@ -88,7 +89,7 @@ def surfaces(
     """The programs, commands, tools and public names of the repository."""
     program = program_name(repo_root, graph)
     entries = declared_entries(graph, read, program, python_scripts(repo_root))
-    files = [n for n, a in graph.nodes(data=True) if a.get("node_type") == "file"]
+    files = file_paths(graph)
     commands = [e for e in entries if e.kind == CLI] + text_commands(files, read, program)
     api = [e for e in entries if e.kind == API and doc_mentions(e, sections)]
     return Surfaces(

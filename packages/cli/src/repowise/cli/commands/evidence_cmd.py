@@ -41,6 +41,7 @@ from repowise.core.evidence.add import (
     detect_environment,
     evidence_caps,
     evidence_paths,
+    evidence_report_dir,
     prepare_evidence_files,
 )
 from repowise.core.evidence.ci_snippet import CI_KINDS
@@ -49,10 +50,11 @@ from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
 
 
-def _resolve_repo(path: str | None, notices: Any) -> Path:
+def _resolve_repo(path: str | None, notices: Any, command: str = "evidence") -> Path:
     """The repository to ingest into (workspace-aware, like ``coverage``)."""
     target = resolve_command_target(path=path)
-    return target.narrow(notices, command="evidence", repo_option=False)
+    return target.narrow(notices, command=command, repo_option=False)
+
 
 
 @click.group("evidence")
@@ -199,6 +201,7 @@ def evidence_add(
             check_file_size(size, max_file_mb, str(path))
         prepared = prepare_evidence_files(
             [(str(path), path.read_bytes()) for path in paths],
+            report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,
             dirty=dirty,
@@ -445,7 +448,7 @@ def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: s
     """
     if ci is not None and not write:
         raise click.UsageError("--ci names the file --write writes; add --write.")
-    _print_setup(repo, fmt, write=write, ci=ci)
+    _print_setup(repo, fmt, write=write, ci=ci, command="evidence")
 
 
 def _print_setup(
@@ -455,6 +458,7 @@ def _print_setup(
     coverage_only: bool = False,
     write: bool = False,
     ci: str | None = None,
+    command: str
 ) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
     from repowise.core.evidence.ci_snippet import detect_ci
@@ -463,7 +467,7 @@ def _print_setup(
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
-    repo_path = _resolve_repo(repo, notices)
+    repo_path = _resolve_repo(repo, notices, command)
     if write:
         ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
@@ -568,6 +572,8 @@ def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
         if timings["flag"]
         else "written by default"
     )
+    if timings.get("env"):
+        how += f" with [cyan]{escape(timings['env'])}[/cyan] in its environment"
     lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
     if timings["ingest"]:
         lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
@@ -585,6 +591,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    # The reason is the last note when there is no command; the rest say what the command installs or skips.
+    lines += [f"  [dim]note: {escape(n)}[/dim]" for n in cov["notes"] if n != cov["reason"]]
     if cov["found"]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
@@ -598,6 +606,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"{head}: [cyan]{escape(target['command'])}[/cyan]")
         if target["reason"]:
             lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
+        if target.get("note"):
+            lines.append(f"    [dim]note: {escape(target['note'])}[/dim]")
         if target["ingest"]:
             lines.append(f"    then: [cyan]{escape(target['ingest'])}[/cyan]")
     return lines
@@ -827,5 +837,10 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(
             f"  {row['test_seconds']:8.2f}s  {escape(row['file_path'])} "
             f"[dim]({row['timed_tests']} of {row['tests']} tests timed)[/dim]"
+        )
+    if costs["every_test"]:
+        lines.append(
+            f"[dim]{costs['every_test']:,} more run in every timed test that reaches production code "
+            "(the test setup imports them), so their time is all of those tests'; not listed.[/dim]"
         )
     return lines
