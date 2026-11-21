@@ -266,7 +266,8 @@ def _facets(
         # Only with runtime evidence, so a repo without any stores what it did.
         **({"measured": r.measured} if r.measured else {}),
         **({"measured_in_tests": r.in_tests} if r.in_tests else {}),
-        # The name said it runs once and a run said otherwise: kept, never led.
+        # The name said it runs once and a run said otherwise: kept, never
+        # led, unless the run measured it above the lead bar (``confirmed``).
         **({"measured_overrides": "cold_path"} if r.measured and cold_name else {}),
         **_query_facets(r.queries),
         **({"confirmed": confirmed} if confirmed else {}),

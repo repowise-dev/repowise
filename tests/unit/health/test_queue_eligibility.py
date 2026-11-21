@@ -176,6 +176,29 @@ def test_a_measured_cold_role_is_queued_but_never_confident() -> None:
     assert perf_queue_verdict(_cause(facets=cli)).reason == "cold_role"
 
 
+def test_a_cold_role_a_leading_run_measured_above_the_bar_is_confident() -> None:
+    cli = {"loop_magnitude": "grows_with_data", "growth_source": "loop", "execution_role": "cli"}
+    confirmed = _cause(facets={**cli, "measured": "update", "confirmed": "measured"})
+    assert perf_confident_verdict(confirmed).eligible
+    # A unit-test run that measured it above the bar never answers the role.
+    in_tests = _cause(facets={**cli, "measured_in_tests": "pytest", "confirmed": "measured_in_tests"})
+    assert perf_confident_verdict(in_tests).reason == "cold_role"
+
+
+def test_a_cold_name_a_leading_run_measured_above_the_bar_is_confident() -> None:
+    facets = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
+    overridden = _cause(
+        biomarker_type="sql_cartesian_join",
+        facets={
+            **facets,
+            "measured": "boot",
+            "measured_overrides": "cold_path",
+            "confirmed": "measured",
+        },
+    )
+    assert perf_confident_verdict(overridden).eligible
+
+
 def test_a_measured_cold_name_is_never_confident_whatever_its_shape() -> None:
     # A shape that grows by itself skips the loop-growth check; the override must not.
     facets = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
