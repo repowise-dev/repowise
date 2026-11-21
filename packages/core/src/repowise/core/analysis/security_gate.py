@@ -651,6 +651,9 @@ def scan_change(
             secrets_only=False,
             patterns=patterns,
             path_allowlisted=allowlisted(path),
+            # Ceiling: the folder rules (docs site, data folder) read the
+            # working tree, not *rev*'s tree. They agree on a checked-out head;
+            # a scan of another revision reads today's folders.
             repo_root=root,
         )
         rows += scoped
