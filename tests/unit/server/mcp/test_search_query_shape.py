@@ -62,6 +62,31 @@ def test_resolve_mode(query: str, mode: str | None, expected: str) -> None:
     assert _resolve_mode(query, mode) == expected
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("class Article", "Article"),
+        ("class Article(", "Article"),
+        ("def get_queryset", "get_queryset"),
+        ("pub fn new_client", "new_client"),
+        ("export interface Props", "Props"),
+        ("struct Router {", "Router"),
+        ("func HandleFunc", "HandleFunc"),
+        ("impl Display", "Display"),
+        # Prose, or a name the index does not hold, stays a search.
+        ("type checking", None),
+        ("class based views", None),
+        ("class Missing", None),
+        ("Article", None),
+    ],
+)
+def test_a_declaration_query_names_its_symbol(query: str, expected: str | None) -> None:
+    from repowise.server.mcp_server._query_shape import declared_name
+
+    names = {"Article", "get_queryset", "new_client", "Props", "Router", "HandleFunc", "Display"}
+    assert declared_name(query, names) == expected
+
+
 def test_identifier_shapes() -> None:
     assert _canonical_symbol_query(" src\\a.py::Foo ") == ("src/a.py", "Foo")
     assert _canonical_symbol_query("a.py::Foo") is None
