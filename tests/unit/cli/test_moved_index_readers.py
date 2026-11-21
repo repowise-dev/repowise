@@ -228,3 +228,25 @@ async def test_a_failed_git_check_is_retried_not_remembered(tmp_path: Path, monk
 
     monkeypatch.setattr(repository, "_has_commit", real)
     assert await _lookup(here) == repo_id
+
+
+async def test_a_rejection_is_checked_again_once_head_moves(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.persistence.crud import repository
+
+    built = _git_repo(tmp_path / "built", "init")
+    repo_id = await _index(built)
+    here = tmp_path / "here"
+    shutil.copytree(built, here)
+    built.rename(tmp_path / "gone")
+    (here / "a.py").write_text("# next\n")
+    _git(here, "commit", "-qam", "next")
+    real = repository._has_commit
+    # The indexed commit is missing here, as in a shallow clone before a fetch.
+    monkeypatch.setattr(repository, "_has_commit", lambda *_a: False)
+    assert await _lookup(here) is None
+
+    monkeypatch.setattr(repository, "_has_commit", real)
+    assert await _lookup(here) is None
+    (here / "a.py").write_text("# pulled\n")
+    _git(here, "commit", "-qam", "pulled")
+    assert await _lookup(here) == repo_id

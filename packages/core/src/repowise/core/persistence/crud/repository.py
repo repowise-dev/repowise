@@ -254,10 +254,10 @@ def _store_dir(session: AsyncSession) -> Path | None:
     return db_file.parent.parent
 
 
-#: ``(store dir, row id, checkout path)`` whose row git said is another repo's.
-#: Kept for the process so a miss on every path-keyed read does not rerun the
-#: git checks; a store re-indexed in place gets a new row id.
-_REJECTED_ROWS: set[tuple[str, str, str]] = set()
+#: ``(store dir, row id, checkout path, checkout HEAD)`` whose row git said is
+#: another repo's. Kept for the process so a miss on every path-keyed read does
+#: not rerun the git checks; a new HEAD or a re-indexed store misses the entry.
+_REJECTED_ROWS: set[tuple[str, str, str, str]] = set()
 
 
 async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
@@ -278,7 +278,9 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     if len(rows) != 1:
         return None
     repo = rows[0]
-    key = (str(store_dir), repo.id, local_path)
+    # The checkout's HEAD is in the key: a pull or checkout that brings the
+    # indexed commit in moves it, and the row is checked again.
+    key = (str(store_dir), repo.id, local_path, _read_head_commit(local_path) or "")
     if key in _REJECTED_ROWS:
         return None
     same = await asyncio.to_thread(_same_checkout, repo, local_path)
