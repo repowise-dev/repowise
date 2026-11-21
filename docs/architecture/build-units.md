@@ -2,7 +2,7 @@
 
 A build unit is one thing a build tool declares: a .NET project, a Cargo
 crate, an npm workspace package, a Gradle project, a Go module, a Maven
-module, a Python distribution. `repowise.core.build_units` reads them once,
+module, a Python distribution, a CMake target. `repowise.core.build_units` reads them once,
 from the resolver indexes the graph build already holds, and stores one
 answer to three questions:
 
@@ -31,12 +31,12 @@ Paths are relative to `packages/core/src/repowise/core/`.
 
 | Field | Meaning |
 |---|---|
-| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `manifest:<root>` (`manifest:.` at the repo root) |
-| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python` or `manifest` |
-| `name` | The name the build tool uses (assembly, crate, package, module path, artifactId) |
+| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `cmake:<target>`, `manifest:<root>` (`manifest:.` at the repo root) |
+| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `cmake` or `manifest` |
+| `name` | The name the build tool uses (assembly, crate, package, module path, artifactId, target) |
 | `root` | Repo-relative POSIX directory, `""` at the repo root |
 | `manifest` | Repo-relative path of the file that declares the unit |
-| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `manifest-root` |
+| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `cmake`, `manifest-root` |
 | `deps` | Sorted ids of the in-repo units this one depends on. Third-party dependencies are not units |
 
 `BuildUnitIndex` holds every unit by id and the owners of each file:
@@ -58,8 +58,8 @@ the same rows.
 
 1. **Listed files first.** An adapter that knows a unit's exact files lists
    them: a .NET project's compiled sources, a Gradle project's source-set
-   directories (which may sit outside the project, `srcDirs("../shared/src")`).
-   A listed file is owned by every unit listing it.
+   directories (which may sit outside the project, `srcDirs("../shared/src")`),
+   a CMake target's sources and declared headers. A listed file is owned by every unit listing it.
 2. **Otherwise the deepest unit root.** Any other file is owned by the units
    whose `root` is the deepest directory above it.
 3. **Several owners are normal.** Two units at one root (a `Web.csproj` and a
@@ -99,6 +99,7 @@ Which units exist is decided per manifest:
 | Go | `GoPackageIndex` (`ingestion/resolvers/go_workspace.py`) and `scan_go_mod` | One unit per module (`go.mod`), not per package | `require` entries naming another module of the repo |
 | Maven | `load_maven_reactor` (`ingestion/external_systems/maven_model.py`) | One unit per module of the root `pom.xml` reactor, followed recursively, with coordinates inherited from local parents | `<dependencies>` naming another module's `groupId:artifactId`, inherited and at every scope |
 | Python | `pyproject.toml` read with `read_toml_or_none`, names normalised as PyPI does | One unit per `pyproject.toml` naming a distribution (`[project] name`, else `[tool.poetry] name`) | `[project]` dependencies and optional dependencies, Poetry dependencies, uv `workspace = true` sources, matched by name; uv and Poetry `path` sources matched by the directory they point at |
+| CMake | `CppWorkspaceIndex` (`ingestion/resolvers/cpp_workspace.py`), its CMake targets only | One unit per `add_library` / `add_executable` target, rooted at the directory of the `CMakeLists.txt` declaring it; sources and declared headers listed | `target_link_libraries` names matching another target |
 | Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby, PHP, Swift, Dart and the rest) | None |
 
 ### Ceilings
@@ -120,6 +121,13 @@ answer:
   `[dependency-groups]` are seen only through their uv source.
 - **Cargo crates outside the root workspace** are units with the path
   dependencies their own manifest declares.
+- **CMake is read without configuring.** Generator expressions, targets and
+  deps built in loops, functions or `include()`-d modules, and every `if()`
+  branch are read statically. `ALIAS` and `IMPORTED` libraries become units
+  of their own, so a dep on an alias points at an empty unit. A
+  `CMakeLists.txt` is build config, not a package manifest, so the fallback
+  never covers a CMake directory. A CMake File API reply in the build tree is
+  the upgrade path, and the index already prefers it when present.
 - **The fallback has no deps.** Ecosystems without an adapter get correct
   roots and ownership but no edges until an adapter is added.
 
@@ -178,6 +186,11 @@ and edge precision and recall are 1.0 on every repo. File ownership agrees
 with the oracle's deepest unit on 50 of 50 sampled source files per repo. No
 adapter fails on any of them.
 
+CMake is not measured yet. Its oracle is the CMake File API codemodel of a
+configured build (targets, their sources and their link dependencies); so far
+the adapter is checked only against `tests/fixtures/cmake_build_units`, which
+builds with CMake.
+
 ## Adding an adapter
 
 Open adapter requests: Ruby
@@ -186,8 +199,8 @@ Open adapter requests: Ruby
 ([#5804](https://github.com/repowise-dev/repowise/issues/5804)), Dart
 ([#5805](https://github.com/repowise-dev/repowise/issues/5805)), Elixir
 ([#5806](https://github.com/repowise-dev/repowise/issues/5806)) and Scala
-([#5807](https://github.com/repowise-dev/repowise/issues/5807)). C and C++
-targets (CMake, Bazel) are tracked with the build-graph partitioner in
+([#5807](https://github.com/repowise-dev/repowise/issues/5807)). Bazel
+`cc_*` targets are tracked with the build-graph partitioner in
 [#5775](https://github.com/repowise-dev/repowise/issues/5775).
 
 1. **Check the manifest names.** The ecosystem's package manifests must be in
