@@ -268,6 +268,23 @@ class _Retrieved(NamedTuple):
     flow_paths: list[list[str]]
     # Lines in another workspace repo's documents (see ``documents``).
     other_repo_lines: list[dict]
+    # The normalized ``scope`` the question was asked under.
+    scope: str | None = None
+
+
+def _split_in_scope(split: dict[str, list[str]], scope: str) -> dict[str, list[str]]:
+    """The held-at-medium definitions as a scoped reply names them: files
+    outside the scope become a count. The grade itself saw every file, so a
+    scope never lifts it."""
+    shown = {}
+    for name, paths in split.items():
+        kept = [p for p in paths if in_scope(p, scope)]
+        outside = len(paths) - len(kept)
+        if outside:
+            many = f"{outside} files outside the scope"
+            kept.append("a file outside the scope" if outside == 1 else many)
+        shown[name] = kept
+    return shown
 
 
 def _keep_in_scope(
@@ -279,7 +296,8 @@ def _keep_in_scope(
     paths add files after it. A scoped caller asked about the scope, so none of
     them may reach the answer, its lists or synthesis. A flow path that leaves
     the scope goes whole: a cut chain would claim a call order that is not there.
-    ``homonyms`` is narrowed in place; ``split`` stays, since it only lowers a grade.
+    ``homonyms`` is narrowed in place; ``split`` stays whole for the grade (see
+    :func:`_split_in_scope` for what the reply names).
     """
     if not scope:
         return hits, flow_paths
@@ -440,7 +458,7 @@ async def _run_retrieval_pipeline(
                     session, repo_id, resolved_pool, question_ids=question_ids
                 )
     return _Retrieved(
-        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines
+        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines, scope
     )
 
 
@@ -584,13 +602,7 @@ def _agreement(hits: list[dict]) -> bool:
 
 
 async def _pre_synthesis_reply(
-    ask: _Ask,
-    retrieved: _Retrieved,
-    agreement_dominant: bool,
-    graph_callers,
-    neighbors,
-    *,
-    scope: str | None = None,
+    ask: _Ask, retrieved: _Retrieved, agreement_dominant: bool, graph_callers, neighbors
 ) -> dict | None:
     """The qualified-miss, answer-by-union or no-hits reply, before any page is read."""
     hits = retrieved.hits
@@ -627,8 +639,9 @@ async def _pre_synthesis_reply(
         # Same length as the unscoped line for a typical scope: names what was
         # searched, and that widening the scope is the first thing to try.
         lead = (
-            f"No wiki hits under {scope}/ for this question. Widen the scope or rephrase. "
-            if scope
+            f"No wiki hits under {retrieved.scope}/ for this question. "
+            "Widen the scope or rephrase. "
+            if retrieved.scope
             else "No wiki hits for this question. Rephrase around the code concept. "
         )
         return _no_answer_payload(
@@ -784,6 +797,8 @@ async def _graded_payload(
         split_names=retrieved.homonyms.get("split"),
         stop_reason=stop_reason,
     )
+    if retrieved.scope and grade.split_names:
+        grade = grade._replace(split_names=_split_in_scope(grade.split_names, retrieved.scope))
     payload = await build_synthesized_payload(
         question=ask.question,
         answer_text=answer_text,
@@ -979,7 +994,7 @@ async def get_answer(
     # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
     early = await _pre_synthesis_reply(
-        ask, retrieved, agreement_dominant, graph_callers, _neighbors, scope=normalized_scope
+        ask, retrieved, agreement_dominant, graph_callers, _neighbors
     )
     if early is not None:
         clock.log("early", "prepare")

@@ -384,7 +384,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the question, and for no remarks on missing line numbers.
 # 33: each served body shows its line range, so answers cite lines; a prose
 #     line citation is not an asserted value.
-_ANSWER_SCHEMA_VERSION = 33
+# 34: a scoped answer names no file outside its scope: hits, flow paths and
+#     union definitions are filtered after every retrieval stage.
+_ANSWER_SCHEMA_VERSION = 34
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

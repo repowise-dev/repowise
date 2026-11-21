@@ -145,3 +145,11 @@ def test_union_defs_and_unindexed_lines_outside_the_scope_are_dropped() -> None:
     assert homonyms["unindexed_lines"] == []
     # Only lowers a grade: kept, so no label moves up under a scope.
     assert homonyms["split"] == {"retry": [_IN, _OUT]}
+
+
+def test_held_at_medium_note_counts_definitions_outside_the_scope() -> None:
+    from repowise.server.mcp_server.tool_answer.answer import _split_in_scope
+
+    shown = _split_in_scope({"retry": [_IN, _OUT, "pkg/gamma/r.py"]}, "pkg/alpha")
+
+    assert shown == {"retry": [_IN, "2 files outside the scope"]}
