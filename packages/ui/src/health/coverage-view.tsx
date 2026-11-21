@@ -64,7 +64,7 @@ function quietScoreText(score: number): string {
     ? scoreTextColor(score)
     : "text-[var(--color-text-secondary)]";
 }
-import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { COVERAGE_ADD_COMMAND, COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
 import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
@@ -101,9 +101,11 @@ function promptInputFor(f: CoverageFileRow): CoverageFilePromptInput {
 export function CoverageView({
   adapter,
   copy,
+  coverageCommand,
 }: {
   adapter: CodeHealthAdapter;
   copy?: CoverageViewCopy | undefined;
+  coverageCommand?: string | undefined;
 }) {
   const { openPrompt, promptModal } = useAiPromptAction();
   // One file from a row, or every file a list shows, through the shared modal.
@@ -168,9 +170,10 @@ export function CoverageView({
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
           unreachedTitle={copy?.unreachedTitle}
+          coverageCommand={coverageCommand}
         />
       ) : !data || data.summary.file_count === 0 ? (
-        <NoCoverageState />
+        <NoCoverageState coverageCommand={coverageCommand} />
       ) : (
         // A report was ingested. `data.inferred` may also be present: when the
         // report never mentioned some files, the graph answers for exactly
@@ -702,7 +705,11 @@ const gapColumns: ResponsiveColumn<ReachedFileRow>[] = [
  * What is left is the honest version: this is genuinely unknown, and here is
  * what would fill it.
  */
-function NoCoverageState() {
+function NoCoverageState({
+  coverageCommand = COVERAGE_ADD_COMMAND,
+}: {
+  coverageCommand?: string | undefined;
+}) {
   return (
     <div className="flex max-w-[62ch] flex-col gap-3">
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
@@ -716,8 +723,7 @@ function NoCoverageState() {
         us the report.
       </p>
       <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-inset)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
-        pytest --cov --cov-report=lcov{"\n"}
-        repowise coverage add coverage.lcov
+        {coverageCommand}
       </pre>
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {COVERAGE_REPORT_FORMATS_LABEL}

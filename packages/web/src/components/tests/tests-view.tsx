@@ -26,7 +26,13 @@ import {
   updateFindingStatus,
 } from "@/lib/api/code-health";
 
-export function TestsView({ repoId: id }: { repoId: string }) {
+export function TestsView({
+  repoId: id,
+  coverageCommand,
+}: {
+  repoId: string;
+  coverageCommand?: string;
+}) {
   const router = useRouter();
   const t = useTranslations("views.tests");
   const prefix = `/repos/${id}`;
@@ -58,5 +64,11 @@ export function TestsView({ repoId: id }: { repoId: string }) {
     [t],
   );
 
-  return <CoverageView adapter={adapter} copy={copy} />;
+  return (
+    <CoverageView
+      adapter={adapter}
+      copy={copy}
+      coverageCommand={coverageCommand}
+    />
+  );
 }
