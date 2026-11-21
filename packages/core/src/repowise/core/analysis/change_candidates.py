@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.forges import BaseForge, ForgeKind, all_forges, detect_forge, get_forge
+from repowise.core.git_sha import FULL_SHA_PATTERN, is_full_sha
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
 log = logging.getLogger(__name__)
@@ -38,13 +39,11 @@ log = logging.getLogger(__name__)
 ChangeKind = Literal["working_tree", "branch", "commit", "change_request"]
 
 WORKING_TREE_ID = "working-tree"
-#: Listed commits carry the full sha; a prefix could name two commits at once.
-_SHA = re.compile(r"^[0-9a-f]{40}$")
 #: A merge or pull request by number, ``mr:<n>`` or ``pr:<n>`` on any forge, or
 #: pinned to the two commits it was read at, ``mr:<n>@<base sha>...<head sha>``,
 #: so a shared link keeps naming the same diff after the request moves on.
 _CHANGE_REQUEST = re.compile(
-    r"^(mr|pr):([1-9][0-9]{0,8})(?:@([0-9a-f]{40})\.\.\.([0-9a-f]{40}))?$"
+    rf"^(mr|pr):([1-9][0-9]{{0,8}})(?:@({FULL_SHA_PATTERN})\.\.\.({FULL_SHA_PATTERN}))?$"
 )
 
 
@@ -585,7 +584,8 @@ async def resolve_change_files(
             raise UnknownChangeError("this server has no checkout to read the change from")
         return await asyncio.to_thread(_change_request_files, repo_path, change_id)
 
-    if kind == "commit" and _SHA.match(ref):
+    # Listed commits carry the full sha; a prefix could name two commits at once.
+    if kind == "commit" and is_full_sha(ref):
         rows = (
             await session.execute(
                 select(GitCommitFile.file_path).where(
@@ -624,7 +624,7 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
     if is_change_request(change_id):
         change = resolve_change_request(repo_path, change_id)
         return f"{change.base_sha}...{change.head_sha}"
-    if kind == "commit" and _SHA.match(ref) and git_refs.resolve(repo_path, ref):
+    if kind == "commit" and is_full_sha(ref) and git_refs.resolve(repo_path, ref):
         return ref
     raise UnknownChangeError(f"unknown change {change_id!r}")
 
@@ -648,7 +648,7 @@ def change_identity(repo_path: str, change_id: str) -> tuple[str, ...] | None:
             raise UnknownChangeError(f"unknown branch {ref!r}")
         base = git_refs.resolve(repo_path, git_refs.default_base(repo_path))
         return (change_id, tip, base, head)
-    if kind == "commit" and _SHA.match(ref):
+    if kind == "commit" and is_full_sha(ref):
         return (change_id, head)
     match = _CHANGE_REQUEST.fullmatch(change_id)
     if match and match.group(4):  # a pinned request names its own two commits

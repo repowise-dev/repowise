@@ -26,6 +26,7 @@ import { cardPadPx } from "./card-content";
 import { cardTextCache } from "./card-measure";
 import type { EdgeRoute, Point, RoutedEdge } from "./edges";
 import type { ZoomPalette } from "./theme";
+import { formatNumber } from "../lib/format";
 
 const LABEL_FONT_PX = 10;
 const LABEL_FONT = `500 ${LABEL_FONT_PX}px ui-sans-serif, system-ui, sans-serif`;
@@ -97,7 +98,7 @@ export function pairLabels(edges: readonly RoutedEdge[]): PairLabel[] {
 export function verbSummary(verbs: ReadonlyMap<string, number>): { text: string; weight: number } {
   const sorted = [...verbs.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   return {
-    text: sorted.map(([verb, n]) => `${verb} ${n.toLocaleString("en-US")}`).join(" · "),
+    text: sorted.map(([verb, n]) => `${verb} ${formatNumber(n)}`).join(" · "),
     weight: sorted.reduce((s, [, n]) => s + n, 0),
   };
 }

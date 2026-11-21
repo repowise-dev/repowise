@@ -157,6 +157,54 @@ class TestClassMethodWrapper:
         assert all(c.meta[EXTRACTION_LAYER_KEY] == "index" for c in contracts)
         assert LAYER_INDEX == "index"
 
+
+class TestWrapperBodiesAndStaticFields:
+    """A wrapper's own request names no route; a static method reads static fields."""
+
+    def test_a_wrappers_inner_call_is_no_route(self):
+        source = (
+            "async function baseFetch(url: string, init?: RequestInit) {\n"
+            "  return fetch(url, init);\n"
+            "}\n"
+            "export async function apiFetch(endpoint: string) {\n"
+            "  return baseFetch(`/api/v1${endpoint}`);\n"
+            "}\n"
+            "export const apiGet = (endpoint: string) => fetch(`/api/v2${endpoint}`);\n"
+            "export function getUser(id: string) { return fetch(`/users/${id}`); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/users/{param}"}
+
+    def test_this_in_a_static_method_is_the_class(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static getUsers() {\n"
+            "    return fetch(this.BASE + '/users');\n"
+            "  }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {"http::GET::/api/users"}
+
+    def test_a_static_field_read_through_the_class_name(self):
+        source = (
+            "export class Api {\n"
+            "  static BASE = '/api';\n"
+            "  static get() {\n"
+            "    return fetch(Api.BASE + '/x');\n"
+            "  }\n"
+            "  list() { return fetch(`${Api.BASE}/items`); }\n"
+            "}\n"
+            "export function top() { return fetch(Api.BASE + '/top'); }\n"
+        )
+        contracts, _u, _c = _run(source, "src/api.ts")
+        assert _ids(contracts) == {
+            "http::GET::/api/x",
+            "http::GET::/api/items",
+            "http::GET::/api/top",
+        }
+
     def test_the_regex_dialect_alone_cannot_see_these(self):
         """Fails before this change: the generic type argument breaks the regex.
 
@@ -201,12 +249,17 @@ class TestModuleLevelHelper:
             "http::GET::/snapshots/{param}/commits",
         }
 
-    def test_regex_dialect_yields_nothing_here(self):
-        """Fails before this change: this file's yield was 0."""
+    def test_regex_dialect_reads_the_type_argument_too(self):
+        """The text dialect reads ``publicFetch<T>(...)`` by name, which is how a
+        wrapper imported from another file is seen at all; the index layer
+        supersedes its rows wherever both read a call."""
         ctx = ScanContext(
             "frontend", "src/lib/api/public-client.ts", ".ts", PUBLIC_CLIENT_TS, {}
         )
-        assert JsClientsDialect().extract(ctx) == []
+        assert _ids(JsClientsDialect().extract(ctx)) == {
+            "http::GET::/snapshots/{param}/overview",
+            "http::GET::/snapshots/{param}/commits",
+        }
 
 
 # Named exactly like an HTTP wrapper, reaches no sink. `_HTTP_NAME_RE` matches
@@ -1113,3 +1166,28 @@ export async function removeProviderKey(providerId: string, repoId?: string) {
         from repowise.core.workspace.extractors.http.dialect import method_from_callee
 
         assert method_from_callee("fetchJSON") == "GET"
+
+
+ANALYTICS_TS = """\
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export class Analytics {
+  private baseUrl = `${API_BASE_URL}/api/analytics/ai-interview`;
+
+  private async makeRequest<T>(endpoint: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`);
+    return response.json();
+  }
+
+  async getOverview(userId: string) {
+    return this.makeRequest<Overview>(`/overview/${userId}`);
+  }
+}
+"""
+
+
+class TestWrapperBase:
+    def test_the_wrapper_prefix_composes_onto_its_calls(self):
+        contracts, _u, _c = _run(ANALYTICS_TS, "src/lib/api/analytics.ts")
+        assert "http::GET::/api/analytics/ai-interview/overview/{param}" in _ids(contracts)
+        assert "http::GET::/overview/{param}" not in _ids(contracts)

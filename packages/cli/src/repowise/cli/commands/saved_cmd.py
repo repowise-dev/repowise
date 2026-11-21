@@ -160,6 +160,10 @@ def saved_command(
                     "priced_saved_input_tokens": report.priced_saved_input_tokens,
                     "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
                     "estimated_usd": report.priced_input_savings_usd,
+                    "backfilled_saved_input_tokens": report.backfilled_saved_input_tokens,
+                    "backfilled_usd": report.backfilled_input_savings_usd,
+                    "subagent_events": report.subagent_events,
+                    "subagent_saved_input_tokens": report.subagent_saved_input_tokens,
                     "mcp_queries_answered": report.mcp_queries_answered,
                     "dead_ends": report.dead_ends,
                     "baseline_events": report.baseline_events,
@@ -170,6 +174,10 @@ def saved_command(
                     "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
+                    "files_not_opened": report.files_not_opened,
+                    "files_not_opened_tokens": report.files_not_opened_tokens,
+                    "tool_calls_answered": report.tool_calls_answered,
+                    **_output_estimate_summary(report),
                 },
                 "rows": rows,
                 "opportunities": {
@@ -225,6 +233,7 @@ def saved_command(
     console.print()
     console.print(table)
     _print_evidence_and_pricing(report)
+    _print_output_estimate(report)
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
@@ -296,6 +305,12 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         f"  Measured: [bold]{report.measured_saved_input_tokens:,}[/bold]  "
         f"Inferred: [bold]{report.inferred_saved_input_tokens:,}[/bold]"
     )
+    if report.tool_calls_answered:
+        console.print(
+            f"  Files not opened: [bold]{report.files_not_opened:,}[/bold] "
+            f"[dim](~{report.files_not_opened_tokens:,} tokens of Reads, once per "
+            f"session); tool calls answered: {report.tool_calls_answered:,}[/dim]"
+        )
     # Out of how much, not just how much. Both the aggregate and the peak,
     # because either alone misreads in whichever direction flatters.
     if report.input_reduction_ratio is not None and report.input_reduction_ratio_p90 is not None:
@@ -315,6 +330,65 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         console.print(
             f"  [dim]{report.unpriced_saved_input_tokens:,} tokens carry no recorded "
             f"rate and are not priced.[/dim]"
+        )
+    if report.backfilled_saved_input_tokens:
+        console.print(
+            f"  [dim]Of those, {report.backfilled_saved_input_tokens:,} priced at report time "
+            f"from their session or agent rate: ${report.backfilled_input_savings_usd:.4f} "
+            f"(backfilled, not in the estimate above).[/dim]"
+        )
+    if report.subagent_events:
+        console.print(
+            f"  [dim]In subagents: {report.subagent_saved_input_tokens:,} tokens over "
+            f"{report.subagent_events:,} events.[/dim]"
+        )
+
+
+def _output_estimate_summary(report: SavingsReport) -> dict:
+    """The benchmark-estimated output fields, named as on the savings endpoint."""
+    estimate = report.output_estimate
+    if estimate is None:
+        return {
+            "output_tokens_saved_estimated": None,
+            "output_usd_saved_estimated": None,
+            "total_usd_saved_estimated": None,
+            "calibration": None,
+        }
+    return {
+        "output_tokens_saved_estimated": estimate.output_tokens_saved,
+        "output_usd_saved_estimated": estimate.output_usd_saved,
+        "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
+        "calibration": estimate.calibration(),
+    }
+
+
+def _print_output_estimate(report: SavingsReport) -> None:
+    """Output tokens agents did not write, labelled as a benchmark estimate.
+
+    Kept on its own lines rather than folded into the recorded figures above:
+    no session measures the output it did not write, so this is the paired
+    benchmark's per-model difference per question, applied to the questions
+    each session that used Repowise asked, and the label says so.
+    """
+    estimate = report.output_estimate
+    if estimate is None or not estimate.sessions:
+        return
+    console.print(
+        f"  Output saved (estimated from benchmark): "
+        f"[bold]{estimate.output_tokens_saved:,}[/bold] tokens, "
+        f"[bold green]${estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim]over {estimate.questions:,.0f} questions in {estimate.sessions:,} sessions; "
+        f"calibration {estimate.version}[/dim]"
+    )
+    console.print(
+        f"  Estimated total: [bold green]"
+        f"${report.priced_input_savings_usd + estimate.output_usd_saved:.4f}[/bold green] "
+        f"[dim](input priced + output estimated)[/dim]"
+    )
+    if estimate.unpriced_output_tokens_saved:
+        console.print(
+            f"  [dim]{estimate.unpriced_output_tokens_saved:,} estimated output tokens come "
+            f"from sessions with no recorded model or output rate and are not priced.[/dim]"
         )
 
 

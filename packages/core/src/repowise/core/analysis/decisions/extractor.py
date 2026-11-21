@@ -39,6 +39,7 @@ from .commit_mining import (
     _BATCH_MAX_TOKENS,
     _MAX_PR_BODIES,
     _attribute_to_commit,
+    drop_subject_restatements,
     git_commit_block,
     pr_candidates,
     pr_commit_block,
@@ -437,7 +438,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_reply(response)
+            extracted = drop_subject_restatements(parse_decisions_reply(response), batch, "message")
 
             # Enrich with commit metadata
             for d in extracted:
@@ -467,7 +468,9 @@ class DecisionExtractor:
     # Source 3: ADR auto-discovery (deterministic-first)
     # ------------------------------------------------------------------
 
-    async def discover_adrs(self) -> list[ExtractedDecision]:
+    async def discover_adrs(
+        self, restrict_to_files: Collection[str] | None = None
+    ) -> list[ExtractedDecision]:
         """Discover and parse Architecture Decision Records.
 
         Deterministic-first: ADRs follow the Nygard/MADR templates (optional
@@ -475,8 +478,9 @@ class DecisionExtractor:
         headings), so structured files are parsed without the LLM. Files that
         carry an ADR name but no recognizable structure fall back to the LLM
         prose miner when a provider is available. Highest source rank.
+        *restrict_to_files* keeps only the ADRs among those repo-relative paths.
         """
-        adr_paths = find_adr_files(self._repo_path)
+        adr_paths = find_adr_files(self._repo_path, restrict_to_files=restrict_to_files)
         if not adr_paths:
             return []
         provider = self._llm("adr")
@@ -493,6 +497,13 @@ class DecisionExtractor:
             elif provider:
                 decisions.extend(await self._mine_unstructured_adr(provider, rel, content))
 
+        return decisions
+
+    async def rescan_adrs(self, changed_files: Collection[str]) -> list[ExtractedDecision]:
+        """The ADRs among *changed_files*, re-read and gated as ``extract_all`` gates them."""
+        decisions, _rejected = self._apply_substring_gate(
+            await self.discover_adrs(restrict_to_files=changed_files)
+        )
         return decisions
 
     def _read_adr(self, path: Path) -> tuple[str, str] | None:
@@ -599,7 +610,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_reply(response)
+            extracted = drop_subject_restatements(parse_decisions_reply(response), batch, "subject")
             for d in extracted:
                 _attribute_to_commit(d, batch, "subject", files_by_sha, source_by_sha)
                 d.source = "pr"

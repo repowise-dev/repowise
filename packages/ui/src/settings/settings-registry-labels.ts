@@ -79,6 +79,7 @@ export const DEFAULT_SETTINGS_REGISTRY_LABELS: SettingsRegistryLabels = {
     distill: "Command output",
     editor: "Editor files",
     events: "Change events",
+    evidence: "Runtime evidence",
     generation: "Documentation",
     health: "Code health",
     hooks: "Agent hooks",

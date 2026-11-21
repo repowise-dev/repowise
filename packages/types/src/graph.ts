@@ -300,6 +300,7 @@ export type ResolutionOrigin =
   | "same_target"
   | "receiver_global"
   | "global_unique"
+  | "import_elsewhere"
   | "receiver_typed_same_file"
   | "receiver_typed_same_package"
   | "receiver_typed_import"

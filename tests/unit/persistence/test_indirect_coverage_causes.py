@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
-
+from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.analysis.patch_coverage import (
     IndirectCause,
     IndirectChange,
     read_indirect_causes,
 )
-from repowise.core.persistence.models import GraphEdge, GraphNode, TestCoverageEntry
+from repowise.core.persistence.crud import save_test_coverage
+from repowise.core.persistence.models import GraphEdge, GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -41,17 +41,23 @@ async def _index(session, repo_id: str) -> None:
                     ("src/api.py::handler", "src/auth.py::login", "calls"),
                 )
             ),
-            TestCoverageEntry(
-                repository_id=repo_id,
-                test_id="tests/test_util.py::test_x",
-                test_file="tests/test_util.py",
-                source_file="src/util.py",
-                covered_lines_json=json.dumps([3, 4]),
-                source_format="coverage.py",
-            ),
         ]
     )
     await session.flush()
+    await save_test_coverage(
+        session,
+        repo_id,
+        [
+            TestCoverage(
+                test_id="tests/test_util.py::test_x",
+                file_path="src/util.py",
+                covered_lines=[3, 4],
+                source_format="coverage.py",
+                test_file="tests/test_util.py",
+            )
+        ],
+        source_format="coverage.py",
+    )
 
 
 def _lost(path: str) -> IndirectChange:

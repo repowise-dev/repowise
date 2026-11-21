@@ -101,14 +101,21 @@ async def select_change_tests(
     if done_key is not None and done_key in _DONE:
         _DONE.move_to_end(done_key)
         return _DONE[done_key]
+
+    async def select_and_cache(cancel: threading.Event) -> tuple:
+        selected = await _select(repo_path, session_factory, change, config, cancel, repo)
+        # Publish before releasing the flight, including while its key is rechecked.
+        if done_key is not None and done_key == await _done_key(
+            key, session_factory, change, config, repo
+        ):
+            _DONE[done_key] = selected
+            while len(_DONE) > _DONE_CAPACITY:
+                _DONE.popitem(last=False)
+        return selected
+
     loop = asyncio.get_running_loop()
     deadline = loop.time() + SELECTION_TIMEOUT_SECONDS
-    flight = await _flight_for(
-        key,
-        change,
-        deadline,
-        lambda cancel: _select(repo_path, session_factory, change, config, cancel, repo),
-    )
+    flight = await _flight_for(key, change, deadline, select_and_cache)
     # asyncio.wait never cancels the task: one caller leaving keeps it for the rest.
     flight.waiters += 1
     try:
@@ -123,15 +130,7 @@ async def select_change_tests(
             f"Selecting tests took over {SELECTION_TIMEOUT_SECONDS:.0f} s; run "
             "`repowise impacted-tests` for this change.",
         )
-    selected = flight.task.result()
-    # A checkout edited while the selection read it is not cached under the old stamp.
-    if done_key is not None and done_key == await _done_key(
-        key, session_factory, change, config, repo
-    ):
-        _DONE[done_key] = selected
-        while len(_DONE) > _DONE_CAPACITY:
-            _DONE.popitem(last=False)
-    return selected
+    return flight.task.result()
 
 
 async def _done_key(
@@ -169,6 +168,10 @@ def _change_identity(change: Any) -> str:
 
 def _tree_stamp(root: str) -> str | None:
     """What the checkout's dirty paths are and when each last changed; ``None`` when git fails."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         out = subprocess.run(
             # .repowise is excluded: the server writes there on every call.

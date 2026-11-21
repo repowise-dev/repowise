@@ -84,6 +84,102 @@ def _render_performance_section(report: Any, coverage: Any, causes: Any | None) 
     )
 
 
+_MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in tests"))
+
+
+def _render_measured_costs(view: dict[str, Any] | None) -> None:
+    """What each workload's newest run measured (``crud.measured_costs``), one
+    block per run.
+
+    Each block opens with its basis and where the run's time went, so a ranked
+    function is never read without its workload. Rows lead with the function's
+    self time, the cost it is ranked by. Silent without ranked evidence.
+    """
+    from rich.markup import escape
+
+    if not view:
+        return
+    for key, title in _MEASURED_GROUPS:
+        group = view.get(key)
+        if not group:
+            continue
+        for run in group["runs"]:
+            console.print(f"\n[bold]{title}[/bold] [dim]({escape(_run_basis(run))})[/dim]")
+            rows = [r for r in group["rows"] if r["run_id"] == run["run_id"]]
+            for row in rows:
+                console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
+                console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
+
+
+def _render_connect_line(freshness: dict[str, Any] | None) -> None:
+    """One line pointing at ``evidence setup`` when no runtime evidence is
+    stored, so the performance figures above read as code shape. Silent when
+    the store cannot say."""
+    from repowise.core.evidence.setup import EVIDENCE_SETUP
+
+    if not freshness or freshness["runtime"]["present"]:
+        return
+    console.print(
+        "\n[dim]No runtime evidence stored, so performance here is code shape only. "
+        f"Connect a real run: [bold]{EVIDENCE_SETUP}[/bold] prints the profile and "
+        "ingest commands.[/dim]"
+    )
+
+
+def _pct(value: float | None) -> str:
+    return "?" if value is None else f"{value * 100:.0f}%"
+
+
+def _run_basis(run: dict[str, Any]) -> str:
+    """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
+    libraries 12% of 5,300 samples``."""
+    from repowise.core.evidence.status import split_words
+
+    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+    if run.get("commit"):
+        parts.append(f"at {run['commit'][:7]}")
+    if run.get("age_days") is not None:
+        parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
+    basis = ", ".join(parts)
+    samples = run.get("samples")
+    split = split_words(run)
+    if split is None:
+        where = "time split unknown (stored before it was recorded; add the profile again)"
+    else:
+        where = split + (f" of {samples:,} samples" if samples else " of the run")
+    if run.get("ordering_only"):
+        where += "; traced, so the order counts and no share is given"
+    return f"{basis}: {where}"
+
+
+def _row_facts(row: dict[str, Any]) -> str:
+    parts = []
+    if row.get("share") is not None:
+        interval = ""
+        if row.get("share_low") is not None and row.get("share_high") is not None:
+            interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
+        parts.append(f"self {_pct(row['share'])} of the run{interval}")
+    if row.get("inclusive") is not None:
+        parts.append(f"with callees {_pct(row['inclusive'])}")
+    if row.get("samples") is not None:
+        parts.append(f"{row['samples']:,} samples")
+    callers = row.get("callers_total")
+    if callers is not None:
+        parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
+    if row.get("owner"):
+        parts.append(f"owner {row['owner']['name']}")
+    tests = row.get("tests")
+    if tests is None:
+        parts.append("tests not mapped")
+    elif tests:
+        parts.append(f"nearest test {tests[0]}")
+    else:
+        parts.append("no test reaches it")
+    if row.get("on_static_findings"):
+        parts.append(f"static cause {', '.join(row['on_static_findings'])}")
+    return " · ".join(parts)
+
+
 def _render_split_line(kpis: dict) -> None:
     """The headline's two halves, so a reader can see which one holds it down."""
     structure = kpis.get("structure_average")

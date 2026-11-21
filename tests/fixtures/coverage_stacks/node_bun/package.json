@@ -1,0 +1,6 @@
+{
+  "name": "d",
+  "scripts": {
+    "test": "bun test"
+  }
+}

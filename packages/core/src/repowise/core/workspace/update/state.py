@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
-import subprocess
 from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from ...analysis.git_cli import run_git
 from ..config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -19,13 +19,7 @@ _log = logging.getLogger("repowise.workspace.update")
 def get_head_commit(repo_path: Path) -> str | None:
     """Return the current HEAD commit SHA via git, or ``None``."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-parse", "HEAD"], repo_path, timeout=10)
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
@@ -36,13 +30,7 @@ def get_head_commit(repo_path: Path) -> str | None:
 def count_commits_between(repo_path: Path, base: str, head: str) -> int:
     """Return the number of commits between *base* and *head*, or 0 on error."""
     try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", f"{base}..{head}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-list", "--count", f"{base}..{head}"], repo_path, timeout=10)
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
@@ -59,12 +47,7 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
     were never indexed (e.g. after a rebase or an aggressive ``git gc``).
     """
     try:
-        result = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            timeout=10,
-        )
+        result = run_git(["cat-file", "-e", f"{sha}^{{commit}}"], repo_path, timeout=10)
         return result.returncode == 0
     except Exception:
         return False
@@ -87,11 +70,8 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
         try:
             # indexed_head is an ancestor of pending_head => strictly ahead,
             # keep it. Non-zero (incl. unresolvable pending) => safe to clear.
-            ahead = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
-                cwd=str(repo_path),
-                capture_output=True,
-                timeout=10,
+            ahead = run_git(
+                ["merge-base", "--is-ancestor", indexed_head, pending_head], repo_path, timeout=10
             )
             if ahead.returncode == 0:
                 return
@@ -290,7 +270,11 @@ def check_repo_staleness(
     repo_path: Path,
     last_commit: str | None,
 ) -> tuple[bool, str | None, int]:
-    """Check if a repo has new commits since *last_commit*.
+    """Check if a repo has new commits since *last_commit*, or owes work without one.
+
+    With HEAD unmoved, an index is still stale when a version stamp moved
+    (:func:`stamps_moved`) or a page is stale, as the single-repo update
+    treats them.
 
     Returns ``(is_stale, current_head, commits_behind)``.
     """
@@ -303,6 +287,8 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        if stamps_moved(repo_path):
+            return True, current_head, 0
         # Same reconciliation as the single-repo update: a page can be stale
         # with HEAD unmoved, and only an update clears it.
         try:
@@ -316,6 +302,27 @@ def check_repo_staleness(
 
     behind = count_commits_between(repo_path, last_commit, current_head)
     return True, current_head, behind
+
+
+def stamps_moved(repo_path: Path) -> bool:
+    """Whether an indexed repo's health or git history stamp is behind this build.
+
+    Work no commit explains: rows scored by an older health analyzer, or git
+    rows written under older history rules. A repo with no recorded sync, or
+    no local store and no configured database, has no rows for either stamp
+    to describe. Under a configured database the repository row is not looked
+    up: this check stays offline, and a member with a moved stamp but no rows
+    there is reported stale on purpose, since the full index that update falls
+    back to writes the rows it is missing.
+    """
+    from ...analysis.health import health_analyzer_changed
+    from ...ingestion.git_indexer import git_history_stale
+    from ...persistence.database import has_db_store
+
+    state = read_repo_state(repo_path)
+    if not state.get("last_sync_commit") or not has_db_store(repo_path):
+        return False
+    return health_analyzer_changed(state) or git_history_stale(state)
 
 
 def restamp_changed_sync_commit(repo_path: Path, previous: str | None, current: str | None) -> None:

@@ -31,6 +31,8 @@ import codecs
 import sqlite3
 from pathlib import Path
 
+from repowise.core.test_paths import nodeid_test_file, nodeid_without_phase
+
 from .apex import parse_apex_contexts
 from .detector import detect_format
 from .lcov import _normalize_path
@@ -66,10 +68,14 @@ def read_report_text(path: str | Path) -> str:
 
     Windows PowerShell 5.1 ``>`` redirection writes UTF-16. Raises like ``read_text``.
     """
-    data = Path(path).read_bytes()
+    return decode_report(Path(path).read_bytes())
+
+
+def decode_report(data: bytes, errors: str = "strict") -> str:
+    """Report bytes as text: UTF-16 when they open with a UTF-16 BOM, else UTF-8."""
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return data.decode("utf-16")
-    return data.decode("utf-8")
+        return data.decode("utf-16", errors)
+    return data.decode("utf-8", errors)
 
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:
@@ -161,6 +167,10 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
     ``arc`` endpoints when the db was written in branch/arc mode). Only
     non-empty contexts become records; a db without contexts
     has a single empty context and comes back ``has_contexts=False``.
+
+    pytest-cov writes one context per phase (``<nodeid>|setup``, ``|run``,
+    ``|teardown``); they merge into one test named by its nodeid, whose
+    ``test_file`` is the path the nodeid names.
     """
     path = Path(db_path)
     try:
@@ -171,22 +181,23 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     try:
         contexts = {cid: ctx for cid, ctx in conn.execute("SELECT id, context FROM context")}
-        named = {cid: ctx for cid, ctx in contexts.items() if ctx}
+        stripped = {cid: nodeid_without_phase(ctx) for cid, ctx in contexts.items() if ctx}
+        named = {cid: test_id for cid, test_id in stripped.items() if test_id}
         if not named:
             # A .coverage without contexts: one empty context, aggregate only.
             return ContextCoverageReport(source_format="coverage.py", has_contexts=False)
 
         files = {fid: _normalize_path(p) for fid, p in conn.execute("SELECT id, path FROM file")}
 
-        # (file_id, context_id) -> covered line set. line_bits is the common
+        # (file_id, test) -> covered line set. line_bits is the common
         # (line-mode) source; arc rows fill in for branch-mode dbs.
-        covered: dict[tuple[int, int], set[int]] = {}
+        covered: dict[tuple[int, str], set[int]] = {}
         for file_id, ctx_id, numbits in conn.execute(
             "SELECT file_id, context_id, numbits FROM line_bits"
         ):
             if ctx_id not in named or file_id not in files:
                 continue
-            covered.setdefault((file_id, ctx_id), set()).update(_numbits_to_lines(numbits))
+            covered.setdefault((file_id, named[ctx_id]), set()).update(_numbits_to_lines(numbits))
 
         if not covered and _has_table(conn, "arc"):
             for file_id, ctx_id, fromno, tono in conn.execute(
@@ -194,7 +205,7 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
             ):
                 if ctx_id not in named or file_id not in files:
                     continue
-                lines = covered.setdefault((file_id, ctx_id), set())
+                lines = covered.setdefault((file_id, named[ctx_id]), set())
                 # Arc endpoints are line numbers; <= 0 are synthetic
                 # (module entry/exit), not real lines.
                 if fromno and fromno > 0:
@@ -208,12 +219,13 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     records = [
         TestCoverage(
-            test_id=named[ctx_id],
+            test_id=test_id,
             file_path=files[file_id],
             covered_lines=sorted(line_set),
             source_format="coverage.py",
+            test_file=nodeid_test_file(test_id),
         )
-        for (file_id, ctx_id), line_set in covered.items()
+        for (file_id, test_id), line_set in covered.items()
         if line_set
     ]
     return ContextCoverageReport(

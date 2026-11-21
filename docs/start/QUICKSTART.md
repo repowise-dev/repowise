@@ -83,12 +83,12 @@ default; add a model whenever you like from the dashboard or with
 |---|---|---|
 | MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
-| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
+| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default, added when absent; never moved off another repo it serves. One whose repo no longer exists is re-pointed here (the plan screen shows the move and `s` keeps it) |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |
 | Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook | by default; `e` turns it off, `--no-hook` skips it |
 
-The global entry points at one repo at a time. Pressing `s` keeps it where it
-is, and agents opened in this repo still connect through `.mcp.json`. Point it
+When the global entry serves another repo, init leaves it there, and agents
+opened in this repo still connect through `.mcp.json`. Point it
 here later with `repowise agents add --target=claude-code --scope=user`.
 When machine-specific files such as `.claude/CLAUDE.md` would show up in
 `git status`, `e` offers to add them to `.git/info/exclude` (off by default).

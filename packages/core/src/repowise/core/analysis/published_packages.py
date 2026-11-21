@@ -179,6 +179,11 @@ def _go_packages(facts: BuildFacts) -> dict[str, bool]:
     return out
 
 
+def go_main_packages(facts: BuildFacts) -> list[str]:
+    """The repo-relative directories of Go ``package main`` packages: the programs a repo builds."""
+    return sorted(d for d, is_main in _go_packages(facts).items() if is_main)
+
+
 def _go_unexported(module_dir: str, packages: Mapping[str, bool]) -> dict[str, None]:
     """Packages of a library module no outside importer can reach."""
     prefix = len(module_dir) + 1 if module_dir else 0

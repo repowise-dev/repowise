@@ -39,9 +39,9 @@ def _is_low_severity_path(file_path: str) -> bool:
     return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
 
 
-# Code that runs at build or release time, or only in docs: a sink there is not
-# a shipped one.
-_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example"})
+# Code that runs at build or release time, only in docs, or that a data folder
+# holds for the product to read by path: a sink there is not a shipped one.
+_NON_SHIPPING_ORIGINS = frozenset({"tooling", "docs_example", "data"})
 # A bundler's or generator's output, or a copied library: nobody here wrote its
 # calls, so only a secret it carries is news.
 _MACHINE_ORIGINS = frozenset({"generated", "vendored"})
@@ -56,7 +56,8 @@ def _holds_no_written_code(file_path: str, origin: str) -> bool:
 def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:
     """Test and fixture material never carries a shipped sink, whatever the kind.
 
-    Nor do scripts, tools or docs examples, though a secret there still leaks.
+    Nor do scripts, tools, docs examples or a data folder's code, though a
+    secret there still leaks.
     """
     return is_low_sev_file or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
 

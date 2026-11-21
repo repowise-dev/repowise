@@ -72,8 +72,8 @@ def embed_failure_message(embedder: str | None, embed_failed_pages: int) -> str 
     return (
         f"Embedding failed for {embed_failed_pages} page(s), so semantic search is "
         "unavailable (full-text search still works). Fix the cause in the warning "
-        "above (for a broken LanceDB install: pip install --force-reinstall lancedb), "
-        "then run: repowise reindex"
+        "above, then run: repowise reindex. Only when that warning names LanceDB "
+        "as missing or broken: pip install --force-reinstall lancedb"
     )
 
 

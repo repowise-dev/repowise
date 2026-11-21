@@ -375,6 +375,104 @@
       }
     },
     {
+      "name": "performance_fix_measured",
+      "repo_name": null,
+      "detail": {
+        "id": "refac4_bbbbbbbbbbbbbbbbbbbb",
+        "refactoring_type": "performance_fix",
+        "file_path": "src/rows.py",
+        "target_symbol": "src/rows.py::load_rows",
+        "line_start": 12,
+        "line_end": 12,
+        "plan": {
+          "strategy": "batch_or_prefetch_io",
+          "safety": "advisory",
+          "steps": [
+            {
+              "order": 1,
+              "action": "Add a form of fetch_row that takes every key at once",
+              "symbol": "src/db.py::fetch_row",
+              "file_path": "src/db.py",
+              "line": null,
+              "applicability": "judgment"
+            },
+            {
+              "order": 2,
+              "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call",
+              "symbol": "load_rows",
+              "file_path": "src/rows.py",
+              "line": 12,
+              "applicability": "judgment",
+              "verify": {
+                "commands": [
+                  "pytest tests/test_rows.py"
+                ],
+                "tests": [
+                  "tests/test_rows.py"
+                ],
+                "coverage": "inferred"
+              }
+            },
+            {
+              "order": 3,
+              "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call",
+              "symbol": "load_rows",
+              "file_path": "src/rows.py",
+              "line": 12,
+              "applicability": "judgment"
+            }
+          ]
+        },
+        "evidence": {
+          "boundary_kind": "db"
+        },
+        "impact_delta": 0.0,
+        "effort_bucket": "M",
+        "blast_radius": {
+          "files": [
+            "src/rows.py"
+          ],
+          "file_count": 1,
+          "call_sites": 2
+        },
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop",
+        "validation": {
+          "basis": "inferred",
+          "via": "call-graph",
+          "total": 1,
+          "tests": [
+            "tests/test_rows.py"
+          ],
+          "truncated": false,
+          "affected_files": [
+            "src/rows.py"
+          ],
+          "affected_symbols": [],
+          "commands": [
+            "pytest tests/test_rows.py"
+          ],
+          "targets": [],
+          "reasons": {
+            "tests/test_rows.py": "calls `load_rows`"
+          },
+          "prerequisite": null,
+          "measure": {
+            "command": "pytest --benchmark-only",
+            "before": "repowise perf measure --save before-load_rows -- pytest --benchmark-only",
+            "after": "repowise perf measure --against before-load_rows -- pytest --benchmark-only",
+            "metric": "median wall time",
+            "baseline": "before-load_rows",
+            "tolerance": 0.05,
+            "workload": "pytest bench",
+            "workload_class": "benchmark"
+          }
+        },
+        "governed_by": [],
+        "risks": []
+      }
+    },
+    {
       "name": "split_file_older_row",
       "repo_name": null,
       "detail": {

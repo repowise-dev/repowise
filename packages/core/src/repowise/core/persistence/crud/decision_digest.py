@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.landing import is_commit_ref
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
 
 from ..models import DecisionAcceptance, DecisionRecord, _now_utc
 from .authority import decision_currencies, pinned_decision_ids
@@ -28,7 +29,7 @@ __all__ = ["RECENT_DAYS", "RecentDecision", "recent_decisions"]
 RECENT_DAYS = 7
 
 #: The note the landing pass signs an agent's decision with when its commit merges.
-_LANDED = re.compile(r"landed on (?P<ref>\S+) in (?P<sha>[0-9a-f]{7,40})")
+_LANDED = re.compile(rf"landed on (?P<ref>\S+) in (?P<sha>{SHA_PREFIX_PATTERN})")
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ from repowise.core.analysis.execution_graph import (
     is_walkable_execution_edge,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
@@ -34,7 +35,7 @@ def _node_id_is_excluded(node_id: str) -> bool:
     traces never wander into test fakes that a mis-resolved execution edge points
     at (e.g. a fake ``fetchall``).
     """
-    path = node_id.split("::", 1)[0] if "::" in node_id else node_id
+    path = file_of_symbol(node_id)
     return is_excluded_execution_path(path)
 
 

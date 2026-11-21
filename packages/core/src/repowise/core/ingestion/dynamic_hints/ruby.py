@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"vendor", "node_modules", ".git", "tmp", "log"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"tmp", "log"}
 
 # Object.send(:method) / .send("method") / .public_send(...)
 _SEND_RE = re.compile(r"\.(?:public_)?send\s*\(\s*[:\"']([A-Za-z_]\w*)")

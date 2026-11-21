@@ -12,7 +12,7 @@ Rows may be ORM rows, SQL rows or mappings; every read goes through
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -31,10 +31,11 @@ from repowise.core.analysis.health.queue.eligibility import (
 )
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
-from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, STATIC_COSTS
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
-from .opportunity_rank import NON_LEADING_MARKERS
+from .opportunity_rank import NON_LEADING_MARKERS, evidence_state
 
 if TYPE_CHECKING:
     from .opportunities import PerformanceOpportunity
@@ -125,6 +126,7 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("confidence", "evidence_confidence", "eq", "set"),
     FilterRule("actionabilities", "actionability_state", "in", "set"),
     FilterRule("proofs", "cost_proof", "in", "set"),
+    FilterRule("static_costs", "static_cost", "in", "set"),
     FilterRule("roles", "execution_role", "in", "set"),
     FilterRule("file_paths", "file_path", "in", "set"),
     # One area at any depth, as ``<area>/``; the root area is no filter.
@@ -146,11 +148,16 @@ FACETS: tuple[Facet, ...] = (
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
 
+#: What the code alone shows about each cause's cost (``worth.STATIC_COSTS``),
+#: apart from ``proof``, which a run can also settle. Counted for the
+#: dashboard's scoped facets only, so the agent surface's facets do not grow.
+_STATIC_COST_FACET: Facet = ("static_cost", "static_cost", "static_costs")
+
 #: The stored default-queue verdict, grouped beside the facet fields so a
 #: scope's facets can be counted inside the scope (:func:`fold_scoped_facets`).
 #: Never emitted as a facet of its own.
 _QUEUE_FACET: Facet = ("queue", "queue_eligible", "queue_eligible")
-SCOPED_GROUP_FIELDS = (*FACET_FIELDS, "queue_eligible")
+SCOPED_GROUP_FIELDS = (*FACET_FIELDS, "static_cost", "queue_eligible")
 
 
 def sort_keys(sort: str | None) -> SortKeys:
@@ -179,6 +186,7 @@ def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
             None if query.actionability in (None, ANY) else frozenset({query.actionability})
         ),
         "proofs": None if query.proof in (None, ANY) else frozenset({query.proof}),
+        "static_costs": query.static_costs,
         "roles": None if query.role in (None, "all") else frozenset({query.role}),
     }
 
@@ -212,7 +220,7 @@ def fold_scoped_facets(
     }
     folded = queue_rules.fold_facets(
         groups,
-        (*FACETS, _QUEUE_FACET),
+        (*FACETS, _STATIC_COST_FACET, _QUEUE_FACET),
         rules=FILTERS,
         selection=selection,
         null=NULL_VALUE,
@@ -344,6 +352,9 @@ class PerformanceQuery:
     confidence: str | None = None
     actionability: str | None = None
     proof: str | None = None
+    #: One ``worth.STATIC_COSTS`` value; narrows like ``boundary``, so the
+    #: default queue keeps its stored verdict.
+    static_cost: str | None = None
     role: str | None = None
     view: str = "detail"
     sort: str = DEFAULT_SORT
@@ -399,6 +410,7 @@ class PerformanceQuery:
             if live
             else self.actionabilities,
             "proofs": (self.proofs or DEFAULT_QUEUE_PROOFS) if live else self.proofs,
+            "static_costs": self.static_costs,
             "roles": (self.roles or QUEUE_ROLES) if live else self.roles,
             "queue_eligible": None if live else self.queue_eligible,
             "file_paths": self.file_paths,
@@ -418,7 +430,7 @@ class PerformanceQuery:
     @property
     def proofs(self) -> frozenset[str] | None:
         """``unproven`` when asked for; else, under another context or state,
-        the measured causes, so every surface lists what the default queue
+        the proven causes, so every surface lists what the default queue
         counts. ``None`` for the default queue. The ``proof`` facet says how
         many unproven ones sit one filter away."""
         if self.default_queue or self.proof == ANY:
@@ -426,6 +438,10 @@ class PerformanceQuery:
         if self.proof is None:
             return DEFAULT_QUEUE_PROOFS
         return frozenset({self.proof})
+
+    @property
+    def static_costs(self) -> frozenset[str] | None:
+        return None if self.static_cost is None else frozenset({self.static_cost})
 
     @property
     def roles(self) -> frozenset[str] | None:
@@ -470,6 +486,7 @@ def parse_query(
     confidence: str | None = None,
     actionability: str | None = None,
     proof: str | None = None,
+    static_cost: str | None = None,
     role: str | None = None,
     view: str | None = None,
     sort: str | None = None,
@@ -513,6 +530,7 @@ def parse_query(
             proof=pick(
                 "performance_proof", proof, (*QUEUE_PROOFS, ANY) if lift_defaults else QUEUE_PROOFS
             ),
+            static_cost=pick("performance_static_cost", static_cost, STATIC_COSTS),
             role=pick("performance_role", role, ROLES),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,
@@ -563,7 +581,7 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
     """The file a reader would open first: the intervention, else the evidence."""
     symbol = opportunity.intervention_symbol
     if symbol:
-        return symbol.split("::", 1)[0]
+        return file_of_symbol(symbol)
     return opportunity.evidence[0]["file_path"] if opportunity.evidence else ""
 
 
@@ -572,8 +590,52 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
 # ---------------------------------------------------------------------------
 
 
+EVIDENCE_STATES = ("confirmed", "measured", "counter_evidence", "ran", "not_exercised")
+"""Every ``state`` :func:`evidence_mark` returns."""
+
+
+def evidence_mark(facets: Mapping[str, Any], workloads: Sequence[str]) -> dict[str, Any] | None:
+    """What runtime evidence says about one cause, for a person's list, or ``None``.
+
+    ``confirmed`` (``basis`` ``query_count``, ``measured`` or
+    ``measured_in_tests``) and ``measured`` (``workload`` names the workload
+    that ranks its loop owner, with ``basis`` ``measured_in_tests`` when only a
+    unit-test run does) say what the evidence found; the queue puts them first
+    (``opportunity_rank.evidence_tier``) unless the cause was only ranked
+    against its cold name, which keeps its static place.
+    ``counter_evidence``: query counts stayed flat as the items grew. ``ran``:
+    query counts reached it and settle nothing. ``not_exercised``: no run
+    reached it, and ``workloads`` names the leading workloads that ran; the
+    cause stays listed in its static place. With no leading workload and no
+    evidence facet there is nothing to say. Ceiling: a function a run sampled
+    too rarely to rank reads as not exercised; the run's own counts would
+    tell the two apart.
+    """
+    state = evidence_state(facets)
+    if state == "confirmed":
+        return {"state": state, "basis": facets["confirmed"]}
+    if state in ("counter_evidence", "ran"):
+        return {"state": state, "basis": "query_count"}
+    if state == "measured":
+        if facets.get("measured"):
+            return {"state": state, "workload": facets["measured"]}
+        return {
+            "state": state,
+            "basis": "measured_in_tests",
+            "workload": facets["measured_in_tests"],
+        }
+    if workloads:
+        return {"state": "not_exercised", "workloads": list(workloads)}
+    return None
+
+
 def serialize(
-    row: Any, link: PlanLink, *, summary: bool = False, decisions: bool = False
+    row: Any,
+    link: PlanLink,
+    *,
+    summary: bool = False,
+    decisions: bool = False,
+    workloads: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Rebuild the canonical opportunity payload from row plus details.
 
@@ -587,6 +649,10 @@ def serialize(
 
     ``rank_position`` is the stored rank; a list serves
     :func:`served_position` in its place.
+
+    ``workloads`` (the leading workloads the stored causes were judged
+    against, ``None`` for a caller that shows no evidence) adds ``runtime_evidence``,
+    the :func:`evidence_mark`, when it has something to say.
     """
     details = detail_map(row)
     payload = {
@@ -619,6 +685,11 @@ def serialize(
         # Why it can wait; the stored rank already orders by loop size.
         "lower_priority": LOW_PRIORITY_LABEL.get(perf_low_priority(row) or ""),
     }
+    if workloads is not None and (
+        mark := evidence_mark(details.get("facets") or {}, workloads)
+    ):
+        # Not ``evidence``: that key is the raw observations a list may add.
+        payload["runtime_evidence"] = mark
     if summary:
         return {**payload, **_decision_fields(row, details)} if decisions else payload
     return {**payload, **_decision_fields(row, details), **_detail_fields(row, details)}
@@ -811,6 +882,7 @@ __all__ = [
     "DEFAULT_ACTIONABILITIES",
     "DEFAULT_CONTEXT",
     "DEFAULT_SORT",
+    "EVIDENCE_STATES",
     "FACETS",
     "FACET_FIELDS",
     "FILTERS",
@@ -823,6 +895,7 @@ __all__ = [
     "PerformanceQuery",
     "PlanLink",
     "area_facet",
+    "evidence_mark",
     "evidence_payload",
     "facet_counts",
     "fold_facets",

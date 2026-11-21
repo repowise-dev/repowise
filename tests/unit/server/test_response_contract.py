@@ -30,9 +30,11 @@ WAIVED: dict[tuple[str, str], str] = {
     ("GET", "/api/graph/{repo_id}/c4/mermaid"): "text/plain diagram source",
     ("GET", "/api/graph/{repo_id}/c4/structurizr"): "text/plain diagram source",
     ("GET", "/api/repos/{repo_id}/blast-radius/change.md"): "text/markdown review for agents",
+    ("GET", "/api/repos/{repo_id}/reports/first-look/export.md"): "text/markdown repo report download",
     ("GET", "/metrics"): "Prometheus text exposition",
     ("POST", "/api/providers/{provider_id}/key"): "204, no body",
     ("DELETE", "/api/providers/{provider_id}/key"): "204, no body",
+    ("POST", "/api/telemetry/view"): "204, no body",
     ("GET", "/api/pages"): (
         "returns full or summary rows by ``fields``; the models serialize "
         "themselves and FastAPI cannot coerce one shape into the other"

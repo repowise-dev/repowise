@@ -666,3 +666,22 @@ def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"], data
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

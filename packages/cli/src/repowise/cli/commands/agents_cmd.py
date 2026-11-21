@@ -431,14 +431,21 @@ def agents_add(
     if fmt == "json":
         emit_json(payload)
         return
+    from rich.markup import escape
+
+    from repowise.cli.agent_targets.tool_surface import always_load_text
+
     _render_writes(payload)
     for agent in payload["agents"]:
         if agent.get("next_step"):
             console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['next_step']}")
         if agent.get("tools"):
-            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['tools']}")
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(agent['tools'])}")
+        always = always_load_text(agent["tool_surface"]) if agent.get("tool_surface") else None
+        if always:
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {escape(always)}")
     if payload.get("tools_hint"):
-        console.print(f"  [dim]{payload['tools_hint']}[/dim]")
+        console.print(f"  [dim]{escape(payload['tools_hint'])}[/dim]")
 
 
 def _save_tools(repo_path: Path, value: str) -> None:
@@ -453,36 +460,23 @@ def _save_tools(repo_path: Path, value: str) -> None:
 
 
 def _note_tool_surface(payload: dict, repo_path: Path) -> None:
-    """Say which tool profile each wired agent's local server lists, and how to change it.
+    """Say which MCP tools each wired agent's local server lists, and how to change it.
 
-    Read from the repo's ``mcp.tools``; with nothing set each agent gets its
-    own default (see ``repowise.core.registry.tool_selection.default_profile``).
+    ``tools`` is the human line, ``tool_surface`` the same facts as keys.
     """
-    from repowise.core.agents.identity import identity_for_target_id
-    from repowise.core.registry.tool_selection import (
-        default_profile,
-        normalize_override,
-        split_profile,
+    from repowise.cli.agent_targets.tool_surface import (
+        agent_tool_surface,
+        change_hint,
+        surface_text,
     )
-    from repowise.core.repo_config import load_repo_config
 
-    try:
-        mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
-        tokens = normalize_override(mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None)
-    except Exception:
-        return
-    profile, rest = split_profile(tokens)
-    if tokens and profile is None and not all(t[0] in "+-" for t in rest):
-        return  # an exact list: the same tools for every agent, nothing per-agent to say
-    adjusted = f" {' '.join(rest)}" if rest else ""
     for agent in payload["agents"]:
-        identity = identity_for_target_id(agent.get("id", ""))
-        chosen = profile or default_profile(identity.slug if identity else "unknown")
-        agent["tools"] = f"lists the {chosen} MCP tools{adjusted}"
-    payload["tools_hint"] = (
-        "Change with 'repowise config set mcp.tools <core|lean|standard|all>', "
-        "then restart the agent."
-    )
+        surface = agent_tool_surface(repo_path, agent.get("id", ""))
+        if surface is None:
+            return
+        agent["tool_surface"] = surface
+        agent["tools"] = surface_text(surface)
+        payload["tools_hint"] = change_hint(surface)
 
 
 def _hosted_url(repo_path: Path, hosted_repo: str | None) -> tuple[str, str]:

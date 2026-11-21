@@ -1,6 +1,6 @@
 ---
 name: code-health
-description: Use when the user asks about code health, code quality, complexity, technical debt, risky or hard-to-maintain files, what to refactor next, untested hotspots, or coverage gaps in a Repowise-indexed codebase (.repowise/ directory exists). Also use for before/after health reads when planning or finishing a refactor.
+description: Code health, complexity, tech debt, risky files, coverage gaps and what to refactor next.
 ---
 
 # Code Health with Repowise

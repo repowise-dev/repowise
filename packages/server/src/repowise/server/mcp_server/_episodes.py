@@ -14,10 +14,11 @@ MCP budget helpers.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from repowise.core.git_sha import is_full_sha
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.precedent.currency import (
     GIT_UNASKED,
     recorded_on,
@@ -66,8 +67,6 @@ _MAX_EVIDENCE_BODY_CHARS = 400
 
 #: A body this short costs less than its recovery marker, so it is served inline.
 _INLINE_BODY_CHARS = 120
-
-_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 #: Ceiling on the listed scope. Measured worst case on this repository's
 #: shareable tiers is 23 paths / 1,522 chars, so this trims nothing in practice
@@ -166,7 +165,7 @@ def episode_evidence(
     ``ProgrammingError`` inside ``_put``, which swallows it and silently drops
     *every* banked block. Banking belongs to whichever thread will attach.
     """
-    if not paths and not query:
+    if (not paths and not query) or root is None:
         return [], []
     store_path = default_store_path(root)
     # Opening the store would CREATE it. A repo that never derived episodes
@@ -250,7 +249,7 @@ def _episode_head(row: dict) -> tuple[dict, str]:
     entry: dict = {"tier": row.get("tier"), "kind": row.get("kind")}
     subject = row.get("subject") or ""
     body = row.get("body") or ""
-    if _SHA_RE.fullmatch(subject):
+    if is_full_sha(subject):
         line, _, body = body.partition("\n")
         entry["subject"] = line.strip()
         # Full here for evidence resolution; served at 12 characters.
@@ -301,7 +300,7 @@ def episode_counts(root: Path, paths: Sequence[str]) -> dict[str, int]:
     this repository's store. Paths with no episodes are absent from the result
     so a caller can omit the field instead of serving a zero.
     """
-    if not paths:
+    if not paths or root is None:
         return {}
     store_path = default_store_path(root)
     # Opening the store would CREATE it. A repo that never derived episodes
@@ -373,4 +372,4 @@ def enrich_episode_counts(results: Sequence[dict], root: Path) -> None:
 
 def _file_of(target: str) -> str:
     """The file a target names, dropping any ``::symbol`` suffix."""
-    return target.split("::", 1)[0].strip()
+    return file_of_symbol(target).strip()

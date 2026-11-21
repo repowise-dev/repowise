@@ -13,10 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from repowise.cli.commands.update_cmd.persistence import (
+from repowise.core.pipeline.incremental.repair import (
     _REPAIR_MAX_COMMITS,
     record_repair_marker,
     resolve_repair_base,
+    unchecked_repair_marker,
 )
 
 
@@ -138,9 +139,7 @@ def test_non_ancestor_marker_is_given_up_on(linear_repo):
 def test_window_past_the_cap_is_given_up_on(linear_repo, monkeypatch):
     """The bound is what stops a step that fails every run from pinning the window open."""
     repo, shas = linear_repo
-    monkeypatch.setattr(
-        "repowise.cli.commands.update_cmd.persistence._REPAIR_MAX_COMMITS", 1
-    )
+    monkeypatch.setattr("repowise.core.pipeline.incremental.repair._REPAIR_MAX_COMMITS", 1)
     state = {"pending_repair": {"from_commit": shas[0], "steps": ["Git persist"]}}
     base, give_up = resolve_repair_base(repo, state, shas[1], shas[2])
     assert base == shas[1]
@@ -149,3 +148,22 @@ def test_window_past_the_cap_is_given_up_on(linear_repo, monkeypatch):
 
 def test_cap_is_a_real_bound():
     assert _REPAIR_MAX_COMMITS > 0
+
+
+# --- unchecked_repair_marker ----------------------------------------------
+
+_SHA = "a" * 40
+
+
+def test_a_marker_the_base_did_not_widen_to_is_kept():
+    marker = {"from_commit": _SHA, "steps": ["Git persist"]}
+    assert unchecked_repair_marker({"pending_repair": marker}, "b" * 40, None) == marker
+
+
+def test_a_widened_given_up_or_junk_marker_is_not_kept():
+    marker = {"from_commit": _SHA, "steps": ["Git persist"]}
+    assert unchecked_repair_marker({"pending_repair": marker}, _SHA, None) is None
+    assert unchecked_repair_marker({"pending_repair": marker}, "b" * 40, "gone") is None
+    assert unchecked_repair_marker({"pending_repair": {"from_commit": "-x"}}, _SHA, None) is None
+    assert unchecked_repair_marker({"pending_repair": "garbage"}, _SHA, None) is None
+    assert unchecked_repair_marker({}, _SHA, None) is None

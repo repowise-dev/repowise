@@ -24,6 +24,7 @@ from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
@@ -40,6 +41,8 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     filter_dicts_by_key,
     filter_path_list,
+    no_source_field,
+    serves_no_source,
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
@@ -150,7 +153,7 @@ async def _compact_symbol_rows(
             "line": s.start_line,
         }
         sid = symbol_identity(s.symbol_id)
-        if sid != f"{path}::{s.name}":
+        if sid != make_symbol_id(path, s.name):
             row["symbol_id"] = sid
         scored.append(
             ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
@@ -352,6 +355,9 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
 
 
 async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    if serves_no_source():
+        docs["file_preview"] = no_source_field(card.target)
+        return
     preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
@@ -625,7 +631,7 @@ async def _symbol_user_files(
     for source_node_id, file_path, confidence, origin in res.all():
         if not shows_call_origin(origin, sym.file_path):
             continue
-        path = file_path or source_node_id.split("::", 1)[0]
+        path = file_path or file_of_symbol(source_node_id)
         user_files.add(path)
         if (
             path == sym.file_path

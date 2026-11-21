@@ -1184,6 +1184,8 @@ def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int],
     return inside
 
 
+# Only complete, single-line strings mask parentheses; unmatched regex quotes do not.
+_TS_PARENTHESIS = re.compile(r'''"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\\n])*`|[()]''')
 _TS_TYPE_HEADER = re.compile(
     r"(?:\binterface\s+[A-Za-z_$][\w$]*|\btype\s+[A-Za-z_$][\w$]*[^=]*=|(?:<|\bas)\s*$)"
 )
@@ -1203,22 +1205,43 @@ def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
     """
     offsets: list[int] = []
     innermost: list[bool] = []
-    stack: list[bool] = []
+    stack: list[tuple[bool, int]] = []
+    paren_offsets: list[int] = []
+    paren_depths: list[int] = []
+    parentheses = 0
+    for match in _TS_PARENTHESIS.finditer(cleaned):
+        token = match.group()
+        if token not in ("(", ")"):
+            continue
+        parentheses += 1 if token == "(" else -1
+        paren_offsets.append(match.start())
+        paren_depths.append(parentheses)
+
     segment_start = 0
     for match in _BRACE.finditer(cleaned):
-        char = match.group()
+        offset, char = match.start(), match.group()
+        index = bisect_left(paren_offsets, offset) - 1
+        parentheses = paren_depths[index] if index >= 0 else 0
         if char == "{":
-            segment = cleaned[segment_start : match.start()]
+            segment = cleaned[segment_start : offset]
+            annotation = _TS_ANNOTATION_HEADER.search(segment)
+            # Only a parameter separator can make a line-start name an annotation.
             is_type = bool(_TS_TYPE_HEADER.search(segment)) or (
-                bool(_TS_ANNOTATION_HEADER.search(segment))
-                and not _TS_NON_ANNOTATION.search(segment)
+                annotation is not None
+                and (
+                    not _TS_NON_ANNOTATION.search(segment)
+                    or (
+                        parentheses > (stack[-1][1] if stack else 0)
+                        and segment[: annotation.start()].rstrip().endswith(("(", ","))
+                    )
+                )
             )
-            stack.append(is_type or (bool(stack) and stack[-1]))
+            stack.append((is_type or (bool(stack) and stack[-1][0]), parentheses))
         elif char == "}" and stack:
             stack.pop()
-        segment_start = match.end()
-        offsets.append(match.start())
-        innermost.append(stack[-1] if stack else False)
+        segment_start = offset + 1
+        offsets.append(offset)
+        innermost.append(stack[-1][0] if stack else False)
 
     def inside(offset: int) -> bool:
         index = bisect_left(offsets, offset) - 1

@@ -42,6 +42,35 @@ def _compact(action: dict[str, Any], *, full: bool) -> dict[str, Any]:
     return row
 
 
+def without_evidence(view: dict[str, Any], ids: frozenset[str]) -> dict[str, Any]:
+    """*view* less the actions that rest on *ids*, each horizon recounted.
+
+    The agent surface carries no runtime evidence yet, so an action on a
+    cause minted from a measurement alone stays on the people's surfaces.
+    Ceiling: a horizon keeps the actions it stored, so one taken out is not
+    replaced by the next.
+    """
+    if not ids:
+        return view
+    horizons = {}
+    for name, horizon in (view.get("horizons") or {}).items():
+        actions = horizon.get("actions") or []
+        gone = [a for a in actions if ids.intersection(a.get("evidence_ids") or ())]
+        if not gone:
+            horizons[name] = horizon
+            continue
+        by_tier = dict(horizon.get("by_tier") or {})
+        for action in gone:
+            by_tier[action["tier"]] = by_tier.get(action["tier"], 0) - 1
+        horizons[name] = {
+            **horizon,
+            "actions": [a for a in actions if not ids.intersection(a.get("evidence_ids") or ())],
+            "total": horizon.get("total", 0) - len(gone),
+            "by_tier": {k: v for k, v in by_tier.items() if v > 0},
+        }
+    return {**view, "horizons": horizons}
+
+
 def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str, Any]:
     """The head of each horizon plus its totals, from a ``load_actions_view`` result.
 
@@ -63,6 +92,13 @@ def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str
         block[name] = row
     # ``unavailable`` stays the sorted name list older readers expect;
     # ``unavailable_reasons`` says why each one is missing.
+    setup = view.get("setup") or {}
+    if setup.get("open"):
+        # Only while steps are left, and only what an agent acts on: how many,
+        # whether to offer the pass, and since when it could have.
+        block["setup"] = {
+            k: v for k, v in setup.items() if k in ("open", "offer", "first_call_at") and v
+        }
     reasons = view.get("unavailable") or {}
     if reasons:
         block["unavailable"] = sorted(reasons)
@@ -82,12 +118,46 @@ async def _build_next_actions(
     """
     # Imported here so ``compact_actions_view`` stays free of persistence.
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
     from repowise.server.mcp_server._helpers import _cross_repo_cut
 
     try:
         async with session.begin_nested():
-            view = await load_actions_view(session, repository.id, **_cross_repo_cut(alias))
-        return compact_actions_view(view, full=full), None
+            setup = await setup_facts(session, repository)
+            view = await load_actions_view(
+                session, repository.id, setup=setup, **_cross_repo_cut(alias)
+            )
+            hidden = await measured_hotspot_ids(session, repository.id)
+        return compact_actions_view(without_evidence(view, hidden), full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)
         return {}, f"Next actions could not be read from this index ({type(exc).__name__})."
+
+
+async def setup_facts(session: Any, repository: Any) -> Any | None:
+    """The live setup facts when the checkout is on this machine, else ``None``.
+
+    This call is an agent call, so the pass is offered from it on even before
+    the ledger records it. ``get_health`` reads the same facts to open a
+    setup step by id. The rewrite hook lives in the agent's settings,
+    which the server does not read, so the distill step stays out here.
+    """
+    from pathlib import Path
+
+    from repowise.core.persistence.crud.analysis.setup_facts import (
+        load_setup_facts,
+        with_current_call,
+    )
+    from repowise.server.mcp_server._meta import served_root
+
+    # The served checkout, none for a context with no source: the stored path
+    # names where the index was built, which such a server cannot read.
+    served = served_root(repository)
+    root = Path(served or "")
+    if not served or not root.is_dir():
+        return None
+    try:
+        return with_current_call(await load_setup_facts(session, repository.id, root))
+    except Exception as exc:  # the rest of the actions must not fail on its account
+        logger.warning("get_overview: setup steps unavailable: %s", exc)
+        return None

@@ -1,7 +1,7 @@
 {
   "project": {
     ".codex/config.toml": {
-      "content": "[mcp_servers.repowise]\ncommand = \"repowise\"\nargs = [\"mcp\"]\ncwd = \"{REPO}\"\nstartup_timeout_sec = 20\n\n[features]\nhooks = true\n",
+      "content": "[mcp_servers.repowise]\ncommand = \"repowise\"\nargs = [\"mcp\"]\ncwd = \"{REPO}\"\nrequired = true\nstartup_timeout_sec = 60\n\n[features]\nhooks = true\n",
       "newlines": "platform"
     },
     ".codex/hooks.json": {

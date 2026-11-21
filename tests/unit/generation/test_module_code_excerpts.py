@@ -252,3 +252,24 @@ def test_ranked_overloads_select_one_implementation_before_the_file_cap(tmp_path
     candidates = excerpt_candidates([], parsed, [path])
     assert [s.name for s in candidates] == ["encode", "first", "second"]
     assert not candidates[0].is_declaration
+    sources = _sources(tmp_path, parsed)
+    for api in ([], [{"name": "encode", "id": candidates[0].id, "file": path}]):
+        selection, _ = module_excerpts(api, parsed, [path], sources, 10_000)
+        assert [item.symbol for item in selection.included] == [s.id for s in candidates]
+        implementation = selection.included[0]
+        assert (implementation.start_line, implementation.end_line) == (3, 3)
+        assert implementation.text.replace("\r\n", "\n") == (
+            "export function encode(value: string | number): string { return String(value); }\n"
+        )
+
+
+def test_c_function_excerpt_uses_definition_after_prototype(tmp_path):
+    path = "client.c"
+    parsed = _index(
+        tmp_path,
+        {path: "int initialize(void);\nint initialize(void) { return 42; }\n"},
+    )
+    selection, _ = module_excerpts([], parsed, [path], _sources(tmp_path, parsed), 10_000)
+    [excerpt] = selection.included
+    assert excerpt.text.replace("\r\n", "\n") == "int initialize(void) { return 42; }\n"
+    assert (excerpt.start_line, excerpt.end_line) == (2, 2)

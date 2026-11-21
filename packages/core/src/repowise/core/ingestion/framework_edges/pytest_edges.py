@@ -19,7 +19,7 @@ config ``usefixtures`` or ``python_functions``, a helper asking for a fixture,
 a request name in a string other than a docstring, code run from a string
 with ``exec``, ``eval`` or ``compile``, a file whose text is not available) is stamped
 :data:`UNRECORDED_HINT` on the conftest edges it could reach, and selection
-keeps every test under those conftests.
+counts that file as using every fixture of those conftests.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...pytest_roots import DEFAULT_PYTHON_FUNCTIONS, _words, pytest_options
+from ...symbol_spans import symbol_at
 from ..resolvers import ResolverContext
 from ..source_text import decode_source, source_text
 from ..type_names import strip_type_arguments
@@ -599,14 +600,7 @@ def _runtime_requests(
 
 def _enclosing(parsed: Any, line: int) -> Any:
     """The innermost function or method symbol holding *line*, ``None`` outside any."""
-    return max(
-        (
-            s for s in parsed.symbols
-            if s.kind in ("function", "method") and s.start_line <= line <= s.end_line
-        ),
-        key=lambda s: s.start_line,
-        default=None,
-    )  # fmt: skip
+    return symbol_at((s for s in parsed.symbols if s.kind in ("function", "method")), line)
 
 
 def _call_names(

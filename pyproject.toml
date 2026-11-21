@@ -119,8 +119,8 @@ graph-extra = [
     "graspologic>=3.4,<4",
 ]
 dev = [
-    "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=1.3,<2",
     "pytest-snapshot>=0.9,<1",
     "pytest-xdist>=3.5,<4",
     "pytest-timeout>=2.3,<3",
@@ -170,6 +170,10 @@ namespaces = true
 # Generated from plugins/shared/commands/ by scripts/gen_plugin_content.py and
 # pinned by tests/unit/cli/test_plugin_content.py.
 "repowise.cli.agent_targets" = ["_data/codex_prompts/*.md"]
+# Gradle init script that applies JaCoCo for `repowise evidence setup`'s workstation command.
+"repowise.core.test_runners" = ["_data/*.gradle"]
+# Per-model benchmark rows the output-savings estimate is calibrated from.
+"repowise.core.savings" = ["_data/output_calibration.json"]
 
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)
@@ -183,8 +187,8 @@ members = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=1.3,<2",
     "pytest-snapshot>=0.9,<1",
     "pytest-xdist>=3.5,<4",
     "pytest-timeout>=2.3,<3",

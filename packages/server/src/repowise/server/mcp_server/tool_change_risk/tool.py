@@ -15,6 +15,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.change_risk.features import revspec_head
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server import _state
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
@@ -22,6 +23,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._call_tasks import ends_call_tasks, start_call_task
 from repowise.server.mcp_server._checkout import caller_revspec
 from repowise.server.mcp_server._helpers import (
+    NO_GIT_REASON,
     _unsupported_repo_all,
     attach_ignored_arguments,
 )
@@ -370,8 +372,8 @@ async def get_change_risk(
         revspec: commit or ``base..head``. Omit for uncommitted work, or
             ``HEAD`` when the tree is clean.
         per_commit: with a range, one compact row per commit (up to 30).
-        include: ``"findings"``, ``"diagnostics"``, ``"scales"``,
-            ``"evidence"``, ``"tests"`` (why each runs).
+        include: ``"findings"`` (with changed symbols), ``"diagnostics"``,
+            ``"scales"``, ``"tests"`` (why each runs).
         finding_id: expand one ``health_delta`` finding.
         extensions: file suffixes to count, e.g. ``[".py"]``.
         exclude_patterns, include_paths: gitignore-style paths to omit, keep
@@ -382,6 +384,10 @@ async def get_change_risk(
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
     ctx = await _pkg._resolve_repo_context(repo)
+    if not _state.git_available():
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply("git_unavailable", {"error": NO_GIT_REASON})
     revspec, refused = caller_revspec(revspec)
     if refused is not None:
         return refused

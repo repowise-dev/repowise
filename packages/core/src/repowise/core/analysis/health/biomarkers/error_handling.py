@@ -50,7 +50,7 @@ _IDIOM_REASONS: dict[str, str] = {
 # Rust code that does not ship (a ``build.rs``, an example, a benchmark, a test
 # file) fails by panicking: the panic ends that one run, which is the intent.
 _RUST_PANIC_KINDS = frozenset({"unsafe_unwrap", "panic_macro"})
-_RUST_UNSHIPPED_ORIGINS = frozenset({"build", "docs_example", "tooling", "test"})
+_RUST_UNSHIPPED_ORIGINS = frozenset({"build", "docs_example", "tooling", "test", "data"})
 
 
 def _reportable_hits(ctx: FileContext) -> list[ErrorHandlingHit]:

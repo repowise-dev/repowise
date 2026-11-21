@@ -22,6 +22,8 @@ switch the other adapter commands carry.
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 from rich.table import Table
 
@@ -88,16 +90,15 @@ def _project_result(item: dict, *, multi: bool) -> dict:
     ==========  ==============================================================
     page        ``score`` (from ``relevance_score``), ``title``, ``page_type``,
                 ``path`` (``target_path`` for a pathless page), ``snippet``
-    symbol      ``score``, ``name``, ``qualified_name``, ``kind``, ``path``,
-                ``line`` (from ``start_line``), and
-                ``symbol_id`` — the id ``repowise symbol`` takes, without
+    symbol      ``name``, ``kind``, ``path``, ``line`` (from ``start_line``),
+                and ``symbol_id`` — the id ``repowise symbol`` takes, without
                 which a symbol hit cannot be followed anywhere
     file        ``score``, ``title``, ``path``
     ==========  ==============================================================
 
-    Dropped: ``page_id``, ``sources``, ``confidence_score``, ``end_line``,
-    ``signature``, ``language`` and ``next`` — call envelope and ranking
-    internals, all of them in ``--full``.
+    A symbol row has no ``score``: the tool ranks symbol rows by order and
+    serves none. Dropped: ``page_id``, ``sources``, ``confidence_score``,
+    ``end_line``, ``signature`` and ``source``, all of them in ``--full``.
 
     ``type`` is emitted on every row although the old payload had none. It was
     unambiguous when every row in a response was a page; ``hybrid`` interleaves
@@ -105,13 +106,14 @@ def _project_result(item: dict, *, multi: bool) -> dict:
     a row even has.
     """
     kind = _result_kind(item)
-    score = item.get("relevance_score") if kind == "page" else item.get("score")
-    out: dict = {"type": kind, "score": round(float(score or 0.0), 6)}
+    out: dict = {"type": kind}
+    if kind != "symbol":
+        score = item.get("relevance_score") if kind == "page" else item.get("score")
+        out["score"] = round(float(score or 0.0), 6)
     if kind == "symbol":
         out.update(
             {
                 "name": item.get("name") or "",
-                "qualified_name": item.get("qualified_name") or "",
                 "kind": item.get("kind") or "",
                 "path": item.get("path") or "",
                 "line": item.get("start_line"),
@@ -141,9 +143,10 @@ def project(payload: dict, query: str, *, multi: bool) -> dict:
     hits resolve to — some results are pages, and this is what to read),
     ``exact_match`` and ``note`` (an identifier query that matched no indexed
     symbol still returns fuzzy neighbours; the note is what stops a caller
-    anchoring on one), ``grep_hint`` (the zero-result recovery path), and the
-    freshness half of ``_meta``. Each of those changes the answer rather than
-    its size, which is the line this trim draws.
+    anchoring on one), ``grep_hint`` (the zero-result recovery path),
+    ``lines``, ``complete``, ``lines_omitted`` (source lines read from live files
+    for identifier queries), and the freshness half of ``_meta``. Each of those
+    changes the answer rather than its size, which is the line this trim draws.
 
     Dropped: the timing and token halves of ``_meta``, and the per-result keys
     named in :func:`_project_result`.
@@ -156,7 +159,15 @@ def project(payload: dict, query: str, *, multi: bool) -> dict:
         "mode": payload.get("mode") or "concept",
         "results": [_project_result(r, multi=multi) for r in payload.get("results") or []],
     }
-    for key in ("candidates", "exact_match", "note", "grep_hint"):
+    for key in (
+        "candidates",
+        "exact_match",
+        "note",
+        "grep_hint",
+        "lines",
+        "complete",
+        "lines_omitted",
+    ):
         if payload.get(key) is not None:
             out[key] = payload[key]
     note = _ta.index_note(payload)
@@ -171,11 +182,11 @@ def project(payload: dict, query: str, *, multi: bool) -> dict:
 @click.option(
     "--mode",
     type=click.Choice(_MODE_CHOICES),
-    default="fulltext",
-    help="Search mode. fulltext/semantic both run the tool's fused concept "
-    "search; auto routes on the query's shape.",
+    default="auto",
+    help="Search mode. auto (default) routes on the query's shape; fulltext/semantic "
+    "both run the tool's fused concept search.",
 )
-@click.option("--limit", type=int, default=10, help="Max results.")
+@click.option("--limit", type=int, default=5, help="Max results (the search_codebase default).")
 @click.option(
     "--repo",
     "repo_alias",
@@ -256,7 +267,10 @@ def search_command(
         # Every early return owes stdout a document: a json caller cannot tell
         # an empty pipe from a crash.
         if fmt == "json":
-            emit_json({"query": query, "mode": tool_mode, "results": []})
+            from repowise.server.mcp_server._query_shape import _resolve_mode
+
+            resolved = _resolve_mode(query, tool_mode)
+            emit_json({"query": query, "mode": resolved, "results": []})
         return
 
     if len(repo_paths) == 1:
@@ -282,14 +296,18 @@ def search_command(
 def _run_search(repo_path, query: str, limit: int, tool_mode: str) -> dict:
     """One ``search_codebase`` call against one repo."""
 
+    arguments = {"query": query, "limit": limit, "mode": tool_mode}
+
     def _factory():
         from repowise.server.mcp_server.tool_search import search_codebase
 
-        return search_codebase(query=query, limit=limit, mode=tool_mode)
+        return search_codebase(**arguments)
 
     # Symbol and path search are SQL lookups: neither reads the vector store.
     reads_vectors = tool_mode not in ("symbol", "path")
-    return _ta.run(repo_path, _factory, "search_codebase", reads_vectors=reads_vectors)
+    return _ta.run(
+        repo_path, _factory, "search_codebase", reads_vectors=reads_vectors, arguments=arguments
+    )
 
 
 def _warn_if_lexical_only(payload: dict, requested: str, notices, repo_path=None) -> None:
@@ -364,6 +382,7 @@ def _fan_out(
                 f"[yellow]search failed for {rp.name}: {escape(str(payload['error']))}[/yellow]"
             )
             continue
+        payload["_repo"] = rp.name
         payloads.append(payload)
         _warn_if_lexical_only(payload, mode, notices, rp)
         for rank, item in enumerate(payload.get("results") or []):
@@ -403,6 +422,7 @@ def _fan_out(
             fused[key] = values[0]
     if payloads and all("exact_match" in p for p in payloads):
         fused["exact_match"] = any(p["exact_match"] for p in payloads)
+    fused.update(_fuse_lines(payloads, query))
     fused["_meta"] = _worst_freshness(payloads)
 
     # "Nothing matched" and "nothing could be searched" are different answers,
@@ -419,6 +439,37 @@ def _fan_out(
         return
     _render(projected, query, mode, multi=True)
     _ta.print_index_note(fused, fmt)
+
+
+def _line_cap(query: str) -> int:
+    from repowise.server.mcp_server._line_hits import MAX_LINES, MAX_LINES_MIXED, _literal
+
+    literal = _literal(query)
+    mixed = not literal and len(query.split()) > 1
+    return MAX_LINES_MIXED if mixed else MAX_LINES
+
+
+def _fuse_lines(payloads: list[dict], query: str) -> dict[str, Any]:
+    """Combine per-repo line hits bounded identically to the MCP tool."""
+    if not any("lines" in p for p in payloads):
+        return {}
+    all_lines: list[dict] = []
+    for p in payloads:
+        repo_name = p.get("_repo", "")
+        for line_item in p.get("lines") or []:
+            line_entry = dict(line_item)
+            line_entry.setdefault("repo", repo_name)
+            all_lines.append(line_entry)
+
+    cap = _line_cap(query)
+    lines = all_lines[:cap]
+    omitted = (len(all_lines) - len(lines)) + sum(p.get("lines_omitted", 0) for p in payloads)
+    is_complete = omitted == 0 and all(p.get("complete", False) for p in payloads if "lines" in p)
+
+    out: dict[str, Any] = {"lines": lines, "complete": is_complete}
+    if omitted > 0:
+        out["lines_omitted"] = omitted
+    return out
 
 
 def _worst_freshness(payloads: list[dict]) -> dict:
@@ -467,7 +518,7 @@ def _render(projected: dict, query: str, mode: str, *, multi: bool) -> None:
         from rich.markup import escape
 
         where = " across the workspace" if multi else ""
-        if mode == "symbol":
+        if mode == "symbol" or projected.get("mode") == "symbol":
             console.print(f"[yellow]No symbols matching '{escape(query)}'{where}[/yellow]")
         else:
             console.print(f"[yellow]No results found{where}.[/yellow]")
@@ -477,13 +528,14 @@ def _render(projected: dict, query: str, mode: str, *, multi: bool) -> None:
         elif kind == "file":
             console.print(_file_table(rows, query, multi=multi))
         else:
-            console.print(_page_table(rows, query, mode, multi=multi))
+            effective_mode = projected.get("mode") or mode
+            console.print(_page_table(rows, query, effective_mode, multi=multi))
 
     _render_notes(projected)
 
 
 def _render_notes(projected: dict) -> None:
-    """``note``, ``grep_hint`` and ``candidates`` — kept keys owe a renderer.
+    """``note``, ``grep_hint``, ``candidates`` and ``lines`` — kept keys owe a renderer.
 
     Escaped, because a table cell and ``console.print`` both parse rich markup:
     a hint quoting ``mode="symbol"`` is harmless but a note quoting a
@@ -504,6 +556,30 @@ def _render_notes(projected: dict) -> None:
         console.print("\n[bold]Files to read[/bold]")
         for entry in candidates:
             console.print(f"  [cyan]{escape(str(entry.get('path', '')))}[/cyan]")
+    _render_lines(projected)
+
+
+def _format_line_entry(entry: dict) -> str:
+    from rich.markup import escape
+
+    repo_prefix = f"{escape(str(entry['repo']))}: " if entry.get("repo") else ""
+    path = escape(str(entry.get("path") or ""))
+    line_no = entry.get("line") if entry.get("line") is not None else ""
+    kind = entry.get("kind") or ""
+    text = escape(str(entry.get("text") or ""))
+    kind_str = f" [dim]({escape(kind)})[/dim]" if kind else ""
+    return f"  [cyan]{repo_prefix}{path}:{line_no}[/cyan]{kind_str}  {text}"
+
+
+def _render_lines(projected: dict) -> None:
+    lines = projected.get("lines") or []
+    if not lines:
+        return
+    console.print("\n[bold]Lines[/bold]")
+    for entry in lines:
+        console.print(_format_line_entry(entry))
+    if omitted := projected.get("lines_omitted"):
+        console.print(f"  [dim]... {omitted} more lines omitted[/dim]")
 
 
 def _titled(query: str, mode: str, *, multi: bool) -> str:
@@ -519,6 +595,8 @@ def _titled(query: str, mode: str, *, multi: bool) -> str:
         "symbol": "Symbol search",
         "path": "Path search",
         "hybrid": "Hybrid search",
+        "concept": "Concept search",
+        "auto": "Search",
     }.get(mode, f"{mode.capitalize()} search")
     return f"{label}: '{query}' (workspace)" if multi else f"{label}: '{query}'"
 
@@ -555,7 +633,7 @@ def _symbol_table(rows: list[dict], query: str, *, multi: bool) -> Table:
     table.add_column("Name", style="cyan")
     if multi:
         table.add_column("Repo", style="magenta")
-    table.add_column("Qualified Name")
+    table.add_column("Symbol ID")
     table.add_column("Kind")
     table.add_column("File")
     table.add_column("Line", justify="right")
@@ -566,7 +644,7 @@ def _symbol_table(rows: list[dict], query: str, *, multi: bool) -> Table:
         if multi:
             cells.append(str(row.get("repo", "")))
         cells += [
-            str(row.get("qualified_name") or ""),
+            str(row.get("symbol_id") or ""),
             str(row.get("kind") or ""),
             str(row.get("path") or ""),
             "" if row.get("line") is None else str(row["line"]),

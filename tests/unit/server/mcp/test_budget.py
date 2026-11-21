@@ -348,6 +348,38 @@ def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path,
     assert '"row": 5' in stored
 
 
+@pytest.mark.parametrize("shape", ["list", "dict", "aliased"])
+def test_fit_to_budget_tail_stops_at_the_first_row_that_fits(repo_root: Path, shape: str):
+    """The tail sheds exactly to the fit line: one row fewer would still be over.
+
+    ``aliased`` serialises the same list twice, so each dropped row frees
+    twice its own size; the shed must still stop at the first fit.
+    """
+    rows = [{"row": i, "body": "r" * (i % 7 * 40)} for i in range(400)]
+    every = list(rows)  # the shed pops ``rows`` itself
+    response: dict = {"results": {f"k{i}": row for i, row in enumerate(rows)}}
+    if shape != "dict":
+        response = {"results": rows}
+    if shape == "aliased":
+        response["mirror"] = rows
+    budget, headroom = 9000, 100
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+
+    fit_to_budget(response, ("results[]",), collector, char_budget=budget, headroom=headroom)
+
+    # The flag lands after the last fit check, so it is not part of the fit.
+    assert response.pop("truncated") is True
+    kept = response["results"]
+    assert 1 < len(kept) < 400
+    assert not over_budget(response, headroom=headroom, char_budget=budget)
+    nxt = len(kept)
+    if isinstance(kept, dict):
+        kept[f"k{nxt}"] = every[nxt]
+    else:
+        kept.append(every[nxt])
+    assert over_budget(response, headroom=headroom, char_budget=budget)
+
+
 def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
     response = {"results": [{"row": i, "body": "r" * 1000} for i in range(6)]}
     collector = OmissionCollector("get_answer", repo_root=repo_root)
@@ -675,3 +707,121 @@ def test_cli_expand_resolves_mcp_row(repo_root: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "dropped target pkg/a.py" in result.output
     assert '"title": "A"' in result.output
+
+
+def _shed_in_rows_measured(response, key, collector, limits, requested) -> None:
+    """The per-row loop :func:`_shed_in_rows` must match: one full measure per row."""
+    from repowise.server.mcp_server._budget.budgeter import (
+        _record_reduction,
+        _rows_to_keep,
+        _shed_tail,
+        shed_stem,
+    )
+
+    path, _, leaf = key.partition("[].")
+    rows = response
+    for part in path.split("."):
+        rows = rows.get(part) if isinstance(rows, dict) else None
+    name = shed_stem(leaf)
+    heaviest = sorted(
+        (i for i, row in enumerate(rows) if isinstance(row, dict) and row.get(name)),
+        key=lambda i: len(json.dumps(rows[i][name], default=str)),
+        reverse=True,
+    )
+    for i in heaviest:
+        if not limits.exceeded(response):
+            return
+        row, label = rows[i], f"{path}[{i}].{name}"
+        if name not in row:
+            continue
+        if leaf.endswith("[]") or isinstance(row[name], list):
+            keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
+            _shed_tail(response, row, name, label, collector, limits, keep)
+            if not row[name]:
+                row.pop(name)
+            continue
+        value = row.pop(name)
+        collector.add(label, value)
+        if limits.record_counts:
+            _record_reduction(response, row, label, name, value, emitted=0)
+        response["truncated"] = True
+
+
+def _rows_payload(seed: int, aliased: str) -> dict:
+    import random
+
+    rng = random.Random(seed)
+    rows = []
+    for i in range(rng.randint(1, 60)):
+        row: dict = {"kind": f"k{i}", "status": "ok"}
+        shape = rng.choice(["list", "list", "dict", "text", "none"])
+        if shape == "list":
+            row["details"] = [
+                {"path": f"src/{i}/{j}.py", "note": "n" * rng.randint(0, 300)}
+                for j in range(rng.randint(0, 40))
+            ]
+        elif shape == "dict":
+            row["details"] = {"files": ["f" * rng.randint(1, 80)] * rng.randint(1, 9), "n": i}
+        elif shape == "text":
+            row["details"] = "t" * rng.randint(1, 900)
+        rows.append(row)
+    response = {"title": "x", "evidence": {"items": rows}, "_meta": {"v": 1}}
+    if rng.random() < 0.3:
+        response["truncated"] = rng.choice([True, False])
+    if aliased == "row" and rows:
+        rows.append(rows[0])
+    elif aliased == "elsewhere" and rows:
+        response["mirror"] = rows[-1]
+    elif aliased == "details" and len(rows) > 1 and isinstance(rows[0].get("details"), list):
+        rows[1]["details"] = rows[0]["details"]
+    return response
+
+
+@pytest.mark.parametrize("aliased", ["none", "row", "elsewhere", "details"])
+@pytest.mark.parametrize("key", ["evidence.items[].details[]", "evidence.items[].details"])
+def test_shed_in_rows_sheds_what_measuring_every_row_sheds(aliased: str, key: str) -> None:
+    """Measuring once and sizing each row decides exactly as measuring per row."""
+    from repowise.server.mcp_server._budget.budgeter import (
+        _shed_in_rows,
+        _ShedLimits,
+        response_chars,
+    )
+
+    for seed in range(15):
+        original = _rows_payload(seed, aliased)
+        size = response_chars(original)
+        for fraction in (0.3, 0.8, 0.97):
+            for requested in (False, True):
+                for record_counts in (False, True):
+                    limits = _ShedLimits(0, int(size * fraction), record_counts)
+                    fast, slow = copy.deepcopy(original), copy.deepcopy(original)
+                    fast_drops = OmissionCollector("t", store_path=Path("unused.db"))
+                    slow_drops = OmissionCollector("t", store_path=Path("unused.db"))
+                    # A row listed twice sheds at its first index and is skipped after.
+                    _shed_in_rows(fast, key, fast_drops, limits, requested)
+                    _shed_in_rows_measured(slow, key, slow_drops, limits, requested)
+                    assert json.dumps(fast) == json.dumps(slow), (seed, fraction)
+                    assert fast_drops._chunks == slow_drops._chunks, (seed, fraction)
+
+
+def test_shed_in_rows_measures_the_response_once(monkeypatch) -> None:
+    from repowise.server.mcp_server._budget import budgeter
+
+    rows = [{"kind": f"k{i}", "details": [{"note": "n" * 50}] * 20} for i in range(300)]
+    response = {"evidence": {"items": rows}}
+    whole = 0
+    measure = budgeter.response_chars
+
+    def counting(value):
+        nonlocal whole
+        whole += value is response
+        return measure(value)
+
+    monkeypatch.setattr(budgeter, "response_chars", counting)
+    limits = budgeter._ShedLimits(0, measure(response) // 2, True)
+    budgeter._shed_in_rows(
+        response, "evidence.items[].details[]", OmissionCollector("t", store_path=Path("unused.db")), limits, False
+    )
+
+    assert all(len(row["details"]) == 1 for row in rows[:5])
+    assert whole == 1

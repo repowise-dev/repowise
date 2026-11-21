@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.changes.reconstruct import _is_trailer
+from repowise.core.git_sha import is_sha_prefix
 from repowise.core.ingestion.git_indexer._constants import _MAX_COMMIT_BODY_BYTES
 from repowise.server.mcp_server._why_relevance import (
     question_terms,
@@ -217,7 +218,9 @@ def _stored_bodies(target_git: dict[str, Any]) -> dict[str, tuple[str, int | Non
 
 async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, tuple[str, int | None]]:
     """Bodies of *shas* from the local clone; empty without one, or on any git failure."""
-    if not repo_root or not (Path(repo_root) / ".git").exists():
+    from repowise.server.mcp_server import _state
+
+    if not repo_root or not _state.git_available() or not (Path(repo_root) / ".git").exists():
         return {}
     try:
         return await asyncio.wait_for(
@@ -236,7 +239,8 @@ def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, tuple[str, int | N
     from repowise.core.forges.changes import change_number
     from repowise.core.forges.detect import detect_forge
 
-    names = [s for s in shas if re.fullmatch(r"[0-9a-f]{4,40}", s)]
+    # Git's own floor for an abbreviation is 4 digits; a stored short sha may be one.
+    names = [s for s in shas if is_sha_prefix(s, min_len=4)]
     if not names:
         return {}
     proc = subprocess.run(

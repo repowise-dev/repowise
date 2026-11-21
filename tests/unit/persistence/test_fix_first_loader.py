@@ -317,23 +317,28 @@ async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeyp
 
 async def test_a_finding_item_verifies_with_measured_tests_of_its_lines(async_session) -> None:
     """A finding with no plan takes its tests from coverage of its own lines."""
-    from repowise.core.persistence.models import TestCoverageEntry
+    from repowise.core.analysis.health.coverage import TestCoverage
+    from repowise.core.persistence.crud import save_test_coverage
 
     rid = await seed_fix_first(async_session)
-    for test_id, lines in (
-        ("tests/test_plain.py::test_walk", [6, 7, 8]),
-        ("tests/test_plain.py::test_elsewhere", [50, 51]),
-    ):
-        async_session.add(
-            TestCoverageEntry(
-                repository_id=rid,
+    await save_test_coverage(
+        async_session,
+        rid,
+        [
+            TestCoverage(
                 test_id=test_id,
-                test_file="tests/test_plain.py",
-                source_file="src/plain.py",
-                covered_lines_json=json.dumps(lines),
+                file_path="src/plain.py",
+                covered_lines=lines,
                 source_format="coverage_json",
+                test_file="tests/test_plain.py",
             )
-        )
+            for test_id, lines in (
+                ("tests/test_plain.py::test_walk", [6, 7, 8]),
+                ("tests/test_plain.py::test_elsewhere", [50, 51]),
+            )
+        ],
+        source_format="coverage_json",
+    )
     await async_session.flush()
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
@@ -449,3 +454,62 @@ async def test_loader_reads_hidden_findings_to_price_a_fix(async_session) -> Non
         select(HealthFinding).where(HealthFinding.repository_id == rid))).scalars()}
     assert by_id["finding_u1"].queue_eligible is None
     assert by_id["finding_n1"].queue_eligible is not None
+
+
+async def test_loader_leaves_an_observation_out_as_the_builder_does(async_session) -> None:
+    """The loader reads an ``investigate`` row's prerequisites in SQL, so a
+    marker with no fix strategy leaves the stored queue uncounted."""
+    from tests.unit.health.test_perf_observations import _observation_row
+
+    rid = await seed_fix_first(async_session)
+    row = _observation_row()
+    details = {**row["details"], "prerequisites": list(row.pop("prerequisites"))}
+    async_session.add(
+        PerformanceOpportunity(repository_id=rid, **_with_json({**row, "details": details}, "details"))
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=no_tests,
+    )
+    assert loaded == built
+
+
+async def test_stored_cause_counts_leave_an_observation_out(async_session, monkeypatch) -> None:
+    """Neither served nor gated: an observation is no unit of the causes count."""
+    from repowise.core.analysis import finding_registry
+    from repowise.core.analysis.finding_registry import LanguageGate
+    from repowise.core.analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
+    from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+
+    gate = LanguageGate("performance", "java", 0.2, "test sample", "2026-10-15", "test")
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", (gate,))
+
+    rid = (await insert_repo(async_session)).id
+
+    def cause(opp: str, path: str, reason: str) -> PerformanceOpportunity:
+        return PerformanceOpportunity(
+            repository_id=rid, opportunity_id=opp, status="open",
+            performance_model_version=PERFORMANCE_MODEL_VERSION, rank_position=1,
+            rank_score=1.0, execution_context="production", biomarker_type="hot_path_sync_io",
+            actionability_state="investigate", evidence_confidence="low",
+            plan_state="no_safe_plan", file_path=path, observations_total=1,
+            affected_call_sites_total=1, affected_files_total=1, details_json="{}",
+            queue_eligible=False, queue_reason=reason,
+        )
+
+    # A Java file is held back by a language gate; the same row counts nowhere.
+    async_session.add_all([
+        cause("o1", "src/a.py", "observation"),
+        cause("o2", "src/B.java", "observation"),
+        cause("n1", "src/c.py", "no_strategy"),
+        cause("n2", "src/D.java", "no_strategy"),
+    ])
+    await async_session.flush()
+    counts = (await unit_counts(async_session, rid, "causes")).as_dict()
+    assert (counts["inventory"], counts["gated"], counts["excluded"]) == (2, 1, {"no_strategy": 1})

@@ -214,6 +214,7 @@ _JSDOC_WRAPPER_TYPES = frozenset(
         "lexical_declaration",
         "variable_declaration",
         "variable_declarator",
+        "expression_statement",  # /** doc */ obj.f = function () {}
     }
 )
 

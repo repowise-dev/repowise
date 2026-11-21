@@ -107,7 +107,8 @@ def _is_path(query: str) -> bool:
 
 
 _TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
-_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+# ``:12``, ``:12-20``, or an editor's ``:12:5`` (line, then column).
+_LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?(?:-\d+(?::\d+)?)?$")
 
 
 def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:

@@ -80,6 +80,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..symbol_identity import module_symbol_id
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -324,7 +325,7 @@ def _add_connection_edges(
         resources, nodes, connections = parse_scene(text)
         if not nodes:
             continue
-        module_sym = f"{path}::__module__"
+        module_sym = module_symbol_id(path)
         for conn in connections:
             method = conn.get("method")
             if not method:
