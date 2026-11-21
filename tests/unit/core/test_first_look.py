@@ -142,6 +142,7 @@ def test_staleness_names_fixed_changed_and_new() -> None:
     found = compare(report, now, current_commit="c2")
     assert found.fixed == (gone.id,)
     assert found.changed == (moved.id,)
+    assert [i.fingerprint for i in found.changed_items] == ["f2"]
     assert [i.id for i in found.new] == [_item(path="n.py").id]
     assert found.behind
 

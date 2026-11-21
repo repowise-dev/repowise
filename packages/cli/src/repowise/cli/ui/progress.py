@@ -127,6 +127,7 @@ _PHASE_LABELS: dict[str, str] = {
     "state": "Writing index state…",
     "views": "Refreshing agent views…",
     "editor_files": "Writing editor files…",
+    "first_look": "Writing the repo report…",
 }
 
 # What a phase counts, so every number on screen has a unit. A phase missing

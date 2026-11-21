@@ -80,17 +80,24 @@ async def render_item_prompt(
     flavor: str = "generic",
     repo_name: str | None = None,
     setup: Any | None = None,
+    actions: Mapping[str, Any] | None = None,
 ) -> str:
     """The "Fix with your agent" prompt for *item*, from what the index holds now.
 
     An item whose source no longer exists (the action stopped firing, the
     cause was fixed) gets the generic item prompt from the report's own facts.
+    *actions* is :func:`~repowise.core.analysis.actions.engine.actions_by_id`
+    when the caller renders many prompts, so the facts are read once.
     """
     ref = item.prompt
     if ref.renderer == "action" and ref.payload_ref:
         from repowise.core.persistence.crud.analysis.actions import load_action
 
-        action = await load_action(session, repository_id, ref.payload_ref, setup=setup)
+        action = (
+            actions.get(ref.payload_ref)
+            if actions is not None
+            else await load_action(session, repository_id, ref.payload_ref, setup=setup)
+        )
         if action is not None:
             return render_action(action_for_prompt(action), flavor, repo_name)
     elif ref.renderer == "fix_item" and ref.payload_ref:

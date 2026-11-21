@@ -141,6 +141,12 @@ def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
     return out
 
 
+def actions_by_id(facts: RepoFacts) -> dict[str, Action]:
+    """Every stored rule's action by id: :func:`find_action` for many ids at once."""
+    ctx = build_context(facts)
+    return {a.action_id: a for rule in RULES for a in rule(facts, ctx).actions}
+
+
 def find_action(
     facts: RepoFacts, action_id: str, setup: SetupFacts | None = None
 ) -> Action | None:
