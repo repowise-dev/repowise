@@ -144,6 +144,8 @@ class TestScanFile:
             ("exec (payload)\n", {"exec_call"}),
             ("eval(\n    payload\n)\n", {"eval_call"}),
             ("builtins.eval(payload)\n", {"eval_call"}),
+            ("obj.eval(payload)\n", set()),
+            ("model = Net().to(device).eval()\n", set()),
             ("retrieval (payload)\n", set()),
             ("my_eval(payload)\n", set()),
             ("# eval(payload)\n", set()),

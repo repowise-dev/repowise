@@ -11,7 +11,7 @@ import re
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 7
+SECURITY_SCANNER_VERSION = 8
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,13 @@ _CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     ),
 ]
 _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
+
+# Python ``eval`` counts only as the builtin: a bare ``eval(x)`` or
+# ``builtins.eval(x)``, never a method call like ``model.eval()`` — the same
+# rule the AST path applies (#6028).
+_PY_BUILTIN_EVAL_PATTERN = re.compile(
+    r"(?<![\w$.])(?:builtins\s*\.\s*)?eval\s*\("
+)
 
 
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
