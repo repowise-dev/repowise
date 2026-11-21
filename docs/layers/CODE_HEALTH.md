@@ -237,6 +237,11 @@ calibrated constants the published accuracy rests on. Full schema:
 Measured without leakage: files scored before the bug window, checked against the next
 six months of bug fixes ([method](../architecture/code-health.md#62-validation-and-calibration)).
 
+`max_ccn` and every CCN threshold quoted above (including "functions under CCN 80") use the
+walker's CCN, which is lower than a token-based counter such as lizard for some constructs —
+comprehension `for`, `finally`, `??` and flat `switch`/`when` dispatches. The construct-by-construct
+rule: [§ 5.6](../architecture/code-health.md#56-what-adds-a-ccn-point).
+
 - ROC AUC 0.737 (95% CI 0.683 to 0.787) across 21 repositories, 9 languages and 2,826
   files; held out on PROMISE jEdit, 0.761 and 0.776.
 - Against a commercial code-health tool on the same files, recall at a 20%-of-lines
