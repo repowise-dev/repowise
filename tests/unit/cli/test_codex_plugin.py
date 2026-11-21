@@ -163,3 +163,11 @@ def test_codex_plugin_marketplace_entry() -> None:
         "authentication": "ON_INSTALL",
     }
     assert entry["category"] == "Productivity"
+
+
+def test_codex_plugin_mcp_forwards_the_same_env_vars_as_the_cli() -> None:
+    from repowise.cli.agent_targets.targets.codex import forwarded_env_vars
+
+    config = _load_json(PLUGIN_ROOT / ".mcp.json")
+
+    assert config["repowise"]["env_vars"] == forwarded_env_vars()

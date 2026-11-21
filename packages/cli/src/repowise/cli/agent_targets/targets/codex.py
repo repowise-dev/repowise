@@ -156,7 +156,55 @@ def server_table(repo_path: Path) -> dict[str, object]:
         "cwd": str(repo_path.resolve()),
         "required": True,
         "startup_timeout_sec": STARTUP_TIMEOUT_SEC,
+        "env_vars": forwarded_env_vars(),
     }
+
+
+#: Variables the server reads to pick its database, embedder, provider or
+#: model, beside the per-provider keys and URLs (and ``DB_ENV_VARS``). Without
+#: them, a shell that selects one by environment gets a different one in the server.
+_SELECTION_ENV_VARS = (
+    "REPOWISE_POSTGRES_KEEPALIVE",
+    "REPOWISE_CONFIG_DIR",
+    "REPOWISE_EMBEDDER",
+    "REPOWISE_EMBEDDING_MODEL",
+    "REPOWISE_EMBEDDING_DIMS",
+    "REPOWISE_EMBEDDING_DECLARED_DIMS",
+    "OLLAMA_EMBEDDING_MODEL",
+    "OLLAMA_EMBEDDING_DIMS",
+    "REPOWISE_PROVIDER",
+    "REPOWISE_MODEL",
+    "REPOWISE_DOC_MODEL",
+    "REPOWISE_REASONING",
+)
+
+
+def forwarded_env_vars() -> list[str]:
+    """The provider variables Codex should pass from the shell to the server.
+
+    Codex starts a stdio server with a cleared environment: only a fixed set of
+    system variables (PATH, HOME, USERPROFILE and the like) plus the names in
+    ``env_vars`` reach it. A key exported in the shell is therefore invisible
+    to the server, and a repo indexed with a keyed embedder answers on keyless
+    vectors while the agent sees a working tool. Names only, never values: the
+    file may be committed. Every provider's key and base-URL variables, because
+    the embedder and the answer model can each be any of them, plus the
+    selection variables in :data:`_SELECTION_ENV_VARS`.
+    """
+    from repowise.core.persistence.database import DB_ENV_VARS
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    return sorted(
+        {
+            *DB_ENV_VARS,
+            *_SELECTION_ENV_VARS,
+            *(
+                var
+                for spec in PROVIDER_SPECS.values()
+                for var in (*spec.api_key_envs, *spec.base_url_envs)
+            ),
+        }
+    )
 
 
 #: How long Codex waits for the server before giving up on it. ``required``
@@ -345,6 +393,20 @@ def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
     # difference is a ClickException naming the file against a traceback
     # mid-run.
     merged = {**spec.merge_base(stored), **spec.entry}
+    # ``env_vars`` is a list both sides write to, so the user's names are kept
+    # ahead of ours instead of being replaced by them.
+    stored_vars = stored.get("env_vars")
+    if "env_vars" in spec.entry and stored_vars is not None and not isinstance(stored_vars, list):
+        raise reasoned_error(
+            f"Cannot update {config_path}: env_vars in [{table}] must be a list. "
+            "Fix it and retry; no changes were written.",
+            reason="editor_config_unmergeable",
+        )
+    if "env_vars" in spec.entry and isinstance(stored_vars, list):
+        merged["env_vars"] = [
+            *stored_vars,
+            *(var for var in spec.entry["env_vars"] if var not in stored_vars),
+        ]
     try:
         block = table_block(table, merged)
     except TypeError as exc:

@@ -267,3 +267,71 @@ def test_a_damaged_hooks_file_still_reports_an_unlaunchable_server(
     assert report.status.value == "broken"
     assert report.issues[0].startswith("Codex will not start:")
     assert "is not valid JSON" in report.issues[1]
+
+
+def test_the_entry_forwards_provider_keys_through_codex_cleared_env(tmp_path: Path) -> None:
+    # Codex launches stdio servers with a cleared environment, so a key exported
+    # in the shell reaches the server only when its name is in env_vars.
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    forwarded = _table(tmp_path)["env_vars"]
+    assert "OPENAI_API_KEY" in forwarded
+    assert "GEMINI_API_KEY" in forwarded
+    assert "OPENAI_BASE_URL" in forwarded
+
+
+def test_env_vars_the_user_added_survive_a_reinstall(tmp_path: Path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[mcp_servers.repowise]\n"
+        'command = "repowise"\n'
+        'args = ["mcp"]\n'
+        'env_vars = ["MY_PROXY", "OPENAI_API_KEY"]\n',
+        encoding="utf-8",
+    )
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    forwarded = _table(tmp_path)["env_vars"]
+    assert forwarded[:2] == ["MY_PROXY", "OPENAI_API_KEY"]
+    assert forwarded.count("OPENAI_API_KEY") == 1
+    assert set(codex_target.forwarded_env_vars()) <= set(forwarded)
+
+
+def test_forwarded_env_vars_cover_every_provider_key_and_url() -> None:
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    forwarded = set(codex_target.forwarded_env_vars())
+    for spec in PROVIDER_SPECS.values():
+        assert set(spec.api_key_envs) <= forwarded, spec.name
+        assert set(spec.base_url_envs) <= forwarded, spec.name
+    from repowise.core.persistence.database import DB_ENV_VARS
+
+    assert set(DB_ENV_VARS) <= forwarded
+    assert {"REPOWISE_EMBEDDER", "REPOWISE_EMBEDDING_MODEL", "OLLAMA_EMBEDDING_MODEL"} <= forwarded
+    assert {"REPOWISE_PROVIDER", "REPOWISE_MODEL", "REPOWISE_DOC_MODEL"} <= forwarded
+
+
+def test_a_second_install_leaves_the_config_byte_identical(tmp_path: Path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+    first = config.read_bytes()
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    assert config.read_bytes() == first
+
+
+def test_a_non_list_env_vars_stops_the_write(tmp_path: Path) -> None:
+    import click
+
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    original = '[mcp_servers.repowise]\ncommand = "repowise"\nenv_vars = "MY_PROXY"\n'
+    config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match="env_vars"):
+        codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    assert config.read_text(encoding="utf-8") == original
