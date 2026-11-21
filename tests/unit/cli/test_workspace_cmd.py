@@ -219,6 +219,36 @@ class TestWorkspaceAdd:
 
         assert result.exit_code != 0
 
+    def test_add_blocked_while_workspace_update_runs(self, runner, tmp_path):
+        # #5341: `workspace add` indexes a repo, so it takes the same guard
+        # as the update it performs. A workspace pass in flight fails the add
+        # fast, before anything is registered or indexed.
+        from repowise.core.update_lock import (
+            release_workspace_lock,
+            update_workspace_lock,
+        )
+
+        _write_workspace_config(tmp_path, repos=[], default_repo=None)
+        new_repo = tmp_path / "new-service"
+        _make_git_repo(new_repo)
+
+        assert update_workspace_lock(tmp_path) is None
+        try:
+            with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+                result = runner.invoke(cli, ["workspace", "add", str(new_repo)])
+            assert result.exit_code != 0
+            assert "already running" in result.output
+            # The add did not release (or steal) the pass's lock.
+            assert (tmp_path / ".repowise-workspace" / ".update.lock").exists()
+            # ... and took no per-repo lock on the new repo either.
+            assert not (new_repo / ".repowise" / ".update.lock").exists()
+        finally:
+            release_workspace_lock(tmp_path)
+
+        # Nothing was registered: the add failed before mutating the config.
+        cfg = _read_workspace_config(tmp_path)
+        assert cfg.get("repos", []) == []
+
 
 # ---------------------------------------------------------------------------
 # workspace remove

@@ -334,8 +334,9 @@ def test_workspace_lock_lives_under_workspace_data_dir(tmp_path: Path) -> None:
     assert update_workspace_lock(tmp_path) is None
     try:
         assert (tmp_path / ".repowise-workspace" / ".update.lock").exists()
-        # The per-repo lock is a different file — a held workspace lock does
-        # not block a single-repo update.
+        # The per-repo lock is a different file — the raw per-repo acquire
+        # below does not consult the workspace lock. (The combined acquire
+        # in :func:`try_acquire_update_locks` does; see the #5341 tests.)
         assert not (tmp_path / ".repowise" / ".update.lock").exists()
     finally:
         from repowise.core.update_lock import release_workspace_lock
@@ -382,3 +383,165 @@ def test_stale_workspace_lock_is_cleared(tmp_path: Path) -> None:
         assert (ws_dir / ".update.lock").exists()
     finally:
         _release_workspace_lock(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# One lock domain — #5341: a repo-level update shares the workspace lock
+# ---------------------------------------------------------------------------
+
+
+def _make_workspace_member(tmp_path: Path) -> tuple[Path, Path]:
+    """A workspace root with one member dir; returns ``(ws_root, member)``.
+
+    Only the config file's presence matters to the lock acquire (it walks up
+    looking for ``.repowise-workspace.yaml``); the member is listed in it for
+    realism.
+    """
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: primary\nrepos:\n"
+        "  - {path: primary, alias: primary, is_primary: true}\n",
+        encoding="utf-8",
+    )
+    member = tmp_path / "primary"
+    member.mkdir(parents=True, exist_ok=True)
+    return tmp_path, member
+
+
+def test_member_update_acquires_workspace_lock_too(tmp_path: Path) -> None:
+    """The #5341 fix: a repo-level update in a workspace member takes the
+    workspace lock as well as its own, so a workspace pass cannot run under it."""
+    from repowise.core.update_lock import (
+        release_update_locks,
+        try_acquire_update_locks,
+        update_workspace_lock,
+        workspace_update_lock_path,
+    )
+
+    ws_root, member = _make_workspace_member(tmp_path)
+    locks = try_acquire_update_locks(member, "abc123")
+    assert locks.blocking_owner is None
+    assert locks.blocking_scope is None
+    assert locks.workspace_root == ws_root
+    try:
+        assert workspace_update_lock_path(ws_root).exists()
+        assert (member / ".repowise" / ".update.lock").exists()
+        # A workspace pass now sees the lock and defers instead of running.
+        assert update_workspace_lock(ws_root) is not None
+    finally:
+        release_update_locks(member, locks.workspace_root)
+    assert not workspace_update_lock_path(ws_root).exists()
+    assert not (member / ".repowise" / ".update.lock").exists()
+
+
+def test_held_workspace_lock_defers_member_update(tmp_path: Path) -> None:
+    """A workspace pass in flight: the member update loses on the workspace
+    lock and takes no per-repo lock either — nothing runs concurrently."""
+    from repowise.core.update_lock import (
+        release_workspace_lock,
+        try_acquire_update_locks,
+        update_workspace_lock,
+    )
+
+    ws_root, member = _make_workspace_member(tmp_path)
+    assert update_workspace_lock(ws_root) is None
+    try:
+        locks = try_acquire_update_locks(member, "abc123")
+        assert locks.blocking_scope == "workspace"
+        assert locks.blocking_owner is not None
+        assert locks.blocking_owner["pid"] == os.getpid()
+        assert locks.workspace_root == ws_root
+        assert not (member / ".repowise" / ".update.lock").exists()
+    finally:
+        release_workspace_lock(ws_root)
+
+
+def test_held_repo_lock_defers_without_leaking_workspace_lock(tmp_path: Path) -> None:
+    """Losing on the per-repo lock after taking the workspace lock must
+    release the workspace lock again — a loss never leaves a lock held."""
+    from repowise.core.update_lock import (
+        release_update_lock,
+        try_acquire_update_lock,
+        try_acquire_update_locks,
+        workspace_update_lock_path,
+    )
+
+    ws_root, member = _make_workspace_member(tmp_path)
+    assert try_acquire_update_lock(member, "first") is None
+    try:
+        locks = try_acquire_update_locks(member, "second")
+        assert locks.blocking_scope == "repo"
+        assert locks.blocking_owner is not None
+        assert locks.blocking_owner["target_commit"] == "first"
+        assert not workspace_update_lock_path(ws_root).exists()
+    finally:
+        release_update_lock(member)
+
+
+def test_standalone_repo_takes_no_workspace_lock(tmp_path: Path) -> None:
+    """Outside any workspace the combined acquire is just the per-repo lock."""
+    from repowise.core.update_lock import (
+        release_update_locks,
+        try_acquire_update_locks,
+    )
+
+    locks = try_acquire_update_locks(tmp_path, "abc123")
+    assert locks.blocking_owner is None
+    assert locks.workspace_root is None
+    try:
+        assert (tmp_path / ".repowise" / ".update.lock").exists()
+        assert not (tmp_path / ".repowise-workspace").exists()
+    finally:
+        release_update_locks(tmp_path, locks.workspace_root)
+
+
+def test_explicit_workspace_root_guards_add_outside_member(tmp_path: Path) -> None:
+    """``workspace add`` passes the workspace it adds to: a repo living
+    outside that root is still guarded by the workspace lock, not only by
+    its own per-repo lock."""
+    from repowise.core.update_lock import (
+        release_update_locks,
+        try_acquire_update_locks,
+        workspace_update_lock_path,
+    )
+
+    ws_root, _member = _make_workspace_member(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    locks = try_acquire_update_locks(outside, "abc123", workspace_root=ws_root)
+    assert locks.blocking_owner is None
+    assert locks.workspace_root == ws_root
+    try:
+        assert workspace_update_lock_path(ws_root).exists()
+        assert (outside / ".repowise" / ".update.lock").exists()
+    finally:
+        release_update_locks(outside, locks.workspace_root)
+
+
+def test_member_update_defers_to_workspace_lock(tmp_path: Path, capsys) -> None:
+    """At the CLI seam: a held workspace lock makes ``_acquire_update_lock``
+    defer and leave HEAD pending for the running pass, as the member endorsed."""
+    import time
+
+    from repowise.cli.commands.update_cmd.command import (
+        UpdateOutcome,
+        _acquire_update_lock,
+    )
+    from repowise.cli.commands.update_cmd.options import UpdateRun
+    from repowise.core.pipeline import PhaseTimings
+    from repowise.core.update_lock import release_workspace_lock, update_workspace_lock
+
+    ws_root, member = _make_workspace_member(tmp_path)
+    assert update_workspace_lock(ws_root) is None
+    try:
+        run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
+        run.repo_path = member
+        run.head = "abc123"
+
+        outcome = _acquire_update_lock(run)
+
+        assert outcome == UpdateOutcome.DEFERRED
+        assert (member / ".repowise" / ".update.pending").read_text(encoding="utf-8") == "abc123"
+        assert not (member / ".repowise" / ".update.lock").exists()
+        assert "workspace update is already running" in capsys.readouterr().out
+    finally:
+        release_workspace_lock(ws_root)
