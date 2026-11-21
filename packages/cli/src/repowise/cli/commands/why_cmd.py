@@ -318,19 +318,26 @@ def why_command(
         command="why",
     )
 
-    def _factory(history: bool):
-        from repowise.server.mcp_server.tool_why import get_why
+    def _run(history: bool) -> dict:
+        arguments = {
+            "query": query,
+            "targets": list(targets) or None,
+            "include": ["history"] if history else None,
+        }
 
-        return get_why(
-            query=query, targets=list(targets) or None, include=["history"] if history else None
-        )
+        def _factory():
+            from repowise.server.mcp_server.tool_why import get_why
+
+            return get_why(**arguments)
+
+        return _ta.run(repo_path, _factory, "get_why", arguments=arguments)
 
     # --full is the whole answer, so it asks for the history too.
-    payload = _ta.run(repo_path, lambda: _factory(full), "get_why")
+    payload = _run(full)
     if not full and _only_points_at_history(payload):
         # Nothing governs the path, so the default answer is a bare pointer.
         # Fall back to its git history and rationale comments, as documented.
-        payload = _ta.run(repo_path, lambda: _factory(True), "get_why")
+        payload = _run(True)
 
     if full:
         _ta.emit_full(payload)
