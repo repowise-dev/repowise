@@ -499,7 +499,7 @@ async def test_a_measured_function_no_static_cause_owns_becomes_one_item(async_s
     from sqlalchemy import select
 
     from repowise.core.persistence.crud import finalize_performance_opportunities
-    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, without_sources
 
     repo = await insert_repo(async_session)
     await _seed_code(async_session, repo.id)
@@ -534,3 +534,10 @@ async def test_a_measured_function_no_static_cause_owns_becomes_one_item(async_s
 
     queue = await load_fix_first(async_session, repo.id, limit=None)
     assert item.opportunity_id in {i.source.opportunity_id for i in queue.items}
+
+    # The agent surfaces' cut: the item goes, the rest re-rank and recount.
+    hidden = without_sources(queue, frozenset({item.opportunity_id}))
+    assert item.opportunity_id not in {i.source.opportunity_id for i in hidden.items}
+    assert [i.rank for i in hidden.items] == list(range(1, len(queue.items)))
+    assert hidden.totals.eligible == queue.totals.eligible - 1
+    assert hidden.by_improves["performance"] == queue.by_improves["performance"] - 1

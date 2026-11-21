@@ -261,6 +261,7 @@ async def finalize_performance_opportunities(
         hot=measured.hot,
         in_tests=measured.in_tests,
         hot_in_tests=measured.hot_in_tests,
+        ranks=measured.ranks,
         queries=await _query_readings(session, repository_id),
     )
 
@@ -321,6 +322,8 @@ class _Measured(NamedTuple):
     #: The same two for ``unit_test`` runs, kept apart as measured in tests.
     in_tests: dict[str, str]
     hot_in_tests: frozenset[str]
+    #: Function -> its best place in a leading workload's run (1 is the top).
+    ranks: dict[str, int]
 
 
 async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
@@ -369,6 +372,7 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> _Mea
         tuple(sorted(workloads)),
         names(best[False]),
         frozenset(hot[False]),
+        {sid: rank for sid, (rank, _name) in best[True].items()},
     )
 
 

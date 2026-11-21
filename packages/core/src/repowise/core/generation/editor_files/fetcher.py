@@ -35,7 +35,8 @@ from repowise.core.generation.entry_points import (
 )
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, without_sources
+from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
@@ -557,7 +558,9 @@ class EditorFileDataFetcher:
         """The queue's top items, or nothing on a store that cannot build it."""
         try:
             async with self._session.begin_nested():
-                queue = await load_fix_first(self._session, self._repo_id, limit=_MAX_FIX_FIRST)
+                queue = await load_fix_first(self._session, self._repo_id, limit=None)
+                # No runtime evidence in agent files: see ``without_sources``.
+                hidden = await measured_hotspot_ids(self._session, self._repo_id)
         except Exception:  # an index from before the refactoring or perf tables
             return []
         return [
@@ -567,7 +570,7 @@ class EditorFileDataFetcher:
                 + (f":{item.target.line_start}" if item.target.line_start else ""),
                 "why": item.why,
             }
-            for item in queue.items
+            for item in without_sources(queue, hidden).items[:_MAX_FIX_FIRST]
         ]
 
     async def _get_kg_data(

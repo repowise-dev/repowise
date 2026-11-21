@@ -403,7 +403,14 @@ def _assemble(
     )
 
 
-def _measured_hotspot(symbol_id: str, workload: str) -> PerformanceOpportunity:
+#: Rank points for a measured hotspot's place in its run: 3 for the top
+#: function, then one fewer per place. The other rank terms are the same for
+#: every hotspot, so this orders them by what the run measured. Ceiling: from
+#: the fourth place on, hotspots tie and fall to their id.
+_TOP_PLACE_POINTS = 3
+
+
+def _measured_hotspot(symbol_id: str, workload: str, rank: int | None) -> PerformanceOpportunity:
     """A work item for a function a leading workload measured above the lead
     bar where no static finding names a cause.
 
@@ -430,7 +437,9 @@ def _measured_hotspot(symbol_id: str, workload: str) -> PerformanceOpportunity:
         provenance="direct",
         magnitude=magnitude,
     )
+    factors["measured_rank"] = max(0, _TOP_PLACE_POINTS + 1 - (rank or _TOP_PLACE_POINTS + 1))
     inputs = {
+        "measured_rank": rank,
         "multiplier_shape": marker,
         "boundary_kind": None,
         "execution_context": "production",
@@ -503,7 +512,10 @@ def _measured_hotspot(symbol_id: str, workload: str) -> PerformanceOpportunity:
 
 
 def measured_hotspots(
-    groups: Mapping[Any, list[Any]], measured: Mapping[str, str], hot: frozenset[str]
+    groups: Mapping[Any, list[Any]],
+    measured: Mapping[str, str],
+    hot: frozenset[str],
+    ranks: Mapping[str, int] | None = None,
 ) -> list[PerformanceOpportunity]:
     """One :func:`_measured_hotspot` per function in *hot* that no static
     cause owns.
@@ -522,7 +534,7 @@ def measured_hotspots(
         for f in ([m for m in members if not _inert(m)] or members)
     }
     return [
-        _measured_hotspot(symbol_id, measured[symbol_id])
+        _measured_hotspot(symbol_id, measured[symbol_id], (ranks or {}).get(symbol_id))
         for symbol_id in sorted(hot - owned)
         if symbol_id in measured and "::" in symbol_id
     ]
@@ -538,6 +550,7 @@ def build_performance_opportunities(
     hot: frozenset[str] = frozenset(),
     in_tests: Mapping[str, str] | None = None,
     hot_in_tests: frozenset[str] = frozenset(),
+    ranks: Mapping[str, int] | None = None,
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
@@ -553,13 +566,14 @@ def build_performance_opportunities(
     for unit-test runs: the ``measured_in_tests`` facet, and ``confirmed`` as
     ``measured_in_tests`` when nothing stronger confirms the cause. A
     function in *hot* that no static cause owns becomes a measured hotspot
-    of its own (:func:`measured_hotspots`).
+    of its own (:func:`measured_hotspots`), ordered by *ranks*, its best
+    place in a leading workload's run.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     groups = group_observations(findings)
-    for opportunity in measured_hotspots(groups, measured or {}, hot):
+    for opportunity in measured_hotspots(groups, measured or {}, hot, ranks):
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = set()
     for key, members in groups.items():

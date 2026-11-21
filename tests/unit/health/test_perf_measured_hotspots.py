@@ -95,3 +95,16 @@ def test_hotspots_sort_with_the_confirmed_causes() -> None:
     )
 
     assert [i.biomarker_type for i in items] == [MEASURED_HOTSPOT, "io_in_loop"]
+
+
+def test_hotspots_follow_the_place_their_run_measured() -> None:
+    first, second = "pkg/a.py::zz_top", "pkg/b.py::aa_second"
+    items = build_performance_opportunities(
+        [],
+        measured={first: "update", second: "update"},
+        hot=frozenset({first, second}),
+        ranks={first: 1, second: 2},
+    )
+
+    assert [i.intervention_symbol for i in items] == [first, second]
+    assert items[0].rank_factors["measured_rank"] == 3

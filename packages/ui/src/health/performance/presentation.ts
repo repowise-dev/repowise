@@ -328,6 +328,8 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
       return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
     case "provenance":
       return value === "call-site" ? "seen at the call site" : humanizeToken(String(value));
+    case "measured_rank":
+      return typeof value === "number" ? `place ${value} in its measured run` : "a measured run";
     default:
       return whyRankedLabel(factor);
   }

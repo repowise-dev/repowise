@@ -61,6 +61,9 @@ describe("performance presentation", () => {
     expect(opportunityTitle(hotspot)).toBe(
       "Measured hotspot with no static cause in _decode_lines",
     );
+    expect(whyRankedPhrase({ factor: "measured_rank", value: 1, points: 3 })).toBe(
+      "place 1 in its measured run",
+    );
     expect(fixStrategyLabel("reduce_measured_self_time")).toBe(
       "Find and cut the work the run measured",
     );
