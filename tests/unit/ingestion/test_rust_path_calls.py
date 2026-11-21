@@ -279,6 +279,9 @@ def test_calls_inside_macro_arguments_are_edges(tmp_path: Path) -> None:
         "#[cfg(all(unix))]\n"
         "pub fn gated() {}\n"
         "macro_rules! m { () => { foo() } }\n"
+        "pub fn declares() {\n"
+        "    thing! { fn foo(a: i32) {} struct S(u8); let g: Box<dyn Fn(i32)> = h; }\n"
+        "}\n"
     )
     edges = _rust_calls(
         tmp_path, {"src/lib.rs": lib, "src/util.rs": "pub fn helper(x: i32) -> i32 { x }\n"}
@@ -288,3 +291,5 @@ def test_calls_inside_macro_arguments_are_edges(tmp_path: Path) -> None:
     assert ("src/lib.rs::S::show", "src/lib.rs::S::name") in edges
     # A macro definition is a template and an attribute calls nothing.
     assert not any(caller.endswith("::m") or "all" in callee for caller, callee in edges)
+    # Nor does a name a macro's tokens declare.
+    assert not any(caller == "src/lib.rs::declares" for caller, _callee in edges)

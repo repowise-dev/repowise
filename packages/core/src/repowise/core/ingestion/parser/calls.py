@@ -542,6 +542,11 @@ def _java_object_is_unnamed(site_node: Node) -> bool:
     return field is None or field.type != "this"
 
 
+# Words before a name a macro declares, or a type it spells, in its tokens.
+_RUST_ITEM_WORDS = frozenset(
+    {"fn", "struct", "enum", "trait", "impl", "type", "mod", "static", "const", "union", "dyn"}
+)
+_RUST_FN_TRAITS = frozenset({"Fn", "FnMut", "FnOnce"})
 # Where a Rust token tree holds no code that runs.
 _RUST_NON_CODE_TOKEN_TREES = frozenset({"macro_definition", "attribute_item", "inner_attribute_item"})
 
@@ -566,6 +571,8 @@ def _rust_token_call(name: Node, target_name: str) -> tuple[str, str | None] | N
             return None
         node = node.parent
     before = name.prev_sibling
+    if target_name in _RUST_FN_TRAITS or (before is not None and before.type in _RUST_ITEM_WORDS):
+        return None  # ``fn foo(``, ``struct S(``, ``dyn Fn(i32)``: a declaration or a type
     if before is None or before.type not in (".", "::"):
         return target_name, None
     path: list[str] = []
