@@ -663,6 +663,9 @@ def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
     named = [[], ["__init__", "py"], []]
     assert _split({"src/b.py": named}, index=on_route) == (["src/b.py"], [])
     assert _split({"lib/z.py": named}, index=on_route) == ([], ["lib/z.py"])
+    # A non-code index file is named by its own word: "index.html" in templates/.
+    to_html = {**_INDEX, "src/a.py": ("src/c.py", "templates/index.html")}
+    assert _split({"lib/z.py": [[], ["index", "html"], []]}, index=to_html) == (["lib/z.py"], [])
     # A test runs only itself, and may now walk a tree or spawn a process.
     assert _split({"tests/test_d.py": [[], [], []]}) == (["tests/test_d.py"], [])
 
