@@ -29,6 +29,7 @@ from ..models import (
     _now_utc,
 )
 from ._shared import _VALID_JOB_STATUSES
+from .page_rekey import rekey_repo_level_pages
 
 _log = logging.getLogger(__name__)
 
@@ -83,7 +84,9 @@ async def upsert_repository(
     A repo-local store (``<local_path>/.repowise/wiki.db``) holds one
     repository. When its single row names another directory because the repo
     was moved or copied with its index, the row is re-pointed at ``local_path``
-    (see :func:`_relocated_row`) instead of a second row being added.
+    (see :func:`_relocated_row`) instead of a second row being added, and a
+    rename moves the repo-level pages to the ids the new folder name builds
+    (see :func:`rekey_repo_level_pages`, #5366).
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
@@ -112,6 +115,14 @@ async def upsert_repository(
         )
         session.add(repo)
     else:
+        if relocated and repo.name != name:
+            # The re-point changed the folder the repo-level page ids are
+            # built from; move the stored pages with it (#5366) or the
+            # overview is rebuilt from scratch under the new id while the
+            # old page is left behind never to be found again.
+            await rekey_repo_level_pages(
+                session, repository_id=repo.id, old_name=repo.name, new_name=name
+            )
         repo.name = name
         if url is not None:
             repo.url = url
@@ -392,7 +403,9 @@ async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repo
     1. A row whose ``local_path`` equals *local_path* is returned as is.
     2. Otherwise, in a repo-local store (no configured ``REPOWISE_DB_URL``)
        holding exactly one row, that row is the moved repository: its
-       ``local_path`` is rewritten to *local_path* and it is returned.
+       ``local_path`` is rewritten to *local_path*, its repo-level pages are
+       re-keyed to the folder name there (see
+       :func:`rekey_repo_level_pages`, #5366) and it is returned.
     3. Anything else returns ``None``. A configured or shared store, or a
        store with two or more rows, never infers identity from a path miss.
     """
@@ -407,6 +420,14 @@ async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repo
     if len(rows) != 1:
         return None
     repo = rows[0]
+    new_name = Path(local_path).name
+    if repo.name != new_name:
+        # The folder the repo-level page ids are built from moved with the
+        # store; re-key now, before any exact-path lookup stops missing and
+        # the name change becomes invisible (#5366).
+        await rekey_repo_level_pages(
+            session, repository_id=repo.id, old_name=repo.name, new_name=new_name
+        )
     repo.local_path = local_path
     repo.updated_at = _now_utc()
     await _adopt_savings_ledger(session, local_path)
