@@ -2612,3 +2612,16 @@ async def test_a_declaration_keyword_before_an_unindexed_word_stays_a_search(set
 
     result = await search_codebase("class Unheardof")
     assert result.get("mode") != "symbol"
+
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_indexed_plain_word_stays_a_search(setup_mcp):
+    # ``checking`` is indexed, but a plain lowercase word is never a lookup key,
+    # so "type checking" is prose, not a declaration.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("checking")
+
+    result = await search_codebase("type checking")
+    assert result.get("mode") != "symbol"
