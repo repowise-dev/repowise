@@ -13,7 +13,7 @@ surface as it stood when the server started. Each MCP session then sees that
 set narrowed to its client's default profile (:func:`session_tool_names`) when
 the configuration names no profile; tools outside it stay callable. Chat calls
 :func:`selected_tool_entries` instead, which re-resolves on every turn. There
-is no per-call cost and tool schemas are untouched.
+is no per-call cost, and the only schema edit is :func:`single_repo_schemas`.
 """
 
 from __future__ import annotations
@@ -274,6 +274,32 @@ def mark_always_loaded(tools: list[Any]) -> list[Any]:
         else t
         for t in tools
     ]
+
+
+#: What a single-repo server lists for a ``repo`` argument whose description
+#: offers ``"all"``: one repository has nothing to fan out over.
+SINGLE_REPO_REPO_DESCRIPTION = "Usually omitted."
+
+
+def without_repo_all(tool: Any) -> Any:
+    """*tool* (``mcp.types.Tool``) with no ``repo="all"`` offer in its schema."""
+    props = tool.inputSchema.get("properties") or {}
+    repo = props.get("repo")
+    if not isinstance(repo, dict) or '"all"' not in (repo.get("description") or ""):
+        return tool
+    repo = {**repo, "description": SINGLE_REPO_REPO_DESCRIPTION}
+    schema = {**tool.inputSchema, "properties": {**props, "repo": repo}}
+    return tool.model_copy(update={"inputSchema": schema})
+
+
+def single_repo_schemas(tools: list[Any]) -> list[Any]:
+    """*tools* without the ``repo="all"`` offer when this server serves one repository.
+
+    A workspace server, or one with no boot selection, gets the list as given.
+    """
+    if _selected_surface is None or _selected_surface[0]:
+        return tools
+    return [without_repo_all(tool) for tool in tools]
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:

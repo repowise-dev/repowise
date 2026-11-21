@@ -111,13 +111,13 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
+| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given, `limit` over 20 | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
 - **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
-- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
+- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`; a `limit` entry carries `"clamped_to": 20`, the value the call ran with.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
 ---
@@ -754,6 +754,7 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 
 - `freshness.status`: `current` (at the indexed commit), `stale`, `unknown`. `source_formats` lists merged formats.
 - `report_paths`: ingest mapping `total`, `matched`, `unmatched`, `ambiguous`, `unmatched_sample`.
+- `unreported_file_count`, `unreported_files` (first five): indexed production files with code lines, of a type the report measured, that the report has no row for.
 - Dashboard `history`: one point per complete ingest, newest 10.
 - Targeted `decay`: `confirmed_lines`, `invalidated_lines` (unknown, not uncovered), `drifted` once a fifth has moved.
 

@@ -23,6 +23,18 @@
   (identifier) @symbol.name
 ) @symbol.def
 
+; Secondary constructor: constructor() : this(1) { ... }
+; It has no name node, so it is named after its class, as a Java constructor is.
+(class_declaration
+  name: (identifier) @symbol.name
+  (class_body
+    (secondary_constructor
+      (modifiers)? @symbol.modifiers
+      (function_value_parameters) @symbol.params
+    ) @symbol.def
+  )
+)
+
 ; typealias Foo = Bar (Q2)
 (type_alias
   (identifier) @symbol.name

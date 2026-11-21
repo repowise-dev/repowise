@@ -5,14 +5,15 @@ not parse, or has no ``name`` and no ``workspace`` key, is left to the manifest
 fallback (with a warning if unreadable). A pubspec with no ``name`` but a
 ``workspace`` key is a pub workspace root and is ruled out (no unit, no
 fallback). A name taken twice keeps the first root in sorted order; the later
-falls back to the manifest adapter.
+falls back to the manifest adapter, and a path pointing at that later
+root links its ``manifest:`` unit.
 
 Deps are the in-repo packages a ``pubspec.yaml`` reaches through ``dependencies``
 and ``dev_dependencies`` with a ``path:`` dependency. The path is resolved
 against the package root, and the directory it points at is matched against
 the root of other units (not by the dependency's key name). A path pointing
-outside the repo, an absolute path, or at a directory without a Dart unit links
-nothing.
+outside the repo, an absolute path, or at a directory that holds no package
+links nothing.
 
 Ceiling: hosted, git and sdk dependencies are external. ``dependency_overrides``
 is not read. Members of a pub workspace that depend on each other by version
@@ -28,7 +29,7 @@ from pathlib import Path
 import structlog
 import yaml
 
-from repowise.core.build_units.adapters import Found
+from repowise.core.build_units.adapters import Found, linked_unit_id
 from repowise.core.build_units.adapters.manifest_roots import package_manifests
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -94,13 +95,18 @@ def _parse_all(ctx: ResolverContext, repo: Path) -> dict[str, dict]:
     return parsed
 
 
-def _select_names(parsed: dict[str, dict]) -> tuple[dict[str, str], set[str]]:
+def _select_names(
+    parsed: dict[str, dict],
+) -> tuple[dict[str, str], set[str], set[str]]:
     """Map each root to its ``dart:<name>`` id (first root wins a taken name).
 
-    Also returns the manifests of pub workspace roots, which are ruled out.
+    Also returns the roots that lost the name, and the manifests of pub
+    workspace roots, which are ruled out.
     """
     by_root: dict[str, str] = {}
+    dropped: set[str] = set()
     ruled_out: set[str] = set()
+    taken: set[str] = set()
     for root, data in sorted(parsed.items()):
         name = data.get("name")
         if not isinstance(name, str) or not name:
@@ -108,13 +114,24 @@ def _select_names(parsed: dict[str, dict]) -> tuple[dict[str, str], set[str]]:
                 ruled_out.add(_manifest_path(root))
             continue
         unit_id = f"dart:{name}"
-        if unit_id not in by_root.values():
-            by_root[root] = unit_id
-    return by_root, ruled_out
+        if unit_id in taken:
+            log.warning("build_units_duplicate_id", unit_id=unit_id, root=root)
+            dropped.add(root)
+            continue
+        taken.add(unit_id)
+        by_root[root] = unit_id
+    return by_root, dropped, ruled_out
 
 
-def _build_unit(root: str, uid: str, data: dict, by_root: dict[str, str]) -> BuildUnit:
+def _build_unit(
+    root: str, uid: str, data: dict, by_root: dict[str, str], dropped: set[str]
+) -> BuildUnit:
     dep_roots = _collect_dep_roots(data, root)
+    deps = {
+        target
+        for path in dep_roots
+        if (target := linked_unit_id(path, by_root, dropped))
+    }
     return BuildUnit(
         id=uid,
         ecosystem="dart",
@@ -122,7 +139,7 @@ def _build_unit(root: str, uid: str, data: dict, by_root: dict[str, str]) -> Bui
         root=root,
         manifest=_manifest_path(root),
         source="pubspec",
-        deps=tuple({by_root[target] for target in dep_roots if target in by_root}),
+        deps=tuple(deps),
     )
 
 
@@ -130,6 +147,9 @@ def units(ctx: ResolverContext) -> Found:
     if ctx.repo_path is None or not any(path.endswith(".dart") for path in ctx.path_set):
         return Found([])
     parsed = _parse_all(ctx, ctx.repo_path)
-    by_root, ruled_out = _select_names(parsed)
-    out = [(_build_unit(root, uid, parsed[root], by_root), ()) for root, uid in by_root.items()]
+    by_root, dropped, ruled_out = _select_names(parsed)
+    out = [
+        (_build_unit(root, uid, parsed[root], by_root, dropped), ())
+        for root, uid in by_root.items()
+    ]
     return Found(out, frozenset(ruled_out))
