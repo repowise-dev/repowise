@@ -106,3 +106,14 @@ def test_a_map_at_either_end_needs_no_git(repo) -> None:
     change = change_set(str(repo), "HEAD~1..HEAD")
     assert query_lines(change, base) == {"mod.py": {1, 3}}
     assert query_lines(change, head) == {"mod.py": {1, 4}}
+
+
+def test_a_bracketed_path_moves_its_lines_too(repo) -> None:
+    (repo / "app" / "[slug]").mkdir(parents=True)
+    path = "app/[slug]/page.py"
+    measured = _commit(repo, {path: TEN}, "map")
+    base_text = "a = 0\n" + TEN
+    _commit(repo, {path: base_text}, "shift")
+    _commit(repo, {path: _edit(base_text, 6, "v5 = 50\n")}, "change")
+    change = change_set(str(repo), "HEAD~1..HEAD")
+    assert query_lines(change, measured, repo) == {path: {5}}
