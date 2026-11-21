@@ -444,6 +444,27 @@ async def test_naming_a_test_beside_a_production_def_leaves_the_grade_unchanged(
     )
 
 
+
+@pytest.mark.asyncio
+async def test_a_scan_that_stopped_short_does_not_vouch_for_a_test_class(tmp_path, monkeypatch):
+    # Unread files could hold a production use, so the class is not trusted on its name.
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    monkeypatch.setattr(
+        symbols, "word_scan", lambda root, token: ([], False, ["time budget: scanned 1 of 9 files"])
+    )
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryFormWithFields:\n    pass\n")
+    row = _Sym("IncompleteCategoryFormWithFields", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchored(
+        tmp_path,
+        [row],
+        {"IncompleteCategoryFormWithFields"},
+        "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        [{"target_path": "core/forms.py", "score": 3.0}],
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
+
 # --- a file the index left out on size --------------------------------------
 
 _BIG_VIEW = "App/Sources/Main/MainView.swift"

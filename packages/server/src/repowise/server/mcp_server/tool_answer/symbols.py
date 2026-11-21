@@ -496,12 +496,11 @@ class _TopicGuard:
         """
         if _TEST_NAME_RE.search(token):
             return True
-        return (
-            token[:1].isupper()
-            and "_" not in token
-            and _looks_like_code_name(token)
-            and not await self.lines(token)
-        )
+        if not (token[:1].isupper() and "_" not in token and _looks_like_code_name(token)):
+            return False
+        # Only a scan that read every file proves production never writes it.
+        rows, complete, _unread = await self._scan(token)
+        return complete and not production_only(rows)
 
 
 # A name written the way test runners collect tests.
