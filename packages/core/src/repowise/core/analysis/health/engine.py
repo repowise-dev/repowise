@@ -134,7 +134,9 @@ log = structlog.get_logger(__name__)
 # queue (#6066); a leading run that measured a cold role or name above the bar
 # may lead (#6093); and a measured hotspot with no static cause becomes a perf
 # work item (#6097). ``PERFORMANCE_MODEL_VERSION`` moved with it. The re-score
-# also writes each cause's ``static_cost`` beside ``cost_proof`` (#6112).
+# also writes each cause's ``static_cost`` beside ``cost_proof`` (#6112). A
+# third-party import no longer contradicts a test named for a file (#5958), and
+# coverage names the indexed production files a report leaves out (#5917).
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.

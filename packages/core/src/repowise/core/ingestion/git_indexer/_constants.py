@@ -357,7 +357,8 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: those of other files in the same commit. A shallow clone's cut commit
 #: credits no author and counts as neither churn nor a file's origin.
 #: v5: one person counts once across names and emails (mailmap applied) in a
-#: file's owners, top authors, bus factor and blame owners (#6045).
+#: file's owners, top authors, bus factor and blame owners (#6045), and bot
+#: accounts count toward neither ownership nor the contributor count (#6051).
 GIT_HISTORY_VERSION: int = 5
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
