@@ -133,3 +133,78 @@ def test_a_file_on_one_side_only_moves_no_route() -> None:
 )
 def test_only_code_carries_edges(path, carries) -> None:
     assert may_carry_edges(path) is carries
+
+
+# -- what a rewired file may newly reach --------------------------------------
+
+
+def _resolve_in(files):
+    from repowise.core.analysis.import_drift import import_resolver
+
+    return import_resolver(".", files)
+
+
+def test_a_gained_import_resolves_to_its_file_and_a_kept_one_does_not() -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    files = {"src/m.py", "src/a.py", "src/b.py", "src/__init__.py"}
+    before = b"from src import a\n"
+    after = b"from src import a\nfrom src import b\nimport os\n"
+    found = rewiring("src/m.py", before, after, _resolve_in(files))
+    # ``os`` is outside the repository, so it reaches nothing a test could.
+    assert found is not None and found.imports == {"src/b.py"}
+    assert found.names == set() and found.dirs == set()
+
+
+def test_a_gained_string_gives_its_words_and_a_path_its_directories() -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    after = _PY + b'\nPLUGINS = ["pkg.plugins.extra"]\nDATA = "fixtures/repo/a.py"\n'
+    found = rewiring("m.py", _PY, after, _resolve_in({"m.py"}))
+    assert found is not None
+    assert {"pkg", "plugins", "extra", "fixtures", "repo", "a"} <= found.names
+    assert {"fixtures", "repo"} <= found.dirs and "plugins" not in found.dirs
+
+
+@pytest.mark.parametrize(
+    ("path", "after"),
+    [
+        # Another language reaches code without naming it.
+        ("m.go", b"package m\n\nfunc G() {}\n"),
+        # A dynamic-load marker makes strings already there resolve.
+        ("m.py", _PY + b'\nimport importlib\nNAME = "pkg.mod"\nimportlib.import_module(NAME)\n'),
+    ],
+)
+def test_a_rewiring_that_cannot_be_told_is_unknown(path, after) -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    before = b"package m\n" if path.endswith(".go") else _PY
+    assert rewiring(path, before, after, _resolve_in({path})) is None
+
+
+def test_an_import_that_will_not_resolve_is_unknown() -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    def fail(*_):
+        raise ValueError("no resolver")
+
+    assert rewiring("m.py", _PY, _PY + b"import x\n", fail) is None
+
+
+def test_a_gained_dynamic_load_in_typescript_is_unknown() -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    after = _TS + b'const mods = import.meta.glob("./mods/*.ts");\n'
+    assert rewiring("m.ts", _TS, after, _resolve_in({"m.ts", "a.ts"})) is None
+
+
+def test_whole_counts_every_import_and_string_as_gained() -> None:
+    from repowise.core.analysis.import_drift import rewiring
+
+    files = {"src/m.py", "src/a.py", "src/b.py"}
+    before = b'from src import a\nNAME = "src.b"\n'
+    after = before + b"import os\n"
+    gained = rewiring("src/m.py", before, after, _resolve_in(files))
+    assert gained is not None and gained.imports == set() and gained.names == set()
+    whole = rewiring("src/m.py", before, after, _resolve_in(files), whole=True)
+    assert whole is not None and whole.imports == {"src/a.py"} and "b" in whole.names

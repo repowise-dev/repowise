@@ -346,8 +346,8 @@ async def collect(
     routes = (
         []
         if config is None
-        else await asyncio.to_thread(
-            _gap_routes, repo_path, change, config, repo_keys, out, project_dirs
+        else await _gap_routes(
+            session, repo_id, repo_path, change, config, repo_keys, out, project_dirs, scope_routes
         )
     )
     routes = sorted({*routes, *scope_routes})
@@ -433,46 +433,121 @@ def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
     out["indexed_commit"] = resolved.sha
 
 
-def _gap_routes(
+async def _gap_routes(
+    session,
+    repo_id: str,
     repo_path,
     change,
     config,
     repo_keys: set[str],
     out: dict,
-    project_dirs: Collection[str] | None = None,
+    project_dirs: Collection[str] | None,
+    scope_routes: Collection[str],
 ) -> list[str]:
     """Record the files changed since the indexed commit, and return those to walk.
 
-    Only files whose edges may have moved are walked: each candidate is read at
-    the indexed commit and at the base in one batch and compared.
+    Only files whose edges may have moved, and whose new edges may lead to
+    the change or a scope route (:func:`~.test_selection.split_rewired`), are
+    walked. When the graph cannot be read to tell, every such file is.
+    """
+    from .test_reach.db import cached_call_importers, cached_file_paths, cached_import_graphs
+    from .test_selection import split_rewired, with_rewired
+
+    try:
+        indexed: frozenset[str] | None = await cached_file_paths(session, repo_id)
+    except Exception as exc:  # unsplit: every rewired file is walked
+        log.debug("gap_split_skipped", error=str(exc))
+        indexed = None
+    # git and parsing run off the event loop: a server shares it with other requests.
+    found = await asyncio.to_thread(
+        _rewired_gap, repo_path, change, config, indexed, out, project_dirs
+    )
+    if found is None:
+        return []
+    plan, rewired, rewirings, added = found
+    unreached: list[str] = []
+    if indexed is not None and any(r is not None for r in rewirings.values()):
+        try:
+            imports = (await cached_import_graphs(session, repo_id))[1]
+            calls = await cached_call_importers(session, repo_id)
+            # A file added since has no edges in the index, so it may reach the change.
+            seeds = [*change.files, *change.deleted, *scope_routes, *added]
+            rewired, unreached = split_rewired(
+                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed
+            )
+        except Exception as exc:  # unsplit: every rewired file is walked
+            log.debug("gap_split_skipped", error=str(exc))
+    plan = with_rewired(plan, rewired, repo_keys, unreached)
+    out["gap"] = plan
+    return list(plan.targets)
+
+
+def _rewired_gap(
+    repo_path,
+    change,
+    config,
+    indexed: Collection[str] | None,
+    out: dict,
+    project_dirs: Collection[str] | None,
+) -> tuple[Any, list[str], dict[str, Any], set[str]] | None:
+    """The gap's plan, the candidates whose edges may have moved, what each may
+    newly reach (:func:`~.import_drift.rewiring`), and the files added since the
+    index; ``None`` when the gap is unknown.
+
+    Each candidate is read at the indexed commit and at the base in one batch
+    and compared. New imports resolve against the files the base holds: the
+    indexed ones, less those deleted since, plus those added since. Without
+    *indexed*, or when that cannot be told, no rewiring is worked out.
     """
     from .change_health.sources import read_blobs
     from .changed_lines import index_gap
-    from .import_drift import edges_may_differ
-    from .test_selection import plan_gap, with_rewired
+    from .import_drift import edges_may_differ, import_resolver, rewiring
+    from .test_selection import is_documentation, plan_gap
 
     out["index_gap"] = gap = index_gap(str(repo_path), out["indexed_commit"], change)
     if gap is None:
-        return []
+        return None
     plan = plan_gap(gap, config, [*change.files, *change.deleted], project_dirs)
-    if plan.candidates:
-        old, new = out["indexed_commit"], change.base
-        # ``rev:./path`` reads from the checkout, which can sit below the git
-        # top level; plain ``rev:path`` would miss and read as absent.
-        specs = [(rev, f"./{p}") for p in plan.candidates for rev in (old, new)]
-        blobs = read_blobs(str(repo_path), specs)
-        # Unreadable means nothing was compared, so every candidate may have moved.
-        unread = _unread(repo_path, specs, blobs)
-        rewired = [
-            p
-            for p in plan.candidates
-            if blobs is None
-            or f"./{p}" in unread
-            or edges_may_differ(p, blobs.get((old, f"./{p}")), blobs.get((new, f"./{p}")))
-        ]
-        plan = with_rewired(plan, rewired, repo_keys)
-    out["gap"] = plan
-    return list(plan.targets)
+    if not plan.candidates:
+        return plan, [], {}, set()
+    old, new = out["indexed_commit"], change.base
+    # ``rev:./path`` reads from the checkout, which can sit below the git
+    # top level; plain ``rev:path`` would miss and read as absent.
+    specs = [(rev, f"./{p}") for p in plan.candidates for rev in (old, new)]
+    blobs = read_blobs(str(repo_path), specs)
+    # Unreadable means nothing was compared, so every candidate may have moved.
+    unread = _unread(repo_path, specs, blobs)
+    rewired = [
+        p
+        for p in plan.candidates
+        if blobs is None
+        or f"./{p}" in unread
+        or edges_may_differ(p, blobs.get((old, f"./{p}")), blobs.get((new, f"./{p}")))
+    ]
+    listed = sorted(gap)
+    flags = _are_blobs(repo_path, [(new, f"./{p}") for p in listed]) if rewired and indexed else None
+    if blobs is None or flags is None:
+        return plan, rewired, {}, set()
+    present = {p for p, is_blob in zip(listed, flags, strict=True) if is_blob}
+    added = {p for p in present - set(indexed) if not is_documentation(p)}
+    try:
+        resolve = import_resolver(repo_path, (set(indexed) - set(gap)) | present)
+        rewirings = {
+            p: rewiring(
+                p,
+                blobs.get((old, f"./{p}")),
+                blobs.get((new, f"./{p}")),
+                resolve,
+                # A file added since can make an import or string that did not change resolve.
+                whole=bool(added),
+            )
+            for p in rewired
+            if f"./{p}" not in unread
+        }
+    except Exception as exc:  # unsplit: every rewired file is walked
+        log.debug("gap_rewiring_failed", error=str(exc))
+        return plan, rewired, {}, set()
+    return plan, rewired, rewirings, added
 
 
 def _unread(repo_path, specs: list[tuple[str, str]], blobs: Mapping | None) -> set[str]:
@@ -488,15 +563,25 @@ def _unread(repo_path, specs: list[tuple[str, str]], blobs: Mapping | None) -> s
     missing = [spec for spec in specs if spec not in blobs]
     if not missing:
         return set()
+    flags = _are_blobs(repo_path, missing)
+    if flags is None:
+        return {path for _, path in missing}
+    return {path for (_, path), is_blob in zip(missing, flags, strict=True) if is_blob}
+
+
+def _are_blobs(repo_path, specs: list[tuple[str, str]]) -> list[bool] | None:
+    """Whether each ``(rev, path)`` is a file, in one batch; ``None`` when git cannot say."""
     from .doc_drift.suggest import git_run
 
-    request = "".join(f"{rev}:{path}\n" for rev, path in missing).encode("utf-8")
+    if not specs:
+        return []
+    request = "".join(f"{rev}:{path}\n" for rev, path in specs).encode("utf-8")
     ran = git_run(Path(repo_path), "cat-file", "--batch-check=%(objecttype)", stdin=request)
     lines = ran[1].decode("utf-8", "replace").splitlines() if ran and ran[0] == 0 else []
-    if len(lines) != len(missing):
-        return {path for _, path in missing}
+    if len(lines) != len(specs):
+        return None
     # A missing object echoes the spec back with " missing"; anything else exists.
-    return {path for (_, path), line in zip(missing, lines, strict=True) if line == "blob"}
+    return [line == "blob" for line in lines]
 
 
 def query_lines(change, measured: str | None, repo_path=None) -> dict[str, set[int] | None]:
