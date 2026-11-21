@@ -156,7 +156,30 @@ def server_table(repo_path: Path) -> dict[str, object]:
         "cwd": str(repo_path.resolve()),
         "required": True,
         "startup_timeout_sec": STARTUP_TIMEOUT_SEC,
+        "env_vars": forwarded_env_vars(),
     }
+
+
+def forwarded_env_vars() -> list[str]:
+    """The provider variables Codex should pass from the shell to the server.
+
+    Codex starts a stdio server with a cleared environment: only a fixed set of
+    system variables (PATH, HOME, USERPROFILE and the like) plus the names in
+    ``env_vars`` reach it. A key exported in the shell is therefore invisible
+    to the server, and a repo indexed with a keyed embedder answers on keyless
+    vectors while the agent sees a working tool. Names only, never values: the
+    file may be committed. Every provider's key and base-URL variables, because
+    the embedder and the answer model can each be any of them.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    return sorted(
+        {
+            var
+            for spec in PROVIDER_SPECS.values()
+            for var in (*spec.api_key_envs, *spec.base_url_envs)
+        }
+    )
 
 
 #: How long Codex waits for the server before giving up on it. ``required``
@@ -345,6 +368,14 @@ def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
     # difference is a ClickException naming the file against a traceback
     # mid-run.
     merged = {**spec.merge_base(stored), **spec.entry}
+    # ``env_vars`` is a list both sides write to, so the user's names are kept
+    # ahead of ours instead of being replaced by them.
+    stored_vars = stored.get("env_vars")
+    if "env_vars" in spec.entry and isinstance(stored_vars, list):
+        merged["env_vars"] = [
+            *stored_vars,
+            *(var for var in spec.entry["env_vars"] if var not in stored_vars),
+        ]
     try:
         block = table_block(table, merged)
     except TypeError as exc:

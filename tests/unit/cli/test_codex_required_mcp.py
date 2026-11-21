@@ -267,3 +267,33 @@ def test_a_damaged_hooks_file_still_reports_an_unlaunchable_server(
     assert report.status.value == "broken"
     assert report.issues[0].startswith("Codex will not start:")
     assert "is not valid JSON" in report.issues[1]
+
+
+def test_the_entry_forwards_provider_keys_through_codex_cleared_env(tmp_path: Path) -> None:
+    # Codex launches stdio servers with a cleared environment, so a key exported
+    # in the shell reaches the server only when its name is in env_vars.
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    forwarded = _table(tmp_path)["env_vars"]
+    assert "OPENAI_API_KEY" in forwarded
+    assert "GEMINI_API_KEY" in forwarded
+    assert "OPENAI_BASE_URL" in forwarded
+
+
+def test_env_vars_the_user_added_survive_a_reinstall(tmp_path: Path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[mcp_servers.repowise]\n"
+        'command = "repowise"\n'
+        'args = ["mcp"]\n'
+        'env_vars = ["MY_PROXY", "OPENAI_API_KEY"]\n',
+        encoding="utf-8",
+    )
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    forwarded = _table(tmp_path)["env_vars"]
+    assert forwarded[:2] == ["MY_PROXY", "OPENAI_API_KEY"]
+    assert forwarded.count("OPENAI_API_KEY") == 1
+    assert set(codex_target.forwarded_env_vars()) <= set(forwarded)
