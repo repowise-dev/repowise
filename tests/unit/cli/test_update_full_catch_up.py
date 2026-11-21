@@ -177,12 +177,11 @@ def test_unproduced_stale_pages_are_retired(tmp_path) -> None:
             await engine.dispose()
 
     asyncio.run(build())
-    written = SimpleNamespace(
-        generated_pages=[SimpleNamespace(page_id="module_page:kept")],
-        stale_page_ids={"module_page:gone"},
-        plan=SimpleNamespace(generate_ids={"module_page:gone", "module_page:kept"}),
+    catch_up_mod.retire_unproduced(
+        repo_path,
+        {"module_page:gone", "module_page:kept"},
+        [SimpleNamespace(page_id="module_page:kept")],
     )
-    catch_up_mod._retire_unproduced(repo_path, written)
 
     assert asyncio.run(statuses()) == {"module_page:gone": "tombstone", "module_page:kept": "fresh"}
     # No vector store is open here: the next update's persist drops its vector.

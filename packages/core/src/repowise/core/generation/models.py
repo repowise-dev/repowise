@@ -10,6 +10,7 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
@@ -657,6 +658,25 @@ STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = (
 MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
     {"module_page", "flow_page", "repo_overview", "architecture_diagram", "onboarding"}
 )
+
+# Model types with pages no model ever writes (``is_model_free``): an update
+# renders those from code (the CLI only in ``update --full``'s catch-up), and
+# ``generate --stale`` leaves them out. Only these need their metadata read.
+MODEL_FREE_PAGE_TYPES: frozenset[str] = frozenset({"onboarding"})
+
+
+def is_model_free(metadata_json: str | None) -> bool:
+    """A stored page of a model type that no model writes: built from code on every run.
+
+    ``_model_free_onboarding_page`` stamps ``model_free`` on the deterministic
+    onboarding subkinds. The one test for it, so the planner, the counts and
+    ``update`` agree on which pages are structural.
+    """
+    try:
+        return bool(json.loads(metadata_json or "{}").get("model_free"))
+    except (AttributeError, ValueError):
+        return False
+
 
 # Metadata key holding the provider error a page fell back to its stub over.
 # Present only on a stub the run substituted for a model page whose provider

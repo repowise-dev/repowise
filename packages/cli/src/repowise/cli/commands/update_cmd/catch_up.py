@@ -118,7 +118,8 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
             yes=opts.yes,
         )
         if written is not None and not opts.dry_run:
-            _retire_unproduced(repo_path, written)
+            asked = written.stale_page_ids & written.plan.generate_ids
+            retire_unproduced(repo_path, asked, written.generated_pages)
     # Pages the change reached only at a distance (two hops, co-change) were
     # marked stale above, not rendered; a plain pass renders them, free.
     if not opts.dry_run and _stale(repo_path, model_written=False):
@@ -128,15 +129,16 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
     return outcome
 
 
-def _retire_unproduced(repo_path: Path, written: Any) -> None:
-    """Retire the stale pages the generator was asked for and no longer yields.
+def retire_unproduced(repo_path: Path, asked: set[str], pages: list[Any]) -> None:
+    """Retire the pages a render was asked for and no longer yields.
 
-    Rewriting cannot refresh them, so left alone they would stay stale for good.
+    Rendering again cannot refresh them, so left alone they would stay stale for good.
     """
-    produced = {page.page_id for page in written.generated_pages}
-    gone = (written.stale_page_ids & written.plan.generate_ids) - produced
-    if gone:
-        retired = run_async(_retire(repo_path, gone))
+    gone = asked - {page.page_id for page in pages}
+    if not gone:
+        return
+    retired = run_async(_retire(repo_path, gone))
+    if retired:
         console.print(f"Retired {len(retired)} page(s) the code no longer yields.")
 
 

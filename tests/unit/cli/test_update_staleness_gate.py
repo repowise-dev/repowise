@@ -180,3 +180,24 @@ def test_pages_planned_notice_warns_a_code_wiki_with_a_provider_of_the_model_run
         "or now with repowise update --full. "
         "It writes the whole wiki with a model, and prices it first." in rec.export_text()
     )
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["plain-update", "full-catch-up"])
+def test_a_model_free_page_waits_for_the_full_catch_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full: bool
+) -> None:
+    """Its render reads every file's history, so only `update --full`'s pass pays for it."""
+    from repowise.cli.commands.update_cmd import stale_targets
+    from repowise.cli.commands.update_cmd.catch_up import UNCAPPED_CASCADE
+
+    landscape = "onboarding:onboarding/active_landscape"
+    monkeypatch.setattr(
+        "repowise.core.persistence.load_stale_update_targets",
+        lambda _path: ([], {landscape, "scc_page:1"}),
+    )
+    monkeypatch.setattr(stale_targets, "can_regenerate_pages", lambda run, opts: True)
+    run = _run(tmp_path, wiki_rebuild=False)
+    opts = SimpleNamespace(cascade_budget=UNCAPPED_CASCADE if full else None)
+
+    assert stale_targets.load_actionable_stale_targets(run, opts) == 0
+    assert run.stale_deterministic_ids == ({landscape, "scc_page:1"} if full else {"scc_page:1"})

@@ -181,9 +181,14 @@ def regenerate_deterministic_page_ids(
     unrelated module/overview/onboarding pages while the level ladder reaches
     the requested structural level.
     """
+    if any(pid.startswith("onboarding:") for pid in page_ids):
+        git_meta_map, page_ids = _with_repo_wide_git(
+            repo_path, git_meta_map, parsed_files, page_ids, degraded
+        )
     if not page_ids:
         return []
-    return _render_pages(
+    degraded_before = len(degraded)
+    pages = _render_pages(
         repo_path=repo_path,
         parsed_files=parsed_files,
         source_map=source_map,
@@ -201,6 +206,32 @@ def regenerate_deterministic_page_ids(
         vector_store=vector_store,
         stats_out=stats_out,
     )
+    onboarding = {pid for pid in page_ids if pid.startswith("onboarding:")}
+    if onboarding and len(degraded) == degraded_before:
+        from .catch_up import retire_unproduced
+
+        # An onboarding page whose gate fails is not yielded; no later run would yield it.
+        # shortcut: a page whose own render raises is dropped without a degraded
+        # entry, so it reads as not yielded too (as in the catch-up's generate path);
+        # upgrade when the generator reports the ids that failed.
+        retire_unproduced(repo_path, onboarding, pages)
+    return pages
+
+
+def _with_repo_wide_git(
+    repo_path: Path, git_meta_map: dict, parsed_files: list, page_ids: set[str], degraded: list[str]
+) -> tuple[dict, set[str]]:
+    """Every file's git row, for the onboarding pages that count history repo-wide.
+
+    An update indexes git for its changed files only. Without the stored rows the
+    page would be built from that slice. Unreadable: the onboarding pages stay
+    stale for the next run.
+    """
+    full = with_stored_git_meta(repo_path, git_meta_map, [pf.file_info.path for pf in parsed_files])
+    if full is not None:
+        return full, page_ids
+    degraded.append("Onboarding page refresh: stored git history unreadable")
+    return git_meta_map, {pid for pid in page_ids if not pid.startswith("onboarding:")}
 
 
 def _render_pages(

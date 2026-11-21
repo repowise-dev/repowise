@@ -868,7 +868,8 @@ _FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
 # file.  A scoped file render cannot refresh these, but update already rebuilds
 # the complete graph and can render an exact id from that view without a model.
 # Keep this deliberately narrow: module/overview/onboarding pages are
-# model-written and belong to ``repowise generate --stale``; layer pages are
+# model-written (bar the ``is_model_free`` ones) and belong to
+# ``repowise generate --stale``; layer pages are
 # retired and swept independently.
 _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
 
@@ -890,14 +891,23 @@ async def get_stale_update_targets(
     which must be rendered from the complete parsed/graph view.  Returning both
     from one query keeps the up-to-date fast path to a single store read.
     """
+    from repowise.core.generation.models import MODEL_FREE_PAGE_TYPES, is_model_free
+
+    # Metadata only where it decides: a file page's is the bulk of the row.
+    model_free_meta = case(
+        (Page.page_type.in_(MODEL_FREE_PAGE_TYPES), Page.metadata_json), else_=None
+    )
     result = await session.execute(
-        select(Page.id, Page.page_type, Page.target_path, Page.provider_name).where(
+        select(
+            Page.id, Page.page_type, Page.target_path, Page.provider_name, model_free_meta
+        ).where(
             Page.repository_id == repository_id,
             Page.page_type.in_(
                 sorted(
                     _FILE_SCOPED_PAGE_TYPES
                     | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES
                     | _UPDATE_WIDE_STUB_PAGE_TYPES
+                    | MODEL_FREE_PAGE_TYPES
                 )
             ),
             Page.freshness_status.in_(["stale", "expired"]),
@@ -905,7 +915,11 @@ async def get_stale_update_targets(
     )
     stale_paths: list[str] = []
     deterministic_ids: set[str] = set()
-    for page_id, page_type, target_path, provider_name in result:
+    for page_id, page_type, target_path, provider_name, metadata_json in result:
+        if page_type in MODEL_FREE_PAGE_TYPES:
+            if is_model_free(metadata_json):
+                deterministic_ids.add(page_id)
+            continue
         if page_type in _UPDATE_WIDE_STUB_PAGE_TYPES:
             if provider_name == "template":
                 deterministic_ids.add(page_id)
