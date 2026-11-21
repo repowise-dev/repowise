@@ -605,8 +605,8 @@ class SelectionInput:
     *changed* are the paths present after the change, *deleted* those it
     removed, *label* names the change; *tiers* is ``impacted-tests``' result
     (``covered``, ``inferred``, ``unknown``, ``helper_importers``, and
-    ``matched_by_file``: changed files the per-test map could only match by
-    file). *map_truncated* is true when the per-test map holds as many rows as
+    ``matched_by_file``: changed files whose covering tests the per-test map
+    could only match by file). *map_truncated* is true when the per-test map holds as many rows as
     the store keeps. *index_gap* lists the files that changed
     between the indexed commit and the change, ``None`` when that cannot be
     told; *index_problem* says why the index's own commit cannot be trusted.
@@ -1049,7 +1049,7 @@ def _notes(
                 f"with every selection (e.g. {detected[0]}: "
                 f"{inp.always_run_tests[detected[0]]})."
             )
-    if by_file := _matched_by_file(inp.tiers):
+    if by_file := inp.tiers.get("matched_by_file"):
         out.append(
             f"The per-test map was measured at another commit, so covering tests of "
             f"{len(by_file)} changed file(s) are matched by file, not by changed line "
@@ -1059,13 +1059,6 @@ def _notes(
     # How each conftest on a route was decided (``conftest_routes``).
     out.extend(inp.tiers.get("conftest_notes") or ())
     return out
-
-
-def _matched_by_file(tiers: Mapping[str, Any]) -> list[str]:
-    """The changed files the per-test map answered by file, not by line (``matched_by_file``)."""
-    by_file = set(tiers.get("matched_by_file") or ())
-    covered = (tiers.get("covered") or {}).values()
-    return sorted({f for row in covered for f in row["source_files"] if f in by_file})
 
 
 def _skipped_notes(inp: SelectionInput, skipped: list[str]) -> list[str]:

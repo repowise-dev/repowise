@@ -684,7 +684,7 @@ def test_a_stale_map_is_stated_for_the_files_it_matched_by_file() -> None:
             "t::y": {"test_file": "tests/test_b.py", "source_files": ["src/b.py"]},
         }
     )
-    tiers["matched_by_file"] = ["src/b.py", "src/gone.py"]  # gone.py has no covering test
+    tiers["matched_by_file"] = ["src/b.py"]
     sel = _select(["src/a.py", "src/b.py"], tiers)
     assert not sel.run_all
     assert sel.reasons == (

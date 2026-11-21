@@ -236,9 +236,9 @@ The per-test map is keyed in the line numbers of the commit it was measured at
 - Anywhere else (another branch, a commit missing from the clone, a failed git call):
   every file is matched by file.
 
-Matching by file never selects fewer tests than matching by line. The files matched by
-file are listed in `matched_by_file`, and the selection says so only when one of them
-has covering tests. Function-scoped matching (a change wholly inside function bodies)
+Matching by file never selects fewer tests than matching by line. A changed file whose
+covering tests were matched by file is listed in `matched_by_file`, and the selection
+and the CLI name it. Function-scoped matching (a change wholly inside function bodies)
 still needs a map at the base or head.
 
 ## Coverage re-ingest hook

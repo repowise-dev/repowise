@@ -353,10 +353,6 @@ async def collect(
     routes = sorted({*routes, *scope_routes})
     # git runs off the event loop when the map's commit needs moving to the base.
     out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
-    if not out["map_empty"]:
-        out["matched_by_file"] = sorted(
-            p for p, diff in change.files.items() if diff.hunks and lines[p] is None
-        )
     functions = (
         await function_scoped_lines(
             session, repo_id, repo_path, change, measured_side(change, measured), lines
@@ -377,6 +373,13 @@ async def collect(
         groups=scope_groups,
         cancelled=cancelled,
         functions=functions,
+    )
+    # Changed files with lines whose covering tests were matched by file all the same.
+    covered = {f for row in out["covered"].values() for f in row["source_files"]}
+    out["matched_by_file"] = sorted(
+        p
+        for p, diff in change.files.items()
+        if diff.hunks and lines[p] is None and p in covered
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -597,7 +600,7 @@ def empty_result(changed_files: int) -> dict:
         "map_truncated": False,
         "measured_commit": None,
         # changed file -> the lines its per-test map lookup asks for (``query_lines``);
-        # the changed files with lines that are matched by file all the same
+        # the changed files with lines whose covering tests are matched by file
         "query_lines": {},
         "matched_by_file": [],
         "indexed_commit": None,
