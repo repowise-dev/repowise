@@ -1241,6 +1241,40 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     @pytest.mark.parametrize(
+        "line",
+        [
+            '  SECRETS$ADD_SECRET = "SECRETS$ADD_SECRET",\n',
+            '  SETTINGS$LLM_API_KEY = "SETTINGS$LLM_API_KEY",\n',
+            '  FEEDBACK$PASSWORD = "FEEDBACK$PASSWORD",\n',
+        ],
+    )
+    def test_an_enum_member_holding_its_own_dollar_joined_name_is_not_a_secret(
+        self, line: str
+    ) -> None:
+        # i18n key enums join a namespace to the key with ``$``.
+        source = "export enum I18nKey {\n" + line + "}\n"
+        kinds = set(self._kinds(source, "declaration.ts"))
+        assert not {"hardcoded_secret", "hardcoded_password"} & kinds
+
+    def test_a_dollar_name_holding_a_different_value_is_still_a_secret(self) -> None:
+        value = "Zq8" + "vR2mT9xLp4"
+        assert "hardcoded_secret" in self._kinds(f'const $api_key = "{value}";\n', "a.js")
+
+    @pytest.mark.parametrize(
+        ("source", "path"),
+        [('password = "pass$word"\n', "config.py"), ('$password = "pass$word";\n', "config.php")],
+    )
+    def test_a_dollar_inside_a_password_does_not_make_it_the_name(
+        self, source: str, path: str
+    ) -> None:
+        assert "hardcoded_password" in self._kinds(source, path)
+
+    @pytest.mark.parametrize("name", ["publicKeyToken", "$publicKeyToken", "ASSEMBLY$publicKeyToken"])
+    def test_an_excluded_key_name_stays_excluded_behind_a_dollar(self, name: str) -> None:
+        source = f'{name} = "b03f5f7f11d50a3a"\n'
+        assert "hardcoded_secret" not in self._kinds(source, "a.js")
+
+    @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
     )
@@ -1685,6 +1719,24 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = 'import { execSync } from "child_process";\nexecSync(cmd);\n'
         assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
         assert self._found("src/run.ts", source) == [("exec_call", "high")]
+
+    def test_a_sink_in_a_data_folders_code_is_low_once_the_root_is_known(self, tmp_path) -> None:
+        """A data folder is read off disk, so the origin needs the repository root."""
+        for i in range(4):
+            item = tmp_path / "backend" / "data" / "problems" / f"p{i}"
+            item.mkdir(parents=True)
+            for n in range(12):
+                (item / f"case{n}.json").write_text("{}")
+            for name in ("python.py", "Solution.java", "go.go"):
+                (item / name).write_text("")
+        path = "backend/data/problems/p0/python.py"
+        source = "import os\nos.system(cmd)\n"
+        assert self._found(path, source) == [("os_system", "high")]
+        info = SimpleNamespace(path=path, abs_path=str(tmp_path / path))
+        found, _ = scan_source_map(
+            [SimpleNamespace(file_info=info, symbols=[])], {path: source.encode()}
+        )
+        assert [(f["kind"], f["severity"]) for f in found[path]] == [("os_system", "low")]
 
     def test_a_secret_in_a_script_stays_high(self) -> None:
         source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'

@@ -12,7 +12,7 @@ from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 from repowise.cli.editor_setup import EditorSetupOutcome
 from repowise.cli.ui import build_contextual_next_steps
 from repowise.cli.ui.brand import THEME
-from repowise.cli.ui.finish_panel import FinishFacts, StoodOut, build_finish_panel
+from repowise.cli.ui.finish_panel import FinishFacts, FirstLook, StoodOut, build_finish_panel
 from repowise.cli.ui.mode_names import completion_title, scope_line
 from repowise.cli.ui.result_panels import serve_step
 
@@ -396,3 +396,54 @@ def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
     body = "\n".join(line.strip("│ ") for line in block.splitlines())
     body.encode("ascii")
     assert "Index ready" in text and "open the dashboard (keeps running" in text
+
+
+@pytest.mark.parametrize(
+    ("first_look", "line"),
+    [
+        (
+            FirstLook(".repowise/reports/repo-report.html"),
+            "Repo report  .repowise/reports/repo-report.html  (template, free)",
+        ),
+        (
+            FirstLook("http://127.0.0.1:3000/repos/r1/report", "claude-haiku-5-5", 0.003),
+            "Repo report  http://127.0.0.1:3000/repos/r1/report  "
+            "(written by claude-haiku-5-5, $0.003)",
+        ),
+        (
+            FirstLook(".repowise/reports/repo-report.html", "template", 0.002),
+            "Repo report  .repowise/reports/repo-report.html  "
+            "(template: the model's reply was unusable, $0.002)",
+        ),
+        (
+            FirstLook(".repowise/reports/repo-report.html", agent=True, open_items=4),
+            "Repo report: tell the user what it found (repowise report --format md); "
+            "they decide what to fix next.",
+        ),
+    ],
+    ids=["keyless", "model", "unusable-reply", "agent"],
+)
+def test_one_footer_line_names_the_repo_report(first_look, line):
+    import io
+
+    from repowise.cli.ui.finish_panel import print_finish_panel
+
+    facts = FinishFacts(
+        scope={"content_provenance": "template", "search": {}}, files=1, symbols=1,
+        languages="Python 100%", elapsed="1.0s", first_look=first_look,
+    )
+    assert _render_line(facts, EditorSetupOutcome(claude_code_connected=True)) == line
+
+    out = io.StringIO()  # a server run: no line for someone at the machine
+    console = Console(file=out, width=120, theme=THEME)
+    setup = EditorSetupOutcome(editor_setup_disabled=True)
+    print_finish_panel(console, facts, steps=[], setup=setup, repo_path=Path("/r"))
+    assert "Repo report" not in out.getvalue()
+
+
+def _render_line(facts, setup) -> str:
+    console = Console(record=True, width=160, theme=THEME)
+    console.print(build_finish_panel(facts, steps=[], setup=setup, repo_path=Path("/r")))
+    found = [ln.strip("│ ") for ln in console.export_text().splitlines() if "Repo report" in ln]
+    assert len(found) == 1
+    return found[0]

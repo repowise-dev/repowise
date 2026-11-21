@@ -245,12 +245,12 @@ Hybrid search routed by query shape: identifiers hit the symbol index, paths res
 |-----------|------|---------|---------|
 | `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
 | `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments`. Accepted, not advertised |
-| `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
+| `limit` | int | `5` | Max results, up to 20; outside `symbol` mode, max distinct files. A larger value is cut to 20 and named in `ignored_arguments` |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Symbol filter, e.g. `function`, `class`, `method` |
 | `page_type` | string | none | One page type, usually `file_page` or `module_page`. Accepted, not advertised |
-| `repo` | string | default repo | Or `"all"` for every repo |
+| `repo` | string | default repo | In a workspace, `"all"` searches every repo; a single-repo server does not advertise it and serves it as the one repo |
 
 **Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 

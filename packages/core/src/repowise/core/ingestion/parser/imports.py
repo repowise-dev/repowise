@@ -9,7 +9,7 @@ from __future__ import annotations
 from ..extractors import node_text
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
-from ..parser_helpers import import_load_kind
+from ..parser_helpers import import_load_kind, python_import_scope
 
 
 def _extract_imports(
@@ -41,11 +41,17 @@ def _extract_imports(
         raw = node_text(stmt_node, src).strip()
         dedup_key = rules.dedup_key(stmt_node, raw, src) if rules.dedup_key else raw
         kind = import_load_kind(stmt_node, language, src)
+        scopes = python_import_scope(stmt_node) if language == "python" else None
         if dedup_key in seen_imports:
             # A lazy copy must not hide a load-time twin: runtime wins.
             for imp in seen_imports[dedup_key]:
                 imp.type_only, imp.deferred = combine_load_kinds(
                     (imp.type_only, imp.deferred), kind
+                )
+                # The same statement in another function binds there too; a
+                # module-level copy binds it file-wide.
+                imp.scopes = (
+                    imp.scopes + scopes if imp.scopes is not None and scopes is not None else None
                 )
             continue
         seen_imports[dedup_key] = []
@@ -57,6 +63,7 @@ def _extract_imports(
         found = rules.statement(stmt_node, module_nodes[0], module_text, raw, language, src)
         for imp in found:
             imp.type_only, imp.deferred = kind
+            imp.scopes = scopes
         seen_imports[dedup_key] = found
         imports.extend(found)
 

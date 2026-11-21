@@ -877,3 +877,62 @@ def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
     table = _tests()
     assert table.exit_code == 0
     assert f"4.50s  {slowest['test_id']}" in table.stdout
+
+
+@pytest.mark.parametrize("elsewhere", [False, True])
+def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
+    indexed, tmp_path_factory: pytest.TempPathFactory, elsewhere: bool
+) -> None:
+    from repowise.core.persistence.models import EvidenceTestTiming
+
+    root, head = indexed
+    # The run may come from another checkout of the repository (--checkout-root).
+    checkout = tmp_path_factory.mktemp("checkout") if elsewhere else root
+
+    async def index_test_file() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(HealthFileMetric(repository_id="r1", file_path="web/src/cart.test.ts",
+                                             code_origin="test"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(index_test_file())
+    # Vitest ran in web/ and names its files from there.
+    (checkout / "web").mkdir()
+    (checkout / "web" / "junit.xml").write_text(
+        '<testsuites><testsuite name="src/cart.test.ts">'
+        '<testcase classname="src/cart.test.ts" name="cart &gt; adds" time="0.5"/></testsuite></testsuites>'
+    )
+
+    where = ["--checkout-root", str(checkout)] if elsewhere else []
+    result = _add(str(checkout / "web" / "junit.xml"), "--workload", "web: vitest tests", "--class",
+                  "unit_test", "--commit", head, *where)
+
+    assert result.exit_code == 0, result.output
+
+    async def stored() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return list((await session.execute(select(EvidenceTestTiming))).scalars())
+        finally:
+            await engine.dispose()
+
+    (row,) = asyncio.run(stored())
+    assert (row.test_id, row.test_file) == ("web/src/cart.test.ts::cart > adds", "web/src/cart.test.ts")
+
+
+def test_tests_says_how_many_files_every_timed_test_runs() -> None:
+    payload = {
+        "runs": [], "tests_total": 2, "slow_tests": [],
+        "file_costs": {
+            "basis": "measured", "files_total": 1, "not_production": 0, "every_test": 3,
+            "files": [{"file_path": "src/app.py", "test_seconds": 3.0, "timed_tests": 1, "tests": 1}],
+        },
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text

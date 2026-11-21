@@ -362,6 +362,108 @@ async def me(): ...
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/api/users/{param}" in ids
 
+    def test_express_mount_follows_the_import_not_the_name(self, tmp_path: Path) -> None:
+        # Each module names its router `router`, and the mounting file names it
+        # something else: the prefix is the module's, found through the import.
+        self._write_file(tmp_path, "src/server.js", """
+            const express = require('express');
+            const app = express();
+            const usersRouter = require('./routes/users');
+            const ordersRouter = require('./routes/orders');
+            app.use('/api/users', usersRouter);
+            app.use('/api/orders', ordersRouter);
+        """)
+        for name, route in (("users", "/:id"), ("orders", "/")):
+            self._write_file(tmp_path, f"src/routes/{name}.js", f"""
+                const router = require('express').Router();
+                router.get('{route}', handler);
+                module.exports = router;
+            """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users/{param}", "http::GET::/api/orders"}
+
+    def test_express_mount_reaches_only_the_module_it_mounts(self, tmp_path: Path) -> None:
+        # `router` mounted in one file is not every module's `router`.
+        self._write_file(tmp_path, "src/server.ts", """
+            import express from 'express';
+            import router from './routes/users';
+            const app = express();
+            app.use('/api', router);
+        """)
+        self._write_file(tmp_path, "src/routes/users.ts", """
+            import { Router } from 'express';
+            const router = Router();
+            router.get('/users', handler);
+            export default router;
+        """)
+        self._write_file(tmp_path, "src/admin.ts", """
+            import { Router } from 'express';
+            const router = Router();
+            router.get('/admin/stats', handler);
+            export default router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users", "http::GET::/admin/stats"}
+
+    def test_express_mount_through_a_namespace_or_named_import(self, tmp_path: Path) -> None:
+        # `import * as` reads a member of the whole module; a named import finds
+        # a router the module also exports as its default.
+        self._write_file(tmp_path, "src/server.ts", """
+            import * as users from './users';
+            import { router as orders } from './orders';
+            const app = express();
+            app.use('/api/users', users.router);
+            app.use('/api/orders', orders);
+        """)
+        self._write_file(tmp_path, "src/users.ts", """
+            export const router = Router();
+            router.get('/me', handler);
+        """)
+        self._write_file(tmp_path, "src/orders.ts", """
+            export const router = Router();
+            router.get('/recent', handler);
+            export default router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users/me", "http::GET::/api/orders/recent"}
+
+    def test_express_nested_module_mounts_compose(self, tmp_path: Path) -> None:
+        # A router module mounting another, a named export read as a member, an
+        # in-file child router, and an inline require.
+        self._write_file(tmp_path, "src/server.js", """
+            const app = require('express')();
+            const routes = require('./routes');
+            app.use('/api', routes);
+            app.use('/health', require('./health'));
+        """)
+        self._write_file(tmp_path, "src/routes/index.js", """
+            const { Router } = require('express');
+            const router = Router();
+            const users = require('./users');
+            const v2 = Router();
+            v2.get('/ping', handler);
+            router.use('/v2', v2);
+            router.use('/users', users.router);
+            module.exports = router;
+        """)
+        self._write_file(tmp_path, "src/routes/users.js", """
+            const { Router } = require('express');
+            const router = Router();
+            router.get('/:id', handler);
+            module.exports = { router };
+        """)
+        self._write_file(tmp_path, "src/health.js", """
+            const router = require('express').Router();
+            router.get('/', handler);
+            module.exports = router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {
+            "http::GET::/api/users/{param}",
+            "http::GET::/api/v2/ping",
+            "http::GET::/health",
+        }
+
     def test_go_route_group_nested(self, tmp_path: Path) -> None:
         # Nested groups compose: v1 := api.Group("/v1") under api := r.Group("/api").
         self._write_file(tmp_path, "main.go", """

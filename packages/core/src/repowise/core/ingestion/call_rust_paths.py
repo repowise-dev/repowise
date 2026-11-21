@@ -7,10 +7,13 @@ The path is walked down the module tree, one segment per module file, and the
 callee is looked up in the module it ends on; a last segment that is no module
 is read as a type, whose method the call names (``index::Store::open()``).
 
-Ceilings: an inline ``mod name { ... }`` is not a module file, so a path
-through one is read in the file that holds it; a ``#[path]`` module is found
-only through its ``mod`` declaration; a crate with both ``lib.rs`` and
-``main.rs`` answers ``crate::f()`` from ``lib.rs``. A child module with no
+An inline ``mod name { ... }`` is no module file: a path through one stays in
+the file that holds it, and the callee is looked up among that block's items
+(``outer::inner::f()``, ``crate::a::m::Type::new()``).
+
+Ceilings: a ``mod x;`` declared inside an inline block is not followed; a
+``#[path]`` module is found only through its ``mod`` declaration; a crate with
+both ``lib.rs`` and ``main.rs`` answers ``crate::f()`` from ``lib.rs``. A child module with no
 ``mod`` declaration is still found by its file, as import resolution does.
 """
 
@@ -19,7 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .resolvers.rust import (
     _crate_root_file,
@@ -47,15 +50,30 @@ class RustPathCallsMixin:
         if start is None:
             return None
         module, rest = start
+        # The inline ``mod`` block the walk stands in, None at a file's top level.
+        scope = self._rust_start_scope(file_path, segments, call.line) if module == file_path else None
         for i, segment in enumerate(rest):
-            child = self._rust_child_module(module, segment)
+            child = None if scope else self._rust_child_module(module, segment)
             if child is not None:
                 module = child
+                continue
+            if self._rust_inline_module(module, segment, scope):
+                if self._rust_name_reused(module, segment):
+                    # Items of two blocks named alike share one key: no pick.
+                    return None
+                scope = segment
                 continue
             if i < len(rest) - 1:
                 return None
             # The last segment is no module: a type the call names a method of.
+            if scope is not None and self._rust_type_reused(module, segment):
+                return None  # ``a::S::new()`` and ``b::S::new()`` share one key
             target = self._file_methods.get(module, {}).get((segment, call.target_name))  # type: ignore[attr-defined]
+            return self._rust_path_edge(caller_id, target, call)
+        if scope is not None:
+            # An item of an inline block is keyed by the block's name.
+            # ``self::f()`` in a block names the block's ``f``, never the file's.
+            target = self._file_methods.get(module, {}).get((scope, call.target_name))  # type: ignore[attr-defined]
             return self._rust_path_edge(caller_id, target, call)
         hit = self._module_alias_call(file_path, module, call, caller_id)  # type: ignore[attr-defined]
         if hit is not None:
@@ -102,7 +120,7 @@ class RustPathCallsMixin:
             while hops < len(segments) and segments[hops] == "super":
                 hops += 1
             # A ``super`` out of an inline ``mod`` block stays in this file.
-            climb = hops - min(hops, self._rust_inline_depth(file_path, line))
+            climb = hops - min(hops, len(self._rust_enclosing_modules(file_path, line)))
             if not climb:
                 return file_path, segments[hops:]
             module_dir = PurePosixPath(_rust_module_dir(file_path))
@@ -127,6 +145,9 @@ class RustPathCallsMixin:
         child = self._rust_child_module(file_path, head)
         if child is not None:
             return child, segments[1:]
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        if self._rust_inline_module(file_path, head, enclosing[-1] if enclosing else None):
+            return file_path, segments  # the walk enters the inline block
         if len(segments) == 1:
             return None  # a type, or an external crate: other tiers answer
         crate_src = self._get_rust_crate_src().get(head)  # type: ignore[attr-defined]
@@ -157,14 +178,71 @@ class RustPathCallsMixin:
         found = _probe_rust_path(_rust_module_dir(module), [name], self._rust_keys())
         return found if found != module else None
 
-    def _rust_inline_depth(self, file_path: str, line: int) -> int:
-        """How many inline ``mod name { ... }`` blocks hold *line* of *file_path*."""
-        parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
-        if parsed is None:
-            return 0
+    def _rust_modules(self, file_path: str) -> list[Symbol]:
+        """The ``mod`` symbols of *file_path* in source order, read once per file."""
+        cache: dict[str, list[Symbol]] | None = getattr(self, "_rust_modules_cache", None)
+        if cache is None:
+            cache = self._rust_modules_cache = {}
+        found = cache.get(file_path)
+        if found is None:
+            parsed = self._parsed_files.get(file_path)  # type: ignore[attr-defined]
+            symbols = parsed.symbols if parsed is not None else []
+            found = cache[file_path] = sorted(
+                (sym for sym in symbols if sym.kind == "module"), key=lambda sym: sym.start_line
+            )
+        return found
+
+    def _rust_enclosing_modules(self, file_path: str, line: int) -> list[str]:
+        """The inline ``mod name { ... }`` blocks that hold *line*, outermost first."""
         # A ``mod name;`` line holds no call, so any module spanning the line is inline.
-        return sum(
-            1
-            for sym in parsed.symbols
-            if sym.kind == "module" and sym.start_line <= line <= sym.end_line
+        return [
+            sym.name
+            for sym in self._rust_modules(file_path)
+            if sym.start_line <= line <= sym.end_line
+        ]
+
+    def _rust_start_scope(self, file_path: str, segments: list[str], line: int) -> str | None:
+        """The inline block a path read in its own file starts from.
+
+        ``crate::`` starts at the top level; ``self::`` and a bare name at the
+        block the call sits in; each ``super`` one block further out.
+        """
+        if segments[0] == "crate":
+            return None
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        hops = 0
+        while hops < len(segments) and segments[hops] == "super":
+            hops += 1
+        depth = len(enclosing) - hops
+        return enclosing[depth - 1] if depth > 0 else None
+
+    def _rust_inline_module(self, module: str, name: str, parent: str | None = None) -> bool:
+        """Whether *module* holds a ``mod name`` block directly inside block *parent*."""
+        return any(
+            sym.name == name and sym.parent_name == parent for sym in self._rust_modules(module)
         )
+
+    def _rust_type_reused(self, module: str, name: str) -> bool:
+        """Whether *module* declares a type *name* in more than one block."""
+        parsed = self._parsed_files.get(module)  # type: ignore[attr-defined]
+        owners = {
+            sym.parent_name
+            for sym in (parsed.symbols if parsed is not None else [])
+            if sym.name == name and sym.kind not in ("function", "method", "module")
+        }
+        return len(owners) > 1
+
+    def _rust_name_reused(self, module: str, name: str) -> bool:
+        """Whether two ``mod name`` blocks of *module* sit in different parents."""
+        return len({sym.parent_name for sym in self._rust_modules(module) if sym.name == name}) > 1
+
+    def _rust_block_item(self, file_path: str, line: int, name: str) -> str | None:
+        """The item *name* the innermost inline ``mod`` block holding *line* declares.
+
+        A bare name in a block names the block's own item first; the file's
+        top level is reached only through ``use super::...``.
+        """
+        enclosing = self._rust_enclosing_modules(file_path, line)
+        if not enclosing or self._rust_name_reused(file_path, enclosing[-1]):
+            return None
+        return self._file_methods.get(file_path, {}).get((enclosing[-1], name))  # type: ignore[attr-defined]

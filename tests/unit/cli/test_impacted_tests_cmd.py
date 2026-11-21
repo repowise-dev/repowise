@@ -693,3 +693,22 @@ def test_the_tables_print_bracketed_paths_as_written(monkeypatch) -> None:
     assert "__tests__/[id]/t0.test.tsx" in out
     assert "app/[locale]/layout.tsx" in out
     assert "app/blog//page.tsx" not in out
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

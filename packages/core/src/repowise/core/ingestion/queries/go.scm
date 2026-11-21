@@ -20,9 +20,15 @@
   parameters: (parameter_list) @symbol.params
 ) @symbol.def
 
-; Type declaration (struct, interface, alias)
+; Type declaration (struct, interface, defined type)
 ; type_spec is always inside type_declaration
 (type_spec
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; Alias declaration: type Old = int
+; The `=` form is its own node, not a type_spec.
+(type_alias
   name: (type_identifier) @symbol.name
 ) @symbol.def
 

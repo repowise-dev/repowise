@@ -193,6 +193,23 @@ def test_go_modules_replace_does_not_leak_across_modules(tmp_path):
     }
 
 
+def test_go_replace_of_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": "module example.com/dup\n\ngo 1.22\n",
+        "a/a.go": "package dup\n",
+        "b/go.mod": "module example.com/dup\n\ngo 1.22\n",
+        "b/b.go": "package dup\n",
+        "app/go.mod": "module example.com/app\n\ngo 1.22\n\nreplace example.com/dup => ../b\n",
+        "app/main.go": "package main\n",
+        "web/go.mod": "module example.com/web\n\ngo 1.22\n\nreplace example.com/dup => ../a\n",
+        "web/web.go": "package web\n",
+    })
+    assert index.unit("go:example.com/dup").root == "a"
+    assert index.unit("go:example.com/app").deps == ("manifest:b",)
+    assert index.unit("go:example.com/web").deps == ("go:example.com/dup",)
+    assert _owners(index, "b/b.go") == ["manifest:b"]
+
+
 def test_go_modules_outside_repo_replace_does_not_fall_back_to_same_named_module(tmp_path):
     index = _collect(tmp_path, {
         "a/go.mod": "module example.com/a\n\ngo 1.22\n\nreplace example.com/b => ../../outside/b\n",
@@ -355,9 +372,9 @@ def test_duplicate_id_keeps_the_shallowest_root(tmp_path):
         "b/copy/go.mod": "module example.com/same\n",
         "b/copy/b.go": "package b\n",
     })
-    assert list(index.units) == ["go:example.com/same"]
+    assert list(index.units) == ["go:example.com/same", "manifest:b/copy"]
     assert index.unit("go:example.com/same").root == "a"
-    assert _owners(index, "b/copy/b.go") == []
+    assert _owners(index, "b/copy/b.go") == ["manifest:b/copy"]
 
 
 def test_cargo_crates_outside_the_workspace_get_units(tmp_path):
@@ -472,6 +489,45 @@ def test_root_binary_outside_src_is_one_crate(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert index.unit("cargo:rg").deps == ("cargo:globset",)
     assert _owners(index, "crates/core/main.rs") == ["cargo:rg"]
+
+
+def test_cargo_path_dep_on_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "a/dup/src/lib.rs": "",
+        "b/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "b/dup/src/lib.rs": "",
+        "app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\n'
+            'other = { path = "../b/dup" }\n'
+            'kept = { path = "../a/dup" }\n'
+        ),
+        "app/src/main.rs": "",
+    })
+    assert index.unit("cargo:dup").root == "a/dup"
+    assert index.unit("cargo:app").deps == ("cargo:dup", "manifest:b/dup")
+    assert _owners(index, "b/dup/src/lib.rs") == ["manifest:b/dup"]
+
+
+def test_cargo_path_dep_on_a_dropped_root_keeps_manifest_beside_go(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "a/dup/src/lib.rs": "",
+        "b/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "b/dup/src/lib.rs": "",
+        "b/dup/go.mod": "module example.com/bdup\n\ngo 1.22\n",
+        "b/dup/dup.go": "package bdup\n",
+        "app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\n'
+            'other = { path = "../b/dup" }\n'
+        ),
+        "app/src/main.rs": "",
+    })
+    assert index.unit("cargo:dup").root == "a/dup"
+    assert index.unit("go:example.com/bdup").root == "b/dup"
+    assert index.unit("manifest:b/dup").manifest == "b/dup/Cargo.toml"
+    assert index.unit("cargo:app").deps == ("manifest:b/dup",)
+    assert _owners(index, "b/dup/src/lib.rs") == ["go:example.com/bdup", "manifest:b/dup"]
 
 
 def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):
@@ -653,7 +709,7 @@ def test_python_unreadable_pyproject_falls_back_alone(tmp_path):
     assert set(index.units) == {"manifest:bad", "python:good"}
 
 
-def test_python_path_source_to_a_dropped_duplicate_links_nothing(tmp_path):
+def test_python_path_source_to_a_dropped_duplicate_links_its_manifest(tmp_path):
     index = _collect(tmp_path, {
         "a/dup/pyproject.toml": '[project]\nname = "dup"\n',
         "b/dup/pyproject.toml": '[project]\nname = "Dup"\n',
@@ -666,7 +722,7 @@ def test_python_path_source_to_a_dropped_duplicate_links_nothing(tmp_path):
         ),
     })
     assert index.unit("python:dup").root == "a/dup"
-    assert index.unit("python:app").deps == ()
+    assert index.unit("python:app").deps == ("manifest:b/dup",)
     assert index.unit("python:web").deps == ("python:dup",)
     assert _owners(index, "b/dup/d.py") == ["manifest:b/dup"]
 
@@ -841,6 +897,27 @@ def test_dart_duplicate_name_keeps_first_root(tmp_path):
     assert set(index.units) == {"dart:same", "manifest:b"}
     assert index.unit("dart:same").root == "a"
     assert _owners(index, "b/b.dart") == ["manifest:b"]
+
+
+def test_dart_path_dep_on_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/pubspec.yaml": "name: dup\n",
+        "a/dup/dup.dart": "",
+        "b/dup/pubspec.yaml": "name: dup\n",
+        "b/dup/dup.dart": "",
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  other:\n"
+            "    path: ../b/dup\n"
+            "  kept:\n"
+            "    path: ../a/dup\n"
+        ),
+        "app/main.dart": "",
+    })
+    assert index.unit("dart:dup").root == "a/dup"
+    assert index.unit("dart:app").deps == ("dart:dup", "manifest:b/dup")
+    assert _owners(index, "b/dup/dup.dart") == ["manifest:b/dup"]
 
 
 def test_dart_adapter_beats_fallback(tmp_path):
@@ -1069,7 +1146,7 @@ def test_swift_duplicate_name_keeps_first_root(tmp_path):
         "App/Sources/App/main.swift": "",
     })
     assert index.unit("swift:Dup").root == "a/Dup"
-    assert index.unit("swift:App").deps == ()
+    assert index.unit("swift:App").deps == ("manifest:b/Dup",)
     assert _owners(index, "b/Dup/Sources/Dup/Dup.swift") == ["manifest:b/Dup"]
 
 
@@ -1298,9 +1375,10 @@ def test_php_duplicate_name_keeps_the_first_root(tmp_path):
     })
     # The first (in sorted order by rel_dir) root "a" wins the id "php:acme/dup"
     assert index.unit("php:acme/dup").root == "a"
-    # Sorted by root, "a" comes first; "b/dup" falls back.
+    # Sorted by root, "a" comes first; "b/dup" falls back, and the path
+    # repository that points at it links that unit.
     assert "manifest:b/dup" in index.units
-    assert index.unit("php:acme/app").deps == ()
+    assert index.unit("php:acme/app").deps == ("manifest:b/dup",)
     assert _owners(index, "b/dup/B.php") == ["manifest:b/dup"]
 
 

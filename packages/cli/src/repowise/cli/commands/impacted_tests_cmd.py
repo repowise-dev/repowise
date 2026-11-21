@@ -267,7 +267,7 @@ def _render(
             err_console.print("[yellow]No index - run `repowise init`.[/yellow]")
         elif result["unknown"]:
             err_console.print(
-                f"[yellow]{len(result['unknown'])} changed file(s) have no coverage, no "
+                f"[yellow]{len(result['unknown'])} changed file(s) have no per-test coverage, no "
                 f"test reaching them in the graph and no paired test; run the full suite "
                 f"to be safe.[/yellow]"
             )
@@ -468,7 +468,7 @@ def _print_inferred(inferred: list[dict]) -> None:
     console.print(table)
     console.print(
         f"[yellow]{len(inferred)} candidate(s)[/yellow] for {len(per_file)} file(s) "
-        "with no coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
+        "with no per-test coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
         "[dim]call-graph[/dim] = a test whose calls reach this file; "
         "[dim]import-graph[/dim] = a test that imports it, directly or not; "
         "[dim]filename-pattern[/dim] = a name-shaped guess. None proves execution - "
@@ -480,7 +480,7 @@ def _print_unknown(unknown: list[str]) -> None:
     if not unknown:
         return
     console.print(
-        f"[red]{len(unknown)} changed file(s)[/red] have no coverage, no test "
+        f"[red]{len(unknown)} changed file(s)[/red] have no per-test coverage, no test "
         "reaching them in the graph and no paired test - run the full suite to be safe:"
     )
     for path in unknown:

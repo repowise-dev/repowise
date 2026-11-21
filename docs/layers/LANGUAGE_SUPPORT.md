@@ -171,8 +171,9 @@ vocabulary, and every origin has exactly one confidence:
 | `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
 | `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
 | `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+| `import_elsewhere` | 0.50 | Python: the name is imported only inside another function of the file, and that one import is read here. **A guess** |
 
-That is the complete vocabulary of 39. You can filter a graph by confidence, and
+That is the complete vocabulary of 40. You can filter a graph by confidence, and
 both the MCP tools and the web UI surface which origin produced an edge, so an
 agent reading an execution flow can tell a fact from an inference. Receiver
 typing, execution-flow terminations and the edge types are in

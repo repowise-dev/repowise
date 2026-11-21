@@ -225,3 +225,51 @@ async def test_a_bare_file_path_listing_is_capped_in_source_order(
     # The id's own last segment, discriminator included, so path::<name> is exact.
     assert result["symbols"] == ["f1", "f2#2"]
     assert result["symbols_total"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        ("::login", "src/auth/service.py::login"),
+        (":25", "src/auth/service.py::login"),
+        (":25:9", "src/auth/service.py::login"),
+        (":20-40", "src/auth/service.py:20-40"),
+    ],
+    ids=["symbol", "line", "line-column", "range"],
+)
+@pytest.mark.parametrize("slashes", ["native", "forward"])
+async def test_an_absolute_path_inside_the_repo_reads_as_its_relative_form(
+    service_file, tmp_path, suffix, expected, slashes
+):
+    """Agents pass the path their editor or shell gave them, root and all."""
+    from repowise.server.mcp_server import get_symbol
+
+    path = str(tmp_path / "src" / "auth" / "service.py")
+    if slashes == "forward":
+        path = path.replace("\\", "/")
+    result = await get_symbol(path + suffix)
+    assert "error" not in result
+    assert result["symbol_id"] == expected
+
+
+@pytest.mark.asyncio
+async def test_an_absolute_file_path_inside_the_repo_lists_its_symbols(service_file, tmp_path):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol(str(tmp_path / "src" / "auth" / "service.py"))
+    assert result["file"] == "src/auth/service.py"
+    assert result["symbols"] == ["AuthService"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escape", [False, True], ids=["sibling", "dot-dot"])
+async def test_an_absolute_path_outside_the_repo_stays_a_miss(service_file, tmp_path, escape):
+    """Never resolved against the repo by its tail: the caller's id is named as given."""
+    from repowise.server.mcp_server import get_symbol
+
+    base = tmp_path / ".." / tmp_path.name / ".." if escape else tmp_path.parent
+    outside = str(base / "elsewhere" / "src" / "auth" / "service.py") + "::login"
+    result = await get_symbol(outside)
+    assert "source" not in result
+    assert result["error"].startswith(f"Symbol not found: {outside!r}.")

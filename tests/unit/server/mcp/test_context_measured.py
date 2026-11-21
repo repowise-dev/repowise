@@ -105,7 +105,7 @@ def test_body_unchanged_says_earlier_commit():
 
 
 def test_file_line_caps_named_functions_and_counts_the_rest():
-    rows = [_row(f"{FILE}::f{i}", rank=i + 1, samples=100 - i) for i in range(5)]
+    rows = [_row(f"{FILE}::f{i}", rank=i + 1, self_share=0.10 - i / 1000) for i in range(5)]
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     line = file_line(rows, NOW)
     assert line.startswith('in entry_point "cli build" (repo code itself 40%), 2d old: ')
@@ -212,10 +212,10 @@ async def test_store_without_the_table_answers_as_no_evidence(
 
 
 def test_low_share_interval_never_rounds_past_the_estimate():
-    row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
+    row = _row(self_share=0.004, share_low=0.0016, share_high=0.0102)
     assert "(<1% self, 0-1%;" in symbol_line(row, NOW)
     # A lower end that is exact in decimal but not in binary keeps its value.
-    row = _row(samples=600, share_low=0.57, share_high=0.63)
+    row = _row(self_share=0.6, share_low=0.57, share_high=0.63)
     assert "(60% self, 57-63%;" in symbol_line(row, NOW)
 
 

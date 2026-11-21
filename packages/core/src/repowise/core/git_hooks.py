@@ -6,7 +6,6 @@ CLI, the server and the MCP server answer "is sync on" from the same reads.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 #: The opening marker of the post-commit block ``repowise hook install`` writes.
@@ -41,14 +40,12 @@ def hooks_dir(repo_path: Path) -> Path | None:
     returns early unless ``$ROOT/.repowise`` exists -- so a shared hook is
     inert in repos with no index rather than wrong.
     """
+    from .analysis.git_cli import run_git
+
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-path", "hooks"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        # run_git, not a bare subprocess: under the stdio MCP server a git that
+        # inherits the protocol pipe as stdin waits there until the timeout.
+        result = run_git(["rev-parse", "--git-path", "hooks"], repo_path, timeout=10)
         if result.returncode == 0:
             p = Path(result.stdout.strip())
             if not p.is_absolute():

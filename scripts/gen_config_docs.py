@@ -96,6 +96,7 @@ _ENV_AREA_ORDER = (
     "events",
     "evidence",
     "health",
+    "report",
 )
 
 #: Every generated table, in the order the file shows them. A setting may sit in
@@ -124,6 +125,7 @@ BLOCKS: tuple[Block, ...] = (
     _block("events"),
     _block("evidence"),
     _block("refactoring"),
+    _block("report"),
     _block("assertions"),
     _block("tests"),
     Block("platform-json", lambda s: s.path == "~/.repowise/platform.json"),

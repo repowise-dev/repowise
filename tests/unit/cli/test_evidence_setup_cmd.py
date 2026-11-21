@@ -95,6 +95,26 @@ def test_test_timings_name_the_environment_the_report_needs() -> None:
     )
 
 
+def test_the_text_shows_every_note_the_json_has() -> None:
+    hooks = "This runs the test runner directly: `npm test` would also run the `pretest` script."
+    unit = {
+        "root": "", "stack": "node", "runner": "jest", "package_manager": "npm",
+        "coverage": {"command": "npx jest --coverage", "prerequisites": [], "found": [], "ingest": None,
+                     "reason": None, "notes": [hooks]},
+        "runtime": [{"class": "unit_test", "workload": "python tests", "command": "python -c x",
+                     "reason": None, "ingest": None, "note": "A subset of the tests is enough."}],
+    }
+    text = " ".join(evidence_cmd._setup_lines(unit))
+    assert f"note: {hooks}" in text
+    assert "note: A subset of the tests is enough." in text
+
+    # Without a command, the last note is the reason, shown once.
+    unit["coverage"].update(command=None, reason="No runner.", notes=["First.", "No runner."])
+    lines = evidence_cmd._setup_lines(unit)
+    assert sum("No runner." in line for line in lines) == 1
+    assert any("note: First." in line for line in lines)
+
+
 def test_coverage_setup_prints_the_coverage_part_of_the_plan(repo: Path) -> None:
     alias = CliRunner(mix_stderr=False).invoke(coverage_group, ["setup", "--format", "json"])
 
