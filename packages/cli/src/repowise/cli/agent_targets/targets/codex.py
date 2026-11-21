@@ -160,10 +160,12 @@ def server_table(repo_path: Path) -> dict[str, object]:
     }
 
 
-#: Variables the embedder and LLM resolvers read to pick a backend or model,
-#: beside the per-provider keys and URLs. Without them, a shell that selects
-#: the embedder or provider by environment gets a different one in the server.
+#: Variables the server reads to pick its database, embedder, provider or
+#: model, beside the per-provider keys and URLs (and ``DB_ENV_VARS``). Without
+#: them, a shell that selects one by environment gets a different one in the server.
 _SELECTION_ENV_VARS = (
+    "REPOWISE_POSTGRES_KEEPALIVE",
+    "REPOWISE_CONFIG_DIR",
     "REPOWISE_EMBEDDER",
     "REPOWISE_EMBEDDING_MODEL",
     "REPOWISE_EMBEDDING_DIMS",
@@ -172,6 +174,8 @@ _SELECTION_ENV_VARS = (
     "OLLAMA_EMBEDDING_DIMS",
     "REPOWISE_PROVIDER",
     "REPOWISE_MODEL",
+    "REPOWISE_DOC_MODEL",
+    "REPOWISE_REASONING",
 )
 
 
@@ -187,10 +191,12 @@ def forwarded_env_vars() -> list[str]:
     the embedder and the answer model can each be any of them, plus the
     selection variables in :data:`_SELECTION_ENV_VARS`.
     """
+    from repowise.core.persistence.database import DB_ENV_VARS
     from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
     return sorted(
         {
+            *DB_ENV_VARS,
             *_SELECTION_ENV_VARS,
             *(
                 var

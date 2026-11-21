@@ -306,8 +306,11 @@ def test_forwarded_env_vars_cover_every_provider_key_and_url() -> None:
     for spec in PROVIDER_SPECS.values():
         assert set(spec.api_key_envs) <= forwarded, spec.name
         assert set(spec.base_url_envs) <= forwarded, spec.name
-    assert "REPOWISE_EMBEDDER" in forwarded
-    assert "REPOWISE_PROVIDER" in forwarded
+    from repowise.core.persistence.database import DB_ENV_VARS
+
+    assert set(DB_ENV_VARS) <= forwarded
+    assert {"REPOWISE_EMBEDDER", "REPOWISE_EMBEDDING_MODEL", "OLLAMA_EMBEDDING_MODEL"} <= forwarded
+    assert {"REPOWISE_PROVIDER", "REPOWISE_MODEL", "REPOWISE_DOC_MODEL"} <= forwarded
 
 
 def test_a_second_install_leaves_the_config_byte_identical(tmp_path: Path) -> None:
