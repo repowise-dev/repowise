@@ -580,9 +580,10 @@ EVIDENCE_STATES = ("confirmed", "measured", "counter_evidence", "ran", "not_exer
 def evidence_mark(facets: Mapping[str, Any], workloads: Sequence[str]) -> dict[str, Any] | None:
     """What runtime evidence says about one cause, for a person's list, or ``None``.
 
-    ``confirmed`` (``basis`` ``query_count`` or ``measured``) and ``measured``
-    (``workload`` names the leading workload that ranks its loop owner) say
-    what the evidence found; the queue puts them first
+    ``confirmed`` (``basis`` ``query_count``, ``measured`` or
+    ``measured_in_tests``) and ``measured`` (``workload`` names the workload
+    that ranks its loop owner, with ``basis`` ``measured_in_tests`` when only a
+    unit-test run does) say what the evidence found; the queue puts them first
     (``opportunity_rank.evidence_tier``) unless the cause was measured
     against its cold name, which keeps its static place.
     ``counter_evidence``: query counts stayed flat as the items grew. ``ran``:
@@ -599,7 +600,13 @@ def evidence_mark(facets: Mapping[str, Any], workloads: Sequence[str]) -> dict[s
     if state in ("counter_evidence", "ran"):
         return {"state": state, "basis": "query_count"}
     if state == "measured":
-        return {"state": state, "workload": facets["measured"]}
+        if facets.get("measured"):
+            return {"state": state, "workload": facets["measured"]}
+        return {
+            "state": state,
+            "basis": "measured_in_tests",
+            "workload": facets["measured_in_tests"],
+        }
     if workloads:
         return {"state": "not_exercised", "workloads": list(workloads)}
     return None

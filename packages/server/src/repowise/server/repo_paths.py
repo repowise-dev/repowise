@@ -1,13 +1,31 @@
 """Caller-supplied file paths, reduced to the repo-relative form the stores key on.
 
 Shared by every surface that matches a path by exact string equality: the MCP
-risk tool and the code-health routes.
+risk and symbol tools and the code-health routes.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+
+def repo_relative_path(path: str, repo_root: str) -> str | None:
+    """*path* relative to *repo_root* in POSIX form, or None when it lies outside.
+
+    A relative *path* resolves against the repo root, not the process cwd: the
+    MCP server's cwd is not the repo, so a relative path that happens to exist
+    there could resolve somewhere unrelated.
+    """
+    root_path = Path(repo_root).resolve()
+    try:
+        candidate = Path(path)
+        resolved = (candidate if candidate.is_absolute() else root_path / candidate).resolve()
+        return resolved.relative_to(root_path).as_posix()
+    except (OSError, ValueError):
+        # Resolution can fail for malformed paths; relative_to() rejects a
+        # path outside the repository.
+        return None
 
 
 def normalize_target_path(target: str, repo_root: str | None = None) -> str:
@@ -27,18 +45,7 @@ def normalize_target_path(target: str, repo_root: str | None = None) -> str:
     # root when we know it. Uses a prefix check on the normalized forms, so a
     # path that is already repo-relative is left untouched.
     if repo_root:
-        root_path = Path(repo_root).resolve()
-        try:
-            # Resolve against the repo root, not the process cwd: the MCP
-            # server's cwd is not the repo, so a relative path that happens
-            # to exist there could resolve somewhere unrelated.
-            candidate = Path(normalized)
-            resolved = (candidate if candidate.is_absolute() else root_path / candidate).resolve()
-            normalized = resolved.relative_to(root_path).as_posix()
-        except (OSError, ValueError):
-            # Resolution can fail for malformed paths; relative_to() also
-            # rejects absolute paths outside the selected repository.
-            pass
+        normalized = repo_relative_path(normalized, repo_root) or normalized
     # Strip a leading cwd-relative prefix and any leading slash left over.
     # A prefix strip, not lstrip: lstrip takes a character set, so it would
     # eat every leading dot (``.github/...`` -> ``github/...``).

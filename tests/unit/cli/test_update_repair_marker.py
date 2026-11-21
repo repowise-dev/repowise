@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.cli.commands.update_cmd.persistence import (
+from repowise.core.pipeline.incremental.repair import (
     _REPAIR_MAX_COMMITS,
     record_repair_marker,
     resolve_repair_base,
@@ -138,9 +138,7 @@ def test_non_ancestor_marker_is_given_up_on(linear_repo):
 def test_window_past_the_cap_is_given_up_on(linear_repo, monkeypatch):
     """The bound is what stops a step that fails every run from pinning the window open."""
     repo, shas = linear_repo
-    monkeypatch.setattr(
-        "repowise.cli.commands.update_cmd.persistence._REPAIR_MAX_COMMITS", 1
-    )
+    monkeypatch.setattr("repowise.core.pipeline.incremental.repair._REPAIR_MAX_COMMITS", 1)
     state = {"pending_repair": {"from_commit": shas[0], "steps": ["Git persist"]}}
     base, give_up = resolve_repair_base(repo, state, shas[1], shas[2])
     assert base == shas[1]

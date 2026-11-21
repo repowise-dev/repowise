@@ -937,7 +937,7 @@ never as zero. How evidence is collected and joined:
 | `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
 | `rank_top_n` | `10` | >= 1 | A measured function is ranked when it is among this many production functions with the most self time in its run (built-ins and libraries it calls included, waits excluded). |
 | `rank_min_samples` | `30` | >= 1 | Fewest self samples on a function for it to be ranked; below this the run has not enough samples in repo code. Runs that count no samples rank by their order alone. |
-| `lead_min_share` | `0.05` | 0-1 | Share of all samples a ranked function needs, in a workload class that may lead, to become a lead candidate from one run. |
+| `lead_min_share` | `0.025` | 0-1 | Self share of the run's time a ranked function needs to count as a measured cost from one run. |
 | `lead_min_lower_bound` | `0.02` | 0-1 | Lower bound of the 95% interval on that share a lead candidate needs from one run. |
 | `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
 <!-- END GENERATED settings:evidence -->
@@ -964,6 +964,20 @@ Cycle / Split File plans behind `repowise health --refactoring-targets`,
   `min_confidence` query parameter can only narrow further.
 - Per-path disables use the `health-rules.json` glob mechanism markers use.
   Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+## The `report:` block
+
+The repo report written after the first index: what Repowise found,
+in order, with a link and an agent prompt per item. The template version is
+free; with a configured provider one model call can write its prose.
+
+<!-- BEGIN GENERATED settings:report (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `first_look.enabled` | `true` | Write the repo report after the first index; the template version costs nothing. |
+| `first_look.llm` | `true` | Let one model call write the report's prose when a provider is configured and prose is on. |
+| `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
+<!-- END GENERATED settings:report -->
 
 ## The `assertions:` block
 

@@ -526,7 +526,8 @@ def _unconfirmed(item: Any) -> bool:
     Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
     growth must come from a loop outside a registry and a cold path
     (``opportunity_rank.growth_source``, absent on rows stored before it); and
-    with no known role, an entry point must reach it. Only a ``plan_ready``
+    with no known role, an entry point or a leading workload's run must reach
+    it (a unit-test run reaches everything it imports). Only a ``plan_ready``
     cause qualifies, and never one whose role or name is cold: a measurement
     keeps such a cause in the queue (:func:`_role_reason`,
     ``actionability.expected_reason``), it does not make it the work to lead
@@ -544,7 +545,8 @@ def _unconfirmed(item: Any) -> bool:
         return True
     if execution_role(item) in COLD_ROLES or facets.get("measured_overrides"):
         return True
-    return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
+    reached = facets.get("exposure") == "entry_reachable" or bool(facets.get("measured"))
+    return execution_role(item) == "unknown" and not reached
 
 
 def perf_confident_verdict(
