@@ -287,6 +287,26 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
 
 
+def count_eligible_file_pages(
+    parsed_files: list[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+) -> int:
+    """How many files clear every per-file gate of file-page selection.
+
+    Matches the ``len(scored)`` count that :func:`select_pages` computes and
+    caps against, including the ``score_file > 0.0`` floor.
+    """
+    git = git_meta_map or {}
+    return sum(
+        1
+        for p in parsed_files
+        if file_page_eligible(
+            p,
+            is_hotspot=bool(git.get(p.file_info.path, {}).get("is_hotspot", False)),
+        )
+    )
+
+
 def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
     """Whether *parsed* clears every per-file gate of file-page selection.
 
