@@ -17,6 +17,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import path_origin
+from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.symbol_spans import symbol_at
@@ -313,8 +315,10 @@ async def _anchor_symbol_hits(
     literal: dict[str, list] = {}
     prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
     homonyms["unindexed"] = sorted(question_ids - indexed_names)
+    guard: _TopicGuard | None = None
     if repo_root is not None:
-        guard = _TopicGuard(repo_root, hits, question, qids_lower)
+        origins = await _stored_origins(session_factory, repo_id, by_name)
+        guard = _TopicGuard(repo_root, hits, question, qids_lower, origins)
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal, homonyms["unindexed_lines"] = await _literal_holders(
@@ -326,6 +330,8 @@ async def _anchor_symbol_hits(
     chosen = await _choose_anchor_symbols(
         by_name, question_ids, _verified_dict, homonyms, question=question
     )
+    if guard is not None and guard.test_named:
+        chosen = _production_first(chosen, homonyms["union"], guard)
     if not chosen and not literal:
         return hits, homonyms
     await _anchor_chosen_symbols(hits, chosen, _verified_dict, prose=prose)
@@ -333,6 +339,38 @@ async def _anchor_symbol_hits(
         await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits, homonyms
+
+
+async def _stored_origins(session_factory: Any, repo_id: str, by_name: dict[str, list]) -> dict:
+    """Stored ``code_origin`` of the candidate defs' files; ``{}`` without an index.
+
+    The guard falls back to :func:`path_origin` for a file this leaves out.
+    """
+    if session_factory is None:
+        return {}
+    from repowise.core.evidence.ingest import load_origins
+
+    paths = {row.file_path for cands in by_name.values() for row in cands}
+    try:
+        async with get_session(session_factory) as session:
+            return await load_origins(session, repo_id, paths)
+    except Exception:  # an origin lookup must never cost the anchoring
+        return {}
+
+
+def _production_first(chosen: list, union: dict[str, list[dict]], guard: _TopicGuard) -> list:
+    """*chosen* without the test defs trusted on their own name when the
+    question also names a production def, anchored or in a union: beside one,
+    the test is an example of it, not the subject."""
+    paths = [row.file_path for row in chosen if _def_key(row) not in guard.test_named]
+    paths += [d["file_path"] for defs in union.values() for d in defs]
+    if not any(guard.origin(p) == "production" for p in paths):
+        return chosen
+    return [row for row in chosen if _def_key(row) not in guard.test_named]
+
+
+def _def_key(row) -> tuple[str, str, int]:
+    return (row.file_path, row.name, row.start_line)
 
 
 # A name defined in more files than this is generic (``get``, ``run``): no answer
@@ -374,12 +412,21 @@ class _TopicGuard:
     fixture shares its name with the local it stands in for. A def is trusted
     when its file is among the top retrieved files, when few production files
     write the identifier (it names one thing), or when its file name or owner
-    shares a word with the rest of the question. Off the top files, a test def
-    is trusted only by a question about tests.
+    shares a word with the rest of the question. Off the top files, a def in a
+    test file (by ``code_origin``) is trusted only by a question about tests,
+    or by its own name (:meth:`_names_a_test_type`).
     """
 
-    def __init__(self, root: Path, hits: list[dict], question: str, qids_lower: set[str]):
+    def __init__(
+        self,
+        root: Path,
+        hits: list[dict],
+        question: str,
+        qids_lower: set[str],
+        origins: dict[str, str] | None = None,
+    ):
         self.root = root
+        self._origins = origins or {}
         self.topical = {
             h["target_path"] for h in hits[:_ANCHOR_TOPICAL_FILES] if h.get("target_path")
         }
@@ -387,8 +434,13 @@ class _TopicGuard:
         self.topic_stems = _text_stems(question) - named
         self.about_tests = _is_test_query(question)
         self._scans: dict[str, tuple[list[dict], bool, list[str]]] = {}
-        #: Test defs trusted on their own name alone (``_names_a_test_type``).
-        self.test_named: set[int] = set()
+        #: ``(file_path, name, start_line)`` of test defs trusted on their own
+        #: name alone (:meth:`_names_a_test_type`).
+        self.test_named: set[tuple[str, str, int]] = set()
+
+    def origin(self, path: str) -> str:
+        """The stored ``code_origin`` of *path*, else :func:`path_origin`."""
+        return self._origins.get(path) or path_origin(path)
 
     async def _scan(self, token: str) -> tuple[list[dict], bool, list[str]]:
         """Every line writing *token*, scanned at most once per question."""
@@ -422,10 +474,10 @@ class _TopicGuard:
         if row.file_path in self.topical and _folds_case(token):
             return True
         # Before the count: a name only tests write counts zero production files.
-        if is_test_related_path(row.file_path) and not self.about_tests:
+        if self.origin(row.file_path) == "test" and not self.about_tests:
             if not await self._names_a_test_type(token):
                 return False
-            self.test_named.add(id(row))
+            self.test_named.add(_def_key(row))
             return True
         files = len({r["path"] for r in await self.lines(token)})
         if (files or self.about_tests) and files <= _SPECIFIC_TOKEN_MAX_FILES:
@@ -564,16 +616,12 @@ async def _trusted_over_topic(
             for c in cands
             if owner or _question_names_parent(c, question_ids) or await guard.trusts(name, c)
         ]
+        if guard.test_named and any(guard.origin(c.file_path) == "production" for c in trusted):
+            # A production def of the name leads; a test of the same name is
+            # never promoted over it.
+            trusted = [c for c in trusted if _def_key(c) not in guard.test_named]
         if trusted:
             kept[name] = trusted
-    # A test's own name anchors only when no production def the question names
-    # will: beside one, the test is an example of it, not the subject.
-    if any(len(cs) == 1 and id(cs[0]) not in guard.test_named for cs in kept.values()):
-        kept = {
-            name: rest
-            for name, cs in kept.items()
-            if (rest := [c for c in cs if id(c) not in guard.test_named])
-        }
     return kept
 
 

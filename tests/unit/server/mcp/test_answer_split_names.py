@@ -147,7 +147,10 @@ def test_a_generic_name_defined_in_many_files_is_not_split_checked() -> None:
 
 
 class _UntrustingGuard:
-    test_named: set[int] = set()
+    test_named = ()
+
+    def origin(self, path):
+        return "production"
 
     async def trusts(self, token, row):
         return False

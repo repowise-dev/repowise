@@ -67,6 +67,7 @@ def test_resolve_mode(query: str, mode: str | None, expected: str) -> None:
     [
         ("class Article", "Article"),
         ("class Article(", "Article"),
+        ("class Article.", "Article"),
         ("def get_queryset", "get_queryset"),
         ("pub fn new_client", "new_client"),
         ("export interface Props", "Props"),

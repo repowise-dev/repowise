@@ -595,7 +595,7 @@ _DECLARATION_RE = re.compile(
     r"sealed|open|async|unsafe|default|data|partial)\s+)*"
     r"(?:class|def|func|fn|function|interface|struct|type|enum|trait|impl|object|"
     r"record|protocol|module|mod|namespace|union|typedef)\s+"
-    r"([A-Za-z_$][\w$]*)\s*[:({<\[]?\s*$"
+    r"([A-Za-z_$][\w$]*)\s*[:({<\[.;]?\s*$"
 )
 
 

@@ -2587,3 +2587,28 @@ def test_a_name_served_from_the_spare_pool_is_not_called_filtered():
     assert _filtered_names(plan, SimpleNamespace(symbols=[], spare=[row]), ["isLockStale"]) is None
     hidden = _filtered_names(plan, SimpleNamespace(symbols=[], spare=[]), ["isLockStale"])
     assert hidden == ("kind=test", ["isLockStale"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["class RetryTransport", "class RetryTransport.", "def RetryTransport("]
+)
+async def test_a_declaration_query_looks_up_the_indexed_name(setup_mcp, query):
+    # Through the real name loader: the keyword is dropped and the name is looked up.
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase(query)
+    assert result.get("mode") == "symbol", result
+    assert result["results"][0]["name"] == "RetryTransport"
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_keyword_before_an_unindexed_word_stays_a_search(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    await _seed_symbol("RetryTransport")
+
+    result = await search_codebase("class Unheardof")
+    assert result.get("mode") != "symbol"
