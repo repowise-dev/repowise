@@ -62,6 +62,7 @@ For a map of every layer and how they feed each other, read
 | [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and functions keep getting fixed, and how recently |
 | [layers/SECURITY.md](layers/SECURITY.md) | The local scan: 22 pattern kinds plus a symbol-name scan, history scanning for secrets, and its limits |
 | [start/CI.md](start/CI.md) | Gate pull requests with the GitHub Action or the GitLab template |
+| [start/OFFLINE.md](start/OFFLINE.md) | Keyless and air-gapped runs, local semantic search with Ollama, and Repowise in a benchmark harness |
 
 ### Know what landed, and who wrote it
 

@@ -72,6 +72,7 @@ uv tool install repowise          # needs Python 3.11+ and Git. Or: pipx install
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
                                   # answers and docs: run repowise generate (one command, no re-index)
+                                  # local semantic search: ollama pull embeddinggemma && repowise reindex --embedder ollama
 repowise serve                    # local dashboard (needs Node 20+; first run downloads the UI)
 ```
 

@@ -8,8 +8,8 @@ Repowise supports Codex in three separate ways:
 
 These features use project-local files. `repowise init --codex` writes under the repository, not to the global `config.toml` in `$CODEX_HOME` (default `~/.codex`).
 
-Codex loads the project `.codex/config.toml` only for a trusted project: run `codex` once in the repo and trust the folder, or use `codex exec --trust`.
-Codex also asks you to review the repowise hooks once before it runs them.
+Codex loads the project `.codex/config.toml` only for a trusted project: run `codex` once in the repo and trust the folder, or use `codex exec --trust`, then restart Codex. `codex mcp list` or `/mcp` shows `repowise` once the project is trusted.
+Codex also asks you to review the repowise hooks once before it runs them; `/hooks` lists them.
 
 For a short smoke walkthrough, see [examples/codex/](../../examples/codex/).
 
@@ -50,6 +50,12 @@ hooks = true
 `required = true` makes Codex wait for the server before the first turn. Without it the first turn can start while the server is still booting, before the Repowise tools are in the tool catalog. The cost is that Codex does not start when `repowise` cannot be launched; `repowise doctor` reports that case with the fix. `startup_timeout_sec` is the ceiling for a slow cold start; a healthy server answers in a few seconds.
 
 `repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table.
+
+### Keys and environment
+
+Codex starts `repowise mcp` with a cleared environment: only system variables such as `PATH` and `HOME`, plus the names in the server's `env_vars`, reach it. The repowise entry carries an `env_vars` list with every provider's key and base-URL variable and the repowise selection variables (`REPOWISE_EMBEDDER`, `OLLAMA_EMBEDDING_MODEL` and the like), so a key exported in the shell that starts Codex reaches the server. Names only, never values, so `.codex/config.toml` stays safe to commit. Names you add to `env_vars` yourself are kept.
+
+Keys in `.repowise/.env` (gitignored) work as well: `repowise mcp` reads that file at startup.
 
 The MCP server uses `repowise mcp` without a path. In no-path mode, Repowise walks upward from the current directory to the nearest initialized `.repowise` repository.
 
