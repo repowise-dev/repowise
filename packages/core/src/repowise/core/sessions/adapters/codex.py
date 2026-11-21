@@ -9,11 +9,11 @@ JSONL line into the shared session ``Event`` shape used by the miners.
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, ClassVar
 
+from repowise.core.codex_home import codex_home
 from repowise.core.fs_walk import iter_glob
 from repowise.core.sessions.adapters.base import (
     INTENT_EDIT_CALLS,
@@ -26,17 +26,6 @@ from repowise.core.sessions.adapters.base import (
 from repowise.core.sessions.adapters.claude_code import parse_timestamp
 from repowise.core.sessions.adapters.registry import register_adapter
 from repowise.core.sessions.events import Event, ToolResult, ToolUse
-
-
-def codex_home() -> Path:
-    """Codex's home directory: ``$CODEX_HOME`` when set, else ``~/.codex``.
-
-    Codex reads its config, hooks, prompts and sessions from here, so every
-    path repowise reads or writes on the user's Codex side starts at it.
-    """
-    value = os.environ.get("CODEX_HOME", "").strip()
-    return Path(value).expanduser().resolve() if value else Path.home() / ".codex"
-
 
 _TOOL_CALL_RE = re.compile(r"tools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')

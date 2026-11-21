@@ -485,7 +485,7 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
 
     codex = CodexAdapter()
     if not codex.detect():
-        from repowise.core.sessions.adapters.codex import codex_home
+        from repowise.core.codex_home import codex_home
 
         console.print(f"  [dim]✗[/dim] codex: not detected (no {codex_home()})")
         return

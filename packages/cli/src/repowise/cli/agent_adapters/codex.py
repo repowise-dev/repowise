@@ -100,7 +100,7 @@ class CodexAdapter(AgentAdapter):
     replaces_tool_output: ClassVar[bool] = False
 
     def detect(self) -> bool:
-        from repowise.core.sessions.adapters.codex import codex_home
+        from repowise.core.codex_home import codex_home
 
         return codex_home().is_dir()
 
