@@ -364,12 +364,14 @@ _DECLARATION_HEAD = re.compile(
     # A pattern holding a default (``{ a = load() }``) is not read: the default is a use.
     r"(?:(?:[\w$:]+\s*)?\{[^}=(]*\}|[\[(][^\])=(]*[\])]|[\w$]+(?:\s*,\s*[\w$]+)*)?"
 )
+# Type parameters, one level of nesting deep: ``<T : Comparable<T>>``.
+_GENERICS = r"<(?:[^<>]|<[^<>]*>)*>"
 # Kotlin's ``fun``, ``val`` and ``object`` heads: past type parameters and an
 # extension receiver (``fun <T> List<T>.second()``), which names a type the
 # function does not declare.
 _KOTLIN_HEAD = re.compile(
     rf"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:{_MODIFIERS})\s+)*(?:fun|val|var|object)\s+"
-    r"(?P<receiver>(?:<[^>]*>\s*)?(?:[\w$]+(?:<[^>]*>)?\??\.)?)(?P<names>[\w$]+)"
+    rf"(?P<receiver>(?:{_GENERICS}\s*)?(?:[\w$]+(?:{_GENERICS})?\??\.)?)(?P<names>[\w$]+)"
 )
 # A C or Java declaration led by its type: ``static int parse(``, ``public
 # List<Foo> items =``, ``char *name;``. The name follows the type; a line led
@@ -389,13 +391,17 @@ _C_TYPE_WORDS = frozenset(
 )
 
 
-def _reads_as_type(head: re.Match[str]) -> bool:
+def _reads_as_type(head: re.Match[str], line: str) -> bool:
     """Whether a typed head's first word is a type: after a modifier, a builtin
     or ``_t`` name, a capitalised name (``List``, ``java.util.Map``), or one
-    spelled with generics, an array or a pointer."""
+    spelled with generics, an array or a pointer. Two bare words also need
+    the line to end as a declaration does, so prose (``Returns foo(x) when``)
+    is no declaration."""
     if head.group("mods") or head.group("shape").strip():
         return True
     word = head.group("type").rsplit(".", 1)[-1]
+    if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
+        return False
     return (
         word in _C_TYPE_WORDS
         or word.endswith("_t")
@@ -416,7 +422,7 @@ def _declares(pattern: re.Pattern[str]) -> Callable[[str], bool]:
             named = _KOTLIN_HEAD.match(line)
             if named is None:
                 named = _TYPED_HEAD.match(line)
-                if named is None or not _reads_as_type(named):
+                if named is None or not _reads_as_type(named, line):
                     return False
             start, end = named.span("names")
             return any(start <= m.start() < end for m in pattern.finditer(line))

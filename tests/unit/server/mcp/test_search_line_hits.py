@@ -1073,6 +1073,9 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
         ("unless foo(x)", r"foo", "match"),
         ("size_t foo = 0;", r"foo", "definition"),
         ("Store foo(int x) {", r"foo", "definition"),
+        ("fun <T : Comparable<T>> sortAll(items: List<T>) {", r"sortAll", "definition"),
+        ("    Returns foo(x) when the cache is warm.", r"foo", "match"),
+        ("obj. foo(1);", r"foo", "match"),
         ("x := make(1)", r"make\(", "match"),
     ],
 )
