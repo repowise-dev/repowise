@@ -1186,23 +1186,30 @@ async def _repo_line_rows(
             return ([], [no_source_reason()], True) if nodes or literal else None
         root = Path(served_root(repository, ctx.path))
         # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
-        token = _HOLDING_MEMO.set({})
-        try:
-            sets = None if len(nodes) > MAX_SYMBOLS else [
-                await reference_edit_set(session, repository.id, root, n) for n in nodes
-            ]
-            names = sorted({_bare_name(n) for n in nodes})
-            # A name past MAX_SYMBOLS serves definitions only and already says
-            # it is not every match, so it pays for no extra grep.
-            unindexed = (
-                await _unindexed_holders(session, repository.id, root, names, spec) if sets else []
-            )
-        finally:
-            _HOLDING_MEMO.reset(token)
+        sets, names, unindexed = await _symbol_sources(session, repository.id, root, nodes, spec)
     served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
     if served is not None and unindexed:
         served = await _with_unindexed_definitions(served, root, names, unindexed)
     return None if served is None else (*served, not sets)
+
+
+async def _symbol_sources(
+    session: Any, repo_id: str, root: Path, nodes: list[GraphNode], spec: Any
+) -> tuple[list[dict[str, Any]] | None, list[str], list[str]]:
+    """``(edit sets, names, unindexed files holding them)`` for *nodes*; the
+    sets are ``None`` past ``MAX_SYMBOLS``. One git grep per name serves both."""
+    token = _HOLDING_MEMO.set({})
+    try:
+        sets = None if len(nodes) > MAX_SYMBOLS else [
+            await reference_edit_set(session, repo_id, root, n) for n in nodes
+        ]
+        names = sorted({_bare_name(n) for n in nodes})
+        # A name past MAX_SYMBOLS serves definitions only and already says it
+        # is not every match, so it pays for no extra grep.
+        unindexed = await _unindexed_holders(session, repo_id, root, names, spec) if sets else []
+    finally:
+        _HOLDING_MEMO.reset(token)
+    return sets, names, unindexed
 
 
 async def _with_unindexed_definitions(
