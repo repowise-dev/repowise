@@ -19,11 +19,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from ..upgrade import rehydrate_graph_builder
+
+if TYPE_CHECKING:
+    from ...analysis.doc_drift.models import DocDriftReport
 
 logger = structlog.get_logger(__name__)
 
@@ -32,6 +35,7 @@ __all__ = [
     "attach_stored_commit_shas",
     "rehydrate_dead_code_report",
     "rehydrate_decision_report",
+    "rehydrate_doc_drift_report",
     "rehydrate_git_meta_map",
     "rehydrate_graph_builder",
     "rehydrate_health_report",
@@ -278,6 +282,67 @@ async def rehydrate_health_report(session: Any, repo_id: str) -> Any:
         ),
         repo_function_mod_p80=getattr(repo, "function_mod_p80", None),
         refactoring_suggestions=suggestions,
+    )
+
+
+async def rehydrate_doc_drift_report(session: Any, repo_id: str) -> DocDriftReport:
+    """Read the complete stored findings and references after an update.
+
+    The scan's timestamp, counters, renderer and documents were not stored.
+    Leave those unknown, and clear both write scopes: this report contains
+    every stored row, including findings carried by a partial symbol pass.
+    Raises on a DB error so the caller can report unavailable products.
+    """
+    from repowise.core.analysis.doc_drift import summarize_confidence
+    from repowise.core.analysis.doc_drift.models import (
+        DocDriftFindingData,
+        DocDriftReport,
+        DriftKind,
+        ResolvedDocReference,
+    )
+    from repowise.core.persistence.crud import get_doc_drift_findings, get_doc_drift_references
+
+    rows = await get_doc_drift_findings(session, repo_id)
+    findings = [
+        DocDriftFindingData(
+            kind=DriftKind(row.kind),
+            file_path=row.file_path,
+            line_number=row.line_number,
+            target=row.target,
+            confidence=row.confidence,
+            reason=row.reason,
+            origin=row.origin,
+            evidence=json.loads(row.evidence_json or "[]"),
+            raw=row.raw,
+            context=row.context,
+            suggestion=row.suggestion or "",
+            suggestion_basis=row.suggestion_basis or "",
+        )
+        for row in rows
+    ]
+    references = [
+        ResolvedDocReference(
+            doc_path=row.document_path,
+            target_path=row.target_path,
+            kind=DriftKind(row.kind),
+            line=row.line_number,
+            section=row.section,
+        )
+        for row in await get_doc_drift_references(session, repo_id)
+    ]
+    return DocDriftReport(
+        repo_id=repo_id,
+        analyzed_at=None,
+        findings=findings,
+        total_findings=len(findings),
+        confidence_summary=summarize_confidence(findings),
+        resolved_references=references,
+        documents_scanned=None,
+        references_checked=None,
+        verdict_summary={},
+        anchor_renderer=None,
+        hidden_below_threshold=None,
+        suppressed=None,
     )
 
 
