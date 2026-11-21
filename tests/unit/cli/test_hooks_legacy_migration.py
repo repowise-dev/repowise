@@ -10,7 +10,9 @@ new marker block.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -239,3 +241,39 @@ class TestInstalledHookScript:
         assert ".update.log" in _HOOK_SCRIPT
         # And no silent /dev/null sink — that was the original bug.
         assert "> /dev/null 2>&1" not in _HOOK_SCRIPT or ">> \"$LOG\"" in _HOOK_SCRIPT
+
+    def test_line_after_block_runs_when_state_json_is_missing(self, git_repo):
+        from repowise.cli.hooks import _HOOK_SCRIPT
+
+        sh = shutil.which("sh") or shutil.which("bash")
+        if sh and Path(sh).parent.name.lower() in ("system32", "windowsapps"):
+            sh = None
+        if not sh:
+            git = shutil.which("git")
+            if git:
+                git_sh = Path(git).parent.parent / "bin" / "sh.exe"
+                if git_sh.is_file():
+                    sh = str(git_sh)
+        if not sh:
+            pytest.skip("no POSIX sh to run the hook under")
+
+        (git_repo / "init.txt").write_text("hello\n", encoding="utf-8")
+        subprocess.run(["git", "add", "init.txt"], cwd=git_repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "init"],
+            cwd=git_repo,
+            check=True,
+        )
+
+        hook = git_repo / ".git" / "hooks" / "post-commit"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        after_marker = git_repo / "after.ran"
+        hook.write_text(
+            f"#!/bin/sh\n{_HOOK_SCRIPT}echo after > '{after_marker.as_posix()}'\n",
+            encoding="utf-8",
+        )
+        assert not (git_repo / ".repowise" / "state.json").exists()
+
+        subprocess.run([sh, str(hook)], cwd=git_repo, check=True, timeout=30)
+        assert after_marker.exists()
+        assert after_marker.read_text(encoding="utf-8").strip() == "after"
