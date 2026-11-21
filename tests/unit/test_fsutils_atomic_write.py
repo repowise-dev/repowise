@@ -19,10 +19,15 @@ def test_a_directory_that_refuses_new_files_raises_at_once(monkeypatch, tmp_path
 
     def _refuse(path: str, *_args: object) -> int:
         calls.append(path)
+        if len(calls) > 3:
+            # The stdlib retry loop, cut short so a regression fails instead of hanging.
+            raise RuntimeError("retried a refused directory")
         raise PermissionError(13, "Access is denied", path)
 
     monkeypatch.setattr(fsutils.os, "open", _refuse)
     monkeypatch.setattr(fsutils.os, "access", lambda *_a, **_k: True)
+    # mkstemp retries only on Windows; take that path on every runner.
+    monkeypatch.setattr(fsutils.os, "name", "nt")
 
     with pytest.raises(PermissionError):
         atomic_write_text(tmp_path / "config.json", "{}")
