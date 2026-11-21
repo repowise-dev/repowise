@@ -348,6 +348,18 @@ def test_a_secret_is_shown_by_kind_and_place_only(repo, tmp_path):
     assert read_entries(baseline) == [{**old, "snippet": ""}]
 
 
+def test_the_trim_never_keeps_a_secrets_characters_without_their_marker():
+    from repowise.core.analysis.security_scan import masked_snippet, shown_snippet
+
+    value = "Zq9XjW7vK3pLm2Nb"  # made up for this test
+    # Every column the 120-character cut can land on around the redaction.
+    for pad in range(80, 130):
+        snippet = masked_snippet(f"run({'a' * pad}); password = '{value}'")
+        shown = shown_snippet("os_system", snippet)
+        for at in range(len(value) - 2):
+            assert value[at : at + 3] not in shown, pad
+
+
 def test_annotations_are_capped_escaped_and_skip_the_baseline():
     rows = [_row(path=f"src/a,b:{i}.py", snippet=f"eval({i})") for i in range(12)]
     rows.append(_row("weak_hash", "low", snippet="md5"))

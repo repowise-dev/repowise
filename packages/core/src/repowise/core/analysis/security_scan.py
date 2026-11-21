@@ -44,6 +44,7 @@ from repowise.core.analysis.security.credentials import (
     _CREDENTIAL_EXACT_PLACEHOLDERS,
     _CREDENTIAL_KINDS,
     _CREDENTIAL_SUBSTRING_PLACEHOLDERS,
+    _KEPT,
     _KEY_NAME_VALUE,
     _LONG_DIGIT_RUN,
     _MARKER,
