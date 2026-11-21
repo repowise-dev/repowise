@@ -272,9 +272,9 @@ def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
     Only our own files count (:func:`~repowise.core.code_origin.path_origin`
     production or test): a vendored or example ``test_*.py`` is no reason to
     narrow. A unit that keeps a ``tests/`` directory inside a package as well
-    (``pkg/tests/``) is left to pytest, so those suites keep running.
-    Ceiling: a test file inside a package outside any tests directory is left
-    out once ``tests`` is named.
+    (``pkg/tests/``), or a test file at its root, is left to pytest, so those
+    tests keep running. Ceiling: a test file inside a package outside any
+    tests directory is left out once ``tests`` is named.
     """
     roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
     collected = [p for p in paths if p.endswith(".py") and roots.may_collect_name(p)
@@ -283,7 +283,7 @@ def _tests_dir(paths: list[str], files: dict[str, str]) -> str:
         outside = [p for p in collected if not p.startswith(f"{base}/")]
         if len(outside) == len(collected) or not outside:
             continue
-        if any(f"/{d}/" in f"/{p}" for p in outside for d in ("tests", "test")):
+        if any("/" not in p or f"/{d}/" in f"/{p}" for p in outside for d in ("tests", "test")):
             return ""
         return f" {base}"
     return ""
@@ -445,18 +445,44 @@ def _configures_pytest(files: dict[str, str]) -> bool:
     return "" in read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES).by_dir
 
 
+def _installs_xdist(paths: list[str], files: dict[str, str]) -> bool:
+    """Whether the unit's printed install brings pytest-xdist.
+
+    Read from the requirements files the pip line names and the pyproject
+    tables each tool installs by default: the project's dependencies, the
+    test or dev extra pip installs, uv's dev and test groups, Poetry's groups
+    and PDM's dev dependencies. Ceiling: a Hatch environment's dependencies
+    are not read, so a Hatch unit never gets the flag.
+    """
+    toml = parse_toml_or_none(files.get("pyproject.toml", "")) or {}
+    project = toml.get("project") or {}
+    extras = project.get("optional-dependencies") or {}
+    groups = toml.get("dependency-groups") or {}
+    tool = toml.get("tool") or {}
+    poetry = tool.get("poetry") or {}
+    chosen = _first(_keys(extras), (*_TEST_SETS, "dev"))
+    tables = [
+        project.get("dependencies"),
+        extras.get(chosen) if chosen else None,
+        *(groups.get(g) for g in ("dev", *_TEST_SETS)),
+        poetry.get("dev-dependencies"),
+        *((g or {}).get("dependencies") for g in (poetry.get("group") or {}).values() if isinstance(g, dict)),
+        (tool.get("pdm") or {}).get("dev-dependencies"),
+        *(files.get(p, "") for p in paths if _TEST_REQUIREMENTS.fullmatch(p)),
+    ]
+    return any(re.search(r"pytest[-_]xdist", json.dumps(t)) for t in tables if t)
+
+
 def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
     args = _pytest_args(paths, files)
-    # A declared pytest-xdist spreads the coverage run over every core (pytest-cov
-    # combines the workers' data), unless the config already picks a worker count.
-    # Ceiling: read from pyproject.toml and the requirements files the install
-    # names, not which extra or group of the pyproject declares it.
-    installed = "\n".join(files.get(p, "") for p in ("pyproject.toml", *(p for p in paths if _TEST_REQUIREMENTS.fullmatch(p))))
-    xdist = bool(re.search(r"pytest[-_]xdist", installed)) and not re.search(
+    # pytest-xdist where the printed install brings it spreads the coverage run over
+    # every core (pytest-cov combines the workers' data), unless the config already
+    # picks a worker count.
+    xdist = _installs_xdist(paths, files) and not re.search(
         r"(?<![\w-])(?:-n|--numprocesses)(?:=|\s|\d)", texts)
     tool, setup, base, installs = _python_tool(root, paths, files, args + (" -n auto" if xdist else ""))
     notes: list[str] = []

@@ -786,6 +786,7 @@ def test_a_tests_directory_is_named_when_other_test_files_would_be_collected():
     [
         "services__tests__test_billing_dot_py",  # a package's own suite keeps running
         "vendor__lib__test_lib_dot_py",  # a vendored file is not ours
+        "test_smoke_dot_py",  # a root test file keeps running
     ],
 )
 def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other):
@@ -796,6 +797,21 @@ def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other
 def test_xdist_named_only_outside_the_install_adds_no_flag():
     backend = _backend(**{"tox_dot_ini": "[testenv]\ndeps = pytest-xdist\n"})
     assert "-n auto" not in backend.test
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "flag"),
+    [
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest-xdist"]\n', True),
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest"]\nperf = ["pytest-xdist"]\n', False),
+        ('[dependency-groups]\ndev = ["pytest-xdist"]\n', True),
+        ('[dependency-groups]\nlint = ["pytest-xdist"]\n', False),
+        ('[tool.poetry.group.dev.dependencies]\npytest-xdist = "*"\n', True),
+    ],
+)
+def test_xdist_counts_only_where_the_install_brings_it(pyproject, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest\n", "pyproject_dot_toml": pyproject})
+    assert ("-n auto" in backend.test) is flag
 
 
 def test_pytests_own_testpaths_keep_deciding():

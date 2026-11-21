@@ -64,8 +64,8 @@ read, a program with no profiler flag).
   (`app = FastAPI()`) is served under uvicorn and the profiler (`serve
   app.main:app`). Its `reason` asks for representative requests while it runs,
   then Ctrl-C; it is named under `next_call.optional`, never a step.
-- A Python coverage command adds `-n auto` when the unit declares
-  pytest-xdist and its config sets no worker count. When two requirements
+- A Python coverage command adds `-n auto` when the printed install brings
+  pytest-xdist and the config sets no worker count. When two requirements
   files pin a package to different versions, each installs on its own, the
   test requirements last.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and its ingest
