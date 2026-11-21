@@ -68,18 +68,46 @@ def test_a_call_through_a_field_reads_the_field(tmp_path: Path) -> None:
 
 
 def test_a_base_that_does_not_resolve_is_not_matched_bare(tmp_path: Path) -> None:
-    # A field set from a constructor argument, and a static field read through
-    # `this`: neither is a constant this can settle, so the call is left out
-    # rather than read as `/generate`.
+    # A field set from a constructor argument is no constant this can settle,
+    # so the call is left out rather than read as `/plans`.
     text = (
         "class Plans {\n"
-        "  private static readonly BASE_URL = '/api/v1/study-plan';\n"
         "  constructor(private baseUrl: string) { this.baseUrl = baseUrl; }\n"
-        "  static generate() { return apiRequest(`${this.BASE_URL}/generate`, { method: 'POST' }); }\n"
         "  list() { return apiRequest(`${this.baseUrl}/plans`); }\n"
         "}\n"
     )
     assert _paths(tmp_path, "src/plans.ts", text) == set()
+
+
+def test_a_static_method_reads_this_as_the_class(tmp_path: Path) -> None:
+    # In a static method `this` is the class, so `this.BASE_URL` is the static field.
+    text = (
+        "class Plans {\n"
+        "  private static readonly BASE_URL = '/api/v1/study-plan';\n"
+        "  static generate() { return apiRequest(`${this.BASE_URL}/generate`, { method: 'POST' }); }\n"
+        "  static async list(): Promise<Plan[]> {\n"
+        "    return fetch(`${this.BASE_URL}/plans`);\n"
+        "  }\n"
+        "}\n"
+    )
+    assert _paths(tmp_path, "src/plans.ts", text) == {
+        ("POST", "/api/v1/study-plan/generate"),
+        ("GET", "/api/v1/study-plan/plans"),
+    }
+
+
+def test_this_reads_static_fields_only_in_static_members(tmp_path: Path) -> None:
+    # `this.BASE` in an instance method is no static field (it is undefined at
+    # run time), and an instance field is not what a static method reads.
+    text = (
+        "class Api {\n"
+        "  static BASE = '/api';\n"
+        "  private root = '/root';\n"
+        "  list() { return fetch(`${this.BASE}/items`); }\n"
+        "  static all() { return fetch(`${this.root}/all`); }\n"
+        "}\n"
+    )
+    assert _paths(tmp_path, "src/api.ts", text) == set()
 
 
 def test_a_field_read_from_the_environment_stays_the_host(tmp_path: Path) -> None:
@@ -107,7 +135,45 @@ def test_only_the_requested_template_is_the_prefix(tmp_path: Path) -> None:
     )
     paths = {p for _m, p in _paths(tmp_path, "src/b.ts", text)}
     assert "/api/v1/a" in paths
-    assert not paths & {"/debug/a", "/failed/a", "/seen/a", "/other/a", "/a"}
+    assert not paths & {"/debug/a", "/failed/a", "/seen/a", "/other/a", "/a", "/api/v1"}
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "async function apiFetch(endpoint: string) {\n  return baseFetch(`/api/v1${endpoint}`);\n}\n",
+        "export const apiFetch = (endpoint: string) => fetch(`/api/v1${endpoint}`);\n",
+        "export const apiFetch = async (endpoint: string, init?: RequestInit): Promise<Response> => {\n"
+        "  const res = await fetch(`/api/v1${endpoint}`, init);\n  return res;\n};\n",
+        "class Client {\n  async apiFetch(endpoint: string) {\n"
+        "    return retry(() => axios.get(`/api/v1${endpoint}`));\n  }\n}\n",
+    ],
+)
+def test_a_wrappers_own_request_is_no_route(tmp_path: Path, definition: str) -> None:
+    # The path is the caller's: the wrapper's inner call names only its prefix.
+    text = "import axios from 'axios';\nimport { baseFetch } from './base';\n" + definition
+    assert "/api/v1" not in {p for _m, p in _paths(tmp_path, "src/w.ts", text)}
+
+
+def test_a_trailing_hole_that_is_no_parameter_still_reads_its_path(tmp_path: Path) -> None:
+    # A query string built in the body, a path parameter segment, a name some
+    # other function takes, and a condition all keep their route.
+    text = (
+        "export function list(page: number) {\n"
+        "  const qs = `?page=${page}`;\n"
+        "  return fetch(`/api/repos${qs}`);\n"
+        "}\n"
+        "export function getUser(id: string) { return fetch(`/api/users/${id}`); }\n"
+        "export function other(qs: string) { return qs; }\n"
+        "export const more = () => fetch(`/api/more${qs}`);\n"
+        "if (qs) { fetch(`/api/cond${qs}`); }\n"
+    )
+    assert {p for _m, p in _paths(tmp_path, "src/l.ts", text)} == {
+        "/api/repos",
+        "/api/users/{param}",
+        "/api/more",
+        "/api/cond",
+    }
 
 
 @pytest.mark.parametrize(
@@ -131,7 +197,7 @@ def test_a_wrapper_prefix_that_cannot_be_read_leaves_the_call_out(
         + definition
         + "export const a = () => apiRequest('/users/list');\n"
     )
-    # Only the wrapper's own inner call is read; the call through it is not.
+    # The call through the wrapper is not read on its bare path.
     assert not {p for _m, p in _paths(tmp_path, "src/c.ts", text) if p.endswith("/users/list")}
 
 

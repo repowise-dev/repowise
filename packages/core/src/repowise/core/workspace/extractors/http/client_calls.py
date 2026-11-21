@@ -174,6 +174,7 @@ def consumer_contracts(
             line=line_at(ctx.content, m.offset),
             origin=m.origin,
             bound_bases=bound_bases,
+            offset=m.offset,
         )
         if c is not None:
             out.append(c)

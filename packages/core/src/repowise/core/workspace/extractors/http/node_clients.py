@@ -383,34 +383,36 @@ class FieldScope:
     """The class fields in scope at a call, settled into the file's strings.
 
     Only the innermost class holding the call is in scope, so a field of one
-    class never folds into another's URL. Holes are allowed, and a field built
-    on another (``users = `${this.base}/users```) resolves on the second
-    round, once the first has settled ``this.base``.
+    class never folds into another's URL, and inside a static member only the
+    class's static fields are. Holes are allowed, and a field built on
+    another (``users = `${this.base}/users```) resolves on the second round,
+    once the first has settled ``this.base``.
     """
 
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
-        self._current: ClassFields | None = None
+        self._current: dict[str, str] | None = None
 
     def raw(self, name: str) -> str | None:
         """The source text the class entered last sets field *name* (``this.x``) to."""
-        return self._current.fields.get(name) if self._current else None
+        return self._current.get(name) if self._current else None
 
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        if found is self._current:
+        fields = found.fields_at(pos) if found is not None else None
+        if fields is self._current:
             return
         settled = self._strings.settled
-        for name in self._current.fields if self._current else ():
+        for name in self._current or ():
             settled.pop(name, None)
-        self._current = found
-        if found is None:
+        self._current = fields
+        if not fields:
             return
         for _ in range(2):
-            for name, rhs in found.fields.items():
+            for name, rhs in fields.items():
                 text = self._strings.text(rhs)
                 if text is not None:
                     settled[name] = text
@@ -463,6 +465,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
             client=client.library.name,
             line=line_at(content, m.start()),
             origin=ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.CLIENT_CALL,
+            offset=m.start(),
         )
         if c is not None:
             out.append(c)

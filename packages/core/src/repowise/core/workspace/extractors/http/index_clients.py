@@ -229,7 +229,7 @@ def extract_consumers(
     # (concrete literal) and unresolved. The set of wrappers proven to take a
     # path is only complete once the whole file has been scanned, so the
     # unresolved tally is settled afterwards.
-    resolved: list[tuple[str, str, str, int, ContractOrigin]] = []  # + origin
+    resolved: list[tuple[str, str, str, int, ContractOrigin, int]] = []  # + origin, offset
     unresolved_by_callee: dict[str, int] = {}
     path_taking: set[str] = set()
     # Calls whose argument list would not parse. Kept apart from the
@@ -281,7 +281,7 @@ def extract_consumers(
             continue
         path_taking.add(name)
         method = method_from_options([a.strip() for a in split_top_level(rest, ",")]) or "GET"
-        resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT))
+        resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT, m.start()))
 
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
     # wrapper confirmation applies — the binding already proves the receiver.
@@ -308,17 +308,17 @@ def extract_consumers(
             client_unresolved += 1
             continue
         origin = ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.TYPED_CLIENT
-        resolved.append((client.library, url, verb.upper(), line, origin))
+        resolved.append((client.library, url, verb.upper(), line, origin, m.start()))
 
     from ..from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
 
     out: list[Contract] = []
-    for callee, url, method, line, origin in resolved:
+    for callee, url, method, line, origin, offset in resolved:
         # Higher than the regex dialect's 0.65/0.75: the callee is a confirmed
         # sink-reaching wrapper and the URL is a whole literal argument, not a
         # string that happened to sit next to a parenthesis.
         contract = build_consumer_contract(
-            ctx, method=method, url=url, client=callee, line=line, origin=origin
+            ctx, method=method, url=url, client=callee, line=line, origin=origin, offset=offset
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
