@@ -81,7 +81,7 @@ default; add a model whenever you like from the dashboard or with
 
 | What | Where | When |
 |---|---|---|
-| MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
+| MCP server entry | `.vscode/mcp.json` (plus `.vscode/extensions.json`); a project `.mcp.json` only when the global Claude Code entry below does not serve this repo | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
 | Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default, added when absent; never moved off another repo it serves. One whose repo no longer exists is re-pointed here (the plan screen shows the move and `s` keeps it) |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |

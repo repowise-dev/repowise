@@ -15,8 +15,8 @@ co-change), code health, dead code, change risk, documentation built from
 code, decisions from markers and ADRs, and full-text and symbol search. It
 makes zero model calls, even when an API key is set in the environment.
 
-A keyless index of envoy, about a million lines of C++, cost $0.07 of cloud
-compute. A 50-file repository indexes in about 13 seconds on a laptop.
+A keyless index of envoy, about 1M lines of C++, built in about 10 minutes
+for $0.07 of cloud compute.
 
 Every MCP tool works on a keyless index. `get_answer` returns ranked, cited
 evidence from the index (marked `"degraded": "no-llm-provider"`); a model
@@ -106,8 +106,12 @@ To run Repowise as one arm of a benchmark:
    ```
 
 3. Add local semantic search with the [Ollama steps](#local-semantic-search-with-ollama).
+   `repowise status --format json` should show
+   `index_scope.search.semantic: "available"`, and `search_codebase` results
+   list `vector` in their `sources`.
 4. Give the agent the stdio server. `repowise mcp /path/to/repo` serves that
-   index; `repowise agents print-config claude-code` prints a ready entry.
+   index; `repowise agents print-config claude-code` prints a ready
+   `mcpServers` entry for the current repository.
    Pin the tool list with `--tools` (for example `--tools standard`) so every
    trial sees the same tools.
 5. A model run is optional. Price it first with

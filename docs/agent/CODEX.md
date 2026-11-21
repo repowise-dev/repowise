@@ -49,13 +49,13 @@ hooks = true
 
 `required = true` makes Codex wait for the server before the first turn. Without it the first turn can start while the server is still booting, before the Repowise tools are in the tool catalog. The cost is that Codex does not start when `repowise` cannot be launched; `repowise doctor` reports that case with the fix. `startup_timeout_sec` is the ceiling for a slow cold start; a healthy server answers in a few seconds.
 
-`repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table. Versions before 0.62 write `startup_timeout_sec = 20` and no `required`.
+`repowise agents add --target=codex` rewrites an entry written by an older version to this shape and keeps any keys you added to the table.
 
 ### Keys and environment
 
-Codex starts `repowise mcp` with a cleared environment: only system variables such as `PATH` and `HOME`, plus the names in the server's `env_vars`, reach it. Put provider and embedder keys in `.repowise/.env` (gitignored); `repowise mcp` reads that file at startup, so the key reaches the server on every version.
+Codex starts `repowise mcp` with a cleared environment: only system variables such as `PATH` and `HOME`, plus the names in the server's `env_vars`, reach it. The repowise entry carries an `env_vars` list with every provider's key and base-URL variable and the repowise selection variables (`REPOWISE_EMBEDDER`, `OLLAMA_EMBEDDING_MODEL` and the like), so a key exported in the shell that starts Codex reaches the server. Names only, never values, so `.codex/config.toml` stays safe to commit. Names you add to `env_vars` yourself are kept.
 
-From 0.62, the entry also carries an `env_vars` list with every provider's key and base-URL variable and the repowise selection variables (`REPOWISE_EMBEDDER`, `OLLAMA_EMBEDDING_MODEL` and the like). Names only, never values, so `.codex/config.toml` stays safe to commit, and a key exported in the shell that starts Codex reaches the server too. Names you add to `env_vars` yourself are kept.
+Keys in `.repowise/.env` (gitignored) work as well: `repowise mcp` reads that file at startup.
 
 The MCP server uses `repowise mcp` without a path. In no-path mode, Repowise walks upward from the current directory to the nearest initialized `.repowise` repository.
 
@@ -143,7 +143,7 @@ The plugin does not carry these, and cannot: a Codex plugin manifest has no slot
 repowise agents add --target=codex
 ```
 
-That writes one `repowise-*.md` per command (versions before 0.62 write to `~/.codex/prompts/` whatever `CODEX_HOME` says), and `repowise agents remove --target=codex` takes them back out, along with `.codex/config.toml`, `.codex/hooks.json` and the managed block in `AGENTS.md`. To remove every agent at once, see [`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path). Invoke them as `/prompts:repowise-risk`, `/prompts:repowise-ask` and so on. They are rendered from the same `plugins/shared/` source as the Claude Code plugin's commands, so the two hosts cannot drift.
+That writes one `repowise-*.md` per command, and `repowise agents remove --target=codex` takes them back out, along with `.codex/config.toml`, `.codex/hooks.json` and the managed block in `AGENTS.md`. To remove every agent at once, see [`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path). Invoke them as `/prompts:repowise-risk`, `/prompts:repowise-ask` and so on. They are rendered from the same `plugins/shared/` source as the Claude Code plugin's commands, so the two hosts cannot drift.
 
 Note this is the mirror image of Claude Code, where the commands come from the plugin and `repowise init` never writes any.
 
