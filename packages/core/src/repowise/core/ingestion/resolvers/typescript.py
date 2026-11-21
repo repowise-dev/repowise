@@ -31,7 +31,7 @@ def detect_platform_files(paths: Iterable[str]) -> bool:
     return any(p.endswith(_PLATFORM_SUFFIXES) for p in paths)
 
 
-def _without_query(module_path: str) -> str:
+def _without_query(module_path: str, importer_path: str, ctx: ResolverContext) -> str:
     """The specifier without a bundler query: ``./kit.js?raw`` is ``./kit.js``.
 
     Vite takes ``?raw``, ``?url``, ``?inline`` or ``?worker`` (and webpack a
@@ -40,72 +40,94 @@ def _without_query(module_path: str) -> str:
     ``?``, as the Astro and HTML resolvers already read it. A test that imports
     the script it runs as text then pairs with that script. A ``#`` stays: it
     starts a Node subpath import.
+
+    Webpack's inline loaders come before the path, each ending in ``!``
+    (``raw-loader!./kit.js``, ``!!style-loader!css-loader?modules!./a.css``):
+    the file is what follows the last ``!``, and is cut out first because a
+    loader may carry a query of its own. A ``!`` is also legal in a file
+    name, so a relative specifier that names a file as written
+    (``./components/Oops!.tsx``) is kept whole. A loader given by a relative
+    path (``./my-loader!./kit.js``) names no file as written, and is cut.
     """
+    _, bang, resource = module_path.rpartition("!")
+    if bang and resource:
+        whole = _strip_query(module_path)
+        if not (whole.startswith(".") and _resolve_relative(whole, importer_path, ctx)):
+            module_path = resource
+    return _strip_query(module_path)
+
+
+def _strip_query(module_path: str) -> str:
     head, sep, _ = module_path.partition("?")
     return head if sep and head else module_path
 
 
-def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
-    """Resolve a TypeScript or JavaScript import to a repo-relative file path."""
-    module_path = _without_query(module_path)
+def _resolve_relative(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    """Resolve a relative specifier (``./x``, ``../x``) to a file in the repository."""
     importer_dir = Path(importer_path).parent
-
-    if module_path.startswith("."):
-        # Join + normalize via posixpath so ``../../helper/html`` collapses
-        # against the importer's directory. ``pathlib`` doesn't normalize
-        # ``..`` segments unless the path exists on disk; without this
-        # step, every cross-directory relative import silently fails to
-        # resolve and reads as an external dep.
-        base_posix = posixpath.normpath(posixpath.join(importer_dir.as_posix(), module_path))
-        if base_posix in ctx.path_set:
-            return base_posix
-        exts: tuple[str, ...] = (
-            ".ts",
-            ".tsx",
-            ".mts",
-            ".cts",
-            ".js",
-            ".jsx",
-            "/index.ts",
-            "/index.tsx",
-            "/index.mts",
-            "/index.cts",
-            "/index.js",
-            "/index.jsx",
+    # Join + normalize via posixpath so ``../../helper/html`` collapses
+    # against the importer's directory. ``pathlib`` doesn't normalize
+    # ``..`` segments unless the path exists on disk; without this
+    # step, every cross-directory relative import silently fails to
+    # resolve and reads as an external dep.
+    base_posix = posixpath.normpath(posixpath.join(importer_dir.as_posix(), module_path))
+    if base_posix in ctx.path_set:
+        return base_posix
+    exts: tuple[str, ...] = (
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".js",
+        ".jsx",
+        "/index.ts",
+        "/index.tsx",
+        "/index.mts",
+        "/index.cts",
+        "/index.js",
+        "/index.jsx",
+    )
+    if ctx.has_sfc_files:
+        # Both the bare file (``./Foo`` -> ``Foo.vue``) and the directory
+        # index (``./components/TodoList`` -> ``.../TodoList/index.vue``).
+        # The index forms were missing here while ``/index.ts`` and
+        # ``/index.js`` were present, so a directory-index component
+        # resolved to nothing and read as unreachable — the same gap
+        # ``subpath_imports`` already handles via ``/index.svelte``.
+        exts = (
+            *exts,
+            ".vue",
+            ".svelte",
+            ".astro",
+            "/index.vue",
+            "/index.svelte",
+            "/index.astro",
         )
-        if ctx.has_sfc_files:
-            # Both the bare file (``./Foo`` -> ``Foo.vue``) and the directory
-            # index (``./components/TodoList`` -> ``.../TodoList/index.vue``).
-            # The index forms were missing here while ``/index.ts`` and
-            # ``/index.js`` were present, so a directory-index component
-            # resolved to nothing and read as unreachable — the same gap
-            # ``subpath_imports`` already handles via ``/index.svelte``.
-            exts = (
-                *exts,
-                ".vue",
-                ".svelte",
-                ".astro",
-                "/index.vue",
-                "/index.svelte",
-                "/index.astro",
-            )
-        for ext in exts:
-            candidate = base_posix + ext
+    for ext in exts:
+        candidate = base_posix + ext
+        if candidate in ctx.path_set:
+            return candidate
+    # Legacy fallback: ``.with_suffix``-style replacement only kicks
+    # in when the specifier already carries a fake extension that
+    # users intended to be stripped (``./foo.js`` resolving to
+    # ``./foo.ts`` under TS rewrite rules). Guarded so it never
+    # clobbers a real multi-dot stem (``foo.config``, ``site.meta``).
+    stem_dot = base_posix.rfind(".")
+    if stem_dot > base_posix.rfind("/"):
+        real_stem = base_posix[:stem_dot]
+        for ext in (".ts", ".tsx", ".mts", ".cts"):
+            candidate = real_stem + ext
             if candidate in ctx.path_set:
                 return candidate
-        # Legacy fallback: ``.with_suffix``-style replacement only kicks
-        # in when the specifier already carries a fake extension that
-        # users intended to be stripped (``./foo.js`` resolving to
-        # ``./foo.ts`` under TS rewrite rules). Guarded so it never
-        # clobbers a real multi-dot stem (``foo.config``, ``site.meta``).
-        stem_dot = base_posix.rfind(".")
-        if stem_dot > base_posix.rfind("/"):
-            real_stem = base_posix[:stem_dot]
-            for ext in (".ts", ".tsx", ".mts", ".cts"):
-                candidate = real_stem + ext
-                if candidate in ctx.path_set:
-                    return candidate
-        return None
+    return None
+
+
+def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    """Resolve a TypeScript or JavaScript import to a repo-relative file path."""
+    module_path = _without_query(module_path, importer_path, ctx)
+
+    if module_path.startswith("."):
+        return _resolve_relative(module_path, importer_path, ctx)
 
     # LWC ``c/fooBar``, only from inside an ``lwc/<bundle>/`` folder.
     if lwc_bundle_dir(importer_path) is not None:
@@ -158,7 +180,7 @@ def resolve_ts_js_import_all(
     expanded (``ctx.has_platform_files``); everything else is exactly
     :func:`resolve_ts_js_import`.
     """
-    module_path = _without_query(module_path)
+    module_path = _without_query(module_path, importer_path, ctx)
     single = resolve_ts_js_import(module_path, importer_path, ctx)
     targets: list[str] = [single] if single else []
     if not ctx.has_platform_files or not module_path.startswith("."):
