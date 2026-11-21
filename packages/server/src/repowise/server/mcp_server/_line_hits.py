@@ -396,8 +396,13 @@ def _reads_as_type(head: re.Match[str], line: str) -> bool:
     or ``_t`` name, a capitalised name (``List``, ``java.util.Map``), or one
     spelled with generics, an array or a pointer. Two bare words also need
     the line to end as a declaration does, so prose (``Returns foo(x) when``)
-    is no declaration."""
-    if head.group("mods") or head.group("shape").strip():
+    is no declaration. A pointer or reference abuts the type or the name
+    (``char *p``, ``int& r``); ``a * f(x)`` and ``ok && f(x)`` are operators."""
+    shape = head.group("shape")
+    if head.group("mods") or "<" in shape or "[" in shape:
+        return True
+    marks = shape.strip()
+    if marks and "&&" not in marks and not (shape[0].isspace() and shape[-1].isspace()):
         return True
     word = head.group("type").rsplit(".", 1)[-1]
     if not word or not line.rstrip().endswith(("{", ";", ")", ",")):
