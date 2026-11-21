@@ -18,6 +18,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+from ..dotnet_test_projects import TEST_PACKAGES, TEST_PROJECT_NAME
 from ..ingestion.external_systems.maven_model import load_maven_reactor
 from ..ingestion.package_roots import module_for, owning_package
 from ..ingestion.resolvers.dotnet.msbuild import MSBuildProject, parse_csproj
@@ -29,7 +30,12 @@ from ..ingestion.workspace_members import (
 )
 from . import LANGUAGE_SUFFIXES
 
-#: Each test (an id, or the file a capped list collapses to) of a language in
+#: MSBuild files every project below their directory imports.
+_SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
+
+
+def _declares_tests(is_test_project: bool, packages: Iterable[str]) -> bool:
+    return is_test_project or not TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
 #: :data:`_RUNNERS`, mapped to ``[run, arg]``: the command that runs its package
 #: from the repository root, and the argument narrowing it to the test's target,
 #: or None to run the whole package. Args of one run are joined with spaces,
@@ -167,31 +173,7 @@ def js_root_runs(tests: Iterable[str]) -> dict[str, list[str | None]]:
     return {path: list(npm_test_run(path, "")) for path in files}
 
 
-#: NuGet ids that make a project a test project: the test SDK and each
-#: framework's runner.
-_TEST_PACKAGES = frozenset(
-    {
-        "microsoft.net.test.sdk",
-        "mstest",
-        "mstest.testadapter",
-        "nunit3testadapter",
-        "tunit",
-        "xunit",
-        "xunit.runner.visualstudio",
-        "xunit.v3",
-        "xunit.v3.mtp-v1",
-        "xunit.v3.mtp-v2",
-    }
-)
-#: MSBuild files every project below their directory imports.
-_SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
-#: The .NET test project naming convention (``Shop.Tests``, ``Shop.UnitTests``,
-#: ``Shop.Test``, ``Shop.Specs``).
-_TEST_PROJECT_NAME = re.compile(r"(Tests|\.Test|\.Specs)$", re.IGNORECASE)
-
-
-def _declares_tests(is_test_project: bool, packages: Iterable[str]) -> bool:
-    return is_test_project or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
+#: Each test (an id, or the file a capped list collapses to) of a language in
 
 
 def _shared_declares_tests(root: Path, directory: str, seen: dict[str, bool]) -> bool:
@@ -271,7 +253,7 @@ def _test_project(path: str, layout: _DotnetLayout) -> str | None:
     projects = by_dir.get(owner, []) if owner in by_dir else by_dir.get("", [])
     if len(projects) != 1:
         return None
-    if projects[0] in layout.test_projects or _TEST_PROJECT_NAME.search(Path(projects[0]).stem):
+    if projects[0] in layout.test_projects or TEST_PROJECT_NAME.search(Path(projects[0]).stem):
         return projects[0]
     users = [u for u in layout.referrers.get(projects[0], ()) if u in layout.test_projects]
     return users[0] if len(users) == 1 else None

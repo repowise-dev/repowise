@@ -96,13 +96,42 @@ from repowise.core.dotnet_test_projects import (
             "</Project>\n",
             False,
         ),
-        # Framework-only references without SDK are NOT test projects
+        # Framework-only references without a runner are NOT test projects
         (
             '<Project Sdk="Microsoft.NET.Sdk">\n'
             "  <ItemGroup>\n"
             '    <PackageReference Include="MSTest.TestFramework" Version="3.0.0" />\n'
-            '    <PackageReference Include="xunit" Version="2.9.0" />\n'
             '    <PackageReference Include="NUnit" Version="4.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            False,
+        ),
+        # A runner or v3 framework alone is enough (#5872): the same list the
+        # runner planner uses, read from TEST_PACKAGES.
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
+        ),
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
+        ),
+        # Explicit IsTestProject=false overrides a runner package
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup>\n"
+            "    <IsTestProject>false</IsTestProject>\n"
+            "  </PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
             "  </ItemGroup>\n"
             "</Project>\n",
             False,

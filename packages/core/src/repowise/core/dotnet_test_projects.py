@@ -1,18 +1,40 @@
 """Where .NET test projects live, read from .csproj files.
 
 A C# test project sets `<IsTestProject>true</IsTestProject>` or references
-`Microsoft.NET.Test.Sdk`. Files inside such a project (step definitions, fakes,
-helpers) are test material even if their filename or directory does not say Test.
+a test package (`TEST_PACKAGES`: the test SDK plus each framework's runner).
+Files inside such a project (step definitions, fakes, helpers) are test
+material even if their filename or directory does not say Test.
 """
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-_TEST_SDK_PACKAGE = "microsoft.net.test.sdk"
+#: NuGet ids that make a project a test project: the test SDK and each
+#: framework's runner. One owner for this list (#5872): the test runner
+#: planner (``test_runners/packages.py``) reads it from here, so the .csproj
+#: verdict below and the planner's agree.
+TEST_PACKAGES = frozenset(
+    {
+        "microsoft.net.test.sdk",
+        "mstest",
+        "mstest.testadapter",
+        "nunit3testadapter",
+        "tunit",
+        "xunit",
+        "xunit.runner.visualstudio",
+        "xunit.v3",
+        "xunit.v3.mtp-v1",
+        "xunit.v3.mtp-v2",
+    }
+)
+#: The .NET test project naming convention (``Shop.Tests``, ``Shop.UnitTests``,
+#: ``Shop.Test``, ``Shop.Specs``).
+TEST_PROJECT_NAME = re.compile(r"(Tests|\.Test|\.Specs)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +87,7 @@ def is_test_project_csproj(text: str) -> bool | None:
             for attr_name, attr_val in elem.attrib.items():
                 if (
                     attr_name.split("}")[-1].lower() in ("include", "update")
-                    and attr_val.strip().lower() == _TEST_SDK_PACKAGE
+                    and attr_val.strip().lower() in TEST_PACKAGES
                 ):
                     has_test_sdk = True
 
