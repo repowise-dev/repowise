@@ -1049,3 +1049,25 @@ class TestQuerySuffix:
     def test_a_loader_with_no_file_after_it_is_left_alone(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, list(self._PATHS))
         assert resolve_ts_js_import("raw-loader!", "src/main.ts", ctx) == "external:raw-loader!"
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("./components/Oops!.tsx", "src/components/Oops!.tsx"),
+            ("./components/Oops!", "src/components/Oops!.tsx"),
+            ("./components/Oops!.tsx?raw", "src/components/Oops!.tsx"),
+        ],
+    )
+    def test_a_relative_file_named_with_a_bang_keeps_its_path(
+        self, tmp_path: Path, spec: str, expected: str
+    ) -> None:
+        # ``!`` is legal in a file name: a relative specifier that names a
+        # file as written is not a loader chain.
+        ctx = _ctx(tmp_path, [*self._PATHS, "src/components/Oops!.tsx"])
+        assert resolve_ts_js_import(spec, "src/main.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/main.ts", ctx) == (expected,)
+
+    def test_a_loader_given_by_a_relative_path_is_still_cut(self, tmp_path: Path) -> None:
+        # ``./my-loader!./worker`` names no file as written, so it is a loader chain.
+        ctx = _ctx(tmp_path, [*self._PATHS, "src/my-loader.js"])
+        assert resolve_ts_js_import("./my-loader!./worker", "src/main.ts", ctx) == "src/worker.ts"
