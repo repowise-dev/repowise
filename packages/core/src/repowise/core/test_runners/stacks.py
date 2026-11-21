@@ -453,16 +453,21 @@ _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 _PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
-#: A trailing shell comment: the arguments a package manager appends land inside it.
-_SCRIPT_COMMENT = re.compile(r"(?:^|\s)#.*\Z", re.S)
+#: Where a trailing shell comment starts: the arguments a package manager appends land inside it.
+_SCRIPT_COMMENT = re.compile(r"(?:^|\s)#")
 #: ``packageManager`` naming Yarn 2 or later (Berry).
 _YARN_BERRY = re.compile(r"yarn@(?:[2-9]|\d\d)")
 
 
 def _uncommented(script: str) -> tuple[str, bool]:
-    """*script* without a trailing shell comment, and whether it had one."""
-    bare = _SCRIPT_COMMENT.sub("", script).rstrip()
-    return bare, bare != script.rstrip()
+    """*script* without a trailing shell comment, and whether it had one.
+
+    Ceiling: a ``#`` after any quote is left alone, since it may sit inside the quotes.
+    """
+    m = _SCRIPT_COMMENT.search(script)
+    if m is None or re.search(r"['\"`]", script[: m.start()]):
+        return script.rstrip(), False
+    return script[: m.start()].rstrip(), True
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")

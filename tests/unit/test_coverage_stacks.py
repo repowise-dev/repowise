@@ -893,6 +893,8 @@ def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command
         # The comment is not read as the script's own flags.
         ("jest # add --coverage later", "npx jest --coverage --coverageReporters=lcov"),
         ("cross-env CI=1 jest # unit tests", ""),
+        # A # inside quotes is no comment: the script stays.
+        ('jest -t "a #b"', "npm test -- --coverage --coverageReporters=lcov"),
     ],
 )
 def test_a_commented_test_script_runs_the_runner_without_the_comment(script, command):
