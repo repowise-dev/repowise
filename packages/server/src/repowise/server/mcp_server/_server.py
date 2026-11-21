@@ -953,12 +953,15 @@ def _has_index(repo_path: str | None, *, workspace: bool) -> bool | None:
         if ws_config is None:
             return None
         paths = [str(ws_root / entry.path) for entry in ws_config.repos]
-    # One read per member until one answers; a workspace has a handful.
+    # One read per member until one is indexed; a workspace has a handful.
+    # An unreadable member does not hide an indexed one after it.
+    unknown = False
     for path in paths:
         found = _store_has_repository(get_repo_db_path(path))
-        if found is not False:
-            return found
-    return False
+        if found:
+            return True
+        unknown = unknown or found is None
+    return None if unknown else False
 
 
 def _store_has_repository(db: Path) -> bool | None:

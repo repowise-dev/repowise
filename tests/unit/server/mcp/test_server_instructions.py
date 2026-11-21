@@ -223,5 +223,9 @@ def test_a_workspace_has_an_index_when_any_member_does(tmp_path: Any, monkeypatc
     )
     monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (tmp_path, config, "api"))
     assert _server._has_index(str(tmp_path), workspace=True) is False
+    (tmp_path / "api" / ".repowise").mkdir(parents=True)
+    (tmp_path / "api" / ".repowise" / "wiki.db").write_text("not a database")
+    assert _server._has_index(str(tmp_path), workspace=True) is None
+    # An unreadable member does not hide an indexed one after it.
     _index(tmp_path / "web")
     assert _server._has_index(str(tmp_path), workspace=True) is True
