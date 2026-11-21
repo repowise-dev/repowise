@@ -342,6 +342,10 @@ def test_a_secret_is_shown_by_kind_and_place_only(repo, tmp_path):
     # A pattern finding with no secret on its line keeps its line text.
     assert "os.system(cmd)" in outputs[0]
     assert "cfg.py:2" in outputs[2]
+    # An entry an older version wrote loses its snippet when the file is rewritten.
+    old = {"fingerprint": "f1", "file_path": "a.py", "kind": "hardcoded_password"}
+    write_baseline(baseline, [], keep=[{**old, "snippet": f"password = '{password[:4]}****'"}])
+    assert read_entries(baseline) == [{**old, "snippet": ""}]
 
 
 def test_annotations_are_capped_escaped_and_skip_the_baseline():

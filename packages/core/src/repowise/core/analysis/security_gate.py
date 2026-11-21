@@ -771,7 +771,8 @@ def write_baseline(
     so accepting this change's findings must not drop earlier ones.
     """
     entries = [
-        *keep,
+        # An entry an older version wrote may still hold a secret's snippet.
+        *({**e, "snippet": shown_snippet(str(e.get("kind", "")), e.get("snippet"))} for e in keep),
         *(
             {
                 "fingerprint": f["fingerprint"],
@@ -868,7 +869,7 @@ def render_markdown(
     if gate.failing:
         lines += [
             "",
-            "| Where | Kind | Severity | Matched (secrets masked) |",
+            "| Where | Kind | Severity | Matched (secrets hidden) |",
             "| --- | --- | --- | --- |",
         ]
         ordered = _order(gate.failing)
