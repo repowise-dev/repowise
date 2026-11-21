@@ -1240,6 +1240,7 @@ def split_rewired(
     seeds: Collection[str],
     indexed_files: Collection[str],
     tests: Collection[str] = (),
+    added: Collection[str] = (),
 ) -> tuple[list[str], list[str]]:
     """*rewired* split into the files a test may now reach *seeds* through, and the rest.
 
@@ -1248,7 +1249,9 @@ def split_rewired(
     to the files depending on it in the index (imports, package inits, calls);
     *seeds* are the files whose tests the selection runs; *tests* the index's
     test files, which the selection's walks never pass through, so neither
-    does this one.
+    does this one; *added* the files added since the index, which it has no
+    edges for: they seed the walk, and a rewired file naming one in any string
+    stays.
 
     A route the index cannot see must leave the first rewired file on it by an
     edge the index lacks, and the rest of the route is again either in the
@@ -1258,8 +1261,8 @@ def split_rewired(
     file that does, or a gained string whose words name one. Stays too, and
     counts as reaching the change, a file whose rewiring is unknown, a
     production ``__init__.py`` (it stands for every module under it), a test
-    file or test helper, and one whose new import resolves to a file the index
-    lacks (added since; the caller passes those among the *seeds*). The rest
+    file or test helper, and one whose imports or strings, gained or not,
+    reach a file in *added*. The rest
     add no route to the change, so their tests are left out. Ceiling, as for a
     file whose imports did not move: a call or framework binding gained with
     no import or string is not seen.
@@ -1282,6 +1285,10 @@ def split_rewired(
             frontier = [d for d in frontier if d not in leaves]
 
     known = set(indexed_files)
+    added_stems: set[str] = set()
+    added_dirs: set[str] = set()
+    _add_words(added, added_stems, added_dirs)
+    added_words = added_stems | added_dirs
     pending = {
         p: rw
         for p in rewired
@@ -1290,10 +1297,11 @@ def split_rewired(
         and not is_test_related_path(p)
         and (rw := rewirings.get(p)) is not None
         and rw.imports <= known
+        and not rw.held & added_words
     }
     # A kept file may lead to the change by edges unseen, so it seeds the walk;
     # a kept test runs only itself, so nothing reaches the change through it.
-    grow([*seeds, *(p for p in rewired if p not in pending and p not in leaves)])
+    grow([*seeds, *added, *(p for p in rewired if p not in pending and p not in leaves)])
     while True:
         joined = [
             p

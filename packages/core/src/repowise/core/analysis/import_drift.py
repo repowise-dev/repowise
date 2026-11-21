@@ -164,12 +164,14 @@ class Rewiring:
     *imports* are the repository files the imports it gained resolve to;
     *names* the words of the strings it gained, any of which may name a module
     or file; *dirs* those of the strings that may name a directory (a path, a
-    templated load, a Django app or URLconf).
+    templated load, a Django app or URLconf); *held* the words of every string
+    it holds, gained or not, read only against files added since the index.
     """
 
     imports: frozenset[str] = frozenset()
     names: frozenset[str] = frozenset()
     dirs: frozenset[str] = frozenset()
+    held: frozenset[str] = frozenset()
 
 
 #: Resolves one parsed import of a file, ``(import, path, language)``, to its targets.
@@ -180,7 +182,11 @@ _WORD_SPLIT = re.compile(r"""[./\\:{}()\[\]'"`\s,=]+""")
 
 
 def rewiring(
-    path: str, before: bytes | None, after: bytes | None, resolve: Resolve, *, whole: bool = False
+    path: str,
+    before: bytes | None,
+    after: bytes | None,
+    resolve: Resolve,
+    added_files: Collection[str] = frozenset(),
 ) -> Rewiring | None:
     """What *after* may reach that *before* did not, or ``None`` when that cannot be told.
 
@@ -188,19 +194,24 @@ def rewiring(
     code without naming it), when *after* does not parse, when an import will
     not resolve, or when *after* gained a dynamic-load marker or a
     package-listing loop, which make strings already there resolve. Imports are
-    compared whole: one that gained a name resolves again in full. With
-    *whole* every import and string counts as gained: files added since the
-    index can make one that did not change resolve. Ceiling: a string's words
-    are matched to file names, so a string reaching a file through an alias
-    the words do not spell is not seen.
+    compared whole: one that gained a name resolves again in full. A file
+    added since the index (*added_files*) can make an import or string that did
+    not change resolve, so then every import resolves again (those landing on
+    an added file count as gained) and every string's words are kept (*held*).
+    Ceiling: a string's words are matched to file names, so a string reaching
+    a file through an alias the words do not spell is not seen.
     """
     language = _language(path)
     if before is None or after is None or language not in _IMPORT_WORD:
         return None
-    old = b"" if whole else before
+    held: set[str] = set()
     try:
-        added = _added_strings(path, language, old, after)
-        targets = _gained_targets(path, language, old, after, resolve)
+        added = _added_strings(path, language, before, after)
+        targets = _gained_targets(path, language, before, after, resolve)
+        if added_files and targets is not None:
+            every = _gained_targets(path, language, b"", after, resolve) or set()
+            targets |= every & set(added_files)
+            held = {w for text in _held_strings(path, language, after) for w in _words(text)}
     except Exception:  # a reader that fails tells nothing: unknown, so the file stays
         return None
     if added is None or targets is None:
@@ -208,11 +219,15 @@ def rewiring(
     names: set[str] = set()
     dirs: set[str] = set()
     for text, may_name_dir in added:
-        words = {w for w in _WORD_SPLIT.split(text) if w}
+        words = _words(text)
         names |= words
         if may_name_dir or "/" in text or "{" in text:
             dirs |= words
-    return Rewiring(imports=frozenset(targets), names=frozenset(names), dirs=frozenset(dirs))
+    return Rewiring(frozenset(targets), frozenset(names), frozenset(dirs), frozenset(held))
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD_SPLIT.split(text) if w}
 
 
 def _gained_targets(
@@ -233,11 +248,9 @@ def _added_strings(
     """The strings *after* holds that *before* did not, each with whether it may
     name a directory; ``None`` when strings already there may start resolving."""
 
-    def literals(source: bytes) -> set[bytes]:
-        found = {m.group(2) for m in _NAME_LITERAL.finditer(source)}
-        return {n for n in found if b"." in n or b"/" in n} | set(path_literals(source))
-
-    added: set[tuple[bytes | str, bool]] = {(s, False) for s in literals(after) - literals(before)}
+    added: set[tuple[bytes | str, bool]] = {
+        (s, False) for s in _literals(after) - _literals(before)
+    }
     if language != "python":
         return None if _gained(_JS_DYNAMIC_LOADS, before, after) else _decoded(added)
     old_gates, old_found, old_live, _ = string_inputs(path, before)
@@ -252,6 +265,21 @@ def _added_strings(
     old_django = _leaves(django_hints.edge_strings(path, before) or ())
     added |= {(s, True) for s in _leaves(django) - old_django}
     return _decoded(added)
+
+
+def _literals(source: bytes) -> set[bytes]:
+    found = {m.group(2) for m in _NAME_LITERAL.finditer(source)}
+    return {n for n in found if b"." in n or b"/" in n} | set(path_literals(source))
+
+
+def _held_strings(path: str, language: str, source: bytes) -> set[str]:
+    """Every string of *source* any edge producer :func:`_added_strings` compares reads."""
+    held: set[bytes | str] = set(_literals(source))
+    if language == "python":
+        _, found, live, _ = string_inputs(path, source)
+        held |= {s for s, _ in found} | set(live)
+        held |= _leaves(django_hints.edge_strings(path, source) or ())
+    return {s.decode("utf-8", "replace") if isinstance(s, bytes) else s for s in held}
 
 
 # Loads whose target a literal does not spell: a glob, a directory listing,

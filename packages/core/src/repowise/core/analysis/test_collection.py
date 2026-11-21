@@ -482,10 +482,9 @@ async def _gap_routes(
                 for t in await cached_test_files(session, repo_id)
                 if is_code_file(t) and is_runnable_test(t, is_test=True)
             }
-            # A file added since has no edges in the index, so it may reach the change.
-            seeds = [*change.files, *change.deleted, *scope_routes, *added]
+            seeds = [*change.files, *change.deleted, *scope_routes]
             rewired, unreached = split_rewired(
-                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed, tests
+                plan, rewired, rewirings, (imports.importers, calls.importers), seeds, indexed, tests, added
             )
         except Exception as exc:  # unsplit: every rewired file is walked
             log.debug("gap_split_skipped", error=str(exc))
@@ -563,9 +562,8 @@ def _rewirings(
     present = {p for p, is_blob in zip(listed, flags, strict=True) if is_blob}
     added = {p for p in present - set(indexed) if not is_documentation(p)}
     resolve = import_resolver(repo_path, (set(indexed) - set(gap)) | present)
-    # A file added since can make an import or string that did not change resolve.
     return {
-        p: rewiring(p, before, after, resolve, whole=bool(added))
+        p: rewiring(p, before, after, resolve, frozenset(added))
         for p, (before, after) in pairs.items()
     }, added
 

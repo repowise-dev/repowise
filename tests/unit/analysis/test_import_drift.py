@@ -198,13 +198,15 @@ def test_a_gained_dynamic_load_in_typescript_is_unknown() -> None:
     assert rewiring("m.ts", _TS, after, _resolve_in({"m.ts", "a.ts"})) is None
 
 
-def test_whole_counts_every_import_and_string_as_gained() -> None:
+def test_an_unchanged_import_or_string_onto_a_file_added_since_counts() -> None:
     from repowise.core.analysis.import_drift import rewiring
 
+    # src/a.py was added since the index; the import of it did not change.
     files = {"src/m.py", "src/a.py", "src/b.py"}
     before = b'from src import a\nNAME = "src.b"\n'
     after = before + b"import os\n"
     gained = rewiring("src/m.py", before, after, _resolve_in(files))
-    assert gained is not None and gained.imports == set() and gained.names == set()
-    whole = rewiring("src/m.py", before, after, _resolve_in(files), whole=True)
-    assert whole is not None and whole.imports == {"src/a.py"} and "b" in whole.names
+    assert gained is not None and gained.imports == set() and gained.held == set()
+    found = rewiring("src/m.py", before, after, _resolve_in(files), {"src/a.py"})
+    # Only the added file counts; every string's words are kept for it.
+    assert found is not None and found.imports == {"src/a.py"} and "b" in found.held

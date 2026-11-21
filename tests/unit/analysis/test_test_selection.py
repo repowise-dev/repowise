@@ -599,13 +599,13 @@ _INDEX |= {"src/d.py": ("tests/test_d.py",)}
 _FILES = {*_INDEX, *(t for ts in _INDEX.values() for t in ts), "src/y.py"}
 
 
-def _split(rewirings, packages=(), index=_INDEX):
+def _split(rewirings, packages=(), index=_INDEX, added=()):
     from repowise.core.analysis.import_drift import Rewiring
 
     plan = GapPlan(candidates=tuple(rewirings), packages=frozenset(packages))
     found = {p: None if r is None else Rewiring(*map(frozenset, r)) for p, r in rewirings.items()}
     tests = [f for f in _FILES if f.startswith("tests/")]
-    return split_rewired(plan, list(rewirings), found, [index], ["src/a.py"], _FILES, tests)
+    return split_rewired(plan, list(rewirings), found, [index], ["src/a.py"], _FILES, tests, added)
 
 
 def test_a_rewired_gap_file_whose_new_edges_miss_the_change_adds_no_tests() -> None:
@@ -652,6 +652,10 @@ def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
     )
     # One already on a route in the index keeps its tests whatever it gained.
     assert _split({"src/c.py": [[], [], []]}) == (["src/c.py"], [])
+    # A string naming a file added since, gained or not, may now reach it.
+    held = {"src/b.py": [[], [], [], ["new"]]}
+    assert _split(held) == ([], ["src/b.py"])
+    assert _split(held, added=["src/new.py"]) == (["src/b.py"], [])
     # A test runs only itself, and may now walk a tree or spawn a process.
     assert _split({"tests/test_d.py": [[], [], []]}) == (["tests/test_d.py"], [])
 

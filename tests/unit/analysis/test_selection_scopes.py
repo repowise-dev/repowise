@@ -471,10 +471,9 @@ def test_a_gap_reads_what_each_rewired_file_may_newly_reach(tmp_path) -> None:
     change = change_set(str(tmp_path), "HEAD~1..HEAD")
     out = {"indexed_commit": indexed}
     files = {"src/a.py", "src/b.py", "src/y.py"}
-    plan, rewired, rewirings, added = _rewired_gap(tmp_path, change, _NONE, files, out, None)
+    _, rewired, rewirings, added = _rewired_gap(tmp_path, change, _NONE, files, out, None)
     assert sorted(out["index_gap"]) == ["src/b.py", "src/new.py"]
     assert rewired == ["src/b.py"] and added == {"src/new.py"}
-    # With a file added since, every import counts, so os and y both resolve again.
     assert rewirings["src/b.py"].imports == {"src/y.py"}
     # Without the indexed files nothing is worked out, and every rewired file stays.
     assert _rewired_gap(tmp_path, change, _NONE, None, out, None)[2] == {}
