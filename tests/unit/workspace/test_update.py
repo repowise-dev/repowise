@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
@@ -145,6 +146,7 @@ def _write_state(repo: Path, commit: str | None) -> None:
     if commit:
         state["last_sync_commit"] = commit
         state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+        state["security_scanner_version"] = SECURITY_SCANNER_VERSION
     (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -159,9 +161,56 @@ def _write_indexed_state(repo: Path, commit: str, **stamps) -> None:
         "last_sync_commit": commit,
         "config_fingerprint": config_fingerprint(repo),
         GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
+        "security_scanner_version": SECURITY_SCANNER_VERSION,
         **stamps,
     }
     (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+async def _seed_security_row(repo: Path, path: str, line: int) -> None:
+    from sqlalchemy import text
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import resolve_db_url
+
+    engine = create_engine(resolve_db_url(repo))
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            row = await upsert_repository(session, name=repo.name, local_path=str(repo))
+            await session.execute(
+                text(
+                    "INSERT INTO security_findings (repository_id, file_path, kind, "
+                    "severity, snippet, line_number, commit_sha, detected_at) "
+                    "VALUES (:r, :p, 'weak_hash', 'low', 'x', :l, '', datetime('now'))"
+                ),
+                {"r": row.id, "p": path, "l": line},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _security_rows(repo: Path) -> set[tuple]:
+    from sqlalchemy import text
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import resolve_db_url
+
+    engine = create_engine(resolve_db_url(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            res = await session.execute(
+                text("SELECT file_path, kind, line_number FROM security_findings")
+            )
+            return {tuple(r) for r in res.fetchall()}
+    finally:
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +278,9 @@ class TestCheckRepoStaleness:
         [
             {"health_analyzer_version": HEALTH_ANALYZER_VERSION - 1},
             {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION - 1},
+            {"security_scanner_version": SECURITY_SCANNER_VERSION - 1},
         ],
-        ids=["health_analyzer", "git_history"],
+        ids=["health_analyzer", "git_history", "security_scanner"],
     )
     def test_stamp_only_move_is_stale(self, tmp_path: Path, stamps: dict) -> None:
         """HEAD unmoved, but the index was built by an older analyzer or history rule."""
@@ -302,6 +352,39 @@ class TestUpdateWorkspace:
         state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
         assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
         assert state["last_sync_commit"] == head
+
+        second = asyncio.run(update_workspace(tmp_path, ws_config, run_hooks=False))
+        assert second[0].skipped_reason == "up_to_date"
+
+    @pytest.mark.parametrize("new_commit", [True, False], ids=["head_moved", "head_unmoved"])
+    def test_scanner_bump_rescans_unchanged_files(self, tmp_path: Path, new_commit: bool) -> None:
+        """A store an older scanner wrote is rescanned whole and stamped, then settles."""
+        import asyncio
+
+        repo = _make_git_repo(tmp_path, "backend")
+        (repo / "app.py").write_text(
+            "import hashlib\n\n\ndef f(x):\n    return hashlib.md5(x)\n", encoding="utf-8"
+        )
+        head = _add_commit(repo, "notes.txt", "add app")
+        _write_indexed_state(repo, head, security_scanner_version=SECURITY_SCANNER_VERSION - 1)
+        # The old scanner's row on app.py, which no commit below touches.
+        asyncio.run(_seed_security_row(repo, "app.py", 99))
+        if new_commit:
+            head = _add_commit(repo, "more.txt", "unrelated change")
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        first = asyncio.run(update_workspace(tmp_path, ws_config, run_hooks=False))
+        assert first[0].error is None
+        assert first[0].security_rescanned is True
+        state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state["security_scanner_version"] == SECURITY_SCANNER_VERSION
+        rows = asyncio.run(_security_rows(repo))
+        assert ("app.py", "weak_hash", 5) in rows
+        assert ("app.py", "weak_hash", 99) not in rows
 
         second = asyncio.run(update_workspace(tmp_path, ws_config, run_hooks=False))
         assert second[0].skipped_reason == "up_to_date"
