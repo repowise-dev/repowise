@@ -380,7 +380,8 @@ def run_key(
         provenance.source,
         # Only when known, so a run that never reports it keeps its key.
         *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
-        *((f"report_dir={report_dir}",) if report_dir else ()),
+        # Only test paths are read from it (rebase_test_entries), so other kinds keep their key.
+        *((f"report_dir={report_dir}",) if report_dir and kind == "test_timing" else ()),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))

@@ -316,5 +316,7 @@ def test_the_report_directory_is_part_of_the_run_key() -> None:
     )
     keys = {run_key("x", provenance, "test_timing", "c", d) for d in ("", "web", "api")}
     assert len(keys) == 3
+    # Only test paths are read from the directory: a profile keeps one key.
+    assert run_key("x", provenance, "profile", "c", "web") == run_key("x", provenance, "profile", "c")
     # A run read from the root keeps the key it always had.
     assert run_key("x", provenance, "test_timing", "c") == run_key("x", provenance, "test_timing", "c", "")
