@@ -425,7 +425,7 @@ Per file:
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
 
 - **`signal_tier`:** the card keeps commit counts, `last_commit_at`, `trend`, owner and `security_signals`, and omits hotspot, co-change, dependents and classification.
-- Multi-target calls add `global_hotspots`. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
+- `co_change_partners` lists the top three; `co_change_partners_total` counts them all. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
 
 | `include` | Adds |
 |-----------|------|
@@ -435,6 +435,7 @@ Per file:
 | `blast` | `pr_blast_radius`: transitive files, co-change warnings, test gaps, structural score; reviewers stay in the directive |
 | `graph` | `dependents` (direct vs transitive), `consumers` (typed contract consumers), `cross_repo_links` (contract rows carry `strategy` and `origin`, see [cross-repo link rows](#cross-repo-link-rows)), `impact_surface`, `direct_risks`, `relationship_analysis` (empty vs unavailable or partial) |
 | `churn` | `change_magnitude`, `risk_type`, `change_pattern` |
+| `hotspots` | `global_hotspots`: up to five hotspots outside the targets, ranked on bug-fix history, then churn |
 | `scales` | Unit, range and calibration per scalar; identical every call |
 
 ### PR mode directive
@@ -566,7 +567,7 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 
 ### branch_overlap
 
-Git-only, no index needed. `branches[]`: `ahead`, `behind`, `last_commit`, `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
+Git-only, no index needed. Up to three `branches[]`: `ahead`, `behind`, `last_commit`, up to five `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). A branch of a remote other than `origin` is measured from that remote's default branch. Default branches, including the local copy of the base, are not listed. Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
 
 ### independent_changes
 

@@ -274,9 +274,9 @@ def _live_grep_response(
     # never costs the reply.
     with contextlib.suppress(Exception):
         from repowise.server.mcp_server._savings import declare_replaced
-        from repowise.server.mcp_server._savings.reads import read_tokens
+        from repowise.server.mcp_server._savings.reads import read_credit
 
-        declare_replaced(response, read_tokens(text))
+        declare_replaced(response, read_credit(root, file_part, text))
     return response
 
 

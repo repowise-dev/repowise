@@ -110,8 +110,14 @@ _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 #: ``tests`` adds the PR directive's typed ``test_recommendations`` rows and
 #: ``blast`` the ``pr_blast_radius`` dossier, ``changes`` each file's recent
-#: Change Records.
-_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {"blast", "scales", "tests", "changes"}
+#: Change Records, ``hotspots`` the repository's hotspots outside the targets.
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {
+    "blast",
+    "scales",
+    "tests",
+    "changes",
+    "hotspots",
+}
 #: Blocks only the PR directive builds: without ``changed_files`` they hold nothing.
 _PR_ONLY_INCLUDES = ("tests", "blast")
 
@@ -266,9 +272,7 @@ async def _global_hotspots(
     all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
     target_set = set(targets)
     return [
-        _hotspot_entry(h, as_of_ts=as_of_ts)
-        for h in all_hotspots
-        if h.file_path not in target_set
+        _hotspot_entry(h, as_of_ts=as_of_ts) for h in all_hotspots if h.file_path not in target_set
     ]
 
 
@@ -287,7 +291,7 @@ async def _gather_evidence(
     changed_files: list[str],
     exclude_spec: Any,
     collector: OmissionCollector,
-    include_graph: bool,
+    include_set: set[str],
 ) -> _RiskEvidence:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -321,7 +325,7 @@ async def _gather_evidence(
                     exclude_spec,
                     team_size,
                     collector,
-                    include_graph,
+                    "graph" in include_set,
                     as_of_ts=as_of_ts,
                     repo_root=repo_root,
                 )
@@ -329,7 +333,7 @@ async def _gather_evidence(
             ]
         )
         global_hotspots = []
-        if len(targets) > 1 and not changed_files:
+        if "hotspots" in include_set:
             global_hotspots = await _global_hotspots(
                 session, repo_id, targets, exclude_spec, as_of_ts=as_of_ts
             )
@@ -342,6 +346,13 @@ async def _gather_evidence(
             )
             test_paths = await get_test_file_paths(session, repo_id)
     return _RiskEvidence(repository, results, test_paths, global_hotspots, pr_blast_radius)
+
+
+def _attach_hotspots(response: dict, hotspots: list, collector: OmissionCollector) -> None:
+    """The repository's top hotspots outside the targets, the rest left recoverable."""
+    cap_collection(
+        response, "global_hotspots", hotspots, 5, collector, label="global_hotspots beyond cap=5"
+    )
 
 
 async def _enrich_cards(
@@ -515,11 +526,12 @@ async def get_risk(
     touched = list(dict.fromkeys(changed_files or ()))
     targets = filter_path_list(targets or changed_files, exclude_spec)
     changed_files = filter_path_list(changed_files, exclude_spec)
-    include_graph = "graph" in include_set
     evidence = await _gather_evidence(
-        ctx, targets, changed_files, exclude_spec, collector, include_graph
+        ctx, targets, changed_files, exclude_spec, collector, include_set
     )
-    await _enrich_cards(evidence.results, ctx, evidence.repository.id, collector, include_graph)
+    await _enrich_cards(
+        evidence.results, ctx, evidence.repository.id, collector, "graph" in include_set
+    )
     if "changes" in include_set:
         await _attach_changes(evidence.results, ctx)
 
@@ -544,16 +556,8 @@ async def get_risk(
             include_blast="blast" in include_set,
             touched=touched,
         )
-    elif len(targets) > 1:
-        # Ambient hotspots orient a multi-file request; beside one named file they are noise.
-        cap_collection(
-            response,
-            "global_hotspots",
-            evidence.global_hotspots,
-            5,
-            collector,
-            label="global_hotspots beyond cap=5",
-        )
+    if "hotspots" in include_set:
+        _attach_hotspots(response, evidence.global_hotspots, collector)
 
     await attach_why_pointer(response, ctx, [*targets, *changed_files])
     response["_meta"] = _build_meta(

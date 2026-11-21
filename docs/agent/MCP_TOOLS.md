@@ -272,7 +272,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`) |
+| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`), `hotspots` (the repository's hotspots outside the targets) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.

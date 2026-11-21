@@ -28,9 +28,9 @@ from .interaction import Interaction
 
 logger = logging.getLogger(__name__)
 
-#: Token scale floor(chars / 4), same as v1. v2 marks the revised counterfactual
-#: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
-_ESTIMATOR = "chars_per_token_floor_v2"
+#: Token scale floor(chars / 4), same as v1. The version names the counterfactual
+#: table in force (docs/architecture/savings-accounting.md, "MCP counterfactuals").
+_ESTIMATOR = "chars_per_token_floor_v3"
 _TOKEN_UNIT = "estimated_tokens"
 
 #: The host session this server runs under, when the host exports it to the

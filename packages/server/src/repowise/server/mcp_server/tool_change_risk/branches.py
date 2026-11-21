@@ -20,8 +20,8 @@ _BRANCH_OVERLAP_TIMEOUT_SECONDS = 20
 #: Caps on the branch-overlap block. It answers "is anyone else editing these
 #: files", not "list every branch", so both lists stay short and their tails go
 #: to the omission store.
-_BRANCH_OVERLAP_LIMIT = 5
-_BRANCH_OVERLAP_FILES_LIMIT = 10
+_BRANCH_OVERLAP_LIMIT = 3
+_BRANCH_OVERLAP_FILES_LIMIT = 5
 
 #: Cap on the files the index cannot link. The count is already in the block's
 #: summary, so the names are supporting detail and their tail is recoverable.
