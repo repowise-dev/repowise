@@ -739,6 +739,68 @@ def test_cmake_include_dir_two_targets_declare_gives_both_its_headers(tmp_path):
     assert _owners(index, "src/foo/foo.cpp") == ["cmake:foo"]
 
 
+_CORE_AND_UTIL = {
+    "src/core/CMakeLists.txt": "add_library(core core.cpp)\ntarget_link_libraries(core PUBLIC util)\n",
+    "src/core/core.cpp": "",
+    "src/util/CMakeLists.txt": "add_library(util u.cpp)\n",
+    "src/util/u.cpp": "",
+    "src/fmt/CMakeLists.txt": "add_library(fmt f.cpp)\n",
+    "src/fmt/f.cpp": "",
+}
+
+
+_SUBDIRS = "add_subdirectory(src/core)\nadd_subdirectory(src/util)\nadd_subdirectory(src/fmt)\n"
+_EXTEND_CORE = "target_sources(core PRIVATE extra.cpp)\ntarget_link_libraries(core PRIVATE fmt)\n"
+
+
+@pytest.mark.parametrize(
+    ("files", "extra"),
+    [
+        # The stub's root "" sorts before "src/core".
+        ({"CMakeLists.txt": _SUBDIRS + _EXTEND_CORE, "extra.cpp": ""}, "extra.cpp"),
+        # The stub's root "tests" sorts after "src/core".
+        (
+            {
+                "CMakeLists.txt": _SUBDIRS + "add_subdirectory(tests)\n",
+                "tests/CMakeLists.txt": _EXTEND_CORE,
+                "tests/extra.cpp": "",
+            },
+            "tests/extra.cpp",
+        ),
+    ],
+    ids=["stub-sorts-first", "stub-sorts-last"],
+)
+def test_cmake_target_sources_from_another_file_merge_into_the_declared_target(
+    tmp_path, files, extra
+):
+    index = _collect(tmp_path, {**_CORE_AND_UTIL, **files})
+    core = index.unit("cmake:core")
+    assert (core.root, core.manifest) == ("src/core", "src/core/CMakeLists.txt")
+    assert core.deps == ("cmake:fmt", "cmake:util")
+    assert _owners(index, "src/core/core.cpp") == ["cmake:core"]
+    assert _owners(index, extra) == ["cmake:core"]
+
+
+def test_cmake_stub_without_a_declaring_file_gives_no_unit(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": "add_library(core core.cpp)\ntarget_sources(ghost PRIVATE g.cpp)\n",
+        "core.cpp": "",
+        "g.cpp": "",
+    })
+    assert list(index.units) == ["cmake:core"]
+
+
+def test_cmake_duplicate_target_name_keeps_the_root_that_sorts_first(tmp_path):
+    index = _collect(tmp_path, {
+        "z/CMakeLists.txt": "add_library(core z.cpp)\n",
+        "z/z.cpp": "",
+        "a/b/CMakeLists.txt": "add_library(core ab.cpp)\n",
+        "a/b/ab.cpp": "",
+    })
+    # Not the shallower one: "a/b" sorts before "z".
+    assert index.unit("cmake:core").root == "a/b"
+
+
 def test_cmake_half_written_file_keeps_its_target_and_its_siblings(tmp_path):
     index = _collect(tmp_path, {
         "CMakeLists.txt": "add_subdirectory(good)\nadd_subdirectory(bad)\n",

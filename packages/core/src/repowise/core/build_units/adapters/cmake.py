@@ -9,6 +9,11 @@ unit root above it.
 ``target_link_libraries`` names that match another target become deps; the
 rest (``Threads::Threads``, system libraries) are third-party and dropped.
 
+A ``target_sources`` call in another file than the one declaring the target
+reaches the index as a stub (kind ``unknown``) rooted at the calling file.
+Its files and deps are merged into the declared target of that name, as
+CMake does; a stub no file declares yields no unit.
+
 The index merges CMake and Bazel targets; only the CMake ones are read here.
 
 Ceilings. The index reads ``CMakeLists.txt`` with a regex tokenizer, not a
@@ -31,9 +36,15 @@ CMake evaluator (see ``ingestion/external_systems/cmake.py``):
   ``IMPORTED`` third-party target gets a unit it should not have.
 - **Every ``if()`` branch counts.** Conditionally compiled sources and deps
   are all kept, whichever options a real configure would pick.
-- **Target names must be unique.** CMake requires that within one project;
-  two separate projects in one repo declaring the same name keep only the
-  shallower one (``collect_build_units`` warns about the duplicate).
+- **Target names must be unique.** CMake requires that within one project.
+  When two separate projects in one repo declare the same name, both claim
+  one id and ``collect_build_units`` keeps the claim whose root sorts first
+  as a string, not the shallower one, and warns about the duplicate. Stubs
+  of that name merge into both claims.
+- **Calls in another file that add no sources are lost.** The index drops a
+  stub without sources, so a ``target_link_libraries`` or
+  ``target_include_directories`` call outside the declaring file adds no
+  dep or include directory.
 - **Headers come from names and public include directories.** Private
   include directories are not carried by the index, so headers only they
   reach fall to the deepest unit root. A ``$<BUILD_INTERFACE:...>`` include
@@ -54,6 +65,7 @@ resolves variables, generator expressions and aliases as CMake itself does.
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections import defaultdict
 from collections.abc import Iterable
 
 from repowise.core.build_units.adapters import Found
@@ -63,11 +75,13 @@ from repowise.core.ingestion.resolvers import ResolverContext
 # The include resolver's header extensions, so the two cannot disagree on
 # what a header is.
 from repowise.core.ingestion.resolvers.cpp import _HEADER_EXTS
-from repowise.core.ingestion.resolvers.cpp_workspace import get_or_build_cpp_index
+from repowise.core.ingestion.resolvers.cpp_workspace import CppTarget, get_or_build_cpp_index
 
 _MANIFEST = "CMakeLists.txt"
 # ``cmake:<name>@<declaring CMakeLists.txt>``, set by ``_cmake_target_to_cpp``.
 _CMAKE_ID_PREFIX = "cmake:"
+# The kind the parser gives a target a file names without declaring it.
+_STUB_KIND = "unknown"
 
 
 def _has_cmake(paths: set[str]) -> bool:
@@ -90,23 +104,36 @@ def _headers_under(dirs: Iterable[str], headers: list[str]) -> list[str]:
     return out
 
 
+def _files(target: CppTarget, headers: list[str]) -> list[str]:
+    return [
+        *target.sources,
+        *target.public_headers,
+        *target.private_headers,
+        *target.conditional_sources,
+        *_headers_under(target.include_dirs, headers),
+    ]
+
+
 def units(ctx: ResolverContext) -> Found:
     if not _has_cmake(ctx.path_set):
         return Found([])
 
     headers = sorted(p for p in ctx.path_set if p.lower().endswith(_HEADER_EXTS))
-    claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
+    declared: list[tuple[str, CppTarget]] = []
+    stubs: dict[str, list[CppTarget]] = defaultdict(list)
     for target_id, target in get_or_build_cpp_index(ctx).targets.items():
         if not target_id.startswith(_CMAKE_ID_PREFIX):
             continue  # a Bazel target
-        _, _, declared_in = target_id.partition("@")
-        files = (
-            *target.sources,
-            *target.public_headers,
-            *target.private_headers,
-            *target.conditional_sources,
-            *_headers_under(target.include_dirs, headers),
-        )
+        if target.kind == _STUB_KIND:
+            stubs[target.name].append(target)
+        else:
+            declared.append((target_id.partition("@")[2], target))
+
+    claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
+    for declared_in, target in declared:
+        parts = [target, *stubs.get(target.name, ())]
+        files = [f for part in parts for f in _files(part, headers)]
+        deps = {f"cmake:{dep}" for part in parts for dep in part.link_deps}
         unit = BuildUnit(
             id=f"cmake:{target.name}",
             ecosystem="cmake",
@@ -114,7 +141,7 @@ def units(ctx: ResolverContext) -> Found:
             root=target.root_dir,
             manifest=declared_in,
             source="cmake",
-            deps=tuple(sorted({f"cmake:{dep}" for dep in target.link_deps})),
+            deps=tuple(sorted(deps)),
         )
         claims.append((unit, tuple(dict.fromkeys(files))))
     return Found(claims)
