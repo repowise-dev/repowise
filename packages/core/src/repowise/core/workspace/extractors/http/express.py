@@ -60,7 +60,8 @@ _APP_USE_RE = re.compile(
     r"""(?:\.routes\s*\(\s*\)|(?![\w$.]|\s*\())"""
 )
 _REQUIRE_SPEC_RE = re.compile(r"""require\s*\(\s*['"]([^'"]+)['"]""")
-_NAMESPACE_IMPORT_RE = re.compile(r"""\bimport\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]""")
+_BARE_NAME_RE = re.compile(r"[\w$]+")
+_NAMESPACE_IMPORT_RE =re.compile(r"""\bimport\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]""")
 # What a module exports as its default: `module.exports = x`, `export default x`
 # or `export { x as default }`.
 _DEFAULT_EXPORT_RE = re.compile(
@@ -87,52 +88,42 @@ class _File:
             for r in outside_comments(ctx, express_routes(ctx.content))
             if r.verb in HTTP_METHODS and r.path
         ]
-        imports: dict[str, tuple[str, str]] | None = None
         # In-file mounts: router variable -> {(receiver, path)}.
         self.local: dict[str, set[tuple[str, str]]] = {}
         # Imported mounts: (module, exported name, receiver, path).
         self.imported: list[tuple[str, str, str, str]] = []
+        self._read_mounts(ctx)
+        self.default = self._default_export(ctx.content)
+
+    def _read_mounts(self, ctx: ScanContext) -> None:
+        imports: dict[str, tuple[str, str]] | None = None
         for m in code_matches(ctx, _APP_USE_RE):
             receiver = chain_receiver(ctx.content, m.start()) or ""
             path, target = m.group(1), m.group(2)
             if imports is None:
-                # `import * as users from './users'` binds the whole module,
-                # read like a whole-module `require`.
-                imports = {
-                    ns.group(1): (ns.group(2), "default")
-                    for ns in _NAMESPACE_IMPORT_RE.finditer(ctx.content)
-                }
-                imports.update(js_imports(ctx.content))
-            spec_m = _REQUIRE_SPEC_RE.match(target)
-            head, _, member = target.partition(".")
-            if spec_m:
-                spec, exported = spec_m.group(1), "default"
-            elif head in imports:
-                spec, exported = imports[head]
-                if member:
-                    # `users.router`: a member of the module the name binds.
-                    if exported != "default":
-                        continue
-                    exported = member.split(".")[0]
-            elif not member:
-                self.local.setdefault(target, set()).add((receiver, path))
+                imports = _module_bindings(ctx.content)
+            source = _imported_router(target, imports)
+            if source is None:
+                if _BARE_NAME_RE.fullmatch(target):
+                    self.local.setdefault(target, set()).add((receiver, path))
                 continue
-            else:
-                continue
-            module = resolve_module(ctx.rel_path, spec)
+            module = resolve_module(ctx.rel_path, source[0])
             if module is not None and module != self.module:
-                self.imported.append((module, exported, receiver, path))
-        found = _DEFAULT_EXPORT_RE.search(ctx.content)
-        self.default = (found.group(1) or found.group(2)) if found else None
+                self.imported.append((module, source[1], receiver, path))
+
+    def _default_export(self, content: str) -> str | None:
+        found = _DEFAULT_EXPORT_RE.search(content)
+        if found:
+            return found.group(1) or found.group(2)
         routers = set(self.bindings) | {
             r.receiver for r in self.routes if r.receiver in JS_DEFAULT_ROUTER_NAMES
         }
-        if self.default is None and len(routers) == 1:
-            # A module with one router and no default export this can read is
-            # taken to export that router, unless it exports it by name.
-            (sole,) = routers
-            if not _named_export_re(sole).search(ctx.content):
-                self.default = sole
+        if len(routers) != 1:
+            return None
+        # A module with one router and no default export this can read is
+        # taken to export that router, unless it exports it by name.
+        (sole,) = routers
+        return None if _named_export_re(sole).search(content) else sole
 
     def key(self, var: str) -> str:
         """The mount key of router *var*: its module and the name it is imported by."""
@@ -159,6 +150,33 @@ class _File:
 
 def _key(module: str, exported: str) -> str:
     return f"{module}:{exported}"
+
+
+def _module_bindings(content: str) -> dict[str, tuple[str, str]]:
+    """``local name -> (spec, exported name)``, a namespace import
+    (``import * as users``) read like a whole-module ``require``."""
+    out = {m.group(1): (m.group(2), "default") for m in _NAMESPACE_IMPORT_RE.finditer(content)}
+    out.update(js_imports(content))
+    return out
+
+
+def _imported_router(
+    target: str, imports: dict[str, tuple[str, str]]
+) -> tuple[str, str] | None:
+    """``(spec, exported name)`` of the router a mount names from another
+    module: an inline ``require('./x')``, an imported name, or a member of an
+    imported module (``users.router``). None for anything else."""
+    spec_m = _REQUIRE_SPEC_RE.match(target)
+    if spec_m:
+        return spec_m.group(1), "default"
+    head, _, member = target.partition(".")
+    if head not in imports:
+        return None
+    spec, exported = imports[head]
+    if not member:
+        return spec, exported
+    # A member of a whole module; a member of a named import is not followed.
+    return (spec, member.split(".")[0]) if exported == "default" else None
 
 
 def _named_export_re(var: str) -> re.Pattern[str]:
