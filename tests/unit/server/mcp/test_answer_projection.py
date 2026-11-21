@@ -157,7 +157,10 @@ def test_high_medium_and_low_are_intentionally_different_shapes():
     assert "retrieval" not in high and "best_guesses" not in high
     assert "retrieval" not in medium and len(medium["best_guesses"]) == 1
     assert "best_guesses" in low and "retrieval" not in low
-    assert high["next_action_hint"] == "Use the answer and citations directly."
+    assert high["next_action_hint"] == (
+        "Use the answer directly; it rests on `check` (src/auth/service.py:1-2), "
+        "served in symbol_bodies."
+    )
     assert medium["next_action_hint"] != high["next_action_hint"]
     assert low["next_action_hint"] != high["next_action_hint"]
 
