@@ -538,6 +538,13 @@ def string_constants(
             if code is None and on_comment_line(content, m.start()):
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
+    if syntax is JS_SYNTAX and "static" in content:
+        # `Api.BASE` reads a static field from anywhere in the file.
+        for cls in js_class_fields(content):
+            for field_name, rhs in cls.static_fields.items():
+                key = cls.name + field_name.removeprefix("this")
+                unsettled = key in seen or resolve_string(rhs, syntax) is None
+                seen[key] = None if unsettled else rhs
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
         seen[m.group(1)] = None
@@ -547,7 +554,7 @@ def string_constants(
     return {name: text for name, text in seen.items() if text is not None}
 
 
-_CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+[A-Za-z_$][\w$]*[^{;]*\{")
+_CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)[^{;]*\{")
 # A class field and what it is set to: a declaration on its own line
 # (`private base = x`, `base: string = x`) or `this.base = x` anywhere, with
 # `op` set for a compound assignment (`this.base += x`).
@@ -575,7 +582,8 @@ class ClassFields:
     """One class body's span and its fields: ``this.name -> rhs``, raw text.
 
     *static_fields* are what ``this.name`` reads inside the *static_spans*,
-    the bodies of the class's static members, where ``this`` is the class.
+    the bodies of the class's static members, where ``this`` is the class,
+    and what ``Name.name`` reads anywhere in the file, *name* being the class's.
     """
 
     start: int
@@ -583,6 +591,7 @@ class ClassFields:
     fields: dict[str, str]
     static_fields: dict[str, str] = field(default_factory=dict)
     static_spans: tuple[tuple[int, int], ...] = ()
+    name: str = ""
 
     def fields_at(self, pos: int) -> dict[str, str]:
         """The fields ``this.name`` reads at *pos*: static in a static member."""
@@ -601,10 +610,12 @@ def js_class_fields(content: str) -> list[ClassFields]:
     classes come first.
     """
     spans: list[tuple[int, int]] = []
+    names: dict[tuple[int, int], str] = {}
     for c in _CLASS_OPEN_RE.finditer(content):
         close = match_paren(content, c.end() - 1, len(content), closer="}")
         if close > 0:
             spans.append((c.end(), close))
+            names[spans[-1]] = c.group("name")
     out: list[ClassFields] = []
     for start, end in sorted(spans, key=lambda s: s[1] - s[0]):
         inner = [s for s in spans if start < s[0] and s[1] < end]
@@ -624,7 +635,9 @@ def js_class_fields(content: str) -> list[ClassFields]:
         fields = {name: rhs for name, rhs in seen.items() if rhs}
         static_fields = {name: rhs for name, rhs in seen_static.items() if rhs}
         if fields or static_fields:
-            out.append(ClassFields(start, end, fields, static_fields, statics))
+            out.append(
+                ClassFields(start, end, fields, static_fields, statics, names[(start, end)])
+            )
     return out
 
 

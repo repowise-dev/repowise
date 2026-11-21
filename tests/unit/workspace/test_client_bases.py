@@ -96,6 +96,24 @@ def test_a_static_method_reads_this_as_the_class(tmp_path: Path) -> None:
     }
 
 
+def test_a_static_field_read_through_the_class_name(tmp_path: Path) -> None:
+    # `Api.BASE` is the static field from any member of the class and from
+    # the rest of the file.
+    text = (
+        "export class Api {\n"
+        "  static BASE = '/api';\n"
+        "  static get() { return fetch(`${Api.BASE}/x`); }\n"
+        "  list() { return fetch(`${Api.BASE}/items`); }\n"
+        "}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    assert _paths(tmp_path, "src/api.ts", text) == {
+        ("GET", "/api/x"),
+        ("GET", "/api/items"),
+        ("GET", "/api/top"),
+    }
+
+
 def test_this_reads_static_fields_only_in_static_members(tmp_path: Path) -> None:
     # `this.BASE` in an instance method is no static field (it is undefined at
     # run time), and an instance field is not what a static method reads.
