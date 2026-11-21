@@ -106,7 +106,9 @@ async def _count_generate_calls(factory: Any, repo_id: str, repo_path: str) -> i
         logger.debug("providers: generate call count gave up after %ss", _COUNT_CEILING_S)
         return None
     except Exception:
-        logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
+        logger.warning(
+            "providers: could not count generate's calls for %s", repo_id, exc_info=True
+        )
         _generate_counts.pop(repo_id, None)
         return None
     _generate_calls[repo_id] = calls
@@ -155,7 +157,9 @@ async def _plan_route(
         if calls is not None:
             route = route_minutes(route, calls)
     except Exception:
-        logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
+        logger.warning(
+            "providers: could not count generate's calls for %s", repo_id, exc_info=True
+        )
     return {"provider": route.provider, "cli_name": route.cli_name, "minutes": route.minutes}
 
 
