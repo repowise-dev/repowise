@@ -47,8 +47,12 @@ def without_evidence(view: dict[str, Any], ids: frozenset[str]) -> dict[str, Any
 
     The agent surface carries no runtime evidence yet, so an action on a
     cause minted from a measurement alone stays on the people's surfaces.
-    Ceiling: a horizon keeps the actions it stored, so one taken out is not
-    replaced by the next.
+    The head refills: a horizon holds ``KEEP_PER_HORIZON`` ranked actions and
+    the overview shows the first ``_PER_HORIZON`` left. Ceiling: the Fix-first
+    rule stores actions for its top ``FIX_FIRST_ACTIONS`` items only, so a
+    hidden one there is not replaced by the next Fix-first item; another
+    rule's action takes the place. Keeping a spare would grow the stored view
+    every surface reads.
     """
     if not ids:
         return view

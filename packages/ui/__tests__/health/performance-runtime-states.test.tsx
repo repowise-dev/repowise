@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MeasuredFunction, MeasuredResponse } from "@repowise-dev/types/runtime-evidence";
 
 import { PerformanceView } from "../../src/health/performance-view";
-import { adapter } from "./fixtures/performance";
+import { adapter, opportunity, page } from "./fixtures/performance";
 import { evidenceAdapter, measured, RUNS, runSummary } from "./fixtures/runtime-evidence";
 
 configure({ asyncUtilTimeout: 5000 });
@@ -57,6 +57,75 @@ const openFirstCause = async () => {
 };
 
 describe("Drawer: runs that measured it", () => {
+  const carried = "Measured: rank 1 of repo code in entry_point \"cli build\" (3% self, 2-3%), 2d old";
+  const hotspotPage = () =>
+    page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_hotspot",
+          biomarker_type: "measured_hotspot",
+          boundary_kind: null,
+          intervention_symbol: "src/a.py::build",
+          observations_total: 0,
+          evidence: [
+            {
+              finding_id: "",
+              file_path: "src/a.py",
+              biomarker_type: "measured_hotspot",
+              function_name: "build",
+              line_start: null,
+              line_end: null,
+              reason: carried,
+              path: [],
+              provenance: "measured",
+            },
+          ],
+        }),
+      ],
+      total: 1,
+      next_offset: null,
+    });
+
+  it("never flashes a hotspot's carried line while the live row loads", async () => {
+    let resolve!: (value: { functions: MeasuredFunction[] }) => void;
+    const getMeasuredFunctions = vi.fn(
+      () => new Promise<{ functions: MeasuredFunction[] }>((r) => (resolve = r)),
+    );
+    render(
+      <PerformanceView
+        adapter={adapter({
+          ...evidenceAdapter(),
+          getPerformanceOpportunities: async () => hotspotPage(),
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions,
+        })}
+      />,
+    );
+    const panel = await openFirstCause();
+    await vi.waitFor(() => expect(getMeasuredFunctions).toHaveBeenCalled());
+    expect(within(panel).queryByText(carried)).toBeNull();
+    resolve({ functions: [measuredFunction()] });
+    expect(await within(panel).findByText("cli build · entry point")).toBeTruthy();
+    expect(within(panel).queryByText(carried)).toBeNull();
+  });
+
+  it("shows a hotspot's carried line once the reads settle without a row", async () => {
+    const getMeasuredFunctions = vi.fn(async () => ({ functions: [] }));
+    render(
+      <PerformanceView
+        adapter={adapter({
+          ...evidenceAdapter(),
+          getPerformanceOpportunities: async () => hotspotPage(),
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions,
+        })}
+      />,
+    );
+    const panel = await openFirstCause();
+    expect(await within(panel).findByText(carried)).toBeTruthy();
+    expect(getMeasuredFunctions).toHaveBeenCalled();
+  });
+
   it("shows the basis run's share, interval and basis for the cause's function", async () => {
     const getMeasuredFunctions = vi.fn(async () => ({ functions: [measuredFunction()] }));
     render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasuredFunctions })} />);

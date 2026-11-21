@@ -9,7 +9,11 @@ import pytest
 from sqlalchemy import insert
 
 from repowise.core.analysis.function_test_map import MappedTest, encode_tests
-from repowise.core.persistence.crud import measured_costs, replace_workload_hotness
+from repowise.core.persistence.crud import (
+    measured_costs,
+    replace_symbol_hotness,
+    replace_workload_hotness,
+)
 from repowise.core.persistence.models import (
     EvidenceRun,
     FunctionFact,
@@ -541,3 +545,67 @@ async def test_a_measured_function_no_static_cause_owns_becomes_one_item(async_s
     assert [i.rank for i in hidden.items] == list(range(1, len(queue.items)))
     assert hidden.totals.eligible == queue.totals.eligible - 1
     assert hidden.by_improves["performance"] == queue.by_improves["performance"] - 1
+
+
+async def test_a_measured_hotspots_evidence_on_rest_is_the_run_that_measured_it(
+    async_session,
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.server.routers.code_health.performance_routes import (
+        get_performance_opportunity_detail,
+        list_performance_opportunity_findings,
+    )
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _two_startup_causes(async_session, repo.id, evidence=True)
+    await replace_workload_hotness(
+        async_session, repo.id, [{**_hot("load", rank=2), "tier": "lead_candidate"}]
+    )
+    # The function's basis row, the one the drawer's measured runs read.
+    await replace_symbol_hotness(
+        async_session,
+        repo.id,
+        [
+            {
+                **_hot("load", rank=2),
+                "tier": "lead_candidate",
+                "workload_name": "w-r1",
+                "workload_class": "entry_point",
+                "measured_at": NOW,
+            }
+        ],
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    (item,) = [r for r in rows if r.biomarker_type == "measured_hotspot"]
+    static = next(r for r in rows if r.biomarker_type != "measured_hotspot")
+
+    page = await list_performance_opportunity_findings(
+        repo.id, item.opportunity_id, limit=50, offset=0, session=async_session
+    )
+    assert (page["total"], page["has_more"]) == (1, False)
+    (row,) = page["items"]
+    assert (row["file_path"], row["function_name"]) == (APP, "load")
+    # Function, rank, share with its interval and the workload, from the run.
+    assert row["reason"].startswith("Measured: rank 2 ")
+    assert "w-r1" in row["reason"] and "10%" in row["reason"]
+    assert (
+        await list_performance_opportunity_findings(
+            repo.id, item.opportunity_id, limit=50, offset=1, session=async_session
+        )
+    )["items"] == []
+
+    detail = await get_performance_opportunity_detail(
+        repo.id, item.opportunity_id, evidence_limit=8, evidence_offset=0, session=async_session
+    )
+    assert detail["evidence_total"] == 1
+    assert detail["evidence"][0]["reason"] == row["reason"]
+
+    # A static cause keeps its own observations and is never given a run.
+    other = await list_performance_opportunity_findings(
+        repo.id, static.opportunity_id, limit=50, offset=0, session=async_session
+    )
+    assert all(r["biomarker_type"] != "measured_hotspot" for r in other["items"])
