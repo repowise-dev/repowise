@@ -539,11 +539,16 @@ def string_constants(
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
     if syntax is JS_SYNTAX and "static" in content:
-        # `Api.BASE` reads a static field from anywhere in the file.
+        # `Api.BASE` reads a static field from anywhere in the file, unless the file
+        # also writes it from outside (`Api.BASE = x`, `Api[k] = x`, `Object.assign(Api, ...)`).
         for cls in js_class_fields(content):
             for field_name, rhs in cls.static_fields.items():
                 key = cls.name + field_name.removeprefix("this")
-                unsettled = key in seen or resolve_string(rhs, syntax) is None
+                unsettled = (
+                    key in seen
+                    or resolve_string(rhs, syntax) is None
+                    or _static_rebinding_re(key).search(text) is not None
+                )
                 seen[key] = None if unsettled else rhs
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
@@ -552,6 +557,15 @@ def string_constants(
         for name in m.group(1).replace(" ", "").split(","):
             seen[name.lstrip("$")] = None
     return {name: text for name, text in seen.items() if text is not None}
+
+
+def _static_rebinding_re(key: str) -> re.Pattern[str]:
+    """A write to the static field *key* (``Api.BASE``) from outside its declaration."""
+    cls, member = (re.escape(part) for part in key.split(".", 1))
+    return re.compile(
+        rf"(?<![\w$.]){cls}\s*(?:\.\s*{member}\s*[-+*/%?|&]*=(?![=>])|\[[^\]]*\]\s*[-+*/%?|&]*=(?![=>]))"
+        rf"|Object\s*\.\s*assign\s*\(\s*{cls}\b"
+    )
 
 
 _CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)[^{;]*\{")

@@ -114,6 +114,20 @@ def test_a_static_field_read_through_the_class_name(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "write", ["Api.BASE = '/v2';", "Api.BASE += '/v2';", "Api['BASE'] = '/v2';", "Object.assign(Api, { BASE: '/v2' });"]
+)
+def test_a_static_field_the_file_writes_from_outside_is_no_constant(tmp_path: Path, write: str) -> None:
+    text = (
+        "export class Api {\n"
+        "  static BASE = '/api';\n"
+        "}\n"
+        f"{write}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    assert ("GET", "/api/top") not in _paths(tmp_path, "src/api.ts", text)
+
+
 def test_this_reads_static_fields_only_in_static_members(tmp_path: Path) -> None:
     # `this.BASE` in an instance method is no static field (it is undefined at
     # run time), and an instance field is not what a static method reads.
