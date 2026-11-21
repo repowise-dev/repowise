@@ -198,6 +198,69 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     assert sorted(stale_paths) == ["bar.py", "foo.py"]
 
 
+async def _add_stale_page(
+    repo_path: Path, page_type: str, metadata: dict | None = None, target: str = "app"
+) -> None:
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+        upsert_page,
+    )
+
+    engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
+    async with get_session(create_session_factory(engine)) as session:
+        repo = await get_repository_by_path(session, str(repo_path))
+        await upsert_page(
+            session,
+            page_id=f"{page_type}:{target}",
+            repository_id=repo.id,
+            page_type=page_type,
+            title=target,
+            content="body",
+            target_path=target,
+            source_hash="hash",
+            model_name="template",
+            provider_name="template",
+            freshness_status="stale",
+            metadata=metadata,
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+def test_a_stale_model_free_page_is_structural_everywhere(tmp_path: Path) -> None:
+    """Issue #6079: built from code on every run, so update refreshes it and nothing prices it."""
+    from repowise.cli.commands._page_freshness import stale_page_count
+
+    repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, []))
+    asyncio.run(_add_stale_page(repo_path, "onboarding", {"model_free": True}))
+
+    # The catch-up of `update --full` starts `generate --stale` on a model count.
+    assert asyncio.run(stale_page_count(repo_path, model_written=True)) == 0
+    assert asyncio.run(stale_page_count(repo_path, model_written=False)) == 1
+    assert load_stale_update_targets(repo_path) == ([], {"onboarding:app"})
+
+    # A model wrote this one: update must not render a stub over its prose.
+    asyncio.run(_add_stale_page(repo_path, "onboarding", target="paid"))
+    assert load_stale_update_targets(repo_path) == ([], {"onboarding:app"})
+    assert asyncio.run(stale_page_count(repo_path, model_written=True)) == 1
+
+
+def test_the_stale_split_reads_metadata_of_model_free_types_only(tmp_path: Path) -> None:
+    """Only an onboarding page can be model-free: a module page's metadata is never read."""
+    from repowise.cli.commands._page_freshness import stale_page_count
+
+    repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["foo.py"]))
+    asyncio.run(_add_stale_page(repo_path, "module_page", {"model_free": True}))
+    asyncio.run(_add_stale_page(repo_path, "onboarding", {"model_free": True}))
+
+    assert asyncio.run(stale_page_count(repo_path, model_written=True)) == 1
+    assert asyncio.run(stale_page_count(repo_path, model_written=False)) == 2
+    assert asyncio.run(stale_page_count(repo_path)) == 3
+
+
 def test_doctor_stale_guidance_names_each_owner() -> None:
     detail = repo_checks._stale_page_guidance(
         {

@@ -992,13 +992,108 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
 
     # A form feed and a line separator are not line breaks to grep.
     (tmp_path / "a.py").write_text("x = 1\f y = 2 z\ndef target():\n", encoding="utf-8")
+    pattern = re.compile(r"def \w+\(")
     rows, reasons = _line_hits._scan(
-        tmp_path, ["a.py"], re.compile(r"def \w+\("), _line_hits._DECLARATION_LINE, None, per_line=True
+        tmp_path, ["a.py"], pattern, _line_hits._declares(pattern), None, per_line=True
     )
 
     assert [(r["line"], r["kind"]) for r in rows] == [(2, "definition")]
     assert reasons == []
 
+
+@pytest.mark.parametrize(
+    ("line", "query", "kind"),
+    [
+        # A call on a declaring line uses the name; the declared name is another.
+        ("    let c = open_ro(&p)?;", r"open_ro\(", "match"),
+        ("const x = make(1);", r"make\(", "match"),
+        ("let mut x = make(1);", r"make\(", "match"),
+        ("class Foo(Base):", r"Base\b", "match"),
+        ("def run(): return helper()", r"helper\(", "match"),
+        # The declaration of the matched name, in any declaring language.
+        ("pub fn open_ro(p: &Path) -> Conn {", r"open_ro\(", "definition"),
+        ("    let c = open_ro(&p)?;", r"let c\b", "definition"),
+        ("let mut x = make(1);", r"\bx =", "definition"),
+        ("export async function load(id) {", r"load\(", "definition"),
+        ("func (s *Store) Load(id int) error {", r"Load\(", "definition"),
+        ("type Store struct {", r"Store struct", "definition"),
+        ("class Foo(Base):", r"^class ", "definition"),
+        ("pub const fn foo() -> u8 {", r"foo\(", "definition"),
+        ("export const enum Color { Red }", r"Color\b", "definition"),
+        ("var x, y int", r"\by\b", "definition"),
+        ("const { a, b } = load();", r"\bb\b", "definition"),
+        ("const { a, b } = load();", r"load\(", "match"),
+        ("let Point { x, y } = p;", r"\bx\b", "definition"),
+        ("let (a, b) = pair();", r"\bb\b", "definition"),
+        ("const { a = load() } = opts;", r"load\(", "match"),
+        ("const [a = load()] = opts;", r"load\(", "match"),
+        ("def run(x): return helper()", r"\brun\(", "definition"),
+        # A Go receiver names a type the method does not declare.
+        ("func (s *Store) Save() error {", r"Store\b", "match"),
+        ("func (g *Getter) GetX() {", r"Get\w*", "definition"),
+        ("function* gen() {", r"gen\(", "definition"),
+        # A keyword glued to a parenthesis is a call.
+        ("kind = type(self.load(cfg))", r"load\(", "match"),
+        ("type(self.load(cfg))", r"load\(", "match"),
+        # C, Java and Kotlin heads: the declared name, never the type or a call.
+        ("static int parse_args(int argc, char **argv) {", r"parse_args\(", "definition"),
+        ("char *strdup_safe(const char *s);", r"strdup_safe", "definition"),
+        ("    public static List<String> loadAll(Path p) throws IOException {", r"loadAll\(", "definition"),
+        ("    public static List<String> loadAll(Path p) {", r"List<", "match"),
+        ("    private final Map<String, Foo> cache = new HashMap<>();", r"\bcache\b", "definition"),
+        ("    private final Map<String, Foo> cache = new HashMap<>();", r"HashMap", "match"),
+        ("public class Store {", r"Store\b", "definition"),
+        ("    @Override public void run() {", r"run\(", "definition"),
+        ("    return parse_args(argc, argv);", r"parse_args\(", "match"),
+        ("    int rc = parse_args(argc, argv);", r"parse_args\(", "match"),
+        ("fun loadAll(path: Path): List<String> {", r"loadAll\(", "definition"),
+        ("    private suspend fun fetch(id: Int) = api.get(id)", r"fetch\(", "definition"),
+        ("    private suspend fun fetch(id: Int) = api.get(id)", r"get\(", "match"),
+        ("fun <T> List<T>.second(): T = this[1]", r"second\(", "definition"),
+        ("fun <T> List<T>.second(): T = this[1]", r"List<", "match"),
+        ("    val cache = mutableMapOf<String, Int>()", r"\bcache\b", "definition"),
+        ("object Registry {", r"Registry\b", "definition"),
+        ("data class Point(val x: Int)", r"Point\(", "definition"),
+        # Lines that declare nothing.
+        ("x = make(1)", r"make\(", "match"),
+        ("    go run(ctx)", r"run\(", "match"),
+        ("    assert check(x)", r"check\(", "match"),
+        ("if foo(x):", r"foo", "match"),
+        ("    if foo(x): return 1", r"foo", "match"),
+        ("elif foo(x):", r"foo", "match"),
+        ("while foo(x):", r"foo", "match"),
+        ("with foo(x) as f:", r"foo", "match"),
+        ("using foo;", r"foo", "match"),
+        ("namespace foo;", r"foo", "match"),
+        ("cd foo;", r"foo", "match"),
+        ("my foo(", r"foo", "match"),
+        ("x.bar foo(1)", r"foo", "match"),
+        ("SELECT foo(x)", r"foo", "match"),
+        ("rescue foo(x)", r"foo", "match"),
+        ("unless foo(x)", r"foo", "match"),
+        ("size_t foo = 0;", r"foo", "definition"),
+        ("Store foo(int x) {", r"foo", "definition"),
+        ("fun <T : Comparable<T>> sortAll(items: List<T>) {", r"sortAll", "definition"),
+        ("    Returns foo(x) when the cache is warm.", r"foo", "match"),
+        ("obj. foo(1);", r"foo", "match"),
+        ("    width*scale(x),", r"scale", "match"),
+        ("const char *get_name(void) {", r"get_name", "definition"),
+        ("lo < hi and hi > check(x)", r"check", "match"),
+        ("data frame load(path) reads it", r"load", "match"),
+        ("    public <T extends Comparable<T>> void sort(List<T> xs) {", r"sort", "definition"),
+        ("    width * compute(x) +", r"compute", "match"),
+        ("ready && validate(input);", r"validate", "match"),
+        ("int& ref_to(int x);", r"ref_to", "definition"),
+        ("char* dup(const char *s);", r"dup", "definition"),
+        ("x := make(1)", r"make\(", "match"),
+    ],
+)
+def test_a_regex_hit_is_a_definition_only_where_its_line_declares_it(line, query, kind):
+    import re
+
+    hits = _line_hits._hit_kinds("src/a.rs", [(1, line)], _line_hits._declares(re.compile(query)))
+
+    assert hits == [(1, line, kind)]
 
 def test_pages_beside_definition_lines_are_dropped():
     from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL

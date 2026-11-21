@@ -435,7 +435,7 @@ def coverage_setup(repo: str | None, fmt: str) -> None:
     """
     from repowise.cli.commands.evidence_cmd import _print_setup
 
-    _print_setup(repo, fmt, coverage_only=True)
+    _print_setup(repo, fmt, coverage_only=True, command="coverage")
 
 
 @coverage_group.command("status")
@@ -523,6 +523,14 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     console.print(
                         f"  Report paths matched: {paths['matched']} of {paths['total']}"
                     )
+                unreported = summary.get("unreported_file_count") or 0
+                if unreported:
+                    named = summary.get("unreported_files") or []
+                    more = f" and {unreported - len(named)} more" if unreported > len(named) else ""
+                    console.print(
+                        f"  Not in the report: {unreported} indexed production file(s) "
+                        f"({escape(', '.join(named))}{more})"
+                    )
                 if (summary.get("freshness") or {}).get("status") == "stale":
                     console.print(
                         f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
@@ -553,3 +561,72 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
 
     run_async(_do())
+
+
+@coverage_group.command("export")
+@click.argument(
+    "report", required=False, type=click.Path(exists=True, dir_okay=False, readable=True)
+)
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
+@click.option(
+    "--output",
+    "-o",
+    "output",
+    default="per-test-map.json.gz",
+    show_default=True,
+    help="File to write the gzipped map to.",
+)
+def coverage_export(report: str | None, repo: str | None, output: str) -> None:
+    """Write the per-test map as a small gzipped file, for an upload from CI.
+
+    With no REPORT, the map `coverage add` stored; with one (a `.coverage` with
+    per-test contexts, or a per-test lcov), that report's map, no index needed.
+    Either way in the stored layout: a few MB where the raw database is
+    gigabytes to parse.
+    """
+    from repowise.core.persistence.crud.analysis.coverage_map import (
+        dump_per_test_map,
+        per_test_map_from_records,
+    )
+
+    async def _stored():
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.crud.analysis.coverage_map import get_per_test_map
+
+        repo_path = _resolve_coverage_repo(repo)
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        async with get_session(create_session_factory(engine)) as session:
+            repo_row = await get_repository_by_path(session, str(repo_path))
+            return await get_per_test_map(session, repo_row.id) if repo_row else None
+
+    if report:
+        from repowise.core.analysis.health.coverage.contexts import parse_contexts_file
+
+        parsed = parse_contexts_file(report)
+        tmap = (
+            per_test_map_from_records(parsed.records, parsed.source_format)
+            if parsed.has_contexts
+            else None
+        )
+    else:
+        tmap = run_async(_stored())
+    if tmap is None:
+        console.print(
+            "[yellow]No per-test map to export.[/yellow] Record one with "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], then "
+            "[cyan]repowise coverage export .coverage[/cyan]."
+        )
+        raise click.exceptions.Exit(1)
+    data = dump_per_test_map(tmap)
+    Path(output).write_bytes(data)
+    console.print(
+        f"Wrote {escape(output)}: {len(tmap.tests)} tests, {tmap.pair_count} test-file pairs, "
+        f"{len(data) / 1e6:.1f} MB."
+    )

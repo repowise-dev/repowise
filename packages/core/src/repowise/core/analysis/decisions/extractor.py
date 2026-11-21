@@ -39,6 +39,7 @@ from .commit_mining import (
     _BATCH_MAX_TOKENS,
     _MAX_PR_BODIES,
     _attribute_to_commit,
+    drop_subject_restatements,
     git_commit_block,
     pr_candidates,
     pr_commit_block,
@@ -437,7 +438,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_reply(response)
+            extracted = drop_subject_restatements(parse_decisions_reply(response), batch, "message")
 
             # Enrich with commit metadata
             for d in extracted:
@@ -609,7 +610,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_reply(response)
+            extracted = drop_subject_restatements(parse_decisions_reply(response), batch, "subject")
             for d in extracted:
                 _attribute_to_commit(d, batch, "subject", files_by_sha, source_by_sha)
                 d.source = "pr"

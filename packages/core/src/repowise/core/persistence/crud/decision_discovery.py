@@ -42,6 +42,20 @@ def _named_files(record: DecisionRecord) -> list[str]:
     return [f for f in files if isinstance(f, str) and f] if isinstance(files, list) else []
 
 
+def _held_by_agent(meta: DecisionCandidateMeta | None) -> bool:
+    """Whether an agent confirmed the record and it waits for its commit to land.
+
+    :func:`~repowise.core.persistence.crud.authority.hold_decision` notes the
+    agent in the review row; the record keeps its source, so the row is the
+    only place that says so.
+    """
+    try:
+        grounding = json.loads(meta.grounding_json or "{}") if meta is not None else {}
+    except (TypeError, ValueError):
+        return False
+    return isinstance(grounding, dict) and bool(grounding.get("agent"))
+
+
 async def _production_heat(
     session: AsyncSession, repository_id: str, paths: list[str]
 ) -> dict[str, tuple[bool, float, float]]:
@@ -80,19 +94,20 @@ async def _production_heat(
     return heat
 
 
-async def discovery_records(
-    session: AsyncSession, repository_id: str, *, limit: int = DISCOVERY_LIMIT
-) -> list[dict[str, Any]]:
-    """Background records on the busiest production files, busiest first.
+async def background_records(
+    session: AsyncSession, repository_id: str
+) -> list[tuple[DecisionRecord, DecisionCandidateMeta | None, list[str]]]:
+    """Every background record on production code, busiest first: ``(record, meta, files)``.
 
     Background: never put in force, not retired, nobody has dismissed, merged
-    or split it, not an agreement, and not an agent's record waiting for its
-    commit to merge. A record must name a production file git has history
+    or split it, not an agreement, and not an agent's record, or one an agent
+    confirmed, waiting for its commit to merge. A record must name a production file git has history
     for; its place is its busiest such file (hotspot first, then hotspot
-    score, then churn). Each dict names those files, busiest first.
+    score, then churn), then confidence, then id, so the order is total and
+    an offset pages it. *files* are those files, busiest first.
     """
     q = (
-        select(DecisionRecord)
+        select(DecisionRecord, DecisionCandidateMeta)
         .outerjoin(DecisionCandidateMeta, DecisionCandidateMeta.decision_id == DecisionRecord.id)
         .where(
             DecisionRecord.repository_id == repository_id,
@@ -106,12 +121,14 @@ async def discovery_records(
         )
     )
     records = [
-        (rec, files)
-        for rec in (await session.execute(q)).scalars().all()
-        if binds_to_paths(rec.scope_basis) and (files := _named_files(rec))
+        (rec, meta, files)
+        for rec, meta in (await session.execute(q)).all()
+        if binds_to_paths(rec.scope_basis)
+        and not _held_by_agent(meta)
+        and (files := _named_files(rec))
     ]
     heat = await _production_heat(
-        session, repository_id, sorted({f for _, files in records for f in files})
+        session, repository_id, sorted({f for *_, files in records for f in files})
     )
 
     def file_key(path: str) -> tuple[bool, float, float, str]:
@@ -119,14 +136,21 @@ async def discovery_records(
         return (not hot, -score, -churn, path)
 
     ranked = []
-    for rec, files in records:
+    for rec, meta, files in records:
         busy = sorted((f for f in dict.fromkeys(files) if f in heat), key=file_key)
         if busy:
-            ranked.append((file_key(busy[0]), -(rec.confidence or 0.0), rec.id, rec, busy))
+            ranked.append((file_key(busy[0]), -(rec.confidence or 0.0), rec.id, rec, meta, busy))
     ranked.sort(key=lambda item: item[:3])
+    return [(rec, meta, busy) for *_, rec, meta, busy in ranked]
+
+
+async def discovery_records(
+    session: AsyncSession, repository_id: str, *, limit: int = DISCOVERY_LIMIT
+) -> list[dict[str, Any]]:
+    """The first *limit* :func:`background_records`, each naming its files busiest first."""
     return [
         {"id": rec.id, "title": rec.title, "source": rec.source, "files": busy}
-        for *_, rec, busy in ranked[:limit]
+        for rec, _meta, busy in (await background_records(session, repository_id))[:limit]
     ]
 
 
@@ -151,7 +175,11 @@ async def agreement_records(
 
 
 async def decision_prompt_for(session: AsyncSession, repository_id: str, kind: str) -> DecisionPrompt:
-    """The decision prompt *kind* (``discover``, ``add``, ``agreements``) over this store."""
+    """The decision prompt *kind* (``discover``, ``review_all``, ``add``, ``agreements``) over this store."""
+    if kind == "review_all":
+        # The queue ``repowise decision candidates --background`` pages through.
+        rows = await background_records(session, repository_id)
+        return decision_prompt(kind, [{"id": rec.id} for rec, _meta, _files in rows[:1]])
     if kind == "agreements":
         return decision_prompt(kind, await agreement_records(session, repository_id))
     if kind == "add":

@@ -5,12 +5,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+# A comment prefix, including Sphinx's ``#:`` for documented attributes.
+_COMMENT_PREFIX = r"^\s*(?:#:?|//|--|/\*|\*)\s*"
+_COMMENT_PREFIX_RE = re.compile(_COMMENT_PREFIX)
+
 # Case-sensitive on purpose: markers are caps conventions like TODO:, and a
 # lowercase match turns ordinary prose ("# decision: ...") into a decision.
 MARKER_RE = re.compile(
-    r"^\s*(?:#|//|--|/\*|\*)\s*"
-    r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
-    r"\s*:\s*(?P<text>.+)",
+    _COMMENT_PREFIX
+    + r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
+    + r"\s*:\s*(?P<text>.+)",
 )
 
 # Regex to detect fenced code blocks in markdown files (``` or ~~~).
@@ -71,10 +75,12 @@ def _with_continuation(marker_text: str, following: list[str]) -> str:
     """Append continuation lines (same comment prefix, no keyword) to a marker."""
     for cont_line in following:
         cont = cont_line.strip()
-        if not (cont.startswith(("#", "//", "--", "*")) and ":" not in cont[:20]):
+        # The colon of a ``#:`` prefix is part of the prefix, not a new label.
+        probe = cont[2:] if cont.startswith("#:") else cont
+        if not (cont.startswith(("#", "//", "--", "*")) and ":" not in probe[:20]):
             break
         # Strip comment prefix
-        cleaned = re.sub(r"^\s*(?:#|//|--|/\*|\*)\s*", "", cont)
+        cleaned = _COMMENT_PREFIX_RE.sub("", cont)
         if cleaned:
             marker_text += " " + cleaned
     return marker_text

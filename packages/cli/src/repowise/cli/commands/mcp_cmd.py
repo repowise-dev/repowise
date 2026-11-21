@@ -130,11 +130,10 @@ def _print_network_startup(
     default=None,
     help=(
         "Override which tools this server entry lists, for its client. Name "
-        "a profile ('core', 'standard', 'all'), optionally followed by +name "
+        "a profile (core, lean, standard, all), optionally followed by +name "
         "or -name (e.g. 'core,+get_health'); +name or -name alone adjusts the "
         "client's default (e.g. '+get_dependency_path,-get_dead_code'); plain "
-        "names are the exact list; 'lean' selects the "
-        "six-tool agent-lean profile. Overrides the mcp.tools config block. "
+        "names are the exact list. Overrides the mcp.tools config block. "
         "Unset: Claude Code gets 'standard', other clients 'core'."
     ),
 )

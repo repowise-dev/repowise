@@ -35,6 +35,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
+from .http.fastapi import mount_prefix
 from .http.flask import flask_file
 from .http.mounts import compose_prefix, router_prefixes
 from .langs import JS_TS, PYTHON
@@ -279,7 +280,7 @@ def extract_http_providers(
         if var not in known:
             continue
         path = compose_prefix(prefixes.get(var, ""), raw_path)
-        path = compose_prefix(ctx.mounts.get(var, ""), path)
+        path = compose_prefix(mount_prefix(ctx, var), path)
         key = (method, path)
         if key in seen:
             continue

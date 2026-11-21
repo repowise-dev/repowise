@@ -53,6 +53,10 @@ Row shapes (the field names are the SQL columns):
 ``coverage``
     One mapping: ``files_measured``, ``ingested_at``, ``ingested_commit_sha``,
     ``partial``.
+``runtime``
+    One mapping: ``runs`` (stored evidence runs), ``ingested_at`` and
+    ``commit_sha`` of the newest, and ``targets`` (the workload classes the
+    index holds something to run for).
 ``test_map``
     One mapping of path to ``total`` (test files that reach it in the code
     graph) and ``via`` (the walk, or ``mocked-only`` with a total of 0 when
@@ -72,11 +76,13 @@ from typing import Any
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import is_safe
 from repowise.core.analysis.finding_registry import excluded_types, is_served
+from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import lead_and_worth, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.author_identity import author_identity_key
 from repowise.core.test_paths import is_test_related_path
 
@@ -90,6 +96,7 @@ from .facts import (
     LeadFinding,
     RecentFinding,
     RepoFacts,
+    RuntimeState,
     SecretFacts,
 )
 from .rules.code import FIX_FIRST_ACTIONS, is_fragile
@@ -269,18 +276,34 @@ def with_test_reach(
 
 
 def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
+    """Each person's last commit and how many were active since *since*.
+
+    People come from the shared resolver, so one person's emails and names are
+    one author. ``author_last_commit`` is keyed on every email folded into a
+    person, so a file owner's stored email finds them under any of them.
+    """
+    rows = list(rows)
+    resolve = people_resolver(commit_rows=rows)
     last: dict[str, datetime] = {}
     active: set[str] = set()
     for r in rows:
         latest = _when(field(r, "committed_at"))
         if latest is None:
             continue
-        key = author_identity_key(field(r, "author_name"), field(r, "author_email"))
+        key = resolve(field(r, "author_name"), field(r, "author_email"))
+        if not key:
+            continue
         if key not in last or latest > last[key]:
             last[key] = latest
         if since is not None and latest >= since:
             active.add(key)
-    return {"author_last_commit": last, "active_authors_90d": len(active)}
+    # A name-only person is found the way ``owner_key`` spells them.
+    by_email = {
+        email: when
+        for key, when in last.items()
+        for email in resolve.aliases(key)[1] or [key.removeprefix("name:").strip().lower()]
+    }
+    return {"author_last_commit": by_email, "active_authors_90d": len(active)}
 
 
 #: Markers that read a measured coverage report, so "worsened" is coverage the
@@ -525,6 +548,25 @@ def build_coverage(row: Mapping[str, Any], head_sha: str | None) -> dict[str, An
     }
 
 
+def build_runtime(row: Mapping[str, Any], head_sha: str | None) -> dict[str, Any]:
+    """Runtime evidence as the rules read it; fresh or stale by the one rule
+    every evidence surface uses (``coverage_freshness``)."""
+    targets = tuple(row.get("targets") or ())
+    if not row.get("runs"):
+        return {"runtime": RuntimeState("unknown", targets=targets)}
+    sha = row.get("commit_sha")
+    stale = coverage_freshness(sha, head_sha) == "stale"
+    return {
+        "runtime": RuntimeState(
+            "stale" if stale else "measured",
+            _when(row.get("ingested_at")),
+            sha,
+            int(row["runs"]),
+            targets,
+        )
+    }
+
+
 # --- all of it ----------------------------------------------------------------
 
 
@@ -545,6 +587,7 @@ def build_repo_facts(
     dead_code: Rows | None = None,
     decisions: Mapping[str, Any] | None = None,
     coverage: Mapping[str, Any] | None = None,
+    runtime: Mapping[str, Any] | None = None,
     test_map: Mapping[str, Any] | None = None,
     history_commits: int | None = None,
     unavailable: Mapping[str, str] | None = None,
@@ -603,6 +646,7 @@ def build_repo_facts(
     build("dead_code", dead_code, lambda rows: build_dead(rows, known_files))
     build("decisions", decisions, build_decisions)
     build("coverage", coverage, lambda row: build_coverage(row, head_sha))
+    build("runtime", runtime, lambda row: build_runtime(row, head_sha))
     values["unavailable"] = {**missing, **(unavailable or {})}
     return RepoFacts(**values)
 
@@ -624,6 +668,7 @@ __all__ = [
     "build_fix_first_store",
     "build_recent",
     "build_repo_facts",
+    "build_runtime",
     "build_secrets",
     "lead_paths",
     "proven_performance",

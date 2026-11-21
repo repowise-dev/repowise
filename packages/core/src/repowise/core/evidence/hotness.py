@@ -15,18 +15,23 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   libraries it called, never time blocked in a wait. Inclusive time is kept
   as context and never ranks: a function that only calls things is on every
   stack and costs nothing itself.
-- ``ranked``: among the run's production functions, in the top
-  ``rank_top_n`` by cost, with at least ``rank_min_samples`` self samples on
-  the function. A run that counted no samples (a traced or an evented
+- ``ranked``: among the run's production functions with at least
+  ``rank_min_samples`` self samples, in the top ``rank_top_n`` by cost. A
+  function under the floor takes no place, so the places a run lists run
+  1, 2, 3 with no gap. A run that counted no samples (a traced or an evented
   profile) cannot be checked against the floor and ranks by its order alone.
   Otherwise the row is ``measured``: not enough samples in repo code, or
   outside the top.
-- ``lead_candidate``: ranked in a workload class that may lead (never
-  ``unit_test``), and either the function's share of all samples is at least
-  ``lead_min_share`` with the interval's lower bound at least
-  ``lead_min_lower_bound``, or it is ranked in ``lead_min_runs`` or more
-  runs. Internal only until the thresholds are calibrated: no surface may
-  word it as a claim, which is why the tier is not named for one.
+- *Share*: the function's self time over the run's time, with an interval
+  around that same number (:func:`_share_interval`).
+- ``lead_candidate``: ranked, and either the function's self share of the
+  run's time is at least ``lead_min_share`` with the interval's lower bound
+  at least ``lead_min_lower_bound``, or, in a workload class that may lead,
+  it is ranked in ``lead_min_runs`` or more such runs. A ``unit_test`` run
+  clears the share rule like any other, and its readers keep it apart as
+  measured in tests. No surface words the tier as a claim, which is why it is
+  not named for one; the performance queue reads it as a measured cost
+  (``analysis.health.worth.lead_reason``).
 - A deterministic tracer (a run whose rows carry call counts) orders
   functions within the run only: rank, never a share, never a lead.
 - *Freshness*: ``current`` at the indexed commit; ``body_unchanged`` from an
@@ -56,12 +61,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.ingestion.symbol_identity import file_of_symbol
-from repowise.core.stats import wilson_interval
+from repowise.core.stats import Interval, wilson_interval
 
 from .status import run_share, time_split
 
@@ -232,7 +237,8 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
     """The id of each workload's newest run, by name and environment.
 
     *runs* carry ``id``, ``workload_name``, ``environment`` and
-    ``measured_at`` (the ingest time when the run did not say).
+    ``measured_at``; a run that did not say when it was measured counts from
+    its ``ingested_at`` when it carries one.
     """
     newest: dict[tuple[str, str], Any] = {}
     for run in runs:
@@ -243,7 +249,11 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
 
 
 def _age_key(run: Any) -> tuple[float, str]:
-    return (run.measured_at.timestamp() if run.measured_at else 0.0, run.id)
+    at = run.measured_at or getattr(run, "ingested_at", None)
+    if at is None:
+        return (0.0, run.id)
+    # SQLite hands back the stored UTC time without its zone.
+    return (at.replace(tzinfo=at.tzinfo or UTC).timestamp(), run.id)
 
 
 def _workload_row(row: _Row) -> dict[str, Any]:
@@ -325,22 +335,56 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
 
     Stale rows take no place, and neither does a row that cost nothing itself
     (a function that only calls others): it stays measured, never ranked, even
-    in a run with fewer costly functions than the top. A tracer's rows order
-    by what the tracer gave and are exempt.
+    in a run with fewer costly functions than the top, nor a row under the
+    sample floor, so the places listed never skip a number. A tracer's rows
+    order by what the tracer gave and are exempt.
     """
     place = 0
     for row in rows:
         if not _takes_place(row):
             continue
+        counted = row.samples is not None
+        if not row.ordering_only and n is not None and counted and row.samples <= n:
+            row.share = _share_interval(row, n)
+        if counted and row.samples < rules.min_samples:
+            continue
         place += 1
         row.rank = place
-        counted = row.samples is not None
-        if place <= rules.top_n and (not counted or row.samples >= rules.min_samples):
+        if place <= rules.top_n:
             row.tier = "ranked"
-        if not row.ordering_only and n is not None and counted and row.samples <= n:
-            row.share = wilson_interval(row.samples, n)
-        if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
+        if row.tier == "ranked" and _measures_cost(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
+
+
+def _share_interval(row: _Row, n: int) -> Interval:
+    """The function's self share of the run's time, with an interval around it.
+
+    The share is a share of time (``self_value / total_value``) and the
+    interval comes from the sample counts (Wilson on ``samples`` of *n*). The
+    two differ whenever samples carry unequal time, which a sampler's do (each
+    sample is charged the time since the last, so a sample inside a blocking
+    call weighs more): on one real run a function held 3.6% of the time and
+    4.0% of the samples, and the raw count interval (3.8% to 4.2%) left out
+    the share it was printed beside. The counts still say how firm the share
+    is, so their interval is scaled by the time-to-count ratio: the relative
+    width stays, the bounds bracket the share that is shown and ranked.
+    A run without a time total keeps the count interval.
+    """
+    counts = wilson_interval(row.samples or 0, n)
+    share = _share(row.cost.self_value, row.run.total_value)
+    if share is None:
+        return counts
+    if counts.estimate <= 0:
+        return Interval(share, 0.0, max(counts.high, share), n, counts.method, counts.confidence)
+    scale = share / counts.estimate
+    return Interval(
+        share,
+        min(counts.low * scale, share),
+        max(min(counts.high * scale, 1.0), share),
+        n,
+        counts.method,
+        counts.confidence,
+    )
 
 
 def _takes_place(row: _Row) -> bool:
@@ -378,25 +422,41 @@ def run_samples(run: RunFacts) -> int | None:
     return None
 
 
+def _measures_cost(row: _Row) -> bool:
+    """A sampled share at the current body: what the share rule can read, in any class."""
+    return not row.ordering_only and row.freshness != "stale"
+
+
 def _may_lead(row: _Row) -> bool:
     return row.run.workload_class in LEAD_CLASSES and not row.ordering_only and row.freshness != "stale"
 
 
 def _clears_share_rule(row: _Row, rules: HotnessRules) -> bool:
+    """The share rule, on the self share of the run's time: a run with no time
+    total has no share to show, so it never clears it."""
     share = row.share
     return (
         share is not None
+        and _share(row.cost.self_value, row.run.total_value) is not None
         and share.estimate >= rules.lead_min_share
         and share.low >= rules.lead_min_lower_bound
     )
 
 
 def _basis_order(row: _Row) -> tuple[Any, ...]:
-    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest."""
+    """Fresh first, then the strongest tier, a class that may lead, the best rank, the newest.
+
+    A run in a class that may not lead counts as ``ranked`` at best here, so a
+    unit-test run never becomes the basis over a leading run that ranks the
+    function.
+    """
     newest = row.run.measured_at.timestamp() if row.run.measured_at else 0.0
+    tier = TIERS.index(row.tier)
+    if row.run.workload_class not in LEAD_CLASSES:
+        tier = min(tier, TIERS.index("ranked"))
     return (
         row.freshness == "stale",
-        -TIERS.index(row.tier),
+        -tier,
         row.run.workload_class not in LEAD_CLASSES,
         row.rank if row.rank is not None else float("inf"),
         -newest,

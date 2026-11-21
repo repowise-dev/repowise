@@ -850,6 +850,90 @@ def nodeid_test_file(test_id: str) -> str | None:
     return head if looks_pathy else None
 
 
+def nodeid_without_params(test_id: str) -> str:
+    """*test_id* without the parameter id of a parametrized test.
+
+    ``tests/test_x.py::TestC::test_f[1-a]`` gives ``tests/test_x.py::TestC::test_f``,
+    the test function's symbol id. Only the part after the file is cut, so a
+    path with brackets (``app/[id]/page.test.ts``) keeps them; a name holds no
+    ``[``, so whatever the parameter id holds (``::`` included) goes with it.
+    """
+    head, sep, rest = test_id.partition("::")
+    if not sep:
+        return test_id
+    return f"{head}::{rest.partition('[')[0]}"
+
+
+def nodeid_function(test_id: str) -> str:
+    """The test function a ``path::qualname`` test id names, as its id after the file.
+
+    Parameters are cut (:func:`nodeid_without_params`) and so is a JVM runner's
+    argument list: ``CartTest.java::CartTest::adds(int)[1]`` gives
+    ``CartTest::adds``. Empty when the id names no function after its file.
+    """
+    _, _, local = nodeid_without_params(test_id).partition("::")
+    return local.partition("(")[0]
+
+
+def dotted_module_paths(dotted: str, *, min_parts: int = 1) -> list[tuple[str, tuple[str, ...]]]:
+    """Where a dotted test name may live: ``(module path, names after it)``, longest first.
+
+    A runner that names a test by module rather than by file (coverage.py
+    dynamic contexts, JUnit XML ``classname``) writes ``tests.unit.test_x.TestC``.
+    Each split gives a module path without its extension (``tests/unit/test_x``)
+    and the names that follow it (``("TestC",)``); the caller keeps the first
+    one that names a file it knows. Splits of fewer than *min_parts* parts are
+    left out, and a name with a part that is not an identifier gives none.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if len(parts) < min_parts or not all(p.isidentifier() for p in parts):
+        return []
+    return [
+        ("/".join(parts[:k]), tuple(parts[k:]))
+        for k in range(len(parts), max(min_parts, 1) - 1, -1)
+    ]
+
+
+def _without_extension(path: str) -> str:
+    head, slash, name = path.rpartition("/")
+    return head + slash + (name.rpartition(".")[0] or name)
+
+
+def files_by_stem(paths: Collection[str]) -> dict[str, list[str]]:
+    """*paths* keyed by their file name without its extension, for :func:`dotted_name_file`."""
+    out: dict[str, list[str]] = {}
+    for path in paths:
+        out.setdefault(_without_extension(path).rpartition("/")[2], []).append(path)
+    return out
+
+
+def dotted_name_file(
+    dotted: str, by_stem: dict[str, list[str]]
+) -> tuple[str, tuple[str, ...]] | None:
+    """The file a dotted test name lives in, and the names inside it, as its symbol ids read.
+
+    The longest module path that is the tail of one file of *by_stem*
+    (:func:`files_by_stem`) wins. A Python file is a module, so the names are
+    the ones after it: ``tests.test_x.TestC`` gives ``("TestC",)``. Any other
+    file is named for the class it declares, which leads the names:
+    ``com.acme.CartTest$Totals`` and ``.../com/acme/CartTest.java`` give
+    ``("CartTest", "Totals")``. A module path two files end with is refused
+    (``None``), never guessed, as is a name that leads to no file.
+    """
+    for module, rest in dotted_module_paths(dotted.replace("$", ".")):
+        hits = [
+            path
+            for path in by_stem.get(module.rpartition("/")[2], ())
+            if (stem := _without_extension(path)) == module or stem.endswith("/" + module)
+        ]
+        if len(hits) > 1:
+            return None
+        if hits:
+            path = hits[0]
+            return path, rest if path.endswith(".py") else (module.rpartition("/")[2], *rest)
+    return None
+
+
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
 
 # JVM and .NET tests are a PascalCase class named for the class under test.

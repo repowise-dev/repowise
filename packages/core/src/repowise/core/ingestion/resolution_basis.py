@@ -18,6 +18,7 @@ from typing import Any
 GUESSED_ORIGINS: frozenset[str] = frozenset(
     {
         "global_unique",
+        "import_elsewhere",
         "receiver_global",
         "receiver_extension_global",
         "receiver_typed_global",

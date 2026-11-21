@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   welcomeSeen: {} as Record<string, string>,
   getRepoSetup: vi.fn(),
   updateOnboardingState: vi.fn(),
+  isWorkspace: false,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/lib/api/setup", () => ({
   getRepoSetup: mocks.getRepoSetup,
   updateOnboardingState: mocks.updateOnboardingState,
 }));
+vi.mock("@/lib/api/workspace", () => ({ getWorkspace: async () => ({ is_workspace: mocks.isWorkspace }) }));
 vi.mock("@/lib/api/meta", () => ({ getMetaVersion: async () => ({ server_version: "0.59.0" }) }));
 vi.mock("@/lib/api/dead-code", () => ({ getDeadCodeSummary: async () => Promise.reject(new Error("x")) }));
 vi.mock("@/lib/api/blast-radius", () => ({ analyzeBlastRadius: async () => Promise.reject(new Error("x")) }));
@@ -45,6 +47,7 @@ beforeEach(() => {
   window.sessionStorage.clear();
   mocks.search = "";
   mocks.welcomeSeen = {};
+  mocks.isWorkspace = false;
   mocks.getRepoSetup.mockImplementation(async () => ({
     onboarding: { welcome_seen: mocks.welcomeSeen, hints_enabled: true, signed_in: false },
   }));
@@ -83,5 +86,20 @@ describe("WelcomeMoment", () => {
     expect(mocks.updateOnboardingState).not.toHaveBeenCalled();
     expect(window.localStorage.getItem("repowise:last-seen-server-version")).toBe("0.58.0");
     expect(sessionMomentTaken()).toBe(false);
+  });
+
+  it("leaves a workspace member to the workspace's own welcome, but still replays on request", async () => {
+    mocks.isWorkspace = true;
+    renderMoment();
+    await waitFor(() => expect(mocks.getRepoSetup).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mocks.updateOnboardingState).not.toHaveBeenCalled();
+    expect(sessionMomentTaken()).toBe(false);
+    cleanup();
+
+    mocks.search = "tour=1";
+    renderMoment();
+    await screen.findByRole("dialog");
   });
 });

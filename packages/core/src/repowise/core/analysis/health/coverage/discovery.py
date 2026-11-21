@@ -37,7 +37,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 from repowise.core.settings.model import flag, parse_flag
-from repowise.core.test_paths import nodeid_test_file
+from repowise.core.test_paths import dotted_module_paths, nodeid_test_file
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
@@ -513,13 +513,22 @@ class ResolvedCoverage:
     def scope(self) -> CoverageScope:
         return CoverageScope(
             report_formats=tuple(sorted(self.report_formats)),
-            ignore=tuple(sorted(self.ignore)),
+            ignore=_in_order(self.ignore),
             mapping_partial=self.mapping_partial,
         )
 
 
 #: Unmatched report paths kept for the diagnostic; the counts stay exact.
 UNMATCHED_SAMPLE_CAP = 10
+
+
+def _in_order(patterns: Iterable[str]) -> tuple[str, ...]:
+    """*patterns* in order with repeats dropped, each kept at its last place.
+
+    The last pattern that matches a path decides it, so an earlier copy of a
+    pattern never decides anything and the result matches the same paths.
+    """
+    return tuple(reversed(dict.fromkeys(reversed(list(patterns)))))
 
 
 @dataclass(frozen=True)
@@ -551,8 +560,9 @@ class CoverageScope:
     """What makes two coverage measurements comparable.
 
     *report_formats* has one entry per report read (``("lcov", "lcov")`` for
-    two lcov reports), sorted; *ignore* is the ``coverage.ignore`` applied,
-    sorted. A base and head that differ in either measured different things,
+    two lcov reports), sorted; *ignore* is the ``coverage.ignore`` applied, in
+    the order written, since a ``!`` exception only re-includes what a pattern
+    above it left out. A base and head that differ in either measured different things,
     and a partial mapping measured a fragment, so neither delta means anything
     (``patch_coverage.delta.incomparable_reasons``).
     """
@@ -578,7 +588,7 @@ class CoverageScope:
             return None
         return cls(
             report_formats=tuple(sorted(str(f) for f in formats)),
-            ignore=tuple(sorted(str(g) for g in ignore)),
+            ignore=_in_order(str(g) for g in ignore),
             mapping_partial=bool(data.get("mapping_partial", False)),
         )
 
@@ -1295,20 +1305,17 @@ def resolve_test_reports(
                 out.test_files_resolved += 1
         elif report.source_format == "coverage.py":
             raw_id = rec.test_id.split("|", 1)[0].strip()
-            parts = [p for p in raw_id.split(".") if p]
-            if len(parts) >= 2 and all(p.isidentifier() for p in parts):
-                for k in range(len(parts), 1, -1):
-                    candidate = "/".join(parts[:k]) + ".py"
-                    tnorm = normalize_report_path(
-                        candidate, strip_prefix=strip_prefix, path_prefix=path_prefix
-                    )
-                    tkey, ambiguous = _match_key(tnorm, repo_keys, suffix_index)
-                    if ambiguous:
-                        break
-                    if tkey is not None:
-                        test_key = tkey
-                        out.test_files_resolved += 1
-                        break
+            for module, _ in dotted_module_paths(raw_id, min_parts=2):
+                tnorm = normalize_report_path(
+                    module + ".py", strip_prefix=strip_prefix, path_prefix=path_prefix
+                )
+                tkey, ambiguous = _match_key(tnorm, repo_keys, suffix_index)
+                if ambiguous:
+                    break
+                if tkey is not None:
+                    test_key = tkey
+                    out.test_files_resolved += 1
+                    break
 
         out.records.append(
             TestCoverage(

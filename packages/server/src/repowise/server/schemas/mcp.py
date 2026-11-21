@@ -35,6 +35,14 @@ class McpToolInfo(BaseModel):
     schema_tokens: int = 0
 
 
+class McpClientSurface(BaseModel):
+    """The tools one agent is listed for this repo, resolved as its server resolves them."""
+
+    #: ``None`` when ``mcp.tools`` is an exact list of names.
+    profile: str | None = None
+    tools: list[str] = Field(default_factory=list)
+
+
 class McpToolSurfaceResponse(BaseModel):
     """The full tool surface for a repo plus its current override."""
 
@@ -49,6 +57,9 @@ class McpToolSurfaceResponse(BaseModel):
     tools: list[McpToolInfo]
     #: The ``repowise config`` command that sets this surface, for an agent.
     command: str = ""
+    #: Per agent asked for with ``?clients=``, keyed by the id as asked
+    #: (``repowise agents`` target ids, as Setup lists them).
+    clients: dict[str, McpClientSurface] = Field(default_factory=dict)
 
 
 class McpClientRef(BaseModel):

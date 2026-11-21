@@ -6,6 +6,7 @@ import { formatNumber } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
 import { RelativeTime } from "../shared/relative-time";
+import { FileSourceCode } from "./file-source-code";
 
 interface FileCoverageTabProps {
   coverage: FileDetailCoverage | null;
@@ -17,6 +18,8 @@ interface FileCoverageTabProps {
   coverageCodeHtml?: string | undefined;
   /** Names the file a selection inside the source came from. */
   filePath?: string;
+  /** A `?line=N` deep link: the source line to scroll to and mark. */
+  highlightLine?: number | undefined;
   /**
    * The graph-inferred "which tests reach this file" block, supplied by the host
    * already wrapped. A node rather than a fetcher because the tab bodies are
@@ -29,6 +32,7 @@ export function FileCoverageTab({
   coverage,
   coverageCodeHtml,
   filePath,
+  highlightLine,
   testsPanel,
 }: FileCoverageTabProps) {
   // Rendered on both bases. Without a report it is the whole answer; with one it
@@ -47,11 +51,11 @@ export function FileCoverageTab({
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
           <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-            Run your suite with coverage on and hand us the report with{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
-              repowise coverage add &lt;report&gt;
-            </span>
-            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
+              repowise coverage setup
+            </span>{" "}
+            prints the test command that writes a report here and the line that adds it. Any of{" "}
+            {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>
@@ -139,29 +143,16 @@ export function FileCoverageTab({
         title="Source"
         description={
           codeHtml
-            ? "Every coverable line, tinted by whether the last report saw it run."
+            ? coveredCount > 0
+              ? "Every coverable line, tinted by whether the last report saw it run."
+              : "The last report saw no line of this file run."
             : stale
               ? "This file changed after coverage was measured; re-run tests with coverage to refresh."
               : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
         }
       >
         {codeHtml ? (
-          <div
-            data-chat-selection=""
-            {...(filePath ? { "data-chat-selection-path": filePath } : {})}
-            className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed"
-          >
-            {/* Highlighted by the host through the shared shiki path; the
-                data-covered line attributes drive the gutter tint below. */}
-            <div dangerouslySetInnerHTML={{ __html: codeHtml /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
-            <style>{`
-            .coverage-code pre { margin: 0; padding: 0.75rem 0; background: transparent !important; }
-            .coverage-code code { display: block; }
-            .coverage-code .line { display: inline-block; width: 100%; padding: 0 0.75rem 0 0.5rem; border-left: 3px solid transparent; }
-            .coverage-code .line[data-covered="y"] { border-left-color: var(--color-success); background: color-mix(in srgb, var(--color-success) 7%, transparent); }
-            .coverage-code .line[data-covered="n"] { border-left-color: var(--color-error); background: color-mix(in srgb, var(--color-error) 8%, transparent); }
-          `}</style>
-          </div>
+          <FileSourceCode html={codeHtml} filePath={filePath} highlightLine={highlightLine} />
         ) : (
           <p className="text-sm text-[var(--color-text-tertiary)]">
             {stale

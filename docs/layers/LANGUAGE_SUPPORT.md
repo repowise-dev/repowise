@@ -29,7 +29,7 @@ resolution and health markers are all static.
 [How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
@@ -171,8 +171,9 @@ vocabulary, and every origin has exactly one confidence:
 | `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
 | `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
 | `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+| `import_elsewhere` | 0.50 | Python: the name is imported only inside another function of the file, and that one import is read here. **A guess** |
 
-That is the complete vocabulary of 39. You can filter a graph by confidence, and
+That is the complete vocabulary of 40. You can filter a graph by confidence, and
 both the MCP tools and the web UI surface which origin produced an edge, so an
 agent reading an execution flow can tell a fact from an inference. Receiver
 typing, execution-flow terminations and the edge types are in
@@ -302,6 +303,34 @@ Why Go and Java are held back from the test-quality markers, and why Kotlin's
 Extract Method waits on its grammar:
 [architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
 Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
+
+## Runtime evidence
+
+Coverage reports and profiles add measured runtime to the static graph.
+`repowise evidence setup` prints, per build unit, the test command that writes
+coverage and the commands that profile it; `coverage add` and `evidence add`
+read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
+Go cover profile format is read for any language, from any tool. A profile
+joins to code only for Python, Go and JavaScript frames.
+
+| Language | Coverage command from setup | Profiles and benchmarks read |
+|----------|-----------------------------|------------------------------|
+| Python | pytest with pytest-cov | Speedscope (pyinstrument, py-spy), collapsed stacks (py-spy), pytest-benchmark JSON |
+| JavaScript | Jest, Vitest or Bun; c8 around other runners | Speedscope |
+| TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
+| Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
+| Java / Kotlin | Maven or Gradle with JaCoCo | no |
+| Rust | `cargo llvm-cov` | no |
+| C# | `dotnet test` with coverlet | no |
+| Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
+| PHP | PHPUnit or Pest | no |
+| Apex | none; the Salesforce CLI test-run JSON is read | no |
+| Object Pascal | none | no |
+| Every other language | none | no |
+
+Formats, the join rules and the workload classes:
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
+[TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
 
 ## Limits
 

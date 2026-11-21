@@ -52,6 +52,7 @@ export default defineConfig({
         __dirname,
         "../types/src/agent-prompts.ts",
       ),
+      "@repowise-dev/types/first-look": path.resolve(__dirname, "../types/src/first-look.ts"),
       "@repowise-dev/types/files": path.resolve(__dirname, "../types/src/files.ts"),
       "@repowise-dev/types/external-systems": path.resolve(
         __dirname,
@@ -62,6 +63,10 @@ export default defineConfig({
       "@repowise-dev/types/refactoring": path.resolve(
         __dirname,
         "../types/src/refactoring.ts",
+      ),
+      "@repowise-dev/types/runtime-evidence": path.resolve(
+        __dirname,
+        "../types/src/runtime-evidence.ts",
       ),
       "@repowise-dev/types/coupling": path.resolve(__dirname, "../types/src/coupling.ts"),
       "@repowise-dev/types/stats": path.resolve(__dirname, "../types/src/stats.ts"),

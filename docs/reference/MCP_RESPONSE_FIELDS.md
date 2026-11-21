@@ -67,7 +67,7 @@ Notes:
 
 ## On the wire
 
-- `structuredContent` is `{"result": <payload>}`; tools advertise an `outputSchema`.
+- `structuredContent` is `{"result": <payload>}`. Tools advertise no `outputSchema`.
 - The text block is the same payload as compact JSON, so clients that forward it send fewer tokens.
 - `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
 
@@ -111,12 +111,13 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
-| `get_answer` | `include` | `_meta.ignored_arguments` map: `{"include": [...]}` |
+| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given, `limit` over 20 | Top-level list |
+| `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
-- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
+- **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
+- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`; a `limit` entry carries `"clamped_to": 20`, the value the call ran with.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
 ---
@@ -175,7 +176,7 @@ Notes:
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
-- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` and no recovery is offered.
+- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` with `"requires": "an LLM provider; Read candidate_files"`, and no recovery is offered.
 - **Evidence by grade** (`include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
 - **Retrieval** fuses full-text and vector search over wiki pages with the symbol index (keyed on the question's content words) by reciprocal rank. The symbol leg reaches private helpers a page's symbol table omits.
 
@@ -238,6 +239,8 @@ Every live line naming a symbol target, as `{path, line, kind, text}` with kind 
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
 - `doc`: the first line of each document naming the symbol, with `mentions` counting them when there are more; release notes are skipped
 
+In get_context each file maps kinds to line numbers, plus, in production files, `in`: the indexed symbol (`Owner.member`) holding each listed line other than a `definition`, `same_name` or `doc` line. Module-level lines are in no symbol and not listed there. Names come from the index, lines from live files.
+
 Never complete for:
 
 - languages other than Python, TypeScript and JavaScript (same-package use needs no import)
@@ -253,7 +256,7 @@ Never complete for:
 `recent_changes`: the newest five Change Records touching the file, each `{id, ref, title, merged_at, category, provenance}`; `recent_changes_total` when more exist.
 
 - `ref` is the forge number (`#123`, `!12`), absent for an unnamed change.
-- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label or attribution is off.
+- `provenance` is `{label, coverage}`, label `agent`, `human_attested` or `unknown`; absent when stored without a label, when coverage is below 30% (where the file and overview shares are withheld too), or when attribution is off.
 - Only the newest 500 changes are read and a change stores its first 1,000 files, so a file past either limit can be missing.
 
 ### provenance
@@ -388,6 +391,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
+- `in` names the indexed symbol (`Owner.member`) a non-definition row in a production file sits in, on the first row of each run in one file and one symbol; the rows after it in the same file without `in` are in the same symbol. A module-level row after such a run says `<module>`. The names come from the index, the lines from live files.
 - When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
@@ -421,7 +425,7 @@ Per file:
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
 
 - **`signal_tier`:** the card keeps commit counts, `last_commit_at`, `trend`, owner and `security_signals`, and omits hotspot, co-change, dependents and classification.
-- Multi-target calls add `global_hotspots`. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
+- `co_change_partners` lists the top three; `co_change_partners_total` counts them all. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
 
 | `include` | Adds |
 |-----------|------|
@@ -431,6 +435,7 @@ Per file:
 | `blast` | `pr_blast_radius`: transitive files, co-change warnings, test gaps, structural score; reviewers stay in the directive |
 | `graph` | `dependents` (direct vs transitive), `consumers` (typed contract consumers), `cross_repo_links` (contract rows carry `strategy` and `origin`, see [cross-repo link rows](#cross-repo-link-rows)), `impact_surface`, `direct_risks`, `relationship_analysis` (empty vs unavailable or partial) |
 | `churn` | `change_magnitude`, `risk_type`, `change_pattern` |
+| `hotspots` | `global_hotspots`: up to five hotspots outside the targets, ranked on bug-fix history, then churn |
 | `scales` | Unit, range and calibration per scalar; identical every call |
 
 ### PR mode directive
@@ -562,7 +567,7 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 
 ### branch_overlap
 
-Git-only, no index needed. `branches[]`: `ahead`, `behind`, `last_commit`, `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
+Git-only, no index needed. Up to three `branches[]`: `ahead`, `behind`, `last_commit`, up to five `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). A branch of a remote other than `origin` is measured from that remote's default branch. Default branches, including the local copy of the base, are not listed. Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
 
 ### independent_changes
 
@@ -750,6 +755,7 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 
 - `freshness.status`: `current` (at the indexed commit), `stale`, `unknown`. `source_formats` lists merged formats.
 - `report_paths`: ingest mapping `total`, `matched`, `unmatched`, `ambiguous`, `unmatched_sample`.
+- `unreported_file_count`, `unreported_files` (first five): indexed production files with code lines, of a type the report measured, that the report has no row for.
 - Dashboard `history`: one point per complete ingest, newest 10.
 - Targeted `decay`: `confirmed_lines`, `invalidated_lines` (unknown, not uncovered), `drifted` once a fifth has moved.
 

@@ -11,15 +11,22 @@ Public API kept stable for existing callers:
   calibrated against ``.repowise/db.sqlite`` telemetry.
 - :func:`lookup_cost` — per-1K rates for a model, ``None`` when unpriced;
   the server prices the active model with it.
+- :func:`estimate_first_look_cost`: the first-look report's one call.
 """
 
 from .approx import approximate_generation_plan
-from .estimator import STRUCTURAL_PAGE_TYPES, estimate_cost
+from .estimator import (
+    FIRST_LOOK_CALL_TYPE,
+    STRUCTURAL_PAGE_TYPES,
+    estimate_cost,
+    estimate_first_look_cost,
+)
 from .plans import build_generation_plan
 from .pricing import lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 __all__ = [
+    "FIRST_LOOK_CALL_TYPE",
     "STRUCTURAL_PAGE_TYPES",
     "CostEstimate",
     "CostRange",
@@ -27,5 +34,6 @@ __all__ = [
     "approximate_generation_plan",
     "build_generation_plan",
     "estimate_cost",
+    "estimate_first_look_cost",
     "lookup_cost",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def _claude_code_settings_path() -> Path:
     Hooks and ``env`` live here. MCP servers do not: Claude Code ignores
     ``mcpServers`` in this file (see :func:`_claude_code_user_config_path`).
     """
-    return Path.home() / ".claude" / "settings.json"
+    return _claude_config_dir() / "settings.json"
 
 
 def _claude_code_user_config_path() -> Path:
@@ -51,7 +52,20 @@ def _claude_code_user_config_path() -> Path:
     Claude Code owns this file and rewrites it often, so repowise only ever
     edits its own ``repowise`` member and leaves every other byte alone.
     """
-    return Path.home() / ".claude.json"
+    custom = _claude_config_dir_override()
+    return custom / ".claude.json" if custom else Path.home() / ".claude.json"
+
+
+def _claude_config_dir() -> Path:
+    """Claude Code's config folder: ``$CLAUDE_CONFIG_DIR`` when set, else ``~/.claude``."""
+    return _claude_config_dir_override() or Path.home() / ".claude"
+
+
+def _claude_config_dir_override() -> Path | None:
+    """``$CLAUDE_CONFIG_DIR``, where Claude Code then reads ``settings.json`` and
+    ``.claude.json`` instead of the copies under the home directory."""
+    custom = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return Path(custom).expanduser() if custom else None
 
 
 def _resolve_mcp_target(repo_path: Path) -> Path:
@@ -64,7 +78,8 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     indexed last, breaking workspace mode.
 
     If ``repo_path`` lives inside a workspace (``.repowise-workspace.yaml`` in
-    any ancestor), return the workspace root instead so the MCP server is
+    any ancestor) and is not a git repo of its own outside the workspace's
+    members, return the workspace root instead so the MCP server is
     invoked in workspace mode and ``repo="<alias>"`` queries work across all
     repos. Otherwise fall back to the per-repo path, preserving single-repo
     behavior.
@@ -185,18 +200,32 @@ def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Pat
     kept, the plugin serves it, or the write failed.
     """
     migrate_claude_code_mcp_entry()
-    if claude_code_plugin_installed():
+    entry = _planned_code_entry(repo_path, retarget=retarget)
+    if entry is None:
         return None
     config_path = _claude_code_user_config_path()
-    entry = planned_global_entry(
-        _stored_repowise_entry(config_path),
+    return config_path if _upsert_user_entry(config_path, entry) else None
+
+
+def claude_code_entry_pending(repo_path: Path) -> bool:
+    """Whether registration still has a user-scope entry to write for *repo_path*.
+
+    True right after :func:`register_with_claude_code` returned None only when
+    its write was refused (an unwritable or unparseable ~/.claude.json).
+    """
+    return _planned_code_entry(repo_path, retarget=False) is not None
+
+
+def _planned_code_entry(repo_path: Path, *, retarget: bool) -> dict | None:
+    """The entry registration would write to ~/.claude.json, or None when none is due."""
+    if claude_code_plugin_installed():
+        return None
+    return planned_global_entry(
+        _stored_repowise_entry(_claude_code_user_config_path()),
         repo_path,
         follows_launch_dir=True,
         retarget=retarget,
     )
-    if entry is None:
-        return None
-    return config_path if _upsert_user_entry(config_path, entry) else None
 
 
 def claude_code_plugin_installed(repo_path: Path | None = None) -> bool:
@@ -251,14 +280,9 @@ def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
 
 def _is_our_entry(entry: dict) -> bool:
     """``repowise mcp ...`` under a bare or pinned ``repowise`` command: the shape init writes."""
-    import re
+    from repowise.cli.agent_targets.formats.server_entry import launches_repowise
 
-    command = entry.get("command")
-    args = entry.get("args")
-    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
-        return False
-    name = re.split(r"[\\/]", command)[-1].lower()
-    return name in ("repowise", "repowise.exe")
+    return isinstance(entry.get("command"), str) and launches_repowise(entry)
 
 
 def migrate_claude_code_mcp_entry() -> None:

@@ -206,6 +206,24 @@ def detect_free_route(repo_path: str | Path | None) -> FreeRoute | None:
     return None
 
 
+def keyed_model_source(repo_path: str | Path | None) -> tuple[str, str] | None:
+    """``(provider id, source line)`` for the first provider a key or local model is set for.
+
+    Agent CLIs are left out: their sign-in is :func:`detect_free_route`'s, and
+    it costs a subprocess.
+    """
+    from repowise.core.providers.llm.resolve import credentialed_providers
+
+    for name in credentialed_providers(Path(repo_path) if repo_path else None):
+        spec = PROVIDER_SPECS.get(name)
+        if spec is None or spec.agent or name == "mock":
+            continue
+        if spec.local:
+            return name, f"Uses {spec.label.removesuffix(' (Local)')} on this machine"
+        return name, f"Uses your {spec.label} key"
+    return None
+
+
 def route_minutes(route: FreeRoute | None, model_calls: int) -> FreeRoute | None:
     """*route* with the minutes *model_calls* take on it; unchanged without calls."""
     if route is None or model_calls <= 0:

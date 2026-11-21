@@ -41,6 +41,7 @@ function is on every stack.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -97,6 +98,88 @@ WAIT_FUNCTIONS = frozenset(
 )  # fmt: skip
 
 
+#: Frames that start or wait on another process, whose own work a profile of
+#: this process does not hold: by the standard-library path (a fragment of it)
+#: and by the name a runtime frame with no source file carries. Python's
+#: multiprocessing, process pools and subprocess; Go's os/exec; Node's
+#: child_process, cluster and worker threads (``--cpu-prof`` writes each
+#: process and worker thread to a file of its own). ``multiprocessing.dummy``
+#: runs threads, so it is left out.
+CHILD_PROCESS_PATHS = (
+    "/multiprocessing/", "/concurrent/futures/process.py", "/subprocess.py",
+    "node:child_process", "node:internal/child_process", "node:cluster",
+    "node:internal/cluster/", "node:worker_threads", "node:internal/worker",
+)  # fmt: skip
+CHILD_PROCESS_FUNCTIONS = frozenset(
+    {
+        "posix.fork", "os.fork", "posix.posix_spawn", "os.posix_spawn", "os.waitpid",
+        "_winapi.CreateProcess", "os.StartProcess", "syscall.forkExec", "syscall.StartProcess",
+    }
+)  # fmt: skip
+#: Go function-name prefixes: ``os/exec`` and the process handle it waits on.
+_CHILD_PROCESS_PREFIXES = ("os/exec.", "os.(*Process).")
+
+
+def is_child_process_frame(frame: ProfileFrame) -> bool:
+    """Whether *frame* starts or waits on another process (:data:`CHILD_PROCESS_PATHS`)."""
+    if frame.function in CHILD_PROCESS_FUNCTIONS or frame.function.startswith(
+        _CHILD_PROCESS_PREFIXES
+    ):
+        return True
+    path = frame.path.replace("\\", "/")
+    if "/multiprocessing/dummy/" in path or is_vendored_or_generated_path(path):
+        return False
+    return any(part in path for part in CHILD_PROCESS_PATHS)
+
+
+def merge_runs(runs: Sequence[ProfileRun]) -> ProfileRun:
+    """Several profiles of one run (a parent and its workers) as one run.
+
+    Frames the files share become one frame and equal stacks add up, so the
+    merged run reads like one file that sampled every process. The runs must
+    count in one unit and come from one tool: samples of different units or
+    samplers do not add up (:class:`EvidenceFormatError` otherwise). The
+    clock is checked by the caller, which knows the one the user named.
+    """
+    from .profile_formats.model import ProfileRun, StackTally
+
+    if len(runs) == 1:
+        return runs[0]
+    units = sorted({run.unit for run in runs})
+    if len(units) > 1:
+        raise EvidenceFormatError(
+            f"the profiles count in different units ({', '.join(units)}), so their "
+            "weights do not add up",
+            "profile every process with the same profiler and options, then add them together",
+        )
+    tools = sorted({run.tool_name for run in runs if run.tool_name})
+    if len(tools) > 1:
+        raise EvidenceFormatError(
+            f"the profiles come from different tools ({', '.join(tools)}), whose samples "
+            "do not add up",
+            "profile every process with the same profiler, then add them together",
+        )
+    index: dict[ProfileFrame, int] = {}
+    tally = StackTally()
+    skipped: Counter[str] = Counter()
+    for run in runs:
+        local = [index.setdefault(frame, len(index)) for frame in run.frames]
+        for stack in run.stacks:
+            tally.add(tuple(local[i] for i in stack.frames), stack.weight, stack.samples)
+        skipped.update(run.skipped)
+    failed = [run.tests_failed for run in runs if run.tests_failed is not None]
+    return ProfileRun(
+        frames=tuple(index),
+        stacks=tally.stacks(),
+        unit=units[0],
+        value_kind=next((run.value_kind for run in runs if run.value_kind), None),
+        tool_name=tools[0] if tools else None,
+        tool_version=next((run.tool_version for run in runs if run.tool_version), None),
+        skipped=dict(skipped),
+        tests_failed=sum(failed) if failed else None,
+    )
+
+
 def is_wait_frame(frame: ProfileFrame) -> bool:
     """Whether *frame* blocks (:data:`WAIT_FRAMES`, :data:`WAIT_FUNCTIONS`)."""
     if frame.function in WAIT_FUNCTIONS:
@@ -129,6 +212,10 @@ class ProfileConversion:
     waits: float = 0.0
     #: Weight in dependency code below the innermost repo frame.
     libraries: float = 0.0
+    #: Weight starting or waiting on another process below the innermost repo
+    #: frame (:func:`is_child_process_frame`): that process's own work is not in
+    #: this profile. Overlaps ``waits``; not part of the four-way split.
+    child_processes: float = 0.0
 
     @property
     def explained_share(self) -> float | None:
@@ -163,6 +250,7 @@ class ProfileConversion:
             "repo_self_share": self.share(self.repo_self),
             "wait_share": self.share(self.waits),
             "library_share": self.share(self.libraries),
+            "child_process_share": self.share(self.child_processes),
             "explained_share": None if share is None else round(share, 4),
             "skip_rate": None if rate is None else round(rate, 4),
             "skipped_share_by_reason": skipped,
@@ -196,7 +284,7 @@ def convert_profile(
             "the profile does not say whether it timed CPU or wall-clock",
             "name the clock the profiler sampled: cpu or wall",
         )
-    refuse_typescript(run, root)
+    refuse_compiled_positions(run, root, read_lines, origins)
     resolution = resolve_frames(
         run.frames,
         root=root,
@@ -242,6 +330,7 @@ def convert_profile(
         tally.buckets["repo_self"],
         tally.buckets["waits"],
         tally.buckets["libraries"],
+        tally.child_processes,
     )
 
 
@@ -263,6 +352,7 @@ class _Tally:
             for f, r in zip(frames, self._reasons, strict=True)
         ]
         self._wait = [is_wait_frame(f) for f in frames]
+        self._child = [is_child_process_frame(f) for f in frames]
         self._resolved = {r.index: r for r in resolution.resolved}
         self._origins = origins
         self._symbols: dict[str, tuple[str, IndexedSymbol]] = {}
@@ -275,6 +365,7 @@ class _Tally:
         self.self_unattributed: Counter[str] = Counter()
         #: The run's weight in ``repo_self``, ``waits`` and ``libraries``.
         self.buckets: Counter[str] = Counter({"repo_self": 0.0, "waits": 0.0, "libraries": 0.0})
+        self.child_processes = 0.0
         self.total = 0.0
         self.explained = 0.0
         self.samples = 0
@@ -311,6 +402,10 @@ class _Tally:
             (k for k in range(len(frames) - 1, -1, -1) if not self._unmaintained[frames[k]]), None
         )
         tail = frames if at is None else frames[at + 1 :]
+        # Only under a repo frame: a worker's own idle stacks (parked in its
+        # pool's queue, no repo frame) are not this process waiting on another.
+        if at is not None and any(self._child[i] for i in tail):
+            self.child_processes += weight
         if any(self._wait[i] for i in tail):
             self.buckets["waits"] += weight
             return
@@ -354,8 +449,23 @@ class _Tally:
         ]
 
 
-def refuse_typescript(run: ProfileRun, root: str) -> None:
-    """A TypeScript frame of this checkout carries compiled positions, so the run is refused."""
+def refuse_compiled_positions(
+    run: ProfileRun,
+    root: str,
+    read_lines: Callable[[str], Sequence[str] | None] | None = None,
+    origins: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse a run whose checkout frames carry positions in compiled code.
+
+    A TypeScript frame's line and column are in the compiled JavaScript, and
+    a JavaScript file that names a source map (``//# sourceMappingURL=``) is
+    build output: a bundle or a compiler's, whose positions belong to other
+    files. Source maps are not read, so either refuses the run. A dependency
+    (``node_modules``, a vendored or generated file by its stored
+    ``code_origin`` in *origins*, else :func:`path_origin`) is charged to its
+    caller and never checked. *read_lines* reads a repo-relative file;
+    without it only TypeScript is checked.
+    """
     typescript = [f for f in run.frames if f.language == "typescript"]
     if typescript and frame_paths(typescript, root=root):
         raise EvidenceFormatError(
@@ -364,6 +474,36 @@ def refuse_typescript(run: ProfileRun, root: str) -> None:
             "profile the compiled JavaScript under its own paths; TypeScript positions "
             "need source maps, which are not read",
         )
+    if read_lines is None:
+        return
+    javascript = [f for f in run.frames if f.language == "javascript"]
+    for rel in sorted(frame_paths(javascript, root=root)):
+        if ((origins or {}).get(rel) or path_origin(rel)) in ("vendored", "generated"):
+            continue
+        lines = read_lines(rel)
+        if lines is not None and _names_source_map(lines):
+            raise EvidenceFormatError(
+                f"the profile ran {rel}, which names a source map: it is bundled or "
+                "compiled code, and its positions belong to other files",
+                "profile the JavaScript sources themselves; positions in bundled or "
+                "compiled code need source maps, which are not read",
+            )
 
 
-__all__ = ["ProfileConversion", "convert_profile", "refuse_typescript"]
+#: A source map comment, which a compiler or bundler writes last in its output.
+_SOURCE_MAP_RE = re.compile(r"^\s*//[#@]\s*sourceMappingURL=")
+
+
+def _names_source_map(lines: Sequence[str]) -> bool:
+    """Whether one of the last five non-blank lines is a source map comment."""
+    tail = [ln for ln in reversed(lines) if ln.strip()][:5]
+    return any(_SOURCE_MAP_RE.match(ln) for ln in tail)
+
+
+__all__ = [
+    "ProfileConversion",
+    "convert_profile",
+    "is_child_process_frame",
+    "merge_runs",
+    "refuse_compiled_positions",
+]

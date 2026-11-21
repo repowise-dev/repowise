@@ -9,6 +9,7 @@ read without one, so they get bare content.
 
 from __future__ import annotations
 
+import hashlib
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,18 @@ def read_tokens(text: str) -> int:
     return estimate_read_tokens(rangeless_read(text), numbered=_numbered())
 
 
+def read_credit(root: Any, path: str, text: str) -> int:
+    """Tokens a call serving part of a file may claim for not reading it.
+
+    One Read of a file gives the agent every symbol in it, so a connection
+    earns the credit once per file content. A later slice of the same content
+    earns 0; after an edit the agent would have to read the file again.
+    """
+    location = str((Path(str(root)) / path).resolve())
+    read = hashlib.sha256(f"{location}\0{text}".encode(errors="replace")).digest()
+    return read_tokens(text) if interaction.first_credit(read) else 0
+
+
 def file_read_tokens(root: Any, path: str) -> int | None:
     """:func:`read_tokens` for a repo file, or None when it cannot be read as text.
 
@@ -47,4 +60,20 @@ def file_read_tokens(root: Any, path: str) -> int | None:
         return None
     if "\x00" in text:
         return None
-    return read_tokens(text)
+    tokens = read_tokens(text)
+    note_served(path, tokens)
+    return tokens
+
+
+def note_served(path: str, tokens: int) -> None:
+    """Note on the live call that it served *path* in place of a Read. Never raises.
+
+    Every caller is a counterfactual that already sized the Read, so this adds
+    no file access. The event write turns the notes into "files not opened".
+    """
+    try:
+        live = interaction.current()
+        if live is not None and isinstance(path, str) and path:
+            live.note_avoided_file(path.replace("\\", "/"), tokens)
+    except Exception:
+        return

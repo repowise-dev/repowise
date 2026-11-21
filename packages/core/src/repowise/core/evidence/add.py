@@ -8,17 +8,26 @@ option it will not take raises :class:`EvidenceRefusedError`; a run that reads b
 does not map returns ``stored: false`` with a ``reason``, like the command.
 
 The command runs the same steps in two parts (:func:`prepare_evidence` before
-it opens the index, :func:`store_evidence` inside it) so a refused file never
-opens a store.
+it opens the index, :func:`store_evidence` inside it) so a file refused on its
+content never opens a store. A profile refused against the index (a checkout
+file that is bundled output by its stored ``code_origin``) is refused by
+:func:`store_evidence` before anything is written.
+
+One run may come in several profiles: a parent process and its workers each
+write their own. :func:`prepare_evidence_files` reads them all and merges
+them into one run before anything is joined, so the run is stored, ranked
+and superseded as one.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import sys
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +74,11 @@ class PreparedEvidence:
     text: str | None = None
     doc: EvidenceDocument | None = None
     run: Any = None
+    #: How many profile files the run was merged from.
+    profiles: int = 1
+    #: The repo-relative directory the file (or every file) was read from
+    #: (:func:`evidence_report_dir`); ``""`` when unknown or the root.
+    report_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,6 +112,59 @@ def check_options(workload: str, workload_class: str, environment: str, commit: 
         raise _bad_option(
             "--commit", "the full 40- or 64-character SHA, e.g. $(git rev-parse HEAD)."
         )
+
+
+#: Share of a single-profile run spent starting or waiting on other processes
+#: from which ``evidence add`` warns that their work was not profiled. Ceiling:
+#: a fixed floor so one short ``git`` call stays quiet; calibrate it with the
+#: other ``evidence.*`` thresholds if it proves noisy.
+UNPROFILED_CHILD_SHARE = 0.01
+
+_OS_NAMES = {"win32": "windows", "cygwin": "windows", "darwin": "macos"}
+
+
+def detect_environment(env: Mapping[str, str] | None = None, platform: str | None = None) -> str:
+    """Where this process runs, the tag ``evidence add`` gives a run by default.
+
+    ``<os>-ci`` in a CI job (:func:`~repowise.core.ci.base.in_ci`), else
+    ``<os>-local``: ``linux-ci``, ``macos-local``, ``windows-local``. Only
+    the caller that ran the profile can say this, so a server storing an
+    upload keeps ``unknown`` unless the upload names it. Runtime versions
+    are left out: the profiled program's interpreter need not be this one.
+    """
+    from repowise.core.ci.base import in_ci
+
+    platform = sys.platform if platform is None else platform
+    name = _OS_NAMES.get(platform) or (
+        "linux" if platform.startswith("linux") else re.sub(r"[^a-z]", "", platform) or "unknown"
+    )
+    return f"{name}-{'ci' if in_ci(env) else 'local'}"
+
+
+def evidence_paths(paths: Sequence[Path]) -> list[Path]:
+    """*paths* with each directory replaced by the files directly in it, each file once.
+
+    A profiler that writes one file per process (``node --cpu-prof``) is
+    pointed at a directory, and the directory is what ``evidence add``
+    takes. Hidden files are left out.
+    """
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path.is_dir():
+            found = sorted(
+                p for p in path.iterdir() if p.is_file() and not p.name.startswith(".")
+            )
+            if not found:
+                raise _bad_option("FILE", f"{path} holds no files to add.")
+        else:
+            found = [path]
+        for file in found:
+            key = file.resolve()
+            if key not in seen:
+                seen.add(key)
+                out.append(file)
+    return out
 
 
 def check_file_size(size: int, max_file_mb: float, name: str) -> None:
@@ -168,7 +235,7 @@ def prepare_evidence(
     *name* names the file in messages. *max_file_mb*, when given, refuses a
     larger file. Raises :class:`EvidenceRefusedError`.
     """
-    from .profile_convert import refuse_typescript
+    from .profile_convert import refuse_compiled_positions
     from .profile_formats import profile_formats
 
     if max_file_mb is not None:
@@ -190,11 +257,14 @@ def prepare_evidence(
         else:
             reader = profile_formats.get(fmt)
             if reader.to_v1 is not None:
-                text = json.dumps(reader.to_v1(data), sort_keys=True)
+                args = (data, checkout_root) if reader.needs_checkout else (data,)
+                text = json.dumps(reader.to_v1(*args), sort_keys=True)
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
-                refuse_typescript(run, str(checkout_root))
+                # TypeScript only: what is bundled output needs the stored
+                # code_origin, so convert_profile checks it against the index.
+                refuse_compiled_positions(run, str(checkout_root))
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
     _check_value_kind(fmt, doc, run, value_kind)
@@ -208,6 +278,121 @@ def prepare_evidence(
         doc=doc,
         run=run,
     )
+
+
+def prepare_evidence_files(
+    files: Sequence[tuple[str, bytes]],
+    *,
+    checkout_root: Path,
+    commit: str | None = None,
+    dirty: bool | None = None,
+    input_format_name: str | None = None,
+    value_kind: str | None = None,
+    max_file_mb: float | None = None,
+    report_dir: str = "",
+) -> PreparedEvidence:
+    """*files* (name, bytes) read as one run.
+
+    One file is :func:`prepare_evidence`. Several are profiles of one run
+    (a parent and its workers) and merge into one: they share the run's
+    options (workload, class, commit, clock), and must share a format, unit
+    and tool. A v1 file or benchmark results stand alone, and mixed formats,
+    units, tools or clocks are refused with the reason. JUnit XML reports (a
+    Maven or Gradle report directory, one file per test class) read as one
+    report, and the other files beside them are left out
+    (:func:`_junit_reports_as_one`). The merged run does not depend on the
+    order the files are named in. *report_dir* is the repo-relative
+    directory the files were read from (:func:`evidence_report_dir`).
+    """
+    from .profile_convert import merge_runs
+
+    if not files:
+        raise _bad_option("FILE", "name at least one evidence file.")
+    files = _junit_reports_as_one(files, input_format_name)
+    digests = [hashlib.sha256(data).hexdigest() for _, data in files]
+    if len(set(digests)) < len(digests):
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            "two of the files are byte-identical, so one profile's samples would count twice",
+            "name each profile once; two processes rarely write identical profiles",
+        )
+    ordered = [f for _, f in sorted(zip(digests, files, strict=True), key=lambda pair: pair[0])]
+    parts = [
+        prepare_evidence(
+            data,
+            name=name,
+            checkout_root=checkout_root,
+            commit=commit,
+            dirty=dirty,
+            input_format_name=input_format_name,
+            value_kind=value_kind,
+            max_file_mb=max_file_mb,
+        )
+        for name, data in ordered
+    ]
+    if len(parts) == 1:
+        return replace(parts[0], report_dir=report_dir)
+    formats = sorted({p.format for p in parts})
+    if len(formats) > 1:
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            f"the files are in different formats ({', '.join(formats)}); one run merges "
+            "profiles of one format",
+            "profile every process with the same profiler, or add each file as its own run",
+        )
+    if any(p.run is None for p in parts):
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            f"{formats[0]} files do not merge: only the profiles of one run's processes add up",
+            "add each file with its own `repowise evidence add`",
+        )
+    clocks = sorted({p.value_kind or p.run.value_kind for p in parts})
+    if len(clocks) > 1:
+        raise EvidenceRefusedError(
+            "invalid_evidence",
+            f"the profiles sampled different clocks ({', '.join(clocks)}), so their "
+            "times do not add up",
+            "profile every process with the same clock, or add each file as its own run",
+        )
+    try:
+        run = merge_runs([p.run for p in parts])
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    return replace(parts[0], run=run, profiles=len(parts))
+
+
+def evidence_report_dir(paths: Sequence[Path], checkout_root: Path) -> str:
+    """The repo-relative directory every file in *paths* is in; ``""`` when that is the
+    root, when they differ, or when one lies outside *checkout_root*."""
+    root = checkout_root.resolve()
+    try:
+        dirs = {p.resolve().parent.relative_to(root).as_posix() for p in paths}
+    except (OSError, ValueError):
+        return ""
+    return dirs.pop() if len(dirs) == 1 and dirs != {"."} else ""
+
+
+def _junit_reports_as_one(
+    files: Sequence[tuple[str, bytes]], input_format_name: str | None
+) -> Sequence[tuple[str, bytes]]:
+    """Several files holding JUnit XML reports as one report; *files* as given otherwise.
+
+    The files that are not JUnit XML (Surefire's ``.txt`` summaries,
+    ``failsafe-summary.xml``) are left out.
+    """
+    from .profile_formats import SNIFF_BYTES, junit
+
+    if len(files) < 2 or input_format_name not in (None, "junit"):
+        return files
+    reports = [(name, data) for name, data in files if junit.sniff(data[:SNIFF_BYTES])]
+    if not reports:
+        return files
+    try:
+        combined = junit.combine(data for _, data in reports)
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
+    name = reports[0][0] if len(reports) == 1 else f"{reports[0][0]} and {len(reports) - 1} more"
+    return [(name, combined)]
 
 
 def _check_value_kind(
@@ -278,7 +463,9 @@ async def store_evidence(
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
-    stale, and its settings rank the refreshed read model.
+    stale, and its settings rank the refreshed read model. Raises
+    :class:`EvidenceRefusedError`, before anything is written, for a profile
+    that ran bundled or compiled code of the checkout.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
@@ -310,6 +497,7 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
+    doc = await _placed_tests(session, repo.id, doc, prepared.report_dir)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(
@@ -335,8 +523,12 @@ async def store_evidence(
     )
     summary = _summary(doc, provenance, joined, partial, index_commit, head_sha)
     summary["input_format"] = prepared.format
+    summary["profiles"] = prepared.profiles
     if conversion is not None:
         summary["conversion"] = conversion.summary()
+        warning = _unprofiled_children(summary["conversion"], prepared.profiles)
+        if warning is not None:
+            summary["warnings"] = [warning]
     if partial and not allow_partial:
         return StoredEvidence({**summary, "stored": False, "reason": "mostly_unmapped"})
     if not joined.rows:
@@ -357,7 +549,7 @@ async def store_evidence(
             doc,
             provenance,
             joined,
-            key=run_key(text, provenance, doc.kind, index_commit),
+            key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
             truncated=truncated,
             mapping_partial=partial,
             unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
@@ -384,10 +576,56 @@ async def store_evidence(
     return StoredEvidence(payload, rows_kept=len(rows))
 
 
+def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[str, Any] | None:
+    """A warning when a single profile spent time starting or waiting on other processes.
+
+    Read from the profile's own frames (multiprocessing, process pools and
+    subprocess in Python, os/exec in Go, child_process, cluster and worker
+    threads in Node): the parent's side is all a profile of one process can
+    show. With several profiles the caller has passed the workers, and which
+    process a file sampled is not recorded, so no warning is given.
+    """
+    share = conversion.get("child_process_share")
+    if profiles > 1 or share is None or share < UNPROFILED_CHILD_SHARE:
+        return None
+    return {
+        "code": "unprofiled_child_processes",
+        "child_process_share": share,
+        "message": (
+            f"{share:.0%} of this run went to starting or waiting on other processes "
+            "(worker pools, subprocesses); their own work is not in this profile."
+        ),
+        "remedy": (
+            "If those processes run repo code, profile each one and pass every profile "
+            "to one `repowise evidence add` (several files, or the directory holding them)."
+        ),
+    }
+
+
+async def _placed_tests(
+    session: Any, repo_id: str, doc: EvidenceDocument, report_dir: str = ""
+) -> EvidenceDocument:
+    """*doc* with each test placed on an indexed file: one named from *report_dir*, the
+    directory its report was read from (:func:`~.ingest.rebase_test_entries`), and one
+    named only by its classname (:func:`~.ingest.place_test_entries`).
+
+    The file list is read only when a test needs it.
+    """
+    rebase = bool(report_dir) and doc.kind == "test_timing"
+    if not rebase and not any(entry.get("classname") for entry in doc.entries):
+        return doc
+    from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
+
+    from .ingest import place_test_entries, rebase_test_entries
+
+    files = await health_file_paths(session, repo_id)
+    return place_test_entries(rebase_test_entries(doc, files, report_dir), files)
+
+
 async def ingest_evidence(
     session: Any,
     repo: Any,
-    data: bytes,
+    data: bytes | Sequence[tuple[str, bytes]],
     *,
     repo_path: Path,
     workload: str,
@@ -406,6 +644,8 @@ async def ingest_evidence(
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
+    *data* is one file's bytes (named *name* in messages), or ``(name,
+    bytes)`` for each profile of one run (:func:`prepare_evidence_files`).
     *repo* is the repository row (None reads as ``no_index``), *repo_path*
     the checkout its index was built from; *checkout_root* is the checkout
     the run used (default *repo_path*), whose source places a profile's
@@ -428,9 +668,9 @@ async def ingest_evidence(
         default_mb, default_caps, _ = evidence_caps(load_repo_config(repo_path))
         max_file_mb = default_mb if max_file_mb is None else max_file_mb
         caps = default_caps if caps is None else caps
-    prepared = prepare_evidence(
-        data,
-        name=name,
+    files = [(name, bytes(data))] if isinstance(data, bytes | bytearray) else list(data)
+    prepared = prepare_evidence_files(
+        files,
         checkout_root=root,
         commit=commit,
         dirty=dirty,
@@ -472,15 +712,18 @@ async def _convert(
         frame_paths(run.frames, root=str(root)),
         fold_case=sys.platform == "win32",
     )
-    return convert_profile(
-        run,
-        root=str(root),
-        symbols_by_file=symbols,
-        dirty_paths=changed or (),
-        origins=origins,
-        read_lines=checkout_reader(root),
-        value_kind=value_kind,
-    )
+    try:
+        return convert_profile(
+            run,
+            root=str(root),
+            symbols_by_file=symbols,
+            dirty_paths=changed or (),
+            origins=origins,
+            read_lines=checkout_reader(root),
+            value_kind=value_kind,
+        )
+    except EvidenceFormatError as exc:
+        raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
 def _tree_state(root: Path, commit: str, dirty: bool | None) -> tuple[Any, bool | None]:
@@ -518,6 +761,7 @@ def _summary(
         "workload": provenance.workload_name,
         "class": provenance.workload_class,
         "commit_sha": commit,
+        "environment": provenance.environment,
         "index_commit": index_commit,
         "stale": head_sha is not None and commit != head_sha,
         "dirty": provenance.dirty,
@@ -537,9 +781,13 @@ __all__ = [
     "StoredEvidence",
     "check_file_size",
     "check_options",
+    "detect_environment",
     "evidence_caps",
+    "evidence_paths",
+    "evidence_report_dir",
     "ingest_evidence",
     "input_format",
     "prepare_evidence",
+    "prepare_evidence_files",
     "store_evidence",
 ]

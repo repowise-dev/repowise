@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import ssl
 from pathlib import Path
 
 import httpx
@@ -139,6 +140,14 @@ def test_without_a_merge_request_or_a_token_nothing_is_sent(capsys, env, expecte
 
 
 # -- the client on its own ----------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch) -> list[float]:
+    """The backoff waits a test caused, instead of sleeping through them."""
+    slept: list[float] = []
+    monkeypatch.setattr(gitlab_api.time, "sleep", slept.append)
+    return slept
 
 
 def _client(handler) -> GitLabClient:
@@ -275,3 +284,114 @@ def test_outside_a_merge_request_the_command_still_prints_the_verdict(tmp_path) 
     assert result.exit_code == 0
     assert result.stdout.strip() == "warn"  # exited 0 but left no row
     assert result.stderr.strip() == "Not a merge-request pipeline, so no merge-request note is posted."
+
+
+def _flaky(*answers):
+    """A handler that gives *answers* in order (a status, or an exception class), then 200."""
+    queue = list(answers)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        answer = queue.pop(0) if queue else 200
+        if isinstance(answer, type):
+            raise answer("dropped", request=request)
+        return httpx.Response(answer, json={"id": 1} if answer == 200 else {"message": "busy"},
+                              headers={"Retry-After": "7"} if answer == 429 else {})
+
+    return handler, calls
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_a_brief_5xx_on_a_read_is_retried_with_backoff(status, waits) -> None:
+    handler, calls = _flaky(status, status)
+    with _client(handler) as client:
+        assert client.request("GET", "user") == {"id": 1}
+    assert calls == ["GET"] * 3 and waits == [1.0, 4.0]
+
+
+def test_a_5xx_that_persists_fails_after_three_tries(waits) -> None:
+    handler, calls = _flaky(502, 502, 502, 502)
+    with _client(handler) as client, pytest.raises(GitLabError) as exc:
+        client.request("PUT", "projects/1/merge_requests/1/notes/5", json={"body": "x"})
+    assert exc.value.status == 502 and len(calls) == 3 and waits == [1.0, 4.0]
+
+
+def test_a_post_is_not_sent_twice_after_a_5xx_or_a_timeout(waits) -> None:
+    for answer in (502, httpx.ReadTimeout):
+        handler, calls = _flaky(answer)
+        with _client(handler) as client, pytest.raises(GitLabError):
+            client.request("POST", "projects/1/merge_requests/1/notes", json={"body": "x"})
+        assert calls == ["POST"]
+    assert waits == []
+
+
+def test_a_rate_limit_or_a_refused_connection_is_retried_for_any_method(waits) -> None:
+    handler, calls = _flaky(429, httpx.ConnectError)
+    with _client(handler) as client:
+        assert client.request("POST", "projects/1/merge_requests/1/notes", json={"body": "x"}) == {"id": 1}
+    assert calls == ["POST"] * 3 and waits == [7.0, 4.0]
+
+
+@pytest.mark.parametrize(("retry_after", "wait"), [("900", 30.0), ("12", 12.0), ("soon", 1.0)])
+def test_a_long_retry_after_waits_the_cap(retry_after, wait, waits) -> None:
+    answers = [httpx.Response(429, headers={"Retry-After": retry_after}), httpx.Response(200, json={})]
+    with _client(lambda request: answers.pop(0)) as client:
+        client.request("GET", "user")
+    assert waits == [wait]
+
+
+def test_a_retry_after_date_waits_until_then_up_to_the_cap(waits) -> None:
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    later = format_datetime(datetime.now(UTC) + timedelta(hours=1), usegmt=True)
+    answers = [httpx.Response(429, headers={"Retry-After": later}), httpx.Response(200, json={})]
+    with _client(lambda request: answers.pop(0)) as client:
+        client.request("GET", "user")
+    assert waits == [30.0]
+
+
+@pytest.mark.parametrize("error", [httpx.ProxyError, httpx.UnsupportedProtocol])
+def test_an_error_that_would_only_repeat_is_not_retried(error, waits) -> None:
+    handler, calls = _flaky(error)
+    with _client(handler) as client, pytest.raises(GitLabError):
+        client.request("GET", "user")
+    assert calls == ["GET"] and waits == []
+
+
+def test_a_bad_certificate_is_not_retried(waits) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        try:
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        except ssl.SSLError as cause:
+            raise httpx.ConnectError("handshake failed", request=request) from cause
+
+    with _client(handler) as client, pytest.raises(GitLabError):
+        client.request("GET", "user")
+    assert calls == ["GET"] and waits == []
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError])
+def test_a_broken_answer_to_a_read_is_retried(error, waits) -> None:
+    handler, calls = _flaky(error)
+    with _client(handler) as client:
+        assert client.request("GET", "user") == {"id": 1}
+    assert len(calls) == 2 and waits == [1.0]
+
+
+def test_a_dropped_read_is_retried(waits) -> None:
+    handler, calls = _flaky(httpx.ReadTimeout)
+    with _client(handler) as client:
+        assert client.request("GET", "user") == {"id": 1}
+    assert len(calls) == 2 and waits == [1.0]
+
+
+def test_a_refusal_is_never_retried(waits) -> None:
+    handler, calls = _flaky(403)
+    with _client(handler) as client, pytest.raises(GitLabError):
+        client.request("GET", "user")
+    assert len(calls) == 1 and waits == []

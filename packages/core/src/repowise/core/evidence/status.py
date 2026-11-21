@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
@@ -83,18 +83,105 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
 
 
 def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[str, Any]:
-    """The newest run of every workload (kind, name, environment), newest first,
-    and how many runs each kind keeps. *runs* come newest first."""
-    latest: dict[tuple[str, str, str], Any] = {}
-    stored: dict[str, int] = {}
+    """The newest run of every workload (kind, name, environment), in the
+    order of *runs* (newest ingest first), and how many runs each kind keeps.
+
+    Newest is :func:`evidence.hotness.newest_runs`, the run the measured views
+    rank: by measurement time, not ingest time, so re-adding an old profile
+    does not make it the workload's newest here while the ranking keeps
+    another. A partially mapped run is never a basis for ranking, so it is a
+    workload's newest only when the workload has no complete run; it still
+    counts as stored."""
+    from .hotness import newest_runs
+
+    runs = list(runs)
+    by_kind: dict[str, list[Any]] = {}
     for run in runs:
-        stored[run.kind] = stored.get(run.kind, 0) + 1
-        latest.setdefault((run.kind, run.workload_name, run.environment), run)
+        by_kind.setdefault(run.kind, []).append(run)
+    newest: set[str] = set()
+    for kind_runs in by_kind.values():
+        complete = [r for r in kind_runs if not r.mapping_partial]
+        newest |= newest_runs(complete)
+        covered = {(r.workload_name, r.environment) for r in complete}
+        newest |= newest_runs(
+            r for r in kind_runs if (r.workload_name, r.environment) not in covered
+        )
     return {
         "reference_commit": reference_commit,
-        "runs_stored": dict(sorted(stored.items())),
-        "workloads": [run_status(run, reference_commit) for run in latest.values()],
+        "runs_stored": {kind: len(kind_runs) for kind, kind_runs in sorted(by_kind.items())},
+        "workloads": [run_status(run, reference_commit) for run in runs if run.id in newest],
     }
 
 
-__all__ = ["evidence_status", "run_share", "run_status", "split_words", "time_split"]
+def _utc(when: datetime | None) -> datetime | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return when.replace(tzinfo=when.tzinfo or UTC) if when else None
+
+
+def freshness_entry(
+    commit_sha: str | None,
+    ingested_at: datetime | None,
+    reference_commit: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """One stored measurement: the commit it measured, when it was ingested,
+    its age in whole days, and ``current``/``stale``/``unknown`` against
+    *reference_commit* (``coverage_freshness``)."""
+    at = _utc(ingested_at)
+    return {
+        "present": True,
+        "commit_sha": commit_sha,
+        "ingested_at": at.isoformat() if at else None,
+        "age_days": max((now - at).days, 0) if at else None,
+        "freshness": coverage_freshness(commit_sha, reference_commit),
+    }
+
+
+#: Nothing stored: no commit, no age; freshness is unknown, never current.
+ABSENT: dict[str, Any] = {
+    "present": False,
+    "commit_sha": None,
+    "ingested_at": None,
+    "age_days": None,
+    "freshness": "unknown",
+}
+
+
+async def load_evidence_freshness(
+    session: Any, repository_id: str, reference_commit: str | None, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """How fresh the stored coverage and runtime evidence are against
+    *reference_commit*: the newest coverage ingest, and the newest runtime
+    run with how many runs are stored. One keyed read per store."""
+    from ..persistence.crud.analysis.coverage import load_newest_ingest
+    from ..persistence.crud.analysis.evidence import newest_evidence_run
+
+    now = now or datetime.now(UTC)
+    ingest = await load_newest_ingest(session, repository_id)
+    coverage = (
+        freshness_entry(ingest.ingested_commit_sha, ingest.ingested_at, reference_commit, now)
+        if ingest is not None
+        else dict(ABSENT)
+    )
+    runs, newest = await newest_evidence_run(
+        session, repository_id, prefer_commit=reference_commit
+    )
+    runtime = (
+        freshness_entry(newest.commit_sha, newest.ingested_at, reference_commit, now)
+        if newest is not None
+        else dict(ABSENT)
+    )
+    runtime["runs"] = runs
+    return {"reference_commit": reference_commit, "coverage": coverage, "runtime": runtime}
+
+
+__all__ = [
+    "ABSENT",
+    "evidence_status",
+    "freshness_entry",
+    "load_evidence_freshness",
+    "run_share",
+    "run_status",
+    "split_words",
+    "time_split",
+]

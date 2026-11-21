@@ -79,6 +79,7 @@ def test_render_names_only_what_a_degraded_index_lacks(gen):
             "file_pages": {"eligible": 5, "generated": 0, "omitted": 5},
             "analysis": {"unavailable": [], "skipped": ["generation"]},
             "upgrade": {"status": "pending"},
+            "provider": {"name": "anthropic"},
         },
     )
     result = gen.render(data)
@@ -166,6 +167,14 @@ def test_index_only_keyless_names_the_fast_to_full_command(any_gen):
     result = any_gen.render(_scoped({**_KEYLESS_SCOPE, "content_provenance": "none"}))
     assert "`repowise update --full` adds a model" in result
     assert "Scope: Index only (no documentation, full-text search)." in result
+
+
+def test_template_index_with_semantic_search_is_not_pending_an_upgrade(any_gen):
+    # Keyless with an embedder on: no provider will take the stored "pending" up.
+    scope = {**_KEYLESS_SCOPE, "search": {"full_text": "available", "semantic": "available"}}
+    result = any_gen.render(_scoped(scope))
+    assert "model upgrade" not in result
+    assert "repowise update --full" not in result
 
 
 def test_keyed_index_keeps_model_guidance(any_gen):

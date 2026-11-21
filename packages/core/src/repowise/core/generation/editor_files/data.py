@@ -209,8 +209,16 @@ class EditorFileData:
     def upgrade_pending(self) -> bool:
         upgrade = self.index_scope.get("upgrade")
         status = upgrade.get("status") if isinstance(upgrade, dict) else None
-        # A keyless index gets its next command from the keyless bullet instead.
-        return status in ("pending", "resumable", "failed") and not self.keyless
+        if self.keyless:
+            # A keyless index gets its next command from the keyless bullet instead.
+            return False
+        if status == "pending":
+            # Every run without a model stores ``pending``; with no provider nothing
+            # takes it up (same rule as ``index_scope._upgrade_in_flight``), so a
+            # template index with semantic search on is finished, not pending.
+            provider = self.index_scope.get("provider")
+            return isinstance(provider, dict) and bool(provider.get("name"))
+        return status in ("resumable", "failed")
 
     @property
     def tool_table_md(self) -> str:

@@ -26,6 +26,12 @@ _TIMEOUT_ENV_VARS = ("OLLAMA_EMBEDDING_TIMEOUT", "REPOWISE_EMBEDDING_TIMEOUT")
 # Ollama's own error text when the requested width is larger than the model's.
 _DIMS_TOO_LARGE = re.compile(r"dimensions (\d+) exceeds embedding length (\d+)")
 _MAX_DETAIL_CHARS = 500
+# Ollama's 404 body when the model was never pulled: `model "x" not found, try pulling it first`.
+_MODEL_NOT_FOUND = re.compile(r"model .*not found")
+
+
+class OllamaModelMissingError(RuntimeError):
+    """Ollama is up but does not have the embedding model: a setup step, not a bad input."""
 
 
 def _normalize_base_url(url: str) -> str:
@@ -198,6 +204,11 @@ class OllamaEmbedder:
         names the setting to change.
         """
         detail = _refusal_detail(exc.response)
+        if exc.response.status_code == 404 and _MODEL_NOT_FOUND.search(detail):
+            return OllamaModelMissingError(
+                f"Ollama has no model {self._model!r}. Run `ollama pull {self._model}`, "
+                "then re-run this command."
+            )
         match = _DIMS_TOO_LARGE.search(detail)
         if match:
             native = match.group(2)

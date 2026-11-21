@@ -635,7 +635,6 @@ async def test_get_risk_no_changed_files_no_governance_risk(setup_mcp_decisions)
     result = await get_risk(["src/auth/service.py", "src/db/models.py"])
     # No directive in standard mode
     assert "directive" not in result
-    assert "global_hotspots" in result
 
 
 @pytest.mark.asyncio

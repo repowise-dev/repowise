@@ -162,3 +162,45 @@ describe("FileOverviewTab symbol fix counts", () => {
     expect(screen.getByText("s0").closest("a")?.textContent).toContain("4");
   });
 });
+
+describe("FileOverviewTab line deep link", () => {
+  const html = '<pre><code><span class="line" data-line="1">x</span></code></pre>';
+
+  it("opens on the source when the host passes it", () => {
+    Element.prototype.scrollIntoView = () => {};
+    const { container } = render(
+      <FileOverviewTab
+        data={makeData([symbol("run", 20)])}
+        symbolHref={symbolHref}
+        fileHref={fileHref}
+        sourceCodeHtml={html}
+        highlightLine={1}
+      />,
+    );
+    const headings = [...container.querySelectorAll("h2")].map((h) => h.textContent);
+    expect(headings[0]).toBe("Source");
+    expect(container.querySelector('[data-line="1"]')?.getAttribute("aria-current")).toBe(
+      "location",
+    );
+  });
+
+  it("shows the source even when nothing was extracted from the file", () => {
+    Element.prototype.scrollIntoView = () => {};
+    render(
+      <FileOverviewTab
+        data={makeData([])}
+        symbolHref={symbolHref}
+        fileHref={fileHref}
+        sourceCodeHtml={html}
+        highlightLine={1}
+      />,
+    );
+    expect(screen.getByText("Source")).toBeTruthy();
+    expect(screen.queryByText("Nothing extracted from this file yet")).toBeNull();
+  });
+
+  it("adds no source section without one", () => {
+    renderTab(makeData([symbol("run", 20)]));
+    expect(screen.queryByText("Source")).toBeNull();
+  });
+});

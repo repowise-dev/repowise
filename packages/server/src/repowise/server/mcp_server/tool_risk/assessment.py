@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
-from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS, shown_snippet
 from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -45,6 +45,9 @@ from repowise.server.repo_paths import missing_path_hint, normalize_target_path
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
+# Partner rows were the largest part of a card. The total stays on the card and
+# the tail stays recoverable, so three is enough to act on.
+_CO_CHANGE_LIMIT = 3
 
 
 async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
@@ -183,11 +186,15 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [
-            {"kind": r[0], "severity": r[1], "snippet": r[2]}
-            for r in rows.all()
-            if r[0] not in SYMBOL_NAME_KINDS
-        ]
+        signals = []
+        for kind, severity, snippet in rows.all():
+            if kind in SYMBOL_NAME_KINDS:
+                continue
+            signal = {"kind": kind, "severity": severity}
+            if shown := shown_snippet(kind, snippet):
+                signal["snippet"] = shown
+            signals.append(signal)
+        return signals
     except Exception:
         return []
 
@@ -196,9 +203,6 @@ def _build_co_changes(
     meta: Any, structural_related: Any, exclude_spec: Any
 ) -> tuple[list[dict], int]:
     """Historical co-change partners and their exact post-filter population.
-
-    Larger lists make MCP responses verbose without adding signal: top-5 captures
-    the bulk of the temporal-coupling mass and keeps tool output tight for agents.
 
     Row order stays by recency-decayed ``weight``. Each row carries ``file_path``,
     ``support`` (shared commit count, when known), ``conf_ab`` (share of target's
@@ -418,7 +422,7 @@ def _apply_co_changes(
 ) -> int:
     """Add the hotspot flags and co-change partners; return the partner total."""
     population, total = _build_co_changes(meta, structural_related, exclude_spec)
-    co_changes = population[:_RELATIONSHIP_LIMIT]
+    co_changes = population[:_CO_CHANGE_LIMIT]
     card["hotspot_score"] = meta.churn_percentile or 0.0
     # The stored flag already applies the absolute activity floors, which a
     # client thresholding the score alone cannot reproduce.
@@ -431,9 +435,9 @@ def _apply_co_changes(
         card,
         "co_change_partners",
         population,
-        _RELATIONSHIP_LIMIT,
+        _CO_CHANGE_LIMIT,
         collector,
-        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        label=f"{target} :: co_change_partners beyond cap={_CO_CHANGE_LIMIT}",
         preserve_counts=True,
     )
     card["relationship_analysis"]["co_change"] = {
@@ -464,7 +468,8 @@ async def _assess_one_target(
     Enriches each result with:
     - test_gap: bool, True when nothing shows a test reaches this file
       (``pr_blast.untested_files``: coverage, the reach walk, or a test named for it).
-    - security_signals: list of {kind, severity, snippet} from security_findings.
+    - security_signals: list of {kind, severity, snippet} from security_findings;
+      a secret has no snippet.
     """
     repo_id = repository.id
     repo_root = served_root(repository, repo_root)

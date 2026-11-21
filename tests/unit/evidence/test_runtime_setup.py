@@ -16,7 +16,7 @@ from repowise.core.evidence.runtime_setup import (
     load_runtime_inputs,
     runtime_targets,
 )
-from repowise.core.evidence.setup import evidence_setup
+from repowise.core.evidence.setup import evidence_setup, offered_classes, runtime_offer
 from repowise.core.generation.flow_entries import console_scripts, python_scripts
 from repowise.core.test_runners.stacks import detect_repo_stacks
 
@@ -92,7 +92,7 @@ def _python(root: Path, *, scripts: str = 'app = "app.cli:main"\n', extra: str =
 
 
 def _targets(root: Path, inputs: RuntimeInputs | None = None, commit: str | None = SHA) -> list[dict]:
-    (stack,) = detect_repo_stacks(root)
+    (stack,) = [s for s in detect_repo_stacks(root) if not s.root]
     return runtime_targets(stack, root, inputs or RuntimeInputs(), commit)
 
 
@@ -291,7 +291,7 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
     )
     mains = go_main_packages(BuildFacts(tmp_path))
 
-    main, bench, tests = _targets_go(tmp_path, inputs, mains)
+    main, bench, results, tests = _targets_go(tmp_path, inputs, mains)
 
     assert mains == ["cmd/fx"]
     assert (main["class"], main["command"], main["ingest"]) == ("entry_point", None, None)
@@ -303,6 +303,14 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
         "go test -count=1 -o .repowise/go-test-work.test -cpuprofile .repowise/go-test-work.pprof ./work"
     )
     assert '--workload "go bench ./work" --class benchmark' in bench["ingest"]
+    # The same benchmarks' printed results, allocations per op included, as a series.
+    assert results["command"] == (
+        "go test '-run=^$' -bench . -benchmem -count=1 ./work > .repowise/go-bench-results-work.txt"
+    )
+    assert results["ingest"] == (
+        'repowise evidence add .repowise/go-bench-results-work.txt '
+        f'--workload "go bench results ./work" --class benchmark --commit {SHA}'
+    )
     # An older profile goes first, so a build that fails leaves nothing to ingest.
     assert bench["prerequisites"] == ["git clean -fqx -- .repowise/go-bench-work.pprof"]
     assert tests["prerequisites"] == ["git clean -fqx -- .repowise/go-test-work.pprof"]
@@ -334,11 +342,11 @@ def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest
 
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs)
 
-    profiled = [t for t in plan["units"][0]["runtime"] if t["command"]]
+    profiled = [t for t in plan["units"][0]["runtime"] if (t["profile"] or "").endswith(".pprof")]
     assert profiled and all(t["ingest"] is None for t in profiled)
     assert all(t["reason"] == "This build of repowise does not read pprof files yet." for t in profiled)
-    # Nothing it could read leads the loop: the coverage run does.
-    assert plan["next_call"]["purpose"].startswith("Run the go tests")
+    # The benchmark results it can read lead the loop instead.
+    assert "go-bench-results-work.txt" in json.dumps(plan["next_call"])
 
 
 def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
@@ -355,7 +363,7 @@ def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
 
     by_root = {u["root"]: [t["workload"] for t in u["runtime"]] for u in plan["units"]}
     assert by_root[""] == ["go run ./cmd/fx"]
-    assert by_root["tools"] == ["tools: go bench .", "tools: go test ."]
+    assert by_root["tools"] == ["tools: go bench .", "tools: go bench results .", "tools: go test ."]
 
 
 def test_units_never_share_a_workload_or_a_profile(tmp_path: Path) -> None:
@@ -520,6 +528,120 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
     assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
 
+@pytest.mark.parametrize("name", ["enterprise", "enterprise edition", "enterprise(ee)&x@2"])
+def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path, name: str) -> None:
+    # The nested unit's conftest imports what only its own install brings.
+    _python(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+    nested = tmp_path / name
+    (nested / "tests").mkdir(parents=True)
+    (nested / "pyproject.toml").write_text('[project]\nname = "enterprise"\n')
+    (nested / "tests" / "conftest.py").write_text("import missing_enterprise_server\n")
+    (nested / "tests" / "test_e.py").write_text("def test_e():\n    pass\n")
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    assert code == 0
+    assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
+
+
+def test_a_path_in_the_arguments_picks_what_the_suite_profile_runs(tmp_path: Path) -> None:
+    # Appended to tests/unit, the node id would run the failing test too.
+    _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "tests/unit/test_a.py::test_a"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
+def test_an_options_value_does_not_replace_the_suites_paths(tmp_path: Path) -> None:
+    # ``--ignore tests/unit/test_c.py`` narrows tests/unit; it is no path to run on its own.
+    _suite(tmp_path, "def test_a():\n    pass\n")
+    (tmp_path / "tests" / "unit" / "test_c.py").write_text("def test_c():\n    assert False\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "--ignore", "tests/unit/test_c.py"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
+def test_a_file_options_value_does_not_replace_the_suites_paths(tmp_path: Path) -> None:
+    # The integration tests cannot import: run with no paths, the profile would fail.
+    _suite(tmp_path, "def test_a():\n    pass\n")
+    (tmp_path / "pytest-extra.ini").write_text("[pytest]\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "--log-file", "pytest-extra.ini"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
+def test_a_path_after_a_flag_still_picks_what_the_suite_profile_runs(tmp_path: Path) -> None:
+    _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "-q", "tests/unit/test_a.py::test_a"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
+def test_of_several_apps_in_a_file_the_one_named_app_is_served(tmp_path: Path) -> None:
+    _asgi(tmp_path, "from fastapi import FastAPI\nadmin = FastAPI()\napp = FastAPI()\n")
+
+    serve = _targets(tmp_path, RuntimeInputs(entry_files=("app/main.py",)))[0]
+
+    assert serve["workload"] == "serve app.main:app"
+
+
+def _asgi(root: Path, source: str = "from fastapi import FastAPI\n\napp: FastAPI = FastAPI(title='x')\n") -> None:
+    _python(root, scripts="")
+    (root / "app" / "main.py").write_text(source)
+
+
+def test_an_asgi_app_is_served_under_the_profiler_and_driven_by_requests(tmp_path: Path) -> None:
+    _asgi(tmp_path)
+
+    serve = _targets(tmp_path, RuntimeInputs(entry_files=("app/main.py",)))[0]
+
+    assert (serve["class"], serve["workload"]) == ("entry_point", "serve app.main:app")
+    assert r"import uvicorn;uvicorn.run(\'app.main:app\')" in serve["command"]
+    # A server takes requests, not arguments.
+    assert ARGS_PLACEHOLDER not in serve["command"] + serve["ingest"]
+    assert "Ctrl-C" in serve["reason"] and "serves" not in serve
+    assert serve["prerequisites"][-1] == "python -m pip install uvicorn"
+
+
+def test_uv_brings_uvicorn_for_an_asgi_app(tmp_path: Path) -> None:
+    _asgi(tmp_path, "import fastapi\napi = fastapi.FastAPI()\n")
+    (tmp_path / "uv.lock").write_text("")
+
+    serve = _targets(tmp_path, RuntimeInputs(entry_files=("app/main.py",)))[0]
+
+    assert serve["command"].startswith("uv run --with pyinstrument --with uvicorn python -c")
+    assert "app.main:api" in serve["command"] and serve["prerequisites"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def create_app():\n    app = FastAPI()\n    return app\n",  # a factory: not module level
+        "from flask import Flask\napp = Flask(__name__)\n",
+    ],
+)
+def test_only_a_module_level_asgi_app_is_served(tmp_path: Path, source: str) -> None:
+    _asgi(tmp_path, source)
+
+    found = _targets(tmp_path, RuntimeInputs(entry_files=("app/main.py",)))
+
+    assert not any(t["workload"].startswith("serve ") for t in found)
+
+
 def test_a_red_suite_is_profiled_and_its_failures_counted(tmp_path: Path) -> None:
     _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
 
@@ -578,11 +700,16 @@ def test_node_bins_get_a_cpu_profile_and_typescript_is_refused(tmp_path: Path) -
 
     js, ts = _targets(tmp_path)
 
-    assert js["command"] == (
-        "node --cpu-prof --cpu-prof-dir=.repowise --cpu-prof-name=node-bin-fx-js.cpuprofile bin/fx.js "
-        + ARGS_PLACEHOLDER
+    # One directory per target: every process and worker thread writes its own
+    # profile there, cleaned first, and the ingest line takes the directory.
+    assert js["command"] == "node --cpu-prof --cpu-prof-dir=.repowise/node-bin-fx-js bin/fx.js " + ARGS_PLACEHOLDER
+    assert js["profile"] == ".repowise/node-bin-fx-js"
+    assert js["prerequisites"] == ["git clean -fqx -- .repowise/node-bin-fx-js"]
+    assert js["ingest"] == (
+        "repowise evidence add .repowise/node-bin-fx-js "
+        f'--workload "node bin/fx.js {ARGS_PLACEHOLDER}" --class entry_point --commit {SHA}'
     )
-    assert js["ingest"] is None and "cpuprofile" in js["reason"]
+    assert "cpuprofile" not in js["reason"]
     assert ts["command"] is None and "TypeScript" in ts["reason"]
 
 
@@ -779,9 +906,67 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
     assert done["reason"] == "Evidence at this commit is ingested; nothing left to run."
 
 
+def test_a_server_waiting_for_requests_is_named_in_next_call_until_measured(tmp_path: Path) -> None:
+    _asgi(tmp_path)
+    inputs = RuntimeInputs(entry_files=("app/main.py",), measured=frozenset({("python tests", SHA)}))
+
+    left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs, coverage_commit=SHA)
+
+    assert left["next_call"]["steps"] == [] and left["next_call"]["optional"]["workloads"] == ["serve app.main:app"]
+    inputs = RuntimeInputs(
+        entry_files=("app/main.py",), measured=frozenset({("python tests", SHA), ("serve app.main:app", SHA)})
+    )
+    assert evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs, coverage_commit=SHA)["next_call"] is None
+
+
+def test_the_offer_is_what_the_plan_prints_an_ingest_line_for(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    offer = runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=SHA)
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    printed = [t["workload"] for u in plan["units"] for t in u["runtime"] if t["ingest"]]
+    assert [t["workload"] for t in offer] == printed == ["app", "python tests"]
+    assert offered_classes(offer) == ("entry_point", "unit_test")
+    assert {t["format"] for t in offer} == {"speedscope"}
+    # The format is for the callers that read the offer, never printed.
+    assert all("format" not in t for u in plan["units"] for t in u["runtime"])
+    # Without a commit nothing can be ingested, so nothing is offered.
+    assert runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=None) == []
+
+
+def test_a_unit_with_nothing_to_profile_offers_nothing_and_says_so(tmp_path: Path) -> None:
+    # A Jest unit: coverage, but no entry point, benchmark or suite recipe to profile.
+    (tmp_path / "package.json").write_text(
+        '{"name": "web", "scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}}'
+    )
+
+    assert runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=SHA) == []
+    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs(), coverage_commit=SHA)
+    assert done["next_call"] is None
+    assert done["reason"].startswith("Coverage at this commit is ingested. No unit has an entry point")
+
+
 def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> None:
     _python(tmp_path, scripts="")
 
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
 
     assert "optional" not in plan["next_call"]
+
+
+def test_a_node_ingest_line_names_the_directory_of_per_process_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.evidence import runtime_setup
+
+    monkeypatch.setattr(runtime_setup, "_readable", lambda _fmt: True)
+    (tmp_path / "package.json").write_text(
+        '{"name": "fx", "bin": {"fx": "bin/fx.js"}, '
+        '"scripts": {"test": "jest"}, "devDependencies": {"jest": "1"}}'
+    )
+    (tmp_path / "bin").mkdir()
+
+    (js,) = _targets(tmp_path)
+
+    assert js["ingest"].startswith('repowise evidence add .repowise/node-bin-fx-js --workload "node bin/fx.js')

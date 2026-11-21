@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -117,6 +117,7 @@ def _row_kwargs(
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.counts import perf_judgement
     from ....analysis.health.queue.eligibility import queue_proof
+    from ....analysis.health.worth import static_cost
 
     fix = opportunity.fix
     row = {
@@ -132,6 +133,7 @@ def _row_kwargs(
         "evidence_confidence": opportunity.confidence,
         "plan_state": plan_state,
         "cost_proof": queue_proof(opportunity),
+        "static_cost": static_cost(opportunity.biomarker_type, opportunity.facets),
         "execution_role": opportunity.facets.get("execution_role", "unknown"),
         "fix_strategy": fix.strategy if fix else None,
         "fix_safety": fix.safety if fix else None,
@@ -149,6 +151,7 @@ def _row_kwargs(
         **row,
         "facets": opportunity.facets,
         "actionability_reason": opportunity.actionability_reason,
+        "prerequisites": opportunity.prerequisites,
     }
     return {**row, **perf_judgement(judged, opportunity.facets, plan or {}).columns()}
 
@@ -251,10 +254,17 @@ async def finalize_performance_opportunities(
     )
     if execution_roles is not None:
         rows = await _restamp_roles(session, rows, execution_roles)
+    measured = await _measured_functions(session, repository_id)
     opportunities = build_performance_opportunities(
         rows,
         evidence_limit=_EVIDENCE_LIMIT,
         origins=await _unknown_context_origins(session, repository_id, rows),
+        measured=measured.measured,
+        hot=measured.hot,
+        in_tests=measured.in_tests,
+        hot_in_tests=measured.hot_in_tests,
+        ranks=measured.ranks,
+        queries=await _query_readings(session, repository_id),
     )
 
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
@@ -262,7 +272,15 @@ async def finalize_performance_opportunities(
         session, repository_id, opportunities, plan_states, analyzed_commit, plans
     )
     await _restamp_findings(session, rows, verdicts)
-    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
+    await _write_summary(
+        session,
+        repository_id,
+        opportunities,
+        plan_states,
+        analyzed_commit,
+        plans,
+        workloads=measured.workloads,
+    )
     return len(opportunities)
 
 
@@ -293,6 +311,114 @@ async def _restamp_roles(
     if changed:
         await session.execute(update(HealthFinding), changed)
     return out
+
+
+class _Measured(NamedTuple):
+    #: Function -> the leading workload that ranks it best.
+    measured: dict[str, str]
+    #: Functions a leading workload measured in the ``lead_candidate`` tier.
+    hot: frozenset[str]
+    #: The leading workloads whose runs measured any function: what a cause
+    #: no facet marks was not exercised in.
+    workloads: tuple[str, ...]
+    #: The same two for ``unit_test`` runs, kept apart as measured in tests.
+    in_tests: dict[str, str]
+    hot_in_tests: frozenset[str]
+    #: Function -> its best place in a leading workload's run (1 is the top).
+    ranks: dict[str, int]
+
+
+async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
+    """Each function a leading workload's newest run ranks, with that workload's
+    name, and the ones any such run puts in ``evidence.hotness``'s
+    ``lead_candidate`` tier (the share and interval rule, or ranked in
+    several runs).
+
+    Read off ``workload_hotness``, which the health writers rebuild before
+    this runs, so it describes the current code. Workload classes that may
+    lead (``evidence.hotness.LEAD_CLASSES``) fill ``measured`` and ``hot``;
+    ``unit_test`` runs fill ``in_tests`` and ``hot_in_tests`` apart, since a
+    test run shows what the code costs, not what production runs, and never
+    marks a cause not exercised. A deterministic tracer's order is not a
+    measured cost (``ordering_only``), so it never counts, as it never leads
+    in ``evidence.hotness``. A function two workloads rank takes the one that
+    ranks it best, ties by name. One indexed lookup without evidence.
+    """
+    from ....evidence.hotness import LEAD_CLASSES
+    from .evidence import ranked_by_workload
+
+    best: dict[bool, dict[str, tuple[int, str]]] = {True: {}, False: {}}
+    hot: dict[bool, set[str]] = {True: set(), False: set()}
+    workloads: set[str] = set()
+    for run, rows in await ranked_by_workload(session, repository_id):
+        leads = run.workload_class in LEAD_CLASSES
+        if not leads and run.workload_class != "unit_test":
+            continue
+        for row in rows:
+            if row.ordering_only:
+                continue
+            if leads:
+                workloads.add(run.workload_name)
+            if row.tier == "lead_candidate":
+                hot[leads].add(row.symbol_id)
+            key = (row.rank, run.workload_name)
+            if row.symbol_id not in best[leads] or key < best[leads][row.symbol_id]:
+                best[leads][row.symbol_id] = key
+
+    def names(by: dict[str, tuple[int, str]]) -> dict[str, str]:
+        return {sid: name for sid, (_rank, name) in by.items()}
+
+    return _Measured(
+        names(best[True]),
+        frozenset(hot[True]),
+        tuple(sorted(workloads)),
+        names(best[False]),
+        frozenset(hot[False]),
+        {sid: rank for sid, (rank, _name) in best[True].items()},
+    )
+
+
+async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
+    """Each call site's query-count reading (``evidence.query_counts``), by symbol id.
+
+    Read from each workload's newest complete ``query_count`` run, so a
+    superseded run never speaks for the current code and a partly mapped one,
+    which is never a basis for ranking either, never decides. Sizes are
+    compared within one run and one scope kind only: a test and a request, or
+    two workloads, are not the same measurement. Ceiling: a newest run
+    measured before the site's body changed still counts; query rows carry
+    no body digest to tell. Two statements, the second only when such a run
+    exists.
+    """
+    from ....evidence.hotness import newest_runs
+    from ....evidence.query_counts import read_statement, strongest
+    from ...models import EvidenceQueryCount, EvidenceRun
+
+    runs = (
+        await session.execute(
+            select(EvidenceRun).where(
+                EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "query_count"
+            )
+        )
+    ).scalars()
+    keep = sorted(newest_runs(r for r in runs if not r.mapping_partial))
+    if not keep:
+        return {}
+    q = EvidenceQueryCount
+    points: dict[tuple[str, str, str, str], list[tuple[int | None, int]]] = {}
+    columns = (q.run_id, q.scope_kind, q.site_symbol_id, q.statement_fp)
+    for batch in chunked(keep):
+        result = await session.execute(
+            select(*columns, q.scope_items, q.query_count).where(
+                q.repository_id == repository_id, q.run_id.in_(batch)
+            )
+        )
+        for run_id, kind, site, fp, items, count in result:
+            points.setdefault((run_id, kind, site, fp), []).append((items, count))
+    by_site: dict[str, list[Any]] = {}
+    for (_run, _kind, site, _fp), seen in points.items():
+        by_site.setdefault(site, []).append(read_statement(seen))
+    return {site: strongest(readings) for site, readings in by_site.items()}
 
 
 async def _unknown_context_origins(
@@ -479,6 +605,39 @@ async def _reconcile_opportunities(
     return verdicts
 
 
+def fill_static_costs(connection: Any) -> int:
+    """Store ``static_cost`` on every opportunity row written before the column.
+
+    Read from each row's own marker and stored facets, the inputs the writer
+    uses, so no analysis reruns. Sync so both Alembic and the SQLite schema
+    reconciler can run it, once, when the column is added. Returns the number
+    of rows filled.
+    """
+    from ....analysis.health.worth import static_cost
+
+    rows = connection.execute(
+        text(
+            "SELECT id, biomarker_type, details_json FROM performance_opportunities "
+            "WHERE static_cost IS NULL"
+        )
+    ).all()
+    fills: list[dict[str, Any]] = []
+    for row_id, marker, details_json in rows:
+        try:
+            details = json.loads(details_json or "{}")
+        except ValueError:
+            details = {}
+        facets = details.get("facets") if isinstance(details, dict) else None
+        facets = facets if isinstance(facets, dict) else {}
+        fills.append({"id": row_id, "cost": static_cost(marker, facets)})
+    if fills:
+        connection.execute(
+            text("UPDATE performance_opportunities SET static_cost = :cost WHERE id = :id"),
+            fills,
+        )
+    return len(fills)
+
+
 async def _write_summary(
     session: AsyncSession,
     repository_id: str,
@@ -486,13 +645,19 @@ async def _write_summary(
     plan_states: dict[str, str],
     analyzed_commit: str | None,
     plans: dict[str, dict[str, Any]] | None = None,
+    *,
+    workloads: tuple[str, ...] = (),
 ) -> None:
 
     from ....analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 
-    payload = json.dumps(
-        _summary_payload(opportunities, plan_states, plans), separators=(",", ":")
-    )
+    summary = _summary_payload(opportunities, plan_states, plans)
+    if workloads:
+        # Only with runtime evidence, so a repo without any stores what it did.
+        # The causes were judged against these runs: a run added since is not
+        # in their facets until the next index, so it is not named either.
+        summary["evidence_workloads"] = list(workloads)
+    payload = json.dumps(summary, separators=(",", ":"))
     row = await session.get(PerformanceSummary, repository_id)
     if row is None:
         row = PerformanceSummary(repository_id=repository_id)
@@ -534,18 +699,30 @@ async def get_performance_opportunity(
 
 
 def _predicates(
-    repository_id: str, *, include_unverified: bool = False, **params: Any
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
+    **params: Any,
 ) -> list[Any]:
     """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table.
 
     Opportunities on a file of a language the registry gates for performance
-    are left out unless ``include_unverified``.
+    are left out unless ``include_unverified``; causes minted from runtime
+    evidence alone (:func:`measured_hotspot_ids`) unless
+    ``include_measured_hotspots``.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
     return [
         PerformanceOpportunity.repository_id == repository_id,
+        *(
+            ()
+            if include_measured_hotspots
+            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+        ),
         ungated(
             "performance",
             PerformanceOpportunity.file_path,
@@ -568,6 +745,7 @@ async def list_performance_opportunities(
     confidence: str | None = None,
     actionabilities: frozenset[str] | None = None,
     proofs: frozenset[str] | None = None,
+    static_costs: frozenset[str] | None = None,
     roles: frozenset[str] | None = None,
     queue_eligible: bool | None = None,
     file_paths: tuple[str, ...] | None = None,
@@ -576,6 +754,7 @@ async def list_performance_opportunities(
     limit: int = 20,
     offset: int = 0,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> tuple[list[PerformanceOpportunity], int]:
     """One page in the requested order, plus the exact total behind it.
 
@@ -591,11 +770,13 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionabilities=actionabilities,
         proofs=proofs,
+        static_costs=static_costs,
         roles=roles,
         queue_eligible=queue_eligible,
         file_paths=file_paths,
         area_prefix=area_prefix,
         include_unverified=include_unverified,
+        include_measured_hotspots=include_measured_hotspots,
     )
     total = int(
         (
@@ -628,6 +809,7 @@ async def performance_facet_counts(
     include_unverified: bool = False,
     scoped: bool = False,
     area_prefix: str | None = None,
+    include_measured_hotspots: bool = True,
 ) -> list[tuple[Any, ...]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
@@ -649,6 +831,7 @@ async def performance_facet_counts(
                 file_paths=file_paths,
                 area_prefix=area_prefix,
                 include_unverified=include_unverified,
+                include_measured_hotspots=include_measured_hotspots,
             )
         )
         .group_by(*columns)
@@ -671,24 +854,69 @@ class PerformanceHeadline(NamedTuple):
         return self._asdict()
 
 
+async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> frozenset[str]:
+    """The open causes minted from runtime evidence alone
+    (``perf.opportunities.measured_hotspots``), for a surface that shows no
+    evidence. One indexed lookup."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    result = await session.execute(
+        select(PerformanceOpportunity.opportunity_id).where(
+            PerformanceOpportunity.repository_id == repository_id,
+            PerformanceOpportunity.status == "open",
+            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+        )
+    )
+    return frozenset(result.scalars().all())
+
+
+async def measured_hotspot_counts(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> tuple[int, int]:
+    """``(open, in the default queue)`` over the causes runtime evidence alone
+    minted that a language gate does not hold back, for a surface that shows
+    no evidence to take out of a stored rollup. One aggregate."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    row = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
+            ).where(
+                *_predicates(repository_id, include_unverified=include_unverified),
+                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            )
+        )
+    ).one()
+    return int(row[0]), int(row[1])
+
+
 async def performance_headline(
     session: AsyncSession,
     repository_id: str,
     *,
     covered_nloc: int,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> PerformanceHeadline:
     """The one count of open performance causes, read by every surface.
 
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    ``include_measured_hotspots=False`` leaves out the causes runtime evidence alone
+    minted, for a surface that shows no evidence.
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
 
     groups = await performance_facet_counts(
-        session, repository_id, include_unverified=include_unverified, scoped=True
+        session,
+        repository_id,
+        include_unverified=include_unverified,
+        scoped=True,
+        include_measured_hotspots=include_measured_hotspots,
     )
     judged = not await any_unjudged(session, repository_id, "causes")
     scopes = scope_counts(groups, judged=judged)
@@ -996,8 +1224,12 @@ async def measured_costs(
     *,
     limit: int = 10,
     now: datetime | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """What each workload's newest stored run measured, ranked by what it costs.
+
+    *run_id* keeps that one run (a workload's newest); any other id ranks
+    nothing here and gives ``None``.
 
     Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence
@@ -1027,6 +1259,8 @@ async def measured_costs(
     from .evidence import ranked_by_workload
 
     ranked = await ranked_by_workload(session, repository_id)
+    if run_id is not None:
+        ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
     if not ranked:
         return None
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
@@ -1093,6 +1327,7 @@ async def _static_causes_on(
     Only a cause whose evidence runs in production code links: a cause seen
     only from tests says nothing about a production measurement.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....symbol_spans import symbol_at
 
     out: dict[str, set[str]] = {}
@@ -1104,6 +1339,8 @@ async def _static_causes_on(
                 PerformanceOpportunity.repository_id == repository_id,
                 PerformanceOpportunity.status == "open",
                 PerformanceOpportunity.intervention_symbol.in_(batch),
+                # A cause the measurement itself minted is no static cause.
+                PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,
             )
         )
         for symbol_id, opportunity_id in result:
@@ -1287,6 +1524,7 @@ def _measured_row(
 
 __all__ = [
     "PerformanceHeadline",
+    "fill_static_costs",
     "finalize_performance_opportunities",
     "gated_performance_counts",
     "get_health_finding_by_public_id",

@@ -312,7 +312,8 @@ def test_chained_updates_keep_the_record_current(
         ("src/Shop/Shop.CSPROJ", True),
         (".github/workflows/ci.yml", False),
         ("src/locales/en.json", False),
-        ("requirements.txt", False),
+        # The package-root scan looks for it; an edit in place still patches (test_unread_unindexed).
+        ("requirements.txt", True),
         ("yarn.lock", False),
         ("docs/logo.png", False),
     ],

@@ -42,9 +42,14 @@ from repowise.core.persistence.crud import (
     load_coverage_for_repo,
     load_coverage_history,
 )
-from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
+from repowise.core.persistence.crud.analysis.fix_first import (
+    load_fix_first,
+    queue_view,
+    without_sources,
+)
 from repowise.core.persistence.crud.analysis.performance import (
     PerformanceHeadline,
+    measured_hotspot_ids,
     performance_headline,
 )
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
@@ -296,6 +301,8 @@ async def _read_perf_headline(
         repository.id,
         covered_nloc=coverage.covered_nloc,
         include_unverified=req.include_unverified,
+        # No runtime evidence on the agent surface (``without_sources``).
+        include_measured_hotspots=False,
     )
     return coverage, causes
 
@@ -331,7 +338,12 @@ async def _read_pillars(
     linkage, and facets are the shared service's; this tool caps the
     collection, pages it, and serializes what comes back."""
     performance_service = PerformanceHealthService(
-        session, repository.id, reference_repository, include_unverified=req.include_unverified
+        session,
+        repository.id,
+        reference_repository,
+        include_unverified=req.include_unverified,
+        # No runtime evidence on the agent surface (``without_sources``).
+        include_measured_hotspots=False,
     )
     refactoring_service = RefactoringHealthService(
         session, repository.id, reference_repository, include_unverified=req.include_unverified
@@ -524,4 +536,7 @@ async def _read_fix_first(
     if pop.scoped or not req.wants("fix_first"):
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
+    full = without_sources(full, await measured_hotspot_ids(session, repository.id))
     return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full
+
+

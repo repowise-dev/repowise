@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
-import subprocess
 from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from ...analysis.git_cli import run_git
 from ..config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -19,13 +19,7 @@ _log = logging.getLogger("repowise.workspace.update")
 def get_head_commit(repo_path: Path) -> str | None:
     """Return the current HEAD commit SHA via git, or ``None``."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-parse", "HEAD"], repo_path, timeout=10)
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
@@ -36,13 +30,7 @@ def get_head_commit(repo_path: Path) -> str | None:
 def count_commits_between(repo_path: Path, base: str, head: str) -> int:
     """Return the number of commits between *base* and *head*, or 0 on error."""
     try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", f"{base}..{head}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-list", "--count", f"{base}..{head}"], repo_path, timeout=10)
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
@@ -59,12 +47,7 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
     were never indexed (e.g. after a rebase or an aggressive ``git gc``).
     """
     try:
-        result = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            timeout=10,
-        )
+        result = run_git(["cat-file", "-e", f"{sha}^{{commit}}"], repo_path, timeout=10)
         return result.returncode == 0
     except Exception:
         return False
@@ -87,11 +70,8 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
         try:
             # indexed_head is an ancestor of pending_head => strictly ahead,
             # keep it. Non-zero (incl. unresolvable pending) => safe to clear.
-            ahead = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
-                cwd=str(repo_path),
-                capture_output=True,
-                timeout=10,
+            ahead = run_git(
+                ["merge-base", "--is-ancestor", indexed_head, pending_head], repo_path, timeout=10
             )
             if ahead.returncode == 0:
                 return

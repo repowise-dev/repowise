@@ -10,6 +10,7 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server import tool_search as _pkg
 from repowise.server.mcp_server._answer_pipeline.leg_record import (
     begin_leg_record,
@@ -34,6 +35,7 @@ from repowise.server.mcp_server._query_shape import (
     _VALID_MODES,
     _fetch_limit_for,
     _resolve_mode,
+    declared_name,
     query_pattern,
 )
 from repowise.server.mcp_server._retrieval_rank import (
@@ -86,6 +88,20 @@ def _query_from_pattern(query: str, pattern: str | None, ignored: list[dict[str,
             {"argument": "pattern", "values": [pattern], "valid": [], "superseded_by": "query"}
         )
     return query
+
+
+#: The most results one call returns. A larger ``limit`` is cut to it and
+#: reported: past it the rows are the long ranked tail, and the response
+#: budget would shed them anyway, at several times the bytes.
+MAX_LIMIT = 20
+
+
+def _clamp_limit(limit: int, ignored: list[dict[str, Any]]) -> int:
+    """*limit* capped at :data:`MAX_LIMIT`; a cut is reported in *ignored*."""
+    if limit <= MAX_LIMIT:
+        return limit
+    ignored.append({"argument": "limit", "values": [limit], "clamped_to": MAX_LIMIT})
+    return MAX_LIMIT
 
 
 def _resolve_kind_and_mode(
@@ -222,13 +238,13 @@ async def search_codebase(
     matches, resolve an identifier to a symbol_id, or find files for
     get_context. Identifier, literal, `a|b|c` or regex queries return
     `lines` (path, line, kind, text; definitions first, one group per
-    alternative) read from live files; when `complete` is true they are
-    every match, so no grep is needed. `candidates` lists
-    distinct files to Read, best first.
+    alternative; `in` names the enclosing symbol until it changes) read
+    from live files; when `complete` is true they are every match, so no
+    grep is needed. `candidates` lists distinct files to Read, best first.
 
     Args:
         query: Identifier, `a|b` alternation, regex, path, or natural language.
-        limit: Max results.
+        limit: Max results, up to 20.
         mode: auto | symbol | path | concept | hybrid.
         kind: implementation | test | config | doc.
         symbol_kind: function | class | method | ...
@@ -250,11 +266,20 @@ async def search_codebase(
             },
         )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    limit = _clamp_limit(limit, ignored)
+    if repo == "all" and _state._registry is None and _state.request_context() is None:
+        # One repository: "all" is that repository, so take the single-repo path.
+        # An embedder serving per request keeps its own fan-out.
+        repo = None
     begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
     names = await _indexed_names(repo, fed, query)
+    if mode in ("auto", "symbol") and (declared := declared_name(query, names)):
+        # The keyword names no symbol; ranked with it, ``class Article`` found
+        # a docstring that says "class" and none of the classes.
+        query, mode = declared, "symbol"
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
     issue = await _issue_files(repo, query, names)

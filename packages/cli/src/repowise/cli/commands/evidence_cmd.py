@@ -1,10 +1,10 @@
 """``repowise evidence``: ingest what a real run showed and join it to the code.
 
 ``evidence add`` reads one ``repowise-evidence-v1`` file (a profile,
-benchmark results, test timings or query counts), or a profiler's or
-benchmark runner's own output in a format of
+benchmark results, test timings or query counts), or a profiler's,
+benchmark runner's or test runner's own output in a format of
 :data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
-to v1 first), joins its entries to the indexed symbols and stores
+to v1 first; several profiles of one run merged into one), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
 its class, and what did not map. The steps live in
 :mod:`repowise.core.evidence.add`; this module words them.
@@ -38,18 +38,23 @@ from repowise.core.evidence.add import (
     PreparedEvidence,
     check_file_size,
     check_options,
+    detect_environment,
     evidence_caps,
-    prepare_evidence,
+    evidence_paths,
+    evidence_report_dir,
+    prepare_evidence_files,
 )
+from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
 from repowise.core.evidence.profile_formats import profile_formats
 
 
-def _resolve_repo(path: str | None, notices: Any) -> Path:
+def _resolve_repo(path: str | None, notices: Any, command: str = "evidence") -> Path:
     """The repository to ingest into (workspace-aware, like ``coverage``)."""
     target = resolve_command_target(path=path)
-    return target.narrow(notices, command="evidence", repo_option=False)
+    return target.narrow(notices, command=command, repo_option=False)
+
 
 
 @click.group("evidence")
@@ -58,7 +63,7 @@ def evidence_group() -> None:
 
 
 @evidence_group.command("add")
-@click.argument("file", type=click.Path(dir_okay=False, path_type=Path))
+@click.argument("files", metavar="FILE...", nargs=-1, required=True, type=click.Path(path_type=Path))
 @click.option("--workload", "workload", required=True, help="What ran, e.g. 'cli build'.")
 @click.option(
     "--class",
@@ -86,8 +91,9 @@ def evidence_group() -> None:
 )
 @click.option(
     "--environment",
-    default="unknown",
-    help="Where it ran, one word (local, ci, ...).",
+    default=None,
+    help="Where it ran, one word. Defaults to the OS and whether this is a CI job, "
+    "e.g. linux-ci or macos-local.",
 )
 @click.option(
     "--input-format",
@@ -113,13 +119,13 @@ def evidence_group() -> None:
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
-    file: Path,
+    files: tuple[Path, ...],
     workload: str,
     workload_class: str,
     commit: str | None,
     checkout_root: Path | None,
     dirty: bool | None,
-    environment: str,
+    environment: str | None,
     input_format: str | None,
     value_kind: str | None,
     allow_partial: bool,
@@ -127,11 +133,18 @@ def evidence_add(
     verbose: bool,
     fmt: str,
 ) -> None:
-    """Ingest one evidence FILE for a named workload.
+    """Ingest the evidence of one run of a named workload.
 
-    FILE is a repowise-evidence-v1 document, or a profile or benchmark
-    results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
-    pytest-benchmark JSON), detected from its content.
+    FILE is a repowise-evidence-v1 document, or a profile, benchmark
+    results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
+    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
+    go test -bench output, JUnit XML), detected from its content. Several
+    profiles (a parent process and its workers, or a directory holding one file
+    per process) merge into one run; they must share a format, unit, tool and
+    clock.
+    A single profile that spent time starting or waiting on other processes
+    gets a warning that their work is not in it. JUnit XML reports (a Maven or
+    Gradle report directory) read as one run; other files beside them are left out.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -146,12 +159,16 @@ def evidence_add(
         repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+        repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
+        repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
+        repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
+    environment = environment or detect_environment()
     try:
         check_options(workload, workload_class, environment, commit)
     except EvidenceRefusedError as exc:
@@ -169,15 +186,22 @@ def evidence_add(
     for problem in problems:
         notices.print(f"[yellow]Ignoring {escape(problem)}.[/yellow]")
     try:
-        size = file.stat().st_size
+        paths = evidence_paths(files)
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     except OSError as exc:
-        raise click.BadParameter(f"cannot read {file}: {exc.strerror}", param_hint="FILE") from None
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
+    try:
+        sizes = [path.stat().st_size for path in paths]
+    except OSError as exc:
+        raise click.BadParameter(f"cannot read {exc.filename or 'FILE'}: {exc.strerror}", param_hint="FILE") from None
     try:
         # Checked before reading, so a file too large is never loaded.
-        check_file_size(size, max_file_mb, str(file))
-        prepared = prepare_evidence(
-            file.read_bytes(),
-            name=str(file),
+        for path, size in zip(paths, sizes, strict=True):
+            check_file_size(size, max_file_mb, str(path))
+        prepared = prepare_evidence_files(
+            [(str(path), path.read_bytes()) for path in paths],
+            report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,
             dirty=dirty,
@@ -186,18 +210,21 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
-    payload = run_async(
-        _ingest(
-            repo_path=repo_path,
-            prepared=prepared,
-            workload=workload.strip(),
-            workload_class=workload_class,
-            environment=environment,
-            allow_partial=allow_partial,
-            caps=caps,
-            notices=notices,
+    try:
+        payload = run_async(
+            _ingest(
+                repo_path=repo_path,
+                prepared=prepared,
+                workload=workload.strip(),
+                workload_class=workload_class,
+                environment=environment,
+                allow_partial=allow_partial,
+                caps=caps,
+                notices=notices,
+            )
         )
-    )
+    except EvidenceRefusedError as exc:
+        _refuse(exc, fmt)
     if fmt == "json":
         emit_json(payload)
     if not payload["stored"]:
@@ -258,13 +285,15 @@ async def _store(
     payload = stored.payload
     conversion = payload.get("conversion")
     if conversion is not None:
-        _report_conversion(notices, prepared.format, conversion)
+        _report_conversion(notices, prepared.format, conversion, prepared.profiles)
         _warn_short_run(
             notices,
             workload_class,
             prepared.value_kind or prepared.run.value_kind,
             conversion,
         )
+    for warning in payload.get("warnings", ()):
+        notices.print(f"[yellow]{escape(warning['message'])} {escape(warning['remedy'])}[/yellow]")
     if payload["stored"]:
         _report_stored(
             notices,
@@ -286,7 +315,7 @@ async def _store(
     return payload
 
 
-def _report_conversion(notices: Any, name: str, summary: dict[str, Any]) -> None:
+def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
@@ -296,8 +325,9 @@ def _report_conversion(notices: Any, name: str, summary: dict[str, Any]) -> None
     reasons = ", ".join(
         f"{reason} {part:.0%}" for reason, part in summary["skipped_share_by_reason"].items()
     )
+    merged = f" ({profiles} profiles merged into one run)" if profiles > 1 else ""
     notices.print(
-        f"Converted {escape(name)}: {split} of "
+        f"Converted {escape(name)}{merged}: {split} of "
         f"{_total(summary['total'])} {escape(summary['unit'])}; {skipped}"
         + (f" ({escape(reasons)})." if reasons else ".")
     )
@@ -377,9 +407,22 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
 
 @evidence_group.command("setup")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--write",
+    is_flag=True,
+    help="Also write a CI file that runs each unit's tests with coverage and JUnit XML "
+    "and keeps them as artifacts.",
+)
+@click.option(
+    "--ci",
+    type=click.Choice(CI_KINDS),
+    default=None,
+    help="The CI file --write writes. Default: gitlab with a .gitlab-ci.yml and no "
+    "GitHub workflows, else github.",
+)
 @format_option()
-def evidence_setup_command(repo: str | None, fmt: str) -> None:
-    """Print how to collect evidence here; run nothing, write nothing.
+def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: str) -> None:
+    """Print how to collect evidence here; run nothing, write nothing without --write.
 
     For each build unit: the stack, the command that writes a coverage report
     repowise reads (run from the unit's root), what it needs first, where the
@@ -391,21 +434,42 @@ def evidence_setup_command(repo: str | None, fmt: str) -> None:
     profile, then the tests with coverage. ``stack: unknown`` when repowise is
     not sure how a unit runs. Works before the repository is indexed.
 
+    --write adds one CI file (``.github/workflows/repowise-evidence.yml`` or
+    ``.gitlab/repowise-evidence.yml``) with a job per unit that runs its tests
+    with coverage and JUnit XML on pull requests and default-branch pushes and
+    keeps both as artifacts. It never overwrites a file that differs.
+
     Examples:
 
         repowise evidence setup
         repowise evidence setup --format json
+        repowise evidence setup --write
+        repowise evidence setup --write --ci gitlab
     """
-    _print_setup(repo, fmt)
+    if ci is not None and not write:
+        raise click.UsageError("--ci names the file --write writes; add --write.")
+    _print_setup(repo, fmt, write=write, ci=ci, command="evidence")
 
 
-def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> None:
+def _print_setup(
+    repo: str | None,
+    fmt: str,
+    *,
+    coverage_only: bool = False,
+    write: bool = False,
+    ci: str | None = None,
+    command: str
+) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
+    from repowise.core.evidence.ci_snippet import detect_ci
     from repowise.core.evidence.setup import evidence_setup
+    from repowise.core.git_refs import default_branch
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
-    repo_path = _resolve_repo(repo, notices)
+    repo_path = _resolve_repo(repo, notices, command)
+    if write:
+        ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
         _stored_inputs(repo_path, runtime=not coverage_only)
     )
@@ -419,13 +483,22 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
         coverage_only=coverage_only,
         index_error=index_error,
         index_fix=index_fix,
+        ci=ci if write else None,
+        branch=default_branch(str(repo_path)) if write else None,
     )
+    if write:
+        _write_ci(repo_path, plan["ci"], fmt)
     if fmt == "json":
         emit_json(plan)
         return
     for unit in plan["units"]:
         for line in _setup_lines(unit):
             notices.print(line)
+    _print_next(plan, notices)
+
+
+def _print_next(plan: dict[str, Any], notices: Any) -> None:
+    """The plan's reason and ``next_call``, in words."""
     call = plan["next_call"]
     if plan["reason"]:
         notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
@@ -440,8 +513,75 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
                       f"{escape(optional['purpose'])}")
 
 
+def _write_ci(repo_path: Path, snippet: dict[str, Any], fmt: str) -> None:
+    """Write *snippet*'s CI file under *repo_path*; refuse when none applies or a different one is there.
+
+    Sets ``snippet["written"]``: True when written, False when the same file was already there.
+    """
+    content = snippet.pop("content")
+    if content is None:
+        emit_refusal(
+            "no_ci_command",
+            "No unit has a test command repowise is sure of, so no CI file was written.",
+            fmt,
+            remedy="Run `repowise evidence setup` and see each unit's reason.",
+            skipped=snippet["skipped"],
+        )
+    target = repo_path / snippet["path"]
+    try:
+        existing = target.read_text(encoding="utf-8") if target.exists() else None
+    except OSError:
+        existing = ""
+    if existing is not None and existing != content:
+        emit_refusal(
+            "ci_file_exists",
+            f"{snippet['path']} already exists and differs; nothing was written.",
+            fmt,
+            remedy=f"Remove {snippet['path']} to write a fresh one, or edit it by hand.",
+            path=snippet["path"],
+        )
+    snippet["written"] = existing is None
+    if existing is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+    if fmt != "json":
+        _print_written(snippet, notice_console(fmt))
+
+
+def _print_written(snippet: dict[str, Any], notices: Any) -> None:
+    """What ``--write`` did, how to include a GitLab file, and the units it left out."""
+    verb = "Wrote" if snippet["written"] else "Unchanged"
+    notices.print(f"[bold]{verb}[/bold] {escape(snippet['path'])} ({len(snippet['units'])} job(s))")
+    if snippet["ci"] == "gitlab":
+        notices.print(
+            f"  include it from .gitlab-ci.yml: [cyan]include: [{{local: {escape(snippet['path'])}}}][/cyan]"
+        )
+    for unit in snippet["skipped"]:
+        notices.print(
+            f"  [yellow]skipped {escape(unit['root'] or 'the repository root')}: "
+            f"{escape(unit['reason'] or '')}[/yellow]"
+        )
+
+
+def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
+    """How a unit's tests write JUnit XML, and the line that ingests it."""
+    if not timings:
+        return []
+    how = (
+        f"add [cyan]{escape(timings['flag'])}[/cyan] to the test command"
+        if timings["flag"]
+        else "written by default"
+    )
+    if timings.get("env"):
+        how += f" with [cyan]{escape(timings['env'])}[/cyan] in its environment"
+    lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
+    if timings["ingest"]:
+        lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
+    return lines
+
+
 def _setup_lines(unit: dict[str, Any]) -> list[str]:
-    """One unit's coverage plan, in words."""
+    """One unit's coverage plan, test timings and runtime targets, in words."""
     cov = unit["coverage"]
     tools = ", ".join(t for t in (unit["runner"], unit["package_manager"]) if t)
     head = f"[bold]{unit['stack']}[/bold]" + (f" ({escape(tools)})" if tools else "")
@@ -451,10 +591,13 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    # The reason is the last note when there is no command; the rest say what the command installs or skips.
+    lines += [f"  [dim]note: {escape(n)}[/dim]" for n in cov["notes"] if n != cov["reason"]]
     if cov["found"]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
         lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
+    lines += _timings_lines(unit.get("test_timings"))
     for target in unit.get("runtime", ()):
         head = f"  {target['class']} [bold]{escape(target['workload'])}[/bold]"
         if not target["command"]:
@@ -463,6 +606,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"{head}: [cyan]{escape(target['command'])}[/cyan]")
         if target["reason"]:
             lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
+        if target.get("note"):
+            lines.append(f"    [dim]note: {escape(target['note'])}[/dim]")
         if target["ingest"]:
             lines.append(f"    then: [cyan]{escape(target['ingest'])}[/cyan]")
     return lines
@@ -586,10 +731,12 @@ def _total(value: float) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
-async def _status(repo_path: Path) -> dict[str, Any]:
-    from repowise.core.evidence.status import evidence_status
+async def _read_store(repo_path: Path, read: Any, empty: dict[str, Any]) -> dict[str, Any]:
+    """``await read(session, repo_row)`` on the repository's store, with ``repo`` and
+    ``indexed``; *empty* in its place when the repository is not indexed, so a
+    JSON reader never meets a missing key."""
     from repowise.core.persistence import create_engine, create_session_factory, get_session
-    from repowise.core.persistence.crud import get_repository_by_path, list_evidence_runs
+    from repowise.core.persistence.crud import get_repository_by_path
 
     url = get_db_url_for_repo(repo_path)
     await reconcile_schema_best_effort(url)
@@ -598,13 +745,102 @@ async def _status(repo_path: Path) -> dict[str, Any]:
         async with get_session(create_session_factory(engine)) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                # Same keys as an indexed repo, so a JSON reader never meets a missing one.
-                return {"repo": str(repo_path), "indexed": False, **evidence_status([], None)}
-            runs = await list_evidence_runs(session, repo_row.id)
-            return {
-                "repo": str(repo_path),
-                "indexed": True,
-                **evidence_status(runs, repo_row.head_commit),
-            }
+                return {"repo": str(repo_path), "indexed": False, **empty}
+            return {"repo": str(repo_path), "indexed": True, **await read(session, repo_row)}
     finally:
         await engine.dispose()
+
+
+async def _status(repo_path: Path) -> dict[str, Any]:
+    from repowise.core.evidence.status import evidence_status
+    from repowise.core.persistence.crud import list_evidence_runs
+
+    async def read(session: Any, repo_row: Any) -> dict[str, Any]:
+        runs = await list_evidence_runs(session, repo_row.id)
+        return evidence_status(runs, repo_row.head_commit)
+
+    return await _read_store(repo_path, read, evidence_status([], None))
+
+
+@evidence_group.command("tests")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--limit",
+    type=click.IntRange(1, 500),
+    default=20,
+    show_default=True,
+    help="Tests and files to list.",
+)
+@format_option()
+def evidence_tests_command(repo: str | None, limit: int, fmt: str) -> None:
+    """Show the slowest tests and the test time spent on each production file.
+
+    Reads the JUnit XML timings ``evidence add`` stored (the newest run of each
+    test workload). Test time per file sums the timed tests that run it:
+    ``measured`` from the per-test coverage map when one is stored
+    (``repowise coverage add`` with per-test contexts), else ``inferred`` from
+    each function's nearest tests on the call graph. Timing orders, never gates.
+
+    Examples:
+
+        repowise evidence tests
+        repowise evidence tests --limit 50 --format json
+    """
+    notices = notice_console(fmt)
+    repo_path = _resolve_repo(repo, notices)
+    payload = run_async(_tests(repo_path, limit))
+    if fmt == "json":
+        emit_json(payload)
+        return
+    if not payload["indexed"]:
+        notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+        return
+    if payload["status"] != "measured":
+        notices.print(
+            "[yellow]No test timings stored.[/yellow] "
+            f"[cyan]{escape(payload['command'])}[/cyan] prints how this repository's tests write JUnit XML."
+        )
+        return
+    for line in _tests_lines(payload):
+        notices.print(line)
+
+
+async def _tests(repo_path: Path, limit: int) -> dict[str, Any]:
+    from repowise.core.evidence.suite_cost import no_timings, suite_costs
+
+    async def read(session: Any, repo_row: Any) -> dict[str, Any]:
+        return await suite_costs(session, repo_row.id, repo_row.head_commit, limit=limit)
+
+    return await _read_store(repo_path, read, no_timings())
+
+
+def _tests_lines(payload: dict[str, Any]) -> list[str]:
+    """The slow-test list and the file costs, in words."""
+    runs = ", ".join(
+        f"{escape(r['workload'])} ({r['freshness']} at {(r['commit_sha'] or 'unknown')[:12]})"
+        for r in payload["runs"]
+    )
+    lines = [f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:"]
+    for test in payload["slow_tests"]:
+        shared = " [dim](may include its class's shared fixtures)[/dim]" if test["first_in_class"] else ""
+        failed = f" [red]{test['outcome']}[/red]" if test["outcome"] in ("failed", "error") else ""
+        lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
+    costs = payload["file_costs"]
+    if not costs["files"]:
+        lines.append(f"No production file is tied to a timed test ({costs['basis']}).")
+        return lines
+    lines.append(
+        f"[bold]Test time per production file[/bold] ({costs['basis']}), "
+        f"{len(costs['files'])} of {costs['files_total']:,}:"
+    )
+    for row in costs["files"]:
+        lines.append(
+            f"  {row['test_seconds']:8.2f}s  {escape(row['file_path'])} "
+            f"[dim]({row['timed_tests']} of {row['tests']} tests timed)[/dim]"
+        )
+    if costs["every_test"]:
+        lines.append(
+            f"[dim]{costs['every_test']:,} more run in every timed test that reaches production code "
+            "(the test setup imports them), so their time is all of those tests'; not listed.[/dim]"
+        )
+    return lines

@@ -1118,9 +1118,13 @@ _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
 # Inner class names a framework reads off the class that declares them, so no
 # code ever names them. Python: the ``class Meta`` options block that Django
 # models and forms, DRF serializers, marshmallow and factory_boy read through
-# their metaclass. Keyed by language; matched only on a nested class.
+# their metaclass, and the ``class Config`` block pydantic models and settings
+# read the same way (v1, still honoured by v2, and SQLModel). Keyed by
+# language; matched only on a nested class, whatever the outer class extends:
+# telling a pydantic model apart needs its bases, which the symbol does not
+# carry, so a plain class's unused inner ``Config`` goes unreported too.
 _FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
-    "python": frozenset({"Meta"}),
+    "python": frozenset({"Meta", "Config"}),
 }
 
 

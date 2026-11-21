@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConnectEvidencePrompt,
+  buildFinishSetupPrompt,
   buildSetupAiPrompt,
   CONNECT_EVIDENCE,
+  FINISH_SETUP,
   type SetupPromptRow,
 } from "../../src/health/ai-prompt-builder.js";
 
@@ -77,5 +79,17 @@ describe("buildConnectEvidencePrompt", () => {
     expect(prompt).toContain("`repowise evidence setup --format json`");
     expect(prompt).toContain("`next_call`");
     expect(prompt).not.toMatch(/pytest|go test|npm /);
+  });
+});
+
+describe("buildFinishSetupPrompt", () => {
+  it("opens with the role, then hands the agent the repowise next loop", () => {
+    const prompt = buildFinishSetupPrompt("claude-code");
+    expect(prompt).toBe(`You are Claude Code in this repository.
+
+${FINISH_SETUP}`);
+    expect(prompt).toContain("`repowise next --format json`");
+    expect(prompt).toContain("`repowise next --dismiss setup`");
+    expect(prompt).not.toMatch(/pytest|npm /);
   });
 });

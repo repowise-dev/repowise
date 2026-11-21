@@ -15,7 +15,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from .rows import detail_map, field
 from .scoring import ranked_severity
@@ -377,6 +377,10 @@ _PER_CALL_MARKERS = frozenset(
 #: Causes whose cost grows with the data by their shape alone.
 _GROWING_MARKERS = frozenset({"goroutine_in_unbounded_loop", "sql_cartesian_join"})
 
+#: The ``confirmed`` facets a measured run gives (``perf.opportunities``):
+#: a leading workload's, or a unit-test run's, kept apart as measured in tests.
+MEASURED_CONFIRMATIONS = frozenset({"measured", "measured_in_tests"})
+
 CostProof = Literal["proven", "unproven"]
 COST_PROOFS: tuple[str, ...] = ("proven", "unproven")
 
@@ -393,29 +397,80 @@ def execution_role(row: Any) -> str:
     return field(row, "execution_role") or perf_facets(row).get("execution_role") or "unknown"
 
 
+def measured(facets: Mapping[str, Any]) -> bool:
+    """Whether a leading workload's newest run ranks the cause's loop owner
+    (the ``measured`` facet). A run overrides the static guesses that the
+    code runs once per process: a cold role or a cold name."""
+    return bool(facets.get("measured"))
+
+
+StaticCost = Literal[
+    "grows_with_data",
+    "grows_by_shape",
+    "per_call_reached",
+    "per_call_unreached",
+    "bounded",
+    "size_unknown",
+]
+STATIC_COSTS: tuple[str, ...] = get_args(StaticCost)
+"""What the code alone shows about a performance cause's cost: a loop that
+grows with the data, a shape that grows by itself (an unbounded goroutine
+loop, a cartesian join), a cost paid once per call that an entry point does or
+does not reach, a bounded loop, or a loop whose size the code does not show.
+Never what a run measured: that is the cause's runtime evidence."""
+
+#: Static costs that lead with no run behind them.
+_LEADING_STATIC_COSTS = frozenset({"grows_with_data", "grows_by_shape", "per_call_reached"})
+#: Why a static cost that never leads waits; ``size_unknown`` waits on a run.
+_STATIC_LOW_PRIORITY: dict[str, LowPriority] = {
+    "per_call_unreached": "unreached_call",
+    "bounded": "bounded_loop",
+}
+
+
+def static_cost(marker: str | None, facets: Mapping[str, Any]) -> StaticCost:
+    """The :data:`StaticCost` of a cause with *marker* and *facets*. A cause
+    with no loop (magnitude ``n/a``) is judged as a per-call one."""
+    if marker in _GROWING_MARKERS:
+        return "grows_by_shape"
+    magnitude_ = facets.get("loop_magnitude")
+    if marker in _PER_CALL_MARKERS or magnitude_ == "n/a":
+        if facets.get("exposure") == "entry_reachable":
+            return "per_call_reached"
+        return "per_call_unreached"
+    if magnitude_ == "grows_with_data":
+        return "grows_with_data"
+    if magnitude_ == "bounded":
+        return "bounded"
+    return "size_unknown"
+
+
 def lead_reason(marker: str | None, facets: Mapping[str, Any]) -> LowPriority | None:
     """Why a performance cause may not lead, or ``None`` when it may.
 
     The one rule the performance queue, its lead, its rank and Fix first read.
-    A cause leads when its loop grows with the data, when it is a per-call
-    cause an entry point reaches, or when its shape grows by itself (an
-    unbounded goroutine loop, a cartesian join). A cause with no loop
-    (magnitude ``n/a``) is judged as a per-call one. ``unmeasured_cost`` is
-    the unproven case: nothing measured the loop, so it is a guess, not a cost.
+    A cause leads when its :func:`static_cost` grows with the data, grows by
+    its shape, or is a per-call cost an entry point reaches.
+    ``unmeasured_cost`` is a loop whose size the code does not show and
+    nothing measured: a guess, not a cost. A run that measured the loop owner
+    above the lead bar (:data:`MEASURED_CONFIRMATIONS`, from
+    ``evidence.hotness``'s share rule) proves the cost the loop size could
+    not, so that cause leads; a bounded loop or an unreached per-call cause
+    stays held, as a run says nothing about either.
     """
-    if marker in _GROWING_MARKERS:
+    static = static_cost(marker, facets)
+    if static in _LEADING_STATIC_COSTS:
         return None
-    magnitude_ = facets.get("loop_magnitude")
-    if marker in _PER_CALL_MARKERS or magnitude_ == "n/a":
-        return None if facets.get("exposure") == "entry_reachable" else "unreached_call"
-    if magnitude_ == "grows_with_data":
-        return None
-    return "bounded_loop" if magnitude_ == "bounded" else "unmeasured_cost"
+    if static == "size_unknown":
+        return None if facets.get("confirmed") in MEASURED_CONFIRMATIONS else "unmeasured_cost"
+    return _STATIC_LOW_PRIORITY[static]
 
 
 def cost_proof(row: Any) -> CostProof:
-    """``unproven`` when nothing measured whether the cause's cost grows: kept
-    out of the default queue, listed under its own filter."""
+    """``unproven`` when neither the code nor a run shows the cause's cost
+    (:func:`lead_reason` ``unmeasured_cost``): kept out of the default queue,
+    listed under its own filter. ``proven`` covers a static cost and a
+    measured one alike; :func:`static_cost` is the code's part alone."""
     reason = lead_reason(field(row, "biomarker_type"), perf_facets(row))
     return "unproven" if reason == "unmeasured_cost" else "proven"
 
@@ -425,15 +480,18 @@ __all__ = [
     "COST_PROOFS",
     "EXTREME_MAGNITUDE",
     "LOW_PRIORITY_LABEL",
+    "MEASURED_CONFIRMATIONS",
     "SIZE_CCN",
     "SIZE_MARKERS",
     "SIZE_NESTING",
     "SIZE_NLOC",
+    "STATIC_COSTS",
     "TANGLED_CCN",
     "TANGLED_NESTING",
     "WORTH_MAGNITUDE",
     "CostProof",
     "LowPriority",
+    "StaticCost",
     "above_bar_after",
     "by_function",
     "cost_proof",
@@ -446,8 +504,10 @@ __all__ = [
     "low_priority",
     "magnitude",
     "measure",
+    "measured",
     "measured_nloc",
     "perf_facets",
+    "static_cost",
     "terminal_shaped",
     "worst_after",
     "worth_size",

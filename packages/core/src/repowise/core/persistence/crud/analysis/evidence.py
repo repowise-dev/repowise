@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, delete, insert, or_, select
+from sqlalchemy import Table, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -141,6 +141,37 @@ async def list_evidence_runs(session: AsyncSession, repository_id: str) -> list[
     return list(result.scalars())
 
 
+async def newest_evidence_run(
+    session: AsyncSession, repository_id: str, *, prefer_commit: str | None = None
+) -> tuple[int, Any]:
+    """How many runs are stored, and the newest one's ``commit_sha`` and
+    ``ingested_at`` (``None`` with no run). Two keyed reads, no row bodies.
+
+    With *prefer_commit*, a run at that commit wins over a newer ingest of
+    another: re-adding an old profile restamps its ingest time, and must not
+    make current evidence read stale.
+    """
+    count = (
+        await session.execute(
+            select(func.count(EvidenceRun.id)).where(EvidenceRun.repository_id == repository_id)
+        )
+    ).scalar_one()
+    if not count:
+        return 0, None
+    preferred = (EvidenceRun.commit_sha == prefer_commit,) if prefer_commit else ()
+    newest = (
+        await session.execute(
+            select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
+            .where(EvidenceRun.repository_id == repository_id)
+            .order_by(
+                *(c.desc() for c in preferred), EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc()
+            )
+            .limit(1)
+        )
+    ).one()
+    return count, newest
+
+
 async def prune_evidence_runs(
     session: AsyncSession,
     repository_id: str,
@@ -194,6 +225,21 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
         for table in EVIDENCE_ROW_TABLES.values():
             await session.execute(delete(table).where(table.c.run_id.in_(chunk)))
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
+
+
+async def benchmark_results(
+    session: AsyncSession, run_ids: list[str]
+) -> list[EvidenceBenchmarkResult]:
+    """The benchmark rows of *run_ids*, one statement per chunk."""
+    out: list[EvidenceBenchmarkResult] = []
+    for i in range(0, len(run_ids), _BATCH_SIZE):
+        result = await session.execute(
+            select(EvidenceBenchmarkResult).where(
+                EvidenceBenchmarkResult.run_id.in_(run_ids[i : i + _BATCH_SIZE])
+            )
+        )
+        out.extend(result.scalars())
+    return out
 
 
 async def hotness_inputs(
@@ -383,6 +429,30 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     return "not_ranked"
 
 
+async def measured_status(session: AsyncSession, repository_id: str) -> str:
+    """``measured`` when a workload's newest run ranks a function (what
+    :func:`ranked_by_workload` lists), else :func:`unranked_reason`'s token.
+    One indexed lookup when anything is ranked."""
+    ranked = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
+    if (await session.execute(ranked.limit(1))).first() is not None:
+        return "measured"
+    return await unranked_reason(session, repository_id)
+
+
+def unranked_command(status: str) -> str | None:
+    """The command that moves an :func:`unranked_reason` token on: ``repowise
+    update`` builds a per-workload view that was never built, evidence setup
+    connects evidence when none is stored or all of it is stale. ``None`` for
+    ``not_ranked`` and ``measured``: no command ranks thin evidence."""
+    if status == "needs_update":
+        return "repowise update"
+    if status in ("no_runtime_data", "stale"):
+        from ....evidence.setup import SETUP_COMMAND
+
+        return SETUP_COMMAND
+    return None
+
+
 async def _workload_view_missing(session: AsyncSession, repository_id: str) -> bool:
     """A workload's newest run is the basis of a ranked function, yet
     ``workload_hotness`` is empty: the per-workload view was never built.
@@ -474,10 +544,12 @@ __all__ = [
     "hotness_for_symbols",
     "hotness_inputs",
     "list_evidence_runs",
+    "measured_status",
     "prune_evidence_runs",
     "ranked_by_workload",
     "replace_symbol_hotness",
     "replace_workload_hotness",
     "save_evidence_run",
+    "unranked_command",
     "unranked_reason",
 ]
