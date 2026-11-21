@@ -76,20 +76,13 @@ def setup_steps(facts: Any, setup: Any | None = None) -> tuple[SetupStep, ...]:
 
 
 async def _repo(ctx: FirstLookContext) -> tuple[dict[str, Any], Any]:
-    from sqlalchemy import func, select
-
     from repowise.core.analysis.health.grading import BAND_LABEL, headline_band
+    from repowise.core.persistence.crud import count_files
     from repowise.core.persistence.crud.analysis.health.summary import get_headline_health
-    from repowise.core.persistence.models import GraphNode, Repository
+    from repowise.core.persistence.models import Repository
 
     repo = await ctx.session.get(Repository, ctx.repository_id)
-    files = (
-        await ctx.session.execute(
-            select(func.count()).where(
-                GraphNode.repository_id == ctx.repository_id, GraphNode.node_type == "file"
-            )
-        )
-    ).scalar()
+    files = await count_files(ctx.session, ctx.repository_id)
     score, share = await get_headline_health(ctx.session, ctx.repository_id)
     band = headline_band(score, share)
     return (

@@ -379,6 +379,13 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
     unproven = await _page(client, repo_id, proof="unproven")
     assert [item["file_path"] for item in unproven["items"]] == ["src/d.py"]
     assert unproven["items"][0]["may_lead"] is False
+    # The code's part alone, apart from the proof a run can also settle.
+    static = {entry["value"]: entry["total"] for entry in production["facets"]["static_cost"]}
+    assert static["size_unknown"] >= 1
+    unknown = await _page(client, repo_id, **{**_PRODUCTION, "static_cost": "size_unknown"})
+    assert "src/d.py" in [item["file_path"] for item in unknown["items"]]
+    assert unknown["total"] == static["size_unknown"]
+    assert "ignored_arguments" not in unknown
 
 
 async def test_an_expected_row_never_leads(app, client: AsyncClient) -> None:

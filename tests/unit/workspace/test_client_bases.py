@@ -114,6 +114,18 @@ def test_a_static_field_read_through_the_class_name(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("comment", ["// the base class", "// base class for the api client"])
+def test_a_comment_naming_class_above_the_header_keeps_the_class_name(tmp_path: Path, comment: str) -> None:
+    text = (
+        f"{comment}\n"
+        "export class Api {\n"
+        "  static BASE = '/api';\n"
+        "}\n"
+        "export function top() { return fetch(`${Api.BASE}/top`); }\n"
+    )
+    assert _paths(tmp_path, "src/api.ts", text) == {("GET", "/api/top")}
+
+
 @pytest.mark.parametrize(
     "write",
     [
