@@ -333,7 +333,7 @@ def _watch_workspace(
 
 
 @click.command("watch")
-@click.argument("path", required=False, default=None)
+@click.argument("path", required=False, default=None, type=click.Path(exists=True))
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--debounce", "debounce_ms", type=int, default=2000, help="Debounce delay in ms.")
