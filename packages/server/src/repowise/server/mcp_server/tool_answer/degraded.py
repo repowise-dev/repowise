@@ -209,13 +209,6 @@ async def _degraded_payload(
             symbol_bodies, ctx, repository, exclude_spec
         )
         payload["note"] += _BODY_NOTE
-    elif best_guesses and retrieval_quality != "weak":
-        # Not on a weak retrieval, where `_meta.hint` says to refine the query
-        # and two disagreeing hints are worse than one.
-        payload["next_action_hint"] = (
-            f"Start from {best_guesses[0]['file']} — it ranked highest, and "
-            "best_guesses says why each candidate is in the running."
-        )
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
