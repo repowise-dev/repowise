@@ -663,21 +663,40 @@ everything with the reason, and the step still passes.
 
 GitHub Actions. With `checks: ""` the action runs no gate.
 
+The index is saved twice per default-branch commit: `repowise-<sha>-early`
+right after it builds, then `repowise-<sha>-full` once the per-test map is
+added. A pull request opened while the tests still run gets its base's graph
+from the early entry instead of an older commit's index. The restore keys
+prefer full, then early, then the newest older index. Without the per-test
+map steps, the early entry is the only one and the restore keys still find it.
+
 ```yaml
 # .github/workflows/repowise-index.yml
 on: {push: {branches: [main]}}
 jobs:
   index:
     runs-on: ubuntu-latest
+    # No background writer left in .repowise while the cache saves it.
+    env: {REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"}
     steps:
       - uses: actions/checkout@v7
         with: {fetch-depth: 0}
       - uses: actions/cache/restore@v6
-        with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
+        with:
+          path: .repowise
+          key: repowise-${{ github.sha }}-full
+          restore-keys: |
+            repowise-${{ github.sha }}-
+            repowise-
       - run: pip install repowise
       - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
       - uses: actions/cache/save@v6
-        with: {path: .repowise, key: "repowise-${{ github.sha }}"}
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-early"}
+      # The per-test map: your test command with per-test contexts (pytest-cov).
+      - run: pytest --cov --cov-context=test
+      - run: repowise coverage add .coverage
+      - uses: actions/cache/save@v6
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-full"}
 ```
 
 ```yaml
@@ -685,7 +704,12 @@ jobs:
 - uses: actions/checkout@v7
   with: {fetch-depth: 0}
 - uses: actions/cache/restore@v6
-  with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
+  with:
+    path: .repowise
+    key: repowise-${{ github.event.pull_request.base.sha }}-full
+    restore-keys: |
+      repowise-${{ github.event.pull_request.base.sha }}-
+      repowise-
 - id: select
   uses: repowise-dev/repowise@main
   with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
@@ -702,7 +726,16 @@ everything.
 GitLab: `repowise-impacted-tests` writes the arguments to
 `impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report.
 
+GitLab keeps one cache entry under a fixed key, so the two saves are two
+jobs: `repowise-index` saves the index as soon as it builds, and
+`repowise-per-test-map` adds the map after the tests and saves it again. The
+map job takes the index from the index job's artifact, so the map lands on
+the same commit's index.
+
 ```yaml
+variables:
+  REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"  # no background writer in .repowise while the cache saves
+
 repowise-index:
   image: python:3.12
   variables: {GIT_DEPTH: "0"}
@@ -710,6 +743,20 @@ repowise-index:
     - pip install repowise
     - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
+  artifacts: {paths: [.repowise/], expire_in: 1 day}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# After a default-branch test job that runs `pytest --cov --cov-context=test`
+# and keeps `.coverage` as an artifact.
+repowise-per-test-map:
+  image: python:3.12
+  stage: .post
+  needs: [repowise-index, test]
+  script:
+    - pip install repowise
+    - repowise coverage add .coverage
+  cache: {key: repowise-index, paths: [.repowise/], policy: push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
