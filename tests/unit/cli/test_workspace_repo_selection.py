@@ -211,3 +211,12 @@ def test_yes_makes_the_largest_repo_primary(tmp_path, monkeypatch):
     assert pick.primary_alias == "kube"
     assert pick.primary_repo is repos[1]
     assert pick.primary_picked is False
+
+
+def test_default_primary_takes_the_innermost_of_nested_repos(tmp_path):
+    outer = _git_repo(tmp_path / "outer", 3)
+    inner = _git_repo(tmp_path / "outer" / "inner", 1)
+    (tmp_path / "outer" / "inner" / "src").mkdir()
+    cwd = tmp_path / "outer" / "inner" / "src"
+    assert _workspace_repos.default_primary([outer, inner], cwd=cwd) == "inner"
+    assert _workspace_repos.default_primary([inner, outer], cwd=cwd) == "inner"

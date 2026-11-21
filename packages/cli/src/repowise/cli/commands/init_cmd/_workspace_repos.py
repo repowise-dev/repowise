@@ -82,7 +82,7 @@ def select_workspace_repos(
 
 
 def default_primary(repos: list[Any], cwd: Path | None = None) -> str:
-    """The alias a promptless run makes primary: the repo the user ran from, else the largest.
+    """The alias a new workspace makes primary: the repo the user ran from, else the largest.
 
     Tools called without ``repo=`` answer about the primary, so the alphabetical
     first (often a small helper repo) is the wrong default. Size is the count of
@@ -91,9 +91,10 @@ def default_primary(repos: list[Any], cwd: Path | None = None) -> str:
     from repowise.core.analysis.decisions.source_files import tracked_files
 
     here = Path(cwd or os.getcwd()).resolve()
-    for repo in repos:
-        if here.is_relative_to(Path(repo.path).resolve()):
-            return repo.alias
+    holding = [r for r in repos if here.is_relative_to(Path(r.path).resolve())]
+    if holding:
+        # Nested repos: the innermost one holds the cwd.
+        return max(holding, key=lambda r: len(Path(r.path).resolve().parts)).alias
     sizes = [len(tracked_files(Path(repo.path)) or ()) for repo in repos]
     return repos[sizes.index(max(sizes))].alias
 

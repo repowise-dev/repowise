@@ -84,7 +84,7 @@ from ._interactive import (
     offer_hook_install,
     warn_unresolved_hooks,
 )
-from ._workspace_config import WorkspacePick, build_workspace_config
+from ._workspace_config import WorkspacePick, build_workspace_config, kept_primary
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
 from .generation import (
@@ -887,7 +887,10 @@ def _workspace_init(
     )
     if picked is None:
         return
-    pick, plan = picked
+    named_pick, plan = picked
+    # The primary the config will end up with, so provider, embedder and editor
+    # setup read the same repo the workspace names.
+    pick = kept_primary(named_pick, ask=sys.stdin.isatty() and not yes)
     selected, primary_alias = pick.selected, pick.primary_alias
     if plan is not None:
         answers = plan.answers
@@ -911,7 +914,7 @@ def _workspace_init(
     first_index = not (root / WORKSPACE_CONFIG_FILENAME).exists()
     ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
     if repo_names:
-        console.print(repos_primary_line(ws_config.default_repo, pick))
+        console.print(repos_primary_line(ws_config.default_repo, named_pick))
 
     from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
@@ -1104,9 +1107,9 @@ def _settle_repos(
         )
         if plan is not None:
             primary_repo = next(r for r in plan.selected if r.alias == plan.primary_alias)
-            # The screen defaults to the first repo; only a changed primary replaces
-            # the one an existing workspace config names.
-            primary_picked = plan.primary_alias != plan.selected[0].alias
+            # Only a primary changed from the screen's default replaces the one an
+            # existing workspace config names.
+            primary_picked = plan.primary_alias != plan.primary_default
             pick = WorkspacePick(
                 plan.selected, scan.root, plan.primary_alias, primary_repo, primary_picked
             )
