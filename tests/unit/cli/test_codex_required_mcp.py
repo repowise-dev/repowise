@@ -297,3 +297,24 @@ def test_env_vars_the_user_added_survive_a_reinstall(tmp_path: Path) -> None:
     assert forwarded[:2] == ["MY_PROXY", "OPENAI_API_KEY"]
     assert forwarded.count("OPENAI_API_KEY") == 1
     assert set(codex_target.forwarded_env_vars()) <= set(forwarded)
+
+
+def test_forwarded_env_vars_cover_every_provider_key_and_url() -> None:
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    forwarded = set(codex_target.forwarded_env_vars())
+    for spec in PROVIDER_SPECS.values():
+        assert set(spec.api_key_envs) <= forwarded, spec.name
+        assert set(spec.base_url_envs) <= forwarded, spec.name
+    assert "REPOWISE_EMBEDDER" in forwarded
+    assert "REPOWISE_PROVIDER" in forwarded
+
+
+def test_a_second_install_leaves_the_config_byte_identical(tmp_path: Path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+    first = config.read_bytes()
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=tmp_path)
+
+    assert config.read_bytes() == first

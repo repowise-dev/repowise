@@ -4,6 +4,34 @@
     "args": [
       "mcp"
     ],
-    "startup_timeout_sec": 20
+    "startup_timeout_sec": 20,
+    "env_vars": [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "DEEPSEEK_API_KEY",
+      "DEEPSEEK_BASE_URL",
+      "EDENAI_API_KEY",
+      "EDENAI_BASE_URL",
+      "GEMINI_API_KEY",
+      "GEMINI_BASE_URL",
+      "GOOGLE_API_KEY",
+      "KIMI_API_KEY",
+      "KIMI_BASE_URL",
+      "LITELLM_API_BASE",
+      "LITELLM_API_KEY",
+      "LITELLM_BASE_URL",
+      "OLLAMA_BASE_URL",
+      "OLLAMA_EMBEDDING_DIMS",
+      "OLLAMA_EMBEDDING_MODEL",
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "OPENROUTER_API_KEY",
+      "REPOWISE_EMBEDDER",
+      "REPOWISE_EMBEDDING_DECLARED_DIMS",
+      "REPOWISE_EMBEDDING_DIMS",
+      "REPOWISE_EMBEDDING_MODEL",
+      "REPOWISE_MODEL",
+      "REPOWISE_PROVIDER"
+    ]
   }
 }
