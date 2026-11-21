@@ -224,6 +224,8 @@ const CAUSE_BY_MARKER: Record<string, (boundary: C4IoKind | null) => string> = {
   blocking_io_under_lock: (b) => `${b ? boundaryNoun(b) : "I/O"} call made while a lock is held`,
   resource_construction_in_loop: (b) =>
     `${b ? boundaryNoun(b) : "Resource"} client constructed on every iteration`,
+  // No static finding: a leading run measured the function above the lead bar.
+  measured_hotspot: () => "Measured hotspot with no static cause",
 };
 
 /** The cause in words: "Database call inside a loop". */
@@ -404,6 +406,7 @@ const FIX_STRATEGY_LABEL: Record<string, string> = {
   shrink_lock_scope: "Move the work out of the lock",
   push_reduction_into_query: "Do the reduction in the query",
   eager_load_relationship: "Load the relationship eagerly",
+  reduce_measured_self_time: "Find and cut the work the run measured",
 };
 
 export function fixStrategyLabel(strategy: string): string {

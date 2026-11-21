@@ -493,3 +493,44 @@ async def test_a_cost_measured_above_the_bar_admits_an_unsized_loop(
     eligible = {r.intervention_symbol.rpartition(":")[2]: r.queue_eligible for r in rows}
     # Its loop size is unknown: only a measured cost above the bar admits it.
     assert eligible == {"aaa_first": True, "zzz_measured": admitted}
+
+
+async def test_a_measured_function_no_static_cause_owns_becomes_one_item(async_session) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    await _two_startup_causes(async_session, repo.id, evidence=True)
+    await replace_workload_hotness(
+        async_session,
+        repo.id,
+        [
+            # Owned by a static cause: that cause is promoted, no second item.
+            {**_hot("x"), "symbol_id": "src/svc.py::zzz_measured", "tier": "lead_candidate"},
+            # No static cause: a measured hotspot.
+            {**_hot("load", rank=2), "tier": "lead_candidate"},
+            # Ranked below the bar, or above it in a unit-test run: nothing.
+            {**_hot("helper", rank=3)},
+            {**_hot("thin", run="r3"), "tier": "lead_candidate"},
+        ],
+    )
+    await finalize_performance_opportunities(async_session, repo.id)
+
+    rows = (await async_session.execute(select(PerformanceOpportunity))).scalars().all()
+    hotspots = [r for r in rows if r.biomarker_type == "measured_hotspot"]
+    assert [r.intervention_symbol for r in hotspots] == [f"{APP}::load"]
+    (item,) = hotspots
+    assert (item.file_path, item.execution_context) == (APP, "production")
+    assert (item.plan_state, item.fix_strategy, item.cost_proof) == (
+        "available",
+        "reduce_measured_self_time",
+        "proven",
+    )
+    assert item.queue_eligible
+    assert json.loads(item.details_json)["facets"]["confirmed"] == "measured"
+
+    queue = await load_fix_first(async_session, repo.id, limit=None)
+    assert item.opportunity_id in {i.source.opportunity_id for i in queue.items}

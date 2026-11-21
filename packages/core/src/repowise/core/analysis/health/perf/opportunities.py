@@ -21,9 +21,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....evidence.query_counts import strongest
+from ....ingestion.symbol_identity import file_of_symbol
 from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
+    MEASURED_HOTSPOT,
     ActionabilityState,
     FixSafety,
     FixStrategy,
@@ -394,6 +396,124 @@ def _assemble(
     )
 
 
+def _measured_hotspot(symbol_id: str, workload: str) -> PerformanceOpportunity:
+    """A work item for a function a leading workload measured above the lead
+    bar where no static finding names a cause.
+
+    The run is the proof of cost (``confirmed`` ``measured``) and of reach
+    (``measured``), so it is plan-ready work in production, never a guess:
+    ``evidence.hotness`` lists production functions only (``code_origin``),
+    charges library and built-in time to the repo frame that called it, never
+    counts a wait as self time, and ranks no stale row, so a framework,
+    standard-library or blocked frame cannot be one. What to change is the
+    reader's call, so its one step is a judgment and its fix is advisory.
+    Ceiling: a function whose own work is inherent (a parser, a writer) clears
+    the same bar; the share bar is what keeps those few.
+    """
+    file_path = file_of_symbol(symbol_id)
+    function = symbol_id[len(file_path) + 2 :] or None
+    key = (MEASURED_HOTSPOT, "production", MEASURED_HOTSPOT, None, file_path, function)
+    marker, magnitude, role = MEASURED_HOTSPOT, "unknown", "unknown"
+    factors = rank_factors(
+        marker=marker,
+        boundary=None,
+        context="production",
+        role=role,
+        site_count=1,
+        provenance="direct",
+        magnitude=magnitude,
+    )
+    inputs = {
+        "multiplier_shape": marker,
+        "boundary_kind": None,
+        "execution_context": "production",
+        "execution_role": role,
+        "affected_call_sites": 1,
+        "provenance": "direct",
+        "loop_magnitude": magnitude,
+    }
+    facets = {
+        "actionability_confidence": "high",
+        "exposure": exposure(None),
+        "amplification": amplification(marker),
+        "leverage": leverage(1),
+        "change_risk": change_risk(1),
+        "loop_magnitude": magnitude,
+        "growth_source": "n/a",
+        "execution_role": role,
+        "measured": workload,
+        "confirmed": "measured",
+    }
+    fix = PerformanceFix(
+        "reduce_measured_self_time",
+        "advisory",
+        f"The {workload} run measured this function above the lead bar and no "
+        "static check names the cause: profile it to find the repeated work.",
+    )
+    return PerformanceOpportunity(
+        opportunity_id=stable_id(key),
+        performance_model_version=PERFORMANCE_MODEL_VERSION,
+        biomarker_type=marker,
+        biomarker_types=(marker,),
+        boundary_kind=None,
+        execution_context="production",
+        terminal_sink=None,
+        shared_path_suffix=(),
+        intervention_symbol=key_intervention_symbol(key),
+        intervention_kind=key_intervention_kind(key),
+        terminal_sinks=(),
+        resource_fingerprints=(),
+        affected_call_sites_total=1,
+        affected_files_total=1,
+        observations_total=0,
+        evidence=(
+            {
+                "finding_id": None,
+                "file_path": file_path,
+                "biomarker_type": marker,
+                "function_name": function,
+                "line_start": None,
+                "line_end": None,
+                "reason": fix.rationale,
+                "path": [],
+                "provenance": "direct",
+            },
+        ),
+        evidence_truncated=False,
+        reliable_entry_reachability=None,
+        provenance="direct",
+        confidence="high",
+        facets=facets,
+        actionability_state="plan_ready",
+        actionability_reason="measured_cost",
+        prerequisites=(),
+        rank_score=sum(factors.values()),
+        rank_factors=factors,
+        why_ranked=why_ranked(factors, inputs),
+        fix=fix,
+        may_lead=may_lead(marker, set(), facets),
+    )
+
+
+def measured_hotspots(
+    groups: Mapping[Any, list[Any]], measured: Mapping[str, str], hot: frozenset[str]
+) -> list[PerformanceOpportunity]:
+    """One :func:`_measured_hotspot` per function in *hot* that no static
+    cause owns.
+
+    A static group whose member's loop owner is the function already carries
+    the measurement (:func:`_confirmed`), so the function gets no second item:
+    never both. *hot* is a leading workload's ``lead_candidate`` tier only,
+    so a unit-test run never mints one.
+    """
+    owned = {f.details.get("role_owner") for members in groups.values() for f in members}
+    return [
+        _measured_hotspot(symbol_id, measured[symbol_id])
+        for symbol_id in sorted(hot - owned)
+        if symbol_id in measured and "::" in symbol_id
+    ]
+
+
 def build_performance_opportunities(
     findings: list[Any],
     *,
@@ -417,12 +537,18 @@ def build_performance_opportunities(
     measured in the ``lead_candidate`` tier; a cause inside one, or whose query counts grow, carries
     the ``confirmed`` facet. *in_tests* and *hot_in_tests* are the same two
     for unit-test runs: the ``measured_in_tests`` facet, and ``confirmed`` as
-    ``measured_in_tests`` when nothing stronger confirms the cause.
+    ``measured_in_tests`` when nothing stronger confirms the cause. A
+    function in *hot* that no static cause owns becomes a measured hotspot
+    of its own (:func:`measured_hotspots`).
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
-    for key, members in group_observations(findings).items():
+    groups = group_observations(findings)
+    for opportunity in measured_hotspots(groups, measured or {}, hot):
+        opportunities.append(opportunity)
+        sites[opportunity.opportunity_id] = set()
+    for key, members in groups.items():
         opportunity = _assemble(
             key,
             members,
@@ -449,6 +575,7 @@ __all__ = [
     "build_performance_opportunities",
     "execution_context",
     "link_performance_findings",
+    "measured_hotspots",
     "model_state",
     "opportunity_id_for_finding",
     "opportunity_id_model_version",

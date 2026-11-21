@@ -45,6 +45,7 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
 from repowise.core.persistence.crud.analysis.performance import (
     PerformanceHeadline,
+    measured_hotspot_ids,
     performance_headline,
 )
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
@@ -296,6 +297,8 @@ async def _read_perf_headline(
         repository.id,
         covered_nloc=coverage.covered_nloc,
         include_unverified=req.include_unverified,
+        # No runtime evidence on the agent surface (``without_sources``).
+        measured_only=False,
     )
     return coverage, causes
 
@@ -364,6 +367,8 @@ async def _read_pillars(
         actionability=req.performance_actionability,
         sort=req.performance_sort,
     )
+    if performance.page is not None:
+        performance = replace(performance, page=_without_measured_only(performance.page))
     # Repository-wide, so a targeted call leaves it out.
     if "performance" in req.include_set and req.wants("performance_measured") and not pop.scoped:
         performance = replace(
@@ -524,4 +529,43 @@ async def _read_fix_first(
     if pop.scoped or not req.wants("fix_first"):
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
+    full = without_sources(full, await measured_hotspot_ids(session, repository.id))
     return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full
+
+
+def _without_measured_only(page: Any) -> Any:
+    """The queue page less the causes minted from a measurement alone
+    (:func:`without_sources` says why). Ceiling: the page's total, facet and
+    summary counts still include them; a count is no evidence to read."""
+    from repowise.core.analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    kept = [i for i in page.items if i.get("biomarker_type") != MEASURED_HOTSPOT]
+    if len(kept) == len(page.items):
+        return page
+    return replace(page, items=kept)
+
+
+def without_sources(queue: FixFirstQueue, opportunity_ids: frozenset[str]) -> FixFirstQueue:
+    """*queue* less the items built on *opportunity_ids*, re-ranked and recounted.
+
+    The agent surface shows no runtime evidence yet, so a cause minted from a
+    measurement alone stays on the people's surfaces (REST, CLI, web). An item
+    taken out leaves the candidates and the eligible count, so the totals
+    describe the items listed.
+    """
+    kept = [i for i in queue.items if i.source.opportunity_id not in opportunity_ids]
+    dropped = len(queue.items) - len(kept)
+    if not dropped:
+        return queue
+    improves = dict(queue.by_improves)
+    for item in queue.items:
+        if item.source.opportunity_id in opportunity_ids:
+            improves[item.improves] = improves.get(item.improves, 0) - 1
+    totals = replace(
+        queue.totals,
+        candidates=queue.totals.candidates - dropped,
+        eligible=queue.totals.eligible - dropped,
+        shown=len(kept),
+    )
+    items = tuple(replace(item, rank=rank) for rank, item in enumerate(kept, 1))
+    return replace(queue, items=items, totals=totals, by_improves=improves)

@@ -660,18 +660,29 @@ async def get_performance_opportunity(
 
 
 def _predicates(
-    repository_id: str, *, include_unverified: bool = False, **params: Any
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    measured_only: bool = True,
+    **params: Any,
 ) -> list[Any]:
     """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table.
 
     Opportunities on a file of a language the registry gates for performance
-    are left out unless ``include_unverified``.
+    are left out unless ``include_unverified``; causes minted from runtime
+    evidence alone (:func:`measured_hotspot_ids`) unless ``measured_only``.
     """
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
     return [
         PerformanceOpportunity.repository_id == repository_id,
+        *(
+            ()
+            if measured_only
+            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+        ),
         ungated(
             "performance",
             PerformanceOpportunity.file_path,
@@ -754,6 +765,7 @@ async def performance_facet_counts(
     include_unverified: bool = False,
     scoped: bool = False,
     area_prefix: str | None = None,
+    measured_only: bool = True,
 ) -> list[tuple[Any, ...]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
@@ -775,6 +787,7 @@ async def performance_facet_counts(
                 file_paths=file_paths,
                 area_prefix=area_prefix,
                 include_unverified=include_unverified,
+                measured_only=measured_only,
             )
         )
         .group_by(*columns)
@@ -797,24 +810,47 @@ class PerformanceHeadline(NamedTuple):
         return self._asdict()
 
 
+async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> frozenset[str]:
+    """The open causes minted from runtime evidence alone
+    (``perf.opportunities.measured_hotspots``), for a surface that shows no
+    evidence. One indexed lookup."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    result = await session.execute(
+        select(PerformanceOpportunity.opportunity_id).where(
+            PerformanceOpportunity.repository_id == repository_id,
+            PerformanceOpportunity.status == "open",
+            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+        )
+    )
+    return frozenset(result.scalars().all())
+
+
 async def performance_headline(
     session: AsyncSession,
     repository_id: str,
     *,
     covered_nloc: int,
     include_unverified: bool = False,
+    measured_only: bool = True,
 ) -> PerformanceHeadline:
     """The one count of open performance causes, read by every surface.
 
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    ``measured_only=False`` leaves out the causes runtime evidence alone
+    minted, for a surface that shows no evidence.
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
 
     groups = await performance_facet_counts(
-        session, repository_id, include_unverified=include_unverified, scoped=True
+        session,
+        repository_id,
+        include_unverified=include_unverified,
+        scoped=True,
+        measured_only=measured_only,
     )
     judged = not await any_unjudged(session, repository_id, "causes")
     scopes = scope_counts(groups, judged=judged)

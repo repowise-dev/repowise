@@ -33,6 +33,11 @@ _STEPS: dict[str, tuple[str | None, str]] = {
         None,
         "Select one row per key in the query instead of reducing all rows here",
     ),
+    "reduce_measured_self_time": (
+        "Find the work {sink} repeats and cut it: cache the result, move it out "
+        "of the loop that calls it, or call it less; then re-run the workload",
+        "",
+    ),
 }
 # Strategies whose edit is one per loop and variable, however many lines of
 # the loop the markers fired on, with the step that names the variable.
