@@ -1,7 +1,8 @@
 """The source lines a search for one identifier or literal names.
 
 An identifier that resolves to one to three indexed symbols gets their edit
-sets (definition, imports, calls, references) from :mod:`_edit_sites`. A
+sets (definition, imports, calls, references) from :mod:`_edit_sites`, plus
+the name's definitions in files the index never parsed (generated code). A
 single-token query naming no indexed symbol (a number, a quoted string, an
 unindexed name) is scanned for in every file git lists (tracked and
 untracked, ignore rules applied), so config and docs the indexer never parsed
@@ -928,7 +929,7 @@ def _serve_lines(
         _drop_sweep_advice(response)
     _drop_pages_beside_definitions(response, every_page=not mixed)
     if shown:
-        _reconcile_symbol_miss(response, literal_scan=literal_scan)
+        _reconcile_symbol_miss(response, literal_scan=literal_scan, query=query)
 
 
 def _drop_pages_beside_definitions(response: dict, *, every_page: bool) -> None:
@@ -1166,8 +1167,69 @@ async def _repo_line_rows(
         sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repository.id, root, n) for n in nodes
         ]
+        names = sorted({_bare_name(n) for n in nodes})
+        unindexed = await _unindexed_holders(session, repository.id, root, names, spec)
     served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
+    if served is not None and unindexed:
+        served = await _with_unindexed_definitions(served, root, names, unindexed)
     return None if served is None else (*served, not sets)
+
+
+async def _with_unindexed_definitions(
+    served: tuple[list[dict[str, Any]], list[str]], root: Path, names: list[str], files: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """*served* with the definitions of *names* in the unindexed *files* added."""
+    rows, reasons = served
+    found, why = await asyncio.to_thread(_unindexed_definitions, root, names, files)
+    seen = {(r["path"], r["line"]) for r in rows}
+    rows += [r for r in found if (r["path"], r["line"]) not in seen]
+    return rows, reasons + [r for r in why if r not in reasons]
+
+
+async def _unindexed_holders(
+    session: Any, repo_id: str, root: Path, names: list[str], spec: Any
+) -> list[str]:
+    """Source files holding one of *names* that the index never parsed.
+
+    The indexer skips generated files (a ``DO NOT EDIT`` banner, a generated
+    suffix), so a type such a file declares has no graph node and no edit set
+    lists it. Doc and config files declare nothing, and excluded paths stay
+    out as the graph's nodes do.
+    """
+    held: set[str] = set()
+    for name in names:
+        # Shortcut: without git there is no cheap list of the files holding the
+        # name, so the lines stay the edit sets alone, as before. A walk of every
+        # unindexed file under the scan budget is the upgrade path.
+        found = await asyncio.to_thread(_files_holding, root, name, word=True)
+        held.update(found or ())
+    files = sorted(f for f in held if not is_doc_or_config_path(f) and not is_excluded(f, spec))
+    indexed: set[str] = set()
+    for i in range(0, len(files), 500):
+        stmt = select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.in_(files[i : i + 500]),
+        )
+        indexed.update((await session.execute(stmt)).scalars())
+    return [f for f in files if f not in indexed]
+
+
+def _unindexed_definitions(
+    root: Path, names: list[str], files: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines in *files* declaring one of *names*, as ``definition`` rows, and
+    why they may not be all, under the literal scan's budget."""
+    alternatives = "|".join(re.escape(n) for n in names)
+    name = rf"(?:{alternatives})(?![\w$])"
+    # A keyword declaration (``type X struct``, ``class X``, ``def x``), a Go
+    # method past its receiver, or a top-level assignment (``X = ...``).
+    pattern = re.compile(
+        rf"\b(?:{_DECL_WORDS})\s+{name}|\bfunc\s*\([^)\n]*\)\s*{name}|^[ \t]*{name}[ \t]*=(?![=>])",
+        re.M,
+    )
+    # No raw needle: a binary git grep listed is skipped, not counted as a match.
+    return _scan(root, files, pattern, lambda _line: True, None)
 
 
 def _across_repos(
@@ -1244,15 +1306,21 @@ def _definition_rows(root: Path, nodes: list[GraphNode]) -> list[dict[str, Any]]
     return rows
 
 
-def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
+def _reconcile_symbol_miss(response: dict, *, literal_scan: bool, query: str = "") -> None:
     """Keep the symbol stage's miss advice from contradicting the lines found.
 
     ``grep_hint`` and the no-exact-symbol ``note`` were written before any
     line was read, and tell the reader to recheck spelling or grep. With
     lines in hand both are wrong; ``exact_match: false`` still says no symbol
     has the name, so the note stays only to label fuzzy results.
+
+    The symbol stage matches names case-blind. When the scan found the
+    query's own spelling defined and no result carries it, the results are
+    another name (``variantResponse`` for ``VariantResponse``), not a match.
     """
     response.pop("grep_hint", None)
+    if literal_scan and response.get("exact_match") and _defined_in_another_case(response, query):
+        response["exact_match"] = False
     if not literal_scan or response.get("exact_match") is not False:
         return
     if response.get("results"):
@@ -1262,6 +1330,18 @@ def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
         )
     else:
         response.pop("note", None)
+
+
+def _defined_in_another_case(response: dict, query: str) -> bool:
+    """Whether ``lines`` define *query* as spelled while no result symbol is
+    named so: the case-blind exact match is a different name."""
+    name = query.strip()
+    if not _IDENTIFIER.fullmatch(name):
+        return False
+    if not any(r.get("kind") == "definition" for r in response.get("lines") or ()):
+        return False
+    rows = [r for r in response.get("results") or () if isinstance(r, dict)]
+    return not any(r.get("name") == name for r in rows)
 
 
 def _lines_after_budget(result: dict[str, Any]) -> None:
