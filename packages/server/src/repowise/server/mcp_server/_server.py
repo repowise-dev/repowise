@@ -890,7 +890,8 @@ _client_instructions: Callable[[str], str] | None = None
 
 #: Clients that repeat the instructions under every tool they list (Codex
 #: appends them to each tool it discovers), so a full text is paid once per
-#: tool. They get the brief text: the first line and the setup line.
+#: tool. They get the brief text: the first line alone, since a line repeated
+#: under every tool reads as tool output and agents relay it.
 _PER_TOOL_INSTRUCTION_CLIENTS = frozenset({"codex"})
 
 

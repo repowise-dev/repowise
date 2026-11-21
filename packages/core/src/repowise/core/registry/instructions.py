@@ -15,9 +15,7 @@ from collections.abc import Iterable
 
 #: The first line is all a host that defers tools shows before discovery, so it
 #: says when to call.
-_HEAD = (
-    "Call repowise first for where/how/why questions about this repo's code, history and decisions."
-)
+_HEAD = "Call repowise first for where/how/why questions about this repo's code."
 
 TOOL_LINES = {
     "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` are read "
