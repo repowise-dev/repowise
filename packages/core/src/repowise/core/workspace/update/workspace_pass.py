@@ -349,15 +349,16 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
                     state = read_repo_state(path)
                     record_prune_refusal(state, result.failed_steps)
                     atomic_write_text(path / ".repowise" / "state.json", _json.dumps(state, indent=2))
-                if result.updated and new_head:
-                    _write_repo_state(path, alias, new_head, first_time, result)
-                    # A no-relevant-changes result did not run the DB writer.
-                    await reconcile_repo_head_commit(path, new_head)
-                    clear_stale_update_pending(path, new_head)
             finally:
                 _release_lock(path)
             result.alias = alias
             result.first_time_indexed = first_time and result.updated
+
+            if result.updated and new_head:
+                _write_repo_state(path, alias, new_head, first_time, result)
+                # A no-relevant-changes result did not run the DB writer.
+                await reconcile_repo_head_commit(path, new_head)
+                clear_stale_update_pending(path, new_head)
 
             # Update workspace config entry
             if result.updated:
