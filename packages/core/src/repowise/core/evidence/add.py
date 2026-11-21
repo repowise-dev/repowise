@@ -76,6 +76,9 @@ class PreparedEvidence:
     run: Any = None
     #: How many profile files the run was merged from.
     profiles: int = 1
+    #: The repo-relative directory the file (or every file) was read from; ``""`` for the
+    #: root, for files in several directories, or for data not read from a file.
+    report_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -303,6 +306,7 @@ def prepare_evidence_files(
 
     if not files:
         raise _bad_option("FILE", "name at least one evidence file.")
+    report_dir = _report_dir([name for name, _ in files], checkout_root)
     files = _junit_reports_as_one(files, input_format_name)
     digests = [hashlib.sha256(data).hexdigest() for _, data in files]
     if len(set(digests)) < len(digests):
@@ -326,7 +330,7 @@ def prepare_evidence_files(
         for name, data in ordered
     ]
     if len(parts) == 1:
-        return parts[0]
+        return replace(parts[0], report_dir=report_dir)
     formats = sorted({p.format for p in parts})
     if len(formats) > 1:
         raise EvidenceRefusedError(
@@ -354,6 +358,22 @@ def prepare_evidence_files(
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
     return replace(parts[0], run=run, profiles=len(parts))
+
+
+def _report_dir(names: Sequence[str], checkout_root: Path) -> str:
+    """The repo-relative directory every file in *names* is in; ``""`` when that is the
+    root, when they differ, or when a name is not a file under *checkout_root*."""
+    dirs: set[str] = set()
+    for name in names:
+        path = Path(name)
+        try:
+            if not path.is_file():
+                return ""
+            dirs.add(path.resolve().parent.relative_to(checkout_root.resolve()).as_posix())
+        except (OSError, ValueError):
+            return ""
+    found = dirs.pop() if len(dirs) == 1 else "."
+    return "" if found == "." else found
 
 
 def _junit_reports_as_one(
@@ -481,7 +501,7 @@ async def store_evidence(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
 
-    doc = await _placed_tests(session, repo.id, doc)
+    doc = await _placed_tests(session, repo.id, doc, prepared.report_dir)
     paths = entry_paths(doc)
     origins = await load_origins(session, repo.id, paths)
     joined = join_entries(
@@ -586,18 +606,24 @@ def _unprofiled_children(conversion: Mapping[str, Any], profiles: int) -> dict[s
     }
 
 
-async def _placed_tests(session: Any, repo_id: str, doc: EvidenceDocument) -> EvidenceDocument:
-    """*doc* with each test named only by its classname placed on an indexed file.
+async def _placed_tests(
+    session: Any, repo_id: str, doc: EvidenceDocument, report_dir: str = ""
+) -> EvidenceDocument:
+    """*doc* with each test placed on an indexed file: one named from *report_dir*, the
+    directory its report was read from (:func:`~.ingest.rebase_test_entries`), and one
+    named only by its classname (:func:`~.ingest.place_test_entries`).
 
-    See :func:`~.ingest.place_test_entries`; the file list is read only when a test needs it.
+    The file list is read only when a test needs it.
     """
-    if not any(entry.get("classname") for entry in doc.entries):
+    rebase = bool(report_dir) and doc.kind == "test_timing"
+    if not rebase and not any(entry.get("classname") for entry in doc.entries):
         return doc
     from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
 
-    from .ingest import place_test_entries
+    from .ingest import place_test_entries, rebase_test_entries
 
-    return place_test_entries(doc, await health_file_paths(session, repo_id))
+    files = await health_file_paths(session, repo_id)
+    return place_test_entries(rebase_test_entries(doc, files, report_dir), files)
 
 
 async def ingest_evidence(

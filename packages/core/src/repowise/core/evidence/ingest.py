@@ -272,6 +272,33 @@ _ROW_KEY = {
 }
 
 
+def rebase_test_entries(doc: EvidenceDocument, files: Collection[str], base: str) -> EvidenceDocument:
+    """*doc* with each test file the index does not hold read from *base*, when the index holds that.
+
+    *base* is the repo-relative directory the report was read from. A runner in a
+    package below the repository root names test files from where it ran and writes
+    its report there (Vitest, which has no option to prefix them); a path the index
+    holds as given is kept.
+    """
+    if doc.kind != "test_timing" or not base:
+        return doc
+    entries = []
+    for entry in doc.entries:
+        path = entry.get("test_file")
+        moved = f"{base}/{path}" if path and path not in files else None
+        if moved is not None and moved in files:
+            location = entry.get("location")
+            test_id = entry["test_id"]
+            entry = {
+                **entry,
+                "test_id": moved + test_id[len(path):] if test_id.startswith(path) else test_id,
+                "test_file": moved,
+                "location": {**location, "path": moved} if location else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
+
+
 def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
     """*doc* with each test named only by a dotted ``classname`` placed on its file.
 
@@ -534,6 +561,7 @@ __all__ = [
     "load_origins",
     "load_symbols",
     "place_test_entries",
+    "rebase_test_entries",
     "resolve_location",
     "run_fields",
     "run_key",

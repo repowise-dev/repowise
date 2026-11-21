@@ -7,9 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.evidence.add import EvidenceRefusedError, prepare_evidence
+from repowise.core.evidence.add import (
+    EvidenceRefusedError,
+    prepare_evidence,
+    prepare_evidence_files,
+)
 from repowise.core.evidence.format_v1 import EvidenceFormatError, parse_evidence
-from repowise.core.evidence.ingest import join_entries, place_test_entries
+from repowise.core.evidence.ingest import join_entries, place_test_entries, rebase_test_entries
 from repowise.core.evidence.profile_formats import detect_profile_format, junit
 
 # pytest --junitxml, default xunit2 family: no file attribute.
@@ -271,3 +275,36 @@ def test_report_files_read_as_one_run_and_other_files_are_left_out(tmp_path: Pat
 
     assert prepared.format == "junit"
     assert len(prepared.doc.entries) == 3
+
+
+def test_a_unit_below_the_root_names_its_tests_from_the_reports_directory() -> None:
+    # Vitest in web/ names src/cart.test.ts and writes web/junit.xml.
+    files = {"web/src/cart.test.ts", "src/other.ts"}
+
+    (entry,) = rebase_test_entries(_doc(VITEST), files, "web").entries
+
+    assert entry["test_id"] == "web/src/cart.test.ts::cart > adds an item"
+    assert (entry["test_file"], entry["location"]["path"]) == ("web/src/cart.test.ts",) * 2
+
+
+def test_a_path_the_index_holds_as_given_is_kept() -> None:
+    files = {"src/cart.test.ts", "web/src/cart.test.ts"}
+    assert rebase_test_entries(_doc(VITEST), files, "web").entries[0]["test_file"] == "src/cart.test.ts"
+    # Neither path indexed: nothing to rebase onto.
+    assert rebase_test_entries(_doc(VITEST), set(), "web").entries[0]["test_file"] == "src/cart.test.ts"
+
+
+def test_prepared_files_carry_the_directory_they_were_read_from(tmp_path: Path) -> None:
+    (tmp_path / "web").mkdir()
+    report = tmp_path / "web" / "junit.xml"
+    report.write_bytes(VITEST)
+    (tmp_path / "junit.xml").write_bytes(VITEST)
+
+    def prepared(path: Path, root: Path = tmp_path):
+        return prepare_evidence_files([(str(path), VITEST)], checkout_root=root, commit="a" * 40)
+
+    assert prepared(report).report_dir == "web"
+    assert prepared(tmp_path / "junit.xml").report_dir == ""
+    # Outside the checkout, or not a file: no directory.
+    assert prepared(report, tmp_path / "other").report_dir == ""
+    assert prepared(Path("the evidence file")).report_dir == ""
