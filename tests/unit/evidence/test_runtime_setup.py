@@ -551,6 +551,18 @@ def test_an_options_value_does_not_replace_the_suites_paths(tmp_path: Path) -> N
     assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
 
 
+def test_a_file_options_value_does_not_replace_the_suites_paths(tmp_path: Path) -> None:
+    # The integration tests cannot import: run with no paths, the profile would fail.
+    _suite(tmp_path, "def test_a():\n    pass\n")
+    (tmp_path / "pytest-extra.ini").write_text("[pytest]\n")
+
+    code, profile = _run_recipe(
+        tmp_path, None, "unit_test", "-p", "no:cacheprovider", "--log-file", "pytest-extra.ini"
+    )
+
+    assert code == 0 and json.loads(profile.read_text())["testsFailed"] == 0
+
+
 def test_a_path_after_a_flag_still_picks_what_the_suite_profile_runs(tmp_path: Path) -> None:
     _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
 

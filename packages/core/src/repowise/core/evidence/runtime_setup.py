@@ -453,14 +453,17 @@ def _python_targets(
     if stack.test:
         # The paths the unit's coverage command runs (``tests/unit`` beside
         # ``tests/integration``), so the profile never collects slower suites,
-        # unless the arguments name a path of their own (``tests/api``, a node
-        # id; not an option's value, as in ``--ignore tests/slow``): then they
-        # pick what runs. The plugin keeps the failed count for
-        # the profile (``n``).
+        # unless the arguments name tests of their own (a directory, a ``.py``
+        # file or a node id, not an option's value as in ``--ignore tests/slow``;
+        # a file option's value such as ``--cov-config .coveragerc`` is neither):
+        # then they pick what runs. The plugin keeps the failed count for the
+        # profile (``n``).
         paths = [p for p in stack.test_paths if _SAFE_PATH.fullmatch(p)]
+        tests = "(lambda p:os.path.isdir(p) or p.endswith('.py') and os.path.isfile(p))(x.split('::')[0])"
         run = (
             "a=sys.argv[1:];"
-            f"import pytest;sys.exit(pytest.main(([] if any(os.path.exists(x.split('::')[0]) and not (j and a[j-1] in {sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
+            f"import pytest;sys.exit(pytest.main(([] if any({tests} and not (j and a[j-1] in "
+            f"{sorted(_VALUE_OPTIONS)!r}) for j,x in enumerate(a)) "
             f"else {paths!r})+a,plugins=[type('R',(),"
             "{'pytest_sessionfinish':lambda s,session:n.append(session.testsfailed)})()]))"
         )
