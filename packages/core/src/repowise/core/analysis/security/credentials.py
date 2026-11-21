@@ -124,7 +124,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
-    if name.lower().lstrip("$") in _KEYWORD_EXCLUDED_NAMES:
+    if name.lower().rsplit("$", 1)[-1] in _KEYWORD_EXCLUDED_NAMES:
         return False
     value = val.strip()
     if kind == "hardcoded_secret" and (

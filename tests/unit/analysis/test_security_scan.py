@@ -1269,6 +1269,11 @@ class TestVendorShapeEdges:
     ) -> None:
         assert "hardcoded_password" in self._kinds(source, path)
 
+    @pytest.mark.parametrize("name", ["publicKeyToken", "$publicKeyToken", "ASSEMBLY$publicKeyToken"])
+    def test_an_excluded_key_name_stays_excluded_behind_a_dollar(self, name: str) -> None:
+        source = f'{name} = "b03f5f7f11d50a3a"\n'
+        assert "hardcoded_secret" not in self._kinds(source, "a.js")
+
     @pytest.mark.parametrize(
         "value",
         ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
