@@ -953,19 +953,25 @@ def _has_index(repo_path: str | None, *, workspace: bool) -> bool | None:
         if ws_config is None:
             return None
         paths = [str(ws_root / entry.path) for entry in ws_config.repos]
+    # One read per member until one answers; a workspace has a handful.
     for path in paths:
-        db = get_repo_db_path(path)
-        if not db.is_file():
-            continue
-        try:
-            with contextlib.closing(
-                sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.5)
-            ) as conn:
-                if conn.execute("SELECT 1 FROM repositories LIMIT 1").fetchone():
-                    return True
-        except sqlite3.Error:
-            return None
+        found = _store_has_repository(get_repo_db_path(path))
+        if found is not False:
+            return found
     return False
+
+
+def _store_has_repository(db: Path) -> bool | None:
+    """Whether the store at *db* has a repository row; ``None`` when unreadable."""
+    if not db.is_file():
+        return False
+    try:
+        with contextlib.closing(
+            sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.5)
+        ) as conn:
+            return conn.execute("SELECT 1 FROM repositories LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return None
 
 
 def _root_outside_cwd(repo_path: str | None) -> str | None:
