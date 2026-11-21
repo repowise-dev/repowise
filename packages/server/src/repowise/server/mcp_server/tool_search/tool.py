@@ -266,8 +266,9 @@ async def search_codebase(
         )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
     limit = _clamp_limit(limit, ignored)
-    if repo == "all" and _state._registry is None:
+    if repo == "all" and _state._registry is None and _state.request_context() is None:
         # One repository: "all" is that repository, so take the single-repo path.
+        # An embedder serving per request keeps its own fan-out.
         repo = None
     begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
