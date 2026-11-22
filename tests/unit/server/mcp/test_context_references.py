@@ -2362,3 +2362,29 @@ def test_c_mask_carries_a_spliced_string_and_reads_keyword_literals():
     # A keyword may run straight into a literal.
     full, _ = c_family_masks("return\"name\"; case'n': code();")
     assert "name" not in full and "code();" in full
+
+
+@pytest.mark.asyncio
+async def test_block_greps_the_name_once_for_its_files_and_documents(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _line_hits
+
+    node = await _seed_method(session, repo_id, tmp_path, "x = 1\n")
+    (tmp_path / "README.md").write_text("Call `fetch_rows` for the rows.\n", encoding="utf-8")
+    calls = []
+    real = _line_hits._git_files_holding
+
+    def counted(root, needle, **kw):
+        calls.append(needle)
+        return real(root, needle, **kw)
+
+    monkeypatch.setattr(_line_hits, "_git_files_holding", counted)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert out["files"]["README.md"] == {"doc": [1]}
+    assert out["files"]["app/use.py"]["call"] == [3]
+    assert calls == ["fetch_rows"]
+    # No grep answer outlives the block.
+    assert _line_hits._HOLDING_MEMO.get() is None
