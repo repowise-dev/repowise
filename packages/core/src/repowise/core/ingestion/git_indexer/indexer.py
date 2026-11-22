@@ -24,6 +24,7 @@ import structlog
 
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.forges import detect_forge
+from repowise.core.procutils import available_memory_bytes as _available_memory_bytes
 from repowise.core.settings.model import flag
 
 from ._constants import (
@@ -110,39 +111,6 @@ _GIT_WORKER_MEMORY_BYTES = 384 * 1024 * 1024
 _GIT_MEMORY_RESERVE_BYTES = 512 * 1024 * 1024
 
 
-def _available_memory_bytes() -> int | None:
-    """Best-effort available physical memory without an optional dependency."""
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            class _MemoryStatus(ctypes.Structure):
-                _fields_ = [
-                    ("length", ctypes.c_ulong),
-                    ("memory_load", ctypes.c_ulong),
-                    ("total_physical", ctypes.c_ulonglong),
-                    ("available_physical", ctypes.c_ulonglong),
-                    ("total_page_file", ctypes.c_ulonglong),
-                    ("available_page_file", ctypes.c_ulonglong),
-                    ("total_virtual", ctypes.c_ulonglong),
-                    ("available_virtual", ctypes.c_ulonglong),
-                    ("available_extended_virtual", ctypes.c_ulonglong),
-                ]
-
-            status = _MemoryStatus()
-            status.length = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.available_physical)
-        except (AttributeError, OSError, TypeError, ValueError):
-            return None
-    try:
-        pages = os.sysconf("SC_AVPHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return int(pages) * int(page_size)
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-
 def git_worker_count(
     pending: int,
     *,
@@ -158,9 +126,7 @@ def git_worker_count(
     affinity_count = getattr(os, "process_cpu_count", None)
     cpus = cpu_count or (affinity_count() if affinity_count else None) or os.cpu_count() or 1
     available = (
-        available_memory_bytes
-        if available_memory_bytes is not None
-        else _available_memory_bytes()
+        available_memory_bytes if available_memory_bytes is not None else _available_memory_bytes()
     )
     memory_workers = _MAX_GIT_WORKERS
     if available is not None:
