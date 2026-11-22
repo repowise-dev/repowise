@@ -117,7 +117,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
-from repowise.server.mcp_server._origin_rank import load_row_origins
+from repowise.server.mcp_server._origin_rank import load_row_languages, load_row_origins
 from repowise.server.mcp_server._savings.interaction import timed_stage
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
@@ -421,13 +421,24 @@ async def _run_retrieval_pipeline(
         with contextlib.suppress(Exception):
             hits = await _expand_via_parent_page(hits, question, ctx)
     # Demote noise (decisions on non-why, test/generated/vendored files the
-    # question does not ask for)
-    # below real pages. Non-dropping; after anchoring, which never injects noise.
+    # question does not ask for, files in another language than the question's)
+    # below real pages. Non-dropping; after anchoring, which never injects noise
+    # and whose files say which language the question is about.
     origins: dict[str, str] = {}
+    languages: dict[str, str] = {}
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
             origins = await load_row_origins(session, repo_id, hits)
-    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question), origins=origins)
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            languages = await load_row_languages(session, repo_id, hits)
+    hits = _demote_noise_hits(
+        hits,
+        question,
+        is_why=_is_why_question(question),
+        origins=origins,
+        languages=languages,
+    )
     # Files on a pasted stack trace lead; files defining a named identifier
     # join just below the top three. No-op when the question has neither.
     try:
@@ -435,6 +446,7 @@ async def _run_retrieval_pipeline(
     except Exception:
         _log.warning("get_answer: issue file lookup failed", exc_info=True)
     else:
+
         def _in_scope(paths: list[str]) -> list[str]:
             return [p for p in paths if in_scope(p, scope)]
 
