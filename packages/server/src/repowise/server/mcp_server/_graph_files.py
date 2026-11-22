@@ -9,16 +9,20 @@ stitches files across a language boundary, so the guards live here with it.
 
 A projection reads every edge of the repo, which is the slowest local step of
 an answer, and its result only moves when the index does. :func:`per_index`
-keeps one copy per index state so a question pays for the scan once.
+keeps one copy per index state so a question pays for the scan once, and a
+sealed copy beside the index so the next server process loads it instead of
+scanning again.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, TypeVar
 
 from sqlalchemy import select
@@ -28,6 +32,7 @@ from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server._index_state import index_state_key
 
 _T = TypeVar("_T")
+_log = logging.getLogger("repowise.mcp")
 
 # Kept importable under its old name for code outside this package.
 node_to_file = file_of_symbol
@@ -41,6 +46,16 @@ _CACHE_MAX_REPOS = 8
 # One lock per projection name, so a question waits only on a build of a
 # projection it reads, never on another (such as the idle warmup's).
 _LOCKS: dict[str, asyncio.Lock] = {}
+
+# Sealed copies of the projections, one file per name under the index's
+# ``.repowise/``. Each holds the index state it was built for, so a file left
+# from an older index is rebuilt and overwritten on first use. Ceiling: no
+# cleanup beyond that overwrite (tens of MB on a large index); an eviction
+# pass belongs here if projections ever grow per question rather than per index.
+_STORE_DIRNAME = "mcp_cache"
+_MISS = object()
+# Writes in flight, held so the loop does not drop them before they finish.
+_PENDING_STORES: set[asyncio.Task] = set()
 
 # Confidence floor for ``calls`` edges. Imports are always 1.0; calls average
 # 0.90 with a low-confidence tail from heuristic resolution. 0.5 keeps every
@@ -125,7 +140,14 @@ async def per_index(
         hit = _cached(repo_id, key, name)
         if hit is not None:
             return hit
-        value = await build()
+        stored_at = _stored_path(repository, name)
+        value = _MISS
+        if stored_at is not None:
+            value = await asyncio.to_thread(_load_stored, stored_at, name, key)
+        if value is _MISS:
+            value = await build()
+            if stored_at is not None:
+                _store_soon(stored_at, name, key, value)
         entry = _CACHE.get(repo_id)
         if entry is None or entry[0] != key:
             # An older index state of this repo is never asked for again.
@@ -136,6 +158,52 @@ async def per_index(
         while len(_CACHE) > _CACHE_MAX_REPOS:
             _CACHE.popitem(last=False)
         return value
+
+
+def _stored_path(repository: Any, name: str) -> Path | None:
+    """Where *name*'s sealed copy lives, or ``None`` when the index has no ``.repowise/``."""
+    from repowise.server.mcp_server._meta import served_root
+
+    root = served_root(repository) if repository is not None else None
+    if not root:
+        return None
+    index_dir = Path(root) / ".repowise"
+    return index_dir / _STORE_DIRNAME / f"{name}.pkl" if index_dir.is_dir() else None
+
+
+def _load_stored(path: Path, name: str, key: str) -> Any:
+    """The value sealed at *path* for index state *key*, else ``_MISS``."""
+    from repowise.core.cache_seal import load_sealed_pickle
+
+    try:
+        stored_key, value = load_sealed_pickle(path, domain=f"mcp-index-cache:{name}")
+    except FileNotFoundError:
+        return _MISS
+    except Exception:
+        # Unsigned, forged, truncated or from an older layout: build it again.
+        _log.debug("repowise MCP: ignoring stored %s", path, exc_info=True)
+        return _MISS
+    return value if stored_key == key else _MISS
+
+
+def _store(path: Path, name: str, key: str, value: Any) -> None:
+    from repowise.core.cache_seal import dump_sealed_pickle
+
+    try:
+        dump_sealed_pickle(path, (key, value), domain=f"mcp-index-cache:{name}")
+    except Exception:
+        # A read-only index or a value that cannot pickle only costs the next
+        # server process a rebuild.
+        _log.debug("repowise MCP: could not store %s", path, exc_info=True)
+
+
+def _store_soon(path: Path, name: str, key: str, value: Any) -> None:
+    """Write the sealed copy on a worker thread; the caller does not wait for it."""
+    task = asyncio.get_running_loop().create_task(
+        asyncio.to_thread(_store, path, name, key, value), name=f"store-{name}"
+    )
+    _PENDING_STORES.add(task)
+    task.add_done_callback(_PENDING_STORES.discard)
 
 
 async def graph_file_paths(session: Any, repo_id: str) -> tuple[str, ...]:

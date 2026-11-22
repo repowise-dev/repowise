@@ -111,3 +111,69 @@ async def test_a_build_does_not_wait_on_another_projections_build(factory, repo_
     finally:
         release.set()
         assert await pending == "slow"
+
+
+async def _stored(tmp_path):
+    """Wait for the sealed copies in flight, then list them."""
+    await asyncio.gather(*list(_graph_files._PENDING_STORES))
+    return sorted(p.name for p in (tmp_path / ".repowise" / "mcp_cache").glob("*.pkl"))
+
+
+@pytest.fixture
+def index_dir(tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_a_new_server_process_loads_the_projection_instead_of_building(
+    session, repo_id, index_dir
+):
+    calls: list[int] = []
+    build = _counting_build(calls)
+    first = await per_index(session, repo_id, "adjacency", build)
+    assert await _stored(index_dir) == ["adjacency.pkl"]
+
+    _graph_files.reset_cache()  # what a new process starts with
+    loaded = await per_index(session, repo_id, "adjacency", build)
+
+    assert calls == [1]
+    assert loaded == first
+
+
+@pytest.mark.asyncio
+async def test_a_stored_projection_from_another_index_state_is_rebuilt(session, repo_id, index_dir):
+    calls: list[int] = []
+    build = _counting_build(calls)
+    await per_index(session, repo_id, "adjacency", build)
+    await _stored(index_dir)
+
+    state = index_dir / ".repowise" / "state.json"
+    state.write_text("{}", encoding="utf-8")
+    os.utime(state, ns=(1, 1))
+    _graph_files.reset_cache()
+    rebuilt = await per_index(session, repo_id, "adjacency", build)
+
+    assert calls == [1, 1]
+    assert rebuilt == {"built": 2}
+
+
+@pytest.mark.asyncio
+async def test_an_unsealed_or_corrupt_copy_is_rebuilt(session, repo_id, index_dir):
+    store = index_dir / ".repowise" / "mcp_cache"
+    store.mkdir()
+    (store / "adjacency.pkl").write_bytes(b"not a sealed pickle")
+    calls: list[int] = []
+
+    value = await per_index(session, repo_id, "adjacency", _counting_build(calls))
+
+    assert calls == [1]
+    assert value == {"built": 1}
+
+
+@pytest.mark.asyncio
+async def test_no_copy_is_written_without_an_index_directory(session, repo_id, tmp_path):
+    await per_index(session, repo_id, "adjacency", _counting_build([]))
+    await asyncio.gather(*list(_graph_files._PENDING_STORES))
+
+    assert not (tmp_path / ".repowise").exists()
