@@ -275,9 +275,12 @@ _TEMPLATE_SNIPPET = re.compile(
     r"|It belongs to the [\w ]+ layer\b"
     r"|\*\*Language:\*\*)"
 )
-# A license header opening the snippet, past comment punctuation.
+# A license header opening the snippet, past comment punctuation: a copyright
+# notice with its year or (c), an SPDX tag, or a "licensed under the ... License"
+# line. Prose that only mentions copyright keeps its snippet.
 _LICENSE_HEAD = re.compile(
-    r"^[\s/*#!-]*(?:copyright\b|\(c\)\s*\d{4}|spdx-license-identifier|licensed under\b)",
+    r"^[\s/*#!-]*(?:copyright\s+(?:\(c\)|©|\d{4})|\(c\)\s*\d{4}|spdx-license-identifier"
+    r"|licensed (?:under|to) the [^\n]*\blicen[cs]e\b)",
     re.IGNORECASE,
 )
 

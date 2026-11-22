@@ -403,6 +403,8 @@ def test_snippets_that_restate_the_row_are_dropped():
         {"snippet": "`retry.py` imports `backoff` to cap the delay."},
         {"snippet": "It defines `Retry` to cap the delay."},
         {"snippet": "It belongs to the payments team."},
+        {"snippet": "Copyright checks run before each release."},
+        {"snippet": "# SPDX-License-Identifier: MIT"},
         {"snippet": "Checks each file is licensed under the Apache License."},
     ]
     _serve_snippets(rows)
@@ -416,6 +418,8 @@ def test_snippets_that_restate_the_row_are_dropped():
         "`retry.py` imports `backoff` to cap the delay.",
         "It defines `Retry` to cap the delay.",
         "It belongs to the payments team.",
+        "Copyright checks run before each release.",
+        None,
         "Checks each file is licensed under the Apache License.",
     ]
 
