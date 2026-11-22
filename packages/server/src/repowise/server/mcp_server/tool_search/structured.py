@@ -482,6 +482,27 @@ def _attach_match_notes(
         response["grep_hint"] = grep_hint
 
 
+async def _attach_path_hits(
+    response: dict, plan: _SearchPlan, pools: _Pools, results: list[dict]
+) -> None:
+    """A path query naming a directory leads with it; one landing on a single
+    file lists that file's symbols."""
+    if folder := _directory_action(plan, pools):
+        _add_directory_hit(response, folder, plan.limit)
+        return
+    one_file = len(results) == 1 and results[0].get("type") == "file"
+    if plan.mode == "path" and not plan.multi and one_file:
+        await attach_file_symbols(pools.contexts[0], results[0])
+
+
+async def _attach_bodies(
+    response: dict, named: list[str], results: list[dict], pools: _Pools, repository: Any
+) -> None:
+    """Serve the bodies of the definitions the query's names find."""
+    rows = definition_rows(named, results, pools.symbols + pools.spare)
+    await attach_definition_bodies(response, rows, pools.contexts[0], repository)
+
+
 def _serves_bodies(plan: _SearchPlan) -> bool:
     """Whether the plan's exact definitions get their bodies inline.
 
@@ -546,10 +567,7 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    if folder := _directory_action(plan, pools):
-        _add_directory_hit(response, folder, limit)
-    elif plan.mode == "path" and not multi and len(results) == 1 and results[0].get("type") == "file":
-        await attach_file_symbols(pools.contexts[0], results[0])
+    await _attach_path_hits(response, plan, pools, results)
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
@@ -563,9 +581,8 @@ async def _structured_search(
     _attach_match_notes(
         response, named, exact, missing, grep_hint, _filtered_names(plan, pools, named)
     )
-    if _serves_bodies(plan) and repository is not None and response.get("exact_match"):
-        rows = definition_rows(named, results, pools.symbols + pools.spare)
-        await attach_definition_bodies(response, rows, pools.contexts[0], repository)
+    if repository is not None and response.get("exact_match") and _serves_bodies(plan):
+        await _attach_bodies(response, named, results, pools, repository)
     if fed is not None:
         fed.annotate(response, results)
     # Last: slims fields the steps above still read.

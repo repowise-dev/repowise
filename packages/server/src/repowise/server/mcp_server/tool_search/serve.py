@@ -182,17 +182,20 @@ def definition_rows(candidates: list[str], results: list[dict], pool: list[dict]
     multi-line one (a C prototype, an ``extern``) is not a second definition;
     two multi-line definitions, overloads included, are ambiguous: no row.
     """
-    rows: list[dict] = []
+    served = {id(r) for r in results}
+    rows: dict[int, dict] = {}
     for name in dict.fromkeys(candidates):
-        named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol([name], [s])]
-        bodies = [s for s in named if _spans_lines(s)] or named
-        if len(bodies) != 1 or not any(r is bodies[0] for r in results):
-            continue
-        if not any(r is bodies[0] for r in rows):
-            rows.append(bodies[0])
-        if len(rows) >= _MAX_BODIES:
-            break
-    return rows
+        row = _one_definition(name, pool)
+        if row is not None and id(row) in served:
+            rows.setdefault(id(row), row)
+    return list(rows.values())[:_MAX_BODIES]
+
+
+def _one_definition(name: str, pool: list[dict]) -> dict | None:
+    """The one row in *pool* defining *name*, else None."""
+    named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol([name], [s])]
+    bodies = [s for s in named if _spans_lines(s)] or named
+    return bodies[0] if len(bodies) == 1 else None
 
 
 async def _live_span(row: dict, ctx, repository) -> tuple[str, int, int] | None:
