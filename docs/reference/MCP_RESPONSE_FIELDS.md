@@ -373,8 +373,8 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 
 | Row | Fields |
 |-----|--------|
-| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`; `source` on a unique exact hit |
-| File | `type: "file"`, `page_id`, `path`, `title`, `score`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
+| Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`; `source` (and `truncated`) on an exact definition |
+| File | `type: "file"`, `page_id`, `path`, `title`, `score`; an indexed file with no page (config, data, tests) has no `page_id` or `title`. When a path search finds one file: `symbols`, `symbols_total` |
 | Concept | `page_type`, `path` if the page names a file, `symbol_id` on a symbol page, `relevance_score`, `snippet`, `sources` |
 
 Row notes:
@@ -382,19 +382,21 @@ Row notes:
 - **`path`:** the openable repo-relative file; absent when the row names no file (module group key, onboarding slot, overview), never a page id. There is no `file` key.
 - **`page_id`, `title`:** dropped where rebuildable: id `{page_type}:{symbol_id or path}`, title `File: <path>` / `Symbol: <symbol_id>` in the page language. Prose titles stay.
 - **`target_path`:** kept only where it differs from `path` (a page's group key, slot or repo name).
-- **`symbols`:** on a symbol hit outside `symbol` mode, up to 5 other matches in the file as `name:line`, then `+N more`. On a page row, up to 3 query-matching `name:line` (`Owner.member`).
+- **`symbols`:** on a symbol hit outside `symbol` mode, up to 5 other matches in the file as `name:line`, then `+N more`. On a page row, up to 3 query-matching `name:line` (`Owner.member`). On the one file row a path search finds, its callables and types in source order (30 max; `symbols_total` when there are more).
 - **`matched_lines`:** on the first three page rows with a match, up to 3 live `{line, text}` sharing the most query words, code before comments and imports. Never every match.
+- **`snippet`:** omitted when it only restates the row: a license header, or the page's structural summary (`x.py` defines / imports / is imported by).
 - **`sources`:** `fts`, `vector`, `symbol`, or a mix; omitted when `["fts"]` and `_meta.semantic_search` is `false`.
 - **`signature`:** omitted where `lines` holds the symbol's live definition line with its whole parameter list.
-- **`source`:** the live numbered body, when the query names one identifier, exactly one indexed symbol has that name and its body is at most 20 lines. It replaces `signature`, sets `_meta.complete`, and makes a `get_symbol` call for that symbol unnecessary. A longer body, two definitions of the name (overloads included) or a workspace-wide search serve none.
+- **`source`:** the live numbered body of the one indexed definition the query names: for an identifier in `symbol` mode, and for each name of an `a|b|c` query (3 bodies and about 6,000 characters per reply). A one-line declaration beside it (a C prototype) is not a second definition. A body of at most 80 lines is served whole and counted in `_meta.complete`, which makes a `get_symbol` call for it unnecessary; a longer one serves its first 40 lines with `truncated: true`, `start_line`/`end_line` still spanning the whole symbol. It replaces `signature`. Two multi-line definitions of the name (overloads included) or a workspace-wide search serve none.
 
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- `in` names the indexed symbol (`Owner.member`) a non-definition row in a production file sits in, on the first row of each run in one file and one symbol; the rows after it in the same file without `in` are in the same symbol. A module-level row after such a run says `<module>`. The names come from the index, the lines from live files.
+- `in` names the indexed symbol (`Owner.member`) a non-definition row in a production file sits in, on the first row of each run in one file and one symbol; the rows after it in the same file without `in` are in the same symbol. A module-level row after such a run says `<module>`. Each `in` comes with `in_lines`, that symbol's `[start, end]`: the range to Read for the row's context. The names come from the index, the lines from live files.
 - When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
+- An identifier, alternation or regex query shows 12 lines (shared across alternation groups): definitions first, then use sites, imports and strings last, in reading order. The rest are counted in `lines_omitted` and recoverable from `_meta.omitted`, and `complete` is `false`.
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
 - An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
 

@@ -388,3 +388,21 @@ def test_another_repos_definition_line_keeps_the_signature():
     }
     _drop_echoed_signatures(response)
     assert row["signature"] == "f()"
+
+
+def test_snippets_that_restate_the_row_are_dropped():
+    from repowise.server.mcp_server.tool_search.serve import _serve_snippets
+
+    rows = [
+        {"snippet": "`models.py` defines `User`. It is imported by 4 files."},
+        {"snippet": "It imports 7 files from this repository."},
+        {"snippet": "/*\nCopyright 2015 The Authors.\n\nLicensed under the Apache License"},
+        {"snippet": "Validates a signup form and hashes the password."},
+    ]
+    _serve_snippets(rows)
+    assert [r.get("snippet") for r in rows] == [
+        None,
+        None,
+        None,
+        "Validates a signup form and hashes the password.",
+    ]

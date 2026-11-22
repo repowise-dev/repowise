@@ -129,3 +129,25 @@ async def test_a_hybrid_question_serves_no_body(setup_mcp, tmp_path):
     _models_file(tmp_path)
     result = await search_codebase("how is User stored", mode="hybrid")
     assert not any("source" in r for r in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_serves_each_names_body(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import search_codebase
+
+    _models_file(tmp_path)
+    result = await search_codebase("User|AuthService")
+
+    bodies = {r["name"]: r["source"] for r in result["results"] if r.get("source")}
+    assert bodies["User"].splitlines()[0] == "     5	class User(Base):"
+    assert result["_meta"]["complete"].startswith("Complete:")
+
+
+@pytest.mark.asyncio
+async def test_a_path_search_on_one_file_lists_its_symbols(setup_mcp):
+    from repowise.server.mcp_server import search_codebase
+
+    result = await search_codebase("src/auth/service.py", mode="path")
+
+    (row,) = [r for r in result["results"] if r.get("type") == "file"]
+    assert row["symbols"][0] == "AuthService:10"
