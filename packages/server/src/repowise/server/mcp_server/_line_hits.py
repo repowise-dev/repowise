@@ -364,15 +364,18 @@ def _untracked_holding(
         if word
         else re.escape(needle.encode())
     )
-    # The grep's own budget: a large untracked tree falls back as a slow grep did.
-    deadline = time.monotonic() + _GIT_GREP_SECONDS
-    found: list[str] = []
-    for f in untracked:
-        holds = _holds(root / f, held) if time.monotonic() <= deadline else None
-        if holds is None:
-            return None
-        if holds:
-            found.append(f)
+    # One pass per repo at a time, so each budget measures its own work and not
+    # the prefetched passes it would share the interpreter with.
+    with _untracked_lock(root):
+        # The grep's own budget: a large untracked tree falls back as a slow grep did.
+        deadline = time.monotonic() + _GIT_GREP_SECONDS
+        found: list[str] = []
+        for f in untracked:
+            holds = _holds(root / f, held) if time.monotonic() <= deadline else None
+            if holds is None:
+                return None
+            if holds:
+                found.append(f)
     return found
 
 
@@ -397,7 +400,12 @@ def _holds(path: Path, needle: re.Pattern[bytes]) -> bool | None:
         return None
 
 
-_UNTRACKED_LOCK = threading.Lock()
+# Per repo root: repos list and match their untracked files side by side.
+_UNTRACKED_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _untracked_lock(root: Path) -> threading.Lock:
+    return _UNTRACKED_LOCKS.setdefault(str(root), threading.Lock())
 
 
 def _untracked_files(root: Path) -> list[str] | None:
@@ -410,7 +418,7 @@ def _untracked_files(root: Path) -> list[str] | None:
     if memo is None:
         return _git_paths(root, args, 10, (0,))
     key = ("untracked", str(root))
-    with _UNTRACKED_LOCK:
+    with _untracked_lock(root):
         if key not in memo:
             memo[key] = _git_paths(root, args, 10, (0,))
         return memo[key]

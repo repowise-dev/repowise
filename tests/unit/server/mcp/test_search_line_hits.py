@@ -1302,3 +1302,10 @@ def test_an_untracked_file_the_pass_cannot_read_whole_falls_back(scan_repo, monk
 
     # README.md is untracked and past the cap: the fallback scan reports it.
     assert _line_hits._files_holding(scan_repo, "retryLimit") is None
+
+
+def test_untracked_passes_lock_per_repo(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    assert _line_hits._untracked_lock(a) is _line_hits._untracked_lock(a)
+    # Another repo's listing never waits on this one's.
+    assert _line_hits._untracked_lock(a) is not _line_hits._untracked_lock(b)
