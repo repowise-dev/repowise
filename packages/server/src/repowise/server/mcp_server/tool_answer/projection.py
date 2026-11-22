@@ -710,12 +710,12 @@ def _set_next_step(payload: dict[str, Any], question: str, *, expanded: bool) ->
             step = _DEFAULT_NEXT_STEP.get(_shape_confidence(payload), _DEFAULT_NEXT_STEP["low"])
             payload.setdefault("next_action_hint", step)
         return
-    if "next_action_hint" in payload:
-        return
-    payload["next_action_hint"] = verify_line(anchor, str(payload.get("confidence")))
+    # A specific hint or the verify line is the next step: the generic one goes.
     meta = payload.get("_meta")
     if isinstance(meta, dict) and meta.get("hint") in _GENERIC_META_HINTS:
         meta.pop("hint")
+    if "next_action_hint" not in payload:
+        payload["next_action_hint"] = verify_line(anchor, str(payload.get("confidence")))
 
 
 # Keyless replies serve source in place of prose. Past this many chars across

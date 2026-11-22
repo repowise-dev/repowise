@@ -97,14 +97,26 @@ def _parts(name: str) -> set[str]:
     return {p.lower() for p in spaced.split() if len(p) >= 3}
 
 
+#: Inflection endings: only these may differ between two forms of a word.
+_ENDINGS = ("ies", "es", "s", "ed", "ing")
+
+
+def _forms(word: str) -> set[str]:
+    """The word and every base it could inflect (``parses`` -> parse, pars)."""
+    forms = {word}
+    for end in _ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            forms.add(word[: -len(end)] + ("y" if end == "ies" else ""))
+    return forms
+
+
 def _same_word(a: str, b: str) -> bool:
-    """Equal, or one inflects the other (parse / parses, summary / summaries)."""
-    if a == b:
-        return True
-    shared = next(
-        (i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b))
-    )
-    return shared >= 4 and shared >= min(len(a), len(b)) - 3
+    """Equal, or one inflects the other (parse / parses, summary / summaries).
+
+    Only an inflection ending may differ, so ``retries`` and ``retrieve`` are
+    different words.
+    """
+    return bool(_forms(a) & _forms(b))
 
 
 def _overlap(name: str, words: set[str]) -> int:
