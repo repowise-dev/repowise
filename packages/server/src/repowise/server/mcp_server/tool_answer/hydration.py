@@ -18,6 +18,7 @@ from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
+    _CONTAINER_KINDS,
     _DEFINES_MAX_FILES,
     _DEFINES_PER_CANDIDATE,
     _ENRICH_TOP_N_HITS,
@@ -342,10 +343,14 @@ async def _symbol_entry(
         "end_line": end_line,
         "_matched": matched,
         "_verified": verified,
+        "_parent": row.parent_name,
     }
     # Scored once here, not per sort comparison.
     entry["_relevance"] = _symbol_relevance(entry, term_stems)
-    if matched and verified:
+    # A namespace or module spans its whole file: a body would be the file's
+    # head, crowding out the code asked about ("Envoy's ..." matched
+    # `namespace Envoy` and spent 120 lines of optref.h).
+    if matched and verified and row.kind not in _CONTAINER_KINDS:
         src = _read_symbol_source(
             repo_root, row.file_path, start_line, end_line, text=text
         )
@@ -385,6 +390,8 @@ def _attach_relevant_excerpts(
         if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
             break
         if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+            continue
+        if s.get("kind") in _CONTAINER_KINDS:
             continue
         src = _read_symbol_source(
             repo_root,

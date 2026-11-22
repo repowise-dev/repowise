@@ -276,6 +276,11 @@ def _retrieval_corpus(hits: list[dict], *, include_paths: bool = False) -> str:
                 v = s.get(key)
                 if v:
                     parts.append(str(v))
+        # Implementation bodies the prompt showed beside the page (grounding.py).
+        for g in h.get("_grounding") or []:
+            parts.append(f"{g.get('name', '')}\n{g.get('source', '')}")
+            if include_paths and g.get("path"):
+                parts.append(str(g["path"]))
         # A concept-anchored hit's rationale comment was selected for containing
         # the question's number; without it the value/frame gates would flag the
         # correct number the answer echoes as invented.

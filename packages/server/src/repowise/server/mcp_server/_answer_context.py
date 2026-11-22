@@ -454,6 +454,17 @@ def _format_hits_block(
                     block.append(f"          source{_line_span(s.get('start_line'), src)}:")
                     for line in src.splitlines():
                         block.append(f"              {line}")
+        grounding = h.get("_grounding") or []
+        if grounding:
+            block.append("    implementation (read from source):")
+        for g in grounding:
+            owner = f"{g['parent']}::" if g.get("parent") else ""
+            span = _line_span(g["start_line"], g["source"])
+            block.append(f"      - {owner}{g['name']} in {g['path']}{span}:")
+            for line in g["source"].splitlines():
+                block.append(f"              {line}")
+            if g.get("truncated"):
+                block.append(f"              ... (body continues to line {g['end_line']})")
         parts.append("\n".join(block))
     return "\n\n".join(parts)
 
