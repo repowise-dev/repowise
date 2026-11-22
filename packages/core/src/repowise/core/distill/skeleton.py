@@ -320,6 +320,12 @@ _LICENSE_TAIL_RE = re.compile(
     r"licen[cs]e for the specific|see (?:the )?licen[cs]e|licenses?/",
     re.IGNORECASE,
 )
+#: A paragraph after the first that opens with its own notice line.
+_NOTICE_START_RE = re.compile(
+    r"\W*(?:copyright\s*(?:\(c\)|©)?\s*\d{4}|(?:\(c\)|©)\s*\d{4}|"
+    r"spdx-license-identifier|licensed under|permission is hereby granted)",
+    re.IGNORECASE,
+)
 #: C preprocessor directives, which may be written with a space after the '#'.
 _DIRECTIVES = frozenset(
     {"include", "define", "undef", "if", "ifdef", "ifndef", "elif", "else", "endif", "pragma"}
@@ -330,14 +336,19 @@ def _license_header_end(lines: list[str], limit: int) -> int:
     """0-indexed end of a leading license header, or 0 when there is none.
 
     The header is the run of leading comment paragraphs (split by blank lines)
-    that opens with a license notice, followed by the paragraphs that carry
-    its terms. The first paragraph that is neither ends it, so a comment that
-    explains the module stays in the skeleton.
+    that opens with a license notice, followed by paragraphs that carry its
+    terms or open with a notice of their own. The first paragraph that is
+    neither ends it, so a comment that explains the module stays in the
+    skeleton even when it mentions a license.
     """
     end = 0
     for start, stop in _comment_paragraphs(lines, limit):
-        text = "\n".join(lines[start:stop])
-        if not (_LICENSE_RE.search(text) or (end and _LICENSE_TAIL_RE.search(text))):
+        if end:
+            text = "\n".join(lines[start:stop])
+            licensed = _LICENSE_TAIL_RE.search(text) or _NOTICE_START_RE.match(lines[start])
+        else:
+            licensed = _LICENSE_RE.search("\n".join(lines[start:stop]))
+        if not licensed:
             break
         end = stop
     return end

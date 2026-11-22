@@ -378,3 +378,40 @@ def test_prose_mentioning_a_license_after_the_header_is_kept():
     text = build_skeleton(source, [SkeletonSymbol("f", "function", 8, 9)]).text
     assert "Licensed under" not in text
     assert "Checks each license key" in text
+
+
+def test_a_later_comment_quoting_license_words_is_kept():
+    source = (
+        "# Copyright 2021 The Authors.\n"
+        "# Licensed under the MIT License.\n"
+        "# See LICENSE for the terms.\n"
+        "\n"
+        "# Rejects uploads that are not licensed under an approved license,\n"
+        "# and keeps the copyright 2019 notices of vendored files.\n"
+        "\n"
+        "def f():\n"
+        "    return 1\n"
+    )
+    text = build_skeleton(source, [SkeletonSymbol("f", "function", 8, 9)]).text
+    assert "Licensed under the MIT" not in text
+    assert "Rejects uploads" in text
+
+
+def test_apache_header_paragraphs_fold_together():
+    source = (
+        "// Copyright 2020 The Authors.\n"
+        "//\n"
+        '// Licensed under the Apache License, Version 2.0 (the "License");\n'
+        "// you may not use this file except in compliance with the License.\n"
+        "\n"
+        "// Unless required by applicable law, distributed under the License\n"
+        '// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES.\n'
+        "\n"
+        "package foo\n"
+        "\n"
+        "func A() {\n"
+        "\treturn\n"
+        "}\n"
+    )
+    text = build_skeleton(source, [SkeletonSymbol("A", "function", 11, 13)]).text
+    assert text.startswith("... 7 lines (1-7)\n")
