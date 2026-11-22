@@ -48,14 +48,27 @@ def _read_config(path: Path, mtime_ns: int, size: int) -> dict:
 
 
 def config() -> LpcConfig:
-    """Read explicit roots and include directories; invalidate on config file changes."""
+    """Read explicit roots and include directories; invalidate on config file changes.
+
+    Costs one ``stat()`` of the config file per call; the parsed result is cached per
+    environment, working directory and config file version.
+    """
     config_path = os.environ.get("REPOWISE_LPC_CONFIG", "").strip()
-    data: dict = {}
-    base = Path.cwd()
+    stamp: tuple[str, int, int] | None = None
     if config_path:
         path = Path(config_path).expanduser().resolve()
         stat = path.stat()
-        data = _read_config(path, stat.st_mtime_ns, stat.st_size)
+        stamp = (str(path), stat.st_mtime_ns, stat.st_size)
+    return _build_config(stamp, os.environ.get("REPOWISE_LPC_ROOTS", ""), os.getcwd())
+
+
+@lru_cache(maxsize=8)
+def _build_config(stamp: tuple[str, int, int] | None, roots_env: str, cwd: str) -> LpcConfig:
+    data: dict = {}
+    base = Path(cwd)
+    if stamp is not None:
+        path = Path(stamp[0])
+        data = _read_config(path, stamp[1], stamp[2])
         base = path.parent
     roots = [
         (base / Path(item).expanduser()).resolve()
@@ -63,7 +76,7 @@ def config() -> LpcConfig:
     ]
     roots.extend(
         Path(item).expanduser().resolve()
-        for item in os.environ.get("REPOWISE_LPC_ROOTS", "").split(os.pathsep)
+        for item in roots_env.split(os.pathsep)
         if item.strip()
     )
     return LpcConfig(

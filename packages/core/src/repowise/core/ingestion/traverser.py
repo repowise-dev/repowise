@@ -1100,7 +1100,10 @@ class FileTraverser:
 
 
 def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
-    """Return language from filename or extension alone, with no file I/O.
+    """Return language from filename or extension alone, without reading the file.
+
+    For ``.c``/``.h`` paths while LPC roots are configured, this stats the LPC config
+    file and resolves the path to check it against the roots (see ``lpc_support``).
 
     Returns None when the extension is not recognised, signalling that the
     caller should fall back to binary detection and shebang sniffing.

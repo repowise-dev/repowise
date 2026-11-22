@@ -86,6 +86,23 @@ def test_relative_config_roots_and_nested_roots(tmp_path, monkeypatch):
     assert support.root_for(tmp_path / "lib/obj/a.c") is None
 
 
+def test_config_is_cached_until_its_inputs_change(tmp_path, monkeypatch):
+    config = tmp_path / "lpc.json"
+    config.write_text(json.dumps({"roots": ["lib"]}))
+    monkeypatch.setenv("REPOWISE_LPC_CONFIG", str(config))
+    monkeypatch.setenv("REPOWISE_LPC_ROOTS", "relative")
+    monkeypatch.chdir(tmp_path)
+    first = support.config()
+    assert support.config() is first
+    monkeypatch.chdir(tmp_path / "..")
+    assert tmp_path / "relative" not in support.config().roots
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REPOWISE_LPC_ROOTS", "")
+    assert support.config().roots == (tmp_path / "lib",)
+    config.write_text(json.dumps({"roots": ["lib", "other"]}))
+    assert tmp_path / "other" in support.config().roots
+
+
 @pytest.mark.parametrize("contents", ['[]', '{"roots":"lib"}', '{"include":[1]}', '{'])
 def test_bad_config_is_reported(tmp_path, monkeypatch, contents):
     config = tmp_path / "lpc.json"
