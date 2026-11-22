@@ -95,6 +95,9 @@ class GoForeign:
                 guessed[implied] = path
         # A spelled alias or the target's own name beats a guess.
         self._paths = {**guessed, **named}
+        # Only a spelled alias is sure to be the import's binding: a guess can
+        # miss the declared name, and the qualifier be a package-level value.
+        self._spelled = set(named)
         self._lines = lines
         self._shadowed: dict[str, bool] = {}
 
@@ -130,7 +133,7 @@ class GoForeign:
         if self._member:
             # A method is never named through a package; unless the name is a
             # local value's (``cfg := ...; cfg.Load()``), the use is not it.
-            return not self._binds(q.group(1))
+            return q.group(1) in self._spelled and not self._binds(q.group(1))
         return not self._is_target(path)
 
 

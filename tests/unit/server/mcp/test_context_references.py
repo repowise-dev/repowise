@@ -1287,7 +1287,7 @@ _MAGEFILE = """package main
 import (
 	"fmt"
 
-	"github.com/magefile/mage/mg"
+	mg "github.com/magefile/mage/mg"
 )
 
 type UI mg.Namespace
@@ -1971,3 +1971,12 @@ def test_go_quoted_module_path_is_read_unquoted(tmp_path):
     (tmp_path / "go.mod").write_text('module "example.com/app"\n', encoding="utf-8")
     target = go_target(tmp_path, "pkg/a.go", ["package pkg"])
     assert target.import_path == "example.com/app/pkg"
+
+
+def test_go_method_on_a_guessed_qualifier_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    # The package may declare another name, and ``config`` be a package-level value.
+    lines = ["package main", 'import "example.com/app/config"', "\tconfig.Load()"]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    assert judge(lines[2], next(re.finditer("Load", lines[2]))) is False
