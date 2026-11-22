@@ -165,7 +165,10 @@ class BearerGate:
         path = scope["path"]
         relative = path[len(root) :] if root and path.startswith(root) else path
         resource_path = root + self.endpoint
-        if relative in (WELL_KNOWN, WELL_KNOWN + self.endpoint) or path == WELL_KNOWN + resource_path:
+        if (
+            relative in (WELL_KNOWN, WELL_KNOWN + self.endpoint)
+            or path == WELL_KNOWN + resource_path
+        ):
             await _send_json(send, 200, _metadata_doc(scope, resource_path), [])
             return
 
@@ -278,10 +281,14 @@ def tool_action(tool: str) -> Action:
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server import ensure_full_surface
 
-    ensure_full_surface()  # tool modules import lazily; idempotent after the first call
-    for entry in mcp_tool_registry.entries():
-        if entry.name == tool:
-            return action_for_safety(entry.safety)
+    # A served tool is registered already; only a name the registry lacks
+    # needs the rest of the catalog, which tool modules import lazily.
+    for attempt in range(2):
+        if attempt:
+            ensure_full_surface()
+        for entry in mcp_tool_registry.entries():
+            if entry.name == tool:
+                return action_for_safety(entry.safety)
     return Action.WRITE
 
 

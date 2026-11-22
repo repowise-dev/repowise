@@ -450,6 +450,14 @@ def _register_tools(names: Iterable[str] | None = None) -> None:
     load_plugins()  # plugin tools register before the surface is attached
 
 
+def _registered(names: Iterable[str]) -> bool:
+    """Whether every tool module serving *names* has registered its tools."""
+    from repowise.core.registry import mcp_tool_registry
+
+    have = {entry.name for entry in mcp_tool_registry.entries()}
+    return all(name in have for name in names if name in _TOOL_MODULES)
+
+
 def _tool_definition(entry: Any) -> Any:
     """A FastMCP ``Tool`` for one registry entry, wrapped and slimmed as the server lists it."""
     from mcp.server.fastmcp.tools import Tool
@@ -550,6 +558,10 @@ def ensure_surface(names: Iterable[str] | None) -> Any:
     from repowise.server.mcp_server._server import mcp as _mcp
 
     if _surface_applied:
+        # A later request for more than the boot attached (every tool, or a
+        # tool it did not import) completes the registry and the snapshot.
+        if not _surface_complete and (names is None or not _registered(names)):
+            ensure_full_surface()
         return _mcp
 
     _register_tools(names)

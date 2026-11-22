@@ -292,3 +292,35 @@ def test_a_core_boot_imports_only_the_core_tools():
     assert seen["listed_after"] == seen["listed"]
     assert set(seen["entries"]) == set(_TOOL_MODULES)
     assert set(seen["snapshot"]) == set(_TOOL_MODULES)
+
+
+def test_a_wider_selection_after_a_core_boot_sees_every_tool():
+    """Authorising a served tool stays narrow; selecting a wider profile completes the surface."""
+    seen = _probe(
+        f"""
+        import json, sys
+        from {_PKG} import _tool_selection
+        from {_PKG}._server import mcp
+        from {_PKG}._http_auth import tool_action
+        _tool_selection.apply_tool_selection(mcp, repo_path=None, override="core")
+        action = str(tool_action("get_answer"))
+        still_narrow = "{_PKG}.tool_change_risk" not in sys.modules
+        wider = _tool_selection.apply_tool_selection(mcp, repo_path=None, override="standard")
+        print(json.dumps({{
+            "action": action,
+            "still_narrow": still_narrow,
+            "wider": sorted(wider),
+            "listed": sorted(mcp._tool_manager._tools),
+        }}))
+        """
+    )
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import resolve_enabled_tools
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    standard = resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=False)
+    assert seen["still_narrow"]
+    assert "READ" in seen["action"].upper()
+    assert set(seen["wider"]) == standard
+    assert set(seen["listed"]) == standard
