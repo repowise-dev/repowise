@@ -398,6 +398,8 @@ def test_snippets_that_restate_the_row_are_dropped():
         {"snippet": "It imports 7 files from this repository."},
         {"snippet": "/*\nCopyright 2015 The Authors.\n\nLicensed under the Apache License"},
         {"snippet": "Validates a signup form and hashes the password."},
+        {"snippet": "It defines the retry policy for failed charges."},
+        {"snippet": "Checks each file is licensed under the Apache License."},
     ]
     _serve_snippets(rows)
     assert [r.get("snippet") for r in rows] == [
@@ -405,4 +407,20 @@ def test_snippets_that_restate_the_row_are_dropped():
         None,
         None,
         "Validates a signup form and hashes the password.",
+        "It defines the retry policy for failed charges.",
+        "Checks each file is licensed under the Apache License.",
     ]
+
+
+def test_a_shed_body_is_no_longer_claimed_whole():
+    from repowise.server.mcp_server.tool_search.serve import _recount_whole_bodies
+
+    kept = {"type": "symbol", "source": "     1	def a(): ..."}
+    head = {"type": "symbol", "source": "     1	def b(): ...", "truncated": True}
+    response = {"results": [kept, head], "_meta": {"complete": "Complete: 2 symbol bodies ..."}}
+    _recount_whole_bodies(response)
+    assert response["_meta"]["complete"].startswith("Complete: 1 symbol body")
+
+    response["results"] = [head]
+    _recount_whole_bodies(response)
+    assert "complete" not in response["_meta"]

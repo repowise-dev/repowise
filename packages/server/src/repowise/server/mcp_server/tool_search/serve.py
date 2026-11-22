@@ -10,7 +10,6 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from repowise.core.analysis.decisions.rationale_comments import is_license_or_boilerplate
 from repowise.core.generation.structural_labels import is_structural_title
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -259,22 +258,28 @@ async def attach_definition_bodies(response: dict, rows: list[dict], ctx, reposi
 
 
 # A generated page's opening that restates the row: the file's structural
-# summary (`x.py` defines / imports / is imported by ..., It belongs to ...) or
-# its language banner. ``symbols`` and ``path`` already say it.
+# summary (`x.py` defines `A` ..., It imports 7 files ..., It belongs to the
+# ... layer) or its language banner. ``symbols`` and ``path`` already say it.
 # Shortcut: keyed on the house template's English openings; a page generated
 # in another language keeps its snippet. Upgrade path: mark template prose at
 # generation time and drop it by that mark.
 _TEMPLATE_SNIPPET = re.compile(
-    r"^\s*(?:`[^`\n]+` (?:defines|imports|is imported|belongs)\b"
-    r"|It (?:defines|imports|is imported|belongs)\b"
+    r"^\s*(?:`[^`\n]+` (?:defines|imports) `"
+    r"|(?:`[^`\n]+`|It) is imported by\b"
+    r"|It (?:defines|imports) (?:`|\d+ files?\b)"
+    r"|It belongs to the\b"
     r"|\*\*Language:\*\*)"
+)
+# A license header opening the snippet, past comment punctuation.
+_LICENSE_HEAD = re.compile(
+    r"^[\s/*#!-]*(?:copyright\b|\(c\)\s*\d{4}|spdx-license-identifier|licensed under\b)",
+    re.IGNORECASE,
 )
 
 
 def _low_information(snippet: str) -> bool:
     """A snippet that is a license header or the page's structural template."""
-    # The head only: a page further down may discuss licensing or encodings.
-    return bool(_TEMPLATE_SNIPPET.match(snippet)) or is_license_or_boilerplate(snippet[:160])
+    return bool(_TEMPLATE_SNIPPET.match(snippet) or _LICENSE_HEAD.match(snippet))
 
 
 def _serve_snippets(results: list[dict]) -> None:
@@ -374,8 +379,27 @@ def _refresh_served_targets_final(response: dict) -> None:
     _refresh_served_targets(response, None)
 
 
+def _recount_whole_bodies(response: dict, _collector: OmissionCollector | None = None) -> None:
+    """Re-count the bodies served whole after shedding may have cut their rows:
+    ``_meta.complete`` names only bodies the caller still receives."""
+    meta = response.get("_meta")
+    if not isinstance(meta, dict) or "complete" not in meta:
+        return
+    whole = sum(
+        1
+        for row in response.get("results") or ()
+        if isinstance(row, dict) and row.get("source") and not row.get("truncated")
+    )
+    if line := completeness_line(bodies=whole):
+        meta["complete"] = line
+    else:
+        del meta["complete"]
+
+
 register_post_shed("search_codebase", _refresh_served_targets)
 register_post_enforce("search_codebase", _refresh_served_targets_final)
+register_post_shed("search_codebase", _recount_whole_bodies)
+register_post_enforce("search_codebase", _recount_whole_bodies)
 
 
 def _result_paths(results: list[dict]) -> list[str]:

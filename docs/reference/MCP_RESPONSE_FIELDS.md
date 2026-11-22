@@ -387,7 +387,7 @@ Row notes:
 - **`snippet`:** omitted when it only restates the row: a license header, or the page's structural summary (`x.py` defines / imports / is imported by).
 - **`sources`:** `fts`, `vector`, `symbol`, or a mix; omitted when `["fts"]` and `_meta.semantic_search` is `false`.
 - **`signature`:** omitted where `lines` holds the symbol's live definition line with its whole parameter list.
-- **`source`:** the live numbered body of the one indexed definition the query names: for an identifier in `symbol` mode, and for each name of an `a|b|c` query (3 bodies and about 6,000 characters per reply). A one-line declaration beside it (a C prototype) is not a second definition. A body of at most 80 lines is served whole and counted in `_meta.complete`, which makes a `get_symbol` call for it unnecessary; a longer one serves its first 40 lines with `truncated: true`, `start_line`/`end_line` still spanning the whole symbol. It replaces `signature`. Two multi-line definitions of the name (overloads included) or a workspace-wide search serve none.
+- **`source`:** the live numbered body of the one indexed definition the query names: for an identifier in `symbol` mode, and for each name of an `a|b|c` query (3 bodies and about 6,000 characters per reply). A one-line declaration beside it (a C prototype) is not a second definition. A body of at most 80 lines is served whole and counted in `_meta.complete` (recounted if the response budget cuts its row), which makes a `get_symbol` call for it unnecessary; a longer one serves its first 40 lines with `truncated: true`, `start_line`/`end_line` still spanning the whole symbol. It replaces `signature`. Two multi-line definitions of the name (overloads included) or a workspace-wide search serve none.
 
 `lines` notes:
 
@@ -396,7 +396,7 @@ Row notes:
 - When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
-- An identifier, alternation or regex query shows 12 lines (shared across alternation groups): definitions first, then use sites, imports and strings last, in reading order. The rest are counted in `lines_omitted` and recoverable from `_meta.omitted`, and `complete` is `false`.
+- An identifier, literal, alternation or regex query shows 12 lines (shared across alternation groups): definitions first, then use sites, imports and strings last, in reading order. The rest are counted in `lines_omitted` and recoverable from `_meta.omitted`, and `complete` is `false`.
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
 - An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
 
