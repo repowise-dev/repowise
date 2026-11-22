@@ -10,7 +10,11 @@ from repowise.server.mcp_server import _graph_files, _warmup
 
 
 @pytest.fixture
-def cold_caches():
+def cold_caches(monkeypatch):
+    from repowise.server.mcp_server import _state
+
+    # An earlier lifespan in this process may have served "no index".
+    monkeypatch.setattr(_state, "_serving_no_index", False)
     _graph_files.reset_cache()
     yield
     _graph_files.reset_cache()
@@ -38,6 +42,7 @@ async def test_first_questions_after_a_warmup_build_nothing_new(setup_mcp, cold_
 
     await _warmup.warm_index_caches()
     warmed = _cached_names(setup_mcp)
+    assert warmed
 
     await get_answer("How does authentication work?")
     await search_codebase("authentication", mode="concept")
