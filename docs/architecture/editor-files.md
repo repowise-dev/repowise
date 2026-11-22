@@ -130,11 +130,16 @@ repository's `mcp.tools` setting (resolved by
 not listed is left out. `CLAUDE.md` names every default tool.
 
 Every block leads with one imperative line, `repowise.core.agent_steer.AGENT_STEER`:
-call a Repowise tool first for any question about the codebase, naming the tool
-for each question kind. In measured agent runs that line made the agent call a
-tool first in every run, while a block that listed the tools without saying so
-moved almost none. The same line leads the shared instruction block that Cursor,
-Copilot, Kiro, opencode and Hermes receive (`agent_targets/instructions.py`).
+for a question about how, where or why the code works, or which files a task
+involves, the agent MUST call a Repowise MCP tool before Grep, find or reading
+files, naming the tool for each question kind. It also says to pass the rule
+on to subagents, to use what the tool returned instead of re-reading or
+re-searching it, and to go straight to a file the agent already knows it will
+edit. A "call first" suggestion was skipped by models that open with Grep or
+hand exploration to a subagent; a block that listed the tools without saying
+to call one first moved almost none. The same line leads the shared
+instruction block that Cursor, Copilot, Kiro, opencode and Hermes receive
+(`agent_targets/instructions.py`).
 
 | Section | Default | Source | Cap |
 |---------|---------|--------|-----|

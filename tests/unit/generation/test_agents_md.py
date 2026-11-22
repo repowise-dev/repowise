@@ -22,7 +22,7 @@ def test_agents_md_routes_tasks_to_tools() -> None:
     rendered = AgentsMdGenerator().render(_data())
 
     assert "Grep, Glob and Read are faster" not in rendered
-    assert "call a Repowise tool first (get_answer for how/where/why questions" in rendered
+    assert "you MUST call a Repowise MCP tool first (get_answer for how/where/why" in rendered
     assert 'get_context(targets=["<symbol>"], include=["references"])' in rendered
     assert 'get_why(targets=["<file>"])' in rendered
     # AGENTS.md readers load schemas up front and get the core tools by default.

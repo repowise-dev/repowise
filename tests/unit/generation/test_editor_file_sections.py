@@ -132,9 +132,13 @@ _HEADINGS = {
 _KEYLESS_SCOPE = {"content_provenance": "template", "search": {"semantic": "unavailable"}}
 
 _STEER = (
-    "For any question about this codebase, call a Repowise tool first "
-    "(get_answer for how/where/why questions, search_codebase for an identifier, "
-    "get_context for callers or a file)."
+    "For any question about how, where or why this codebase works, or which files "
+    "a task involves, you MUST call a Repowise MCP tool first (get_answer for "
+    "how/where/why questions, search_codebase for an identifier, get_context for "
+    "callers or a file) before Grep, find or reading files, and pass this rule on in "
+    "any subagent brief. Use what it returns: open a cited file only for lines it did "
+    "not show, and skip Grep when it marks a list complete. To edit a file you already "
+    "know, go straight to it."
 )
 _POINTER = (
     'Recorded decisions govern some files: `get_why(targets=["<file>"])` '
@@ -364,10 +368,11 @@ def test_agents_md_tool_table_lists_only_the_listed_tools():
 # Budget: the block is read into the agent's context on every turn
 # ---------------------------------------------------------------------------
 
-#: About 250 tokens at the four-characters-per-token estimate the repo uses
+#: About 330 tokens at the four-characters-per-token estimate the repo uses
 #: (``distill.budget.estimate_tokens``); the longest default block below is
-#: 249 tokens with the cl100k tokenizer.
-_BLOCK_BUDGET_CHARS = 1_000
+#: 335 tokens with the cl100k tokenizer. 86 of them are the scoped MUST in the
+#: call-first line, which is what makes agents call a tool at all.
+_BLOCK_BUDGET_CHARS = 1_320
 #: Each pinned decision is one line a person chose to pay for.
 _PIN_LINE_BUDGET_CHARS = 160
 
