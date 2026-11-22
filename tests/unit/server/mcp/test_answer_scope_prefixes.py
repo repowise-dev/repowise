@@ -10,6 +10,7 @@ no indexed file lives under is named back with the nearest directories.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -135,7 +136,7 @@ async def test_resolution_keeps_an_indexed_path_with_a_space_and_folds_nested(le
 
 @pytest.mark.asyncio
 async def test_fts_path_filter_takes_several_prefixes(ledgers):
-    rows = await ledgers.fts.search(_QUESTION, limit=10, path_prefix="pkg/vault,pkg/billing")
+    rows = await ledgers.fts.search(_QUESTION, limit=10, path_prefix="pkg/vault\npkg/billing")
 
     assert sorted(r.target_path for r in rows) == [_BILLING, _VAULT]
 
@@ -143,8 +144,9 @@ async def test_fts_path_filter_takes_several_prefixes(ledgers):
 def test_in_scope_reads_each_prefix_as_a_directory():
     from repowise.server.mcp_server._page_paths import in_scope
 
-    assert in_scope("pkg/a/x.py", "pkg/b,pkg/a")
-    assert not in_scope("pkg/ab/x.py", "pkg/b,pkg/a")
+    assert in_scope("pkg/a/x.py", "pkg/b\npkg/a")
+    assert not in_scope("pkg/ab/x.py", "pkg/b\npkg/a")
+    assert in_scope("reports,2024/q1.py", "reports,2024")
 
 
 def test_nearest_directories_start_inside_the_missing_ones_parent():
@@ -164,7 +166,10 @@ def test_nearest_directories_start_inside_the_missing_ones_parent():
         }
     )
 
-    assert _nearest(["pkg/agent"], dirs) == ["pkg/monitor/agent/", "examples/ip-masq-agent/"]
+    # A name match outside the parent never displaces the parent's own directories.
+    assert _nearest(["pkg/agent"], dirs) == ["pkg/monitor/agent/"]
+    # At the root, every name match counts, shallowest first.
+    assert _nearest(["masq-agent"], dirs) == ["examples/ip-masq-agent/", "pkg/monitor/agent/"]
     assert _nearest(["pkg/zzz"], dirs) == ["pkg/datapath/", "pkg/monitor/"]
 
 
@@ -177,8 +182,38 @@ async def test_a_directory_of_documents_on_disk_is_searched_not_reported_missing
 
     (tmp_path / "handbook").mkdir()
     (tmp_path / "handbook" / "ledger.md").write_text("# Ledger reconcile\n", encoding="utf-8")
+    (tmp_path / "scratch").mkdir()
+    (tmp_path / "scratch" / "ledger.md").write_text("# Ledger\n", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "handbook/ledger.md"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True)
 
     result = await get_answer(_QUESTION, scope="handbook")
 
     assert "holds no indexed file" not in json.dumps(result)
     assert "scope_suggestions" not in result
+    # Untracked, so not a directory the answer reads from.
+    untracked = await get_answer(_QUESTION, scope="scratch")
+    assert "scratch/ holds no indexed file" in untracked["note"]
+
+
+@pytest.mark.asyncio
+async def test_an_indexed_directory_named_with_a_comma_stays_whole(ledgers, session):
+    from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server.tool_answer.scope import resolve_scope
+
+    session.add(
+        GraphNode(
+            id="comma",
+            repository_id="repo1",
+            node_id="reports,2024/q1.py",
+            node_type="file",
+            language="python",
+        )
+    )
+    await session.commit()
+    async with get_session(ledgers.session_factory) as s:
+        whole = await resolve_scope(s, "repo1", "reports,2024/")
+        separators = await resolve_scope(s, "repo1", " , ")
+
+    assert whole.scope == "reports,2024" and not whole.missing
+    assert separators == (None, [], [])

@@ -4,13 +4,15 @@ Agents pass several directories in one scope ("pkg/maps pkg/datapath",
 "a/, b/") and directories the index does not hold. Read as one literal prefix,
 both match nothing and the reply could only say "no wiki hits". Here a scope
 becomes the union of its prefixes, written canonically as the prefixes joined
-by ``,`` (what :func:`~repowise.server.mcp_server._page_paths.in_scope` and the
-search path filter read), and a prefix no indexed file lives under is named
-back to the caller with the existing directories nearest to it.
+by :data:`~repowise.server.mcp_server._page_paths.SCOPE_SEPARATOR` (what
+``in_scope`` and the search path filter read), and a prefix no indexed file
+lives under is named back to the caller with the existing directories nearest
+to it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 from collections import Counter
 from pathlib import Path
@@ -20,10 +22,10 @@ from sqlalchemy import func, or_, select, union
 
 from repowise.core.persistence.crud import indexed_file
 from repowise.core.persistence.models import GraphNode, Page
+from repowise.server.mcp_server._line_hits import _git_paths
+from repowise.server.mcp_server._page_paths import SCOPE_SEPARATOR
+from repowise.server.mcp_server.tool_answer.documents import _is_document
 from repowise.server.mcp_server.tool_answer.synthesis import _normalize_scope
-
-#: Joins the prefixes of a canonical multi-prefix scope.
-SCOPE_SEPARATOR = ","
 
 #: Directories a scope that matched nothing is pointed at.
 _NEAREST_DIRS = 5
@@ -73,17 +75,14 @@ def _indexed_paths(repo_id: Any) -> tuple[Any, Any]:
     )
 
 
-def _on_disk(root: Path | None, prefix: str) -> bool:
-    """Whether *prefix* is a path inside the checkout. Documents are served from
-    disk (see documents.py), so a directory of them holds no graph row or page."""
+def _documents_under(root: Path | None, prefix: str) -> bool:
+    """Whether git tracks a document under *prefix*. Documents are served from
+    the checkout (documents.py), so their directory may hold no graph row or
+    page; an untracked or ignored directory is not one the answer reads."""
     if root is None:
         return False
-    try:
-        return (root / prefix).resolve().is_relative_to(root.resolve()) and (
-            root / prefix
-        ).exists()
-    except OSError:
-        return False
+    listed = _git_paths(root, ["ls-files", "-z", "--", prefix], 10, (0,))
+    return any(_is_document(p) for p in listed or ())
 
 
 async def _holds_files(session: Any, repo_id: Any, prefix: str, root: Path | None) -> bool:
@@ -91,21 +90,26 @@ async def _holds_files(session: Any, repo_id: Any, prefix: str, root: Path | Non
     for query, column in ((graph, GraphNode.node_id), (pages, Page.target_path)):
         if await session.scalar(query.where(_under(column, prefix)).limit(1)) is not None:
             return True
-    return _on_disk(root, prefix)
+    return await asyncio.to_thread(_documents_under, root, prefix)
 
 
 async def _split_pieces(session: Any, repo_id: Any, raw: str, root: Path | None) -> list[str]:
-    """The prefixes *raw* names. Commas always separate; whitespace separates
-    unless the whole piece is itself an indexed path ("My Docs/")."""
-    prefixes: list[str] = []
-    for piece in raw.split(SCOPE_SEPARATOR):
+    """The prefixes *raw* names. Commas and whitespace separate, unless the
+    piece they would split is itself an indexed path ("My Docs", "a,b")."""
+
+    async def split(piece: str, sep: str | None) -> list[str]:
         norm = _normalize_scope(piece)
         if norm is None:
-            continue
-        if any(ch.isspace() for ch in norm) and not await _holds_files(session, repo_id, norm, root):
-            prefixes.extend(n for word in norm.split() if (n := _normalize_scope(word)))
-        else:
-            prefixes.append(norm)
+            return []
+        parts = norm.split(sep)
+        if len(parts) == 1 or await _holds_files(session, repo_id, norm, root):
+            return [norm]
+        return [n for part in parts if (n := _normalize_scope(part))]
+
+    prefixes: list[str] = []
+    for piece in await split(raw, ","):
+        for p in await split(piece, None):
+            prefixes.append(p)
     return list(dict.fromkeys(prefixes))
 
 
@@ -148,10 +152,10 @@ def _nearest(missing: list[str], dir_files: Counter) -> list[str]:
         parts = m.split("/")
         ancestor = _deepest_ancestor(parts, dir_files)
         inside = f"{ancestor}/" if ancestor else ""
-        found = sorted(
-            _named_like(parts[-1].lower(), by_name),
-            key=lambda d: (not d.startswith(inside), d.count("/"), -dir_files[d], d),
-        ) or _children(inside, dir_files)
+        named = [d for d in _named_like(parts[-1].lower(), by_name) if d.startswith(inside)]
+        found = sorted(named, key=lambda d: (d.count("/"), -dir_files[d], d)) or _children(
+            inside, dir_files
+        )
         picked.extend(d for d in found if d not in picked)
     return [f"{d}/" for d in picked[:_NEAREST_DIRS]]
 
@@ -179,6 +183,9 @@ async def resolve_scope(
     if _normalize_scope(raw) is None:
         return ScopeResolution(None, [], [])
     prefixes = await _split_pieces(session, repo_id, raw or "", root)
+    if not prefixes:
+        # Separators only (","): no directory named, read as "" and "." are.
+        return ScopeResolution(None, [], [])
     found, missing = [], []
     # One indexed query per prefix: a scope names a handful, never a list to batch.
     for p in prefixes:

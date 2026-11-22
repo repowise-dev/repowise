@@ -202,11 +202,11 @@ def _path_filter(column: str, path_prefix: str | None) -> tuple[str, dict[str, A
     """SQL keeping rows whose *column* is *path_prefix* or a path under it.
 
     A directory match: ``pkg/a`` holds ``pkg/a/x.py``, never ``pkg/ab/x.py``.
-    Several prefixes joined by ``,`` keep what any of them holds. ``substr``
+    Several prefixes joined by a newline keep what any of them holds. ``substr``
     rather than ``LIKE``: exact case and no wildcard escaping, on both
     backends. Empty when there is no prefix.
     """
-    scopes = [p.rstrip("/") for p in (path_prefix or "").split(",")]
+    scopes = [p.rstrip("/") for p in (path_prefix or "").split("\n")]
     scopes = [p for p in scopes if p]
     if not scopes:
         return "", {}
