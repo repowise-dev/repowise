@@ -252,19 +252,27 @@ async def _degraded_payload(
             )
         )
     await _attach_call_path(
-        payload, question, question_ids or set(), symbol_bodies, ctx, repository, exclude_spec
+        payload,
+        question,
+        question_ids or set(),
+        symbol_bodies,
+        ctx,
+        repository,
+        exclude_spec,
+        lifted_by_body=body_answered and retrieval_quality == "weak",
     )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 
 
 async def _attach_call_path(
     payload: dict, question: str, question_ids: set[str], symbol_bodies: list[dict],
-    ctx, repository, exclude_spec,
+    ctx, repository, exclude_spec, *, lifted_by_body: bool = False,
 ) -> None:
     """Swap the named body for the call path when the question asks how a call travels.
 
     The trust hint is re-read without bodies, and the upgrade line a body
-    held back is added, so ``_meta`` describes the reply served.
+    held back is added, so ``_meta`` describes the reply served. A grade the
+    body lifted over a weak retrieval goes back to "low" with the body.
     """
     start, hops = await _call_path_from_named(
         payload["degraded"], question, question_ids, symbol_bodies, ctx, repository, exclude_spec
@@ -272,6 +280,8 @@ async def _attach_call_path(
     if not hops:
         return
     _serve_call_path(payload, start, hops)
+    if lifted_by_body:
+        payload["confidence"] = "low"
     meta = payload["_meta"]
     meta["hint"] = _answer_hint(
         payload["confidence"],

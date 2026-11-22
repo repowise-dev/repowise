@@ -1131,3 +1131,36 @@ async def test_a_body_that_does_not_lift_keeps_the_refine_hint(tmp_path):
     assert payload["retrieval_quality"] == "weak"
     assert payload["confidence"] == "low"
     assert "retrieval was weak" in payload["_meta"]["hint"]
+
+
+@pytest.mark.parametrize(("lifted", "expected"), [(True, "low"), (False, "medium")])
+async def test_a_call_path_that_replaces_the_lifting_body_drops_its_lift(
+    monkeypatch, lifted: bool, expected: str
+):
+    """The hops replace the body, so a grade only the body earned goes with it."""
+    from repowise.server.mcp_server.tool_answer import degraded
+
+    async def _hops(*_a, **_k):
+        return "out of run src/flask/app.py:2", ["run -> start"]
+
+    async def _no_note(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(degraded, "_call_path_from_named", _hops)
+    monkeypatch.setattr(degraded, "_keyless_note_meta", _no_note)
+    payload = {
+        "confidence": "medium",
+        "degraded": "no-llm-provider",
+        "retrieval_quality": "weak",
+        "symbol_bodies": [{"name": "run", "path": "src/flask/app.py", "lines": [2, 4]}],
+        "note": "",
+        "_meta": {},
+    }
+
+    await degraded._attach_call_path(
+        payload, "how does run call start", {"run"}, payload["symbol_bodies"], None, None, None,
+        lifted_by_body=lifted,
+    )
+
+    assert payload["call_path"] == ["run -> start"]
+    assert payload["confidence"] == expected
