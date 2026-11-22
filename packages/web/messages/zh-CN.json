@@ -3121,10 +3121,10 @@
       "hide": "在此电脑上隐藏"
     },
     "pill": {
-      "label": "设置向导",
-      "progress": "{done}/{total}",
-      "aria": "设置向导：已完成 {done}/{total} 项必备设置",
-      "hide": "在此电脑上隐藏设置提醒"
+      "essentials": "已完成 {done}/{total} 项必备设置",
+      "more": "还有 {count} 项",
+      "moreLong": "必备设置已完成。还有 {count} 项可完成，即 repowise next --prompt setup 列出的步骤",
+      "done": "已设置"
     },
     "settings": {
       "openSetup": "打开设置向导",

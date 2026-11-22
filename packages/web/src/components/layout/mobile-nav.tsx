@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  ListChecks,
 } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@repowise-dev/ui/ui/sheet";
@@ -22,7 +23,7 @@ import { NewMark } from "./new-mark";
 import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
-import { FooterSetupPill } from "@/components/setup/setup-pill";
+import { SetupProgressMark, useSetupEntry } from "@/components/setup/setup-entry";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
 import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
@@ -68,6 +69,8 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
     });
   };
 
+  const setup = useSetupEntry(repos, activeRepoId);
+
   // Close sheet on navigation
   React.useEffect(() => {
     setOpen(false);
@@ -111,7 +114,8 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
 
           <ScrollArea className="flex-1">
             <div className="px-3 py-3">
-              <nav className="space-y-1">
+              {/* At the size of a repo's own rows, as on desktop. */}
+              <nav className="space-y-0.5">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
                   const isActive = isNavItemActive(item, pathname);
@@ -120,7 +124,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors",
+                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
                         isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                       )}
                     >
@@ -132,11 +136,25 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                     </Link>
                   );
                 })}
+                {/* Always there, so setup can be reopened once it is done. */}
+                <Link
+                  href={setup.href}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
+                    pathname === setup.href ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
+                  )}
+                >
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    <ListChecks className="h-4 w-4" />
+                  </span>
+                  <span className="truncate">{t("setup")}</span>
+                  <SetupProgressMark progress={setup.progress} />
+                </Link>
               </nav>
 
               {isWorkspace && (
                 <>
-                  <p className="mb-1 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <p className="mb-1 mt-4 px-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     {ts("workspace")}
                   </p>
                   {/* Children of the Workspace group, same as on desktop:
@@ -170,7 +188,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               {repos.length > 0 && (
                 <>
                   <Separator className="my-4" />
-                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <p className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     {ts("repositories")}
                   </p>
                   <div className="space-y-0.5">
@@ -183,7 +201,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                             onClick={() => toggleRepo(repo.id)}
                             aria-expanded={isExpanded}
                             title={repo.name}
-                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                               <Circle className="h-2 w-2 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />
@@ -246,7 +264,6 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-4 py-2.5">
-            <FooterSetupPill repos={repos} activeRepoId={activeRepoId} />
             <FeedbackButton />
             {/* Mobile had no theme control anywhere in the shell, so the
                 preference was simply unreachable on a phone. It shares the
