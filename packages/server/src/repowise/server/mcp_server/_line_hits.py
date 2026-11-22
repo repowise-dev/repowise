@@ -101,6 +101,14 @@ _SNIFF_BYTES = 8192
 # text file for its lines. Past this neither is read; it is reported as skipped.
 _MAX_STREAM_BYTES = 64_000_000
 OVER_LINES = f"over {MAX_LINES} lines"
+# Lines an identifier, alternation or regex query shows: definitions first,
+# imports and strings last. The rest are under ``_meta.omitted``; most served
+# lines past the first few point at files the caller never opens.
+MAX_LINES_SHOWN = 12
+OVER_LINES_SHOWN = (
+    f"over {MAX_LINES_SHOWN} lines shown: lines_omitted counts the rest; "
+    "the full list is under _meta.omitted"
+)
 _KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "string": 4, "match": 5}
 # Under the short mixed-query cap, call sites say more than imports.
 _MIXED_KIND_ORDER = {
@@ -997,10 +1005,11 @@ async def _attach(
     mixed = not literal and len(query.split()) > 1
     rows.sort(key=_row_order(mixed))
     kept = _capped_per_file(rows, reasons)
-    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
+    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES_SHOWN, OVER_LINES_SHOWN)
     if len(kept) > cap and over not in reasons:
         reasons.append(over)
-    _serve_lines(response, query, ctx, rows, kept[:cap], reasons, mixed, literal_scan)
+    shown = kept[:cap] if mixed else _shown(kept, cap)
+    _serve_lines(response, query, ctx, rows, shown, reasons, mixed, literal_scan)
     return ctx
 
 
@@ -1016,6 +1025,20 @@ def _row_order(mixed: bool) -> Any:
         r["path"],
         r["line"],
     )
+
+
+def _shown_tier(row: dict[str, Any]) -> int:
+    kind = row["kind"]
+    return 0 if kind == "definition" else 2 if kind in ("import", "string") else 1
+
+
+def _shown(rows: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
+    """*cap* of *rows*, in their order: definitions kept first, then use sites,
+    then imports and strings."""
+    if len(rows) <= cap:
+        return rows
+    keep = {id(r) for r in sorted(rows, key=_shown_tier)[:cap]}
+    return [r for r in rows if id(r) in keep]
 
 
 def _capped_per_file(rows: list[dict[str, Any]], reasons: list[str]) -> list[dict[str, Any]]:
@@ -1059,7 +1082,7 @@ def _serve_lines(
         # already says where the rest is. The edit sets scan the symbol's own
         # name, also for a ``pkg.mod.name`` or ``path::name`` query.
         name = _leaf(query.strip())
-        budget = (OVER_LINES, OVER_LINES_MIXED)
+        budget = (OVER_LINES, OVER_LINES_MIXED, OVER_LINES_SHOWN)
         missed = any("_meta.omitted" not in r and r not in budget for r in reasons)
         if missed and not literal_scan and not mixed and _IDENTIFIER.fullmatch(name):
             response.setdefault("hint", incomplete_hint(name))
@@ -1135,14 +1158,14 @@ async def _attach_pattern(
     if found is None:
         return None
     ctx, rows, groups, reasons, literal_scan = found
-    caps = _fair_caps([len(g) for g in groups], MAX_LINES)
+    caps = _fair_caps([len(g) for g in groups], MAX_LINES_SHOWN)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
-        reasons.append(OVER_LINES)
+        reasons.append(OVER_LINES_SHOWN)
     # Tests leave each group's share after the caps, so no row takes their place.
     shown = [
         row
         for g in _without_tests_beside_shipped(
-            [g[:c] for g, c in zip(groups, caps, strict=True)], reasons
+            [_shown(g, c) for g, c in zip(groups, caps, strict=True)], reasons
         )
         for row in g
     ]

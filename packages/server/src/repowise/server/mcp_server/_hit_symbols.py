@@ -30,6 +30,8 @@ from repowise.server.mcp_server.tool_search_symbols import _stem, _tokens
 _log = logging.getLogger("repowise.mcp.search")
 
 _MAX_HIT_SYMBOLS = 3
+# A path search that lands on one file lists that file's callables and types.
+_MAX_FILE_SYMBOLS = 30
 # Only the top files are read: past them an agent opens the file anyway.
 _MAX_LINE_FILES = 3
 _MAX_HIT_LINES = 3
@@ -186,3 +188,43 @@ async def _attach(ctx, query: str, rows: list[dict]) -> None:
     for hit in rows:
         if found := sampled.get(targets.get(id(hit), "")):
             hit["matched_lines"] = found
+
+
+async def attach_file_symbols(ctx, row: dict) -> None:
+    """List the callables and types in *row*'s file as ``symbols`` (``name:line``,
+    in file order), in place.
+
+    For a path search that found one file: its symbols are what the caller
+    reads next. Past :data:`_MAX_FILE_SYMBOLS`, ``symbols_total`` counts them
+    all. A failure here only costs the field, never the search.
+    """
+    path = hit_file_path(row)
+    if not path:
+        return
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repo = await _get_repo(session)
+            result = await session.execute(
+                select(
+                    WikiSymbol.name,
+                    WikiSymbol.qualified_name,
+                    WikiSymbol.parent_name,
+                    WikiSymbol.kind,
+                    WikiSymbol.start_line,
+                )
+                .where(
+                    WikiSymbol.repository_id == repo.id,
+                    WikiSymbol.file_path == path,
+                    WikiSymbol.start_line > 0,
+                )
+                .order_by(WikiSymbol.start_line)
+            )
+            found = result.all()
+    except Exception:
+        _log.debug("search_codebase: file symbol lookup failed", exc_info=True)
+        return
+    labels = [f"{_label(r)}:{r.start_line}" for r in found if r.kind not in _VALUE_KINDS]
+    if labels:
+        row["symbols"] = labels[:_MAX_FILE_SYMBOLS]
+    if len(labels) > _MAX_FILE_SYMBOLS:
+        row["symbols_total"] = len(labels)

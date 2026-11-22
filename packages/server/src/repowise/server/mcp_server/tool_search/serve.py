@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Container
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.decisions.rationale_comments import is_license_or_boilerplate
 from repowise.core.generation.structural_labels import is_structural_title
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -55,9 +57,15 @@ _UNSERVED_ROW_KEYS: dict[str | None, tuple[str, ...]] = {
     "file": ("next",),
 }
 
-# A unique exact hit's body served inline, when the whole body is this short.
-# get_symbol on that hit is the usual next call; a longer body keeps it.
-_UNIQUE_BODY_LINES = 20
+# An exact definition's body is served inline: whole up to this many lines
+# (most exact definitions fit), else its first ``_BODY_HEAD_LINES`` lines with
+# ``truncated`` set. get_symbol on the hit is the usual next call otherwise.
+_BODY_WHOLE_LINES = 80
+_BODY_HEAD_LINES = 40
+# Bodies per reply, and their numbered characters together: an ``a|b|c``
+# query serves one body per name until either runs out.
+_MAX_BODIES = 3
+_BODIES_CHARS = 6_000
 
 
 def _attach_paths(output: list[dict], page_info: dict) -> None:
@@ -163,28 +171,33 @@ def _slim_served_rows(
     return rows
 
 
-def unique_exact_row(candidates: list[str], results: list[dict], pool: list[dict]) -> dict | None:
-    """The served symbol row the query's one identifier names, when *pool*
-    (every ranked symbol row, served or not) holds exactly one row naming it.
+def _spans_lines(row: dict) -> bool:
+    return (row.get("end_line") or 0) > (row.get("start_line") or 0)
 
-    Two definitions of the name, overloads included, are ambiguous: no row.
+
+def definition_rows(candidates: list[str], results: list[dict], pool: list[dict]) -> list[dict]:
+    """The served symbol row each of the query's names defines, in query order.
+
+    A name gets a row when *pool* (every ranked symbol row, served or not)
+    holds exactly one definition of it. A one-line declaration beside a
+    multi-line one (a C prototype, an ``extern``) is not a second definition;
+    two multi-line definitions, overloads included, are ambiguous: no row.
     """
-    if len(candidates) != 1:
-        return None
-    named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol(candidates, [s])]
-    if len(named) != 1 or not any(r is named[0] for r in results):
-        return None
-    return named[0]
+    rows: list[dict] = []
+    for name in dict.fromkeys(candidates):
+        named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol([name], [s])]
+        bodies = [s for s in named if _spans_lines(s)] or named
+        if len(bodies) != 1 or not any(r is bodies[0] for r in results):
+            continue
+        if not any(r is bodies[0] for r in rows):
+            rows.append(bodies[0])
+        if len(rows) >= _MAX_BODIES:
+            break
+    return rows
 
 
-async def attach_unique_body(response: dict, row: dict, ctx, repository) -> None:
-    """Serve *row*'s live numbered body inline when it is whole and short.
-
-    The body replaces ``signature`` (its first lines say it) and the row's
-    lines become the live ones. Nothing is added for a body over
-    ``_UNIQUE_BODY_LINES`` lines, one the live file no longer locates, or an
-    unreadable file: the row then reads as before and get_symbol serves it.
-    """
+async def _live_span(row: dict, ctx, repository) -> tuple[str, int, int] | None:
+    """``(file text, start, end)`` of *row*'s symbol as the live file has it."""
     try:
         async with get_session(ctx.session_factory) as session:
             res = await session.execute(
@@ -195,30 +208,84 @@ async def attach_unique_body(response: dict, row: dict, ctx, repository) -> None
             )
             found = list(res.scalars().all())
         if len(found) != 1:
-            return
+            return None
         symbol = found[0]
         text = _read_file_text(Path(str(ctx.path)), symbol.file_path)
         if text is None:
-            return
+            return None
         check = await verify_and_heal(ctx.session_factory, symbol, text)
     except (SQLAlchemyError, OSError):
         # The row keeps its signature; get_symbol still serves the body.
         _log.warning("search_codebase: no inline body for %s", row.get("symbol_id"), exc_info=True)
-        return
-    if not check.verified or check.end_line - check.start_line + 1 > _UNIQUE_BODY_LINES:
-        return
-    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, 0)
-    row["start_line"], row["end_line"] = start, end
-    row.pop("signature", None)
-    row["source"] = _number_lines(source, start)
-    response.setdefault("_meta", {})["complete"] = completeness_line(bodies=1)
+        return None
+    if not check.verified:
+        return None
+    return text, check.start_line, check.end_line
+
+
+async def attach_definition_bodies(response: dict, rows: list[dict], ctx, repository) -> None:
+    """Serve each of *rows*' live numbered bodies inline.
+
+    A body is served whole up to ``_BODY_WHOLE_LINES`` lines; a longer one
+    serves its first ``_BODY_HEAD_LINES`` with ``truncated: true`` while the
+    row's ``start_line``/``end_line`` keep the whole span. The body replaces
+    ``signature`` (its first lines say it). ``_meta.complete`` counts the
+    bodies served whole. A row whose live file no longer locates it, an
+    unreadable file, or a body past the reply's ``_BODIES_CHARS`` keeps its
+    signature, and get_symbol serves it.
+    """
+    whole = spent = 0
+    for row in rows:
+        live = await _live_span(row, ctx, repository)
+        if live is None:
+            continue
+        text, start, end = live
+        cut = end - start + 1 > _BODY_WHOLE_LINES
+        last = start + _BODY_HEAD_LINES - 1 if cut else end
+        source, first, shown_end, _total = _slice_text(text, start, last, 0)
+        numbered = _number_lines(source, first)
+        if spent + len(numbered) > _BODIES_CHARS:
+            continue
+        spent += len(numbered)
+        row["start_line"], row["end_line"] = start, end
+        row.pop("signature", None)
+        row["source"] = numbered
+        if cut and shown_end < end:
+            row["truncated"] = True
+        else:
+            whole += 1
+    if line := completeness_line(bodies=whole):
+        response.setdefault("_meta", {})["complete"] = line
+
+
+# A generated page's opening that restates the row: the file's structural
+# summary (`x.py` defines / imports / is imported by ..., It belongs to ...) or
+# its language banner. ``symbols`` and ``path`` already say it.
+# Shortcut: keyed on the house template's English openings; a page generated
+# in another language keeps its snippet. Upgrade path: mark template prose at
+# generation time and drop it by that mark.
+_TEMPLATE_SNIPPET = re.compile(
+    r"^\s*(?:`[^`\n]+` (?:defines|imports|is imported|belongs)\b"
+    r"|It (?:defines|imports|is imported|belongs)\b"
+    r"|\*\*Language:\*\*)"
+)
+
+
+def _low_information(snippet: str) -> bool:
+    """A snippet that is a license header or the page's structural template."""
+    # The head only: a page further down may discuss licensing or encodings.
+    return bool(_TEMPLATE_SNIPPET.match(snippet)) or is_license_or_boilerplate(snippet[:160])
 
 
 def _serve_snippets(results: list[dict]) -> None:
-    """Drop each snippet's leading page heading, after ranking has read it."""
+    """Drop each snippet's leading page heading, after ranking has read it, and
+    a snippet that only restates the row (a license header, the structural
+    template)."""
     for item in results:
         if item.get("snippet"):
             item["snippet"] = _pkg.strip_leading_headings(item["snippet"])
+            if _low_information(item["snippet"]):
+                del item["snippet"]
 
 
 def _drop_internal_ranking_fields(results: list[dict]) -> None:

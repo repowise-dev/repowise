@@ -77,18 +77,29 @@ def mark_enclosing(rows: list[dict[str, Any]], ranges: dict[Any, dict[str, list[
     in one file and one symbol: a row without it is in the symbol the row above
     in the same file names. A module-level row after such a run says
     ``<module>``; one opening a file's run says nothing. *ranges* is keyed by
-    each row's ``repo`` (``None`` for a single-repo reply)."""
-    last: tuple[Any, str | None] = (None, None)
+    each row's ``repo`` (``None`` for a single-repo reply).
+
+    A row naming a symbol also gets ``in_lines``: that symbol's ``[start,
+    end]``, the one range to Read for the row's context."""
+    last: tuple[Any, _Span | None] = (None, None)
     for row in rows:
         if row.get("kind") == "definition":
             # A definition row ends the run: the next row names its own symbol.
             last = (None, None)
             continue
-        name = enclosing_at(ranges.get(row.get("repo"), {}), row["path"], row["line"])
+        span = symbol_at(ranges.get(row.get("repo"), {}).get(row["path"], ()), row["line"])
         where = (row.get("repo"), row["path"])
         if where != last[0]:
-            if name:
-                row["in"] = name
-        elif name != last[1]:
-            row["in"] = name or MODULE_LEVEL
-        last = (where, name)
+            if span:
+                _name(row, span)
+        elif span != last[1]:
+            if span:
+                _name(row, span)
+            else:
+                row["in"] = MODULE_LEVEL
+        last = (where, span)
+
+
+def _name(row: dict[str, Any], span: _Span) -> None:
+    row["in"] = span.name
+    row["in_lines"] = [span.start_line, span.end_line]
