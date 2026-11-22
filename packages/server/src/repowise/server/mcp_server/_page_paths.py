@@ -28,6 +28,13 @@ def pageless_path(page_id: str) -> str:
     """The file a pageless row's id (``file:<path>``) names."""
     return page_id.partition(":")[2]
 
+
+def in_scope(path: str, scope: str | None) -> bool:
+    """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
+    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
+    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
+
+
 # Page types whose ``target_path`` is a real repository-relative file path.
 #
 # ``symbol_spotlight`` is included because its target_path is ``file.py::Sym``:

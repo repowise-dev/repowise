@@ -64,7 +64,7 @@ def _write(root, rel, text):
 
 def _index(counts: dict[str, int]) -> _SymbolTextIndex:
     """Name postings carrying each word *counts* times, keyed as the index keys them."""
-    return _SymbolTextIndex((), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
+    return _SymbolTextIndex((), (), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
 
 
 def test_rarest_terms_keep_the_rare_word_over_the_long_one():

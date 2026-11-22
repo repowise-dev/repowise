@@ -197,6 +197,22 @@ _SCORE_EPSILON = 1e-6
 _BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5, 1.0)
 _BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
 
+
+def _path_filter(column: str, path_prefix: str | None) -> tuple[str, dict[str, Any]]:
+    """SQL keeping rows whose *column* is *path_prefix* or a path under it.
+
+    A directory match: ``pkg/a`` holds ``pkg/a/x.py``, never ``pkg/ab/x.py``.
+    ``substr`` rather than ``LIKE``: exact case and no wildcard escaping, on
+    both backends. Empty when there is no prefix.
+    """
+    scope = (path_prefix or "").rstrip("/")
+    if not scope:
+        return "", {}
+    under = f"{scope}/"
+    sql = f" AND ({column} = :scope OR substr({column}, 1, :scope_len) = :scope_dir)"
+    return sql, {"scope": scope, "scope_len": len(under), "scope_dir": under}
+
+
 _log = logging.getLogger(__name__)
 
 
@@ -693,7 +709,12 @@ class FullTextSearch:
             return {r[0] for r in rows.fetchall()}
 
     async def search(
-        self, query: str, limit: int = 10, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int = 10,
+        repository_id: str | None = None,
+        *,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """Search for pages matching *query*.
 
@@ -701,6 +722,8 @@ class FullTextSearch:
             query: Natural-language search query.
             limit: Maximum number of results to return.
             repository_id: Optional repository ID to narrow the search scope.
+            path_prefix: Only pages whose target path is this directory or
+                under it. Applied in the query, so all *limit* rows can match.
 
         Returns:
             List of SearchResult objects sorted by relevance (descending).
@@ -711,8 +734,12 @@ class FullTextSearch:
             repository_id = self._repository_id
 
         if self._dialect == "sqlite":
-            return await self._search_sqlite(query, limit, repository_id=repository_id)
-        return await self._search_postgresql(query, limit, repository_id=repository_id)
+            return await self._search_sqlite(
+                query, limit, repository_id=repository_id, path_prefix=path_prefix
+            )
+        return await self._search_postgresql(
+            query, limit, repository_id=repository_id, path_prefix=path_prefix
+        )
 
     async def _document_frequency(self, conn, term: str) -> int:
         """How many indexed pages *term* matches. ``""`` is the corpus size.
@@ -763,35 +790,45 @@ class FullTextSearch:
         return _build_fts5_query(query, counts.__getitem__)
 
     async def _matching_rows(
-        self, conn, fts_query: str, limit: int, repository_id: str | None = None
+        self,
+        conn,
+        fts_query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list:
+        scoped, scope_params = _path_filter("f.target_path", path_prefix)
         if repository_id is not None:
             rows = await conn.execute(
                 text(
                     f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
                     "FROM page_fts f "
                     "JOIN wiki_pages p ON p.id = f.page_id "
-                    "WHERE page_fts MATCH :q AND p.repository_id = :repo_id "
+                    f"WHERE page_fts MATCH :q AND p.repository_id = :repo_id{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
                     "LIMIT :lim"
                 ),
-                {"q": fts_query, "lim": limit, "repo_id": repository_id},
+                {"q": fts_query, "lim": limit, "repo_id": repository_id, **scope_params},
             )
         else:
             rows = await conn.execute(
                 text(
                     f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
                     "FROM page_fts f "
-                    "WHERE page_fts MATCH :q "
+                    f"WHERE page_fts MATCH :q{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
                     "LIMIT :lim"
                 ),
-                {"q": fts_query, "lim": limit},
+                {"q": fts_query, "lim": limit, **scope_params},
             )
         return list(rows.fetchall())
 
     async def _search_sqlite(
-        self, query: str, limit: int, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """FTS5 search.  bm25 is negative; we negate it to get a positive score."""
         async with self._engine.connect() as conn:
@@ -800,7 +837,9 @@ class FullTextSearch:
                 return await self._document_frequency(conn, term)
 
             fts_query = await self._build_selective_query(query, df)
-            raw = await self._matching_rows(conn, fts_query, limit, repository_id=repository_id)
+            raw = await self._matching_rows(
+                conn, fts_query, limit, repository_id=repository_id, path_prefix=path_prefix
+            )
 
             # The frequency ceiling can cut a question down to terms that
             # nothing carries together. Retrying with every term is the prior
@@ -813,7 +852,11 @@ class FullTextSearch:
                     extra = [
                         r
                         for r in await self._matching_rows(
-                            conn, widened, limit, repository_id=repository_id
+                            conn,
+                            widened,
+                            limit,
+                            repository_id=repository_id,
+                            path_prefix=path_prefix,
                         )
                         if r[0] not in seen
                     ]
@@ -924,7 +967,11 @@ class FullTextSearch:
         return " | ".join(_pg_term(t) for t in kept)
 
     async def _search_postgresql(
-        self, query: str, limit: int, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """PostgreSQL tsvector search with ts_rank scoring.
 
@@ -945,6 +992,7 @@ class FullTextSearch:
             ts_query = await self._build_ts_query(conn, query)
             if not ts_query:
                 return []
+            scoped, scope_params = _path_filter("target_path", path_prefix)
             if repository_id is not None:
                 rows = await conn.execute(
                     text(
@@ -953,11 +1001,11 @@ class FullTextSearch:
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
                         f"  AND freshness_status != 'tombstone' "
-                        f"  AND repository_id = :repo_id "
+                        f"  AND repository_id = :repo_id{scoped} "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
                     ),
-                    {"q": ts_query, "lim": limit, "repo_id": repository_id},
+                    {"q": ts_query, "lim": limit, "repo_id": repository_id, **scope_params},
                 )
             else:
                 rows = await conn.execute(
@@ -966,11 +1014,11 @@ class FullTextSearch:
                         f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
-                        f"  AND freshness_status != 'tombstone' "
+                        f"  AND freshness_status != 'tombstone'{scoped} "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
                     ),
-                    {"q": ts_query, "lim": limit},
+                    {"q": ts_query, "lim": limit, **scope_params},
                 )
             raw = rows.fetchall()
 

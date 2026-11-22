@@ -335,8 +335,13 @@ async def _run_retrieval_pipeline(
     documents = asyncio.create_task(
         find_documents(question, _repo_root(ctx), ctx, scope=scope, exclude_spec=exclude_spec)
     )
-    hits = await _hybrid_retrieve(question, ctx)
-    hits = await _hydrate_hits(hits, ctx, scope=scope)
+    hits = await _hydrate_hits(await _hybrid_retrieve(question, ctx), ctx, scope=scope)
+    if scope and not hits:
+        # The repository's best rows held nothing under the scope: search inside
+        # it. Only then, so a scope the first pass already served keeps the
+        # ranks (and grades) it had.
+        scoped = await _hybrid_retrieve(question, ctx, scope=scope)
+        hits = await _hydrate_hits(scoped, ctx, scope=scope)
 
     # Drop excluded files right after hydration (which attaches target_path) so
     # they never enter ranking, citations, or fallback_targets.
