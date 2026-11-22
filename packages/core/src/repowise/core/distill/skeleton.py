@@ -312,8 +312,14 @@ _LICENSE_RE = re.compile(
     r"licensed under|permission is hereby granted|general public license|license, version",
     re.IGNORECASE,
 )
-#: Wording the paragraphs after the notice carry (terms, warranty disclaimer).
-_LICENSE_TAIL_RE = re.compile(r"licen[cs]e|warrant|redistribut", re.IGNORECASE)
+#: Boilerplate the paragraphs after the notice carry (terms, warranty
+#: disclaimer). Set phrases, so prose that only mentions a license stays.
+_LICENSE_TAIL_RE = re.compile(
+    r"warrant(?:y|ies)|distributed (?:under|in the hope)|redistribution and use|"
+    r"obtain a copy of the licen[cs]e|you may not use this file|the above copyright notice|"
+    r"licen[cs]e for the specific|see (?:the )?licen[cs]e|licenses?/",
+    re.IGNORECASE,
+)
 #: C preprocessor directives, which may be written with a space after the '#'.
 _DIRECTIVES = frozenset(
     {"include", "define", "undef", "if", "ifdef", "ifndef", "elif", "else", "endif", "pragma"}

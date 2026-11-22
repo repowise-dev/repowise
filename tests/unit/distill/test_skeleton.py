@@ -361,3 +361,20 @@ def test_undated_copyright_prose_is_kept():
     source = "# Strips copyright notices from vendored files.\n\ndef f():\n    return 1\n"
     text = build_skeleton(source, [SkeletonSymbol("f", "function", 3, 4)]).text
     assert "Strips copyright notices" in text
+
+
+def test_prose_mentioning_a_license_after_the_header_is_kept():
+    source = (
+        "# Copyright 2021 The Authors.\n"
+        "# Licensed under the MIT License.\n"
+        "# See LICENSE for the terms.\n"
+        "\n"
+        "# Checks each license key against the activation server.\n"
+        "# Keys are cached for an hour.\n"
+        "\n"
+        "def f():\n"
+        "    return 1\n"
+    )
+    text = build_skeleton(source, [SkeletonSymbol("f", "function", 8, 9)]).text
+    assert "Licensed under" not in text
+    assert "Checks each license key" in text
