@@ -333,14 +333,20 @@ def _result_paths(results: list[dict]) -> list[str]:
     return paths
 
 
-def _grep_hint_for(query: str, names: Container[str] | None = None) -> str | None:
+def _grep_hint_for(
+    query: str, names: Container[str] | None = None, mode: str | None = None
+) -> str | None:
     """Zero-result recovery hint for identifier-shaped queries, else ``None``.
 
     Only attached when the search produced nothing (see call sites) — a
     populated result set needs no escape hatch. Points back into the tool
     surface first; Grep is named only for the one job it genuinely wins:
     an exhaustive literal sweep of every usage (e.g. before a rename).
+    A path search for a dotted or slashed name (``go.mod``) asked after a
+    file, so "retry as a symbol" would send the caller the wrong way.
     """
+    if mode == "path" and any(ch in query for ch in "./\\"):
+        return None
     if _looks_like_exact_token(query):
         return (
             f"No indexed match for identifier {query!r}. Retry with "

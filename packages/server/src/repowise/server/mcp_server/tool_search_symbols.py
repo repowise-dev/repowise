@@ -584,6 +584,8 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     seen: set[str] = set()
     rows: list[dict] = []
     # Paths match case-insensitively, so ``test|Test`` is one alternative.
+    # One search per alternative, capped at ``_MAX_ALTERNATIVES`` as the
+    # line search is: a few indexed lookups each.
     unique = list(dict.fromkeys(p.lower() for p in parts))
     for i, part in enumerate(unique[:_MAX_ALTERNATIVES]):
         for row in await _search_one_path(ctx, part, limit):
