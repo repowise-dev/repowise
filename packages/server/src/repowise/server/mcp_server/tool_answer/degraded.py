@@ -140,8 +140,9 @@ async def _degraded_payload(
     repo_root = _repo_root(ctx)
     # A named body that leaves out the rest of the question is served as
     # evidence, never as the answer the payload leads with.
+    body_candidates = _gather_body_candidates(hits, "", anchor_names=question_ids or set())
     symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
+        body_candidates,
         repo_root,
         question=question,
         hits=hits,
@@ -185,9 +186,8 @@ async def _degraded_payload(
         retrieval_quality,
         lead_outside_top=lead_leaves_retrieval(hits, lead),
         graph_answered=graph_callers.graph_answered,
-        body_answered=_answers_by_name(question, question_ids, symbol_bodies, hits)
-        if served_named_body
-        else False,
+        body_answered=served_named_body
+        and _lead_answers_by_name(question, question_ids, symbol_bodies, body_candidates, hits),
     )
 
     payload: dict = {
@@ -283,17 +283,32 @@ async def _attach_call_path(
         )
 
 
-def _answers_by_name(
-    question: str, question_ids: set[str] | None, symbol_bodies: list[dict], hits: list[dict]
+def _lead_answers_by_name(
+    question: str,
+    question_ids: set[str] | None,
+    symbol_bodies: list[dict],
+    body_candidates: list[tuple[int, int, int, str, dict]],
+    hits: list[dict],
 ) -> bool:
-    """Is a served body the code the question names, carrying the rest of the question?
+    """Is the body the reply leads with the code the question names, carrying the rest?
 
     A body anchored some other way (a value line, a concept) is evidence, and a
     named body that leaves out the rest of the question is only the place asked
-    about; neither answers it.
+    about; neither answers it. The owner's name counts as named, as when the
+    body was selected (the served entry does not carry it).
     """
-    named = _named_body(symbol_bodies, question_ids or set())
-    return named is not None and not body_leaves_out(question, named, hit_stems(hits))
+    lead = symbol_bodies[0] if symbol_bodies else None
+    if lead is None or _named_body([lead], question_ids or set()) is None:
+        return False
+    owner = next(
+        (
+            sym.get("parent_name")
+            for *_rank, path, sym in body_candidates
+            if path == lead["path"] and sym.get("name") == lead["name"]
+        ),
+        None,
+    )
+    return not body_leaves_out(question, {**lead, "parent_name": owner}, hit_stems(hits))
 
 
 def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:

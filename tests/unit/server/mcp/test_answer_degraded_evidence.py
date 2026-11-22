@@ -1050,3 +1050,54 @@ async def test_a_weak_retrieval_without_a_named_body_stays_low(tmp_path):
     assert payload["retrieval_quality"] == "weak"
     assert "symbol_bodies" not in payload
     assert payload["confidence"] == "low"
+
+
+def _method_tree(tmp_path) -> SimpleNamespace:
+    src = tmp_path / "src" / "flask"
+    src.mkdir(parents=True)
+    (src / "app.py").write_text(
+        "class Flask:\n    def run(self):\n        start = 1\n        return start\n",
+        encoding="utf-8",
+    )
+    return SimpleNamespace(path=str(tmp_path), session_factory=None)
+
+
+def _method_hits() -> list[dict]:
+    method = {
+        "name": "run",
+        "kind": "method",
+        "parent_name": "Flask",
+        "start_line": 2,
+        "end_line": 4,
+    }
+    top = {
+        "target_path": "src/flask/app.py",
+        "title": "app",
+        "summary": "the app module",
+        "score": 4.0,
+        "_anchor_symbols": [method],
+    }
+    return [top, {**top, "target_path": "src/flask/other.py", "score": 3.9, "_anchor_symbols": []}]
+
+
+async def test_a_method_named_with_its_class_lifts_like_its_selection(tmp_path):
+    """The class word is the method's owner, not a word its body leaves out."""
+    payload = await _degraded(
+        _method_tree(tmp_path), _method_hits(), {"run"}, question="what does Flask run do"
+    )
+
+    assert payload["grounding"] == "symbol_body"
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["confidence"] == "medium"
+
+
+def test_only_the_body_the_reply_leads_with_can_lift():
+    """A named body further down does not lift a reply that leads with another."""
+    from repowise.server.mcp_server.tool_answer.degraded import _lead_answers_by_name
+
+    bodies = [
+        {"path": "a.py", "name": "helper", "lines": [1, 2], "source": "def helper(): pass"},
+        {"path": "b.py", "name": "run", "lines": [1, 2], "source": "def run(): pass"},
+    ]
+    assert not _lead_answers_by_name("what does run do", {"run"}, bodies, [], [])
+    assert _lead_answers_by_name("what does run do", {"run"}, bodies[1:], [], [])
