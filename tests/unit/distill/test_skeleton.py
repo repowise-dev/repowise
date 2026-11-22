@@ -330,3 +330,34 @@ def test_a_comment_about_license_logic_is_not_a_license_header():
     source = "# Validates license keys on activation.\n\ndef check():\n    return True\n"
     text = build_skeleton(source, [SkeletonSymbol("check", "function", 3, 4)]).text
     assert "Validates license keys" in text
+
+
+def test_only_the_license_paragraphs_fold():
+    source = (
+        "# Copyright 2021 The Authors.\n"
+        "# Licensed under the MIT License.\n"
+        "# See LICENSE for the terms.\n"
+        "\n"
+        "# Copyright handling for uploaded files lives here.\n"
+        "# Routes each upload to its store.\n"
+        "\n"
+        "import os\n"
+        "\n"
+        "def f():\n"
+        "    return 1\n"
+    )
+    text = build_skeleton(source, [SkeletonSymbol("f", "function", 10, 11)]).text
+    assert "Licensed under" not in text
+    assert "Routes each upload" in text
+
+
+def test_spaced_directives_are_not_comments():
+    source = "# include <a.h>\n// Copyright 2020 X\n\nclass A {};\n"
+    text = build_skeleton(source, [SkeletonSymbol("A", "class", 4, 4)]).text
+    assert "# include <a.h>" in text
+
+
+def test_undated_copyright_prose_is_kept():
+    source = "# Strips copyright notices from vendored files.\n\ndef f():\n    return 1\n"
+    text = build_skeleton(source, [SkeletonSymbol("f", "function", 3, 4)]).text
+    assert "Strips copyright notices" in text

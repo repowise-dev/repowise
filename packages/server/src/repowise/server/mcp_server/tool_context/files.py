@@ -115,7 +115,11 @@ def _by_directory(dir_path: str, paths: list[str]) -> dict[str, int]:
         rest = path[len(prefix) :] if path.startswith(prefix) else path
         head, sep, _ = rest.partition("/")
         counts[f"{prefix}{head}/" if sep else "."] += 1
-    return dict(counts.most_common(_MAX_OMITTED_DIRS))
+    shown = dict(counts.most_common(_MAX_OMITTED_DIRS))
+    if rest := sum(counts.values()) - sum(shown.values()):
+        # The smaller subdirectories, so the counts still add up to ``omitted``.
+        shown["other_directories"] = rest
+    return shown
 
 
 def _fit(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

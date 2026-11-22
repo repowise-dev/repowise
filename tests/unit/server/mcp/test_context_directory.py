@@ -215,6 +215,14 @@ async def test_files_over_the_cap_say_what_they_left_out(setup_mcp, monkeypatch)
     assert block["omitted_by_directory"] == {"src/auth/": 1, "src/db/": 1}
 
 
+def test_omitted_counts_add_up_past_the_directory_cap(monkeypatch):
+    from repowise.server.mcp_server.tool_context import files
+
+    monkeypatch.setattr(files, "_MAX_OMITTED_DIRS", 1)
+    counts = files._by_directory("src", ["src/a/x.py", "src/a/y.py", "src/b/z.py", "src/top.py"])
+    assert counts == {"src/a/": 2, "other_directories": 2}
+
+
 @pytest.mark.asyncio
 async def test_files_without_indexed_tests_says_false_is_not_evidence(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_context
