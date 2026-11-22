@@ -18,6 +18,13 @@ export interface RepowiseUsageProps {
   onGroupingChange: (grouping: SpendGrouping) => void;
   /** Rendered in place of the figures while the host loads or after it failed. */
   fallback?: React.ReactNode;
+  /**
+   * The host's own account of its spend, in place of the token figures and
+   * table, for a host that bills from a ledger and records no tokens. The
+   * grouping control goes with the table. On the savings page,
+   * `summary.total_calls` still decides whether the section shows at all.
+   */
+  children?: React.ReactNode;
 }
 
 /**
@@ -26,7 +33,15 @@ export interface RepowiseUsageProps {
  * subscription or machine says so instead of printing $0.00, and a window
  * with no calls says Repowise cost nothing.
  */
-export function RepowiseUsage({ copy, summary, rows, grouping, onGroupingChange, fallback }: RepowiseUsageProps) {
+export function RepowiseUsage({
+  copy,
+  summary,
+  rows,
+  grouping,
+  onGroupingChange,
+  fallback,
+  children,
+}: RepowiseUsageProps) {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[var(--color-border-default)] pb-3">
@@ -34,7 +49,7 @@ export function RepowiseUsage({ copy, summary, rows, grouping, onGroupingChange,
           <h2 className="text-[18px] font-semibold text-[var(--color-text-primary)]">{copy.usageTitle}</h2>
           <p className="mt-0.5 max-w-[80ch] text-xs text-[var(--color-text-tertiary)]">{copy.usageSub}</p>
         </div>
-        {summary && summary.total_calls > 0 && !fallback && (
+        {summary && summary.total_calls > 0 && !fallback && !children && (
           <Segmented<SpendGrouping>
             label={copy.usageGroupLabel}
             value={grouping}
@@ -46,7 +61,7 @@ export function RepowiseUsage({ copy, summary, rows, grouping, onGroupingChange,
           />
         )}
       </div>
-      {fallback ?? (summary ? <UsageBody copy={copy} summary={summary} rows={rows} grouping={grouping} /> : null)}
+      {fallback ?? children ?? (summary ? <UsageBody copy={copy} summary={summary} rows={rows} grouping={grouping} /> : null)}
     </section>
   );
 }

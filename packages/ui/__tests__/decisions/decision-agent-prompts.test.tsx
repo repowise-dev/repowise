@@ -140,6 +140,23 @@ describe("DecisionAgentHero", () => {
     expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeInTheDocument();
   });
 
+  it("tells the host which prompt was copied", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(async () => undefined) } });
+    const onCopy = vi.fn();
+    render(
+      <DecisionAgentHero
+        prompt={discover}
+        reviewAll={{ text: "Check every background record.", label: "Review all records" }}
+        onCopy={onCopy}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review all records" }));
+
+    await waitFor(() => expect(onCopy.mock.calls).toEqual([["prompt"], ["review_all"]]));
+  });
+
   it("hides the whole-queue button when the host has no text for it", () => {
     const none = render(<DecisionAgentHero prompt={discover} reviewAll={null} />);
     expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
