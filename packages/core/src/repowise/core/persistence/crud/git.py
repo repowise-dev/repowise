@@ -935,6 +935,19 @@ async def get_latest_commit_committed_at(session: AsyncSession, repository_id: s
     return result.scalar_one_or_none()
 
 
+async def get_latest_commit_shas_at_timestamp(
+    session: AsyncSession, repository_id: str, committed_at: datetime
+) -> set[str]:
+    """Return all commit SHAs persisted at or after *committed_at* for a repository."""
+    result = await session.execute(
+        select(GitCommit.sha).where(
+            GitCommit.repository_id == repository_id,
+            GitCommit.committed_at >= committed_at,
+        )
+    )
+    return set(result.scalars().all())
+
+
 async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) -> GitCommit | None:
     """Return one commit by sha (or a unique prefix), or None."""
     result = await session.execute(

@@ -384,7 +384,9 @@ def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commit
         stats_sink.update(succeeded=succeeded, commits=commits)
 
 
-def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | None:
+def _depth_newer_than(
+    repo: object, commit_limit: int, since_ts: int, *, allow_equal: bool = False
+) -> int | None:
     """How deep in the window the commits newer than *since_ts* reach.
 
     ``None`` when git fails. A ``%ct``-only pass is cheap next to the numstat
@@ -399,14 +401,19 @@ def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | N
         logger.warning("repo_commit_index_failed", error=str(exc))
         return None
     return max(
-        (position + 1 for position, stamp in enumerate(stamps) if _stamp_after(stamp, since_ts)),
+        (
+            position + 1
+            for position, stamp in enumerate(stamps)
+            if _stamp_after(stamp, since_ts, allow_equal=allow_equal)
+        ),
         default=0,
     )
 
 
-def _stamp_after(stamp: str, since_ts: int) -> bool:
+def _stamp_after(stamp: str, since_ts: int, *, allow_equal: bool = False) -> bool:
     try:
-        return int(stamp) > since_ts
+        val = int(stamp)
+        return val >= since_ts if allow_equal else val > since_ts
     except ValueError:  # unparseable stamp: keep it in the window
         return True
 
@@ -605,6 +612,7 @@ def load_commit_index(
     *,
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
+    known_shas: set[str] | None = None,
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
@@ -666,7 +674,9 @@ def load_commit_index(
     # diffing commits whose fate is already known.
     depth = commit_limit
     if since_ts is not None:
-        newer = _depth_newer_than(repo, commit_limit, since_ts)
+        newer = _depth_newer_than(
+            repo, commit_limit, since_ts, allow_equal=bool(known_shas)
+        )
         if newer is None:
             return {}
         depth = newer
@@ -698,7 +708,7 @@ def load_commit_index(
     labeler = _CommitLabeler(repo, depth, provenance_classifier, trace_index, commit_sink)
     buckets = _FileBuckets(indexable_files)
     commits_parsed = 0
-    for header, numstat_lines in _commits_after(records, since_ts):
+    for header, numstat_lines in _commits_after(records, since_ts, known_shas=known_shas):
         commits_parsed += 1
         # The full footprint (every file, not just the indexable subset): the
         # agent-trace overlap check and the commit sink both need it.
@@ -722,17 +732,33 @@ def load_commit_index(
     return buckets.records
 
 
-def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[dict, list[str]]]:
+def _commits_after(
+    records: list[str],
+    since_ts: int | None,
+    *,
+    known_shas: set[str] | None = None,
+) -> Iterator[tuple[dict, list[str]]]:
     """``(header, numstat_lines)`` of each parseable record newer than *since_ts*.
 
     Skips rather than stops at an older commit: the walk is newest first, but
-    commit times can be slightly out of order.
+    commit times can be slightly out of order. When *known_shas* is supplied,
+    commits occurring at *since_ts* whose shas are not in *known_shas* are
+    retained so same-second commits are not dropped (#6150).
     """
     from .git_indexer import _parse_commit_record
 
     for record in records:
         parsed = _parse_commit_record(record)
-        if parsed is not None and (since_ts is None or parsed[0]["ts"] > since_ts):
+        if parsed is None:
+            continue
+        ts = parsed[0]["ts"]
+        sha = parsed[0].get("sha")
+        if since_ts is None:
+            yield parsed
+        elif known_shas is not None:
+            if ts > since_ts or (ts == since_ts and sha not in known_shas):
+                yield parsed
+        elif ts > since_ts:
             yield parsed
 
 

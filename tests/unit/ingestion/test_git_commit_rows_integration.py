@@ -129,6 +129,37 @@ async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
 
 
+@pytest.mark.asyncio
+async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> None:
+    """Commits sharing the boundary timestamp with known_shas excluded are not dropped (#6150)."""
+    import os
+
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    env = os.environ.copy()
+    env["GIT_AUTHOR_DATE"] = "1700000000 +0000"
+    env["GIT_COMMITTER_DATE"] = "1700000000 +0000"
+
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 1", env=env)
+    c1_sha = repo.head.commit.hexsha
+
+    f.write_text("x = 2\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 2", env=env)
+    c2_sha = repo.head.commit.hexsha
+
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+
+    # When since_ts is 1700000000 and c1_sha is known, c2_sha is captured
+    new_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha})
+    assert len(new_rows) == 1
+    assert new_rows[0]["sha"] == c2_sha
+
+
 def _configure_author(repo, name: str, email: str) -> None:
     with repo.config_writer() as cw:
         cw.set_value("user", "name", name)

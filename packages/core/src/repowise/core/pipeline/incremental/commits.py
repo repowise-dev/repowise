@@ -25,6 +25,7 @@ async def persist_incremental_commits(
     from repowise.core.persistence.crud import (
         clear_attribution_if_disabled,
         get_latest_commit_committed_at,
+        get_latest_commit_shas_at_timestamp,
         get_repository,
         update_repo_git_totals,
         upsert_git_commit_files_bulk,
@@ -46,6 +47,7 @@ async def persist_incremental_commits(
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
+    known_shas: set[str] | None = None
     if newest is not None:
         # SQLite drops tzinfo, so a naive read must be interpreted as UTC (the
         # column is stored tz-aware) rather than local time.
@@ -53,6 +55,7 @@ async def persist_incremental_commits(
 
         dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
         since_ts = int(dt.timestamp())
+        known_shas = await get_latest_commit_shas_at_timestamp(session, repo_id, newest)
     with timed(timings, "persist.commits.capture"):
         # One walk fills both, so they describe the same commit set.
         file_rows: list[dict] = []
@@ -61,6 +64,7 @@ async def persist_incremental_commits(
                 indexer.capture_new_commit_rows,
                 since_ts=since_ts,
                 file_rows_sink=file_rows,
+                known_shas=known_shas,
             )
         )
         if rows:
