@@ -268,7 +268,7 @@ Never complete for:
 
 ### files
 
-On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files before tests and each group by path, with the test evidence `get_risk` reads for its test gaps.
+On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files first, then other files, then tests, each group by path, with the test evidence `get_risk` reads for its test gaps.
 
 - `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
 - Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
