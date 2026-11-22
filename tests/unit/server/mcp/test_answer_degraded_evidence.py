@@ -1036,6 +1036,8 @@ async def test_a_weak_retrieval_with_the_named_body_served_grades_medium(tmp_pat
     assert payload["retrieval_quality"] == "weak"
     assert payload["grounding"] == "symbol_body"
     assert payload["confidence"] == "medium"
+    # The hint points at the body, not at a fresh search.
+    assert "symbol_bodies" in payload["_meta"]["hint"]
 
 
 async def test_a_weak_retrieval_without_a_named_body_stays_low(tmp_path):

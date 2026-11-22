@@ -1346,7 +1346,9 @@ def answer_hint(
     and let `confidence` rate the other half.
     """
     if degraded:
-        if retrieval_quality == "weak":
+        # A served body of the named code is the evidence however retrieval
+        # rated: a refine-the-search hint would send the agent away from it.
+        if retrieval_quality == "weak" and not has_bodies:
             return (
                 "No synthesis, and retrieval was weak. Refine the query with "
                 "search_codebase rather than reading these files in order."
