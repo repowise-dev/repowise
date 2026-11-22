@@ -131,7 +131,14 @@ _HEADINGS = {
 
 _KEYLESS_SCOPE = {"content_provenance": "template", "search": {"semantic": "unavailable"}}
 
+#: AGENTS.md: its readers load tool schemas up front.
 _STEER = (
+    "For any question about this codebase, call a Repowise tool first "
+    "(get_answer for how/where/why questions, search_codebase for an identifier, "
+    "get_context for callers or a file)."
+)
+#: CLAUDE.md: Claude Code defers tool schemas, so the text carries a scoped MUST.
+_STEER_DEFERRED = (
     "For any question about how, where or why this codebase works, or which files "
     "a task involves, you MUST call a Repowise MCP tool first (get_answer for "
     "how/where/why questions, search_codebase for an identifier, get_context for "
@@ -163,16 +170,19 @@ def test_each_section_renders_only_when_listed(gen, section):
     "sections", [DEFAULT_SECTIONS, ALL_SECTIONS, frozenset()], ids=["default", "all", "none"]
 )
 def test_every_block_leads_with_the_call_first_line(gen, sections):
+    steer = _STEER_DEFERRED if isinstance(gen, ClaudeMdGenerator) else _STEER
     rendered = gen.render(_full_data(sections=sections))
-    assert rendered.count(_STEER) == 1
+    assert rendered.count(steer) == 1
     body = rendered.split("Last indexed:", 1)[1].split("\n", 1)[1]
-    assert body.lstrip("\n").startswith(_STEER)
+    assert body.lstrip("\n").startswith(steer)
 
 
-def test_the_call_first_line_is_the_one_every_host_gets():
-    from repowise.core.agent_steer import AGENT_STEER
+def test_each_host_gets_its_call_first_line():
+    from repowise.core.agent_steer import AGENT_STEER, AGENT_STEER_DEFERRED
 
     assert AGENT_STEER == _STEER
+    assert AGENT_STEER_DEFERRED == _STEER_DEFERRED
+    assert "MUST" not in AgentsMdGenerator().render(_full_data())
 
 
 def test_the_default_is_lean(gen):
@@ -282,10 +292,11 @@ def test_fix_first_alone_keeps_its_heading(gen):
 
 
 @pytest.mark.parametrize("sections", [None, ALL_SECTIONS], ids=["default", "all"])
-def test_the_shared_body_differs_only_in_the_read_note(sections):
-    # With every default tool listed to both readers, only the read note differs.
+def test_the_shared_body_differs_only_in_the_steer_and_read_note(sections):
+    # With every default tool listed to both readers, only the call-first line
+    # and the read note differ.
     data = _full_data(mcp_tools="standard", **({"sections": sections} if sections else {}))
-    claude = ClaudeMdGenerator().render(data)
+    claude = ClaudeMdGenerator().render(data).replace(_STEER_DEFERRED, _STEER)
     agents = AgentsMdGenerator().render(data)
     if sections is None:
         assert claude == agents

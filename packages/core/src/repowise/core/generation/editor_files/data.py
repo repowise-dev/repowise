@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
-from repowise.core.agent_steer import AGENT_STEER
+from repowise.core.agent_steer import AGENT_STEER, AGENT_STEER_DEFERRED
 
 from .sections import DEFAULT_SECTIONS
 
@@ -165,10 +165,13 @@ class EditorFileData:
 
         return listed_default_tools(TOOL_TABLE_ROWS, client=client, override=self.mcp_tools)
 
-    @property
-    def steer(self) -> str:
-        """The call-first line the block leads with, whatever sections are on."""
-        return AGENT_STEER
+    def steer(self, client: str) -> str:
+        """The call-first line the block leads with, whatever sections are on.
+
+        ``claude`` (Claude Code defers tool schemas) gets the scoped MUST; a
+        client that loads schemas up front gets the plain call-first line.
+        """
+        return AGENT_STEER_DEFERRED if client == "claude" else AGENT_STEER
 
     @property
     def keyless(self) -> bool:
@@ -263,5 +266,5 @@ class WorkspaceEditorFileData:
 
     @property
     def steer(self) -> str:
-        """The call-first line, the same one each repo's own block leads with."""
-        return AGENT_STEER
+        """The call-first line, the same one each repo's own CLAUDE.md leads with."""
+        return AGENT_STEER_DEFERRED

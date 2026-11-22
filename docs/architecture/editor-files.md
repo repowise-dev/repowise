@@ -129,17 +129,24 @@ repository's `mcp.tools` setting (resolved by
 `registry.tool_selection.listed_default_tools`); a moment line whose tool is
 not listed is left out. `CLAUDE.md` names every default tool.
 
-Every block leads with one imperative line, `repowise.core.agent_steer.AGENT_STEER`:
-for a question about how, where or why the code works, or which files a task
-involves, the agent MUST call a Repowise MCP tool before Grep, find or reading
-files, naming the tool for each question kind. It also says to pass the rule
-on to subagents, to use what the tool returned instead of re-reading or
-re-searching it, and to go straight to a file the agent already knows it will
-edit. A "call first" suggestion was skipped by models that open with Grep or
-hand exploration to a subagent; a block that listed the tools without saying
-to call one first moved almost none. The same line leads the shared
-instruction block that Cursor, Copilot, Kiro, opencode and Hermes receive
-(`agent_targets/instructions.py`).
+Every block leads with one imperative line from `repowise.core.agent_steer`,
+naming the tool for each question kind. A block that listed the tools without
+saying to call one first moved almost no agent.
+
+- `AGENTS.md` leads with `AGENT_STEER`: call a Repowise tool first for any
+  question about the codebase. Its readers load every tool schema up front and
+  start with a Repowise call on this line. The same line leads the shared
+  instruction block that Cursor, Copilot, Kiro, opencode and Hermes receive
+  (`agent_targets/instructions.py`).
+- `CLAUDE.md`, the workspace `CLAUDE.md` and the Claude Code session-start hook
+  lead with `AGENT_STEER_DEFERRED`. Claude Code defers MCP tool schemas, so this
+  text is all the model sees before it decides to load one, and a plain "call
+  first" was skipped by models that open with Grep or hand exploration to a
+  subagent. For a question about how, where or why the code works, or which
+  files a task involves, the agent MUST call a Repowise MCP tool before Grep,
+  find or reading files. The line also says to pass the rule on to subagents,
+  to use what the tool returned instead of re-reading it, and to go straight to
+  a file the agent already knows it will edit.
 
 | Section | Default | Source | Cap |
 |---------|---------|--------|-----|

@@ -29,7 +29,7 @@ from pathlib import Path
 # The leaf module, not the ``helpers`` facade: the facade imports rich and
 # asyncio, which every hook call would pay at import.
 from repowise.cli._helpers.git import as_commit_id
-from repowise.core.agent_steer import AGENT_STEER
+from repowise.core.agent_steer import AGENT_STEER_DEFERRED
 
 from ._shared import _checkout_root, _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
@@ -85,7 +85,7 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     # when it is true and not already in the agent's context.
     lines = [line for line in (freshness, _distill_off_path_note(), _setup_line(repo_path)) if line]
     if not _has_agent_block(checkout):
-        lines.insert(0, AGENT_STEER)
+        lines.insert(0, AGENT_STEER_DEFERRED)
 
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
