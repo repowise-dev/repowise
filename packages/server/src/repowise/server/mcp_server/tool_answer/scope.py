@@ -172,9 +172,15 @@ async def _suggestions(session: Any, repo_id: Any, missing: list[str]) -> list[s
     """The nearest indexed directories to *missing*; None when the index holds
     no directory at all, so it cannot judge a prefix."""
     picked: list[str] = []
+    subtrees: dict[str, Counter] = {}
     for m in missing:
         ancestor = await _deepest_ancestor(session, repo_id, m)
-        dir_files = await _directories(session, repo_id, ancestor)
+        # Ceiling: a missing top-level directory reads every indexed path once
+        # (about 1 s at 38k files), still under the retrieval and scan it
+        # replaces. Upgrade path: a grouped directory count in SQL.
+        if ancestor not in subtrees:
+            subtrees[ancestor] = await _directories(session, repo_id, ancestor)
+        dir_files = subtrees[ancestor]
         if not dir_files and not ancestor:
             return None
         picked.extend(d for d in _nearest(m, ancestor, dir_files) if d not in picked)
