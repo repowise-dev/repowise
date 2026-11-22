@@ -36,7 +36,8 @@ Optional ``include`` parameter widens the response:
   - include=["skeleton+"] → all non-function code kept, every function/method body elided
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
-  - include=["symbols"]   → every symbol in a file card, not the ranked top 15
+  - include=["symbols"]   → the ranked top 50 symbols of a file card, not 15; the
+                            rest are stored behind the _meta.omitted ref
   - include=["facts"]     → a symbol card's fact row (awaits, assigned fields,
                             complexity, resolved callers) and direct test links
   - include=["changes"]   → recent Change Records touching a file target

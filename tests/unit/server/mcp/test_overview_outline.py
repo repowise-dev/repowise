@@ -138,10 +138,59 @@ def test_outline_is_shallow_by_default_but_reports_subtree_size(tmp_path):
 def test_outline_opens_one_rung_deeper_on_request(tmp_path):
     outline = _build_outline(SPINE, 2, _collector(tmp_path))
     runtime = outline["sections"][0]
-    assert [c["page_id"] for c in runtime["children"]] == [MODULE.id]
+    assert [c["target_path"] for c in runtime["children"]] == [MODULE.target_path]
     # Still bounded: the module's own children are a count, not a listing.
     assert "children" not in runtime["children"][0]
     assert runtime["children"][0]["descendants"] == 1
+
+
+def test_child_rows_leave_out_what_their_path_restates(tmp_path):
+    outline = _build_outline(SPINE, 2, _collector(tmp_path))
+    child = outline["sections"][0]["children"][0]
+    # page_id is "<page_type>:<target_path>" and the title names the path.
+    assert child == {
+        "section": "1.1",
+        "page_type": "module_page",
+        "target_path": "runtime/engine",
+        "descendants": 1,
+    }
+    # The top rung keeps its full shape: the tour and reading order cite it.
+    assert outline["sections"][0]["page_id"] == LAYER_RUNTIME.id
+
+
+def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path):
+    layers = [
+        _row(
+            f"layer_page:layer:l{i:02d}",
+            page_type="layer_page",
+            target_path=f"layer:l{i:02d}",
+            parent_page_id=ROOT.id,
+            display_order=i,
+            section_number=str(i),
+        )
+        for i in range(1, 31)
+    ]
+    files = [
+        _row(
+            f"file_page:pkg/l{i:02d}/very/long/directory/name/file_{j}.py",
+            target_path=f"pkg/l{i:02d}/very/long/directory/name/file_{j}.py",
+            parent_page_id=layer.id,
+            display_order=j,
+        )
+        for i, layer in enumerate(layers, start=1)
+        for j in range(10)
+    ]
+    collector = _collector(tmp_path)
+    outline = _build_outline([ROOT, *layers, *files], 2, collector)
+    sections = outline["sections"]
+    assert len(json.dumps(sections, separators=(",", ":"))) <= 8_000
+    # The head keeps its listing, the tail keeps its count.
+    assert "children" in sections[0]
+    assert "children" not in sections[-1]
+    assert sections[-1]["descendants"] == 10
+    assert outline["children_omitted_sections"] > 0
+    body = "\n".join(text for _label, text in collector._chunks)
+    assert "pkg/l30/very/long/directory/name/file_9.py" in body
 
 
 def test_no_outline_when_the_tree_has_never_been_built(tmp_path):

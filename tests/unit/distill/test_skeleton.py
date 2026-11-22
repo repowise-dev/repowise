@@ -225,7 +225,7 @@ _ANNOTATED = [
         "def run(a, b):",
     ),
     (
-        "@Override\npublic String toString() {\n    String s = \"x\";\n    s = s + 1;\n"
+        '@Override\npublic String toString() {\n    String s = "x";\n    s = s + 1;\n'
         "    s = s + 2;\n    return s;\n}\n",
         "public String toString() {",
     ),
@@ -296,3 +296,31 @@ class TestFocus:
     def test_without_focus_smart_ranks_bodies(self) -> None:
         result = build_skeleton(_FOCUS_SOURCE, _focus_symbols(None), mode="smart")
         assert "format_timestamp" in result.bodies_kept
+
+
+def test_license_header_folds_to_one_marker():
+    source = (
+        "// Copyright 2020 The Authors.\n"
+        "//\n"
+        "// Licensed under the Apache License, Version 2.0\n"
+        "// you may not use this file except in compliance.\n"
+        "\n"
+        "package foo\n"
+        "\n"
+        "func A() {\n"
+        "\treturn\n"
+        "}\n"
+    )
+    result = build_skeleton(source, [SkeletonSymbol("A", "function", 8, 10)])
+    assert result.text.startswith("... 4 lines (1-4)\n")
+    assert "Apache" not in result.text
+    assert "package foo" in result.text
+
+
+def test_explanatory_header_and_directives_are_kept():
+    explained = "# Routes requests to handlers.\n# See the router docs.\n\ndef f():\n    return 1\n"
+    assert (
+        "Routes requests" in build_skeleton(explained, [SkeletonSymbol("f", "function", 4, 5)]).text
+    )
+    header = "#pragma once\n#ifndef A_H\n#define A_H\n// license-free note\n\nclass A {};\n"
+    assert "#pragma once" in build_skeleton(header, [SkeletonSymbol("A", "class", 6, 6)]).text

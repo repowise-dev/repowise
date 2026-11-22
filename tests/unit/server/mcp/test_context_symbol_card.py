@@ -111,6 +111,34 @@ async def test_include_symbols_returns_every_symbol(session, repository, dense_f
     assert "symbols_truncated" not in docs
 
 
+async def test_include_symbols_past_its_cap_stores_the_rest(
+    session, repository, dense_file, monkeypatch, tmp_path
+) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_context import targets
+
+    monkeypatch.setattr(targets, "_REQUESTED_SYMBOL_CAP", 20)
+    collector = OmissionCollector("get_context", repo_root=tmp_path)
+    card = await _resolve_one_target(
+        session,
+        repository,
+        _FILE,
+        _DEFAULT | {"symbols"},
+        True,
+        exclude_spec=None,
+        collector=collector,
+    )
+    docs = card["docs"]
+    assert len(docs["symbols"]) == 20
+    assert docs["symbols_total"] == 28
+    assert docs["symbols_truncated"]["shown"] == 20
+    assert "_meta.omitted" in docs["symbols_truncated"]["hint"]
+    # Ranked as the default list is: the types lead, the values are cut.
+    assert [s["kind"] for s in docs["symbols"][:3]] == ["class"] * 3
+    ((_label, rest),) = collector._chunks
+    assert len(rest) == 8
+
+
 async def test_symbol_id_dropped_only_when_derivable(session, repository, dense_file) -> None:
     docs = (await _card(session, repository, _FILE, _DEFAULT | {"symbols"}))["docs"]
     by_id = {s.get("symbol_id"): s for s in docs["symbols"] if "symbol_id" in s}

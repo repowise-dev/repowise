@@ -235,9 +235,7 @@ def _signature_text(
     return _render(lines, keep), bodies_kept
 
 
-def _drop_decorations(
-    lines: list[str], focused: list[SkeletonSymbol], keep: list[bool]
-) -> None:
+def _drop_decorations(lines: list[str], focused: list[SkeletonSymbol], keep: list[bool]) -> None:
     """Unmark banner comments: they add bytes, not structure. Focused bodies stay whole."""
     in_focus = [False] * len(lines)
     _keep_focus(focused, in_focus)
@@ -279,16 +277,18 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
     """Mark the pre-symbol region: whole if small, docstring+imports if not."""
     if first_start <= 0:
         return
+    # A license header folds to one marker line; its range stays readable.
+    head = _license_header_end(lines, first_start)
     if first_start <= _PREAMBLE_KEEP_LINES:
-        for i in range(first_start):
+        for i in range(head, first_start):
             keep[i] = True
         return
     # Long preamble: leading docstring/comment block, then import-shaped lines.
-    i = 0
+    i = head
     in_docstring = False
     while i < first_start:
         stripped = lines[i].strip()
-        if i == 0 or in_docstring or stripped.startswith("#") or (not stripped and i < 3):
+        if i == head or in_docstring or stripped.startswith("#") or (not stripped and i < 3):
             keep[i] = True
             opens = sum(stripped.count(d) for d in _DOCSTRING_DELIMS)
             if not in_docstring and any(stripped.startswith(d) for d in _DOCSTRING_DELIMS):
@@ -301,6 +301,35 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
     for j in range(i, first_start):
         if _IMPORT_RE.match(lines[j]):
             keep[j] = True
+
+
+#: Line comment and block comment openers a file header is written in.
+_COMMENT_PREFIXES = ("#", "//", "/*", "*", "--", ";", "%", "(*")
+_LICENSE_RE = re.compile(r"copyright|licen[cs]e|spdx-", re.IGNORECASE)
+
+
+def _license_header_end(lines: list[str], limit: int) -> int:
+    """0-indexed end of a leading license comment block, or 0 when there is none.
+
+    The block is the run of comment lines a file opens with (a shebang and
+    blank lines inside it included). It counts as a license header only when
+    it names a copyright, a license or an SPDX identifier, so a module comment
+    that explains the code is kept.
+    """
+    end = 0
+    has_comment = False
+    for i in range(limit):
+        stripped = lines[i].strip()
+        # "#include", "#pragma", "#!" are directives, not comments.
+        directive = (stripped.startswith("#") and stripped[1:2].isalpha()) or stripped[:2] == "#!"
+        if stripped.startswith(_COMMENT_PREFIXES) and not directive:
+            has_comment = True
+            end = i + 1
+        elif stripped and not (i == 0 and stripped.startswith("#!")):
+            break
+    if not has_comment or not _LICENSE_RE.search("\n".join(lines[:end])):
+        return 0
+    return end
 
 
 def _elide_callable_bodies(

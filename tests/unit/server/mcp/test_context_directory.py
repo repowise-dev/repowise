@@ -211,6 +211,8 @@ async def test_files_over_the_cap_say_what_they_left_out(setup_mcp, monkeypatch)
     assert block["total"] == 3 and block["complete"] is False and block["omitted"] == 2
     assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
     assert "subdirectory" in block["hint"]
+    # The rest are counted where they live, each one targeted call away.
+    assert block["omitted_by_directory"] == {"src/auth/": 1, "src/db/": 1}
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ whether a file is tested.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -27,9 +28,13 @@ if TYPE_CHECKING:
 #: and is listed in full by naming its subdirectories as targets.
 MAX_FILE_ROWS = 100
 
-#: Serialized size the rows may take, so the block fits the include budget
-#: (32,000 chars) beside the card instead of being dropped whole.
-MAX_ROW_CHARS = 16_000
+#: Serialized size the rows may take. At 16k a large directory's block was the
+#: whole reply and agents used about one row in five; past this the rest are
+#: counted per subdirectory, each one targeted call away.
+MAX_ROW_CHARS = 6_000
+
+#: Subdirectories named in ``omitted_by_directory``, largest first.
+_MAX_OMITTED_DIRS = 15
 
 #: Tests shown per evidence kind on one row; the rest are counted.
 _MAX_TESTS_PER_ROW = 2
@@ -68,6 +73,10 @@ async def files_section(card: CardState) -> None:
             f"first {len(rows)}, code files before other files and tests, each by path; "
             "a subdirectory target lists its own files"
         )
+        shown = {row["path"] for row in rows}
+        block["omitted_by_directory"] = _by_directory(
+            card.dir_path, [p for p in paths if p not in shown]
+        )
     if not test_files:
         block["note"] = "the index holds no test files, so has_test false is not evidence"
     card.data["files"] = block
@@ -93,6 +102,17 @@ async def _paths_under(card: CardState) -> set[str]:
     )
     nodes = _rows_under(card.dir_path, list(res.all()), card.query.exclude_spec)
     return {r.file_path for r in [*await card.dir_rows(), *nodes]}
+
+
+def _by_directory(dir_path: str, paths: list[str]) -> dict[str, int]:
+    """Omitted files counted under the subdirectory one level below *dir_path*."""
+    prefix = _dir_prefix(dir_path)
+    counts: Counter[str] = Counter()
+    for path in paths:
+        rest = path[len(prefix) :] if path.startswith(prefix) else path
+        head, sep, _ = rest.partition("/")
+        counts[f"{prefix}{head}/" if sep else prefix or "."] += 1
+    return dict(counts.most_common(_MAX_OMITTED_DIRS))
 
 
 def _fit(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

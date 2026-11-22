@@ -113,6 +113,11 @@ _RANK_LOOKUP_CHUNK = 500
 #: file's types and functions in most real files.
 _SYMBOL_CAP = 15
 
+#: Rows ``include=["symbols"]`` carries, ranked the same way. A 140-symbol
+#: header served whole measured 30k chars; past this the rest are stored and
+#: restorable, so the list stays one reply.
+_REQUESTED_SYMBOL_CAP = 50
+
 # Card rank by ``SymbolKind``: the types a file defines, then its callables,
 # then values. Wider than the budgeter's ``symbol_priority`` table, which
 # ranks ``type_alias``, ``impl`` and ``module`` with variables.
@@ -155,9 +160,7 @@ async def _compact_symbol_rows(
         sid = symbol_identity(s.symbol_id)
         if sid != make_symbol_id(path, s.name):
             row["symbol_id"] = sid
-        scored.append(
-            ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
-        )
+        scored.append(((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row))
     scored.sort(key=lambda pair: pair[0])
     return [row for _, row in scored]
 
@@ -283,15 +286,18 @@ async def _file_docs(card: CardState, docs: dict[str, Any]) -> None:
 
 async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: Any) -> None:
     docs["symbols"] = await _compact_symbol_rows(card.session, card.repo_id, card.target, symbols)
-    if not card.wants("symbols") and len(symbols) > _SYMBOL_CAP:
-        docs["symbols"] = docs["symbols"][:_SYMBOL_CAP]
+    requested = card.wants("symbols")
+    cap = _REQUESTED_SYMBOL_CAP if requested else _SYMBOL_CAP
+    if len(symbols) > cap:
+        rest = docs["symbols"][cap:]
+        docs["symbols"] = docs["symbols"][:cap]
         # The budgeter's own total, so a later trim cannot report 15.
         docs["symbols_total"] = len(symbols)
-        docs["symbols_truncated"] = {
-            "shown": _SYMBOL_CAP,
-            "total": len(symbols),
-            "hint": "Pass include=['symbols'] for the full list.",
-        }
+        hint = "Pass include=['symbols'] for the full list."
+        if requested and card.query.collector is not None:
+            card.query.collector.add(f"{card.target} :: docs.symbols beyond cap={cap}", rest)
+            hint = "The rest are stored: restore with the ref in _meta.omitted."
+        docs["symbols_truncated"] = {"shown": cap, "total": len(symbols), "hint": hint}
 
 
 def _full_file_symbols(
