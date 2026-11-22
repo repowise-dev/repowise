@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page
-from repowise.server.mcp_server._page_paths import PAGELESS_FILE, pageless_path
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, in_scope, pageless_path
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -47,12 +47,6 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
         # A pageless file: its path is in its id, and it serves matched code.
         meta = {"target_path": pageless_path(hit["page_id"]), "page_type": PAGELESS_FILE}
     return meta
-
-
-def in_scope(path: str, scope: str | None) -> bool:
-    """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
-    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
-    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
 
 
 def drop_out_of_scope(hits: list[dict], scope: str | None) -> list[dict]:
