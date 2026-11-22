@@ -38,7 +38,9 @@ node_to_file = file_of_symbol
 _CACHE: OrderedDict[str, tuple[str, dict[str, Any]]] = OrderedDict()
 _CACHE_MAX_REPOS = 8
 # Concurrent cold questions would each pay the scan; one builds, the rest wait.
-_LOCK = asyncio.Lock()
+# One lock per projection name, so a question waits only on a build of a
+# projection it reads, never on another (such as the idle warmup's).
+_LOCKS: dict[str, asyncio.Lock] = {}
 
 # Confidence floor for ``calls`` edges. Imports are always 1.0; calls average
 # 0.90 with a low-confidence tail from heuristic resolution. 0.5 keeps every
@@ -83,10 +85,16 @@ def keep_projected_edge(
 
 def reset_cache() -> None:
     """Drop every cached projection. For tests and for a re-index in-process."""
-    global _LOCK
     _CACHE.clear()
     # A lock that once waited is bound to that event loop; a fresh one is not.
-    _LOCK = asyncio.Lock()
+    _LOCKS.clear()
+
+
+def _lock_for(name: str) -> asyncio.Lock:
+    lock = _LOCKS.get(name)
+    if lock is None:
+        lock = _LOCKS[name] = asyncio.Lock()
+    return lock
 
 
 def _cached(repo_id: str, key: str, name: str) -> Any | None:
@@ -113,7 +121,7 @@ async def per_index(
     hit = _cached(repo_id, key, name)
     if hit is not None:
         return hit
-    async with _LOCK:
+    async with _lock_for(name):
         hit = _cached(repo_id, key, name)
         if hit is not None:
             return hit

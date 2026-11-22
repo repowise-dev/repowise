@@ -87,3 +87,27 @@ async def test_the_least_recently_used_repo_is_evicted(session, repo_id, monkeyp
     await per_index(session, repo_id, "adjacency", build)
 
     assert calls == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_build_does_not_wait_on_another_projections_build(factory, repo_id):
+    release = asyncio.Event()
+
+    async def slow():
+        await release.wait()
+        return "slow"
+
+    async def fast():
+        return "fast"
+
+    async def ask(name, build):
+        async with factory() as s:
+            return await per_index(s, repo_id, name, build)
+
+    pending = asyncio.ensure_future(ask("slow", slow))
+    await asyncio.sleep(0.05)
+    try:
+        assert await asyncio.wait_for(ask("fast", fast), timeout=5) == "fast"
+    finally:
+        release.set()
+        assert await pending == "slow"

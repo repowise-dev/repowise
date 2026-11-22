@@ -123,3 +123,13 @@ async def test_a_tool_call_stops_the_warmup_after_the_cache_in_flight(
     await _warmup.warm_index_caches()
 
     assert built == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_warmup_says_so(setup_mcp, cold_caches, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="repowise.mcp"):
+        await _warmup.warm_index_caches()
+
+    assert any("index caches warm" in r.getMessage() for r in caplog.records)

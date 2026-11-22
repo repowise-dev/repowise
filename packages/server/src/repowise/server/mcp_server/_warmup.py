@@ -9,10 +9,9 @@ seconds after the handshake, so the server builds them in that gap instead.
 
 The work starts once the client has the ``initialize`` reply and runs on the
 event loop one cache at a time. The first tool call stops it after the cache
-in flight. That call waits for that one build even when it reads a different
-cache first, since :func:`~._graph_files.per_index` builds under one lock; a
-build of its own would not finish sooner, as both are Python work on the same
-thread. From then on each call builds what it reads, as before. It is skipped when the machine
+in flight; :func:`~._graph_files.per_index` locks per cache, so that call
+waits on the warm build only when it reads the same cache, and then reuses
+it. From then on each call builds what it reads, as before. It is skipped when the machine
 is short of free memory, since every MCP server on the machine holds its own
 copy.
 """
@@ -129,6 +128,7 @@ async def _build_caches(ctx: Any) -> bool:
             await step(session, repo_id)
         _log.debug("repowise MCP: warmed %s in %.2fs", name, time.perf_counter() - began)
         await asyncio.sleep(0)  # let a waiting request in between caches
+    return True
 
 
 async def _run() -> None:
