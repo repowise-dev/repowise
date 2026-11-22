@@ -746,6 +746,9 @@ repowise suspects         # recent changes ranked against a symptom
 repowise components       # declared and derived components, owners vs activity
 repowise packages where   # where a third-party package is imported
 repowise report           # assessment, change evidence and inventory packs
+repowise report repo      # what Repowise found, most urgent first
+repowise evidence setup   # how to collect coverage, test results and profiles here
+repowise perf measure -- <cmd>  # did a change make a command faster or slower?
 repowise dead-code        # unreachable code by confidence tier
 repowise doc-drift        # documentation the code no longer supports
 repowise security         # secrets and risky patterns, tree or full history
