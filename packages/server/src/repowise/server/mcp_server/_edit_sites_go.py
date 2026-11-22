@@ -23,7 +23,7 @@ from typing import Any, NamedTuple
 # One import spec: ``[alias] "path"``, on an ``import`` line or inside a block.
 _SPEC = re.compile(r'^\s*(?:import\s*\(?\s*)?(?:([A-Za-z_]\w*|[._])\s+)?"([^"\s]+)"')
 _PACKAGE = re.compile(r"^\s*package\s+([A-Za-z_]\w*)")
-_MODULE = re.compile(r"^\s*module\s+(\S+)")
+_MODULE = re.compile(r"^\s*module\s+[\"`]?([^\s\"`]+)")
 # The name right before ``.Name``, not itself after a dot or a call: ``pkg.`` in
 # ``pkg.Name``, never ``x.pkg.`` or ``f().``.
 _QUALIFIER = re.compile(r"(?<![\w.)\]])([A-Za-z_]\w*)\s*\.\s*$")
@@ -111,6 +111,8 @@ class GoForeign:
             binding = re.compile(
                 rf"(?:\b{word}\s*(?:,\s*\w+\s*)*:?=(?!=)|,\s*{word}\s*(?:,\s*\w+\s*)*:=(?!=)"
                 rf"|\bvar\s+{word}\b|[(,]\s*{word}\s+[\w*\[\].]"
+                # Grouped parameters: ``(cfg, other *Config)``.
+                rf"|[(,]\s*{word}\s*,\s*\w+(?:\s*,\s*\w+)*\s+[\w*\[\].]"
                 # A parameter or field alone on its line: ``\tcfg *Config,``.
                 rf"|^\s*{word}(?:\s*,\s*\w+)*\s+[\w*\[\].])"
             )

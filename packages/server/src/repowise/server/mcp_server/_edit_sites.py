@@ -899,10 +899,11 @@ def _file_sites(
             continue
         if n in imports:
             hits = _outside_module(text, hits)
-        elif go_foreign is not None:
-            hits = [h for h in hits if not (prose.is_code(n, h) and go_foreign(text, h))]
-        elif foreign is not None and n not in graph_calls:
-            hits = [h for h in hits if not foreign(n, text, h)]
+        else:
+            if go_foreign is not None:
+                hits = [h for h in hits if not (prose.is_code(n, h) and go_foreign(text, h))]
+            if foreign is not None and n not in graph_calls:
+                hits = [h for h in hits if not foreign(n, text, h)]
         if not hits:
             continue
         is_def = not def_seen and def_start <= n <= def_end

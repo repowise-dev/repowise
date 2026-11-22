@@ -1948,3 +1948,26 @@ def test_go_root_package_without_a_module_is_not_judged():
 
     target = GoTarget(None, "", "repo")
     assert go_judge("cmd/main.go", ['import "x/repo"'], {1}, target, member=False) is None
+
+
+def test_go_method_named_on_a_grouped_parameter_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/cfg"',
+        "func run(cfg, other *Config) {",
+        "\tcfg.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[3]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_quoted_module_path_is_read_unquoted(tmp_path):
+    from repowise.server.mcp_server._edit_sites_go import go_target
+
+    (tmp_path / "go.mod").write_text('module "example.com/app"\n', encoding="utf-8")
+    target = go_target(tmp_path, "pkg/a.go", ["package pkg"])
+    assert target.import_path == "example.com/app/pkg"
