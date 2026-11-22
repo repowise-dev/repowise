@@ -664,7 +664,9 @@ def test_key_symbols_served_nowhere_else_keep_their_text():
         }
     )
 
-    payload = project_answer_payload(raw, question="how does auth work")
+    # The default reply serves lean symbols; the dedupe keeps unserved text
+    # wherever text is served.
+    payload = project_answer_payload(raw, question="how does auth work", include=["evidence"])
 
     outside = payload["retrieval"][0]["key_symbols"][0]
     other_file = payload["retrieval"][1]["key_symbols"][0]
@@ -853,3 +855,68 @@ def test_keyless_note_drops_its_generic_sentences():
     keyed = {"degraded": "synthesis-timeout", "note": _NO_SYNTHESIS_NOTE}
     _trim_keyless_note(keyed)
     assert keyed["note"] == _NO_SYNTHESIS_NOTE
+
+
+def _raw_retrieval_only(confidence: str) -> dict:
+    """A synthesized reply whose evidence is page rows, as on a documented index."""
+    return {
+        "answer": "Use AuthService.check.",
+        "citations": ["src/auth/service.py"],
+        "confidence": confidence,
+        "retrieval_quality": "partial",
+        "retrieval": [
+            {"path": "src/auth/service.py", "title": "Auth service", "excerpt": "page " * 300},
+            {
+                "path": "src/auth/middleware.py",
+                "title": "Middleware",
+                "excerpt": "page " * 300,
+                "key_symbols": [
+                    {
+                        "name": "guard",
+                        "kind": "function",
+                        "start_line": 4,
+                        "end_line": 9,
+                        "source_excerpt": "def guard(): ...",
+                        "docstring": "Guard the route.",
+                    }
+                ],
+            },
+            {"path": "src/auth/routes.py", "title": "Routes", "excerpt": "page " * 300},
+        ],
+        "_candidate_file_facts": {
+            "src/auth/routes.py": {"functions": [{"name": "login", "line": 12}]}
+        },
+        "_meta": {"contract_version": 1},
+    }
+
+
+@pytest.mark.parametrize("confidence", ["medium", "low"])
+def test_a_synthesized_reply_serves_retrieval_rows_without_page_excerpts(confidence):
+    raw = _raw_retrieval_only(confidence)
+
+    compact = project_answer_payload(raw, question="how does auth work")
+    expanded = project_answer_payload(raw, question="how does auth work", include=["evidence"])
+
+    rows = compact["retrieval"]
+    assert all("excerpt" not in row for row in rows)
+    # The cited file adds nothing as a bare row; symbols and functions point Reads.
+    assert [row["path"] for row in rows] == ["src/auth/middleware.py", "src/auth/routes.py"][
+        : len(rows)
+    ]
+    assert rows[0]["key_symbols"] == [
+        {"name": "guard", "kind": "function", "start_line": 4, "end_line": 9}
+    ]
+    if len(rows) > 1:
+        assert rows[1]["functions"] == [{"name": "login", "line": 12}]
+    assert compact["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
+    assert all(row.get("excerpt") for row in expanded["retrieval"])
+    assert expanded["retrieval"][1]["key_symbols"][0]["docstring"] == "Guard the route."
+
+
+def test_a_degraded_reply_keeps_its_retrieval_excerpts():
+    raw = _raw_retrieval_only("low")
+    raw["degraded"] = "synthesis-failed"
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    assert all(row.get("excerpt") for row in payload["retrieval"])
