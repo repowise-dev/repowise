@@ -832,6 +832,45 @@ describe("PerformanceView measured hotspot drawer", () => {
   });
 });
 
+describe("PerformanceView measured hotspot with no static finding", () => {
+  it("renders an evidence row whose finding_id is null", async () => {
+    const measurement = 'Measured: rank 2 of repo code in entry_point "cli serve" (8% self), 1d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot_null",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/b.py::serve",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: null,
+          file_path: "src/b.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "serve",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
+  });
+});
+
 describe("PerformanceView drawer siblings", () => {
   it("names a preferred sibling's fix as the stronger one", async () => {
     const withSiblings = page({
