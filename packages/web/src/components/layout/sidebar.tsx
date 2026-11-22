@@ -527,7 +527,7 @@ function SidebarNavItem({
   const t = useTranslations("nav");
   const label = t(item.labelKey);
   const Icon = item.icon;
-  const { isNew, ariaLabel } = useNavNewMark(item.href, label);
+  const { isNew, ariaLabel } = useNavNewMark(item.href, label, item.exact);
 
   if (iconOnly) {
     return (
