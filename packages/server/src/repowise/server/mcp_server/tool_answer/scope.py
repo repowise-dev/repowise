@@ -113,14 +113,6 @@ async def _split_pieces(session: Any, repo_id: Any, raw: str, root: Path | None)
     return list(dict.fromkeys(prefixes))
 
 
-def _deepest_ancestor(parts: list[str], dir_files: Counter) -> str:
-    """The deepest indexed directory above a missing path; ``""`` for the root."""
-    for i in range(len(parts) - 1, 0, -1):
-        if (ancestor := "/".join(parts[:i])) in dir_files:
-            return ancestor
-    return ""
-
-
 def _named_like(tail: str, by_name: dict[str, list[str]]) -> list[str]:
     """Directories whose name holds *tail*, sits inside it, or spells it closely."""
     names = {
@@ -137,38 +129,56 @@ def _children(inside: str, dir_files: Counter) -> list[str]:
     return sorted(kids, key=lambda d: (-dir_files[d], d))
 
 
-def _nearest(missing: list[str], dir_files: Counter) -> list[str]:
-    """Existing directories near each missing prefix.
-
-    A directory named like the missing one's last segment comes first, inside
-    the deepest existing ancestor before elsewhere, then shallowest and
-    largest. Without one, the largest directories directly inside that ancestor.
-    """
+def _nearest(missing: str, ancestor: str, dir_files: Counter) -> list[str]:
+    """Directories inside *ancestor* near *missing*: those named like its last
+    segment, shallowest and largest first; without one, the largest directories
+    directly inside *ancestor*. *dir_files* holds the directories under it."""
     by_name: dict[str, list[str]] = {}
     for d in dir_files:
         by_name.setdefault(d.rsplit("/", 1)[-1].lower(), []).append(d)
-    picked: list[str] = []
-    for m in missing:
-        parts = m.split("/")
-        ancestor = _deepest_ancestor(parts, dir_files)
-        inside = f"{ancestor}/" if ancestor else ""
-        named = [d for d in _named_like(parts[-1].lower(), by_name) if d.startswith(inside)]
-        found = sorted(named, key=lambda d: (d.count("/"), -dir_files[d], d)) or _children(
-            inside, dir_files
-        )
-        picked.extend(d for d in found if d not in picked)
-    return [f"{d}/" for d in picked[:_NEAREST_DIRS]]
+    inside = f"{ancestor}/" if ancestor else ""
+    named = _named_like(missing.rsplit("/", 1)[-1].lower(), by_name)
+    return sorted(named, key=lambda d: (d.count("/"), -dir_files[d], d)) or _children(
+        inside, dir_files
+    )
 
 
-async def _directories(session: Any, repo_id: Any) -> Counter:
-    """Every directory holding indexed files, with how many files it holds."""
-    rows = await session.execute(union(*_indexed_paths(repo_id)))
+async def _deepest_ancestor(session: Any, repo_id: Any, missing: str) -> str:
+    """The deepest indexed directory above *missing*; ``""`` for the root."""
+    parts = missing.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        if await _holds_files(session, repo_id, ancestor := "/".join(parts[:i]), None):
+            return ancestor
+    return ""
+
+
+async def _directories(session: Any, repo_id: Any, ancestor: str) -> Counter:
+    """The directories holding indexed files under *ancestor* (every one for
+    ``""``), with how many files each holds. Read only on a miss, and only
+    under the deepest indexed parent, so a deep miss reads a subtree."""
+    graph, pages = _indexed_paths(repo_id)
+    if ancestor:
+        graph = graph.where(_under(GraphNode.node_id, ancestor))
+        pages = pages.where(_under(Page.target_path, ancestor))
     counts: Counter = Counter()
-    for (path,) in rows:
+    for (path,) in await session.execute(union(graph, pages)):
         parts = path.split("/")[:-1]
         for i in range(1, len(parts) + 1):
             counts["/".join(parts[:i])] += 1
     return counts
+
+
+async def _suggestions(session: Any, repo_id: Any, missing: list[str]) -> list[str] | None:
+    """The nearest indexed directories to *missing*; None when the index holds
+    no directory at all, so it cannot judge a prefix."""
+    picked: list[str] = []
+    for m in missing:
+        ancestor = await _deepest_ancestor(session, repo_id, m)
+        dir_files = await _directories(session, repo_id, ancestor)
+        if not dir_files and not ancestor:
+            return None
+        picked.extend(d for d in _nearest(m, ancestor, dir_files) if d not in picked)
+    return [f"{d}/" for d in picked[:_NEAREST_DIRS]]
 
 
 async def resolve_scope(
@@ -192,7 +202,7 @@ async def resolve_scope(
         (found if await _holds_files(session, repo_id, p, root) else missing).append(p)
     if found:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(found)), missing, [])
-    dir_files = await _directories(session, repo_id)
-    if not dir_files:
+    nearest = await _suggestions(session, repo_id, missing)
+    if nearest is None:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(prefixes)), [], [])
-    return ScopeResolution(None, missing, _nearest(missing, dir_files))
+    return ScopeResolution(None, missing, nearest)

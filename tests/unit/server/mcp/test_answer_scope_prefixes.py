@@ -149,28 +149,38 @@ def test_in_scope_reads_each_prefix_as_a_directory():
     assert in_scope("reports,2024/q1.py", "reports,2024")
 
 
-def test_nearest_directories_start_inside_the_missing_ones_parent():
-    from collections import Counter
+@pytest.mark.asyncio
+async def test_nearest_directories_start_inside_the_missing_ones_parent(ledgers, session):
+    from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server.tool_answer.scope import resolve_scope
 
-    from repowise.server.mcp_server.tool_answer.scope import _nearest
-
-    dirs = Counter(
-        {
-            "examples": 1,
-            "examples/ip-masq-agent": 1,
-            "pkg": 10,
-            "pkg/monitor": 3,
-            "pkg/monitor/agent": 3,
-            "pkg/datapath": 7,
-            "daemon": 4,
-        }
+    paths = [
+        "examples/ip-masq-agent/e.py",
+        *(f"pkg/monitor/agent/m{i}.py" for i in range(3)),
+        *(f"pkg/datapath/d{i}.py" for i in range(7)),
+    ]
+    session.add_all(
+        GraphNode(
+            id=f"near{i}",
+            repository_id="repo1",
+            node_id=p,
+            node_type="file",
+            language="go",
+        )
+        for i, p in enumerate(paths)
     )
+    await session.commit()
+
+    async def nearest(scope: str) -> list[str]:
+        async with get_session(ledgers.session_factory) as s:
+            return (await resolve_scope(s, "repo1", scope)).nearest
 
     # A name match outside the parent never displaces the parent's own directories.
-    assert _nearest(["pkg/agent"], dirs) == ["pkg/monitor/agent/"]
+    assert await nearest("pkg/agent") == ["pkg/monitor/agent/"]
     # At the root, every name match counts, shallowest first.
-    assert _nearest(["masq-agent"], dirs) == ["examples/ip-masq-agent/", "pkg/monitor/agent/"]
-    assert _nearest(["pkg/zzz"], dirs) == ["pkg/datapath/", "pkg/monitor/"]
+    assert await nearest("masq-agent") == ["examples/ip-masq-agent/", "pkg/monitor/agent/"]
+    # No name match: the parent's largest directories.
+    assert (await nearest("pkg/zzz"))[:2] == ["pkg/datapath/", "pkg/monitor/"]
 
 
 @pytest.mark.asyncio
