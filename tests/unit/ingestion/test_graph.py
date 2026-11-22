@@ -129,6 +129,43 @@ class TestAddFile:
         assert g.nodes["src/pages.ts"]["symbol_count"] == 2
         assert parsed.symbol_count == 2
 
+    def test_has_method_created_when_method_precedes_class(self) -> None:
+        """A method declared before its parent class/struct still gets a has_method edge (#6149)."""
+        b = GraphBuilder()
+        parsed = _parsed("src/service.go", "go")
+        sym_method = Symbol(
+            id="src/service.go::Service::Start",
+            name="Start",
+            qualified_name="Service.Start",
+            kind="method",
+            signature="func (s *Service) Start()",
+            parent_name="Service",
+            start_line=3,
+            end_line=5,
+            docstring=None,
+            language="go",
+        )
+        sym_struct = Symbol(
+            id="src/service.go::Service",
+            name="Service",
+            qualified_name="Service",
+            kind="struct",
+            signature="type Service struct",
+            parent_name=None,
+            start_line=7,
+            end_line=9,
+            docstring=None,
+            language="go",
+        )
+        # Method appears BEFORE struct in symbols list
+        parsed.symbols = [sym_method, sym_struct]
+        b.add_file(parsed)
+        g = b.graph()
+
+        assert ("src/service.go::Service", "src/service.go::Service::Start") in g.edges
+        edge_data = g.edges["src/service.go::Service", "src/service.go::Service::Start"]
+        assert edge_data["edge_type"] == "has_method"
+
 
 # ---------------------------------------------------------------------------
 # Docstring propagation

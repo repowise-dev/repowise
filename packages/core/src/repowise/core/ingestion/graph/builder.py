@@ -430,10 +430,14 @@ class GraphBuilder(
                 edge_type="defines",
             )
 
-            # HAS_METHOD edge: class/struct → method
+        # HAS_METHOD edge: class/struct → method
+        # Resolved in a second pass over the file's symbols so declaration order in
+        # the file (e.g. Go methods declared above structs, or Rust impl blocks) does
+        # not drop containment edges when the method precedes its container.
+        for sym in parsed.symbols:
             if sym.parent_name and sym.kind == "method":
                 parent_id = make_symbol_id(path, sym.parent_name)
-                if parent_id in self._graph:
+                if parent_id in self._graph and sym.id in self._graph:
                     self._graph.add_edge(
                         parent_id,
                         sym.id,
