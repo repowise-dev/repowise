@@ -205,9 +205,7 @@ async def test_a_page_on_a_header_member_is_completed_by_its_definition(
         ],
         {"conn.h": _HEADER, "conn.cc": _IMPL},
     )
-    hits = [
-        {"target_path": "conn.h::ActiveStream::decodeHeaders", "page_type": "symbol_spotlight"}
-    ]
+    hits = [{"target_path": "conn.h::ActiveStream::decodeHeaders", "page_type": "symbol_spotlight"}]
     await attach_grounding_bodies(session, repo_id, hits, ctx, "decodeHeaders")
     (body,) = hits[0]["_grounding"]
     assert body["path"] == "conn.cc"
@@ -251,4 +249,91 @@ async def test_a_mock_is_not_the_implementation(session, repo_id, tmp_path) -> N
         session, repo_id, hits, ctx, question_ids={"decodeHeaders"}, question="decodeHeaders"
     )
     await attach_grounding_bodies(session, repo_id, hits, ctx, "how does decodeHeaders work")
+    assert "_grounding" not in hits[0]
+
+
+_PY = """\
+def load(path):
+    return open(path).read()
+
+
+class Cache:
+    def load(self, path):
+        data = open(path).read()
+        self.items = data.split()
+        return self.items
+"""
+
+
+def _py(repo_id, rid, path, name, start, end, parent=None):
+    row = _row(repo_id, rid, path, name, "method" if parent else "function", start, end, parent)
+    row.language = "python"
+    return row
+
+
+async def test_a_page_on_a_free_function_is_not_given_a_methods_body(
+    session, repo_id, tmp_path
+) -> None:
+    """Also covers a two-line Python body: it is the body, not a declaration."""
+    ctx = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        [_py(repo_id, "f", "m.py", "load", 1, 2), _py(repo_id, "c", "m.py", "load", 6, 9, "Cache")],
+        {"m.py": _PY},
+    )
+    hits = [{"target_path": "m.py::load", "page_type": "symbol_spotlight"}]
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "how is a file loaded")
+    (body,) = hits[0]["_grounding"]
+    assert (body["start_line"], body["parent"]) == (1, None)
+
+
+async def test_a_python_one_liner_is_not_chased_to_another_file(session, repo_id, tmp_path) -> None:
+    ctx = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        [
+            _py(repo_id, "a", "a.py", "load", 1, 2),
+            _py(repo_id, "b", "b.py", "load", 1, 2),
+            _py(repo_id, "c", "c.py", "load", 6, 9),
+        ],
+        {"a.py": _PY, "b.py": _PY, "c.py": _PY},
+    )
+    hits = [{"target_path": "a.py", "page_type": "file_page"}]
+    await _hydrate_symbols_for_hits(
+        session, repo_id, hits, ctx, question_ids={"load"}, question="load"
+    )
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "load")
+    assert "_grounding" not in hits[0]
+
+
+async def test_a_page_on_a_file_sized_namespace_gets_no_body(session, repo_id, tmp_path) -> None:
+    filler = "\n".join(f"  int field{i};" for i in range(60))
+    ctx = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        [_row(repo_id, "n", "optref.h", "Envoy", "module", 1, 62)],
+        {"optref.h": f"namespace Envoy {{\n{filler}\n}}\n"},
+    )
+    hits = [{"target_path": "optref.h::Envoy", "page_type": "symbol_spotlight"}]
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "what is Envoy")
+    assert "_grounding" not in hits[0]
+
+
+async def test_one_name_word_plus_signature_words_is_not_enough(session, repo_id, tmp_path) -> None:
+    row = _row(
+        repo_id,
+        "s",
+        "f.cc",
+        "decode",
+        "function",
+        2,
+        7,
+        sig="decode(Headers headers, Stream stream)",
+    )
+    ctx = await _seed(session, repo_id, tmp_path, [row], {"f.cc": _IMPL})
+    hits = [{"target_path": "f.cc", "page_type": "file_page"}]
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "decode headers stream")
     assert "_grounding" not in hits[0]

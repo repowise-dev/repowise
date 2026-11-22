@@ -351,6 +351,7 @@ async def _symbol_entry(
         "_matched": matched,
         "_verified": verified,
         "_parent": row.parent_name,
+        "_language": row.language,
     }
     # Scored once here, not per sort comparison.
     entry["_relevance"] = _symbol_relevance(entry, term_stems)

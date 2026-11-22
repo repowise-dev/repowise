@@ -38,10 +38,15 @@ from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _GROUNDING_CHAR_BUDGET,
     _GROUNDING_MAX_BODIES,
-    _RELEVANCE_NAME_WEIGHT,
     _SYNTH_FULL_SOURCE_LINES,
 )
-from repowise.server.mcp_server.tool_answer.hydration import _stem, _symbol_relevance
+from repowise.server.mcp_server.tool_answer.hydration import (
+    _is_file_container,
+    _stem,
+    _stem_hit,
+    _symbol_relevance,
+    _text_stems,
+)
 from repowise.server.mcp_server.tool_answer.source import _read_repo_text, _read_symbol_source
 
 # Pages whose ``target_path`` is ``file::Symbol`` or ``file::Type::method``.
@@ -51,10 +56,27 @@ _SYMBOL_PAGE_TYPES = frozenset({"flow_page", "symbol_spotlight"})
 _CALLABLE_KINDS = frozenset({"function", "method"})
 # A definition shorter than this is another declaration, not a body.
 _MIN_BODY_LINES = 3
+# Languages whose bodies are delimited by indentation: a one- or two-line def
+# there is a whole function, never a declaration of one defined elsewhere.
+_INDENT_LANGUAGES = frozenset({"python"})
+
+
+def _declares(kind: str | None, language: str | None, start: int, end: int) -> bool:
+    """A callable whose indexed span is too short for a body in its language."""
+    return (
+        kind in _CALLABLE_KINDS
+        and language not in _INDENT_LANGUAGES
+        and start > 0
+        and end - start + 1 < _MIN_BODY_LINES
+    )
 
 
 def _span(row) -> int:
     return (row.end_line or 0) - (row.start_line or 0) + 1
+
+
+def _row_declares(row) -> bool:
+    return _declares(row.kind, row.language, row.start_line or 0, row.end_line or 0)
 
 
 def _file_stem(path: str) -> str:
@@ -87,15 +109,21 @@ def _bodyless(sym: dict) -> bool:
     """An indexed span too short to hold a body, with no opening brace in it."""
     start, end = sym.get("start_line") or 0, sym.get("end_line") or 0
     text = sym.get("source_excerpt") or sym.get("signature") or ""
-    return start > 0 and end - start + 1 < _MIN_BODY_LINES and "{" not in text
+    return _declares(sym.get("kind"), sym.get("_language"), start, end) and "{" not in text
 
 
 def _on_page(rows: list, path: str, parent: str | None) -> Any | None:
     """The row a symbol page names: its file, its enclosing type when given."""
-    on_file = [r for r in rows if r.file_path == path]
-    if parent:
-        # No row under that type: the page's symbol is not one we can place.
-        on_file = [r for r in on_file if (r.parent_name or None) == parent]
+    # The enclosing type must agree, also when the page names none: a page on a
+    # module-level function is not about a same-named method. A file-sized
+    # namespace or module is not a body (see hydration._is_file_container).
+    on_file = [
+        r
+        for r in rows
+        if r.file_path == path
+        and (r.parent_name or None) == parent
+        and not _is_file_container(r.kind, r.start_line, r.end_line)
+    ]
     # Overloads, or a declaration beside its definition: the longest is the body.
     return max(on_file, key=_span, default=None)
 
@@ -129,12 +157,13 @@ def _best_in_file(rows: list, terms: set[str]) -> Any | None:
         # A constructor scores on its class's name, which the page already gave.
         if r.kind not in _CALLABLE_KINDS or r.name.lstrip("~") == (r.parent_name or ""):
             continue
+        # Two question words in the name, not one: a single shared word
+        # ("connection") names half the methods of a large file.
+        name_stems = _text_stems(r.name)
+        if sum(_stem_hit(t, name_stems) for t in terms) < 2:
+            continue
         entry = {"name": r.name, "signature": r.signature, "docstring": r.docstring}
-        score = _symbol_relevance(entry, terms)
-        # Two question words, not one: a single shared word ("connection")
-        # names half the methods of a large file.
-        if score >= 2 * _RELEVANCE_NAME_WEIGHT:
-            scored.append((-score, r.start_line or 0, r))
+        scored.append((-_symbol_relevance(entry, terms), r.start_line or 0, r))
     return min(scored, key=lambda t: t[:2])[2] if scored else None
 
 
@@ -197,11 +226,7 @@ class _Defs:
         self.by_name = by_name
 
     async def add_definitions_of(self, session, repo_id: str, rows: list) -> None:
-        pending = {
-            r.name
-            for r in rows
-            if r is not None and _span(r) < _MIN_BODY_LINES and r.kind in _CALLABLE_KINDS
-        }
+        pending = {r.name for r in rows if r is not None and _row_declares(r)}
         if not pending:
             return
         for name, extra in _by(await _rows(session, repo_id, pending, set()), "name").items():
@@ -212,8 +237,8 @@ class _Defs:
         return _definition(self.by_name.get(name) or [], decl_path, parent)
 
     def complete(self, row):
-        """*row*, or for a declaration-sized callable, its definition elsewhere."""
-        if row is None or _span(row) >= _MIN_BODY_LINES or row.kind not in _CALLABLE_KINDS:
+        """*row*, or for a declaration, its definition elsewhere."""
+        if row is None or not _row_declares(row):
             return row
         return self.definition(row.name, row.file_path, row.parent_name)
 
