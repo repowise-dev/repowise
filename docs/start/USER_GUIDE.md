@@ -37,12 +37,16 @@ Install with `uv tool install repowise`, `pipx install repowise` or
 the base package. Step by step, including letting your agent do it:
 [Quickstart](QUICKSTART.md).
 
-Two optional extras exist, and neither is about providers:
+Three optional extras exist, and none is about providers:
 
 ```bash
 pip install "repowise[postgres]"     # PostgreSQL + pgvector instead of SQLite
 pip install "repowise[graph-extra]"  # optional graph algorithms via graspologic
+pip install "repowise[local-embed]"  # local semantic search, no service: --embedder fastembed
 ```
+
+`local-embed` covers Python 3.11 and 3.12; on 3.13 and newer, `pip install
+fastembed` does the same.
 
 For local development against a clone:
 
