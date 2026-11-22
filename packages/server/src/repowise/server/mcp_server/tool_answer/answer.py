@@ -177,6 +177,7 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _is_readable_path,
     _repo_root,
 )
+from repowise.server.mcp_server.tool_answer.grounding import attach_grounding_bodies
 from repowise.server.mcp_server.tool_answer.neighbors import (
     attach_graph_neighbors,
     lead_file,
@@ -733,6 +734,13 @@ async def _user_prompt(
     ask: _Ask, hits: list[dict], graph_callers, other_repo_lines: list[dict]
 ) -> str:
     """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
+    # Prompt-only material, so it is fetched here and not in retrieval: a
+    # keyless reply never pays for it.
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            await attach_grounding_bodies(session, ask.repo_id, hits, ask.ctx, ask.question)
+    except Exception:
+        _log.warning("get_answer: grounding body lookup failed", exc_info=True)
     top_paths = [h["target_path"] for h in hits if h.get("target_path")]
     decisions: list[dict] = []
     if _is_why_question(ask.question):
