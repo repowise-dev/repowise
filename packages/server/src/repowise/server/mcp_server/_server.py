@@ -346,6 +346,13 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
+async def _stop_index_warmup() -> None:
+    """Cancel the idle cache warmup before the store it reads closes."""
+    from repowise.server.mcp_server import _warmup
+
+    await _warmup.stop()
+
+
 async def _abort_startup(*tasks: asyncio.Task) -> None:
     """Undo the startup a lifespan raised out of, before it reached its teardown.
 
@@ -724,6 +731,7 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _stop_index_warmup()
         await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
@@ -778,6 +786,7 @@ async def _lifespan(server: FastMCP):
 
     yield
 
+    await _stop_index_warmup()
     await _cancel_task(_release_task)
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
@@ -854,6 +863,9 @@ class _RepowiseMCP(FastMCP):
         return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        from repowise.server.mcp_server import _warmup
+
+        _warmup.call_started()
         principal = self._request_principal()
         if principal is not None:
             from mcp.server.fastmcp.exceptions import ToolError
@@ -1061,6 +1073,18 @@ class _ClientSession(ServerSession):
             except Exception:
                 _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
         await super()._received_request(responder)
+
+    async def _received_notification(self, notification: Any) -> None:
+        await super()._received_notification(notification)
+        # The client has the initialize reply: build the index caches while it
+        # reads the tool list and its model plans the first call.
+        if (
+            isinstance(notification.root, mcp_types.InitializedNotification)
+            and self._init_options.server_name == mcp.name
+        ):
+            from repowise.server.mcp_server import _warmup
+
+            _warmup.start()
 
 
 # The low-level server builds each session from this module name; there is no
