@@ -389,7 +389,7 @@ def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | N
 
     ``None`` when git fails. A ``%ct``-only pass is cheap next to the numstat
     walk, and both traverse the same revisions in the same order, so every
-    commit past this depth is one the walk's ``ts <= since_ts`` check drops.
+    commit past this depth is one the walk's ``ts < since_ts`` check drops.
     """
     try:
         stamps = repo.git.log(  # type: ignore[attr-defined]
@@ -406,7 +406,7 @@ def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | N
 
 def _stamp_after(stamp: str, since_ts: int) -> bool:
     try:
-        return int(stamp) > since_ts
+        return int(stamp) >= since_ts
     except ValueError:  # unparseable stamp: keep it in the window
         return True
 
@@ -634,11 +634,12 @@ def load_commit_index(
     no extra git pass — and lets the caller build per-commit rows downstream
     (see :mod:`git_indexer.commit_rows`).
 
-    When *since_ts* is supplied (unix seconds), commits at or before it are
-    skipped — used by the incremental path to capture only commits newer than
-    the newest already-persisted one, so the commits surface stays current
-    without re-walking the full window. Default (``None``) processes the whole
-    depth.
+    When *since_ts* is supplied (unix seconds), commits older than it are
+    skipped — used by the incremental path to capture commits at or after
+    the newest already-persisted one (upserts are idempotent on the commit
+    SHA, so re-capturing the boundary second is safe), so the commits
+    surface stays current without re-walking the full window. Default
+    (``None``) processes the whole depth.
 
     *provenance_classifier* (an
     :class:`~.git_indexer.agent_provenance.AgentProvenanceClassifier`) labels
@@ -661,8 +662,8 @@ def load_commit_index(
     """
     _report(stats_sink, succeeded=False, commits=0)
 
-    # With *since_ts* only the prefix newer than it is asked of git; the
-    # ``ts <= since_ts`` check in the walk stays, this only stops git from
+    # With *since_ts* only the prefix at or after it is asked of git; the
+    # ``ts < since_ts`` check in the walk stays, this only stops git from
     # diffing commits whose fate is already known.
     depth = commit_limit
     if since_ts is not None:
@@ -723,7 +724,7 @@ def load_commit_index(
 
 
 def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[dict, list[str]]]:
-    """``(header, numstat_lines)`` of each parseable record newer than *since_ts*.
+    """``(header, numstat_lines)`` of each parseable record at or after *since_ts*.
 
     Skips rather than stops at an older commit: the walk is newest first, but
     commit times can be slightly out of order.
@@ -732,7 +733,7 @@ def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[d
 
     for record in records:
         parsed = _parse_commit_record(record)
-        if parsed is not None and (since_ts is None or parsed[0]["ts"] > since_ts):
+        if parsed is not None and (since_ts is None or parsed[0]["ts"] >= since_ts):
             yield parsed
 
 

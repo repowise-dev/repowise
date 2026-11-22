@@ -107,8 +107,9 @@ def test_list_reachable_shas_returns_none_on_a_shallow_clone(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
-    """The incremental capture walks the same commit index but drops commits at
-    or older than *since_ts* — only genuinely new commits are returned."""
+    """The incremental capture walks the same commit index but drops commits
+    older than *since_ts* — commits at the boundary second are re-captured
+    (idempotent on the commit SHA) rather than permanently dropped."""
     import git as gitpython
 
     repo = gitpython.Repo.init(tmp_path)
@@ -122,11 +123,15 @@ async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     all_rows = idx.capture_new_commit_rows()
     assert len(all_rows) == 3
 
-    # Bound at/after the newest → nothing new. (Commits made in the same second
-    # share a timestamp at 1s git resolution, so a far-future bound is the
-    # robust assertion; the precise boundary is covered by the unit test.)
+    # Bound at the newest second → the same-second commits are re-captured
+    # (git timestamps have 1s resolution, so all of these share the newest
+    # second here); a far-future bound captures nothing new.
     newest_ts = max(r["committed_at"].timestamp() for r in all_rows)
-    assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
+    expected = {
+        r["sha"] for r in all_rows if r["committed_at"].timestamp() >= newest_ts
+    }
+    assert {r["sha"] for r in idx.capture_new_commit_rows(since_ts=int(newest_ts))} == expected
+    assert idx.capture_new_commit_rows(since_ts=int(newest_ts) + 10) == []
 
 
 def _configure_author(repo, name: str, email: str) -> None:

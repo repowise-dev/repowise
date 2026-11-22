@@ -117,8 +117,9 @@ def _mock_repo(commits: list[dict]):
 
 
 def test_commit_sink_since_ts_drops_old_commits() -> None:
-    """``since_ts`` filters the sink to commits strictly newer than the bound —
-    the incremental capture path's freshness guarantee."""
+    """``since_ts`` filters the sink to commits at or after the bound — the
+    incremental capture path's freshness guarantee, inclusive so same-second
+    commits are re-captured (idempotently) rather than dropped."""
     commits = [
         {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
          "files": [(1, 0, "src/a.py")]},
@@ -130,13 +131,19 @@ def test_commit_sink_since_ts_drops_old_commits() -> None:
     repo = _mock_repo(commits)
     sink: list[dict] = []
     load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1500)
-    # Only commits with ts > 1500 survive (3000, 2000).
+    # Only commits with ts >= 1500 survive (3000, 2000).
     assert sorted(c["sha"] for c in sink) == ["mid", "new"]
 
     repo2 = _mock_repo(commits)
     sink2: list[dict] = []
+    # The bound is inclusive: a commit exactly at since_ts is re-captured.
     load_commit_index(repo2, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
-    assert sink2 == []
+    assert sorted(c["sha"] for c in sink2) == ["new"]
+
+    repo3 = _mock_repo(commits)
+    sink3: list[dict] = []
+    load_commit_index(repo3, 100, {"src/a.py"}, commit_sink=sink3, since_ts=3001)
+    assert sink3 == []
 
 
 def test_since_ts_bounds_the_numstat_walk_to_the_surviving_prefix() -> None:
@@ -153,13 +160,13 @@ def test_since_ts_bounds_the_numstat_walk_to_the_surviving_prefix() -> None:
     ]
     repo = _mock_repo(commits)
     sink: list[dict] = []
-    # ts > 4800 keeps c0..c1 (5000, 4900); c2 is exactly 4800 and is excluded.
+    # ts >= 4800 keeps c0..c2 (5000, 4900, 4800); c3 at 4700 is excluded.
     load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=4800)
 
-    assert sorted(c["sha"] for c in sink) == ["c0", "c1"]
+    assert sorted(c["sha"] for c in sink) == ["c0", "c1", "c2"]
     numstat_calls = [c for c in repo._log_calls if "--numstat" in c]
     assert len(numstat_calls) == 1
-    assert numstat_calls[0][0] == "-2"
+    assert numstat_calls[0][0] == "-3"
 
 
 def test_since_ts_newer_than_every_commit_skips_the_numstat_walk() -> None:
@@ -172,6 +179,35 @@ def test_since_ts_newer_than_every_commit_skips_the_numstat_walk() -> None:
     assert load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=9999) == {}
     assert sink == []
     assert [c for c in repo._log_calls if "--numstat" in c] == []
+
+
+def test_since_ts_keeps_same_second_commits_at_the_boundary() -> None:
+    """Commits sharing the boundary timestamp are captured, not dropped.
+
+    Git timestamps have 1s resolution, so rapid or scripted commits often
+    land in the same second as the newest already-persisted one; the
+    incremental walk must re-capture them (idempotent on the commit SHA)
+    instead of silently skipping them forever.
+    """
+    commits = [
+        {"sha": "c5", "an": "A", "ae": "a@x", "ct": 1700000005, "subj": "c5",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "c4", "an": "A", "ae": "a@x", "ct": 1700000000, "subj": "c4",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "c3", "an": "A", "ae": "a@x", "ct": 1700000000, "subj": "c3",
+         "files": [(1, 0, "src/b.py")]},
+        {"sha": "c2", "an": "A", "ae": "a@x", "ct": 1700000000, "subj": "c2",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "c1", "an": "A", "ae": "a@x", "ct": 1699999000, "subj": "c1",
+         "files": [(1, 0, "src/a.py")]},
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1700000000)
+    # Same-second c4/c3/c2 are kept along with the newer c5; older c1 drops.
+    assert sorted(c["sha"] for c in sink) == ["c2", "c3", "c4", "c5"]
+    numstat_calls = [c for c in repo._log_calls if "--numstat" in c]
+    assert numstat_calls[0][0] == "-4"
 
 
 def test_commit_sink_default_none_is_noop() -> None:
