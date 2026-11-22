@@ -117,13 +117,28 @@ def _deepest_ancestor(parts: list[str], dir_files: Counter) -> str:
     return ""
 
 
+def _named_like(tail: str, by_name: dict[str, list[str]]) -> list[str]:
+    """Directories whose name holds *tail*, sits inside it, or spells it closely."""
+    names = {
+        n for n in by_name if len(tail) >= 3 and (tail in n or (len(n) >= 3 and n in tail))
+    }
+    names.update(difflib.get_close_matches(tail, list(by_name), n=_NEAREST_DIRS, cutoff=0.8))
+    return [d for n in names for d in by_name[n]]
+
+
+def _children(inside: str, dir_files: Counter) -> list[str]:
+    """The directories directly in *inside* (``""`` for the root), largest first."""
+    depth = inside.count("/")
+    kids = (d for d in dir_files if d.startswith(inside) and d.count("/") == depth)
+    return sorted(kids, key=lambda d: (-dir_files[d], d))
+
+
 def _nearest(missing: list[str], dir_files: Counter) -> list[str]:
     """Existing directories near each missing prefix.
 
-    A directory whose name holds the missing one's last segment (or is a close
-    spelling of it) comes first, inside the deepest existing ancestor before
-    elsewhere, then shallowest and largest. Without one, the largest
-    directories directly inside that ancestor.
+    A directory named like the missing one's last segment comes first, inside
+    the deepest existing ancestor before elsewhere, then shallowest and
+    largest. Without one, the largest directories directly inside that ancestor.
     """
     by_name: dict[str, list[str]] = {}
     for d in dir_files:
@@ -131,23 +146,12 @@ def _nearest(missing: list[str], dir_files: Counter) -> list[str]:
     picked: list[str] = []
     for m in missing:
         parts = m.split("/")
-        tail = parts[-1].lower()
         ancestor = _deepest_ancestor(parts, dir_files)
         inside = f"{ancestor}/" if ancestor else ""
-        named = {
-            n for n in by_name if len(tail) >= 3 and (tail in n or (len(n) >= 3 and n in tail))
-        }
-        named.update(difflib.get_close_matches(tail, list(by_name), n=_NEAREST_DIRS, cutoff=0.8))
         found = sorted(
-            (d for n in named for d in by_name[n]),
+            _named_like(parts[-1].lower(), by_name),
             key=lambda d: (not d.startswith(inside), d.count("/"), -dir_files[d], d),
-        )
-        if not found:
-            depth = inside.count("/")
-            found = sorted(
-                (d for d in dir_files if d.startswith(inside) and d.count("/") == depth),
-                key=lambda d: (-dir_files[d], d),
-            )
+        ) or _children(inside, dir_files)
         picked.extend(d for d in found if d not in picked)
     return [f"{d}/" for d in picked[:_NEAREST_DIRS]]
 
@@ -176,6 +180,7 @@ async def resolve_scope(
         return ScopeResolution(None, [], [])
     prefixes = await _split_pieces(session, repo_id, raw or "", root)
     found, missing = [], []
+    # One indexed query per prefix: a scope names a handful, never a list to batch.
     for p in prefixes:
         (found if await _holds_files(session, repo_id, p, root) else missing).append(p)
     if found:
