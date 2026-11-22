@@ -164,22 +164,30 @@ def _is_program(language: str) -> bool:
     return bool(spec and spec.is_code and not spec.is_infra)
 
 
+# Language tags that are everyday words too ("go ahead", "plan c"): they name
+# the language only spelled as its name, capitalised.
+_WORD_TAGS = frozenset({"go", "c", "r"})
+
+
 def _word_language(word: str) -> str | None:
-    """The language a query word names: its tag (``proto``, ``go``), or a
+    """The language a query word names: its tag (``proto``, ``Go``), or a
     dotted extension (``.tsx``). A bare extension is not enough: ``page`` and
     ``h`` are words first."""
     if word.startswith("."):
-        tag = REGISTRY.from_extension(word)
+        tag = REGISTRY.from_extension(word.lower())
         return tag if tag and tag != "unknown" else None
-    return word if REGISTRY.get(word) is not None else None
+    tag = word.lower()
+    if REGISTRY.get(tag) is None or (tag in _WORD_TAGS and not word[0].isupper()):
+        return None
+    return tag
 
 
 def asked_languages(query: str) -> frozenset[str]:
     """Language families *query* asks for: a language tag or extension, a
     file of that language, or a file-type word (``script``, ``schema``)."""
     asked: set[str] = set()
-    for word in re.findall(r"\.?[a-z0-9+#]+", query.lower()):
-        asked.update(_KIND_WORDS.get(word.lstrip("."), ()))
+    for word in re.findall(r"\.?[A-Za-z0-9+#]+", query):
+        asked.update(_KIND_WORDS.get(word.lstrip(".").lower(), ()))
         if (tag := _word_language(word)) is not None:
             asked.add(tag)
     for token in path_tokens(query):
