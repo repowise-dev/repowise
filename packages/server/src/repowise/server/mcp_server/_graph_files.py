@@ -31,6 +31,7 @@ from typing import Any, TypeVar
 from sqlalchemy import select
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.persistence.database import MCP_CACHE_DIRNAME
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server._index_state import index_state_key
 
@@ -60,7 +61,6 @@ _LOCKS: dict[str, asyncio.Lock] = {}
 # Ceiling: no eviction beyond that overwrite (about 50 MB on a 650 MB index), and
 # a file whose repo left the workspace stays until the index directory goes;
 # add a sweep here if projections ever grow per question rather than per index.
-_STORE_DIRNAME = "mcp_cache"
 # Bump when a persisted projection's build or pickled layout changes: a source
 # checkout keeps one __version__ across commits, so only this number tells them
 # apart there.
@@ -166,13 +166,7 @@ async def per_index(
         if hit is not None:
             return hit
         stored_at = _stored_path(repository, repo_id, name) if persist else None
-        value = _MISS
-        if stored_at is not None:
-            value = await asyncio.to_thread(_load_stored, stored_at, repo_id, name, key)
-        if value is _MISS:
-            value = await build()
-            if stored_at is not None:
-                _store_soon(stored_at, repo_id, name, key, value)
+        value = await _load_or_build(stored_at, repo_id, name, key, build)
         entry = _CACHE.get(repo_id)
         if entry is None or entry[0] != key:
             # An older index state of this repo is never asked for again.
@@ -183,6 +177,19 @@ async def per_index(
         while len(_CACHE) > _CACHE_MAX_REPOS:
             _CACHE.popitem(last=False)
         return value
+
+
+async def _load_or_build(
+    stored_at: Path | None, repo_id: str, name: str, key: str, build: Callable[[], Awaitable[_T]]
+) -> _T:
+    """The sealed copy at *stored_at* for *key*, else a fresh build saved there."""
+    if stored_at is None:
+        return await build()
+    value = await asyncio.to_thread(_load_stored, stored_at, repo_id, name, key)
+    if value is _MISS:
+        value = await build()
+        _store_soon(stored_at, repo_id, name, key, value)
+    return value
 
 
 def _stored_path(repository: Any, repo_id: str, name: str) -> Path | None:
@@ -196,7 +203,7 @@ def _stored_path(repository: Any, repo_id: str, name: str) -> Path | None:
     if not index_dir.is_dir():
         return None
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", repo_id)
-    return index_dir / _STORE_DIRNAME / f"{safe_id}.{name}.pkl"
+    return index_dir / MCP_CACHE_DIRNAME / f"{safe_id}.{name}"
 
 
 def _store_domain(repo_id: str, name: str) -> str:

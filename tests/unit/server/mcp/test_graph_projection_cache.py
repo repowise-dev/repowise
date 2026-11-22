@@ -138,7 +138,7 @@ async def test_a_new_server_process_loads_the_projection_instead_of_building(
     calls: list[int] = []
     build = _counting_build(calls)
     first = await per_index(session, repo_id, "adjacency", build, persist=True)
-    assert await _stored(index_dir) == [f"{repo_id}.adjacency.pkl"]
+    assert await _stored(index_dir) == [f"{repo_id}.adjacency"]
 
     _graph_files.reset_cache()  # what a new process starts with
     loaded = await per_index(session, repo_id, "adjacency", build, persist=True)
@@ -185,7 +185,7 @@ async def test_a_copy_written_by_another_release_is_rebuilt(
     assert calls == [1, 1]
     assert rebuilt == {"built": 2}
     # The rebuilt copy replaced the old one rather than sitting beside it.
-    assert await _stored(index_dir) == [f"{repo_id}.adjacency.pkl"]
+    assert await _stored(index_dir) == [f"{repo_id}.adjacency"]
 
 
 @pytest.mark.asyncio
@@ -194,8 +194,8 @@ async def test_a_copy_is_never_read_for_another_repo(session, repo_id, index_dir
     await _stored(index_dir)
     store = index_dir / ".repowise" / "mcp_cache"
     # A copy renamed to another repo's slot fails its seal.
-    (store / f"{repo_id}.adjacency.pkl").rename(store / "other.adjacency.pkl")
-    path = store / "other.adjacency.pkl"
+    (store / f"{repo_id}.adjacency").rename(store / "other.adjacency")
+    path = store / "other.adjacency"
 
     assert _graph_files._load_stored(path, "other", "adjacency", "any") is _graph_files._MISS
 
@@ -205,7 +205,7 @@ async def test_a_copy_is_never_read_for_another_repo(session, repo_id, index_dir
 async def test_an_unsealed_corrupt_or_partial_copy_is_rebuilt(session, repo_id, index_dir, content):
     calls: list[int] = []
     build = _counting_build(calls)
-    path = index_dir / ".repowise" / "mcp_cache" / f"{repo_id}.adjacency.pkl"
+    path = index_dir / ".repowise" / "mcp_cache" / f"{repo_id}.adjacency"
     builds_before = 0
     if content == "truncated":
         builds_before = 1
@@ -226,7 +226,7 @@ async def test_an_unsealed_corrupt_or_partial_copy_is_rebuilt(session, repo_id, 
 def test_two_servers_writing_and_reading_one_copy_never_fail(index_dir):
     import threading
 
-    path = index_dir / ".repowise" / "mcp_cache" / "repo1.adjacency.pkl"
+    path = index_dir / ".repowise" / "mcp_cache" / "repo1.adjacency"
     value = {f"f{i}.py": [f"g{i}.py"] for i in range(5000)}
     errors: list[BaseException] = []
     seen: list[object] = []
@@ -259,7 +259,7 @@ def test_two_servers_writing_and_reading_one_copy_never_fail(index_dir):
 
 
 def test_temp_files_a_killed_write_left_are_removed(index_dir):
-    path = index_dir / ".repowise" / "mcp_cache" / "repo1.adjacency.pkl"
+    path = index_dir / ".repowise" / "mcp_cache" / "repo1.adjacency"
     path.parent.mkdir()
     orphan = path.parent / f"{path.name}deadbeef.tmp"
     orphan.write_bytes(b"x")
