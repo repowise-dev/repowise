@@ -80,7 +80,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `max_file_pages` | unset | >= 0 | Most per-file pages to write; 0 means every file. Unset lets the repo size decide. |  |
 | `folder_coverage` | `[]` |  | Least share of files per folder that get their own page, as "glob=0.5". |  |
 | `enable_onboarding` | `true` |  | Write the onboarding pages. |  |
-| `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
+| `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, fastembed (the local-embed extra), openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
 | `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
@@ -1366,7 +1366,7 @@ Keys resolve in order:
 | `REPOWISE_PROVIDER` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset: the saved global choice (provider_config.json), then REPOWISE_PROVIDER, then the first provider whose API key is present. | `provider` (the file wins) |
 | `REPOWISE_MODEL` | unset |  | The model id to use with the provider. Unset: the saved global choice (provider_config.json), then REPOWISE_MODEL, then the provider's default model. | `model` (the file wins) |
 | `REPOWISE_REASONING` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `reasoning` (this wins) |
-| `REPOWISE_EMBEDDER` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `embedder` (this wins) |
+| `REPOWISE_EMBEDDER` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, fastembed (the local-embed extra), openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `embedder` (this wins) |
 | `REPOWISE_EMBEDDING_MODEL` | unset |  | The embedding model id. Unset uses the embedder's default. | `embedding_model` (this wins) |
 | `REPOWISE_DOC_MODEL` | unset |  | A different model just for get_answer write-ups. |  |
 | `REPOWISE_EMBEDDING_DIMS` | unset | > 0 | Force the embedding vector width. |  |

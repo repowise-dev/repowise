@@ -118,6 +118,13 @@ postgres = [
 graph-extra = [
     "graspologic>=3.4,<4",
 ]
+# In-process local embeddings (`repowise reindex --embedder fastembed`): ONNX
+# runtime + a ~65 MB model, no server, no key. Never a default dependency.
+# Python 3.12 and older only: on 3.13+ fastembed needs numpy 2, which
+# graspologic (graph-extra) refuses, and the lock must keep holding both.
+local-embed = [
+    "fastembed>=0.7,<1; python_version < '3.13'",
+]
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.3,<2",

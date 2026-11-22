@@ -91,7 +91,33 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
     checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
+    embedder_row = _embedder_package_check(repo_path)
+    if embedder_row is not None:
+        checks.append(embedder_row)
     return checks
+
+
+def _embedder_package_check(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A warning when the repo's embedder cannot be imported here, else no row.
+
+    An optional extra (``local-embed`` for fastembed) installed where the index
+    was built but not where the MCP server or ``update`` runs leaves search
+    without its vectors; the install line is the fix.
+    """
+    from repowise.cli.providers import resolve_embedder_for_repo
+    from repowise.core.providers.embedding.registry import (
+        _BUILTIN_EMBEDDERS,
+        import_builtin_embedder,
+    )
+
+    name = resolve_embedder_for_repo(repo_path)
+    if name not in _BUILTIN_EMBEDDERS:
+        return None
+    try:
+        import_builtin_embedder(name)
+    except ImportError as exc:
+        return _check("Embedder", True, str(exc), check_id="embedder-package", warn=True)
+    return None
 
 
 def _no_provider_detail(repo_path: _DoctorPath) -> str:
