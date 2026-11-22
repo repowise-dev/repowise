@@ -357,24 +357,33 @@ def _git_files_holding(
     deadline = time.monotonic() + _GIT_GREP_SECONDS
     found: list[str] = []
     for f in untracked:
-        if time.monotonic() > deadline:
+        holds = _holds(root / f, held) if time.monotonic() <= deadline else None
+        if holds is None:
             return None
-        if _holds(root / f, held):
+        if holds:
             found.append(f)
     return tracked + found
 
 
-def _holds(path: Path, needle: re.Pattern[bytes]) -> bool:
+def _holds(path: Path, needle: re.Pattern[bytes]) -> bool | None:
     """Whether the regular file's bytes match *needle*, as git grep reads them.
-    A symlink (git greps its target path, not the file it names), a file past
-    the stream cap or an unreadable one does not."""
+
+    A symlink does not (git greps its target path, not the file it names), nor
+    does a file gone since the listing. ``None`` for a file this cannot read
+    whole (unreadable, or past the stream cap): the caller's fallback scan reads
+    it and says why it could not.
+    """
     try:
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_STREAM_BYTES:
+        if not stat.S_ISREG(info.st_mode):
             return False
+        if info.st_size > _MAX_STREAM_BYTES:
+            return None
         return needle.search(path.read_bytes()) is not None
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return None
 
 
 _UNTRACKED_LOCK = threading.Lock()

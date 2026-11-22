@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -1278,6 +1279,26 @@ def test_an_untracked_symlink_is_not_followed(scan_repo, tmp_path_factory):
 
 
 def test_a_slow_untracked_read_falls_back_as_a_slow_grep(scan_repo, monkeypatch):
-    monkeypatch.setattr(_line_hits, "_GIT_GREP_SECONDS", -1.0)
+    real = _line_hits._holds
+    reads: list[str] = []
 
+    def slow(path, needle):
+        reads.append(path.name)
+        time.sleep(1.2)
+        return real(path, needle)
+
+    for name in ("a.txt", "b.txt"):
+        (scan_repo / name).write_text("x\n", encoding="utf-8")
+    # The tracked grep of this tiny repo finishes well inside the budget.
+    monkeypatch.setattr(_line_hits, "_GIT_GREP_SECONDS", 2.0)
+    monkeypatch.setattr(_line_hits, "_holds", slow)
+
+    assert _line_hits._files_holding(scan_repo, "retryLimit") is None
+    assert 0 < len(reads) < 4  # four untracked files; the budget stops the pass
+
+
+def test_an_untracked_file_the_pass_cannot_read_whole_falls_back(scan_repo, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 4)
+
+    # README.md is untracked and past the cap: the fallback scan reports it.
     assert _line_hits._files_holding(scan_repo, "retryLimit") is None
