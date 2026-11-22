@@ -517,7 +517,7 @@ Raw data, every cell:
   reported beside the grader-fixed ones.
 - **Grader fixes.** Every hit was read by hand, and each fix applies to every
   arm. Three ccx-domain tasks (155, 156, 157) whose oracle drifted from the
-  curator's `tests/ground_truth.json` are scored by file F1 against that ground
+  curator's ground-truth file are scored by file F1 against that ground
   truth. Negative checks that match correct text are reversed: envoy n2, which
   fires on "`newStream(response_decoder, ...)`"; cilium-ebpf n1 and n2, which
   ignore negation; kafka-contributor-workflow's `Maven|pom\.xml`, which matches
