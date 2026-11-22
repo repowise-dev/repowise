@@ -12,11 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.62.0] - 2026-11-22
 
-repowise 0.62 measures what the code costs at run time and shows it to you. Store a profile, a benchmark, a set of test timings or query counts with `repowise evidence add`, and the Performance tab lists the production functions the run measured, ranked by self time with an interval on every share. A measured run confirms the static causes it reaches, keeps a cause in the queue that its name or role would have held back, and turns a measured hotspot with no static cause into a work item of its own. `repowise evidence setup` prints, per build unit, how to collect coverage, test results and profiles here (and writes a CI file with `--write`), `repowise perf measure` says whether a change made a command faster or slower with an interval, and `repowise perf check` gates a change on allocations per operation.
+repowise 0.62 shows what your code costs at run time. Store a profile, benchmark or test run with `repowise evidence add`, and the Performance tab ranks the functions it measured and confirms the causes behind them. `repowise evidence setup` shows how to collect that evidence for each part of your repository.
 
-Every repository now has a model of its build units: the packages, crates, projects and modules it builds, the files each owns and the units each depends on, across Python, JavaScript, Go, Rust, Maven, Gradle, .NET, Dart, Swift, PHP, Delphi and Elixir. Coverage and evidence setup read it, and impacted-test selection uses the per-test coverage map for changes inside function bodies. After the first index, `init` writes a repo report, most urgent first, that you can read in the app and mark as you go. Setup finishes itself: `repowise next --prompt setup` hands what is left to your agent, `init` ends on who to restart and what to ask, and dates show in your own time zone. The Usage & savings page leads with how much less your agents had to read and the checks they ran.
+Every repository gets a map of its build units across 12 ecosystems, which drives coverage setup and test selection. The first index writes a repo report you can work through, and `repowise next --prompt setup` hands the rest of setup to your agent.
 
-The agent surface is faster and more precise. A new MCP server answers its first `get_answer` in about half the time, a full keyless `get_answer` on a large Go repository takes 1.8 s at the median instead of 6.6 s, `get_context` references come back 30% to 46% faster, and every tool schema is 12% to 21% smaller. Scoped answers stay in their scope, search finds definitions in files the index skips, and the generated CLAUDE.md gets Claude Code to call Repowise first.
+Agent calls are faster and sharper: first answers in about half the time, keyless `get_answer` 3.7x faster at the median on a large repository, and tool schemas up to 21% smaller.
 
 ### Highlights
 
