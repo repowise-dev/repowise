@@ -144,9 +144,11 @@ function MarkdownCode({
   }
   // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
   // same nominal size, so 1em mono inside 16px sans reads oversized.
+  // Wraps at spaces only; an identifier splits only when it alone is wider
+  // than the line (overflow-wrap), never mid-name to fill one (no break-all).
   return (
     <code
-      className="break-all whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere]"
+      className="whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere] [box-decoration-break:clone]"
       {...props}
     >
       {children}
