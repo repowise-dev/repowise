@@ -49,14 +49,19 @@ def existing_vector_dim(lance_dir: Path) -> int | None:
     return dim
 
 
-def semantic_search_status(embedder: str | None, embed_failed_pages: int) -> str:
+def semantic_search_status(embedder: str | None, embed_failed_pages: int, store: Any = None) -> str:
     """Whether a run left semantic search usable: ``available`` or not.
 
     Read from what the run did, not only from the embedder's name: a real
     embedder whose vector writes failed leaves the same empty index the mock
-    does, and calling it available hid exactly that.
+    does, and calling it available hid exactly that. Likewise a named embedder
+    that could not be built: the run's *store* then embedded keyless vectors.
     """
+    from repowise.core.providers.embedding import store_has_semantic_vectors
+
     if not embedder or embedder == "mock" or embed_failed_pages:
+        return "unavailable"
+    if store is not None and not store_has_semantic_vectors(store):
         return "unavailable"
     return "available"
 

@@ -34,9 +34,16 @@ def _fresh_module():
 class _FakeTextEmbedding:
     instances: ClassVar[list[_FakeTextEmbedding]] = []
 
-    def __init__(self, model_name: str, cache_dir: str | None = None, threads: Any = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        cache_dir: str | None = None,
+        threads: Any = None,
+        local_files_only: bool = False,
+    ) -> None:
         self.model_name = model_name
         self.cache_dir = cache_dir
+        self.local_files_only = local_files_only
         self.calls: list[tuple[str, list[str]]] = []
         self.instances.append(self)
 
@@ -168,3 +175,206 @@ def test_doctor_prints_the_install_line_with_its_brackets(
     _render.render_checks(ctx, [row], all_ok=True)
 
     assert 'pip install "repowise[local-embed]"' in out.export_text()
+
+
+class _OfflineTextEmbedding(_FakeTextEmbedding):
+    """A model that is not cached, on a machine that cannot download it."""
+
+    downloads: ClassVar[list[int]] = []
+    EMBEDDINGS_REGISTRY: ClassVar[list[type]] = []
+
+    def __init__(self, model_name: str, *args: Any, **kwargs: Any) -> None:
+        super().__init__(model_name, *args, **kwargs)
+        raise ValueError(f"Could not load model {model_name} from any source.")
+
+    @classmethod
+    def _get_model_description(cls, model_name: str) -> str:
+        return model_name
+
+    @classmethod
+    def download_model(cls, model: str, cache_dir: str, retries: int = 3) -> None:
+        cls.downloads.append(retries)
+        raise ValueError(f"Could not load model {model} from any source.")
+
+
+@pytest.fixture
+def offline_fastembed(fake_fastembed, monkeypatch: pytest.MonkeyPatch):
+    _OfflineTextEmbedding.downloads = []
+    _OfflineTextEmbedding.EMBEDDINGS_REGISTRY = [_OfflineTextEmbedding]
+    monkeypatch.setattr(sys.modules["fastembed"], "TextEmbedding", _OfflineTextEmbedding)
+    return _OfflineTextEmbedding
+
+
+@pytest.fixture
+def err_out(monkeypatch: pytest.MonkeyPatch):
+    from rich.console import Console
+
+    from repowise.cli.providers import embedders
+
+    out = Console(record=True, width=400)
+    monkeypatch.setattr("repowise.cli.helpers.err_console", out)
+    monkeypatch.setattr(embedders, "_REPORTED_LOAD_FAILURES", set())
+    return out
+
+
+async def test_a_cached_model_opens_without_the_network(fake_fastembed) -> None:
+    from repowise.core.providers.embedding.registry import get_embedder
+
+    await get_embedder("fastembed").embed(["page"])
+
+    (model,) = fake_fastembed.instances
+    assert model.local_files_only
+
+
+async def test_a_model_that_cannot_load_is_tried_once_per_process(offline_fastembed) -> None:
+    from repowise.core.providers.embedding.registry import get_embedder
+
+    for embedder in (get_embedder("fastembed"), get_embedder("fastembed")):
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match=r"could not load BAAI/bge-small-en-v1\.5"):
+                await embedder.embed(["page"])
+
+    # One cache look and one download, with one try: fastembed's own three
+    # tries sleep 39 s before an offline run could fall back.
+    assert offline_fastembed.downloads == [1]
+    assert [m.local_files_only for m in offline_fastembed.instances] == [True]
+
+
+def test_a_build_that_cannot_load_the_model_goes_keyless_in_one_line(
+    offline_fastembed, err_out
+) -> None:
+    from repowise.cli.providers.embedders import build_embedder
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    first = build_embedder("fastembed")
+    second = build_embedder("fastembed")  # init builds one for the store, one for generation
+
+    assert isinstance(first, KeylessEmbedder) and isinstance(second, KeylessEmbedder)
+    assert offline_fastembed.downloads == [1]
+    lines = err_out.export_text().strip().splitlines()
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("Semantic search is off for this run: fastembed could not load")
+    assert "repowise reindex --embedder fastembed" in lines[0]
+
+
+def test_a_build_loads_the_model_it_returns(fake_fastembed, err_out) -> None:
+    from repowise.cli.providers.embedders import build_embedder
+
+    embedder = build_embedder("fastembed")
+
+    assert type(embedder).__name__ == "FastEmbedEmbedder"
+    assert len(fake_fastembed.instances) == 1
+    assert err_out.export_text() == ""
+
+
+def test_the_fallback_warning_keeps_the_install_line_brackets(
+    monkeypatch: pytest.MonkeyPatch, err_out
+) -> None:
+    from repowise.cli.providers.embedders import build_embedder
+
+    monkeypatch.setitem(sys.modules, "fastembed", None)
+
+    build_embedder("fastembed")
+
+    assert f"pip install {_install()}" in err_out.export_text()
+
+
+@pytest.mark.parametrize("cause", ["missing package", "offline"])
+def test_reindex_with_an_unavailable_embedder_exits_1_without_aborting(
+    cause: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, err_out, request
+) -> None:
+    import click
+    from rich.console import Console
+
+    from repowise.cli.commands import reindex_cmd
+
+    out = Console(record=True, width=400)
+    monkeypatch.setattr(reindex_cmd, "console", out)
+    if cause == "missing package":
+        monkeypatch.setitem(sys.modules, "fastembed", None)  # Python 3.13+: the extra is empty
+    else:
+        request.getfixturevalue("offline_fastembed")
+
+    with pytest.raises(click.exceptions.Exit) as raised:
+        reindex_cmd._embedder_for(tmp_path, "fastembed")
+
+    assert raised.value.exit_code == 1
+    said = err_out.export_text()
+    assert (f"pip install {_install()}" if cause == "missing package" else "could not load") in said
+    # It stops: no claim that this run carries on with keyless vectors.
+    assert "Falling back" not in said and "off for this run" not in said
+    assert "Nothing was re-embedded" in out.export_text()
+
+
+def test_a_run_that_fell_back_does_not_report_semantic_search() -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.providers.vector_store import semantic_search_status
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    # init names fastembed, but the model never loaded: the store embedded keyless.
+    fell_back = SimpleNamespace(_embedder=KeylessEmbedder())
+    real = SimpleNamespace(_embedder=object())
+
+    assert semantic_search_status("fastembed", 0, fell_back) == "unavailable"
+    assert semantic_search_status("fastembed", 0, real) == "available"
+    assert semantic_search_status("fastembed", 0) == "available"
+
+
+def test_the_mcp_server_names_the_same_install_line() -> None:
+    from repowise.server.mcp_server._server import _EMBEDDER_REMEDIATION
+
+    assert f"pip install {_install()}" in _EMBEDDER_REMEDIATION["fastembed"]
+
+
+class _FirstRunTextEmbedding(_FakeTextEmbedding):
+    """Online, nothing cached yet: the cache look fails until a download lands."""
+
+    downloaded: ClassVar[list[int]] = []
+    EMBEDDINGS_REGISTRY: ClassVar[list[type]] = []
+
+    def __init__(self, model_name: str, *args: Any, **kwargs: Any) -> None:
+        if kwargs.get("local_files_only") and not self.downloaded:
+            raise ValueError("Could not find model in cache_dir")
+        super().__init__(model_name, *args, **kwargs)
+
+    @classmethod
+    def _get_model_description(cls, model_name: str) -> str:
+        return model_name
+
+    @classmethod
+    def download_model(cls, model: str, cache_dir: str, retries: int = 3) -> None:
+        cls.downloaded.append(retries)
+
+
+async def test_a_first_run_downloads_once_and_shares_the_model(
+    fake_fastembed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FirstRunTextEmbedding.downloaded = []
+    _FirstRunTextEmbedding.EMBEDDINGS_REGISTRY = [_FirstRunTextEmbedding]
+    monkeypatch.setattr(sys.modules["fastembed"], "TextEmbedding", _FirstRunTextEmbedding)
+    from repowise.core.providers.embedding.registry import get_embedder
+
+    for embedder in (get_embedder("fastembed"), get_embedder("fastembed")):
+        await embedder.embed(["page"])
+
+    assert _FirstRunTextEmbedding.downloaded == [1]
+    # Opened from the cache it just filled, once for both embedders.
+    assert [m.local_files_only for m in fake_fastembed.instances] == [True]
+
+
+async def test_without_fastembeds_model_classes_it_downloads_the_usual_way(
+    fake_fastembed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _NoRegistry(_FakeTextEmbedding):
+        def __init__(self, model_name: str, *args: Any, **kwargs: Any) -> None:
+            if kwargs.get("local_files_only"):
+                raise ValueError("Could not find model in cache_dir")
+            super().__init__(model_name, *args, **kwargs)
+
+    monkeypatch.setattr(sys.modules["fastembed"], "TextEmbedding", _NoRegistry)
+    from repowise.core.providers.embedding.registry import get_embedder
+
+    await get_embedder("fastembed").embed(["page"])
+
+    assert [m.local_files_only for m in fake_fastembed.instances] == [False]

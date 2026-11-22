@@ -573,7 +573,9 @@ def _stamp_full_init_scope(
     from repowise.cli.providers import semantic_search_command, semantic_search_status
 
     semantic = semantic_search_status(
-        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+        embedder_name_resolved,
+        getattr(result, "embed_failed_pages", 0),
+        getattr(result, "vector_store", None),
     )
     stamp_index_scope(
         state,

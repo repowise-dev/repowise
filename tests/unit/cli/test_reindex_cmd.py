@@ -319,7 +319,7 @@ async def test_reindex_auto_honours_the_repo_pinned_embedder(
 
     built: dict[str, str] = {}
 
-    def fake_build_embedder(name: str, _repo_path: object):
+    def fake_build_embedder(name: str, _repo_path: object, **_kw: object):
         built["name"] = name
         raise click.Abort()
 
@@ -383,7 +383,7 @@ async def test_auto_replaces_a_mock_pin_with_a_detected_embedder(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     built: dict[str, str] = {}
 
-    def fake_build_embedder(name: str, _repo_path: object):
+    def fake_build_embedder(name: str, _repo_path: object, **_kw: object):
         built["name"] = name
         raise click.Abort()
 
@@ -565,7 +565,7 @@ async def _switch_embedder(
     )
     if to != "mock":
         monkeypatch.setattr(
-            "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: object()
+            "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: object()
         )
 
     await reindex_cmd._reindex(tmp_path, to, batch_size=20)
@@ -736,7 +736,7 @@ async def test_a_missing_ollama_model_stops_on_the_first_batch_with_the_pull_com
         "repowise.core.persistence.vector_store.LanceDBVectorStore", lambda *a, **k: _Store()
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: object()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: object()
     )
 
     with pytest.raises(click.ClickException) as exc_info:
