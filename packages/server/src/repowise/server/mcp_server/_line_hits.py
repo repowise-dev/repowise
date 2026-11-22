@@ -343,7 +343,18 @@ def _git_files_holding(
         args += ["--", *globs]
     # Exit 1 is "no file matched".
     tracked = _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
-    untracked = None if tracked is None else _untracked_files(root)
+    if tracked is None:
+        return None
+    untracked = _untracked_holding(root, needle, word=word, globs=globs)
+    return None if untracked is None else tracked + untracked
+
+
+def _untracked_holding(
+    root: Path, needle: str, *, word: bool, globs: tuple[str, ...]
+) -> list[str] | None:
+    """The untracked files git grep ``--untracked`` would add, matched in
+    Python; ``None`` when they cannot all be read in the grep's time budget."""
+    untracked = _untracked_files(root)
     if untracked is None:
         return None
     if globs:
@@ -362,7 +373,7 @@ def _git_files_holding(
             return None
         if holds:
             found.append(f)
-    return tracked + found
+    return found
 
 
 def _holds(path: Path, needle: re.Pattern[bytes]) -> bool | None:
