@@ -1322,9 +1322,7 @@ def run_mcp(
     try:
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
-        from repowise.server.mcp_server import ensure_full_surface
-
-        ensure_full_surface()
+        # Selection imports and attaches only the tools it can enable.
         _select_surface(repo_path, tools)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
