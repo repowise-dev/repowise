@@ -305,10 +305,11 @@ def check_repo_staleness(
 
 
 def stamps_moved(repo_path: Path) -> bool:
-    """Whether an indexed repo's health or git history stamp is behind this build.
+    """Whether an indexed repo's health, security or git history stamp is behind this build.
 
-    Work no commit explains: rows scored by an older health analyzer, or git
-    rows written under older history rules. A repo with no recorded sync, or
+    Work no commit explains: rows scored by an older health analyzer, findings
+    an older security scanner wrote, or git rows written under older history
+    rules. A repo with no recorded sync, or
     no local store and no configured database, has no rows for either stamp
     to describe. Under a configured database the repository row is not looked
     up: this check stays offline, and a member with a moved stamp but no rows
@@ -316,13 +317,18 @@ def stamps_moved(repo_path: Path) -> bool:
     back to writes the rows it is missing.
     """
     from ...analysis.health import health_analyzer_changed
+    from ...analysis.security.patterns import security_scanner_changed
     from ...ingestion.git_indexer import git_history_stale
     from ...persistence.database import has_db_store
 
     state = read_repo_state(repo_path)
     if not state.get("last_sync_commit") or not has_db_store(repo_path):
         return False
-    return health_analyzer_changed(state) or git_history_stale(state)
+    return (
+        health_analyzer_changed(state)
+        or security_scanner_changed(state)
+        or git_history_stale(state)
+    )
 
 
 def restamp_changed_sync_commit(repo_path: Path, previous: str | None, current: str | None) -> None:

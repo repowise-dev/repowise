@@ -84,6 +84,7 @@ from .security import (
     _replace_security_findings,
     persist_incremental_security_findings,
     persist_security_findings,
+    rescan_repo_security,
 )
 from .sweeps import (
     _SWEPT_GENERATED_PAGE_TYPES,
