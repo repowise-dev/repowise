@@ -579,7 +579,7 @@ function SidebarNavItem({
   const t = useTranslations("nav");
   const label = t(item.labelKey);
   const Icon = item.icon;
-  const newMark = useNavNewMark(item.href, label);
+  const newMark = useNavNewMark(item.href, label, item.exact);
   const { isNew } = newMark;
   const ariaLabel = description ? `${newMark.ariaLabel}, ${description}` : newMark.ariaLabel;
 

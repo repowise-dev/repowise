@@ -1,6 +1,6 @@
 "use client";
 
-/** Overview's Repo report card: the living report's progress and top three, loaded after the page. */
+/** Overview's Repo report card: one line with the living report's progress, loaded after the page. */
 
 import Link from "next/link";
 import useSWR from "swr";
@@ -14,9 +14,5 @@ export function RepoReportCardHost({ repoId }: { repoId: string }) {
   // Shares the page's cache entry, so opening the report after the card costs nothing.
   const { data } = useSWR(firstLookKey(repoId), () => getFirstLook(repoId, { flavor: "generic" }));
   if (!data) return null;
-  return (
-    <div className="mb-6">
-      <RepoReportCard report={data.report} href={`/repos/${repoId}/report`} copy={copy} LinkComponent={Link} />
-    </div>
-  );
+  return <RepoReportCard report={data.report} href={`/repos/${repoId}/report`} copy={copy} LinkComponent={Link} />;
 }

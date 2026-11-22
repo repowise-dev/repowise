@@ -62,16 +62,25 @@ export function FirstLookView({ repoId }: { repoId: string }) {
     },
     [mutate, repoId, t],
   );
+  const writtenAt = data?.report.prose_source.written_at ?? null;
   const onRewrite = useCallback(async () => {
     setRewriting(true);
     try {
       await mutate(await rewriteFirstLook(repoId, { flavor: FLAVOR }), { revalidate: false });
     } catch (err) {
-      toast.error(toFriendlyMessage(err, t("rewriteFailed")));
+      // The API stores the rewrite as soon as the model answers, so a dropped
+      // connection can hide one that landed (and was paid for). Reload first.
+      const now = await mutate().catch(() => undefined);
+      const landed = now?.report.prose_source.written_at;
+      if (landed && landed !== writtenAt) return;
+      // A 4xx carries the server's words (e.g. no model configured); a 5xx or
+      // a proxy failure only has a status line, which helps nobody.
+      const serverWords = err instanceof ApiClientError && err.status < 500 && err.detail;
+      toast.error(serverWords || t("rewriteFailed"));
     } finally {
       setRewriting(false);
     }
-  }, [mutate, repoId, t]);
+  }, [mutate, repoId, t, writtenAt]);
 
   if (isLoading) {
     return (

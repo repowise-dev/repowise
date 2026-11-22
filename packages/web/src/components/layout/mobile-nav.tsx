@@ -132,7 +132,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                         <Icon className="h-4 w-4" />
                       </span>
                       <span className="truncate">{t(item.labelKey)}</span>
-                      {isNew(item.href) && <NewMark />}
+                      {isNew(item.href, item.exact) && <NewMark />}
                     </Link>
                   );
                 })}
@@ -235,7 +235,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                                           <Icon className="h-4 w-4" />
                                         </span>
                                         <span className="truncate">{t(item.labelKey)}</span>
-                                        {isNew(item.href) && <NewMark />}
+                                        {isNew(item.href, item.exact) && <NewMark />}
                                       </Link>
                                     );
                                 }}
