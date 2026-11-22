@@ -164,58 +164,80 @@ def _by(rows: list, key: str) -> dict[str, list]:
     return out
 
 
-async def _candidates(session, repo_id: str, hits: list[dict], question: str) -> list[tuple]:
-    """``(hit, row, reason)`` in priority order, in at most three queries."""
-    pages = [(h, t) for h in hits if (t := _symbol_target(h))]
-    declared = sorted(
-        (
-            (rank, not s.get("_matched"), -(s.get("_relevance") or 0), h, s)
-            for rank, h in enumerate(hits)
-            for s in h.get("symbols") or []
-            if _is_declaration(s)
-        ),
-        key=lambda d: d[:3],
-    )
-    bare = [
+def _declared(hits: list[dict]) -> list[tuple[dict, dict]]:
+    """``(hit, symbol)`` declarations, by hit rank, question match, relevance."""
+    keyed = [
+        ((rank, not s.get("_matched"), -(s.get("_relevance") or 0)), h, s)
+        for rank, h in enumerate(hits)
+        for s in h.get("symbols") or []
+        if _is_declaration(s)
+    ]
+    keyed.sort(key=lambda d: d[0])
+    return [(h, s) for _, h, s in keyed]
+
+
+def _bare(hits: list[dict]) -> list[dict]:
+    """File hits the hydrator gave no symbols (it enriches only the top two)."""
+    return [
         h
         for h in hits
         if "symbols" not in h and h.get("page_type") in FILE_ROW_TYPES and h.get("target_path")
     ]
-    page_names = {t[1] for _, t in pages}
-    names = {d[4]["name"] for d in declared}
-    rows = await _rows(session, repo_id, names, {h["target_path"] for h in bare}, page_names)
-    by_name, by_file = _by(rows, "name"), _by(rows, "file_path")
 
-    # A bare file's best symbol may itself be a declaration (a header below
-    # the enriched two): its definition is fetched like any other.
+
+class _Defs:
+    """Rows by name, completed with the definitions short callables point at."""
+
+    def __init__(self, by_name: dict[str, list]) -> None:
+        self.by_name = by_name
+
+    async def add_definitions_of(self, session, repo_id: str, rows: list) -> None:
+        pending = {
+            r.name
+            for r in rows
+            if r is not None and _span(r) < _MIN_BODY_LINES and r.kind in _CALLABLE_KINDS
+        }
+        if not pending:
+            return
+        for name, extra in _by(await _rows(session, repo_id, pending, set()), "name").items():
+            known = {r.id for r in self.by_name.get(name, [])}
+            self.by_name.setdefault(name, []).extend(r for r in extra if r.id not in known)
+
+    def definition(self, name: str, decl_path: str, parent: str | None):
+        return _definition(self.by_name.get(name) or [], decl_path, parent)
+
+    def complete(self, row):
+        """*row*, or for a declaration-sized callable, its definition elsewhere."""
+        if row is None or _span(row) >= _MIN_BODY_LINES or row.kind not in _CALLABLE_KINDS:
+            return row
+        return self.definition(row.name, row.file_path, row.parent_name)
+
+
+async def _candidates(session, repo_id: str, hits: list[dict], question: str) -> list[tuple]:
+    """``(hit, row, reason)`` in priority order, in at most four queries."""
+    pages = [(h, t) for h in hits if (t := _symbol_target(h))]
+    declared, bare = _declared(hits), _bare(hits)
+    rows = await _rows(
+        session,
+        repo_id,
+        {s["name"] for _, s in declared},
+        {h["target_path"] for h in bare},
+        {t[1] for _, t in pages},
+    )
+    defs, by_file = _Defs(_by(rows, "name")), _by(rows, "file_path")
     terms = {_stem(t) for t in content_terms(question)}
     best = [(h, _best_in_file(by_file.get(h["target_path"]) or [], terms)) for h in bare]
-    on_pages = [(h, _on_page(by_name.get(t[1]) or [], t[0], t[2])) for h, t in pages]
-    # A short callable is a declaration (a page on a header's member, a bare
-    # file's best match): its definition is fetched like any other.
-    short = [r for _, r in [*best, *on_pages] if r is not None and _span(r) < _MIN_BODY_LINES]
-    pending = {r.name for r in short if r.kind in _CALLABLE_KINDS}
-    if pending:
-        more = await _rows(session, repo_id, pending, set())
-        for name, extra in _by(more, "name").items():
-            known = {r.id for r in by_name.get(name, [])}
-            by_name.setdefault(name, []).extend(r for r in extra if r.id not in known)
+    on_pages = [(h, _on_page(defs.by_name.get(t[1]) or [], t[0], t[2])) for h, t in pages]
+    # A page on a header's member, or a bare header's best match, is a
+    # declaration: its definition is fetched like any other.
+    await defs.add_definitions_of(session, repo_id, [r for _, r in [*best, *on_pages]])
 
-    def _complete(row):
-        if row is None or _span(row) >= _MIN_BODY_LINES:
-            return row
-        if row.kind not in _CALLABLE_KINDS:
-            return row
-        return _definition(by_name.get(row.name) or [], row.file_path, row.parent_name)
-
-    out: list[tuple] = []
-    for h, row in on_pages:
-        out.append((h, _complete(row), "page"))
-    for *_, h, s in declared:
-        found = _definition(by_name.get(s["name"]) or [], h["target_path"], s.get("_parent"))
-        out.append((h, found, "declaration"))
-    for h, row in best:
-        out.append((h, _complete(row), "file"))
+    out = [(h, defs.complete(r), "page") for h, r in on_pages]
+    out += [
+        (h, defs.definition(s["name"], h["target_path"], s.get("_parent")), "declaration")
+        for h, s in declared
+    ]
+    out += [(h, defs.complete(r), "file") for h, r in best]
     found = [c for c in out if c[1] is not None]
     # Test, generated and vendored code the question does not ask about is
     # not the implementation it asks about (a mock shares the real names).
@@ -235,53 +257,67 @@ async def attach_grounding_bodies(
     the prompt already shows is not repeated.
     """
     candidates = await _candidates(session, repo_id, hits, question)
-    if not candidates:
-        return
-    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
-    session_factory = getattr(ctx, "session_factory", None)
-    shown = {
-        (hit_file_path(h) or "", s.get("start_line") or 0)
-        for h in hits
-        for s in h.get("symbols") or []
-        if s.get("source_excerpt")
-    }
-    texts: dict[str, str | None] = {}
+    shown, reader = _shown(hits), _Reader(ctx)
     spent = attached = 0
     for hit, row, reason in candidates:
         if attached >= _GROUNDING_MAX_BODIES:
             break
         if (row.file_path, row.start_line) in shown:
             continue
-        if row.file_path not in texts:
-            texts[row.file_path] = _read_repo_text(repo_root, row.file_path)
-        text = texts[row.file_path]
+        body = await reader.body(row)
+        if body is None or (row.file_path, body["start_line"]) in shown:
+            continue
+        if spent + len(body["source"]) > _GROUNDING_CHAR_BUDGET:
+            continue
+        hit.setdefault("_grounding", []).append({**body, "for": reason})
+        shown.add((row.file_path, row.start_line))
+        spent += len(body["source"])
+        attached += 1
+
+
+def _shown(hits: list[dict]) -> set[tuple[str, int]]:
+    """``(file, start_line)`` of every symbol body the prompt already carries."""
+    return {
+        (hit_file_path(h) or "", s.get("start_line") or 0)
+        for h in hits
+        for s in h.get("symbols") or []
+        if s.get("source_excerpt")
+    }
+
+
+class _Reader:
+    """Live, bounds-verified bodies; each file read once."""
+
+    def __init__(self, ctx: Any) -> None:
+        self.root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+        self.session_factory = getattr(ctx, "session_factory", None)
+        self.texts: dict[str, str | None] = {}
+
+    async def body(self, row) -> dict | None:
+        if row.file_path not in self.texts:
+            self.texts[row.file_path] = _read_repo_text(self.root, row.file_path)
+        text = self.texts[row.file_path]
         if text is None:
-            continue
-        check = await verify_and_heal(session_factory, row, text)
-        if not check.verified or (row.file_path, check.start_line) in shown:
-            continue
+            return None
+        check = await verify_and_heal(self.session_factory, row, text)
+        if not check.verified:
+            return None
         src = _read_symbol_source(
-            repo_root,
+            self.root,
             row.file_path,
             check.start_line,
             check.end_line,
             max_lines=_SYNTH_FULL_SOURCE_LINES,
             text=text,
         )
-        if not src or spent + len(src) > _GROUNDING_CHAR_BUDGET:
-            continue
-        hit.setdefault("_grounding", []).append(
-            {
-                "path": row.file_path,
-                "name": row.name,
-                "parent": row.parent_name,
-                "start_line": check.start_line,
-                "end_line": check.end_line,
-                "truncated": check.start_line + src.count("\n") < check.end_line,
-                "source": src,
-                "for": reason,
-            }
-        )
-        shown.add((row.file_path, row.start_line))
-        spent += len(src)
-        attached += 1
+        if not src:
+            return None
+        return {
+            "path": row.file_path,
+            "name": row.name,
+            "parent": row.parent_name,
+            "start_line": check.start_line,
+            "end_line": check.end_line,
+            "truncated": check.start_line + src.count("\n") < check.end_line,
+            "source": src,
+        }
