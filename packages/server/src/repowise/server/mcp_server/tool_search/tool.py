@@ -282,8 +282,8 @@ async def search_codebase(
         # The keyword names no symbol; ranked with it, ``class Article`` found
         # a docstring that says "class" and none of the classes.
         query, mode = declared, "symbol"
-    grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
+    grep_hint = _grep_hint_for(query, names, resolved_mode)
     issue = await _issue_files(repo, query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):

@@ -49,9 +49,11 @@ from repowise.server.mcp_server._origin_rank import (
     is_demoted_path,
 )
 from repowise.server.mcp_server._query_shape import (
+    _MAX_ALTERNATIVES,
     _name_lookup_keys,
     _names_symbol,
     _qual_norm,
+    alternation_parts,
     defined_identifiers,
     is_issue_shaped,
     path_tokens,
@@ -67,6 +69,10 @@ from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 # caps how many rows we pull. Generous enough that the true top-`limit` is
 # always inside the window, bounded so a pathological LIKE can't load the table.
 _MAX_CANDIDATES = 400
+
+# Internal row key: which alternative of an ``a|b`` path query found the file.
+# Read and dropped before serving (``tool_search.structured``).
+ALTERNATIVE = "_alternative"
 
 # An exact match scores at least 160 and any other match at most about 110, so
 # these reorder symbols inside their tier without crossing it: an exact test
@@ -566,6 +572,31 @@ async def file_path_index(session: Any, repo_id: str) -> PathIndex:
 
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     """Path search against one repo context. Returns ranked file result dicts.
+
+    An ``a|b|c`` query searches each alternative on its own, as ``lines``
+    does; each row carries ``ALTERNATIVE`` (its alternative's index, first
+    match wins) so the caller can serve the alternatives in turn after
+    merging repos by score.
+    """
+    parts = alternation_parts(query)
+    if not parts:
+        return await _search_one_path(ctx, query, limit)
+    seen: set[str] = set()
+    rows: list[dict] = []
+    # Paths match case-insensitively, so ``test|Test`` is one alternative.
+    # One search per alternative, capped at ``_MAX_ALTERNATIVES`` as the
+    # line search is: a few indexed lookups each.
+    unique = list(dict.fromkeys(p.lower() for p in parts))
+    for i, part in enumerate(unique[:_MAX_ALTERNATIVES]):
+        for row in await _search_one_path(ctx, part, limit):
+            if row["file"] not in seen:
+                seen.add(row["file"])
+                rows.append({**row, ALTERNATIVE: i})
+    return rows
+
+
+async def _search_one_path(ctx: Any, query: str, limit: int) -> list[dict]:
+    """Path search for one query (one alternative of an ``a|b`` query).
 
     Only the path-shaped words of ``query`` are matched (``path_tokens``), so
     words around a path do not empty the result; the whole query is matched

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Container
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import Any
 
 from repowise.core.persistence.database import get_session
@@ -23,6 +24,7 @@ from repowise.server.mcp_server._query_shape import (
     NOT_THE_NAMED_SYMBOL,
     _canonical_symbol_query,
     _embedded_identifiers,
+    _has_code_extension,
     _has_exact_symbol,
     _identifier_candidates,
     _looks_like_code_name,
@@ -32,6 +34,7 @@ from repowise.server.mcp_server._query_shape import (
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
     _MAX_CANDIDATES,
+    ALTERNATIVE,
     IssueFiles,
     file_path_index,
     search_paths_single,
@@ -280,6 +283,20 @@ def _hybrid_mode_results(plan: _SearchPlan, pools: _Pools, exact: bool) -> list[
     return results
 
 
+def _by_alternative(files: list[dict]) -> list[dict]:
+    """An ``a|b`` path query's rows served one alternative at a time, in the
+    query's order (each one's best, then each one's second, ...), so a common
+    basename cannot fill the window before the others show. Drops the
+    internal ``ALTERNATIVE`` key."""
+    groups: dict[int, list[dict]] = {}
+    for row in files:
+        groups.setdefault(row.pop(ALTERNATIVE, 0), []).append(row)
+    if len(groups) < 2:
+        return files
+    turns = zip_longest(*(groups[i] for i in sorted(groups)))
+    return [row for turn in turns for row in turn if row is not None]
+
+
 def _select_results(
     plan: _SearchPlan, pools: _Pools, candidates: list[str], exact: bool
 ) -> tuple[list[dict], int]:
@@ -287,7 +304,7 @@ def _select_results(
     if plan.mode == "symbol":
         return _symbol_mode_results(plan, pools, candidates, exact)
     if plan.mode == "path":
-        return pools.files[: plan.limit], 0
+        return _by_alternative(pools.files)[: plan.limit], 0
     return _hybrid_mode_results(plan, pools, exact), 0
 
 
@@ -519,8 +536,15 @@ async def _structured_search(
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
+    # A file name in a question (``plugin.go``) still steers ranking, but it
+    # names no symbol, so it gets no exact-match verdict or note.
+    named = candidates
+    if plan.mode == "hybrid":
+        named = [c for c in candidates if not _has_code_extension(c)]
+    if named != candidates:
+        exact = _has_exact_symbol(named, pools.symbols)
     _attach_match_notes(
-        response, candidates, exact, missing, grep_hint, _filtered_names(plan, pools, candidates)
+        response, named, exact, missing, grep_hint, _filtered_names(plan, pools, named)
     )
     # Symbol mode ranks every candidate, so its pool can tell one definition
     # from two; hybrid fetches a window and cannot.
