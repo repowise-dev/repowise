@@ -267,6 +267,13 @@ async def test_distinct_scopes_never_cross_contaminate(setup_mcp, factory, monke
     from repowise.server.mcp_server import get_answer
 
     _patch_retrieval(monkeypatch, answer_mod)
+    # Each scope holds a file: a scope holding none never reaches synthesis.
+    billing = [{"page_id": "file_page:src/billing/invoice.py", "score": 3.0}]
+
+    async def _fake_retrieve(question, ctx):
+        return [dict(h) for h in (*_HITS, *billing)]
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     provider = _Provider("Scoped answer (src/auth/service.py).")
     _patch_provider(monkeypatch, answer_mod, provider)
 

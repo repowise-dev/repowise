@@ -49,13 +49,24 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
     return meta
 
 
+def in_scope(path: str, scope: str | None) -> bool:
+    """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
+    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
+    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
+
+
+def drop_out_of_scope(hits: list[dict], scope: str | None) -> list[dict]:
+    """*hits* without the ones whose file is outside ``scope``; pathless hits stay."""
+    return [h for h in hits if not h.get("target_path") or in_scope(h["target_path"], scope)]
+
+
 def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
     """Copy *meta* onto *hit*; False when the hit is tombstoned or out of scope."""
     # Tombstoned pages describe deleted or renamed files.
     if meta.get("freshness") == "tombstone":
         return False
     target_path = meta.get("target_path", "")
-    if scope and target_path and not target_path.startswith(scope):
+    if target_path and not in_scope(target_path, scope):
         return False
     hit["target_path"] = target_path
     hit["summary"] = meta.get("summary", "")

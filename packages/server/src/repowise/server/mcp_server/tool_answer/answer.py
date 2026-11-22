@@ -83,6 +83,7 @@ from repowise.server.mcp_server._answer_pipeline import (
 from repowise.server.mcp_server._answer_pipeline import (
     demote_noise_hits as _demote_noise_hits,
 )
+from repowise.server.mcp_server._answer_pipeline import drop_out_of_scope, in_scope
 from repowise.server.mcp_server._answer_pipeline import (
     expand_via_graph as _expand_via_graph,
 )
@@ -267,6 +268,57 @@ class _Retrieved(NamedTuple):
     flow_paths: list[list[str]]
     # Lines in another workspace repo's documents (see ``documents``).
     other_repo_lines: list[dict]
+    # The normalized ``scope`` the question was asked under.
+    scope: str | None = None
+
+
+def _split_in_scope(split: dict[str, list[str]], scope: str) -> dict[str, list[str]]:
+    """The held-at-medium definitions as a scoped reply names them: files
+    outside the scope become a count. The grade itself saw every file, so a
+    scope never lifts it."""
+    shown = {}
+    for name, paths in split.items():
+        kept = [p for p in paths if in_scope(p, scope)]
+        outside = len(paths) - len(kept)
+        if outside:
+            many = f"{outside} files outside the scope"
+            kept.append("a file outside the scope" if outside == 1 else many)
+        shown[name] = kept
+    return shown
+
+
+def _keep_in_scope(
+    hits: list[dict], homonyms: dict, flow_paths: list[list[str]], scope: str | None
+) -> tuple[list[dict], list[list[str]]]:
+    """What retrieval found, less every file outside *scope*.
+
+    Hydration drops out-of-scope hits, but graph expansion, anchoring and flow
+    paths add files after it. A scoped caller asked about the scope, so none of
+    them may reach the answer, its lists or synthesis. A flow path that leaves
+    the scope goes whole: a cut chain would claim a call order that is not there.
+    ``homonyms`` is narrowed in place; ``split`` stays whole for the grade (see
+    :func:`_split_in_scope` for what the reply names).
+    """
+    if not scope:
+        return hits, flow_paths
+    homonyms["union"] = {
+        name: kept
+        for name, defs in (homonyms.get("union") or {}).items()
+        if (kept := [d for d in defs if in_scope(d.get("file_path") or "", scope)])
+    }
+    # A value reply lists each defining file's assignment: only the scope's.
+    homonyms["split_at"] = {
+        name: {path: line for path, line in at.items() if in_scope(path, scope)}
+        for name, at in (homonyms.get("split_at") or {}).items()
+    }
+    if homonyms.get("unindexed_lines"):
+        homonyms["unindexed_lines"] = [
+            r for r in homonyms["unindexed_lines"] if in_scope(r["path"], scope)
+        ]
+    return (
+        drop_out_of_scope(hits, scope),
+        [p for p in flow_paths if all(in_scope(f, scope) for f in p)],
+    )
 
 
 @timed_stage("retrieve")
@@ -379,7 +431,7 @@ async def _run_retrieval_pipeline(
         _log.warning("get_answer: issue file lookup failed", exc_info=True)
     else:
         def _in_scope(paths: list[str]) -> list[str]:
-            return [p for p in paths if not scope or p.startswith(scope)]
+            return [p for p in paths if in_scope(p, scope)]
 
         if traced := _in_scope(issue.traced):
             hits = lead_with_files(hits, traced)
@@ -392,6 +444,7 @@ async def _run_retrieval_pipeline(
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
         hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
+    hits, flow_paths = _keep_in_scope(hits, homonyms, flow_paths, scope)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -410,7 +463,7 @@ async def _run_retrieval_pipeline(
                     session, repo_id, resolved_pool, question_ids=question_ids
                 )
     return _Retrieved(
-        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines
+        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines, scope
     )
 
 
@@ -588,9 +641,16 @@ async def _pre_synthesis_reply(
     # Another workspace repo's documents can answer what this repo's code does
     # not (a ticket asked about by its key): synthesis reads their lines.
     if not hits and not retrieved.other_repo_lines:
+        # Same length as the unscoped line for a typical scope: names what was
+        # searched, and that widening the scope is the first thing to try.
+        lead = (
+            f"No wiki hits under {retrieved.scope}/ for this question. "
+            "Widen the scope or rephrase. "
+            if retrieved.scope
+            else "No wiki hits for this question. Rephrase around the code concept. "
+        )
         return _no_answer_payload(
-            "No wiki hits for this question. Rephrase around the code "
-            "concept. " + _NO_HITS_RECOVERY_HINT,
+            lead + _NO_HITS_RECOVERY_HINT,
             repository=ask.repository,
             t0=ask.t0,
         )
@@ -742,6 +802,8 @@ async def _graded_payload(
         split_names=retrieved.homonyms.get("split"),
         stop_reason=stop_reason,
     )
+    if retrieved.scope and grade.split_names:
+        grade = grade._replace(split_names=_split_in_scope(grade.split_names, retrieved.scope))
     payload = await build_synthesized_payload(
         question=ask.question,
         answer_text=answer_text,
