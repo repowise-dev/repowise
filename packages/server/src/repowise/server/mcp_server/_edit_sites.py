@@ -1984,7 +1984,12 @@ async def edit_set_block(
     served and the rest go to *collector*, with ``files_total`` and
     ``complete: false``: nothing is left out without its count.
     """
-    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
+    from repowise.server.mcp_server._line_hits import line_read_memo
+
+    # The candidate files and the document rows grep the same name: one git
+    # grep serves both, as search_codebase's edit sets already share theirs.
+    with line_read_memo():
+        sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
     by_file, left_out = _file_lines(sites, prose)
     budget = int(effective_char_budget() * _BLOCK_SHARE)
     # ``in`` only adds bytes, so the files that fit with it are a prefix of
