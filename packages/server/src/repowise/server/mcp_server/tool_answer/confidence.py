@@ -785,6 +785,7 @@ def _degraded_confidence(
     *,
     lead_outside_top: bool = False,
     graph_answered: bool = False,
+    body_answered: bool = False,
 ) -> str:
     """Grade a synthesis-less payload on what a caller can act on, not on prose.
 
@@ -805,12 +806,17 @@ def _degraded_confidence(
 
     ``graph_answered`` (a caller question the call graph answered) grades
     "medium" on its own: the answer then leads with graph edges, not retrieval.
+    ``body_answered`` (the answer leads with the live body of the code the
+    question names, and that body carries the question's words) grades
+    "medium" over a weak retrieval: exact-name resolution found the body, not
+    the ranking that rated weak. A body whose file hybrid retrieval ranks
+    outside its top still grades "low", as any other lead.
     """
     if reason == "no-llm-provider" and graph_answered:
         return "medium"
     if reason != "no-llm-provider" or lead_outside_top:
         return "low"
-    return "low" if retrieval_quality == "weak" else "medium"
+    return "low" if retrieval_quality == "weak" and not body_answered else "medium"
 
 
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:

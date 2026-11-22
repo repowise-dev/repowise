@@ -1008,3 +1008,45 @@ async def test_an_unranked_duplicate_does_not_hide_its_files_rank(tmp_path, monk
         "src/other.ts",
         "src/hub.ts",
     ]
+
+
+def test_a_body_the_question_named_grades_medium_over_a_weak_retrieval():
+    """The served body was found by exact name, not by the ranking that rated weak.
+
+    A body outside the hybrid top still grades low, as any lead does, and only
+    the no-provider reply lifts: a failed provider can still be retried.
+    """
+    assert _degraded_confidence("no-llm-provider", "weak", body_answered=True) == "medium"
+    assert (
+        _degraded_confidence("no-llm-provider", "weak", lead_outside_top=True, body_answered=True)
+        == "low"
+    )
+    assert _degraded_confidence("synthesis-failed", "weak", body_answered=True) == "low"
+
+
+async def test_a_weak_retrieval_with_the_named_body_served_grades_medium(tmp_path):
+    """Two near-tied hits rate weak; the served `Flask` body still answers the question."""
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(ctx, hits, {"Flask"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["grounding"] == "symbol_body"
+    assert payload["confidence"] == "medium"
+
+
+async def test_a_weak_retrieval_without_a_named_body_stays_low(tmp_path):
+    """The control: same retrieval, a question naming nothing indexed."""
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(ctx, hits, {"Blueprint"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert "symbol_bodies" not in payload
+    assert payload["confidence"] == "low"

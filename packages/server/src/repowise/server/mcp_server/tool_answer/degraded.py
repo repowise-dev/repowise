@@ -38,7 +38,9 @@ from repowise.server.mcp_server.tool_answer.callers import (
 from repowise.server.mcp_server.tool_answer.confidence import (
     _degraded_confidence,
     _retrieval_quality,
+    body_leaves_out,
     file_hybrid_rank,
+    hit_stems,
     lead_leaves_retrieval,
 )
 from repowise.server.mcp_server.tool_answer.config import _BODY_NOTE, _RATIONALE_NOTE
@@ -183,6 +185,9 @@ async def _degraded_payload(
         retrieval_quality,
         lead_outside_top=lead_leaves_retrieval(hits, lead),
         graph_answered=graph_callers.graph_answered,
+        body_answered=_answers_by_name(question, question_ids, symbol_bodies, hits)
+        if served_named_body
+        else False,
     )
 
     payload: dict = {
@@ -276,6 +281,19 @@ async def _attach_call_path(
                 repo_id=getattr(repository, "id", None),
             )
         )
+
+
+def _answers_by_name(
+    question: str, question_ids: set[str] | None, symbol_bodies: list[dict], hits: list[dict]
+) -> bool:
+    """Is a served body the code the question names, carrying the rest of the question?
+
+    A body anchored some other way (a value line, a concept) is evidence, and a
+    named body that leaves out the rest of the question is only the place asked
+    about; neither answers it.
+    """
+    named = _named_body(symbol_bodies, question_ids or set())
+    return named is not None and not body_leaves_out(question, named, hit_stems(hits))
 
 
 def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:
