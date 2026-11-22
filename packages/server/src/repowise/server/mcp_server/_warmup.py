@@ -91,7 +91,7 @@ def _prime_git(path: str) -> None:
         subprocess.run(
             ["git", "--no-optional-locks", "-C", path, "--no-pager", "status", "--porcelain", "-z"],
             capture_output=True,
-            timeout=60,
+            timeout=20,
             stdin=subprocess.DEVNULL,
         )
 
@@ -110,9 +110,8 @@ WARM_STEPS: tuple[tuple[str, Callable[[Any, str], Awaitable[Any]]], ...] = (
 
 async def warm_index_caches() -> None:
     """Build every :data:`WARM_STEPS` cache for the served repository."""
-    from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server import _state
-    from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+    from repowise.server.mcp_server._helpers import _resolve_repo_context
 
     if _state._serving_no_index:
         return
@@ -120,16 +119,36 @@ async def warm_index_caches() -> None:
     if ctx.session_factory is None:
         return
     started = time.perf_counter()
+    git = None
     if ctx.path is not None and _state.git_available() and (ctx.path / ".git").exists():
-        await asyncio.to_thread(_prime_git, str(ctx.path))
+        # Its own process: it runs beside the cache builds rather than before them.
+        git = asyncio.ensure_future(asyncio.to_thread(_prime_git, str(ctx.path)))
+    try:
+        await _build_caches(ctx)
+    except BaseException:
+        # Teardown does not wait on git: the read finishes on its own thread.
+        if git is not None:
+            git.cancel()
+        raise
+    if git is not None:
+        await git
+    _log.info("repowise MCP: index caches warm in %.1fs", time.perf_counter() - started)
+
+
+async def _build_caches(ctx: Any) -> None:
+    from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server._helpers import _get_repo
+
     async with get_session(ctx.session_factory) as session:
         repo_id = (await _get_repo(session)).id
-        for name, step in WARM_STEPS:
-            began = time.perf_counter()
+    for name, step in WARM_STEPS:
+        began = time.perf_counter()
+        # A session per cache: one read snapshot held across every step would
+        # keep keying them to an index a re-index has since replaced.
+        async with get_session(ctx.session_factory) as session:
             await step(session, repo_id)
-            _log.debug("repowise MCP: warmed %s in %.2fs", name, time.perf_counter() - began)
-            await asyncio.sleep(0)  # let a waiting request in between caches
-    _log.info("repowise MCP: index caches warm in %.1fs", time.perf_counter() - started)
+        _log.debug("repowise MCP: warmed %s in %.2fs", name, time.perf_counter() - began)
+        await asyncio.sleep(0)  # let a waiting request in between caches
 
 
 async def _run() -> None:
