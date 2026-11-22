@@ -182,6 +182,16 @@ def checkout_fact(
     return stale_fact(f"{caller.served}{at}", f"{caller.caller} is{head}")
 
 
+def source_root(local_path: str | None) -> Path | None:
+    """The checkout whose files a response about *local_path* should read.
+
+    A borrowed checkout serves the indexed checkout's files, so a position in
+    the caller's file must be resolved against the served checkout's copy.
+    """
+    caller = borrowed_checkout(local_path)
+    return caller.served if caller is not None else None
+
+
 # ``HEAD`` or ``@`` alone, with a suffix (``HEAD~2``) or in a range
 # (``main..HEAD``); not ``ORIG_HEAD``, ``origin/HEAD`` or ``HEAD@{1}``.
 _HEAD = re.compile(r"(?<![\w/@-])(?:HEAD|@)(?![\w/@{-])")
