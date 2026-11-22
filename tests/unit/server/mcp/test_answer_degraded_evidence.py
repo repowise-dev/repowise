@@ -1117,3 +1117,17 @@ def test_the_owner_is_read_from_the_definition_that_was_served():
     hits = [{"target_path": "a.py", "title": "Flask Other", "summary": "Flask Other"}]
     assert _lead_answers_by_name("what does Flask run do", {"run"}, [lead], cands, hits)
     assert not _lead_answers_by_name("what does Other run do", {"run"}, [lead], cands, hits)
+
+
+async def test_a_body_that_does_not_lift_keeps_the_refine_hint(tmp_path):
+    """Hint and grade agree: a body lead outside the hybrid top stays low, refine-search."""
+    hits = _hits(end_line=6)
+    hits[0]["_hybrid_rank"] = 7
+    hits.append({**hits[0], "target_path": "src/flask/other.py", "_anchor_symbols": []})
+    hits[1]["score"] = hits[0]["score"] - 0.1
+
+    payload = await _degraded(_tree(tmp_path), hits, {"Flask"})
+
+    assert payload["retrieval_quality"] == "weak"
+    assert payload["confidence"] == "low"
+    assert "retrieval was weak" in payload["_meta"]["hint"]

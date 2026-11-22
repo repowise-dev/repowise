@@ -181,13 +181,18 @@ async def _degraded_payload(
         lead = best_guesses[0]["file"]
     else:
         lead = next((r.get("path") for r in code_rationale[:1] if can_lead_answer(r)), None)
+    lead_outside_top = lead_leaves_retrieval(hits, lead)
+    body_answered = (
+        served_named_body
+        and not lead_outside_top
+        and _lead_answers_by_name(question, question_ids, symbol_bodies, body_candidates, hits)
+    )
     confidence = _degraded_confidence(
         reason,
         retrieval_quality,
-        lead_outside_top=lead_leaves_retrieval(hits, lead),
+        lead_outside_top=lead_outside_top,
         graph_answered=graph_callers.graph_answered,
-        body_answered=served_named_body
-        and _lead_answers_by_name(question, question_ids, symbol_bodies, body_candidates, hits),
+        body_answered=body_answered,
     )
 
     payload: dict = {
@@ -229,6 +234,7 @@ async def _degraded_payload(
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=served_named_body,
+                body_answers=body_answered,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],

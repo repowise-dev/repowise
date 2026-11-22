@@ -1322,6 +1322,7 @@ def answer_hint(
     degraded: str | None = None,
     retrieval_quality: str | None = None,
     has_bodies: bool = False,
+    body_answers: bool = False,
 ) -> str | None:
     """Hint for `get_answer` callers.
 
@@ -1346,9 +1347,9 @@ def answer_hint(
     and let `confidence` rate the other half.
     """
     if degraded:
-        # A served body of the named code is the evidence however retrieval
-        # rated: a refine-the-search hint would send the agent away from it.
-        if retrieval_quality == "weak" and not has_bodies:
+        # A served body that answers the question is the evidence however
+        # retrieval rated: a refine-the-search hint would send the agent away.
+        if retrieval_quality == "weak" and not body_answers:
             return (
                 "No synthesis, and retrieval was weak. Refine the query with "
                 "search_codebase rather than reading these files in order."
