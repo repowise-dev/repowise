@@ -236,6 +236,8 @@ def test_asked_languages_reads_tags_extensions_paths_and_kind_words():
     assert "markdown" in asked_languages("where is the readme section")
     assert "sql" in asked_languages("which migration adds the column")
     assert "go" in asked_languages("which Go package serves it")
+    assert "cpp" in asked_languages("which C++ class parses it")
+    assert "csharp" in asked_languages("the C# handler for it")
     # A bare extension, and a tag that is an everyday word, are words first.
     assert asked_languages("which page renders it") == frozenset()
     assert asked_languages("where do requests go after the router") == frozenset()

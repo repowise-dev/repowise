@@ -167,6 +167,8 @@ def _is_program(language: str) -> bool:
 # Language tags that are everyday words too ("go ahead", "plan c"): they name
 # the language only spelled as its name, capitalised.
 _WORD_TAGS = frozenset({"go", "c", "r"})
+# Language names spelled other than their tag.
+_NAME_TAGS = {"c++": "cpp", "c#": "csharp", "f#": "fsharp", "golang": "go"}
 
 
 def _word_language(word: str) -> str | None:
@@ -176,7 +178,7 @@ def _word_language(word: str) -> str | None:
     if word.startswith("."):
         tag = REGISTRY.from_extension(word.lower())
         return tag if tag and tag != "unknown" else None
-    tag = word.lower()
+    tag = _NAME_TAGS.get(word.lower(), word.lower())
     if REGISTRY.get(tag) is None or (tag in _WORD_TAGS and not word[0].isupper()):
         return None
     return tag
