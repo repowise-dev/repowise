@@ -229,3 +229,45 @@ def test_a_workspace_has_an_index_when_any_member_does(tmp_path: Any, monkeypatc
     # An unreadable member does not hide an indexed one after it.
     _index(tmp_path / "web")
     assert _server._has_index(str(tmp_path), workspace=True) is True
+
+
+def _workspace(monkeypatch: Any, root: Any, aliases: list[str]) -> None:
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+    from repowise.server.mcp_server import _server
+
+    config = WorkspaceConfig(repos=[RepoEntry(path=f"src/{a}", alias=a) for a in aliases])
+    for alias in aliases:
+        (root / "src" / alias).mkdir(parents=True)
+    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (root, config, aliases[0]))
+
+
+def test_a_workspace_names_each_repo_root_the_cwd_is_outside(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from repowise.core.registry.instructions import server_instructions
+    from repowise.server.mcp_server import _server
+
+    _workspace(monkeypatch, tmp_path, ["api", "web"])
+    api, web = (str((tmp_path / "src" / a).resolve()) for a in ("api", "web"))
+    for cwd in (tmp_path, tmp_path.parent):
+        monkeypatch.chdir(cwd)
+        roots = _server._member_roots_outside_cwd(str(tmp_path))
+        assert roots == [("api", api), ("web", web)]
+    line = f"Paths in replies are relative to their repo's root: api={api}, web={web}."
+    assert line in server_instructions(None, workspace=True, member_roots=roots).splitlines()
+    # A repo the agent already works in needs no root.
+    monkeypatch.chdir(tmp_path / "src" / "web")
+    assert _server._member_roots_outside_cwd(str(tmp_path)) == [("api", api)]
+
+
+def test_a_large_workspace_names_the_rest_by_count(tmp_path: Any, monkeypatch: Any) -> None:
+    from repowise.core.registry.instructions import server_instructions
+
+    roots = [(f"repo{n}", f"/srv/workspace/src/repo{n}") for n in range(40)]
+    text = server_instructions({"list_repos"}, workspace=True, member_roots=roots)
+    assert len(text) < _MAX_INSTRUCTIONS_CHARS
+    line = text.splitlines()[-1]
+    assert line.startswith("Paths in replies are relative to their repo's root: repo0=")
+    shown = line.count("=")
+    assert line.endswith(f", and {40 - shown} more (list_repos).")
+    assert "list_repos" not in server_instructions(None, workspace=True, member_roots=roots)
