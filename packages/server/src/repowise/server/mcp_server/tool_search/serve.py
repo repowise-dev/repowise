@@ -170,17 +170,21 @@ def _slim_served_rows(
     return rows
 
 
-def _spans_lines(row: dict) -> bool:
-    return (row.get("end_line") or 0) > (row.get("start_line") or 0)
+def _has_body(row: dict) -> bool:
+    """Whether *row*'s span runs past its signature: a declaration (a C
+    prototype, an ``extern``, of any length) spans only its signature."""
+    span = (row.get("end_line") or 0) - (row.get("start_line") or 0) + 1
+    return span > (row.get("signature") or "").count("\n") + 1
 
 
 def definition_rows(candidates: list[str], results: list[dict], pool: list[dict]) -> list[dict]:
     """The served symbol row each of the query's names defines, in query order.
 
     A name gets a row when *pool* (every ranked symbol row, served or not)
-    holds exactly one definition of it. A one-line declaration beside a
-    multi-line one (a C prototype, an ``extern``) is not a second definition;
-    two multi-line definitions, overloads included, are ambiguous: no row.
+    holds exactly one definition of it. A declaration beside a definition
+    with a body (a C prototype or ``extern``, one line or several) is not a
+    second definition; two definitions with bodies, overloads included, are
+    ambiguous: no row.
     """
     served = {id(r) for r in results}
     rows: dict[int, dict] = {}
@@ -194,7 +198,7 @@ def definition_rows(candidates: list[str], results: list[dict], pool: list[dict]
 def _one_definition(name: str, pool: list[dict]) -> dict | None:
     """The one row in *pool* defining *name*, else None."""
     named = [s for s in pool if s.get("type") == "symbol" and _has_exact_symbol([name], [s])]
-    bodies = [s for s in named if _spans_lines(s)] or named
+    bodies = [s for s in named if _has_body(s)] or named
     return bodies[0] if len(bodies) == 1 else None
 
 

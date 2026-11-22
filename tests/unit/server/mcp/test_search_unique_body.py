@@ -18,10 +18,12 @@ def _models_file(root) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _row(name: str, symbol_id: str, qualified: str, start: int = 1, end: int = 9) -> dict:
+def _row(
+    name: str, symbol_id: str, qualified: str, start: int = 1, end: int = 9, signature: str = ""
+) -> dict:
     return {
         "type": "symbol", "symbol_id": symbol_id, "name": name, "qualified_name": qualified,
-        "start_line": start, "end_line": end,
+        "start_line": start, "end_line": end, "signature": signature,
     }
 
 
@@ -40,6 +42,23 @@ def test_a_one_line_declaration_is_not_a_second_definition():
     decl = _row("parse", "a.h::parse", "parse", 48, 48)
     body = _row("parse", "a.c::parse", "parse", 602, 653)
     assert definition_rows(["parse"], [decl, body], [decl, body]) == [body]
+
+
+_PROTO = "plan(Query *q,\n\tint opts,\n\tParams p)"
+
+
+def test_a_multi_line_prototype_is_not_a_second_definition():
+    # A header prototype wrapped over three lines spans only its signature.
+    decl = _row("plan", "a.h::plan", "plan", 64, 66, _PROTO)
+    body = _row("plan", "a.c::plan", "plan", 881, 959, "plan(Query *q, int opts,\n\tParams p)")
+    assert definition_rows(["plan"], [decl, body], [decl, body]) == [body]
+
+
+def test_two_definitions_with_bodies_stay_ambiguous_beside_a_prototype():
+    decl = _row("plan", "a.h::plan", "plan", 64, 66, _PROTO)
+    one = _row("plan", "a.c::plan", "plan", 881, 959, "plan(Query *q, int opts, Params p)")
+    two = _row("plan", "b.c::plan", "plan", 20, 40, "plan(Query *q, int opts, Params p)")
+    assert definition_rows(["plan"], [decl, one, two], [decl, one, two]) == []
 
 
 def test_each_name_of_an_alternation_gets_its_definition():
