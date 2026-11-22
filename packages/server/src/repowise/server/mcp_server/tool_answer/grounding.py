@@ -32,7 +32,7 @@ from repowise.server.mcp_server._origin_rank import (
     file_origins,
     is_demoted_path,
 )
-from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
+from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
@@ -89,7 +89,8 @@ def _on_page(rows: list, path: str, parent: str | None) -> Any | None:
     """The row a symbol page names: its file, its enclosing type when given."""
     on_file = [r for r in rows if r.file_path == path]
     if parent:
-        on_file = [r for r in on_file if (r.parent_name or None) == parent] or on_file
+        # No row under that type: the page's symbol is not one we can place.
+        on_file = [r for r in on_file if (r.parent_name or None) == parent]
     # Overloads, or a declaration beside its definition: the longest is the body.
     return max(on_file, key=_span, default=None)
 
@@ -105,7 +106,8 @@ def _definition(rows: list, decl_path: str, parent: str | None) -> Any | None:
     bodied = [
         r
         for r in rows
-        if r.file_path != decl_path
+        if r.kind in _CALLABLE_KINDS
+        and r.file_path != decl_path
         and (r.parent_name or None) == parent
         and _span(r) >= _MIN_BODY_LINES
     ]
@@ -131,10 +133,20 @@ def _best_in_file(rows: list, terms: set[str]) -> Any | None:
     return min(scored, key=lambda t: t[:2])[2] if scored else None
 
 
-async def _rows(session, repo_id: str, names: set[str], paths: set[str]) -> list:
+async def _rows(
+    session, repo_id: str, names: set[str], paths: set[str], page_names: set[str] = frozenset()
+) -> list:
+    """Rows named by *page_names* (any kind), callables named by *names*, and
+    every row of *paths*. A common method name ("close") can return a few
+    thousand rows; that bounded cost is accepted over a LIMIT that could drop
+    the one definition being looked for."""
     clauses = []
+    if page_names:
+        clauses.append(WikiSymbol.name.in_(sorted(page_names)))
     if names:
-        clauses.append(WikiSymbol.name.in_(sorted(names)))
+        clauses.append(
+            WikiSymbol.name.in_(sorted(names)) & WikiSymbol.kind.in_(sorted(_CALLABLE_KINDS))
+        )
     if paths:
         clauses.append(WikiSymbol.file_path.in_(sorted(paths)))
     if not clauses:
@@ -153,7 +165,7 @@ def _by(rows: list, key: str) -> dict[str, list]:
 
 
 async def _candidates(session, repo_id: str, hits: list[dict], question: str) -> list[tuple]:
-    """``(hit, row, reason)`` in priority order, in at most two queries."""
+    """``(hit, row, reason)`` in priority order, in at most three queries."""
     pages = [(h, t) for h in hits if (t := _symbol_target(h))]
     declared = sorted(
         (
@@ -169,30 +181,41 @@ async def _candidates(session, repo_id: str, hits: list[dict], question: str) ->
         for h in hits
         if "symbols" not in h and h.get("page_type") in FILE_ROW_TYPES and h.get("target_path")
     ]
-    names = {t[1] for _, t in pages} | {d[4]["name"] for d in declared}
-    rows = await _rows(session, repo_id, names, {h["target_path"] for h in bare})
+    page_names = {t[1] for _, t in pages}
+    names = {d[4]["name"] for d in declared}
+    rows = await _rows(session, repo_id, names, {h["target_path"] for h in bare}, page_names)
     by_name, by_file = _by(rows, "name"), _by(rows, "file_path")
 
     # A bare file's best symbol may itself be a declaration (a header below
     # the enriched two): its definition is fetched like any other.
     terms = {_stem(t) for t in content_terms(question)}
     best = [(h, _best_in_file(by_file.get(h["target_path"]) or [], terms)) for h in bare]
-    pending = {r.name for _, r in best if r is not None and _span(r) < _MIN_BODY_LINES}
-    if pending - set(by_name):
-        by_name.update(_by(await _rows(session, repo_id, pending - set(by_name), set()), "name"))
+    on_pages = [(h, _on_page(by_name.get(t[1]) or [], t[0], t[2])) for h, t in pages]
+    # A short callable is a declaration (a page on a header's member, a bare
+    # file's best match): its definition is fetched like any other.
+    short = [r for _, r in [*best, *on_pages] if r is not None and _span(r) < _MIN_BODY_LINES]
+    pending = {r.name for r in short if r.kind in _CALLABLE_KINDS}
+    if pending:
+        more = await _rows(session, repo_id, pending, set())
+        for name, extra in _by(more, "name").items():
+            known = {r.id for r in by_name.get(name, [])}
+            by_name.setdefault(name, []).extend(r for r in extra if r.id not in known)
+
+    def _complete(row):
+        if row is None or _span(row) >= _MIN_BODY_LINES:
+            return row
+        if row.kind not in _CALLABLE_KINDS:
+            return row
+        return _definition(by_name.get(row.name) or [], row.file_path, row.parent_name)
 
     out: list[tuple] = []
-    for h, (path, name, parent) in pages:
-        out.append((h, _on_page(by_name.get(name) or [], path, parent), "page"))
+    for h, row in on_pages:
+        out.append((h, _complete(row), "page"))
     for *_, h, s in declared:
         found = _definition(by_name.get(s["name"]) or [], h["target_path"], s.get("_parent"))
         out.append((h, found, "declaration"))
     for h, row in best:
-        if row is not None and _span(row) < _MIN_BODY_LINES:
-            if row.kind not in _CALLABLE_KINDS:
-                continue
-            row = _definition(by_name.get(row.name) or [], row.file_path, row.parent_name)
-        out.append((h, row, "file"))
+        out.append((h, _complete(row), "file"))
     found = [c for c in out if c[1] is not None]
     # Test, generated and vendored code the question does not ask about is
     # not the implementation it asks about (a mock shares the real names).
@@ -217,7 +240,7 @@ async def attach_grounding_bodies(
     repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
     session_factory = getattr(ctx, "session_factory", None)
     shown = {
-        (h.get("target_path") or "", s.get("start_line") or 0)
+        (hit_file_path(h) or "", s.get("start_line") or 0)
         for h in hits
         for s in h.get("symbols") or []
         if s.get("source_excerpt")
@@ -235,7 +258,7 @@ async def attach_grounding_bodies(
         if text is None:
             continue
         check = await verify_and_heal(session_factory, row, text)
-        if not check.verified:
+        if not check.verified or (row.file_path, check.start_line) in shown:
             continue
         src = _read_symbol_source(
             repo_root,

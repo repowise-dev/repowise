@@ -22,6 +22,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _DEFINES_MAX_FILES,
     _DEFINES_PER_CANDIDATE,
     _ENRICH_TOP_N_HITS,
+    _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
     _RELEVANCE_DOC_CHARS,
@@ -98,6 +99,12 @@ def _question_names_symbol(row, qids_lower: set[str]) -> bool:
             if len(q) >= 5  # avoid spurious substring matches on short tokens
         )
     )
+
+
+def _is_file_container(kind: str | None, start: int | None, end: int | None) -> bool:
+    """A namespace/module/package longer than a matched body is read at."""
+    span = (end or 0) - (start or 0) + 1
+    return kind in _CONTAINER_KINDS and span > _MATCHED_SYMBOL_SOURCE_LINES
 
 
 def _symbol_relevance(entry: dict, terms: set[str]) -> int:
@@ -347,10 +354,10 @@ async def _symbol_entry(
     }
     # Scored once here, not per sort comparison.
     entry["_relevance"] = _symbol_relevance(entry, term_stems)
-    # A namespace or module spans its whole file: a body would be the file's
-    # head, crowding out the code asked about ("Envoy's ..." matched
-    # `namespace Envoy` and spent 120 lines of optref.h).
-    if matched and verified and row.kind not in _CONTAINER_KINDS:
+    # A namespace or module spanning a file is not a body: it would be the
+    # file's head, crowding out the code asked about ("Envoy's ..." matched
+    # `namespace Envoy` and spent 120 lines of an unrelated header).
+    if matched and verified and not _is_file_container(row.kind, start_line, end_line):
         src = _read_symbol_source(
             repo_root, row.file_path, start_line, end_line, text=text
         )
@@ -391,7 +398,7 @@ def _attach_relevant_excerpts(
             break
         if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
             continue
-        if s.get("kind") in _CONTAINER_KINDS:
+        if _is_file_container(s.get("kind"), s["start_line"], s.get("end_line")):
             continue
         src = _read_symbol_source(
             repo_root,

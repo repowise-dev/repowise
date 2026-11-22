@@ -64,7 +64,8 @@ _DEFINES_MAX_FILES = 20
 _SYNTH_FULL_SOURCE_LINES = _INLINE_BODY_MAX_LINES
 _SYNTH_FULL_BODY_MAX_SYMBOLS = 2
 
-# Kinds whose span is a whole file or block of definitions; never given a body.
+# Kinds that wrap other definitions. Longer than _MATCHED_SYMBOL_SOURCE_LINES,
+# one is a file's worth of code, not a body: it gets none.
 _CONTAINER_KINDS = frozenset({"module", "namespace", "package"})
 
 # Implementation bodies behind the pages synthesis reads (tool_answer.grounding):

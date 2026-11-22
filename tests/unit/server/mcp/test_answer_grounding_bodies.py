@@ -146,20 +146,71 @@ async def test_unrelated_same_name_definitions_are_not_guessed(session, repo_id,
 async def test_namespace_matched_by_a_question_word_gets_no_body(
     session, repo_id, tmp_path
 ) -> None:
+    filler = "\n".join(f"  int field{i};" for i in range(60))
+    text = f"namespace Envoy {{\n{filler}\n}} // namespace Envoy\n"
     ctx = await _seed(
         session,
         repo_id,
         tmp_path,
-        [_row(repo_id, "n", "optref.h", "Envoy", "module", 1, 6)],
-        {"optref.h": _HEADER},
+        [
+            _row(repo_id, "n", "optref.h", "Envoy", "module", 1, 62),
+            _row(repo_id, "s", "small.h", "Envoy", "module", 1, 6),
+        ],
+        {"optref.h": text, "small.h": _HEADER},
     )
-    hits = [{"target_path": "optref.h", "page_type": "file_page"}]
+    hits = [
+        {"target_path": "optref.h", "page_type": "file_page"},
+        {"target_path": "small.h", "page_type": "file_page"},
+    ]
     await _hydrate_symbols_for_hits(
         session, repo_id, hits, ctx, question_ids={"Envoy"}, question="In Envoy's codec"
     )
-    (ns,) = hits[0]["symbols"]
-    assert ns["_matched"] is True
-    assert "source_excerpt" not in ns
+    (big,), (small,) = hits[0]["symbols"], hits[1]["symbols"]
+    assert big["_matched"] is True
+    assert "source_excerpt" not in big
+    # A short namespace is its own body, as before.
+    assert "decodeHeaders" in small["source_excerpt"]
+
+
+async def test_a_body_already_in_the_prompt_is_not_repeated(session, repo_id, tmp_path) -> None:
+    ctx = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        [_row(repo_id, "i", "conn.cc", "decodeHeaders", "method", 2, 7, "ActiveStream")],
+        {"conn.cc": _IMPL},
+    )
+    hits = [
+        {"target_path": "conn.cc", "page_type": "file_page"},
+        {"target_path": "conn.cc::ActiveStream::decodeHeaders", "page_type": "flow_page"},
+    ]
+    await _hydrate_symbols_for_hits(
+        session, repo_id, hits, ctx, question_ids={"decodeHeaders"}, question="decodeHeaders"
+    )
+    assert hits[0]["symbols"][0]["source_excerpt"]
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "decodeHeaders")
+    assert not any(h.get("_grounding") for h in hits)
+
+
+async def test_a_page_on_a_header_member_is_completed_by_its_definition(
+    session, repo_id, tmp_path
+) -> None:
+    ctx = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        [
+            _row(repo_id, "d", "conn.h", "decodeHeaders", "method", 4, 4, "ActiveStream"),
+            _row(repo_id, "i", "conn.cc", "decodeHeaders", "method", 2, 7, "ActiveStream"),
+        ],
+        {"conn.h": _HEADER, "conn.cc": _IMPL},
+    )
+    hits = [
+        {"target_path": "conn.h::ActiveStream::decodeHeaders", "page_type": "symbol_spotlight"}
+    ]
+    await attach_grounding_bodies(session, repo_id, hits, ctx, "decodeHeaders")
+    (body,) = hits[0]["_grounding"]
+    assert body["path"] == "conn.cc"
 
 
 async def test_unenriched_file_hit_gets_its_question_named_body_within_the_cap(
