@@ -18,9 +18,10 @@ from repowise.server.mcp_server._budget import OmissionCollector
 # tokens. ``include=["outline"]`` opens the next rung.
 _OUTLINE_TOP_CAP = 40
 _OUTLINE_CHILD_CAP = 10
-#: Serialized size the opened rung may take. Agents used about one path in six
-#: of a full two-rung outline, so past this the tail sections keep their
-#: ``descendants`` count and their children go to the omission store.
+#: Serialized size the opened rung (the sections' children) may take. Agents
+#: used about one path in six of a full two-rung outline, so past this the tail
+#: sections keep their ``descendants`` count and their children go to the
+#: omission store. The top rung itself is never cut.
 _OUTLINE_MAX_CHARS = 8_000
 #: Children a section keeps in the first trimming pass, before any loses all.
 _OUTLINE_TRIM_KEEP = 3
@@ -193,7 +194,10 @@ def _fit_outline(
 
 
 def _outline_chars(sections: list[dict[str, Any]]) -> int:
-    return len(json.dumps(sections, separators=(",", ":")))
+    """Serialized size of the opened rung: the sections' children."""
+    return sum(
+        len(json.dumps(n["children"], separators=(",", ":"))) for n in sections if n.get("children")
+    )
 
 
 def _stored_line(node: dict[str, Any]) -> str:

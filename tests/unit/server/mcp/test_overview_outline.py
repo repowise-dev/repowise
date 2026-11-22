@@ -158,7 +158,13 @@ def test_child_rows_leave_out_what_their_path_restates(tmp_path):
     assert outline["sections"][0]["page_id"] == LAYER_RUNTIME.id
 
 
-def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path):
+def _children_chars(sections: list[dict]) -> int:
+    return sum(
+        len(json.dumps(s["children"], separators=(",", ":"))) for s in sections if "children" in s
+    )
+
+
+def _layered(n: int) -> list:
     layers = [
         _row(
             f"layer_page:layer:l{i:02d}",
@@ -168,7 +174,7 @@ def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path
             display_order=i,
             section_number=str(i),
         )
-        for i in range(1, 31)
+        for i in range(1, n + 1)
     ]
     files = [
         _row(
@@ -180,17 +186,29 @@ def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path
         for i, layer in enumerate(layers, start=1)
         for j in range(10)
     ]
+    return [ROOT, *layers, *files]
+
+
+def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path):
     collector = _collector(tmp_path)
-    outline = _build_outline([ROOT, *layers, *files], 2, collector)
+    outline = _build_outline(_layered(30), 2, collector)
     sections = outline["sections"]
-    assert len(json.dumps(sections, separators=(",", ":"))) <= 8_000
-    # The head keeps its listing, the tail keeps its count.
-    assert "children" in sections[0]
-    assert "children" not in sections[-1]
+    assert _children_chars(sections) <= 8_000
+    # Breadth first: every section keeps its first rows and its count.
+    assert all(len(s["children"]) == 3 for s in sections)
     assert sections[-1]["descendants"] == 10
     assert outline["children_omitted_sections"] > 0
     body = "\n".join(text for _label, text in collector._chunks)
     assert "pkg/l30/very/long/directory/name/file_9.py" in body
+
+
+def test_tail_sections_lose_their_last_rows_when_three_each_still_overflow(tmp_path):
+    outline = _build_outline(_layered(40), 2, _collector(tmp_path))
+    sections = outline["sections"]
+    assert _children_chars(sections) <= 8_000
+    assert len(sections[0]["children"]) == 3
+    assert "children" not in sections[-1]
+    assert sections[-1]["descendants"] == 10
 
 
 def test_a_section_holding_an_entry_point_keeps_its_children_past_the_cap(tmp_path):
@@ -217,10 +235,10 @@ def test_a_section_holding_an_entry_point_keeps_its_children_past_the_cap(tmp_pa
     ]
     outline = _build_outline([ROOT, *dirs, *files], 2, _collector(tmp_path), ["d30/main.go"])
     sections = outline["sections"]
-    assert len(json.dumps(sections, separators=(",", ":"))) <= 8_000
-    # The last section holds the entry point: other tails give up theirs first.
-    assert "children" in sections[-1]
-    assert "children" not in sections[-2]
+    assert _children_chars(sections) <= 8_000
+    # The last section holds the entry point: the others are cut first.
+    assert len(sections[-1]["children"]) == 10
+    assert len(sections[-2]["children"]) == 3
 
 
 def test_no_outline_when_the_tree_has_never_been_built(tmp_path):
