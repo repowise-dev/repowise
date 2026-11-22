@@ -113,6 +113,33 @@ def _note(s: Setting, r: Resolved) -> str:
     return ""
 
 
+def _ollama_dimension_warning(root: Path) -> str | None:
+    """Flag an effective override above a known model's limit."""
+    from repowise.core.providers.embedding.ollama import (
+        DEFAULT_OLLAMA_EMBEDDING_MODEL,
+        known_model_dimensions,
+    )
+    from repowise.core.providers.embedding.resolve import (
+        embedding_model_for,
+        ollama_dimension_override,
+        resolve_reindex_embedder,
+    )
+    from repowise.core.providers.llm.resolve import repo_getenv
+
+    override = ollama_dimension_override(repo_getenv(root), warn_invalid=False)
+    if override is None or resolve_reindex_embedder(root)[0] != "ollama":
+        return None
+    var, width = override
+    model = embedding_model_for("ollama", root) or DEFAULT_OLLAMA_EMBEDDING_MODEL
+    limit = known_model_dimensions(model)
+    if limit is None or width <= limit:
+        return None
+    return (
+        f"{var}={width} exceeds the {limit}-dimension limit for {model}. "
+        f"Set {var} to {limit} or less, or remove the dimension overrides."
+    )
+
+
 @config_group.command(name="list")
 @click.option("--area", type=click.Choice(list(AREAS)), default=None, help="Only this area.")
 @click.option("--changed", "only_changed", is_flag=True, help="Only settings not at their default.")
@@ -146,9 +173,21 @@ def config_list(
         for s, r in zip(settings, _resolve_all(root, settings, fmt), strict=True)
         if not only_changed or _changed(s, r)
     ]
+    warning = _ollama_dimension_warning(root) if area in (None, "generation") else None
+    _emit_list(rows, root=root, fmt=fmt, warning=warning)
+
+
+def _emit_list(
+    rows: list[tuple[Setting, Resolved]], *, root: Path, fmt: str, warning: str | None
+) -> None:
     if fmt == "json":
-        emit_json({"repo": str(root), "settings": [view(s, r) for s, r in rows]})
+        payload: dict[str, Any] = {"repo": str(root), "settings": [view(s, r) for s, r in rows]}
+        if warning:
+            payload["warnings"] = [warning]
+        emit_json(payload)
         return
+    if warning:
+        console.print(f"[yellow]Warning: {escape(warning)}[/yellow]")
     _print_list(rows)
 
 

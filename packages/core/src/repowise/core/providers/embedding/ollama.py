@@ -16,7 +16,7 @@ import httpx
 from repowise.core.providers.embedding.base import resolve_embedding_timeout
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
-_DEFAULT_MODEL = "embeddinggemma"
+DEFAULT_OLLAMA_EMBEDDING_MODEL = "embeddinggemma"
 _DEFAULT_TIMEOUT = 30.0
 # Extra seconds per input character when no timeout is configured. A CPU-only
 # Ollama measured ~0.8 ms/char on a full 16-page chunk (171.6s for ~210k chars),
@@ -26,6 +26,20 @@ _TIMEOUT_ENV_VARS = ("OLLAMA_EMBEDDING_TIMEOUT", "REPOWISE_EMBEDDING_TIMEOUT")
 # Ollama's own error text when the requested width is larger than the model's.
 _DIMS_TOO_LARGE = re.compile(r"dimensions (\d+) exceeds embedding length (\d+)")
 _MAX_DETAIL_CHARS = 500
+_QWEN3_TAGS = {
+    "latest": "8b",
+    "0.6b": "0.6b",
+    "0.6b-q8_0": "0.6b",
+    "0.6b-fp16": "0.6b",
+    "4b": "4b",
+    "4b-q4_k_m": "4b",
+    "4b-q8_0": "4b",
+    "4b-fp16": "4b",
+    "8b": "8b",
+    "8b-q4_k_m": "8b",
+    "8b-q8_0": "8b",
+    "8b-fp16": "8b",
+}
 
 
 def _normalize_base_url(url: str) -> str:
@@ -64,6 +78,23 @@ def _infer_dimensions(model: str) -> int:
     return 768
 
 
+def known_model_dimensions(model: str) -> int | None:
+    """Native width of a recognized Ollama model, without the inference fallback."""
+    name, _, tag = model.lower().removeprefix("library/").partition(":")
+    if name == "qwen3-embedding":
+        size = _QWEN3_TAGS.get(tag or "latest")
+        return _infer_dimensions(f"{name}:{size}") if size else None
+    if tag in ("", "latest") and name in {
+        "all-minilm",
+        "bge-m3",
+        "embeddinggemma",
+        "mxbai-embed-large",
+        "nomic-embed-text",
+    }:
+        return _infer_dimensions(name)
+    return None
+
+
 class OllamaEmbedder:
     """Ollama embedding adapter implementing the repowise Embedder protocol.
 
@@ -90,7 +121,7 @@ class OllamaEmbedder:
             model
             or os.environ.get("OLLAMA_EMBEDDING_MODEL")
             or os.environ.get("REPOWISE_EMBEDDING_MODEL")
-            or _DEFAULT_MODEL
+            or DEFAULT_OLLAMA_EMBEDDING_MODEL
         )
         self._base_url = _normalize_base_url(
             base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL

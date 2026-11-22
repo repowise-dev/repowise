@@ -34,6 +34,8 @@ def repo(tmp_path, monkeypatch):
     for s in all_settings():
         if s.env is not None and not s.env.prefix:
             monkeypatch.delenv(s.env.name, raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
     return root
 
 
@@ -89,6 +91,70 @@ def test_list_text_groups_by_area(repo):
     assert "commit_limit" in out and "default 5000" in out
     code, out = _run(repo, "list", "--changed")
     assert "1 changed from the default" in out
+
+
+@pytest.mark.parametrize(
+    ("embedder", "model", "width", "limit"),
+    [
+        ("ollama", "qwen3-embedding:0.6b", "3072", 1024),
+        ("ollama", "qwen3-embedding:0.6b-q8_0", "3072", 1024),
+        ("ollama", "qwen3-embedding:4b-q4_K_M", "3072", 2560),
+        ("ollama", "qwen3-embedding", "8192", 4096),
+        ("ollama", "library/qwen3-embedding:latest", "8192", 4096),
+        ("ollama", "qwen3-embedding:0.6b", "1024", None),
+        ("ollama", "qwen3-embedding:0.6b", "512", None),
+        ("ollama", "qwen3-embedding:8b", "3072", None),
+        ("ollama", "qwen3-embedding:custom", "3072", None),
+        ("openai", "qwen3-embedding:0.6b", "3072", None),
+    ],
+)
+def test_list_warns_only_for_an_oversized_ollama_override(
+    repo, monkeypatch, embedder, model, width, limit
+):
+    _write_config(repo, {"embedder": embedder, "embedding_model": model})
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", width)
+    args = ("list", "--area", "generation", "--changed")
+
+    out = _json(repo, *args)
+    assert out["_exit"] == 0
+    if limit is not None:
+        warning = f"REPOWISE_EMBEDDING_DIMS={width} exceeds the {limit}-dimension limit for {model}."
+        assert out["warnings"][0].startswith(warning)
+    else:
+        assert "warnings" not in out
+    code, text = _run(repo, *args)
+    assert code == 0
+    assert ("exceeds the" in " ".join(text.split())) == (limit is not None)
+
+
+def test_list_uses_the_effective_ollama_override_and_model_from_repo_env(repo, monkeypatch):
+    _write_config(repo, {"embedder": "ollama", "embedding_model": "qwen3-embedding:8b"})
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "512")
+    (repo / ".repowise" / ".env").write_text(
+        "OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b\nOLLAMA_EMBEDDING_DIMS=3072\n", encoding="utf-8"
+    )
+
+    out = _json(repo, "list", "--changed")
+    assert out["_exit"] == 0
+    assert out["warnings"][0].startswith(
+        "OLLAMA_EMBEDDING_DIMS=3072 exceeds the 1024-dimension limit for qwen3-embedding:0.6b."
+    )
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "512")
+    out = _json(repo, "list", "--changed")
+    assert "warnings" not in out
+
+
+def test_list_warns_when_auto_reindex_would_replace_a_saved_mock_pin(repo, monkeypatch):
+    _write_config(repo, {"embedder": "mock"})
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "3072")
+    result = _json(repo, "list", "--area", "generation")
+    assert result["_exit"] == 0
+    assert "3072 exceeds the 1024-dimension limit" in result["warnings"][0]
+
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
+    assert "warnings" not in _json(repo, "list", "--area", "generation")
 
 
 def test_get_text_and_json(repo):

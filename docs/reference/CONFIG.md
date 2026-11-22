@@ -1385,6 +1385,10 @@ Keys resolve in order:
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model; also selects the `ollama` embedder |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama output dimensions (optional; inferred from the model) |
 
+- `repowise config list --area generation` warns when an Ollama dimension
+  override exceeds the known native width of the model selected by automatic
+  reindexing. With `--format json`, the warning appears in the `warnings` array
+  when present.
 - `REPOWISE_EMBEDDING_TIMEOUT` unset: 30 seconds for `ollama`, 10 elsewhere.
   Raise it for a local endpoint: one request embeds a whole batch, and an
   expired batch shows only as `N/N items failed to embed`.
