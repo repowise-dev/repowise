@@ -928,6 +928,53 @@ class TestPathSearch:
         assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "src/auth/service.py|src/db/models.py",
+            "SERVICE.PY|Models.py",
+            "src/auth|src/db",
+            "(service|models)",
+        ],
+    )
+    async def test_alternation_searches_each_alternative(self, setup_mcp, query):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase(query, mode="path")
+        files = [r["path"] for r in result["results"]]
+        # One alternative's best file, then the other's.
+        assert files[0].startswith("src/auth/"), files
+        assert files[1] == "src/db/models.py", files
+        assert "_alternative" not in result["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_a_common_alternative_does_not_crowd_out_the_others(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        for i in range(6):
+            await _seed_page(f"file_page:pkg{i}/service.py", f"pkg{i}/service.py")
+        result = await search_codebase("service.py|models.py", mode="path", limit=3)
+        files = [r["path"] for r in result["results"]]
+        assert "src/db/models.py" in files[:2], files
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("query", ["go.mod", "src/missing.py"])
+    async def test_a_missing_file_name_is_not_sent_to_symbol_search(self, setup_mcp, query):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase(query, mode="path")
+        assert result["results"] == []
+        assert "identifier" not in result.get("grep_hint", "")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_identifier_keeps_its_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("NoSuchConfigClass", mode="path")
+        assert result["results"] == []
+        assert 'mode="symbol"' in result["grep_hint"]
+
+    @pytest.mark.asyncio
     async def test_auto_routes_path_shaped_query(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
@@ -1337,6 +1384,19 @@ class TestExactMatchSignal:
         result = await search_codebase("AuthService", mode="symbol")
         assert result["exact_match"] is True
         assert "exactly matches" not in result.get("note", "")
+
+    @pytest.mark.asyncio
+    async def test_a_file_name_in_a_question_gets_no_symbol_verdict(self, setup_mcp):
+        # ``Go`` makes ``plugin.go`` read as a dotted name; it names a file.
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_symbol("Go")
+        result = await search_codebase("plugin.go webhook dispatch flow")
+        assert result["mode"] == "hybrid"
+        assert "exactly matches" not in result.get("note", "")
+        assert "exact_match" not in result
+        named = await search_codebase("service.py AuthService login flow")
+        assert named["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_fuzzy_only_sets_false_with_note(self, setup_mcp):

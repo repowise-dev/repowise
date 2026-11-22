@@ -126,11 +126,16 @@ def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
             continue
         token = raw.strip(_TOKEN_EDGE_CHARS).split("::", 1)[0].rstrip(".:")
         token = _LINE_SUFFIX_RE.sub("", token)
-        if os.path.splitext(token)[1] in _code_exts() or (
+        if _has_code_extension(token) or (
             ("/" in token or "\\" in token) and _names_indexed_segments(token, paths)
         ):
             out.append(token)
     return out
+
+
+def _has_code_extension(token: str) -> bool:
+    """``plugin.go``, ``x.py``: a file name, not a dotted symbol name."""
+    return os.path.splitext(token)[1] in _code_exts()
 
 
 def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:

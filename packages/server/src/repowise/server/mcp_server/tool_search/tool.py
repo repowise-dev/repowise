@@ -282,8 +282,11 @@ async def search_codebase(
         # The keyword names no symbol; ranked with it, ``class Article`` found
         # a docstring that says "class" and none of the classes.
         query, mode = declared, "symbol"
-    grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
+    # A path search for a dotted or slashed name (``go.mod``) asked after a
+    # file: "retry as a symbol" would send the caller the wrong way.
+    path_name = resolved_mode == "path" and any(ch in query for ch in "./\\")
+    grep_hint = None if path_name else _grep_hint_for(query, names)
     issue = await _issue_files(repo, query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):

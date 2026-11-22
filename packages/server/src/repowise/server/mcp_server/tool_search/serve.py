@@ -32,6 +32,7 @@ from repowise.server.mcp_server._page_paths import (
 )
 from repowise.server.mcp_server._query_shape import (
     _embedded_identifiers,
+    _has_code_extension,
     _has_exact_symbol,
     _looks_like_exact_token,
 )
@@ -345,7 +346,7 @@ def _grep_hint_for(query: str, names: Container[str] | None = None) -> str | Non
             f"No indexed match for identifier {query!r}. Retry with "
             'mode="symbol" (or check spelling/casing). ' + EXHAUSTIVE_SWEEP_HINT
         )
-    if idents := _embedded_identifiers(query, names):
+    if idents := [t for t in _embedded_identifiers(query, names) if not _has_code_extension(t)]:
         shown = ", ".join(repr(t) for t in idents[:3])
         return (
             f"Query names identifier(s) {shown} but nothing matched. Search "
