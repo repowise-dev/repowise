@@ -12,6 +12,7 @@ check over ``ctx.path_set``.
 
 from __future__ import annotations
 
+import fnmatch
 import posixpath
 import re
 from pathlib import Path
@@ -20,13 +21,18 @@ import structlog
 
 from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
 log = structlog.get_logger(__name__)
 
-# Gemfile:  gem "lib", path: "../lib"  (single quotes and `:path =>` likewise)
+# Gemfile:  gem "lib", path: "../lib"  (single quotes and `:path =>` likewise).
+# A call may split its arguments over following lines, so the middle of the
+# match crosses newlines — but never a line starting a new Gemfile statement
+# (another gem, gemspec, group, source ...) or a comment, so a `path:` on a
+# later line still belongs to this call.
 _GEMFILE_PATH_DEP_RE = re.compile(
-    r"""^\s*gem\s*\(?\s*["'](?:[A-Za-z0-9_.\-]+)["']\s*,[^\n]*?"""
+    r"""^\s*gem\s*\(?\s*["'](?:[A-Za-z0-9_.\-]+)["']\s*,(?:[^\n]|\n(?!\s*(?:gem\b|gemspec\b|source\b|group\b|end\b|plugin\b|eval_gemfile\b|#)))*?"""
     r"""(?:path\s*:|:path\s*=>)\s*["']([^"']+)["']""",
     re.MULTILINE,
 )
@@ -50,25 +56,40 @@ def _read_text(path: Path) -> str | None:
 def _gem_roots(ctx: ResolverContext) -> dict[str, dict[str, str]]:
     """Each ``Gemfile``/``.gemspec`` root to its manifest paths, from ``path_set``.
 
-    A root holds at most one ``Gemfile`` and one ``.gemspec``: the first
-    gemspec in sorted order names the gem.
+    The manifest names come from the language registry, not a hand-written
+    list: a ``Gemfile`` is the Ruby spec's manifest file, a ``.gemspec`` one
+    of its manifest globs. A root holds at most one ``Gemfile`` and one
+    ``.gemspec``: the first gemspec in sorted order names the gem.
     """
+    ruby = REGISTRY.get("ruby")
+    manifest_files = frozenset(ruby.manifest_files) if ruby is not None else frozenset()
+    manifest_globs = tuple(ruby.manifest_globs) if ruby is not None else ()
     roots: dict[str, dict[str, str]] = {}
     for path in sorted(ctx.path_set):
-        if path == "Gemfile" or path.endswith("/Gemfile"):
-            root = path[: -len("/Gemfile")] if "/" in path else ""
+        if not REGISTRY.is_package_manifest(path):
+            continue
+        name = path.rsplit("/", 1)[-1]
+        root = path[: -len(name) - 1] if "/" in path else ""
+        if name in manifest_files:
             roots.setdefault(root, {})["gemfile"] = path
-        elif path.endswith(".gemspec"):
-            root = path.rsplit("/", 1)[0] if "/" in path else ""
+        elif any(fnmatch.fnmatchcase(name.lower(), glob.lower()) for glob in manifest_globs):
+            # Scoped to the Ruby spec's own globs: the registry-wide glob
+            # match would also claim another ecosystem's glob manifest.
+            # Lowercased like the registry's case-insensitive glob match.
             roots.setdefault(root, {}).setdefault("gemspec", path)
     return roots
 
 
 def _gemspec_name(text: str, gemspec: str) -> str:
-    """The gemspec's declared name, else its file stem, as RubyGems expects."""
-    match = _GEMSPEC_NAME_RE.search(text) or _GEMSPEC_NEW_NAME_RE.search(text)
-    if match:
-        return match.group(1)
+    """The gemspec's declared name, else its file stem, as RubyGems expects.
+
+    An interpolated name (``spec.name = "rails_#{x}"``) is not a literal, so
+    it falls back to the file stem instead of capturing the ``rails_`` prefix.
+    """
+    for pattern in (_GEMSPEC_NAME_RE, _GEMSPEC_NEW_NAME_RE):
+        for match in pattern.finditer(text):
+            if not text[match.end() :].startswith("#{"):
+                return match.group(1)
     return gemspec.rsplit("/", 1)[-1][: -len(".gemspec")]
 
 
@@ -81,16 +102,16 @@ def _path_dep_roots(text: str, root: str) -> set[str]:
     return roots
 
 
-def units(ctx: ResolverContext) -> Found:
-    if ctx.repo_path is None or not any(
-        path == "Gemfile" or path.endswith("/Gemfile") or path.endswith(".gemspec")
-        for path in ctx.path_set
-    ):
-        return Found([])
-    repo = ctx.repo_path
-    # root -> (name, manifest, source, path-dep roots)
+def _read_gem_roots(
+    repo: Path, roots: dict[str, dict[str, str]]
+) -> dict[str, tuple[str, str, str, set[str]]]:
+    """Read each root's manifests: (name, manifest, source, path-dep roots).
+
+    A root whose ``.gemspec`` or ``Gemfile`` cannot be read is left out, so
+    the manifest fallback claims it.
+    """
     read: dict[str, tuple[str, str, str, set[str]]] = {}
-    for root, files in sorted(_gem_roots(ctx).items()):
+    for root, files in sorted(roots.items()):
         gemspec, gemfile = files.get("gemspec"), files.get("gemfile")
         if gemspec is not None:
             text = _read_text(repo / gemspec)
@@ -107,9 +128,18 @@ def units(ctx: ResolverContext) -> Found:
                 continue  # unreadable Gemfile: the manifest fallback claims the root
             paths = _path_dep_roots(text, root)
         read[root] = (name, manifest, source, paths)
-    # A name taken twice keeps its first root in sorted order; the later
-    # root is no unit here, so the fallback claims it, and a path dep
-    # pointing at it links nothing rather than the other gem.
+    return read
+
+
+def _dedupe_roots(
+    read: dict[str, tuple[str, str, str, set[str]]],
+) -> dict[str, str]:
+    """The first root (in sorted order) per gem name, as ``root -> ruby:<name>``.
+
+    A name taken twice keeps its first root; the later root is no unit here,
+    so the fallback claims it, and a path dep pointing at it links nothing
+    rather than the other gem.
+    """
     by_root: dict[str, str] = {}
     taken: set[str] = set()
     for root, (name, _manifest, _source, _paths) in read.items():
@@ -119,7 +149,13 @@ def units(ctx: ResolverContext) -> Found:
             continue
         taken.add(uid)
         by_root[root] = uid
+    return by_root
 
+
+def _build_claims(
+    read: dict[str, tuple[str, str, str, set[str]]], by_root: dict[str, str]
+) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+    """The units for *by_root*, each linked to the in-repo gems its Gemfile names."""
     claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for root, uid in by_root.items():
         name, manifest, source, paths = read[root]
@@ -137,4 +173,14 @@ def units(ctx: ResolverContext) -> Found:
                 (),
             )
         )
-    return Found(claims)
+    return claims
+
+
+def units(ctx: ResolverContext) -> Found:
+    if ctx.repo_path is None or not any(
+        REGISTRY.is_package_manifest(path) for path in ctx.path_set
+    ):
+        return Found([])
+    read = _read_gem_roots(ctx.repo_path, _gem_roots(ctx))
+    by_root = _dedupe_roots(read)
+    return Found(_build_claims(read, by_root))

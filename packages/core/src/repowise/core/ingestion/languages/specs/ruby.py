@@ -23,6 +23,7 @@ SPEC = LanguageSpec(
     scm_file="ruby.scm",
     heritage_node_types=frozenset({"class"}),
     manifest_files=("Gemfile",),
+    manifest_globs=("*.gemspec",),
     lock_files=("Gemfile.lock",),
     shebang_tokens=("ruby",),
     builtin_calls=frozenset(

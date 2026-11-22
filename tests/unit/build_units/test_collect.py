@@ -807,6 +807,35 @@ def test_ruby_duplicate_gem_name_keeps_first_root(tmp_path):
     assert _owners(index, "b/dup/d.rb") == ["manifest:b/dup"]
 
 
+def test_ruby_multiline_path_dep_links(tmp_path):
+    index = _collect(tmp_path, {
+        "app/Gemfile": (
+            'source "https://rubygems.org"\n'
+            'gem "lib",\n'
+            '  path: "../lib"\n'
+            'gem "gone",\n'
+            '  git: "https://example.com/gone.git"\n'
+        ),
+        "app/app.rb": "",
+        "lib/lib.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "lib"\nend\n'
+        ),
+        "lib/lib.rb": "",
+    })
+    assert _deps(index) == {"ruby:app": ("ruby:lib",), "ruby:lib": ()}
+
+
+def test_ruby_interpolated_spec_name_falls_back_to_stem(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/railsy.gemspec": (
+            'Gem::Specification.new do |spec|\n  spec.name = "rails_#{x}"\nend\n'
+        ),
+        "lib/lib.rb": "",
+    })
+    assert index.unit("ruby:railsy").name == "railsy"
+    assert index.unit("ruby:railsy").manifest == "lib/railsy.gemspec"
+
+
 def test_ruby_files_without_manifests_get_no_unit(tmp_path):
     index = _collect(tmp_path, {
         "lib/a.rb": "",
@@ -2050,7 +2079,8 @@ def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch
 
     monkeypatch.setattr(pascal_adapter, "get_pascal_index", boom)
     index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
-    assert list(index.units) == ["manifest:pkg"]
+    # The empty Gemfile is a Ruby root, not a manifest fallback.
+    assert list(index.units) == ["ruby:pkg"]
     assert index.failed_ecosystems == frozenset()
 
 
