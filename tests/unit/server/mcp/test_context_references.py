@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import UTC, datetime
 
@@ -1236,6 +1237,120 @@ async def test_go_package_is_its_live_directory(session, repo_id, tmp_path):
     assert out["complete"] is True, out.get("reasons")
 
 
+_TOKEN = "package token\n\nfunc NewServer() *Server {\n\treturn nil\n}\n"
+_TOKEN_TEST = """package token_test
+
+import (
+	"testing"
+
+	authn "example.com/app/internal/authn"
+	"example.com/app/internal/oidc"
+	"example.com/app/internal/token"
+	tok "example.com/app/internal/token"
+)
+
+func TestServers(t *testing.T) {
+	_ = token.NewServer()
+	_ = tok.NewServer()
+	_ = authn.NewServer()
+	_ = oidc.NewServer()
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_go_use_qualified_by_another_package_is_not_a_site(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "go.mod": "module example.com/app\n\ngo 1.22\n",
+            "internal/token/server.go": _TOKEN,
+            "internal/token/server_test.go": _TOKEN_TEST,
+        },
+        "go",
+        ("internal/token/server.go", "NewServer", 3, 5),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == "internal/token/server_test.go"}
+    # token.NewServer and the aliased tok.NewServer; never authn's or oidc's.
+    assert lines == {13, 14}
+    assert out["complete"] is True, out.get("reasons")
+
+
+_MAGEFILE = """package main
+
+import (
+	"fmt"
+
+	mg "github.com/magefile/mage/mg"
+)
+
+type UI mg.Namespace
+
+func Build() error {
+	mg.Deps(Clean)
+	return nil
+}
+
+func (u UI) Deps() error {
+	fmt.Println("deps")
+	return nil
+}
+
+func (u UI) Run() error {
+	mg.Deps(u.Deps)
+	return nil
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_go_method_is_never_named_through_an_import(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"go.mod": "module example.com/app\n", "magefile.go": _MAGEFILE},
+        "go",
+        ("magefile.go", "Deps", 16, 19),
+        git=False,
+    )
+    node.node_id, node.kind = "magefile.go::UI::Deps", "method"
+    # The graph bound ``mg.Deps(Clean)`` to the method by its name alone.
+    session.add(
+        _edge(1, repo_id, "magefile.go::Build", node.node_id, "calls", call_lines_json="[12]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == "magefile.go"}
+    assert 12 not in lines
+    assert {16, 22} <= lines
+
+
+def test_go_method_named_on_a_local_that_shadows_an_import_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/config"',
+        "func run() {",
+        "	config := load()",
+        "	config.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[4]
+    m = next(re.finditer(r"\bReload\b", text))
+    assert judge(text, m) is False
+
+
 @pytest.mark.asyncio
 async def test_go_directory_holding_another_package_is_incomplete(session, repo_id, tmp_path):
     node = await _seed_package(
@@ -1809,3 +1924,59 @@ async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
     assert "files shown to fit" in out["reasons"][-1]
     assert out["hint"] == _edit_sites.incomplete_hint("pick")
     assert r'query="\bpick\b"' in out["hint"]
+
+
+def test_go_method_named_on_a_parameter_alone_on_its_line_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/config"',
+        "func run(",
+        "\tconfig *Config,",
+        ") {",
+        "\tconfig.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[5]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_root_package_without_a_module_is_not_judged():
+    from repowise.server.mcp_server._edit_sites_go import GoTarget, go_judge
+
+    target = GoTarget(None, "", "repo")
+    assert go_judge("cmd/main.go", ['import "x/repo"'], {1}, target, member=False) is None
+
+
+def test_go_method_named_on_a_grouped_parameter_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/cfg"',
+        "func run(cfg, other *Config) {",
+        "\tcfg.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[3]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_quoted_module_path_is_read_unquoted(tmp_path):
+    from repowise.server.mcp_server._edit_sites_go import go_target
+
+    (tmp_path / "go.mod").write_text('module "example.com/app"\n', encoding="utf-8")
+    target = go_target(tmp_path, "pkg/a.go", ["package pkg"])
+    assert target.import_path == "example.com/app/pkg"
+
+
+def test_go_method_on_a_guessed_qualifier_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    # The package may declare another name, and ``config`` be a package-level value.
+    lines = ["package main", 'import "example.com/app/config"', "\tconfig.Load()"]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    assert judge(lines[2], next(re.finditer("Load", lines[2]))) is False

@@ -37,6 +37,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, W
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
+from repowise.server.mcp_server._edit_sites_go import go_judge, go_target
 from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._meta import (
@@ -742,6 +743,8 @@ class _Judge(NamedTuple):
 
     member: bool
     own: set[int]
+    # A Go target's package (:class:`GoTarget`): import-qualified uses are judged.
+    go: Any = None
 
     def for_file(
         self,
@@ -768,6 +771,7 @@ class _Scope(NamedTuple):
     member: bool
     # Files holding a base method the symbol answers for, or an override of it.
     kin: frozenset[str]
+    go: Any = None
 
 
 def _scan(
@@ -836,7 +840,7 @@ def _scan(
             own.append(rel)
         found, missed, through_object = _file_sites(
             rel, lines, imports, name, local, definition, graph_calls, live,
-            _Judge(scope.member, own_lines),
+            _Judge(scope.member, own_lines, scope.go),
         )
         sites += found
         stale += missed
@@ -883,6 +887,9 @@ def _file_sites(
     def_seen = rel != def_path
     prose = _ProseLines(rel, lines, name)
     foreign = judge.for_file(rel, lines, imports, name, prose, live, def_path)
+    # Read on the graph's call lines too: a call the graph bound by name alone
+    # (``mg.Deps(...)`` for ``UI.Deps``) is still another package's.
+    go_foreign = go_judge(rel, lines, imports, judge.go, member=judge.member)
     sites: list[dict[str, Any]] = []
     stale = 0
     for n, text in enumerate(lines, 1):
@@ -892,8 +899,11 @@ def _file_sites(
             continue
         if n in imports:
             hits = _outside_module(text, hits)
-        elif foreign is not None and n not in graph_calls:
-            hits = [h for h in hits if not foreign(n, text, h)]
+        else:
+            if go_foreign is not None:
+                hits = [h for h in hits if not (prose.is_code(n, h) and go_foreign(text, h))]
+            if foreign is not None and n not in graph_calls:
+                hits = [h for h in hits if not foreign(n, text, h)]
         if not hits:
             continue
         is_def = not def_seen and def_start <= n <= def_end
@@ -1771,6 +1781,7 @@ async def _edit_set(
     scope = _Scope(
         node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
         frozenset(file_of_symbol(i) for i in bases + overrides),
+        await asyncio.to_thread(_go_scope, root, node, language),
     )
     scan = _ScanResult(
         *await asyncio.to_thread(
@@ -1798,6 +1809,13 @@ async def _edit_set(
             session, repo_id, root, node, name, ordered + unindexed, scan.sites
         )
     return scan.sites, reasons
+
+
+def _go_scope(root: Path, node: GraphNode, language: str) -> Any:
+    """A Go symbol's package, which judges the qualified uses in each file."""
+    if language != "go":
+        return None
+    return go_target(root, node.file_path, _read_lines(root, node.file_path) or [])
 
 
 async def reference_edit_set(
