@@ -382,6 +382,11 @@ class GraphBuilder(
         )
 
         # --- Symbol nodes ---
+        # Intra-file containment edges are deferred: a method may be emitted
+        # before its enclosing class/struct (Go receiver methods above the
+        # type, a Rust impl above the struct), so the parent node can still
+        # be missing when the method is visited. Issue #6149.
+        pending_containment: list[tuple[str, str]] = []
         for sym in parsed.symbols:
             # A declaration must never displace a definition already indexed
             # under this id — the same rule ``call_resolver._build_indices``
@@ -430,15 +435,10 @@ class GraphBuilder(
                 edge_type="defines",
             )
 
-            # HAS_METHOD edge: class/struct → method
+            # HAS_METHOD edge: class/struct → method (deferred, see above)
             if sym.parent_name and sym.kind == "method":
                 parent_id = make_symbol_id(path, sym.parent_name)
-                if parent_id in self._graph:
-                    self._graph.add_edge(
-                        parent_id,
-                        sym.id,
-                        edge_type="has_method",
-                    )
+                pending_containment.append((parent_id, sym.id))
 
         # --- Synthetic module-level symbol for top-level calls ---
         module_sym_id = module_symbol_id(path)
@@ -455,6 +455,12 @@ class GraphBuilder(
             docstring=parsed.docstring,
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
+
+        # All file symbols exist now: resolve the containment edges that were
+        # waiting for a parent emitted later in the file.
+        for parent_id, method_id in pending_containment:
+            if parent_id in self._graph:
+                self._graph.add_edge(parent_id, method_id, edge_type="has_method")
 
     def _qualify_python_symbols(self) -> None:
         """Rename Python symbols to their importable dotted module.

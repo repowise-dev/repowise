@@ -154,6 +154,57 @@ def _sym(
     )
 
 
+# ---------------------------------------------------------------------------
+# Intra-file containment order
+# ---------------------------------------------------------------------------
+
+
+class TestHasMethodEdgeOrder:
+    def test_method_before_parent_still_links(self) -> None:
+        """A method emitted before its class keeps its ``has_method`` edge (#6149).
+
+        Go receiver methods may sit above the struct declaration, and a Rust
+        ``impl`` block may sit above its ``struct``; the containment edge must
+        not depend on declaration order.
+        """
+        b = GraphBuilder()
+        parsed = _parsed("src/service.go", language="go")
+        method = _sym("src/service.go", "Start", kind="method")
+        method.parent_name = "Service"
+        struct = _sym("src/service.go", "Service", kind="struct")
+        parsed.symbols = [method, struct]
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.has_edge(struct.id, method.id)
+        assert g.edges[struct.id, method.id]["edge_type"] == "has_method"
+
+    def test_parent_before_method_still_links(self) -> None:
+        """The classic order keeps working after the deferral change."""
+        b = GraphBuilder()
+        parsed = _parsed("src/service.go", language="go")
+        method = _sym("src/service.go", "Start", kind="method")
+        method.parent_name = "Service"
+        struct = _sym("src/service.go", "Service", kind="struct")
+        parsed.symbols = [struct, method]
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.edges[struct.id, method.id]["edge_type"] == "has_method"
+
+    def test_missing_parent_still_drops_the_edge(self) -> None:
+        """A method whose parent never appears in the file still yields no edge."""
+        b = GraphBuilder()
+        parsed = _parsed("src/service.go", language="go")
+        method = _sym("src/service.go", "Start", kind="method")
+        method.parent_name = "Service"
+        parsed.symbols = [method]
+        b.add_file(parsed)
+        g = b.graph()
+        has_method_edges = [
+            d for _, _, d in g.edges(data=True) if d.get("edge_type") == "has_method"
+        ]
+        assert has_method_edges == []
+
+
 class TestDocstringPropagation:
     def test_symbol_docstring_in_graph_node(self) -> None:
         b = GraphBuilder()
