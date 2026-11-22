@@ -141,3 +141,30 @@ def test_it_is_free_like_the_other_local_embedders() -> None:
     assert lookup_embedding_cost("fastembed") == 0.0
     # A keyless run keeps it even when nobody named it on this run.
     assert template_run_embedder("fastembed", embedder_was_requested=False) == "fastembed"
+
+
+def test_doctor_prints_the_install_line_with_its_brackets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from repowise.cli.commands.doctor_cmd import _render
+    from repowise.cli.commands.doctor_cmd._types import _check
+
+    out = Console(record=True, width=200)
+    monkeypatch.setattr(_render, "console", out)
+    monkeypatch.setattr(_render, "_advise_claude_md_stamp", lambda *_a: None)
+    ctx = SimpleNamespace(repo_path=tmp_path, coord_drift_pct=None, coord_drift_color="", state={})
+    row = _check(
+        "Embedder",
+        True,
+        'Install it with: pip install "repowise[local-embed]"',
+        check_id="embedder-package",
+        warn=True,
+    )
+
+    _render.render_checks(ctx, [row], all_ok=True)
+
+    assert 'pip install "repowise[local-embed]"' in out.export_text()
