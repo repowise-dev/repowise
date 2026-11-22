@@ -195,13 +195,35 @@ def test_language_family_is_one_language():
 
 
 def test_anchored_row_never_sinks():
-    """A file defining a named symbol keeps its rank whatever its language."""
-    langs = {"a.go": "go", "b.go": "go", "c.go": "go", "gen.sh": "shell"}
-    hits = [{**_hit("file_page", "gen.sh"), "_symbol_anchored": True}] + [
-        _hit("file_page", p) for p in ("a.go", "b.go", "c.go")
+    """A file defining a named symbol keeps its rank whatever its language;
+    an unanchored file in the same language still sinks."""
+    langs = {"a.go": "go", "gen.sh": "shell", "tools/other.sh": "shell"}
+    hits = [
+        _hit("file_page", "tools/other.sh"),
+        {**_hit("file_page", "gen.sh"), "_symbol_anchored": True},
+        {**_hit("file_page", "a.go"), "_symbol_anchored": True},
     ]
-    out = demote_noise_hits(hits, "what does run_gen do", is_why=False, languages=langs)
-    assert _paths(out)[0] == "gen.sh"
+    out = demote_noise_hits(hits, "what do run_gen and Run do", is_why=False, languages=langs)
+    assert _paths(out) == ["gen.sh", "a.go", "tools/other.sh"]
+
+
+def test_non_code_named_symbol_falls_back_to_the_ranking_vote():
+    """A named proto message sets no language; the ranked code files do."""
+    hits = [
+        _hit("file_page", "docs/root/intro.md"),
+        {**_hit("api_contract", _HCM_PROTO), "_symbol_anchored": True},
+        _hit("file_page", "source/common/http/conn_manager_impl.cc"),
+        _hit("file_page", "envoy/http/codec.h"),
+    ]
+    out = demote_noise_hits(
+        hits, "how is HttpConnectionManager read", is_why=False, languages=_LANGS
+    )
+    assert _paths(out) == [
+        _HCM_PROTO,
+        "source/common/http/conn_manager_impl.cc",
+        "envoy/http/codec.h",
+        "docs/root/intro.md",
+    ]
 
 
 def test_asked_languages_reads_tags_extensions_paths_and_kind_words():

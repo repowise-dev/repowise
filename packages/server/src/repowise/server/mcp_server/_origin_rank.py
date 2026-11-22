@@ -193,27 +193,38 @@ def question_language(hits: list[dict], languages: Mapping[str, str]) -> tuple[s
     """The language family a question is about, read from stored languages,
     and whether a symbol the question names decided it.
 
-    The files defining a symbol the question names decide first; else the
-    first few distinct files of the ranking vote, one vote each. Only
-    languages that implement behaviour vote, so a run of ``.proto`` or ``.md``
-    rows cannot make the question about them. ``None`` unless one family holds
+    The code files defining a symbol the question names decide first; when
+    none is code, the first few distinct files of the ranking vote, one vote
+    each. Only languages that implement behaviour vote, so a run of
+    ``.proto`` or ``.md`` rows cannot make the question about them. ``None`` unless one family holds
     a strict majority of the votes: a mixed ranking demotes nothing.
     """
-    files = list(dict.fromkeys(p for p in map(_row_file, hits) if p))
-    anchored = list(
-        dict.fromkeys(p for h in hits if h.get("_symbol_anchored") and (p := _row_file(h)))
+    named = _program_votes(
+        dict.fromkeys(p for h in hits if h.get("_symbol_anchored") and (p := _row_file(h))),
+        languages,
     )
+    if named:
+        return _majority(named), True
+    files = list(dict.fromkeys(p for p in map(_row_file, hits) if p))
+    return _majority(_program_votes(files[:_VOTE_FILES], languages)), False
+
+
+def _program_votes(paths: Iterable[str], languages: Mapping[str, str]) -> dict[str, int]:
+    """One vote per file for its language family; non-code files abstain."""
     votes: dict[str, int] = {}
-    for path in anchored or files[:_VOTE_FILES]:
+    for path in paths:
         lang = languages.get(path, "")
         if _is_program(lang):
             votes[_family(lang)] = votes.get(_family(lang), 0) + 1
+    return votes
+
+
+def _majority(votes: Mapping[str, int]) -> str | None:
+    """The family holding a strict majority of *votes*, else ``None``."""
     if not votes:
-        return None, False
+        return None
     best = max(votes, key=votes.__getitem__)
-    if 2 * votes[best] <= sum(votes.values()):
-        return None, False
-    return best, bool(anchored)
+    return best if 2 * votes[best] > sum(votes.values()) else None
 
 
 def is_off_language_row(
