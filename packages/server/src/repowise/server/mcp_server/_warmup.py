@@ -9,10 +9,10 @@ seconds after the handshake, so the server builds them in that gap instead.
 
 The work starts once the client has the ``initialize`` reply and runs on the
 event loop one cache at a time. The first tool call stops it after the cache
-in flight, which that call may be waiting on
-(:func:`~._graph_files.per_index` lets a caller wait on a build rather than
-repeat it); from then on each call builds what it reads, as before, so the
-warmup never competes with a call for the loop. It is skipped when the machine
+in flight. That call waits for that one build even when it reads a different
+cache first, since :func:`~._graph_files.per_index` builds under one lock; a
+build of its own would not finish sooner, as both are Python work on the same
+thread. From then on each call builds what it reads, as before. It is skipped when the machine
 is short of free memory, since every MCP server on the machine holds its own
 copy.
 """
