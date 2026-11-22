@@ -402,6 +402,7 @@ def test_snippets_that_restate_the_row_are_dropped():
         {"snippet": "It defines the retry policy for failed charges."},
         {"snippet": "`retry.py` imports `backoff` to cap the delay."},
         {"snippet": "It defines `Retry` to cap the delay."},
+        {"snippet": "It belongs to the payments team."},
         {"snippet": "Checks each file is licensed under the Apache License."},
     ]
     _serve_snippets(rows)
@@ -414,6 +415,7 @@ def test_snippets_that_restate_the_row_are_dropped():
         "It defines the retry policy for failed charges.",
         "`retry.py` imports `backoff` to cap the delay.",
         "It defines `Retry` to cap the delay.",
+        "It belongs to the payments team.",
         "Checks each file is licensed under the Apache License.",
     ]
 

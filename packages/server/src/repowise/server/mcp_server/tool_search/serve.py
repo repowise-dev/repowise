@@ -272,7 +272,7 @@ _TEMPLATE_SNIPPET = re.compile(
     rf"^\s*(?:(?:`[^`\n]+`|It) (?:defines|imports) {_NAME_LIST}"
     r"|(?:`[^`\n]+`|It) is imported by\b"
     r"|It imports \d+ files? from this repository\b"
-    r"|It belongs to the\b"
+    r"|It belongs to the [\w ]+ layer\b"
     r"|\*\*Language:\*\*)"
 )
 # A license header opening the snippet, past comment punctuation.
