@@ -1980,3 +1980,277 @@ def test_go_method_on_a_guessed_qualifier_is_kept():
     lines = ["package main", 'import "example.com/app/config"', "\tconfig.Load()"]
     judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
     assert judge(lines[2], next(re.finditer("Load", lines[2]))) is False
+# Two classes each with their own ``_init`` (httpx's Client/AsyncClient).
+_TWINS = """class Base:
+    pass
+
+
+class Client(Base):
+    def __init__(self):
+        self._init(1)
+
+    def _init(self, x):
+        return x
+
+
+class AsyncClient(Base):
+    def __init__(self):
+        self._init(2)
+
+    def _init(self, x):
+        return x
+
+
+class SyncClient(Client):
+    def _init(self, x):
+        return self._init(x)
+"""
+
+
+async def _seed_twins(session, repo_id, tmp_path, rel: str, text: str, language: str, symbols):
+    """Write *rel* and index its symbols ``(node_id, kind, start, end)``; the first is the target."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(text, encoding="utf-8")
+    nodes = [
+        GraphNode(
+            id=f"twin_{i}",
+            repository_id=repo_id,
+            node_id=f"{rel}::{sid}",
+            node_type="symbol",
+            name=sid.split("::")[-1],
+            file_path=rel,
+            kind=kind,
+            language=language,
+            start_line=start,
+            end_line=end,
+            created_at=_NOW,
+        )
+        for i, (sid, kind, start, end) in enumerate(symbols)
+    ]
+    session.add_all(nodes)
+    await session.flush()
+    return nodes[0]
+
+
+_TWIN_SYMBOLS = [
+    ("AsyncClient::_init", "method", 17, 18),
+    ("Base", "class", 1, 2),
+    ("Client", "class", 5, 10),
+    ("Client::_init", "method", 9, 10),
+    ("AsyncClient", "class", 13, 18),
+    ("SyncClient", "class", 21, 23),
+    ("SyncClient::_init", "method", 22, 23),
+]
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_class_s_same_named_member_is_not_a_site(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+            _edge(3, repo_id, f"{rel}::SyncClient", f"{rel}::Client", "extends"),
+        ]
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # Its own definition and the self-call in its own class stay.
+    assert {17, 15} <= lines
+    # Client's definition and Client's self-call are Client's member.
+    assert not {9, 7} & lines
+    # SyncClient (headed ``class SyncClient(Client)``) is not related to AsyncClient.
+    assert not {22, 23} & lines
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_a_subclass_override_in_the_definition_file_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    target = ("Client::_init", "method", 9, 10)
+    symbols = [target] + [s for s in _TWIN_SYMBOLS if s != target]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", symbols)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+        ]
+    )
+    await session.flush()
+    # No extends edge for SyncClient: its header naming Client keeps it related.
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    assert {9, 7, 22, 23} <= lines
+    assert not {17, 15} & lines
+
+
+@pytest.mark.asyncio
+async def test_a_subclass_by_extends_edge_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    text = _TWINS.replace("class SyncClient(Client):", "class SyncClient(Mixed):")
+    target = ("Client::_init", "method", 9, 10)
+    symbols = [target] + [s for s in _TWIN_SYMBOLS if s != target]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, text, "python", symbols)
+    session.add(_edge(1, repo_id, f"{rel}::SyncClient", f"{rel}::Client", "extends"))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert {22, 23} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+_GO_TWINS = """package main
+
+type Go struct{}
+
+type UI struct{}
+
+func (g Go) Lint() error {
+	return nil
+}
+
+func (u UI) Lint() error {
+	return nil
+}
+
+type Linter interface {
+	Lint() error
+}
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("implements", [False, True])
+async def test_a_go_receiver_twin_stays_listed(
+    session, repo_id, tmp_path, implements
+):
+    rel = "magefile.go"
+    node = await _seed_twins(
+        session,
+        repo_id,
+        tmp_path,
+        rel,
+        _GO_TWINS,
+        "go",
+        [
+            ("Go::Lint", "method", 7, 9),
+            ("Go", "struct", 3, 3),
+            ("UI", "struct", 5, 5),
+            ("UI::Lint", "method", 11, 13),
+            ("Linter", "interface", 15, 17),
+            ("Linter::Lint", "method", 16, 16),
+        ],
+    )
+    if implements:
+        session.add(_edge(1, repo_id, f"{rel}::Go", f"{rel}::Linter", "method_implements"))
+        await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # A receiver's calls cannot be told apart, so its definition stays with them.
+    assert {7, 11, 16} <= lines
+
+
+@pytest.mark.asyncio
+async def test_a_cousin_override_of_an_inherited_member_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    text = _TWINS.replace("    pass\n", "    def _init(self, x): ...\n", 1)
+    symbols = [*_TWIN_SYMBOLS, ("Base::_init", "method", 2, 2)]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, text, "python", symbols)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+        ]
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    # Both override Base._init: a rename of one reaches the whole family.
+    assert {2, 7, 9} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unresolved", ["Client", "AsyncClient"])
+async def test_a_declared_base_the_index_lacks_keeps_the_twin(
+    session, repo_id, tmp_path, unresolved
+):
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    # The twin's class (Client) or the symbol's (AsyncClient) declares ``(Base)``
+    # with no extends edge: their inheritance is unknown.
+    resolved = {"Client", "AsyncClient"} - {unresolved}
+    session.add_all(
+        _edge(i, repo_id, f"{rel}::{c}", f"{rel}::Base", "extends") for i, c in enumerate(resolved)
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert {7, 9} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+_NESTED = """class Target:
+    def run(self):
+        return 1
+
+
+class Outer:
+    def run(self):
+        return 2
+
+    class Inner(Target):
+        def go(self):
+            return self.run()
+"""
+
+
+@pytest.mark.asyncio
+async def test_self_uses_in_a_twin_class_holding_a_nested_class_are_kept(
+    session, repo_id, tmp_path
+):
+    rel = "pkg/nested.py"
+    node = await _seed_twins(
+        session,
+        repo_id,
+        tmp_path,
+        rel,
+        _NESTED,
+        "python",
+        [
+            ("Target::run", "method", 2, 3),
+            ("Target", "class", 1, 3),
+            ("Outer", "class", 6, 12),
+            ("Outer::run", "method", 7, 8),
+            ("Outer::Inner", "class", 10, 12),
+        ],
+    )
+    session.add(_edge(1, repo_id, f"{rel}::Outer::Inner", f"{rel}::Target", "extends"))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # Inner inherits Target: its ``self.run()`` is the symbol.
+    assert 12 in lines
+    # Outer's calls cannot be told apart, so its definition stays with them.
+    assert 7 in lines
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_without_indexed_lines_has_no_twins(session, repo_id, tmp_path):
+    from repowise.server.mcp_server._edit_sites_twins import sibling_twins
+
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    node.start_line = None
+
+    assert await sibling_twins(session, repo_id, node, "_init", set(), frozenset()) is None

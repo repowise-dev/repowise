@@ -38,6 +38,7 @@ from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._edit_sites_go import go_judge, go_target
+from repowise.server.mcp_server._edit_sites_twins import Twin, Twins, sibling_twins
 from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._meta import (
@@ -738,6 +739,87 @@ class _OwnMember:
         return n in self._own or bool(_SELF_BEFORE.search(text, 0, m.start()))
 
 
+def _header(lines: list[str], start: int) -> str:
+    """A class's header from its first line: through ``{`` or a closing ``:``."""
+    out = []
+    for t in lines[start - 1 : start + 5]:
+        out.append(t)
+        if "{" in t or t.rstrip().endswith(":"):
+            break
+    return " ".join(out)
+
+
+def _headers_relate(lines: list[str], twin: Twin) -> bool:
+    """Whether either class's header names the other's: related, so kept."""
+    (its_head, own_head), (its_class, own_class) = twin.heads, twin.names
+    if its_head and _word(own_class).search(_header(lines, its_head)):
+        return True
+    return bool(own_head and _word(its_class).search(_header(lines, own_head)))
+
+
+# A Python class header with a positional base (``class A(B):``); ``object`` and
+# keyword arguments alone (``metaclass=M``) declare none.
+_PY_BASE = re.compile(
+    r"\bclass\s+\w+\s*(?:\[[^\]]*\])?\s*\(\s*(?!object\s*\))(?![A-Za-z_]\w*\s*=(?!=))[A-Za-z_]"
+)
+# Elsewhere ``extends``/``implements``, or a ``:`` (Kotlin, C#, Swift, C++).
+_OTHER_BASE = re.compile(r"\b(?:extends|implements)\b|:")
+
+
+def _base_unresolved(lines: list[str], twin: Twin, python: bool) -> bool:
+    """Whether either class's header declares a base the index holds no edge
+    for: its inheritance is unknown, so the twin is kept."""
+    declares = (_PY_BASE if python else _OTHER_BASE).search
+    for head, resolved in zip(twin.heads, twin.resolved, strict=True):
+        if head and not resolved and declares(_header(lines, head)):
+            return True
+    return False
+
+
+def _kept(lines: list[str], twin: Twin, python: bool) -> bool:
+    """Whether *twin* may be related to the symbol, so none of its uses are judged."""
+    return _headers_relate(lines, twin) or _base_unresolved(lines, twin, python)
+
+
+def _def_line(lines: list[str], word: re.Pattern[str], span: tuple[int, int]) -> int:
+    """The first line of *span* naming *word*, decorators left out; 0 for none."""
+    first, last = span
+    for n in range(first, min(last, len(lines)) + 1):
+        if not lines[n - 1].lstrip().startswith("@") and word.search(lines[n - 1]):
+            return n
+    return 0
+
+
+class _SiblingMember:
+    """Uses in the definition file of a member that are another, unrelated
+    class's member of the same name: its definition line, and calls on
+    ``self``/``this`` inside that class but outside the symbol's own. A
+    class whose header names the other's, or declares a base the index does
+    not hold, counts as related and is kept. A twin whose class holds a nested
+    class has no body here: that class's ``self`` may be the symbol's."""
+
+    def __init__(self, lines: list[str], name: str, twins: Twins, python: bool):
+        word = _word(name)
+        self._own = twins.own_body
+        # Only a twin inside a class body is judged: there its calls are told
+        # apart too (``self`` in its class). A Go receiver's or a twin whose
+        # class holds another keeps its definition, so a rename stays whole.
+        unrelated = [
+            t for t in twins.members if t.body and t.body != self._own and not _kept(lines, t, python)
+        ]
+        self._defs = {n for t in unrelated if (n := _def_line(lines, word, t.span))}
+        self._bodies = [t.body for t in unrelated]
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        if n in self._defs:
+            return True
+        if not _SELF_BEFORE.search(text, 0, m.start()):
+            return False
+        if self._own and self._own[0] <= n <= self._own[1]:
+            return False
+        return any(s <= n <= e for s, e in self._bodies)
+
+
 class _Judge(NamedTuple):
     """Which judge, if any, reads one file's uses."""
 
@@ -745,6 +827,8 @@ class _Judge(NamedTuple):
     own: set[int]
     # A Go target's package (:class:`GoTarget`): import-qualified uses are judged.
     go: Any = None
+    # The definition file's unrelated same-named members, for a member.
+    twins: Twins | None = None
 
     def for_file(
         self,
@@ -758,6 +842,10 @@ class _Judge(NamedTuple):
     ) -> Any:
         if self.own:
             return _OwnMember(self.own)
+        # Set only when the definition file has no edits.
+        if self.twins and rel == def_path:
+            python = PurePosixPath(rel).suffix in _PYTHON_EXTENSIONS
+            return _SiblingMember(lines, name, self.twins, python)
         suffix = PurePosixPath(rel).suffix
         # An edit in progress may use the name before importing it: not judged.
         if self.member or live or rel == def_path or suffix not in _IMPORT_BOUND_EXTENSIONS:
@@ -772,6 +860,7 @@ class _Scope(NamedTuple):
     # Files holding a base method the symbol answers for, or an override of it.
     kin: frozenset[str]
     go: Any = None
+    twins: Twins | None = None
 
 
 def _scan(
@@ -840,7 +929,7 @@ def _scan(
             own.append(rel)
         found, missed, through_object = _file_sites(
             rel, lines, imports, name, local, definition, graph_calls, live,
-            _Judge(scope.member, own_lines, scope.go),
+            _Judge(scope.member, own_lines, scope.go, scope.twins),
         )
         sites += found
         stale += missed
@@ -1782,6 +1871,7 @@ async def _edit_set(
         node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
         frozenset(file_of_symbol(i) for i in bases + overrides),
         await asyncio.to_thread(_go_scope, root, node, language),
+        await sibling_twins(session, repo_id, node, name, {*bases, *overrides}, dirty),
     )
     scan = _ScanResult(
         *await asyncio.to_thread(
