@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import difflib
 from collections import Counter
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from sqlalchemy import func, or_, select, union
@@ -72,15 +73,28 @@ def _indexed_paths(repo_id: Any) -> tuple[Any, Any]:
     )
 
 
-async def _holds_files(session: Any, repo_id: Any, prefix: str) -> bool:
+def _on_disk(root: Path | None, prefix: str) -> bool:
+    """Whether *prefix* is a path inside the checkout. Documents are served from
+    disk (see documents.py), so a directory of them holds no graph row or page."""
+    if root is None:
+        return False
+    try:
+        return (root / prefix).resolve().is_relative_to(root.resolve()) and (
+            root / prefix
+        ).exists()
+    except OSError:
+        return False
+
+
+async def _holds_files(session: Any, repo_id: Any, prefix: str, root: Path | None) -> bool:
     graph, pages = _indexed_paths(repo_id)
     for query, column in ((graph, GraphNode.node_id), (pages, Page.target_path)):
         if await session.scalar(query.where(_under(column, prefix)).limit(1)) is not None:
             return True
-    return False
+    return _on_disk(root, prefix)
 
 
-async def _split_pieces(session: Any, repo_id: Any, raw: str) -> list[str]:
+async def _split_pieces(session: Any, repo_id: Any, raw: str, root: Path | None) -> list[str]:
     """The prefixes *raw* names. Commas always separate; whitespace separates
     unless the whole piece is itself an indexed path ("My Docs/")."""
     prefixes: list[str] = []
@@ -88,7 +102,7 @@ async def _split_pieces(session: Any, repo_id: Any, raw: str) -> list[str]:
         norm = _normalize_scope(piece)
         if norm is None:
             continue
-        if any(ch.isspace() for ch in norm) and not await _holds_files(session, repo_id, norm):
+        if any(ch.isspace() for ch in norm) and not await _holds_files(session, repo_id, norm, root):
             prefixes.extend(n for word in norm.split() if (n := _normalize_scope(word)))
         else:
             prefixes.append(norm)
@@ -149,18 +163,21 @@ async def _directories(session: Any, repo_id: Any) -> Counter:
     return counts
 
 
-async def resolve_scope(session: Any, repo_id: Any, raw: str | None) -> ScopeResolution:
-    """*raw* as the union of the prefixes it names that the index holds.
+async def resolve_scope(
+    session: Any, repo_id: Any, raw: str | None, root: Path | None = None
+) -> ScopeResolution:
+    """*raw* as the union of the prefixes it names that the index or the
+    checkout at *root* holds.
 
     A repository whose graph holds no file rows cannot judge a prefix, so its
     scope is kept as written.
     """
     if _normalize_scope(raw) is None:
         return ScopeResolution(None, [], [])
-    prefixes = await _split_pieces(session, repo_id, raw or "")
+    prefixes = await _split_pieces(session, repo_id, raw or "", root)
     found, missing = [], []
     for p in prefixes:
-        (found if await _holds_files(session, repo_id, p) else missing).append(p)
+        (found if await _holds_files(session, repo_id, p, root) else missing).append(p)
     if found:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(found)), missing, [])
     dir_files = await _directories(session, repo_id)

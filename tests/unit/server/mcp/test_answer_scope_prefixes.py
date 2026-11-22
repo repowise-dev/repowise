@@ -166,3 +166,19 @@ def test_nearest_directories_start_inside_the_missing_ones_parent():
 
     assert _nearest(["pkg/agent"], dirs) == ["pkg/monitor/agent/", "examples/ip-masq-agent/"]
     assert _nearest(["pkg/zzz"], dirs) == ["pkg/datapath/", "pkg/monitor/"]
+
+
+@pytest.mark.asyncio
+async def test_a_directory_of_documents_on_disk_is_searched_not_reported_missing(
+    ledgers, tmp_path
+):
+    """Documents are served from disk, so their directory may hold no indexed row."""
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "handbook").mkdir()
+    (tmp_path / "handbook" / "ledger.md").write_text("# Ledger reconcile\n", encoding="utf-8")
+
+    result = await get_answer(_QUESTION, scope="handbook")
+
+    assert "holds no indexed file" not in json.dumps(result)
+    assert "scope_suggestions" not in result

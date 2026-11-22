@@ -840,7 +840,7 @@ async def _resolve_scope(ask: _Ask, scope: str | None) -> ScopeResolution:
         return ScopeResolution(None, [], [])
     try:
         async with get_session(ask.ctx.session_factory) as session:
-            return await resolve_scope(session, ask.repo_id, scope)
+            return await resolve_scope(session, ask.repo_id, scope, _repo_root(ask.ctx))
     except Exception:
         _log.debug("get_answer scope check failed; scope kept as written", exc_info=True)
         return ScopeResolution(_normalize_scope(scope), [], [])
