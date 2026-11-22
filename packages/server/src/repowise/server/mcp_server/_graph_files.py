@@ -18,6 +18,7 @@ import asyncio
 import os
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from functools import lru_cache
 from typing import Any, TypeVar
 
 from sqlalchemy import select
@@ -50,6 +51,9 @@ def is_symbol_node(node_id: str) -> bool:
     return "::" in node_id
 
 
+# A projection asks once per edge end, over the same few thousand paths; bounded
+# like the path classifier's memo so a long-lived server sees a fixed ceiling.
+@lru_cache(maxsize=65536)
 def file_ext(path: str) -> str:
     """Lower-case file extension (``retrieval.py`` -> ``py``), ``""`` if none."""
     base = os.path.basename(path)
