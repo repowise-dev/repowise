@@ -114,6 +114,9 @@ _EMBEDDER_REMEDIATION: dict[str, str] = {
         "(and `pip install google-genai`)"
     ),
     "ollama": "start Ollama, pull an embedding model, and set OLLAMA_BASE_URL if not local",
+    "fastembed": (
+        'run `pip install "repowise[local-embed]"` in the environment the MCP server runs from'
+    ),
     "openrouter": "set OPENROUTER_API_KEY in the MCP server's environment (and `pip install openai`)",
 }
 

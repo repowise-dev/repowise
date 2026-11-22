@@ -127,6 +127,8 @@ def semantic_search_setup_hint() -> str:
     keys = " or ".join(EMBEDDER_KEY_ENVS[name][0] for name in ("gemini", "openai"))
     return (
         "Run [bold]repowise reindex --embedder ollama[/bold] with Ollama running, "
+        "or [bold]--embedder fastembed[/bold] after "
+        '[bold]pip install "repowise\\[local-embed]"[/bold] (no service to run), '
         f"or set {keys} and run [bold]repowise reindex[/bold]."
     )
 
@@ -166,11 +168,11 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
 def is_free_embedder(name: str) -> bool:
     """Whether an embedder can never put anything on the bill.
 
-    The keyless mock and the local ollama server cost nothing; every other
-    built-in calls a hosted endpoint. Runs that promise "no spend" ask this
+    The keyless mock, the local ollama server and in-process fastembed cost
+    nothing; every other built-in calls a hosted endpoint. Runs that promise "no spend" ask this
     instead of spelling the names, so the answer lives in one place.
     """
-    return name in ("mock", "ollama")
+    return name in ("mock", "ollama", "fastembed")
 
 
 def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:

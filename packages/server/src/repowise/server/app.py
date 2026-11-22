@@ -116,7 +116,7 @@ def _build_embedder():
         return get_embedder(name, **embedder_kwargs(name))
     logger.warning(
         "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, "
-        "ollama, or edenai for real RAG"
+        "ollama, fastembed, or edenai for real RAG"
     )
     return KeylessEmbedder()
 

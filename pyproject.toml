@@ -118,6 +118,11 @@ postgres = [
 graph-extra = [
     "graspologic>=3.4,<4",
 ]
+# In-process local embeddings (`repowise reindex --embedder fastembed`): ONNX
+# runtime + a ~65 MB model, no server, no key. Never a default dependency.
+local-embed = [
+    "fastembed>=0.7,<1",
+]
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.3,<2",
@@ -178,6 +183,14 @@ namespaces = true
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)
 # ---------------------------------------------------------------------------
+[tool.uv]
+# graspologic pins numpy<2 and fastembed needs numpy>=2.1 on Python 3.13+, so
+# one lock cannot hold both extras together. pip installs either one alone.
+conflicts = [[{ extra = "graph-extra" }, { extra = "local-embed" }]]
+# With the extras forked apart, the base install would float to numpy 2. Keep
+# it where graspologic held it on the Pythons CI runs pull requests on.
+constraint-dependencies = ["numpy<2; python_full_version < '3.13'"]
+
 [tool.uv.workspace]
 members = [
     "packages/core",

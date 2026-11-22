@@ -9,6 +9,7 @@ Built-in embedders:
     ollama      -> OllamaEmbedder      (embeddinggemma default, local, no key)
     openrouter  -> OpenRouterEmbedder  (google/gemini-embedding-001 default)
     edenai      -> EdenAIEmbedder      (openai/text-embedding-3-small via Eden AI's EU gateway)
+    fastembed   -> FastEmbedEmbedder   (BAAI/bge-small-en-v1.5, in-process ONNX, no key; extra local-embed)
     mock        -> KeylessEmbedder     (keyless runs and tests; no semantic signal)
 
 Custom embedder registration:
@@ -32,6 +33,7 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.embedding.ollama", "OllamaEmbedder"),
     "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
     "edenai": ("repowise.core.providers.embedding.edenai", "EdenAIEmbedder"),
+    "fastembed": ("repowise.core.providers.embedding.fastembed", "FastEmbedEmbedder"),
     "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
@@ -69,7 +71,7 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
     """Instantiate an embedder by name.
 
     Args:
-        name:     Embedder identifier ('openai', 'gemini', 'mock').
+        name:     Embedder identifier ('openai', 'gemini', 'fastembed', 'mock').
         **kwargs: Constructor arguments (e.g., api_key, model).
 
     Returns:
@@ -95,25 +97,38 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         available = sorted(set(_BUILTIN_EMBEDDERS) | set(_custom_embedders))
         raise ValueError(f"Unknown embedder: {name!r}. Available embedders: {available}")
 
-    module_path, class_name = _BUILTIN_EMBEDDERS[name]
-    _missing = {
-        "openai": "openai",
-        "gemini": "google-genai",
-        "ollama": "httpx",
-        "openrouter": "openai",  # openrouter uses the openai package
-        "edenai": "openai",  # edenai uses the openai package
-    }
+    module = import_builtin_embedder(name)
+    cls = getattr(module, _BUILTIN_EMBEDDERS[name][1])
+    return cls(**kwargs)
+
+
+#: The package a built-in embedder's module needs, when it is not the name.
+_MISSING_PACKAGE = {
+    "openai": "openai",
+    "gemini": "google-genai",
+    "ollama": "httpx",
+    "openrouter": "openai",  # openrouter uses the openai package
+    "edenai": "openai",  # edenai uses the openai package
+    "fastembed": "repowise[local-embed]",
+}
+
+
+def import_builtin_embedder(name: str) -> Any:
+    """Import built-in embedder *name*'s module, or raise ImportError naming the install.
+
+    Shared by :func:`get_embedder` and ``repowise doctor``, so both print the
+    same install line.
+    """
     try:
-        module = importlib.import_module(module_path)
+        return importlib.import_module(_BUILTIN_EMBEDDERS[name][0])
     except ImportError as exc:
-        package = _missing.get(name, name)
+        package = _MISSING_PACKAGE.get(name, name)
+        # An extra needs quotes, or zsh reads the brackets as a glob.
+        spec = f'"{package}"' if "[" in package else package
         raise ImportError(
             f"Embedder {name!r} requires the '{package}' package. "
-            f"Install it with: pip install {package}"
+            f"Install it with: pip install {spec}"
         ) from exc
-
-    cls = getattr(module, class_name)
-    return cls(**kwargs)
 
 
 def list_embedders() -> list[str]:

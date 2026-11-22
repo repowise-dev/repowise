@@ -51,6 +51,24 @@ repowise reindex --embedder ollama
 `http://localhost:11434`. Ollama also serves as the documentation model:
 `repowise generate --provider ollama`.
 
+## Local semantic search without a service
+
+The `local-embed` extra embeds inside the repowise process with
+[fastembed](https://github.com/qdrant/fastembed) (ONNX, `BAAI/bge-small-en-v1.5`).
+There is no server to run and no key. Both it and Ollama are supported; pick
+this one when you would rather not keep Ollama running:
+
+```bash
+pip install "repowise[local-embed]"
+repowise reindex --embedder fastembed
+```
+
+The extra adds about 65 MB of packages, and the model (about 65 MB) downloads
+once to `~/.repowise/models` (set `FASTEMBED_CACHE_PATH` to move it). A query
+embeds in a few milliseconds on a laptop CPU. `reindex` records the embedder
+in `.repowise/config.yaml` like any other, so the MCP server and
+`repowise update` use it; install the extra wherever they run.
+
 ## Air-gapped networks
 
 1. Install from wheels. On a connected machine with the same OS and Python,
@@ -67,7 +85,10 @@ repowise reindex --embedder ollama
 4. For semantic search, run `ollama pull embeddinggemma` on a connected
    machine, copy Ollama's model folder (`~/.ollama/models` for a user install,
    or the path in `OLLAMA_MODELS`) to the offline machine, then run
-   `repowise reindex --embedder ollama`.
+   `repowise reindex --embedder ollama`. With the `local-embed` extra
+   instead, include it in the wheel download (`repowise[local-embed]`), copy
+   `~/.repowise/models` from a machine that ran `reindex --embedder
+   fastembed`, and set `HF_HUB_OFFLINE=1`.
 5. For the dashboard, run `repowise serve` once on a connected machine. It
    downloads the UI to `~/.repowise/web/`; copy that folder to the same path
    on the offline machine. `repowise serve` then runs from the cached copy

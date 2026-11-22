@@ -22,7 +22,9 @@ _INPUT_TOO_LONG_RETRIES = 4
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
+    type=click.Choice(
+        ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock", "auto"]
+    ),
     default="auto",
     help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
     "when the repo has none or only the keyless mock.",
@@ -466,7 +468,7 @@ def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
     # a run to finish with test vectors.
     if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
         console.print(
-            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
+            "[red]No real embedder available. Set a real embedder key, configure Ollama, install the local-embed extra for fastembed, or pass --embedder mock for test vectors.[/red]"
         )
         raise click.Abort()
     if embedder_name == "mock":

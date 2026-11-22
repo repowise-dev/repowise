@@ -10,7 +10,8 @@ install:  ## Install all Python packages in the workspace
 	uv sync --all-packages
 
 install-dev:  ## Install all packages including dev dependencies
-	uv sync --all-packages --all-extras
+	# Named, not --all-extras: graph-extra and local-embed cannot share one environment.
+	uv sync --all-packages --extra postgres --extra graph-extra
 
 # ---------------------------------------------------------------------------
 # Testing
