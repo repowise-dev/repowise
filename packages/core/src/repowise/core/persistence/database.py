@@ -181,6 +181,8 @@ REPOWISE_DIRNAME = ".repowise"
 STATE_FILENAME = "state.json"
 #: Repo-local vector store directory.
 LANCEDB_DIRNAME = "lancedb"
+#: Sealed copies of the MCP server's per-index caches, one file per repo and cache.
+MCP_CACHE_DIRNAME = "mcp_cache"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 

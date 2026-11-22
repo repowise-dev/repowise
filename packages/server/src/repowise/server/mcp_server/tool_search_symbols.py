@@ -567,7 +567,7 @@ async def file_path_index(session: Any, repo_id: str) -> PathIndex:
         paths = tuple(p for (p,) in res.all() if p)
         return PathIndex(paths, path_word_counts(list(paths)))
 
-    return await per_index(session, repo_id, "search_file_paths", build)
+    return await per_index(session, repo_id, "search_file_paths", build, persist=True)
 
 
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
