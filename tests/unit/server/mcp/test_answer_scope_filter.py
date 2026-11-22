@@ -16,6 +16,26 @@ import pytest
 _IN = "pkg/alpha/store.py"
 # A sibling sharing the scope's spelling: ``pkg/alpha`` is a directory, not a prefix.
 _OUT = "pkg/alphabet/retry.py"
+# Indexed, but nothing retrieval returns lives there.
+_QUIET = "pkg/gamma/clock.py"
+
+
+@pytest.fixture(autouse=True)
+async def _indexed(setup_mcp, session, repo_id):
+    """The index holds a file under each directory these tests scope to."""
+    from repowise.core.persistence.models import GraphNode
+
+    session.add_all(
+        GraphNode(
+            id=f"scoped{i}",
+            repository_id=repo_id,
+            node_id=path,
+            node_type="file",
+            language="python",
+        )
+        for i, path in enumerate((_IN, _OUT, _QUIET))
+    )
+    await session.commit()
 
 
 def _patch_pipeline(monkeypatch, answer_mod) -> None:
@@ -107,7 +127,7 @@ async def test_unscoped_answer_keeps_the_neighbour(setup_mcp, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_scope_holding_no_hit_says_so(setup_mcp, monkeypatch):
-    """Nothing in scope: the existing no-hits reply, naming the scope it searched."""
+    """An indexed scope retrieval finds nothing in: the no-hits reply, naming the scope it searched."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 

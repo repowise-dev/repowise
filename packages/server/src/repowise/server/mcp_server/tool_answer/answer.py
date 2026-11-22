@@ -202,6 +202,11 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _intersection_boost,
     _rerank_by_coverage,
 )
+from repowise.server.mcp_server.tool_answer.scope import (
+    ScopeResolution,
+    resolve_scope,
+    scope_label,
+)
 from repowise.server.mcp_server.tool_answer.symbols import (
     _anchor_symbol_hits,
     _concept_anchor_hits,
@@ -650,7 +655,7 @@ async def _pre_synthesis_reply(
         # Same length as the unscoped line for a typical scope: names what was
         # searched, and that widening the scope is the first thing to try.
         lead = (
-            f"No wiki hits under {retrieved.scope}/ for this question. "
+            f"No wiki hits under {scope_label(retrieved.scope)} for this question. "
             "Widen the scope or rephrase. "
             if retrieved.scope
             else "No wiki hits for this question. Rephrase around the code concept. "
@@ -836,6 +841,57 @@ async def _graded_payload(
     return payload, grade.confidence, citations
 
 
+async def _resolve_scope(ask: _Ask, scope: str | None) -> ScopeResolution:
+    """*scope* as :func:`resolve_scope` reads it; as written when the index
+    cannot be read, so a scope check never fails the answer."""
+    if _normalize_scope(scope) is None:
+        return ScopeResolution(None, [], [])
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            return await resolve_scope(session, ask.repo_id, scope, _repo_root(ask.ctx))
+    except Exception:
+        _log.debug("get_answer scope check failed; scope kept as written", exc_info=True)
+        return ScopeResolution(_normalize_scope(scope), [], [])
+
+
+def _missing_label(scoped: ScopeResolution) -> str:
+    return ", ".join(f"{p}/" for p in scoped.missing)
+
+
+def _scope_miss_payload(ask: _Ask, scoped: ScopeResolution) -> dict:
+    """The reply when no prefix of the scope holds an indexed file: nothing was
+    searched, and the nearest existing directories are what to retry with."""
+    retry = (
+        f"Nearest indexed directories: {', '.join(scoped.nearest)}. "
+        "Retry with one of them, or omit scope."
+        if scoped.nearest
+        else "Omit scope to search the whole repository."
+    )
+    payload = _no_answer_payload(
+        f"Scope {_missing_label(scoped)} holds no indexed file, so nothing was searched. "
+        + retry,
+        repository=ask.repository,
+        t0=ask.t0,
+    )
+    if scoped.nearest:
+        payload["scope_suggestions"] = scoped.nearest
+    return payload
+
+
+def _with_scope_note(payload: dict, scoped: ScopeResolution) -> dict:
+    """Name the scope prefixes the index lacks, which this reply did not search.
+
+    Set per call, never inherited: a cached reply may carry another call's note.
+    """
+    payload.pop("scope_note", None)
+    if scoped.missing and scoped.scope:
+        payload["scope_note"] = (
+            f"{_missing_label(scoped)} holds no indexed file; "
+            f"searched {scope_label(scoped.scope)} only."
+        )
+    return payload
+
+
 def _with_scan_gaps(payload: dict, homonyms: dict) -> dict:
     """Add the lines a live scan found in files the index left out, and the
     files it never read; neither key appears when there is nothing to say."""
@@ -929,7 +985,8 @@ async def get_answer(
 
     Args:
         question: developer question.
-        scope: optional path-prefix filter (e.g. "src/pkg/").
+        scope: optional path-prefix filter (e.g. "src/pkg/"); several
+            prefixes separated by commas or spaces search their union.
         repo: usually omitted.
         include: optional ``["evidence"]`` expanded projection;
             ``["diagnostics"]`` adds ``retrieval_quality``.
@@ -955,7 +1012,12 @@ async def get_answer(
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
-    normalized_scope = _normalize_scope(scope)
+    # Several prefixes are one union; a prefix the index lacks is said, not
+    # silently searched.
+    scoped = await _resolve_scope(ask, scope)
+    if scoped.missing and scoped.scope is None:
+        return _scope_miss_payload(ask, scoped)
+    normalized_scope = scoped.scope
     qhash = _hash_answer_identity(question, normalized_scope)
     cache_disabled = _cache_disabled()
     if not cache_disabled:
@@ -972,7 +1034,7 @@ async def get_answer(
             served = _kept_keyless_reply(ask, qhash)
         if served is not None:
             clock.log("cached", "lookup")
-            return served
+            return _with_scope_note(served, scoped)
     clock.mark("lookup")
 
     retrieved = await _run_retrieval_pipeline(
@@ -997,6 +1059,7 @@ async def get_answer(
 
     def _finish(payload: dict, *, keep: bool = False) -> dict:
         _with_scan_gaps(payload, retrieved.homonyms)
+        _with_scope_note(payload, scoped)
         if retrieved.other_repo_lines:
             payload["other_repo_lines"] = retrieved.other_repo_lines
         # Kept on the terms of the database cache, which watches only this repo.
@@ -1145,7 +1208,7 @@ async def get_answer(
 
     Args:
         question: One question about one subject; split a multi-part task.
-        scope: Repository-relative path prefix.
+        scope: Repository-relative path prefix; several, comma-separated, search their union.
         repo: Usually omitted.
         include: ["evidence"] expands evidence; ["diagnostics"] adds retrieval_quality.
     """

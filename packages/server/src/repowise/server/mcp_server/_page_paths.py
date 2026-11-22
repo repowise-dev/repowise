@@ -29,10 +29,19 @@ def pageless_path(page_id: str) -> str:
     return page_id.partition(":")[2]
 
 
+#: Joins the prefixes of a scope naming several directories. A newline, since
+#: no repository path holds one and a comma or space can.
+SCOPE_SEPARATOR = "\n"
+
+
 def in_scope(path: str, scope: str | None) -> bool:
     """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
-    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
-    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
+    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``. A scope of several prefixes
+    joined by :data:`SCOPE_SEPARATOR` holds what any of them holds."""
+    if not scope:
+        return True
+    under = f"{path}/"
+    return any(under.startswith(f"{p.rstrip('/')}/") for p in scope.split(SCOPE_SEPARATOR) if p)
 
 
 # Page types whose ``target_path`` is a real repository-relative file path.
