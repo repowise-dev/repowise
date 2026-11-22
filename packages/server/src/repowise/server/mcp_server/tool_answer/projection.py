@@ -660,7 +660,8 @@ def _set_next_step(payload: dict[str, Any], question: str, *, expanded: bool) ->
     anchor = answer_anchor(payload, question)
     if anchor is None:
         if not expanded:
-            payload.setdefault("next_action_hint", _DEFAULT_NEXT_STEP[_shape_confidence(payload)])
+            step = _DEFAULT_NEXT_STEP.get(_shape_confidence(payload), _DEFAULT_NEXT_STEP["low"])
+            payload.setdefault("next_action_hint", step)
         return
     if "next_action_hint" in payload:
         return
