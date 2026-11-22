@@ -410,6 +410,28 @@ def test_a_mirrored_directory_leaves_no_other_same_name_test_beyond_the_cap() ->
     }
 
 
+def test_unowned_name_match_order_is_mirror_first_then_by_path() -> None:
+    # Order invariant for unowned name matches (pinned per review thread
+    # discussion_r4580017989): when any candidate mirrors a trailing
+    # directory of the target, only the best-mirroring candidates are kept
+    # and rank first; with no mirror, every same-name test ranks by path and
+    # the complete list is kept past MAX_TESTS_PER_TARGET (pinned above).
+    tests = {"tests/pkg/test_x.py", "tests/aaa/test_x.py", "tests/bbb/test_x.py"}
+
+    # A mirror exists, so only the mirror survives, ranked first.
+    assert name_match(["src/pkg/x.py"], tests) == {
+        "src/pkg/x.py": model.ReachedBy(
+            ["tests/pkg/test_x.py"], "name-match", 1, ("tests/pkg/test_x.py",)
+        )
+    }
+
+    # No mirror: all same-name tests rank by path, complete list kept.
+    ordered = ("tests/aaa/test_x.py", "tests/bbb/test_x.py", "tests/pkg/test_x.py")
+    assert name_match(["src/x.py"], tests) == {
+        "src/x.py": model.ReachedBy(list(ordered), "name-match", 3, ordered)
+    }
+
+
 @pytest.mark.parametrize("source,test", [("x.py", "test_x.py"), ("test_x.py", "test_test_x.py")])
 def test_root_level_files_including_tests_can_own_sibling_tests(source, test) -> None:
     assert name_match([source, f"elsewhere/{source}"], {source, test}) == {
