@@ -22,6 +22,8 @@ _OUTLINE_CHILD_CAP = 10
 #: of a full two-rung outline, so past this the tail sections keep their
 #: ``descendants`` count and their children go to the omission store.
 _OUTLINE_MAX_CHARS = 8_000
+#: Children a section keeps in the first trimming pass, before any loses all.
+_OUTLINE_TRIM_KEEP = 3
 
 
 async def _load_tree_rows(session: Any, repository: Any) -> list[Any]:
@@ -154,33 +156,44 @@ def _fit_outline(
     collector: OmissionCollector,
     entry_points: Sequence[str] = (),
 ) -> int:
-    """Drop children from the tail sections until the rung fits; returns how many.
+    """Trim the tail sections' children until the rung fits; returns how many.
 
-    Sections holding an entry point (``cmd`` beside ``cmd/main.go``) give up
-    their children last, so the binaries' paths stay in view. Each section
-    keeps its ``descendants`` count, and its children stay recoverable from
-    the omission store, so the cut is a summary, not a loss.
+    Breadth first: every section is cut to its first ``_OUTLINE_TRIM_KEEP``
+    children before any loses all of them, so each top-level directory still
+    names a few of its paths (``cmd`` keeps ``cmd/argocd-server``). Sections
+    holding an entry point (``cmd`` beside ``cmd/main.go``) are cut last in
+    each pass. Each section keeps its ``descendants`` count, and the cut rows
+    stay recoverable from the omission store, so the cut is a summary, not a
+    loss.
     """
-    size = len(json.dumps(sections, separators=(",", ":")))
-    trimmed = 0
     tail = list(reversed(sections))
     holds = [_holds_entry_point(n, entry_points) for n in tail]
     order = [n for n, h in zip(tail, holds, strict=True) if not h]
     order += [n for n, h in zip(tail, holds, strict=True) if h]
-    for node in order:
-        if size <= _OUTLINE_MAX_CHARS:
-            break
-        kids = node.pop("children", None)
-        if not kids:
-            continue
-        size -= len(json.dumps(kids, separators=(",", ":"))) + len(',"children":')
-        trimmed += 1
-        collector.add(
-            f"outline children of {node.get('target_path') or node.get('page_id')} "
-            f"beyond the outline size cap ({len(kids)} rows)",
-            "\n".join(_stored_line(k) for k in kids),
-        )
-    return trimmed
+    trimmed: set[int] = set()
+    for keep in (_OUTLINE_TRIM_KEEP, 0):
+        for node in order:
+            if _outline_chars(sections) <= _OUTLINE_MAX_CHARS:
+                return len(trimmed)
+            kids = node.get("children") or []
+            if len(kids) <= keep:
+                continue
+            cut = kids[keep:]
+            if keep:
+                node["children"] = kids[:keep]
+            else:
+                del node["children"]
+            trimmed.add(id(node))
+            collector.add(
+                f"outline children of {node.get('target_path') or node.get('page_id')} "
+                f"beyond the outline size cap ({len(cut)} rows)",
+                "\n".join(_stored_line(k) for k in cut),
+            )
+    return len(trimmed)
+
+
+def _outline_chars(sections: list[dict[str, Any]]) -> int:
+    return len(json.dumps(sections, separators=(",", ":")))
 
 
 def _stored_line(node: dict[str, Any]) -> str:
