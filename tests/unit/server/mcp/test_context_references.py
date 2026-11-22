@@ -362,9 +362,7 @@ async def test_a_typescript_namespace_handed_on_is_incomplete(session, repo_id, 
     out = await edit_set_block(session, repo_id, tmp_path, node)
 
     assert out["complete"] is False
-    assert out["reasons"] == [
-        "may be called through a module object outside an import: web/b.ts"
-    ]
+    assert out["reasons"] == ["may be called through a module object outside an import: web/b.ts"]
 
 
 @pytest.mark.asyncio
@@ -407,9 +405,15 @@ async def test_a_typescript_namespace_not_handed_on_stays_complete(
             '["catalog"]',
         ),
         # An object use with no module import of a file holding the name.
-        ("from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n", '["MODELS"]'),
+        (
+            "from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n",
+            '["MODELS"]',
+        ),
         # A call's result, in a file that never hands the module on.
-        ("from pkg import catalog\n\ndef f(make):\n    return make().backend_of()\n", '["catalog"]'),
+        (
+            "from pkg import catalog\n\ndef f(make):\n    return make().backend_of()\n",
+            '["catalog"]',
+        ),
     ],
 )
 async def test_object_use_without_a_module_object_stays_complete(
@@ -579,7 +583,11 @@ _PICK = "export function pick(x: number) { return x }\n"
 @pytest.mark.parametrize(
     ("rel", "text", "alias_line"),
     [
-        ("web/b.ts", "import { pick as choose } from './a'\n\nexport const f = () => choose(1)\n", 3),
+        (
+            "web/b.ts",
+            "import { pick as choose } from './a'\n\nexport const f = () => choose(1)\n",
+            3,
+        ),
         (
             "web/b.ts",
             "import {\n  other,\n  pick as choose,\n} from './a'\nfunction f() {\n  return choose(1)\n}\n",
@@ -587,7 +595,11 @@ _PICK = "export function pick(x: number) { return x }\n"
         ),
         ("web/b.js", "const { pick: choose } = require('./a')\nchoose(1)\n", 2),
         ("web/b.ts", "import { pick as choose } from './a'\nconst k = new choose()\n", 2),
-        ("web/b.tsx", "import { pick as choose } from './a'\nconst e = <choose a={1}></choose>\n", 2),
+        (
+            "web/b.tsx",
+            "import { pick as choose } from './a'\nconst e = <choose a={1}></choose>\n",
+            2,
+        ),
         ("web/b.ts", "import { pick as choose } from './a'\nchoose.mockReset()\n", 2),
         ("web/b.ts", "import { pick as choose } from './a'\nconst n = choose?.length\n", 2),
     ],
@@ -847,7 +859,10 @@ async def test_a_failed_enclosing_read_leaves_the_block_and_session_usable(
     from sqlalchemy import text
 
     node = await _seed_js(
-        session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": "import { pick } from './a'\npick(1)\n"}
+        session,
+        repo_id,
+        tmp_path,
+        {"web/a.ts": _PICK, "web/b.ts": "import { pick } from './a'\npick(1)\n"},
     )
 
     async def _broken(s, _repo_id, _paths):
@@ -883,7 +898,10 @@ async def test_prose_mentions_are_counted_and_listed_only_when_asked(session, re
     # A type written as a string is a reference; a name or dotted target in a
     # string is its own kind.
     assert out["files"][_USER] == {
-        "import": [3], "call": [9], "reference": [18], "string": [10, 17, 19]
+        "import": [3],
+        "call": [9],
+        "reference": [18],
+        "string": [10, 17, 19],
     }
     assert out["complete"] is True
     assert wide["files"][_USER]["prose"] == [13, 15, 16]
@@ -987,7 +1005,9 @@ async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path)
 
     # A string subscript is a member access, not a string target.
     assert out["files"]["web/a.test.ts"] == {
-        "import": [2], "reference": [5, 6, 7], "string": [3, 4]
+        "import": [2],
+        "reference": [5, 6, 7],
+        "string": [3, 4],
     }
 
 
@@ -1171,7 +1191,9 @@ async def test_java_same_package_subclasses_are_listed_and_complete(session, rep
                 "class Vet extends org.sp.petclinic.model.BaseEntity {\n}\n"
             ),
             # A subpackage holding another BaseEntity is not a use.
-            f"{_MODEL}/sub/Other.java": _model("BaseEntity", "Object", "org.sp.petclinic.model.sub"),
+            f"{_MODEL}/sub/Other.java": _model(
+                "BaseEntity", "Object", "org.sp.petclinic.model.sub"
+            ),
         },
         "java",
         (f"{_MODEL}/BaseEntity.java", "BaseEntity", 3, 4),
@@ -1618,7 +1640,9 @@ async def _seed_method(session, repo_id, tmp_path, outside: str):
     session.add_all(
         [
             node,
-            _edge(1, repo_id, "app/use.py", "pkg/store.py", "imports", imported_names_json='["Store"]'),
+            _edge(
+                1, repo_id, "app/use.py", "pkg/store.py", "imports", imported_names_json='["Store"]'
+            ),
             _edge(2, repo_id, "app/use.py::__module__", sym, "calls", call_lines_json="[3]"),
         ]
     )
@@ -1724,9 +1748,7 @@ async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, re
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
     assert out["complete"] is False
-    assert "member: an unscanned file names it: app/other.py" in (
-        out["reasons"]
-    )
+    assert "member: an unscanned file names it: app/other.py" in (out["reasons"])
 
 
 @pytest.mark.asyncio
@@ -1800,9 +1822,7 @@ async def test_uses_an_importing_file_binds_itself_are_not_sites(session, repo_i
 
 
 @pytest.mark.asyncio
-async def test_a_typescript_mock_key_is_a_site_and_a_local_mock_is_not(
-    session, repo_id, tmp_path
-):
+async def test_a_typescript_mock_key_is_a_site_and_a_local_mock_is_not(session, repo_id, tmp_path):
     node = await _seed_js(
         session,
         repo_id,
@@ -1840,7 +1860,9 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
         "        return store.fetch_rows()\n",
     )
     session.add(
-        _edge(92, repo_id, "app/other.py", "pkg/store.py", "imports", imported_names_json='["Store"]')
+        _edge(
+            92, repo_id, "app/other.py", "pkg/store.py", "imports", imported_names_json='["Store"]'
+        )
     )
     await session.flush()
 
@@ -1886,12 +1908,14 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
         # A Python module named index is imported by that name.
         ("pkg/index.py", "from pkg import index\nm = index\n", True),
         # A keyword argument passes the module to a call, as a positional one does.
-        ("pkg/catalog.py", "from pkg import catalog\npatch.object(target=catalog, attr='x')\n", False),
+        (
+            "pkg/catalog.py",
+            "from pkg import catalog\npatch.object(target=catalog, attr='x')\n",
+            False,
+        ),
     ],
 )
-def test_a_module_handed_on_is_found_by_the_name_its_import_spells(
-    tmp_path, holder, user, handed
-):
+def test_a_module_handed_on_is_found_by_the_name_its_import_spells(tmp_path, holder, user, handed):
     rel = "web/u.ts" if holder.startswith("web/") else "app/u.py"
     (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text(user, encoding="utf-8")
@@ -1980,6 +2004,8 @@ def test_go_method_on_a_guessed_qualifier_is_kept():
     lines = ["package main", 'import "example.com/app/config"', "\tconfig.Load()"]
     judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
     assert judge(lines[2], next(re.finditer("Load", lines[2]))) is False
+
+
 # Two classes each with their own ``_init`` (httpx's Client/AsyncClient).
 _TWINS = """class Base:
     pass
@@ -2127,9 +2153,7 @@ type Linter interface {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("implements", [False, True])
-async def test_a_go_receiver_twin_stays_listed(
-    session, repo_id, tmp_path, implements
-):
+async def test_a_go_receiver_twin_stays_listed(session, repo_id, tmp_path, implements):
     rel = "magefile.go"
     node = await _seed_twins(
         session,
@@ -2254,3 +2278,87 @@ async def test_a_symbol_without_indexed_lines_has_no_twins(session, repo_id, tmp
     node.start_line = None
 
     assert await sibling_twins(session, repo_id, node, "_init", set(), frozenset()) is None
+
+
+_DENSE_C = """/*
+ * dense_alloc - carve a chunk
+ */
+static void *
+dense_alloc(int size)
+{
+\treturn 0;
+}
+
+/* dense_alloc but for shared memory. */
+void *
+shared_alloc(int size)
+{
+\t// falls back to dense_alloc
+\treturn dense_alloc(size);
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_c_comments_are_prose_not_references(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"hash.c": _DENSE_C},
+        "c",
+        ("hash.c", "dense_alloc", 4, 8),
+        git=False,
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["hash.c"] == {"definition": [5], "reference": [15]}
+    assert out["prose_lines"] == 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "#error don't do this\nfoo(x);",
+        "int a = 1'000; foo(x);",
+        "char c = '\\''; foo(x);",
+        '#define Q "\nfoo(x);',
+    ],
+)
+def test_a_c_literal_never_masks_the_next_line(text):
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    full, _comments = c_family_masks(text)
+    assert full is not None and "foo(x);" in full.split("\n")[-1]
+
+
+def test_a_cpp_raw_string_leaves_the_file_unmasked():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    assert c_family_masks('auto s = R"x(a " b)x"; foo(x);') == (None, None)
+
+
+def test_c_mask_reads_openers_splices_and_prefixes():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    # ``/*/`` does not close on its own opener.
+    full, _ = c_family_masks("/*/ still a comment\nname here */ code();")
+    assert full.split("\n") == [" " * 19, " " * 12 + " code();"]
+    # A ``//`` comment ending in a backslash runs on into the next line.
+    full, _ = c_family_masks("// note \\\nname\ncode();")
+    assert full.split("\n")[1:] == ["    ", "code();"]
+    # An encoding prefix opens a string; a word or number before a quote does not.
+    full, _ = c_family_masks('x = L"name"; y = u8"name"; z = 1\'000;')
+    assert "name" not in full and "1'000" in full
+
+
+def test_c_mask_carries_a_spliced_string_and_reads_keyword_literals():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    # A string continued by a backslash stays a string on the next line.
+    full, _ = c_family_masks('s = "first \\\nname here";\ncode();')
+    assert full.split("\n")[1:] == [" " * 10 + ";", "code();"]
+    # A keyword may run straight into a literal.
+    full, _ = c_family_masks("return\"name\"; case'n': code();")
+    assert "name" not in full and "code();" in full

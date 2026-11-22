@@ -37,6 +37,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, W
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
+from repowise.server.mcp_server._c_masks import c_family_masks
 from repowise.server.mcp_server._edit_sites_go import go_judge, go_target
 from repowise.server.mcp_server._edit_sites_twins import Twin, Twins, sibling_twins
 from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
@@ -426,6 +427,10 @@ async def import_sites(
     return await asyncio.to_thread(_import_sites, Path(repo_root).resolve(), files, module_path)
 
 
+# C and C++ are masked here: the workspace extractors' masker covers neither.
+_C_FAMILY_EXTENSIONS = REGISTRY.extensions_for(("c", "cpp"))
+
+
 class _ProseLines:
     """Which hit lines of one file name the symbol only in prose.
 
@@ -509,6 +514,8 @@ class _ProseLines:
 
         full = _comment_mask(self._suffix, text, strings=True)
         comments = _comment_mask(self._suffix, text, strings=False)
+        if full is None and self._suffix in _C_FAMILY_EXTENSIONS:
+            full, comments = c_family_masks(text)
         if full is None or comments is None:
             return ("mask", None)
         return ("mask", (full.split("\n"), comments.split("\n")))
