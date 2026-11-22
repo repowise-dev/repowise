@@ -148,7 +148,7 @@ function MarkdownCode({
   // than the line (overflow-wrap), never mid-name to fill one (no break-all).
   return (
     <code
-      className="whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere] [box-decoration-break:clone]"
+      className="whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:break-word] [box-decoration-break:clone]"
       {...props}
     >
       {children}

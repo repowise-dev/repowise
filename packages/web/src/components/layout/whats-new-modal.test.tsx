@@ -106,6 +106,7 @@ describe("WhatsNewModal", () => {
     const code = within(screen.getByRole("dialog")).getByText("get_symbol");
     expect(code.tagName).toBe("CODE");
     expect(code.className).not.toContain("break-all");
+    expect(code.className).not.toContain("overflow-wrap:anywhere");
   });
 
   it("opens a short section and keeps a long one collapsed until opened", () => {
