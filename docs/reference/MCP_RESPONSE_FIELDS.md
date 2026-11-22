@@ -396,7 +396,7 @@ Row notes:
 - When those references are not complete for a reason other than a cut that names `_meta.omitted`, `hint` gives the regex query whose live scan lists every line naming the symbol.
 - Past 3 plain `reference` or `string` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
-- An identifier, literal, alternation or regex query shows 12 lines (shared across alternation groups): definitions first, then use sites, imports and strings last, in reading order. The rest are counted in `lines_omitted` and recoverable from `_meta.omitted`, and `complete` is `false`.
+- An identifier, literal, alternation or regex query shows 12 lines (shared across alternation groups): definitions first, then use sites, imports and strings last, one line per file before a second, in reading order. The rest are counted in `lines_omitted` and recoverable from `_meta.omitted`, and `complete` is `false`.
 - When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
 - An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
 

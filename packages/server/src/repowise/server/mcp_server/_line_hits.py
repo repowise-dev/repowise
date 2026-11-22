@@ -1034,10 +1034,18 @@ def _shown_tier(row: dict[str, Any]) -> int:
 
 def _shown(rows: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
     """*cap* of *rows*, in their order: definitions kept first, then use sites,
-    then imports and strings."""
+    then imports and strings; within a tier one row per file before a second,
+    so the cut drops a file's later sites before another file's first."""
     if len(rows) <= cap:
         return rows
-    keep = {id(r) for r in sorted(rows, key=_shown_tier)[:cap]}
+    seen: dict[tuple[Any, str], int] = {}
+    nth: dict[int, int] = {}
+    for r in rows:
+        where = (r.get("repo"), r["path"])
+        nth[id(r)] = seen.get(where, 0)
+        seen[where] = nth[id(r)] + 1
+    ranked = sorted(rows, key=lambda r: (_shown_tier(r), nth[id(r)]))
+    keep = {id(r) for r in ranked[:cap]}
     return [r for r in rows if id(r) in keep]
 
 

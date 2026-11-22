@@ -1326,3 +1326,15 @@ def test_untracked_passes_lock_per_repo(tmp_path):
     assert _line_hits._untracked_lock(a) is _line_hits._untracked_lock(a)
     # Another repo's listing never waits on this one's.
     assert _line_hits._untracked_lock(a) is not _line_hits._untracked_lock(b)
+
+
+def test_a_shown_lines_cut_takes_each_files_first_site_before_a_seconds():
+    rows = [
+        {"path": "a.py", "line": 1, "kind": "call"},
+        {"path": "a.py", "line": 2, "kind": "call"},
+        {"path": "a.py", "line": 3, "kind": "call"},
+        {"path": "b.py", "line": 9, "kind": "call"},
+        {"path": "c.py", "line": 1, "kind": "import"},
+    ]
+    shown = _line_hits._shown(rows, 2)
+    assert [(r["path"], r["line"]) for r in shown] == [("a.py", 1), ("b.py", 9)]
