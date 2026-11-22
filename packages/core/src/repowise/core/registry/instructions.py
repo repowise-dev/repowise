@@ -11,7 +11,7 @@ send the same words.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 #: The first line is all a host that defers tools shows before discovery, so it
 #: says when to call.
@@ -35,6 +35,10 @@ NO_INDEX_LINE = (
     "API key or model calls). Suggest it, do not run it yourself."
 )
 
+#: Characters the workspace roots line lists before it names only a count, so
+#: a large workspace stays well inside what hosts keep of the instructions.
+_MEMBER_ROOTS_CHARS = 400
+
 #: Opt-in workspace tools, named only in a workspace whose surface has them.
 WORKSPACE_TOOL_LINES = {
     "get_architecture": "get_architecture for the workspace's coupling and architecture score",
@@ -51,6 +55,7 @@ def server_instructions(
     brief: bool = False,
     indexed: bool | None = None,
     root: str | None = None,
+    member_roots: Sequence[tuple[str, str]] = (),
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
@@ -65,6 +70,7 @@ def server_instructions(
     relay it to the user. *indexed* drops the no-index line when ``True``;
     ``None`` (not known) keeps it. *root* names the directory reply paths are
     relative to, for a server started outside the repository it serves.
+    *member_roots* does the same per repo of a workspace, as (alias, root).
     """
     if brief:
         return _HEAD
@@ -78,6 +84,8 @@ def server_instructions(
         lines.append(NO_INDEX_LINE)
     if root:
         lines.append(f"Paths in replies are relative to {root}.")
+    if member_roots:
+        lines.append(_member_roots_line(member_roots, list_repos="list_repos" in names))
     if repo_line and "get_why" in names:
         lines.append(repo_line)
     if workspace:
@@ -86,6 +94,23 @@ def server_instructions(
             lines.append(f"In this workspace, use {' and '.join(tools)}.")
     lines += extra or ()
     return "\n".join(lines)
+
+
+def _member_roots_line(member_roots: Sequence[tuple[str, str]], *, list_repos: bool) -> str:
+    """Each workspace repo's root, so a reply's repo and path join into a file."""
+    shown: list[str] = []
+    used = 0
+    for alias, path in member_roots:
+        item = f"{alias}={path}"
+        if shown and used + len(item) > _MEMBER_ROOTS_CHARS:
+            break
+        shown.append(item)
+        used += len(item) + 2
+    line = f"Paths in replies are relative to their repo's root: {', '.join(shown)}"
+    rest = len(member_roots) - len(shown)
+    if rest:
+        line += f", and {rest} more" + (" (list_repos)" if list_repos else "")
+    return line + "."
 
 
 __all__ = [

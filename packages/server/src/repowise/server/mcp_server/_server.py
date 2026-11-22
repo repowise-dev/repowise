@@ -912,6 +912,7 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     repo_line = decisions_line(repo_path)
     indexed = _has_index(repo_path, workspace=workspace)
     root = None if workspace else _root_outside_cwd(repo_path)
+    member_roots = _member_roots_outside_cwd(repo_path) if workspace else ()
 
     def text(served: Iterable[str], *, brief: bool = False) -> str:
         return server_instructions(
@@ -922,6 +923,7 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
             brief=brief,
             indexed=indexed,
             root=root,
+            member_roots=member_roots,
         )
 
     mcp._mcp_server.instructions = text(enabled)
@@ -975,6 +977,26 @@ def _store_has_repository(db: Path) -> bool | None:
             return conn.execute("SELECT 1 FROM repositories LIMIT 1").fetchone() is not None
     except sqlite3.Error:
         return None
+
+
+def _member_roots_outside_cwd(repo_path: str | None) -> list[tuple[str, str]]:
+    """Each workspace repo's (alias, root) whose root does not hold the cwd.
+
+    Workspace replies give paths relative to their repo (the call's ``repo``,
+    or a row's ``repo`` on ``repo="all"``); an agent can join the two into a
+    file only when it knows each root.
+    """
+    if not repo_path:
+        return []
+    ws_root, ws_config, _alias = _detect_workspace(repo_path)
+    if ws_config is None:
+        return []
+    try:
+        cwd = Path.cwd().resolve()
+        roots = [(e.alias, (ws_root / e.path).resolve()) for e in ws_config.repos]
+    except OSError:
+        return []
+    return [(alias, str(root)) for alias, root in roots if not cwd.is_relative_to(root)]
 
 
 def _root_outside_cwd(repo_path: str | None) -> str | None:
