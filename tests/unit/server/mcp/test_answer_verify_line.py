@@ -123,3 +123,8 @@ def test_a_specific_hint_is_kept():
 def test_reply_naming_no_file_keeps_the_generic_step():
     out = project_answer_payload({"answer": "x", "confidence": "high"}, question="q")
     assert out["next_action_hint"] == "Use the answer and citations directly."
+
+
+def test_string_rows_name_the_file_without_a_line():
+    anchor = answer_anchor({"best_guesses": ["a.py"], "degraded": "x"}, "how does a work")
+    assert anchor == Anchor("a.py")

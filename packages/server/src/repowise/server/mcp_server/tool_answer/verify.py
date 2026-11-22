@@ -79,7 +79,7 @@ def _symbol_rows(payload: dict[str, Any], path: str) -> list[tuple[str, int]]:
         ("retrieval", "key_symbols", "start_line"),
     ):
         for row in payload.get(key) or []:
-            if _path_of(row) != path:
+            if not isinstance(row, dict) or _path_of(row) != path:
                 continue
             for sym in row.get(field) or []:
                 if isinstance(sym, dict) and sym.get("name") and isinstance(sym.get(line_key), int):
