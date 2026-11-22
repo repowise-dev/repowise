@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from repowise.server.mcp_server._meta import answer_hint
 from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
-from repowise.server.mcp_server.tool_answer.verify import Anchor, answer_anchor, verify_line
+from repowise.server.mcp_server.tool_answer.verify import (
+    Anchor,
+    _same_word,
+    answer_anchor,
+    verify_line,
+)
 
 _GUESS = {
     "file": "src/foreman/test_summary.py",
@@ -115,9 +120,12 @@ def test_a_specific_hint_is_kept():
         "confidence": "medium",
         "citations": ["src/a.py"],
         "next_action_hint": "call get_symbol id='src/a.py::run' for the withheld body",
+        "_meta": {"hint": answer_hint("low")},
     }
     out = project_answer_payload(raw, question="how does run work")
     assert out["next_action_hint"] == "call get_symbol id='src/a.py::run' for the withheld body"
+    # One next step: the generic hint does not sit beside the specific one.
+    assert "hint" not in out.get("_meta", {})
 
 
 def test_reply_naming_no_file_keeps_the_generic_step():
@@ -128,3 +136,8 @@ def test_reply_naming_no_file_keeps_the_generic_step():
 def test_string_rows_name_the_file_without_a_line():
     anchor = answer_anchor({"best_guesses": ["a.py"], "degraded": "x"}, "how does a work")
     assert anchor == Anchor("a.py")
+
+
+def test_unrelated_words_sharing_a_prefix_do_not_match():
+    assert _same_word("parses", "parse") and _same_word("summaries", "summary")
+    assert not _same_word("retries", "retrieve")
