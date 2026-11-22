@@ -3307,10 +3307,10 @@
       "hide": "Hide on this machine"
     },
     "pill": {
-      "label": "Setup",
-      "progress": "{done} of {total}",
-      "aria": "Setup: {done} of {total} essentials done",
-      "hide": "Hide the setup reminder on this machine"
+      "essentials": "{done} of {total} essentials done",
+      "more": "{count} more",
+      "moreLong": "Essentials done. {count, plural, one {# more step} other {# more steps}} to finish, the ones repowise next --prompt setup lists",
+      "done": "Set up"
     },
     "settings": {
       "openSetup": "Open Setup",
