@@ -129,7 +129,7 @@ function shareActions({
 
 function ExportNote({ copy, onExit }: { copy: FirstLookCopy; onExit: () => void }) {
   return (
-    <div className="flex flex-wrap items-center justify-center gap-2.5 bg-[var(--color-accent-muted)] p-2 text-[12.5px] print:hidden">
+    <div className="flex flex-wrap items-center justify-center gap-2.5 bg-[var(--color-bg-inset)] p-2 text-xs print:hidden">
       {copy.exportNote}
       <button type="button" className={BUTTON} onClick={onExit}>
         {copy.exitExport}
@@ -158,7 +158,7 @@ function TopBar({
       <div className="mx-auto flex max-w-[900px] items-center gap-3 px-4 py-3">
         <Link
           href={overviewHref}
-          className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
         >
           <ChevronLeft aria-hidden className="size-4" />
           {copy.back}
@@ -185,11 +185,11 @@ function Footer({
 }) {
   const { stamp } = report;
   return (
-    <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-[12.5px] text-[var(--color-text-secondary)]">
+    <footer className="mt-[52px] flex flex-wrap gap-x-[18px] gap-y-1.5 border-t border-[var(--color-border-default)] pt-4 text-xs text-[var(--color-text-secondary)]">
       <span className="font-mono">{copy.reportAt((stamp.commit ?? "").slice(0, 7))}</span>
       {sinceCommand ? (
         <span>
-          {copy.sinceThen} <code className="font-mono text-[0.86em]">{sinceCommand}</code>
+          {copy.sinceThen} <code className="font-mono">{sinceCommand}</code>
         </span>
       ) : null}
     </footer>
@@ -204,7 +204,7 @@ function ProseSource({ report, copy, rewrite }: { report: FirstLookLivingReport;
   const model = source.writer !== "template";
   const label = model ? copy.rewrite : copy.rewriteWithModel;
   return (
-    <div className="flex flex-wrap items-center gap-x-1.5 text-[12.5px] text-[var(--color-text-secondary)]">
+    <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-[var(--color-text-secondary)]">
       <span title={model ? source.writer : undefined}>
         {model ? copy.wordingByModel(formatDate(source.written_at ?? report.stamp.created_at)) : copy.wordingTemplate}
         {model ? <span className="sr-only"> ({source.writer})</span> : null}
@@ -218,7 +218,7 @@ function ProseSource({ report, copy, rewrite }: { report: FirstLookLivingReport;
             type="button"
             onClick={rewrite.onRewrite}
             disabled={rewrite.running}
-            className={cn(CONTROL, "text-[var(--color-accent-primary)] hover:underline disabled:opacity-60")}
+            className={cn(CONTROL, "text-[var(--color-model)] hover:text-[var(--color-model-hover)] hover:underline disabled:opacity-60")}
           >
             {rewrite.running ? copy.writing : label}
             {rewrite.cost != null && !rewrite.running ? ` (${copy.approxCost(formatCost(rewrite.cost))})` : null}
@@ -233,7 +233,7 @@ function Toast({ message }: { message: string | null }) {
   return (
     <div role="status" aria-live="polite">
       {message ? (
-        <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom,0px))] left-1/2 z-20 max-w-[calc(100%-32px)] -translate-x-1/2 rounded-lg bg-[var(--color-action-primary)] px-3.5 py-2 text-[13px] text-[var(--color-text-on-action)] print:hidden">
+        <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom,0px))] left-1/2 z-20 max-w-[calc(100%-32px)] -translate-x-1/2 rounded-lg bg-[var(--color-action-primary)] px-3.5 py-2 text-xs text-[var(--color-text-on-action)] print:hidden">
           {message}
         </div>
       ) : null}
@@ -323,7 +323,7 @@ export function FirstLookReport({
   const paired = PAIRED.every(has);
 
   return (
-    <div data-export={exporting || undefined} className="text-[14.5px] leading-[1.55] text-[var(--color-text-primary)]">
+    <div data-export={exporting || undefined} className="text-[15px] leading-[1.55] text-[var(--color-text-primary)]">
       <style>{"[data-export] .first-look-control{display:none!important}[data-export] [data-decoration]{display:none}"}</style>
       {exporting ? <ExportNote copy={copy} onExit={() => setExporting(false)} /> : null}
       <TopBar
@@ -370,7 +370,7 @@ export function ProgressBar({ p, className }: { p: Progress; className?: string 
 export function ProgressLine({ p, copy, tail }: { p: Progress; copy: FirstLookCopy; tail?: string | undefined }) {
   const b = (n: number) => <b className="font-semibold tabular-nums text-[var(--color-text-primary)]">{formatNumber(n)}</b>;
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-[var(--color-text-secondary)]">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[var(--color-text-secondary)]">
       <ProgressBar p={p} />
       <span>
         {b(p.resolved)} {copy.resolved} · {b(p.acknowledged)} {copy.acknowledged} · {b(p.added)} {tail ?? copy.newSince}
@@ -386,8 +386,8 @@ function Header({ report, copy, rewrite }: { report: FirstLookLivingReport; copy
   return (
     <header className="relative isolate grid gap-3.5 pt-9">
       <ContourPattern sha={stamp.commit} />
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-accent-primary)]">{copy.eyebrow}</div>
-      <h1 className="m-0 font-serif text-[clamp(28px,4.6vw,38px)] font-semibold leading-[1.15] [overflow-wrap:anywhere] [text-wrap:balance]">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">{copy.eyebrow}</div>
+      <h1 className="m-0 font-serif text-[22px] font-semibold leading-[1.25] [overflow-wrap:anywhere] [text-wrap:balance]">
         {repo.name}
       </h1>
       <div className="flex flex-wrap gap-x-3.5 gap-y-1 font-mono text-xs text-[var(--color-text-secondary)]">
@@ -399,7 +399,7 @@ function Header({ report, copy, rewrite }: { report: FirstLookLivingReport; copy
       <ProseSource report={report} copy={copy} rewrite={rewrite} />
       {first ? <ProgressLine p={progress(report)} copy={copy} /> : null}
       {report.prose?.summary ? (
-        <p className="m-0 mt-1 max-w-[66ch] text-[16.5px] leading-[1.6]">{inline(report.prose.summary)}</p>
+        <p className="m-0 mt-1 max-w-[66ch]">{inline(report.prose.summary)}</p>
       ) : null}
     </header>
   );
@@ -426,8 +426,8 @@ function Strip({ report, copy }: { report: FirstLookLivingReport; copy: FirstLoo
               <Icon aria-hidden className="size-4" />
               {copy.stripTitle[s.key] ?? s.key}
             </span>
-            <span className="text-xl font-semibold tabular-nums tracking-[-0.01em]">{stripValue(s)}</span>
-            <span className="text-[11.5px] leading-[1.3] text-[var(--color-text-tertiary)]">{copy.stripUnit[s.key] ?? ""}</span>
+            <span className="text-[22px] font-semibold tabular-nums tracking-[-0.01em]">{stripValue(s)}</span>
+            <span className="text-xs leading-[1.3] text-[var(--color-text-tertiary)]">{copy.stripUnit[s.key] ?? ""}</span>
           </a>
         );
       })}
@@ -440,13 +440,13 @@ function Insight({ report, copy }: { report: FirstLookLivingReport; copy: FirstL
   if (!headline) return null;
   const lift = report.repo.headline_facts?.find((f) => typeof f.lift === "number")?.lift as number | undefined;
   return (
-    <div className="mt-[18px] flex flex-col gap-1 rounded-[10px] bg-[var(--color-accent-muted)] px-3.5 py-3 min-[441px]:flex-row min-[441px]:items-baseline min-[441px]:gap-3">
+    <div className="mt-[18px] flex flex-col gap-1 rounded-[10px] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3.5 py-3 min-[441px]:flex-row min-[441px]:items-baseline min-[441px]:gap-3">
       {lift != null ? (
         <span className="whitespace-nowrap font-mono font-medium text-[var(--color-accent-primary)]">{lift.toFixed(1)}×</span>
       ) : null}
       <p className="m-0">
         {inline(headline)}{" "}
-        <span className="whitespace-nowrap rounded border border-[var(--color-border-default)] px-[5px] py-px font-mono text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-text-secondary)]">
+        <span className="whitespace-nowrap rounded border border-[var(--color-border-default)] px-[5px] py-px font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
           {copy.measured}
         </span>
       </p>
@@ -460,7 +460,7 @@ function StartHere({ report, copy, text }: { report: FirstLookLivingReport; copy
   if (!top.length) return null;
   return (
     <section aria-labelledby="fl-start" className="mt-[34px]">
-      <h2 id="fl-start" className="m-0 font-serif text-[21px] font-semibold">
+      <h2 id="fl-start" className="m-0 font-serif text-[22px] font-semibold">
         {copy.startHere}
       </h2>
       <ol className="m-0 mt-3.5 list-none border-t border-[var(--color-border-default)] p-0">
@@ -474,7 +474,7 @@ function StartHere({ report, copy, text }: { report: FirstLookLivingReport; copy
               <span className="font-mono text-xs text-[var(--color-text-tertiary)]">{n + 1}</span>
               <a
                 href={`#${item.id}`}
-                className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
               >
                 <Icon aria-hidden className="size-4" />
                 {copy.stripTitle[item.section] ?? item.section}

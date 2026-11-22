@@ -269,6 +269,14 @@ describe("FirstLookReport", () => {
     expect(onRewrite).toHaveBeenCalledOnce();
   });
 
+  it("spends orange on one point only, the measured lift, and keeps the rewrite violet", () => {
+    const { container } = renderReport({ canRewrite: true, onRewrite: vi.fn(), rewriteCost: 0.01 });
+    const orange = [...container.querySelectorAll("[class*='accent-primary'], [class*='accent-muted']")];
+    expect(orange.map((el) => el.textContent)).toEqual(["8.3×"]);
+    expect(screen.getByText("measured").className).toContain("text-tertiary");
+    expect(screen.getByRole("button", { name: /Rewrite/ }).className).toContain("color-model");
+  });
+
   it("draws the header contours from the commit, the same every time", () => {
     expect(contourPaths("c1203324")).toEqual(contourPaths("c1203324"));
     expect(contourPaths("c1203324")).not.toEqual(contourPaths("9f2e1aa0"));
