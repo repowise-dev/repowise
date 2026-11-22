@@ -15,6 +15,7 @@ from sqlalchemy import select
 from repowise.core.analysis.pr_blast import FileTests, file_tests
 from repowise.core.analysis.test_reachability import cached_test_files
 from repowise.core.persistence.models import GraphNode
+from repowise.core.test_paths import in_test_tree
 from repowise.core.test_runners import is_code_file
 from repowise.server.mcp_server._directory import _dir_prefix, _rows_under
 from repowise.server.mcp_server._helpers import LIKE_ESCAPE, escape_like
@@ -75,7 +76,8 @@ async def files_section(card: CardState) -> None:
 def _listing_order(paths: set[str], test_files: Any) -> list[str]:
     """Code files first, then other files, then tests, each by path: a cap cuts
     what needs no test (a locale catalog, a manifest, a test file) before code."""
-    return sorted(paths, key=lambda p: (p in test_files, not is_code_file(p), p))
+    # The test rule ``file_tests`` labels rows by, so the order matches the rows.
+    return sorted(paths, key=lambda p: (p in test_files or in_test_tree(p), not is_code_file(p), p))
 
 
 async def _paths_under(card: CardState) -> set[str]:

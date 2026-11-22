@@ -258,6 +258,7 @@ def test_files_list_code_before_other_files_and_tests():
         "app/models.py",
         "app/LICENSE",
         "app/tests/test_models.py",
+        "app/tests/helpers.py",
         "app/admin.py",
     }
     assert _listing_order(paths, frozenset({"app/tests/test_models.py"})) == [
@@ -265,5 +266,6 @@ def test_files_list_code_before_other_files_and_tests():
         "app/models.py",
         "app/LICENSE",
         "app/locale/af/django.po",
+        "app/tests/helpers.py",
         "app/tests/test_models.py",
     ]
