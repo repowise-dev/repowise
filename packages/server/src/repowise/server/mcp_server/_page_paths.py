@@ -31,8 +31,12 @@ def pageless_path(page_id: str) -> str:
 
 def in_scope(path: str, scope: str | None) -> bool:
     """Whether *path* is the ``scope`` or under it, as a directory: ``pkg/a``
-    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``."""
-    return not scope or f"{path}/".startswith(f"{scope.rstrip('/')}/")
+    holds ``pkg/a/x.py``, never ``pkg/ab/x.py``. A scope of several prefixes
+    joined by ``,`` holds what any of them holds."""
+    if not scope:
+        return True
+    under = f"{path}/"
+    return any(under.startswith(f"{p.rstrip('/')}/") for p in scope.split(",") if p)
 
 
 # Page types whose ``target_path`` is a real repository-relative file path.

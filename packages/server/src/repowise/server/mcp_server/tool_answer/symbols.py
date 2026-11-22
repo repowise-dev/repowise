@@ -25,6 +25,7 @@ from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._line_hits import production_only, word_scan
+from repowise.server.mcp_server._page_paths import in_scope
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
@@ -463,7 +464,7 @@ class _TopicGuard:
         None when the scan stopped short. See :func:`_writes_as_code`."""
         rows, complete, _unread = await self._scan(token)
         if scope:
-            rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
+            rows = [r for r in rows if in_scope(r["path"], scope)]
         if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
             return True
         return False if complete else None

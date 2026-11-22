@@ -202,15 +202,23 @@ def _path_filter(column: str, path_prefix: str | None) -> tuple[str, dict[str, A
     """SQL keeping rows whose *column* is *path_prefix* or a path under it.
 
     A directory match: ``pkg/a`` holds ``pkg/a/x.py``, never ``pkg/ab/x.py``.
-    ``substr`` rather than ``LIKE``: exact case and no wildcard escaping, on
-    both backends. Empty when there is no prefix.
+    Several prefixes joined by ``,`` keep what any of them holds. ``substr``
+    rather than ``LIKE``: exact case and no wildcard escaping, on both
+    backends. Empty when there is no prefix.
     """
-    scope = (path_prefix or "").rstrip("/")
-    if not scope:
+    scopes = [p.rstrip("/") for p in (path_prefix or "").split(",")]
+    scopes = [p for p in scopes if p]
+    if not scopes:
         return "", {}
-    under = f"{scope}/"
-    sql = f" AND ({column} = :scope OR substr({column}, 1, :scope_len) = :scope_dir)"
-    return sql, {"scope": scope, "scope_len": len(under), "scope_dir": under}
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for i, scope in enumerate(scopes):
+        under = f"{scope}/"
+        clauses.append(
+            f"{column} = :scope{i} OR substr({column}, 1, :scope_len{i}) = :scope_dir{i}"
+        )
+        params.update({f"scope{i}": scope, f"scope_len{i}": len(under), f"scope_dir{i}": under})
+    return f" AND ({' OR '.join(clauses)})", params
 
 
 _log = logging.getLogger(__name__)
