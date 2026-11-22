@@ -177,19 +177,9 @@ async def _resolve_question_anchors(
 
     tokens = sorted({t for t in _question_terms(question) if len(t) >= 4})
     if tokens:
-        res = await session.execute(
-            select(Page.target_path)
-            .where(
-                Page.repository_id == repo_id,
-                Page.page_type == "file_page",
-            )
-            # Same reason as the symbol query: this feeds anchor insertion order.
-            .order_by(Page.target_path)
+        stem_to_paths = await per_index(
+            session, repo_id, "file_page_stems", lambda: _file_page_stems(session, repo_id)
         )
-        stem_to_paths: dict[str, list[str]] = {}
-        for (tp,) in res.all():
-            if tp:
-                stem_to_paths.setdefault(_basename_stem(tp), []).append(tp)
         for token in tokens:
             for stem, paths in stem_to_paths.items():
                 if not _token_matches_stem(token, stem):
@@ -201,6 +191,24 @@ async def _resolve_question_anchors(
                         anchors.setdefault(p, "module")
 
     return anchors
+
+
+async def _file_page_stems(session: Any, repo_id: str) -> dict[str, list[str]]:
+    """Each file page's basename stem, to the paths of the pages carrying it."""
+    res = await session.execute(
+        select(Page.target_path)
+        .where(
+            Page.repository_id == repo_id,
+            Page.page_type == "file_page",
+        )
+        # Same reason as the symbol query: this feeds anchor insertion order.
+        .order_by(Page.target_path)
+    )
+    stem_to_paths: dict[str, list[str]] = {}
+    for (tp,) in res.all():
+        if tp:
+            stem_to_paths.setdefault(_basename_stem(tp), []).append(tp)
+    return stem_to_paths
 
 
 async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
