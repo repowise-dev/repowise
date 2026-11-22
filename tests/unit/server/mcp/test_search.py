@@ -945,7 +945,7 @@ class TestPathSearch:
         # One alternative's best file, then the other's.
         assert files[0].startswith("src/auth/"), files
         assert files[1] == "src/db/models.py", files
-        assert "_alternative" not in result["results"][0]
+        assert not any("_alternative" in r for r in result["results"])
 
     @pytest.mark.asyncio
     async def test_a_common_alternative_does_not_crowd_out_the_others(self, setup_mcp):
