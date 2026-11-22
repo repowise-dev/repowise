@@ -152,8 +152,8 @@ describe("DecisionAgentHero", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(onCopy.mock.calls).toEqual([["prompt"]]));
     fireEvent.click(screen.getByRole("button", { name: "Review all records" }));
-
     await waitFor(() => expect(onCopy.mock.calls).toEqual([["prompt"], ["review_all"]]));
   });
 
