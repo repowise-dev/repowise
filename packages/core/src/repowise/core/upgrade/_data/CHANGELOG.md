@@ -88,6 +88,7 @@ Thank you to everyone who built this release with us.
 - **Leaner instructions for Codex** (#6114). Codex gets the brief server instructions, `search_codebase` caps `limit` at 20 and says so in `ignored_arguments`.
 - **Change risk is size and spread** (#3802). The UI and the VS Code panels frame change risk as size and spread, not review priority.
 - **Version stamps.** `HEALTH_ANALYZER_VERSION` moved from 45 to 46, so health re-scores. `PARSER_SCHEMA_VERSION` moved from 13 to 14, so the parse cache refreshes once. `GIT_HISTORY_VERSION` moved from 4 to 5, so ownership is recomputed once. The performance model moved from 3 to 4 and the workspace contracts version from 16 to 17 (#6102). `STORE_FORMAT_VERSION` is unchanged.
+- **A calmer web UI** (#6179, #6180, #6181, #6182, #6183, #6185). What's new leads with the highlights and folds long change lists away, release notices fit on one line, and the sidebar marks the pages and tabs a release highlights as New. The Overview's repo report and your change each take one line, a Setup entry stays in the sidebar with what is left to do, the Ask pill keeps clear of the Architecture map's controls, and the repo report uses one accent and the dashboard type scale.
 
 ### Performance
 
@@ -117,6 +118,7 @@ Thank you to everyone who built this release with us.
 - **Hooks, Codex and providers.** A subagent's read state stays apart from its parent's (#5913), and one predicate decides whether a command runs tests (#6111). Codex reads and writes under `$CODEX_HOME`, passes provider keys to the server and waits for it before the first turn (#6110, #6109, #5925). Setup states the keyless scope, keeps the Ollama embedder model and warns on a bad Ollama URL (#6124), Ollama's refusal reason is named (#5740), an OpenRouter model outside the known widths works when its width is configured (#5732), the cost estimator calibrates from `wiki.db` (#5643), `reindex` records the new embedder (#6077), a fastembed model that cannot load falls back once (#6174), GitLab retries when busy (#5689), a blank provider key is refused (#5736) and PostgreSQL full-text search leaves tombstoned pages out (#5720).
 - **Web UI.** The first run works without a model and asks the agent one Repowise question (#5918), a performance cause from the queue's summary view renders (#5974), apps can supply their own empty and error state art (#5734), and seven files with double-encoded UTF-8 read correctly (#4100).
 - **Plugin:** the Claude Code plugin documents the `fastembed` embedder and `coverage setup` and `export`, and the generated CLAUDE.md leads with a scoped call-Repowise-first rule (#6168, #5830, #5924, #6170). The Codex plugin (0.11.0) passes provider keys from the shell to the server (#6109).
+- **Web and update.** A report rewrite or chat call that takes longer than 30 seconds completes and shows its result (#6184), and an update with nothing stale says so in one sentence (#6176).
 
 ### Documentation
 
@@ -126,6 +128,7 @@ Thank you to everyone who built this release with us.
 - The architecture docs name one owner per concept and describe the build-unit model (#5810).
 - Scale: ClickHouse sizing and what a first index does with rendered code and JSON (#5692, #5687).
 - The README and benchmarks lead with the strongest results (#5947, #5922), the contributing guide mentions the review bot (#5836), and examples and telemetry docs match the code (#6070, #6071, #6023).
+- CodeScaleBench results in the benchmarks, and the `local-embed` extra in the quickstart and user guide (#6178).
 
 ### Dependencies
 
