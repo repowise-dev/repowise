@@ -52,3 +52,56 @@ def test_rebuilt_from_its_own_maps_compares_equal():
     again = BuildUnitIndex(units=dict(reversed(index.units.items())), file_owners=index.file_owners)
     assert again == index
     assert list(again.units) == list(index.units)
+
+
+
+def _declared(uid: str, ecosystem: str, manifest: str) -> BuildUnit:
+    root = manifest.rpartition("/")[0]
+    return BuildUnit(
+        id=uid, ecosystem=ecosystem, name=uid, root=root, manifest=manifest, source="t"
+    )
+
+
+def test_build_file_unit_passes_other_code_languages_up():
+    # A unit declared in a build file is rooted at no package: at its root it
+    # does not own files in another code language, which go on to the deepest
+    # root holding a unit that may own them.
+    cmake = _declared("cmake:core", "cmake", "src/CMakeLists.txt")
+    paths = [
+        "src/CMakeLists.txt", "src/a.cpp", "src/b.c", "src/inc/A.H", "src/gen.py", "src/x.rb",
+        "src/cmake/flags.cmake", "src/README.md", "src/Makefile",
+    ]
+    index = BuildUnitIndex.from_units([cmake, _unit("top", "")], paths)
+    assert index.file_owners == {
+        # Its own build file, its languages, and files in no code language.
+        "src/CMakeLists.txt": ("cmake:core",),
+        "src/Makefile": ("cmake:core",),
+        "src/README.md": ("cmake:core",),
+        "src/a.cpp": ("cmake:core",),
+        "src/b.c": ("cmake:core",),
+        "src/cmake/flags.cmake": ("cmake:core",),
+        "src/inc/A.H": ("cmake:core",),
+        # Other code languages.
+        "src/gen.py": ("top",),
+        "src/x.rb": ("top",),
+    }
+    assert [u.id for u in index.units_owning("src/new.py")] == ["top"]
+    # An explicit listing still wins, whatever the file's language.
+    listed = BuildUnitIndex.from_units([cmake], ["src/gen.py"], {"src/gen.py": ["cmake:core"]})
+    assert listed.file_owners == {"src/gen.py": ("cmake:core",)}
+
+
+def test_build_file_rule_follows_the_registry_not_the_ecosystem():
+    # Any build file the registry lists gets the rule (a Bazel BUILD here);
+    # a package manifest does not, so an unlisted Python file under a Delphi
+    # project's root stays its own, as it always has.
+    bazel = _declared("bazel://core", "bazel", "core/BUILD.bazel")
+    pascal = _declared("pascal:App", "pascal", "app/App.dpr")
+    index = BuildUnitIndex.from_units(
+        [bazel, pascal, _unit("top", "")], ["core/x.py", "core/x.cc", "app/tool.py"]
+    )
+    assert index.file_owners == {
+        "app/tool.py": ("pascal:App",),
+        "core/x.cc": ("bazel://core",),
+        "core/x.py": ("top",),
+    }

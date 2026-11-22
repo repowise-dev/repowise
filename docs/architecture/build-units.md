@@ -61,7 +61,13 @@ the same rows.
    directories (which may sit outside the project, `srcDirs("../shared/src")`).
    A listed file is owned by every unit listing it.
 2. **Otherwise the deepest unit root.** Any other file is owned by the units
-   whose `root` is the deepest directory above it.
+   whose `root` is the deepest directory above it. A unit declared in a
+   build file (a manifest the language registry lists as build config, such
+   as `CMakeLists.txt` or a Bazel `BUILD`) sits at no package root, so at its
+   root it does not own files in another code language: a `.py` or `.rb`
+   file goes on to the deepest root holding a unit that may own it. Its own
+   build file, files in its languages and files in no code language
+   (`*.cmake`, a README) stay with it.
 3. **Several owners are normal.** Two units at one root (a `Web.csproj` and a
    workspace `package.json` side by side) both own its unlisted files, such as
    `index.ts`. The C# files the .NET project lists are owned by that project
@@ -76,7 +82,10 @@ Which units exist is decided per manifest:
 - A unit's own manifest and its ruled-out manifests are the only ones an
   adapter decides. `manifest_roots` then gives a `manifest:` unit to every
   package root that still holds an undecided manifest.
-- **A specific adapter's unit wins** over the fallback at the same root.
+- **A specific adapter's unit wins** over the fallback at the same root,
+  unless that unit is declared in a build file. A build file is no package
+  manifest, so the root's package manifests are still undecided and keep
+  their `manifest:` unit.
 - **An unreadable manifest falls back.** A manifest that fails to parse is
   never decided, so its root still gets a `manifest:` unit and its files keep
   an owner.
