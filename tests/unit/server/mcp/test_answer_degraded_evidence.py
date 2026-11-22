@@ -1101,3 +1101,17 @@ def test_only_the_body_the_reply_leads_with_can_lift():
     ]
     assert not _lead_answers_by_name("what does run do", {"run"}, bodies, [], [])
     assert _lead_answers_by_name("what does run do", {"run"}, bodies[1:], [], [])
+
+
+def test_the_owner_is_read_from_the_definition_that_was_served():
+    """Two same-named methods in one file: the lead's own class counts as named."""
+    from repowise.server.mcp_server.tool_answer.degraded import _lead_answers_by_name
+
+    lead = {"path": "a.py", "name": "run", "lines": [10, 12], "source": "def run(self): pass"}
+    cands = [
+        (0, 0, 2, "a.py", {"name": "run", "parent_name": "Other"}),
+        (0, 0, 10, "a.py", {"name": "run", "parent_name": "Flask"}),
+    ]
+    hits = [{"target_path": "a.py", "title": "Flask Other", "summary": "Flask Other"}]
+    assert _lead_answers_by_name("what does Flask run do", {"run"}, [lead], cands, hits)
+    assert not _lead_answers_by_name("what does Other run do", {"run"}, [lead], cands, hits)

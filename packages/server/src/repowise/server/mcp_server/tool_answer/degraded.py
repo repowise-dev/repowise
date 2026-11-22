@@ -303,8 +303,8 @@ def _lead_answers_by_name(
     owner = next(
         (
             sym.get("parent_name")
-            for *_rank, path, sym in body_candidates
-            if path == lead["path"] and sym.get("name") == lead["name"]
+            for _tier, _kind, start, path, sym in body_candidates
+            if (path, sym.get("name"), start) == (lead["path"], lead["name"], lead["lines"][0])
         ),
         None,
     )
