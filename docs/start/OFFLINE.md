@@ -67,7 +67,9 @@ The extra adds about 65 MB of packages, and the model (about 65 MB) downloads
 once to `~/.repowise/models` (set `FASTEMBED_CACHE_PATH` to move it). A query
 embeds in a few milliseconds on a laptop CPU. `reindex` records the embedder
 in `.repowise/config.yaml` like any other, so the MCP server and
-`repowise update` use it; install the extra wherever they run.
+`repowise update` use it; install the extra wherever they run. The extra
+covers Python 3.11 and 3.12; on 3.13 and newer, run `pip install fastembed`
+instead.
 
 ## Air-gapped networks
 

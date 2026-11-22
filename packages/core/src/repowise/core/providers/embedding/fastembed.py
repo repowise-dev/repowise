@@ -1,6 +1,7 @@
 """In-process local embeddings via fastembed (ONNX): no server to run, no key.
 
-Optional: ``pip install "repowise[local-embed]"``. The model (default
+Optional: ``pip install "repowise[local-embed]"`` (``pip install fastembed``
+on Python 3.13+). The model (default
 ``BAAI/bge-small-en-v1.5``, 384 dims, ~65 MB) downloads once on first use to
 ``FASTEMBED_CACHE_PATH`` or ``~/.repowise/models``. For air-gapped machines,
 copy that folder across and set ``HF_HUB_OFFLINE=1``.

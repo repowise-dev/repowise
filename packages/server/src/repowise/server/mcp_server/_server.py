@@ -115,7 +115,8 @@ _EMBEDDER_REMEDIATION: dict[str, str] = {
     ),
     "ollama": "start Ollama, pull an embedding model, and set OLLAMA_BASE_URL if not local",
     "fastembed": (
-        'run `pip install "repowise[local-embed]"` in the environment the MCP server runs from'
+        "install the local-embed extra (on Python 3.13+, the fastembed package) "
+        "in the environment the MCP server runs from"
     ),
     "openrouter": "set OPENROUTER_API_KEY in the MCP server's environment (and `pip install openai`)",
 }

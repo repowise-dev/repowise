@@ -17,6 +17,12 @@ import pytest
 _MODULE = "repowise.core.providers.embedding.fastembed"
 
 
+def _install() -> str:
+    from repowise.core.providers.embedding.registry import install_spec
+
+    return install_spec("fastembed")
+
+
 @pytest.fixture(autouse=True)
 def _fresh_module():
     """Each test imports the embedder against its own stub; none outlives it."""
@@ -98,8 +104,15 @@ def test_a_missing_extra_names_the_install(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setitem(sys.modules, "fastembed", None)  # import fastembed -> ImportError
     from repowise.core.providers.embedding.registry import get_embedder
 
-    with pytest.raises(ImportError, match=r'pip install "repowise\[local-embed\]"'):
+    with pytest.raises(ImportError) as raised:
         get_embedder("fastembed")
+    assert f"pip install {_install()}" in str(raised.value)
+
+
+def test_the_extra_is_named_where_it_installs_fastembed() -> None:
+    # The extra holds fastembed on 3.11 and 3.12 only; newer Pythons install it directly.
+    expected = '"repowise[local-embed]"' if sys.version_info < (3, 13) else "fastembed"
+    assert _install() == expected
 
 
 def test_doctor_warns_when_the_repo_embedder_cannot_be_imported(
@@ -114,7 +127,7 @@ def test_doctor_warns_when_the_repo_embedder_cannot_be_imported(
 
     assert row is not None
     assert (row.id, row.level) == ("embedder-package", "warn")
-    assert 'pip install "repowise[local-embed]"' in row.detail
+    assert f"pip install {_install()}" in row.detail
 
     monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "mock")
     assert providers._embedder_package_check(tmp_path) is None

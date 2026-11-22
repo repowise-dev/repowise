@@ -122,13 +122,16 @@ def semantic_search_command(repo_path: Any = None, used: str | None = None) -> s
 
 def semantic_search_setup_hint() -> str:
     """How to get an embedder when none is detectable, for a one-line note."""
+    from rich.markup import escape
+
+    from repowise.core.providers.embedding.registry import install_spec
     from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
 
     keys = " or ".join(EMBEDDER_KEY_ENVS[name][0] for name in ("gemini", "openai"))
     return (
         "Run [bold]repowise reindex --embedder ollama[/bold] with Ollama running, "
         "or [bold]--embedder fastembed[/bold] after "
-        '[bold]pip install "repowise\\[local-embed]"[/bold] (no service to run), '
+        f"[bold]pip install {escape(install_spec('fastembed'))}[/bold] (no service to run), "
         f"or set {keys} and run [bold]repowise reindex[/bold]."
     )
 

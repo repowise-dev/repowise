@@ -22,6 +22,7 @@ Custom embedder registration:
 from __future__ import annotations
 
 import importlib
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -109,7 +110,10 @@ _MISSING_PACKAGE = {
     "ollama": "httpx",
     "openrouter": "openai",  # openrouter uses the openai package
     "edenai": "openai",  # edenai uses the openai package
-    "fastembed": "repowise[local-embed]",
+    # The extra stops at Python 3.12: graph-extra pins numpy below 2, which
+    # fastembed cannot use on 3.13+, and one lock holds both extras. There
+    # fastembed installs on its own.
+    "fastembed": "repowise[local-embed]" if sys.version_info < (3, 13) else "fastembed",
 }
 
 
@@ -123,12 +127,17 @@ def import_builtin_embedder(name: str) -> Any:
         return importlib.import_module(_BUILTIN_EMBEDDERS[name][0])
     except ImportError as exc:
         package = _MISSING_PACKAGE.get(name, name)
-        # An extra needs quotes, or zsh reads the brackets as a glob.
-        spec = f'"{package}"' if "[" in package else package
         raise ImportError(
             f"Embedder {name!r} requires the '{package}' package. "
-            f"Install it with: pip install {spec}"
+            f"Install it with: pip install {install_spec(name)}"
         ) from exc
+
+
+def install_spec(name: str) -> str:
+    """What follows ``pip install`` for built-in embedder *name*'s package."""
+    package = _MISSING_PACKAGE.get(name, name)
+    # An extra needs quotes, or zsh reads the brackets as a glob.
+    return f'"{package}"' if "[" in package else package
 
 
 def list_embedders() -> list[str]:
