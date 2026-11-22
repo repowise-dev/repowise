@@ -80,6 +80,11 @@ def _is_declaration(sym: dict) -> bool:
         return False
     if not (sym.get("_matched") or sym.get("_relevance")):
         return False
+    return _bodyless(sym)
+
+
+def _bodyless(sym: dict) -> bool:
+    """An indexed span too short to hold a body, with no opening brace in it."""
     start, end = sym.get("start_line") or 0, sym.get("end_line") or 0
     text = sym.get("source_excerpt") or sym.get("signature") or ""
     return start > 0 and end - start + 1 < _MIN_BODY_LINES and "{" not in text
