@@ -82,7 +82,6 @@ const PILL: Record<string, string> = {
   done: "text-[var(--color-success)] border-[color-mix(in_srgb,var(--color-success)_40%,transparent)]",
   resolved: "text-[var(--color-success)] border-[color-mix(in_srgb,var(--color-success)_40%,transparent)]",
   acknowledged: "text-[var(--color-warning)] border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]",
-  new: "text-[var(--color-accent-primary)] border-[color-mix(in_srgb,var(--color-accent-primary)_40%,transparent)]",
 };
 
 export function StatusPill({ item, copy }: { item: FirstLookLivingItem; copy: FirstLookCopy }) {
@@ -93,7 +92,7 @@ export function StatusPill({ item, copy }: { item: FirstLookLivingItem; copy: Fi
       data-status={pill}
       title={item.status_reason ?? undefined}
       className={cn(
-        "whitespace-nowrap rounded-full border border-[var(--color-border-default)] px-2 text-[11.5px] text-[var(--color-text-secondary)]",
+        "whitespace-nowrap rounded-full border border-[var(--color-border-default)] px-2 text-xs text-[var(--color-text-secondary)]",
         PILL[pill],
       )}
     >
@@ -166,7 +165,7 @@ export function ItemRow({ item, h }: { item: FirstLookLivingItem; h: SectionHand
               {loc.path}
               {loc.line ? (
                 <>
-                  :<b className="font-medium text-[var(--color-accent-primary)]">{loc.line}</b>
+                  :<b className="font-medium text-[var(--color-text-secondary)]">{loc.line}</b>
                 </>
               ) : null}
               {loc.symbol && shared.has(loc.path) ? (
@@ -195,9 +194,9 @@ export function ItemRow({ item, h }: { item: FirstLookLivingItem; h: SectionHand
 }
 
 const TH =
-  "whitespace-nowrap border-b border-[var(--color-border-default)] pb-1.5 pr-2.5 pt-2 text-left text-[11.5px] font-medium uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]";
+  "whitespace-nowrap border-b border-[var(--color-border-default)] pb-1.5 pr-2.5 pt-2 text-left font-mono text-[10px] font-medium uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]";
 const TD = "border-b border-[var(--color-border-default)] py-2 pr-2.5 align-baseline [tr:last-child_&]:border-b-0";
-const NUM = "text-right font-mono text-[12.5px] tabular-nums";
+const NUM = "text-right font-mono text-xs tabular-nums";
 
 const num = (v: number | null) => (v == null ? "—" : formatNumber(v));
 
@@ -206,7 +205,7 @@ function PathCell({ item, h, label }: { item: FirstLookLivingItem; h: SectionHan
   const href = h.hrefFor(item.link.route, item.link.params);
   const path = loc ? `${loc.path}${loc.line ? `:${loc.line}` : ""}` : item.rule;
   const sub = (
-    <span className="block font-mono text-[11.5px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">{path}</span>
+    <span className="block font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">{path}</span>
   );
   return (
     <td className={TD}>
@@ -244,7 +243,7 @@ function FunctionTable({
   const t = h.copy.table;
   return (
     <div className="mt-1.5 overflow-x-auto">
-      <table className="w-full border-collapse text-[13.5px]">
+      <table className="w-full border-collapse">
         <thead>
           <tr>
             <th className={TH}>{t.function}</th>
@@ -260,7 +259,7 @@ function FunctionTable({
             const symbol = item.locations[0]?.symbol ?? (item.title_facts.symbol as string | undefined);
             return (
               <tr key={item.id} id={item.id} data-status={item.status} className="scroll-mt-20">
-                <PathCell item={item} h={h} label={<code className="font-mono text-[0.92em]">{symbol ?? item.rule}</code>} />
+                <PathCell item={item} h={h} label={<code className="font-mono">{symbol ?? item.rule}</code>} />
                 {columns.map(([fact]) => (
                   <td key={fact} className={cn(TD, NUM)}>
                     {num(factNumber(item, fact))}
@@ -289,7 +288,7 @@ function CountTable({
 }) {
   return (
     <div className="mt-1.5 overflow-x-auto">
-      <table className="w-full border-collapse text-[13.5px]">
+      <table className="w-full border-collapse">
         {head ? (
           <thead>
             <tr>
@@ -320,7 +319,7 @@ function MoreLink({ n, href, h }: { n: number; href: string | null; h: SectionHa
   return (
     <h.Link
       href={href}
-      className={cn(CONTROL, "mt-2.5 inline-flex items-center gap-1.5 text-[13px] text-[var(--color-accent-primary)] hover:underline")}
+      className={cn(CONTROL, "mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:underline")}
     >
       {h.copy.moreInApp(formatNumber(n))}
       <ArrowUpRight aria-hidden className="size-4" />
@@ -338,7 +337,7 @@ function Coverage({ section, copy }: { section: LivingSection; copy: FirstLookCo
     <div className="mt-3 flex flex-wrap gap-7">
       {stats.map(([pct, label]) => (
         <div key={label} className="grid">
-          <span className="text-[26px] font-semibold tabular-nums">{pct.toFixed(1)}%</span>
+          <span className="text-[22px] font-semibold tabular-nums">{pct.toFixed(1)}%</span>
           <span className="text-xs text-[var(--color-text-secondary)]">{label}</span>
           <span className="mt-1.5 h-1.5 w-[140px] overflow-hidden rounded-[3px] bg-[var(--color-bg-inset)]" aria-hidden>
             <i className="block h-full bg-[var(--color-warning)]" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
@@ -491,9 +490,9 @@ export function ReportSection({
         >
           <Icon className="size-4" />
         </span>
-        <h2 id={heading} className="m-0 flex items-center gap-2.5 font-serif text-[21px] font-semibold">
+        <h2 id={heading} className="m-0 flex items-center gap-2.5 font-serif text-[22px] font-semibold">
           {title}
-          {count ? <span className="font-sans text-[13px] font-medium text-[var(--color-text-secondary)]">{count}</span> : null}
+          {count ? <span className="font-sans text-xs font-medium text-[var(--color-text-secondary)]">{count}</span> : null}
         </h2>
         <span className="flex-1" />
         {open && section.key !== "tests" ? (
