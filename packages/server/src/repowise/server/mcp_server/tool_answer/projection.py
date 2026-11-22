@@ -512,30 +512,22 @@ def _slim_retrieval(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
 
     The answer was written from these page excerpts, so by default a row keeps
     its path, title, score and lean ``key_symbols`` (name, signature and lines,
-    which point a Read), and a row naming a cited file with no symbols is
-    dropped. A row without symbols gets the file's ``functions`` instead, as
-    slim ``best_guesses`` rows do. ``include=["evidence"]`` restores the
+    which point a Read). Rows are never dropped here: the next step and the
+    fallback pruning already counted them. A row without symbols gets the
+    file's ``functions`` instead, as slim ``best_guesses`` rows do. ``include=["evidence"]`` restores the
     excerpts and symbol text. Returns whether any text was dropped.
     """
     rows = payload.get("retrieval")
     if not isinstance(rows, list) or not rows:
         return False
-    cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
-    kept: list[Any] = []
     dropped = False
     for row in rows:
-        if isinstance(row, dict):
-            dropped |= _strip_row_text(row)
-            if not row.get("key_symbols"):
-                path = _nav_path(row)
-                if path in cited:
-                    dropped = True
-                    continue
-                known = facts.get(path)
-                if isinstance(known, dict) and known.get("functions"):
-                    row["functions"] = known["functions"]
-        kept.append(row)
-    payload["retrieval"] = kept
+        if not isinstance(row, dict):
+            continue
+        dropped |= _strip_row_text(row)
+        known = facts.get(_nav_path(row))
+        if not row.get("key_symbols") and isinstance(known, dict) and known.get("functions"):
+            row["functions"] = known["functions"]
     return dropped
 
 

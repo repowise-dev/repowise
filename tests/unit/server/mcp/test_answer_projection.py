@@ -899,15 +899,18 @@ def test_a_synthesized_reply_serves_retrieval_rows_without_page_excerpts(confide
 
     rows = compact["retrieval"]
     assert all("excerpt" not in row for row in rows)
-    # The cited file adds nothing as a bare row; symbols and functions point Reads.
-    assert [row["path"] for row in rows] == ["src/auth/middleware.py", "src/auth/routes.py"][
-        : len(rows)
-    ]
-    assert rows[0]["key_symbols"] == [
+    # Rows stay as the shape kept them; symbols and functions point Reads.
+    assert [row["path"] for row in rows] == [
+        "src/auth/service.py",
+        "src/auth/middleware.py",
+        "src/auth/routes.py",
+    ][: len(rows)]
+    assert len(rows) == (2 if confidence == "medium" else 3)
+    assert rows[1]["key_symbols"] == [
         {"name": "guard", "kind": "function", "start_line": 4, "end_line": 9}
     ]
-    if len(rows) > 1:
-        assert rows[1]["functions"] == [{"name": "login", "line": 12}]
+    if confidence == "low":
+        assert rows[2]["functions"] == [{"name": "login", "line": 12}]
     assert compact["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
     assert all(row.get("excerpt") for row in expanded["retrieval"])
     assert expanded["retrieval"][1]["key_symbols"][0]["docstring"] == "Guard the route."
@@ -920,3 +923,14 @@ def test_a_degraded_reply_keeps_its_retrieval_excerpts():
     payload = project_answer_payload(raw, question="how does auth work")
 
     assert all(row.get("excerpt") for row in payload["retrieval"])
+
+
+def test_rows_with_nothing_to_cut_advertise_no_recovery():
+    raw = _raw_retrieval_only("low")
+    raw["retrieval"] = [{"path": "src/auth/routes.py", "title": "Routes"}]
+    raw.pop("_candidate_file_facts")
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    assert payload["retrieval"] == [{"path": "src/auth/routes.py", "title": "Routes"}]
+    assert "recovery" not in payload.get("_meta", {}).get("projection", {})
