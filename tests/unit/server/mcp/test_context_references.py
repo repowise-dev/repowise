@@ -1924,3 +1924,27 @@ async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
     assert "files shown to fit" in out["reasons"][-1]
     assert out["hint"] == _edit_sites.incomplete_hint("pick")
     assert r'query="\bpick\b"' in out["hint"]
+
+
+def test_go_method_named_on_a_parameter_alone_on_its_line_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/config"',
+        "func run(",
+        "\tconfig *Config,",
+        ") {",
+        "\tconfig.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[5]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_root_package_without_a_module_is_not_judged():
+    from repowise.server.mcp_server._edit_sites_go import GoTarget, go_judge
+
+    target = GoTarget(None, "", "repo")
+    assert go_judge("cmd/main.go", ['import "x/repo"'], {1}, target, member=False) is None

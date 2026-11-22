@@ -110,7 +110,9 @@ class GoForeign:
             word = re.escape(alias)
             binding = re.compile(
                 rf"(?:\b{word}\s*(?:,\s*\w+\s*)*:?=(?!=)|,\s*{word}\s*(?:,\s*\w+\s*)*:=(?!=)"
-                rf"|\bvar\s+{word}\b|[(,]\s*{word}\s+[\w*\[\].])"
+                rf"|\bvar\s+{word}\b|[(,]\s*{word}\s+[\w*\[\].]"
+                # A parameter or field alone on its line: ``\tcfg *Config,``.
+                rf"|^\s*{word}(?:\s*,\s*\w+)*\s+[\w*\[\].])"
             )
             self._shadowed[alias] = any(binding.search(t) for t in self._lines)
         return self._shadowed[alias]
@@ -135,5 +137,8 @@ def go_judge(
 ) -> GoForeign | None:
     """The judge for one scanned file, when it is Go and the target's package is known."""
     if not isinstance(target, GoTarget) or PurePosixPath(rel).suffix != ".go":
+        return None
+    if not member and target.import_path is None and not target.directory:
+        # A root package with no go.mod: no import path to tell it from another.
         return None
     return GoForeign(lines, imports, target, member=member)
