@@ -59,6 +59,12 @@ const SECTION_ROUTE: Partial<Record<string, FirstLookRouteKey>> = {
   ownership: "ownership",
 };
 
+/** A section's page in the shell, where a route key names one and the shell has it. */
+export function sectionHref(key: string, hrefFor: FirstLookHrefFor): string | null {
+  const route = SECTION_ROUTE[key];
+  return route ? hrefFor(route, {}) : null;
+}
+
 /** Rows a compact table shows before "more in the app". */
 const TABLE_ROWS = { functions: 6, dead_code: 5, documents: 4 } as const;
 
@@ -366,8 +372,7 @@ function SectionBody({
   const items = section.items;
   /** The first `cap` rows of `list`, then the gone rows of the same kind. */
   const shown = (list: FirstLookLivingItem[], cap: number, gone = resolved) => [...list.slice(0, cap), ...gone];
-  const route = SECTION_ROUTE[section.key];
-  const href = route ? h.hrefFor(route, {}) : null;
+  const href = sectionHref(section.key, h.hrefFor);
   switch (sectionLayout(section.key)) {
     case "functions": {
       const rows = shown(items, TABLE_ROWS.functions);
