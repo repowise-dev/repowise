@@ -135,8 +135,11 @@ _warned_ambiguous: set[str] = set()
 
 
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository by path, ID or name; with none, the served directory's."""
-    if repo:
+    """Resolve a repository by path, ID or name; with none, the served directory's.
+
+    ``.`` names the served directory, as it does in a shell.
+    """
+    if repo and Path(repo) != Path("."):
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
         obj = result.scalar_one_or_none()
