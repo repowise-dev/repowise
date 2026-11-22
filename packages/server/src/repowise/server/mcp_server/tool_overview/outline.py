@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import case, select
@@ -142,15 +143,31 @@ def _drop_derivable(node: dict[str, Any]) -> None:
         del node["section"]
 
 
-def _fit_outline(sections: list[dict[str, Any]], collector: OmissionCollector) -> int:
+def _holds_entry_point(node: dict[str, Any], entry_points: Sequence[str]) -> bool:
+    """Whether *node*'s directory holds one of the repo's entry points."""
+    path = (node.get("target_path") or "").rstrip("/")
+    return bool(path) and any(e == path or e.startswith(f"{path}/") for e in entry_points)
+
+
+def _fit_outline(
+    sections: list[dict[str, Any]],
+    collector: OmissionCollector,
+    entry_points: Sequence[str] = (),
+) -> int:
     """Drop children from the tail sections until the rung fits; returns how many.
 
-    Each section keeps its ``descendants`` count, and its children stay
-    recoverable from the omission store, so the cut is a summary, not a loss.
+    Sections holding an entry point (``cmd`` beside ``cmd/main.go``) give up
+    their children last, so the binaries' paths stay in view. Each section
+    keeps its ``descendants`` count, and its children stay recoverable from
+    the omission store, so the cut is a summary, not a loss.
     """
     size = len(json.dumps(sections, separators=(",", ":")))
     trimmed = 0
-    for node in reversed(sections):
+    tail = list(reversed(sections))
+    holds = [_holds_entry_point(n, entry_points) for n in tail]
+    order = [n for n, h in zip(tail, holds, strict=True) if not h]
+    order += [n for n, h in zip(tail, holds, strict=True) if h]
+    for node in order:
         if size <= _OUTLINE_MAX_CHARS:
             break
         kids = node.pop("children", None)
@@ -173,7 +190,12 @@ def _stored_line(node: dict[str, Any]) -> str:
     return f"{head}: {path}" if head else path
 
 
-def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) -> dict[str, Any]:
+def _build_outline(
+    rows: list[Any],
+    depth: int,
+    collector: OmissionCollector,
+    entry_points: Sequence[str] = (),
+) -> dict[str, Any]:
     """The stored page tree, rooted at the repo overview.
 
     This is the same hierarchy the web app and the editor extension render:
@@ -199,7 +221,7 @@ def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) ->
         "total_pages": len(rows),
         "sections": sections,
     }
-    if trimmed := _fit_outline(sections, collector):
+    if trimmed := _fit_outline(sections, collector, entry_points):
         outline["children_omitted_sections"] = trimmed
     if len(top) > _OUTLINE_TOP_CAP:
         # Siblings are ordered by type rank, so what falls off the end is the

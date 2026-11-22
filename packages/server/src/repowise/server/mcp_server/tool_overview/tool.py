@@ -222,7 +222,9 @@ async def _repo_overview(
         if dependencies:
             architecture = {**architecture, "dependencies": dependencies}
         requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)
-        sections, outline = await _load_outline(session, repository, want, collector)
+        sections, outline = await _load_outline(
+            session, repository, want, collector, entry_point_ids
+        )
     except BaseException:
         await _abandon(slow)
         raise
@@ -390,12 +392,16 @@ async def _requested_blocks(
 
 
 async def _load_outline(
-    session: Any, repository: Any, want: set[str], collector: OmissionCollector
+    session: Any,
+    repository: Any,
+    want: set[str],
+    collector: OmissionCollector,
+    entry_points: list[str],
 ) -> tuple[dict[str, str | None], dict[str, Any]]:
     """Section labels by page id for the tour, and the outline when it was asked for."""
     if not want & {"outline", "tour"}:
         return {}, {}
     tree_rows = await _load_tree_rows(session, repository)
     sections = {r.id: r.section_number for r in tree_rows}
-    outline = _build_outline(tree_rows, 2, collector) if "outline" in want else {}
+    outline = _build_outline(tree_rows, 2, collector, entry_points) if "outline" in want else {}
     return sections, outline

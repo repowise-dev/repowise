@@ -193,6 +193,36 @@ def test_outline_over_its_size_cap_keeps_counts_and_stores_the_children(tmp_path
     assert "pkg/l30/very/long/directory/name/file_9.py" in body
 
 
+def test_a_section_holding_an_entry_point_keeps_its_children_past_the_cap(tmp_path):
+    dirs = [
+        _row(
+            f"module_page:d{i:02d}",
+            page_type="module_page",
+            target_path=f"d{i:02d}",
+            parent_page_id=ROOT.id,
+            display_order=i,
+            section_number=str(i),
+        )
+        for i in range(1, 31)
+    ]
+    files = [
+        _row(
+            f"file_page:d{i:02d}/very/long/directory/name/file_{j}.go",
+            target_path=f"d{i:02d}/very/long/directory/name/file_{j}.go",
+            parent_page_id=d.id,
+            display_order=j,
+        )
+        for i, d in enumerate(dirs, start=1)
+        for j in range(10)
+    ]
+    outline = _build_outline([ROOT, *dirs, *files], 2, _collector(tmp_path), ["d30/main.go"])
+    sections = outline["sections"]
+    assert len(json.dumps(sections, separators=(",", ":"))) <= 8_000
+    # The last section holds the entry point: other tails give up theirs first.
+    assert "children" in sections[-1]
+    assert "children" not in sections[-2]
+
+
 def test_no_outline_when_the_tree_has_never_been_built(tmp_path):
     # Every parent null — what the migration leaves behind until the next
     # index or update run. A flat list dressed as a hierarchy would be a lie.
