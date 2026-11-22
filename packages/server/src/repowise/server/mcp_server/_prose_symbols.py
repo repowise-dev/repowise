@@ -149,7 +149,7 @@ async def _symbol_text_index(session, repo_id: str) -> _SymbolTextIndex:
             {word: tuple(pos) for word, pos in postings.items()},
         )
 
-    return await per_index(session, repo_id, "prose_symbol_text", build)
+    return await per_index(session, repo_id, "prose_symbol_text", build, persist=True)
 
 
 def _candidates_for_term(
@@ -539,7 +539,7 @@ async def _filename_index(session, repo_id: str) -> _FilenameIndex:
             {w: tuple(pos) for w, pos in postings.items()},
         )
 
-    return await per_index(session, repo_id, "prose_filename_words", build)
+    return await per_index(session, repo_id, "prose_filename_words", build, persist=True)
 
 
 async def filename_backed_pages(

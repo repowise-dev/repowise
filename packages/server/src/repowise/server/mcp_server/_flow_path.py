@@ -178,7 +178,11 @@ async def _resolve_question_anchors(
     tokens = sorted({t for t in _question_terms(question) if len(t) >= 4})
     if tokens:
         stem_to_paths = await per_index(
-            session, repo_id, "file_page_stems", lambda: _file_page_stems(session, repo_id)
+            session,
+            repo_id,
+            "file_page_stems",
+            lambda: _file_page_stems(session, repo_id),
+            persist=True,
         )
         for token in tokens:
             for stem, paths in stem_to_paths.items():
@@ -248,7 +252,11 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str
 async def file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
     """:func:`_load_file_adjacency`, built once per index state. Read-only."""
     return await per_index(
-        session, repo_id, "file_adjacency", lambda: _load_file_adjacency(session, repo_id)
+        session,
+        repo_id,
+        "file_adjacency",
+        lambda: _load_file_adjacency(session, repo_id),
+        persist=True,
     )
 
 

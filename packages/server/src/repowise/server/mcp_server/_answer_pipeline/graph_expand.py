@@ -105,7 +105,11 @@ async def _projected_graph(session: Any, repo_id: str) -> _ProjectedGraph:
 async def projected_graph(session: Any, repo_id: str) -> _ProjectedGraph:
     """:func:`_projected_graph`, built once per index state. Read-only."""
     return await per_index(
-        session, repo_id, "projected_graph", lambda: _projected_graph(session, repo_id)
+        session,
+        repo_id,
+        "projected_graph",
+        lambda: _projected_graph(session, repo_id),
+        persist=True,
     )
 
 
