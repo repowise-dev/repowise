@@ -109,7 +109,7 @@ class TestClaudeMdKGSection:
         assert "- `src/core`\n" in rendered
 
     def test_the_lean_protocol_leads_with_the_call_first_line(self, jinja_env):
-        from repowise.core.agent_steer import AGENT_STEER
+        from repowise.core.agent_steer import AGENT_STEER_DEFERRED as AGENT_STEER
 
         tmpl = jinja_env.get_template("claude_md.j2")
         rendered = tmpl.render(data=self._data(entry_points=["src/main.py"]))
