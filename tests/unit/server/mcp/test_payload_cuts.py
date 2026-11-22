@@ -395,10 +395,13 @@ def test_snippets_that_restate_the_row_are_dropped():
 
     rows = [
         {"snippet": "`models.py` defines `User`. It is imported by 4 files."},
+        {"snippet": "`filter_manager.h` defines `FilterManager`, `ActiveStream` and 16 more. It"},
         {"snippet": "It imports 7 files from this repository."},
         {"snippet": "/*\nCopyright 2015 The Authors.\n\nLicensed under the Apache License"},
         {"snippet": "Validates a signup form and hashes the password."},
         {"snippet": "It defines the retry policy for failed charges."},
+        {"snippet": "`retry.py` imports `backoff` to cap the delay."},
+        {"snippet": "It defines `Retry` to cap the delay."},
         {"snippet": "Checks each file is licensed under the Apache License."},
     ]
     _serve_snippets(rows)
@@ -406,8 +409,11 @@ def test_snippets_that_restate_the_row_are_dropped():
         None,
         None,
         None,
+        None,
         "Validates a signup form and hashes the password.",
         "It defines the retry policy for failed charges.",
+        "`retry.py` imports `backoff` to cap the delay.",
+        "It defines `Retry` to cap the delay.",
         "Checks each file is licensed under the Apache License.",
     ]
 

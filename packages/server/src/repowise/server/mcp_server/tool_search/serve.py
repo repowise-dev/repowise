@@ -266,10 +266,12 @@ async def attach_definition_bodies(response: dict, rows: list[dict], ctx, reposi
 # Shortcut: keyed on the house template's English openings; a page generated
 # in another language keeps its snippet. Upgrade path: mark template prose at
 # generation time and drop it by that mark.
+# A sentence that only lists names: `A`, `B` and 3 more.
+_NAME_LIST = r"`[^`\n]+`(?:, `[^`\n]+`)*(?: and (?:`[^`\n]+`|\d+ more))?\."
 _TEMPLATE_SNIPPET = re.compile(
-    r"^\s*(?:`[^`\n]+` (?:defines|imports) `"
+    rf"^\s*(?:(?:`[^`\n]+`|It) (?:defines|imports) {_NAME_LIST}"
     r"|(?:`[^`\n]+`|It) is imported by\b"
-    r"|It (?:defines|imports) (?:`|\d+ files?\b)"
+    r"|It imports \d+ files? from this repository\b"
     r"|It belongs to the\b"
     r"|\*\*Language:\*\*)"
 )
