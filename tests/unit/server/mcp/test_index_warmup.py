@@ -15,6 +15,7 @@ def cold_caches(monkeypatch):
 
     # An earlier lifespan in this process may have served "no index".
     monkeypatch.setattr(_state, "_serving_no_index", False)
+    monkeypatch.setattr(_warmup, "_call_seen", False)
     _graph_files.reset_cache()
     yield
     _graph_files.reset_cache()
@@ -102,3 +103,23 @@ async def test_a_session_starts_the_warmup_once_initialized(tmp_path, monkeypatc
     await _session(tmp_path, monkeypatch, "claude-code", None)
 
     assert calls
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_stops_the_warmup_after_the_cache_in_flight(
+    setup_mcp, cold_caches, monkeypatch
+):
+    built: list[str] = []
+
+    def step(name: str, *, call: bool = False):
+        async def run(_session, _repo_id):
+            built.append(name)
+            if call:
+                _warmup.call_started()
+
+        return name, run
+
+    monkeypatch.setattr(_warmup, "WARM_STEPS", (step("a", call=True), step("b"), step("c")))
+    await _warmup.warm_index_caches()
+
+    assert built == ["a"]

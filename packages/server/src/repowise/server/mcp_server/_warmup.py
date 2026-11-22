@@ -4,17 +4,17 @@ The first get_answer or search_codebase of a session used to build every
 whole-repo projection it reads (file paths, symbol text, filename words, the
 projected graph, file adjacency) inline: a first get_answer took 3.5 s on a
 Django-size index and 11 s on an Envoy-size one, against about 1 s once they
-exist. They depend only on the index, and the agent's
-first call comes seconds after the handshake, so the server builds them in
-that gap instead.
+exist. They depend only on the index, and the agent's first call comes
+seconds after the handshake, so the server builds them in that gap instead.
 
-The work starts once the client has the ``initialize`` reply, runs on the
-event loop one cache at a time, and yields between caches, so a request that
-arrives meanwhile waits at most for the cache being built (which a first
-question would have built anyway: :func:`~._graph_files.per_index` lets it
-wait on the build in flight rather than repeat it). It is skipped when the
-machine is short of free memory, since every MCP server on the machine holds
-its own copy.
+The work starts once the client has the ``initialize`` reply and runs on the
+event loop one cache at a time. The first tool call stops it after the cache
+in flight, which that call may be waiting on
+(:func:`~._graph_files.per_index` lets a caller wait on a build rather than
+repeat it); from then on each call builds what it reads, as before, so the
+warmup never competes with a call for the loop. It is skipped when the machine
+is short of free memory, since every MCP server on the machine holds its own
+copy.
 """
 
 from __future__ import annotations
@@ -38,6 +38,13 @@ MIN_FREE_MEMORY_BYTES = 2 * 1024**3
 FREE_MEMORY_PER_STORE_BYTE = 2
 
 _task: asyncio.Task | None = None
+_call_seen = False
+
+
+def call_started() -> None:
+    """Note a tool call: the warmup stops after the cache it is building."""
+    global _call_seen
+    _call_seen = True
 
 
 async def _file_paths(session: Any, repo_id: str) -> Any:
@@ -76,26 +83,6 @@ async def _adjacency(session: Any, repo_id: str) -> Any:
     return await file_adjacency(session, repo_id)
 
 
-def _prime_git(path: str) -> None:
-    """Run one ``git status`` so the first call finds git's index and the tree cached.
-
-    A call reads the working tree's dirty paths under a 0.5 s bound
-    (``_meta._working_tree_dirty_paths``); cold, the first read overran it and
-    the call went out with the check "not evaluated". This read only warms the
-    caches: its result is not kept, and ``--no-optional-locks`` keeps it from
-    rewriting the index under a git command the user runs meanwhile.
-    """
-    import subprocess
-
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(
-            ["git", "--no-optional-locks", "-C", path, "--no-pager", "status", "--porcelain", "-z"],
-            capture_output=True,
-            timeout=20,
-            stdin=subprocess.DEVNULL,
-        )
-
-
 #: Every per-index cache a first get_answer or search_codebase builds, in the
 #: order a question reads them.
 WARM_STEPS: tuple[tuple[str, Callable[[Any, str], Awaitable[Any]]], ...] = (
@@ -119,29 +106,22 @@ async def warm_index_caches() -> None:
     if ctx.session_factory is None:
         return
     started = time.perf_counter()
-    git = None
-    if ctx.path is not None and _state.git_available() and (ctx.path / ".git").exists():
-        # Its own process: it runs beside the cache builds rather than before them.
-        git = asyncio.ensure_future(asyncio.to_thread(_prime_git, str(ctx.path)))
-    try:
-        await _build_caches(ctx)
-    except BaseException:
-        # Teardown does not wait on git: the read finishes on its own thread.
-        if git is not None:
-            git.cancel()
-        raise
-    if git is not None:
-        await git
-    _log.info("repowise MCP: index caches warm in %.1fs", time.perf_counter() - started)
+    if await _build_caches(ctx):
+        _log.info("repowise MCP: index caches warm in %.1fs", time.perf_counter() - started)
 
 
-async def _build_caches(ctx: Any) -> None:
+async def _build_caches(ctx: Any) -> bool:
+    """Build the caches until a tool call starts; whether every one was built."""
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
 
     async with get_session(ctx.session_factory) as session:
         repo_id = (await _get_repo(session)).id
     for name, step in WARM_STEPS:
+        if _call_seen:
+            # The call builds what it reads itself; more warm work would only
+            # compete with it for the loop.
+            return False
         began = time.perf_counter()
         # A session per cache: one read snapshot held across every step would
         # keep keying them to an index a re-index has since replaced.
@@ -175,7 +155,7 @@ def _memory_needed() -> int:
 
 def start() -> None:
     """Start the warmup once per server, unless free memory is short."""
-    global _task
+    global _task, _call_seen
     if _task is not None:
         return
     from repowise.core.procutils import available_memory_bytes
@@ -184,13 +164,15 @@ def start() -> None:
     if free is not None and free < _memory_needed():
         _log.info("repowise MCP: skipping cache warmup, %d MB free", free // 2**20)
         return
+    _call_seen = False
     _task = asyncio.get_running_loop().create_task(_run(), name="index-cache-warmup")
 
 
 async def stop() -> None:
     """Cancel a warmup still running; the next server start may warm again."""
-    global _task
+    global _task, _call_seen
     task, _task = _task, None
+    _call_seen = False
     if task is not None and not task.done():
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

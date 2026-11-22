@@ -863,6 +863,9 @@ class _RepowiseMCP(FastMCP):
         return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        from repowise.server.mcp_server import _warmup
+
+        _warmup.call_started()
         principal = self._request_principal()
         if principal is not None:
             from mcp.server.fastmcp.exceptions import ToolError
