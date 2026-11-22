@@ -111,6 +111,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     filter_dicts_by_key,
 )
+from repowise.server.mcp_server._line_hits import line_read_memo
 from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -1037,9 +1038,11 @@ async def get_answer(
             return _with_scope_note(served, scoped)
     clock.mark("lookup")
 
-    retrieved = await _run_retrieval_pipeline(
-        question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
-    )
+    # Its stages grep the same question words: one git grep per word.
+    with line_read_memo():
+        retrieved = await _run_retrieval_pipeline(
+            question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
+        )
     clock.mark("retrieve")
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
