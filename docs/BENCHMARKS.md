@@ -9,6 +9,7 @@ code, against answer keys we did not write, with every sample published in
 |---|---|
 | **Up to 99% fewer files opened** | Sonnet 4.6 went from 3.28 files per question to 0.00, wrote 51% less, answered 47% faster and made 28% fewer tool calls, with 71 of 72 answers right. Every model we tested opened fewer files, and Opus 5.5 kept all 48 answers right. [Details](#per-model-agent-loop) |
 | **31.6% less output** | Side by side with four other context tools, repowise saved the agent the most work: 3.8 tool calls instead of 7.2. [Details](#2-what-changes-in-a-real-agent-loop) |
+| **53% fewer input tokens** | On CodeScaleBench's heavy "understand" tasks over large repositories, Haiku 4.5 with repowise docs and semantic search made 42% fewer file reads and 2.5 shell searches instead of 27.9, at 33% lower cost and the same accuracy. [Details](#codescalebench) |
 | **88% of the right files** | Found in one call for a real bug fix, on cases sealed until the final run. The next tool finds 61%. [Details](#1-finding-the-right-files) |
 | **2.3x the later bugs** | Its health score finds 2.3 times as many files that later need bug fixes as CodeScene, in the same review budget, across 21 projects. [Details](#5-code-health-predicts-defects) |
 | **Up to 99.5% less noise** | Test, install and git output trimmed before the agent reads it, with every error line kept. [Details](#4-command-output-compression) |
@@ -101,6 +102,48 @@ model it reaches **47.9% less output and 41.5% less time**.
 Codex (`gpt-5.6-sol`), August 2026. With `qwen3:8b` under Ollama, repowise cuts
 output by 40.8% with every tool on and by 47.9% with its local tools only.
 [Method](#method-side-by-side).
+
+---
+
+<a id="codescalebench"></a>
+
+## 53% fewer input tokens and 33% lower cost on CodeScaleBench
+
+**What we asked.** CodeScaleBench's "understand" tasks ask an agent to explain
+real, large codebases: how PostgreSQL executes a query, how Envoy routes a
+request, how a Kubernetes CRD moves through its lifecycle. The task's own
+checks grade every answer. How much reading and searching does repowise save,
+and does the answer stay as good?
+
+**What we found.** On 9 heavy tasks over large repositories, Claude Code with
+Haiku 4.5 and a repowise index with written docs and semantic search used
+**53% fewer input tokens**, made **42% fewer file reads** and ran **2.5 shell
+searches instead of 27.9**, at **33% lower cost**. Accuracy held: the
+grader-fixed score went from 0.803 to 0.830 (paired delta **+0.027**, 95% CI
+[-0.028, +0.082]), non-inferior at the -0.05 margin set before the run.
+
+| Per task, 9 heavy tasks | Without repowise | Repowise, keyless | Repowise, docs + semantic search | Docs + semantic vs without |
+|---|---:|---:|---:|---:|
+| Input tokens incl. cache | 2.12M | 1.06M | **1.00M** | **-53%** |
+| Read calls | 20.7 | 15.5 | **12.0** | **-42%** |
+| Distinct files read | 16.2 | 12.3 | **9.9** | **-39%** |
+| Shell searches (grep, find, ls) | 27.9 | 3.9 | **2.5** | **-91%** |
+| Turns | 51.3 | 36.0 | **33.4** | **-35%** |
+| Tool calls, repowise included | 54.9 | 35.0 | **32.4** | **-41%** |
+| Output tokens | 15.4k | 12.3k | **11.7k** | **-24%** |
+| Cost (API-equivalent) | $0.408 | $0.274 | **$0.272** | **-33%** |
+| Wall time (agent) | 171 s | 159 s | **160 s** | **-7%** |
+| Accuracy, grader-fixed | 0.803 | 0.882 | 0.830 | **+0.027** |
+
+Against no repowise, cost and input tokens are lower on all 9 tasks. Docs and semantic search add
+to what keyless already saves: against keyless on the same tasks, Read calls
+fall a further 23% (per task -27%, 95% CI [-46%, -2%]) at the same cost.
+
+Across all 31 understand tasks we ran, with a keyless index, the agent ran
+**71% fewer shell searches** (16.6 to 4.8 per task, lower on 29 of 31), made 21%
+fewer reads, used 20% fewer input tokens and cost 10% less pooled (17% less on
+the median task), with accuracy level (-0.010, 95% CI [-0.068, +0.049]). Every
+valid trial, 61 of 61, called repowise. [Method](#method-codescalebench).
 
 ---
 
@@ -351,6 +394,7 @@ The method end to end:
 | Held out, sealed | Test cases set aside before any tuning, so they show what you will see on your own code |
 | Files opened | Distinct source files the agent read while answering, by opening them or printing them in a shell |
 | Output tokens | The text the agent writes while it works: its reasoning, its tool requests and its answer. A token is about three quarters of a word |
+| Non-inferior | The accuracy difference's 95% interval stays above a margin fixed before the run, so the cheaper setup is shown to be no worse |
 | p-value | The chance a difference this size is luck. Below 0.05 is the usual bar, and most results here are far below it |
 
 <a id="method-agent-loop"></a>
@@ -441,6 +485,114 @@ Raw data, every cell:
 **[rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
 (15-question runs). Per-tool setup notes:
 [head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head).
+
+<a id="method-codescalebench"></a>
+
+### CodeScaleBench understand tasks
+
+- **Harness.** [CodeScaleBench](https://github.com/sourcegraph/CodeScaleBench)
+  at `21f6e82`, Harbor 0.1.45, Claude Code 2.1.330 headless,
+  `claude-haiku-4-5-20251001`, the task's own `instruction.md`, no tool
+  restrictions in any arm. 2 trials per task per arm, paired per task.
+  November 2026, repowise at `4575e7a`.
+- **The arms.** Without repowise: our own run of the benchmark's baseline
+  config, no MCP server. Repowise keyless: a `repowise init --no-prose` index,
+  the `.claude/CLAUDE.md` that `repowise init` writes, and a preamble saying the
+  agent must call repowise tools first. The full local source stays in place,
+  so the agent can still grep and read everything. Repowise docs + semantic
+  search: the same, plus documentation written by `gpt-6-luna`
+  (`repowise generate`), OpenAI embeddings and synthesized `get_answer` replies.
+  The benchmark's published Sourcegraph arm also carries a must-use preamble and
+  removes the local source, so read the two as different experiments.
+- **Tasks.** 31 of the 44 understand tasks. The other 13 sit in LLVM/gcc,
+  Firefox, the JDK, Chromium, Android frameworks, ArangoDB with its third-party
+  tree, and ClickHouse (which clones an unpinned HEAD). The 9 heavy tasks are
+  postgres-query-exec-arch, envoy-request-routing-qa, cilium-project-orient,
+  cilium-ebpf-fault-qa, argocd-arch-orient, grafana-platform-orient,
+  django-composite-field-recover, k8s-crd-lifecycle-arch and
+  camel-routing-arch: six tasks with large keyless savings in the 31-task run,
+  plus argocd, k8s-crd and camel to cover more big repositories.
+- **Accuracy.** Non-inferiority at a margin of -0.05 on the mean paired reward
+  delta, fixed before the run, with a 95% t-interval over tasks. Raw scores are
+  reported beside the grader-fixed ones.
+- **Grader fixes.** Every hit was read by hand, and each fix applies to every
+  arm. Three ccx-domain tasks (155, 156, 157) whose oracle drifted from the
+  curator's ground-truth file are scored by file F1 against that ground
+  truth. Negative checks that match correct text are reversed: envoy n2, which
+  fires on "`newStream(response_decoder, ...)`"; cilium-ebpf n1 and n2, which
+  ignore negation; kafka-contributor-workflow's `Maven|pom\.xml`, which matches
+  any mention.
+- **Cost.** API-equivalent dollars from each session's own token counts at list
+  price, plus the OpenAI query-time synthesis in the docs arm ($0.0025 per
+  session). Input tokens, the driver, are shown beside it.
+
+| 31 understand tasks, keyless | Without repowise | With repowise | Pooled change | Per-task geo-mean [95% CI] | Tasks lower |
+|---|---:|---:|---:|---:|---:|
+| Shell searches (grep, find, ls) | 16.6 | 4.8 | **-71%** | -75% [-85%, -58%] | **29 of 31** |
+| Read calls | 14.3 | 11.3 | **-21%** | -26% [-39%, -12%] | 22 of 31 |
+| Distinct files read | 10.3 | 8.2 | **-20%** | -22% [-34%, -8%] | 21 of 31 |
+| Input tokens incl. cache | 1.47M | 1.18M | **-20%** | -18% [-33%, +1%] | 22 of 31 |
+| Cost (API-equivalent) | $0.303 | $0.272 | **-10%** | -9% [-21%, +5%] | 22 of 31 |
+| Cost per correct point | $0.361 | $0.318 | **-12%** | | 20 of 31 |
+| Tool calls, repowise included | 37.3 | 31.0 | -17% | -12% [-26%, +5%] | 19 of 31 |
+| Output tokens | 12,828 | 12,788 | 0% | -1% [-7%, +7%] | 16 of 31 |
+| Wall time (agent) | 140 s | 150 s | +7% | +8% [-1%, +18%] | 11 of 31 |
+
+Median per-task change: cost -17%, input tokens -24%, Read calls -24%. The
+largest savings come on architecture and orientation questions over big
+repositories: postgres -54% cost, envoy -38%, grafana-platform -35%,
+cilium-ebpf -35%, cilium-project -34%, flink -33%. Small tasks the agent
+finishes in 6 to 15 turns cost more, since the repowise calls add turns there.
+Accuracy, grader-fixed: 0.839 without, 0.829 with, paired delta -0.010 (95% CI
+[-0.068, +0.049]); raw: -0.007 [-0.066, +0.052].
+
+Docs + semantic search against keyless, same 9 tasks:
+
+| Per task | Keyless | Docs + semantic search | Pooled change | Per-task geo-mean [95% CI] |
+|---|---:|---:|---:|---:|
+| Read calls | 15.5 | 12.0 | **-23%** | **-27% [-46%, -2%]** |
+| Distinct files read | 12.3 | 9.9 | -20% | -20% [-41%, +7%] |
+| Shell searches | 3.9 | 2.5 | -36% | -9% [-78%, +280%] |
+| Input tokens incl. cache | 1.06M | 1.00M | -6% | -10% [-27%, +12%] |
+| Turns | 36.0 | 33.4 | -7% | -9% [-24%, +8%] |
+| Cost (API-equivalent) | $0.274 | $0.272 | -1% | -1% [-12%, +11%] |
+
+Accuracy against keyless is +0.004 [-0.040, +0.049] on 8 of the 9 tasks. On
+the ninth, django-composite-field-recover, the task names a class
+`CompositFieldValidator` and the grader requires that spelling; both docs trials
+wrote `CompositeFieldValidator`, which brings the 9-task delta to -0.052
+[-0.187, +0.083]. Docs against without repowise, raw: +0.024 [-0.035, +0.083].
+
+Per task, 9 heavy tasks (mean of 2 trials; without / keyless / docs + semantic):
+
+| Task | Accuracy, grader-fixed | Cost | Read calls |
+|---|---|---|---|
+| postgres-query-exec-arch-001 | 0.875 / 0.865 / 0.890 | $0.540 / $0.248 / $0.235 | 23.0 / 10.5 / 5.5 |
+| envoy-request-routing-qa-001 | 0.960 / 0.935 / 0.865 | $0.435 / $0.270 / $0.285 | 19.0 / 13.0 / 11.0 |
+| cilium-project-orient-001 | 0.965 / 0.945 / 0.975 | $0.360 / $0.238 / $0.205 | 22.0 / 19.5 / 6.5 |
+| cilium-ebpf-fault-qa-001 | 0.950 / 0.900 / 0.970 | $0.336 / $0.219 / $0.296 | 21.0 / 19.0 / 21.0 |
+| argocd-arch-orient-001 | 0.770 / 0.810 / 0.810 | $0.327 / $0.271 / $0.258 | 15.5 / 12.5 / 14.0 |
+| grafana-platform-orient-001 | 0.985 / 0.950 / 0.970 | $0.337 / $0.221 / $0.228 | 24.0 / 17.5 / 12.5 |
+| django-composite-field-recover-001 | 0.400 / 0.900 / 0.400 | $0.640 / $0.455 / $0.471 | 20.0 / 17.5 / 17.5 |
+| k8s-crd-lifecycle-arch-001 | 0.670 / 0.745 / 0.785 | $0.331 / $0.256 / $0.239 | 21.0 / 15.0 / 9.5 |
+| camel-routing-arch-001 | 0.655 / 0.885 / 0.805 | $0.364 / $0.290 / $0.231 | 21.0 / 15.0 / 10.5 |
+
+**Index cost.** An index is built once per commit and reused by every session.
+A keyless index costs $0.008 to $0.62 per repository in cloud compute at list
+price. A full docs + semantic index costs $0.23 to $1.37 per repository, documentation generation
+included:
+
+| Repository | Wiki pages | Items embedded | Index cost |
+|---|---:|---:|---:|
+| argocd | 55 | 832 | $0.23 |
+| django | 60 | 1,366 | $0.26 |
+| cilium (project task) | 120 | 2,801 | $0.50 |
+| postgres | 97 | 3,770 | $0.50 |
+| cilium (ebpf task) | 123 | 2,915 | $0.51 |
+| envoy | 118 | 5,731 | $0.54 |
+| grafana | 143 | 6,203 | $0.73 |
+| kubernetes (CRD task) | 136 | 7,079 | $1.00 |
+| camel | 146 | 8,026 | $1.37 |
 
 <a id="method-retrieval"></a>
 

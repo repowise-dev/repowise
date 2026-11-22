@@ -211,7 +211,7 @@ shows a cost estimate before any model call.
 | Setup | Cost | Command | `get_answer` gives your agent |
 |---|---|---|---|
 | Keyless | free; nothing leaves the machine | `repowise init --yes --no-prose` | a ranked, cited shortlist of evidence from the index (`degraded: no-llm-provider`) |
-| Keyless plus semantic search | free with Ollama; a few cents of embedding calls with a key | `ollama pull embeddinggemma`, then `repowise reindex --embedder ollama` | the same shortlist, matched by meaning as well as words |
+| Keyless plus semantic search | free with Ollama or the `local-embed` extra; a few cents of embedding calls with a key | `ollama pull embeddinggemma`, then `repowise reindex --embedder ollama`; or `pip install "repowise[local-embed]"`, then `repowise reindex --embedder fastembed` | the same shortlist, matched by meaning as well as words |
 | Full docs | `repowise generate --dry-run` prices it first; a signed-in Claude Code, Codex or Copilot uses plan quota | `repowise generate --provider <id>` | one written, cited answer |
 
 Every other tool returns the same result in all three. Running keyless in CI,
@@ -227,6 +227,16 @@ offline or in a benchmark: [Offline, CI and benchmarks](OFFLINE.md).
 
 Semantic search needs an embedder, which is separate from the model. Without
 one, search is full-text, and every run names the command that turns it on.
+For local semantic search with no service to run and no key, install the
+`local-embed` extra and pick `fastembed`:
+
+```bash
+pip install "repowise[local-embed]"
+repowise reindex --embedder fastembed
+```
+
+The extra covers Python 3.11 and 3.12; on 3.13 and newer, run
+`pip install fastembed` instead. Details: [Offline](OFFLINE.md#local-semantic-search-without-a-service).
 
 ### Providers and embedders
 
