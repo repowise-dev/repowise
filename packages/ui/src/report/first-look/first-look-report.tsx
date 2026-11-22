@@ -352,10 +352,14 @@ export function FirstLookReport({
   );
 }
 
-function ProgressBar({ p }: { p: Progress }) {
+/** Resolved then acknowledged, as shares of every item; decorative, the counts beside it carry the meaning. */
+export function ProgressBar({ p, className }: { p: Progress; className?: string }) {
   const share = (n: number) => `${p.total ? (n / p.total) * 100 : 0}%`;
   return (
-    <span aria-hidden className="flex h-1.5 w-[160px] flex-none overflow-hidden rounded-[3px] bg-[var(--color-bg-inset)]">
+    <span
+      aria-hidden
+      className={cn("flex h-1.5 w-[160px] flex-none overflow-hidden rounded-[3px] bg-[var(--color-bg-inset)]", className)}
+    >
       <i className="block h-full bg-[var(--color-success)]" style={{ width: share(p.resolved) }} />
       <i className="block h-full bg-[var(--color-warning)]" style={{ width: share(p.acknowledged) }} />
     </span>

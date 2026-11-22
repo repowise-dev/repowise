@@ -166,8 +166,11 @@ export default async function OverviewPage({ params }: Props) {
         header: (
           <>
             {header}
-            <RepoReportCardHost repoId={id} />
-            <ReviewNudgeHost repoId={id} />
+            {/* The report and change lines sit together as one strip; it collapses when both are empty. */}
+            <div className="grid gap-2 empty:hidden">
+              <RepoReportCardHost repoId={id} />
+              <ReviewNudgeHost repoId={id} />
+            </div>
             {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
             <WelcomeMoment
               repoId={id}
