@@ -37,6 +37,7 @@ from repowise.core.providers.embedding.base import (
     warm_query_embedder,
 )
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.providers.embedding.registry import install_spec
 from repowise.core.registry.instructions import server_instructions
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
@@ -114,9 +115,10 @@ _EMBEDDER_REMEDIATION: dict[str, str] = {
         "(and `pip install google-genai`)"
     ),
     "ollama": "start Ollama, pull an embedding model, and set OLLAMA_BASE_URL if not local",
+    # The same install line build_embedder and the setup hint print.
     "fastembed": (
-        "install the local-embed extra (on Python 3.13+, the fastembed package) "
-        "in the environment the MCP server runs from"
+        f"run `pip install {install_spec('fastembed')}` in the environment the MCP server "
+        "runs from"
     ),
     "openrouter": "set OPENROUTER_API_KEY in the MCP server's environment (and `pip install openai`)",
 }
