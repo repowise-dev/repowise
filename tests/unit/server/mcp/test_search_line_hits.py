@@ -786,6 +786,45 @@ def test_token_nowhere_in_the_repo_is_complete_and_empty(scan_repo):
     assert _line_hits._scan_listed(scan_repo, "noSuchTokenAnywhere", True) == ([], [])
 
 
+def test_untracked_files_match_by_word_and_glob_as_git_grep_would(scan_repo):
+    (scan_repo / "notes.txt").write_text("retryLimitOld\n", encoding="utf-8")
+
+    assert "README.md" in _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+    # Untracked, and holding the needle only inside a longer name.
+    assert "notes.txt" in _line_hits._files_holding(scan_repo, "retryLimit")
+    assert "notes.txt" not in _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+    docs = _line_hits._files_holding(scan_repo, "retryLimit", word=True, globs=("*.md",))
+    assert sorted(docs) == ["README.md", "docs/api/retry.md", "docs/guide.md"]
+
+
+def test_untracked_pruned_dirs_are_never_read(scan_repo):
+    # An unignored index directory: gigabytes on a real checkout.
+    (scan_repo / ".repowise").mkdir()
+    (scan_repo / ".repowise" / "wiki.db").write_text("retryLimit\n", encoding="utf-8")
+
+    held = _line_hits._files_holding(scan_repo, "retryLimit")
+    assert held and not any(f.startswith(".repowise/") for f in held)
+
+
+def test_one_call_lists_the_untracked_files_once(scan_repo, monkeypatch):
+    real_run = subprocess.run
+    listings: list[list[str]] = []
+
+    def counting(cmd, *args, **kwargs):
+        if "ls-files" in cmd:
+            listings.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(_line_hits.subprocess, "run", counting)
+    with _line_hits.line_read_memo():
+        first = _line_hits._files_holding(scan_repo, "retryLimit")
+        _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+        assert _line_hits._files_holding(scan_repo, "retryLimit") is first
+    assert len(listings) == 1
+    _line_hits._files_holding(scan_repo, "retryLimit")
+    assert len(listings) == 2
+
+
 @pytest.mark.parametrize("needle", ["a\nb", "a\0b", "-e", "café"])
 def test_needles_git_cannot_take_as_one_argument_use_the_python_scan(scan_repo, needle):
     assert _line_hits._files_holding(scan_repo, needle) is None
@@ -1206,3 +1245,39 @@ async def test_a_cut_to_the_line_cap_gets_no_hint(tree, monkeypatch):
 )
 def test_the_hint_takes_a_name_any_letter_opens(name, ok):
     assert bool(_line_hits._IDENTIFIER.fullmatch(name)) is ok
+
+
+@pytest.mark.asyncio
+async def test_prefetched_greps_serve_the_scans_of_one_call(scan_repo, monkeypatch):
+    real = _line_hits._git_files_holding
+    greps: list[str] = []
+
+    def counting(root, needle, **kwargs):
+        greps.append(needle)
+        return real(root, needle, **kwargs)
+
+    monkeypatch.setattr(_line_hits, "_git_files_holding", counting)
+    await _line_hits.prefetch_word_scans(scan_repo, ["retryLimit"])
+    assert greps == []  # nothing would keep the answer
+    with _line_hits.line_read_memo():
+        await _line_hits.prefetch_word_scans(scan_repo, ["retryLimit", "noSuchToken"])
+        rows, complete, _unread = _line_hits.word_scan(scan_repo, "retryLimit")
+    assert sorted(greps) == ["noSuchToken", "retryLimit"]
+    assert complete and rows
+
+
+def test_an_untracked_symlink_is_not_followed(scan_repo, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "secret.txt"
+    outside.write_text("retryLimit\n", encoding="utf-8")
+    try:
+        (scan_repo / "link.txt").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    assert "link.txt" not in _line_hits._files_holding(scan_repo, "retryLimit")
+
+
+def test_a_slow_untracked_read_falls_back_as_a_slow_grep(scan_repo, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_GIT_GREP_SECONDS", -1.0)
+
+    assert _line_hits._files_holding(scan_repo, "retryLimit") is None

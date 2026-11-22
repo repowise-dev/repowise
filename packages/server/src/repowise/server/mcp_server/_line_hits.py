@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
+import fnmatch
 import logging
 import os
 import re
+import stat
 import subprocess
+import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -330,12 +334,96 @@ def _git_files_holding(
     """
     if not needle.isascii() or "\n" in needle or "\0" in needle or needle.startswith("-"):
         return None
-    args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--untracked", "--no-color", "-F"]
+    # Tracked files only: ``--untracked`` makes git walk and read the whole work
+    # tree instead of the index, several times slower on a large checkout. The
+    # untracked files are listed once (see :func:`_untracked_files`) and read here.
+    args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--no-color", "-F"]
     args += ["-w", "-e", needle] if word else ["-e", needle]
     if globs:
         args += ["--", *globs]
     # Exit 1 is "no file matched".
-    return _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
+    tracked = _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
+    untracked = None if tracked is None else _untracked_files(root)
+    if untracked is None:
+        return None
+    if globs:
+        untracked = [f for f in untracked if any(fnmatch.fnmatchcase(f, g) for g in globs)]
+    held = re.compile(
+        rb"(?<![A-Za-z0-9_])" + re.escape(needle.encode()) + rb"(?![A-Za-z0-9_])"
+        if word
+        else re.escape(needle.encode())
+    )
+    # The grep's own budget: a large untracked tree falls back as a slow grep did.
+    deadline = time.monotonic() + _GIT_GREP_SECONDS
+    found: list[str] = []
+    for f in untracked:
+        if time.monotonic() > deadline:
+            return None
+        if _holds(root / f, held):
+            found.append(f)
+    return tracked + found
+
+
+def _holds(path: Path, needle: re.Pattern[bytes]) -> bool:
+    """Whether the regular file's bytes match *needle*, as git grep reads them.
+    A symlink (git greps its target path, not the file it names), a file past
+    the stream cap or an unreadable one does not."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_STREAM_BYTES:
+            return False
+        return needle.search(path.read_bytes()) is not None
+    except OSError:
+        return False
+
+
+_UNTRACKED_LOCK = threading.Lock()
+
+
+def _untracked_files(root: Path) -> list[str] | None:
+    """Untracked files outside the ignore rules and the pruned directories
+    (``.repowise/``, ``node_modules/``), or ``None`` when git cannot list them.
+    Listed once inside :func:`line_read_memo`: the work tree walk is the costly
+    part of a grep on a large checkout."""
+    args = ["ls-files", "-z", "--others", "--exclude-standard"]
+    memo = _HOLDING_MEMO.get()
+    if memo is None:
+        return _git_paths(root, args, 10, (0,))
+    key = ("untracked", str(root))
+    with _UNTRACKED_LOCK:
+        if key not in memo:
+            memo[key] = _git_paths(root, args, 10, (0,))
+        return memo[key]
+
+
+@contextlib.contextmanager
+def line_read_memo() -> Iterator[None]:
+    """Answer each git grep, and the untracked listing, once inside the block.
+
+    For one tool call: its stages grep the same words, and nothing it caches
+    outlives it.
+    """
+    if _HOLDING_MEMO.get() is not None:
+        yield  # an enclosing block's answers serve this one too
+        return
+    token = _HOLDING_MEMO.set({})
+    try:
+        yield
+    finally:
+        _HOLDING_MEMO.reset(token)
+
+
+async def prefetch_word_scans(root: Path, tokens: list[str]) -> None:
+    """Run the git grep each :func:`word_scan` of *tokens* opens with, side by
+    side, so scans run one after another inside :func:`line_read_memo` only
+    read files. A no-op outside it, where no grep answer is kept."""
+    if _HOLDING_MEMO.get() is None:
+        return
+    # A failed grep is the scan's to meet again, never the caller's.
+    await asyncio.gather(
+        *(asyncio.to_thread(_files_holding, root, t) for t in dict.fromkeys(tokens)),
+        return_exceptions=True,
+    )
 
 
 def _scan_rank(rel: str) -> int:
@@ -1198,8 +1286,7 @@ async def _symbol_sources(
 ) -> tuple[list[dict[str, Any]] | None, list[str], list[str]]:
     """``(edit sets, names, unindexed files holding them)`` for *nodes*; the
     sets are ``None`` past ``MAX_SYMBOLS``. One git grep per name serves both."""
-    token = _HOLDING_MEMO.set({})
-    try:
+    with line_read_memo():
         sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repo_id, root, n) for n in nodes
         ]
@@ -1207,8 +1294,6 @@ async def _symbol_sources(
         # A name past MAX_SYMBOLS serves definitions only and already says it
         # is not every match, so it pays for no extra grep.
         unindexed = await _unindexed_holders(session, repo_id, root, names, spec) if sets else []
-    finally:
-        _HOLDING_MEMO.reset(token)
     return sets, names, unindexed
 
 
