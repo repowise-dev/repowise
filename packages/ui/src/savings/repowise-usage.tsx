@@ -21,8 +21,9 @@ export interface RepowiseUsageProps {
   /**
    * The host's own account of its spend, in place of the token figures and
    * table, for a host that bills from a ledger and records no tokens. The
-   * grouping control goes with the table. On the savings page,
-   * `summary.total_calls` still decides whether the section shows at all.
+   * grouping control goes with the table. With no savings recorded,
+   * `SavingsPageBody` shows the section only when `summary.total_calls` is
+   * above zero; with savings it always shows.
    */
   children?: React.ReactNode;
 }

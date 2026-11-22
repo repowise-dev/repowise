@@ -171,7 +171,6 @@ export function DecisionAgentHero({
   }
 
   const copy = async () => {
-    onCopy?.("prompt");
     let ok = true;
     try {
       await navigator.clipboard.writeText(prompt.text);
@@ -181,6 +180,8 @@ export function DecisionAgentHero({
     setResult(ok ? "copied" : "failed");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setResult(null), 2400);
+    // After the copy and its feedback, so a host callback that throws cannot stop either.
+    onCopy?.("prompt");
   };
 
   return (
