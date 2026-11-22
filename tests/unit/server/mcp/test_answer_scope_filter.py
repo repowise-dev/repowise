@@ -131,6 +131,7 @@ def test_union_defs_and_unindexed_lines_outside_the_scope_are_dropped() -> None:
         },
         "unindexed_lines": [{"path": _OUT, "line": 3, "text": "retry = 1"}],
         "split": {"retry": [_IN, _OUT]},
+        "split_at": {"retry": {_IN: 3, _OUT: 7}},
     }
     hits, flows = _keep_in_scope(
         [{"target_path": _OUT}, {"target_path": _IN}, {"page_id": "pathless"}],
@@ -143,6 +144,7 @@ def test_union_defs_and_unindexed_lines_outside_the_scope_are_dropped() -> None:
     assert flows == [[_IN]]
     assert homonyms["union"] == {"retry": [{"file_path": _IN}]}
     assert homonyms["unindexed_lines"] == []
+    assert homonyms["split_at"] == {"retry": {_IN: 3}}
     # Only lowers a grade: kept, so no label moves up under a scope.
     assert homonyms["split"] == {"retry": [_IN, _OUT]}
 

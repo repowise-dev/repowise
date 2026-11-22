@@ -306,6 +306,11 @@ def _keep_in_scope(
         for name, defs in (homonyms.get("union") or {}).items()
         if (kept := [d for d in defs if in_scope(d.get("file_path") or "", scope)])
     }
+    # A value reply lists each defining file's assignment: only the scope's.
+    homonyms["split_at"] = {
+        name: {path: line for path, line in at.items() if in_scope(path, scope)}
+        for name, at in (homonyms.get("split_at") or {}).items()
+    }
     if homonyms.get("unindexed_lines"):
         homonyms["unindexed_lines"] = [
             r for r in homonyms["unindexed_lines"] if in_scope(r["path"], scope)
