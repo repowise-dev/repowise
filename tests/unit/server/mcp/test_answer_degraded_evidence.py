@@ -129,8 +129,8 @@ async def test_degraded_selects_only_symbols_the_question_named(tmp_path):
     assert payload["citations"] == []
     # A hint is still given — it just cannot be a body hint, because no body was
     # served. Nothing here may name symbol_bodies or tell the caller to read one.
-    assert "symbol_bodies" not in payload["next_action_hint"]
-    assert "body" not in payload["next_action_hint"]
+    assert "symbol_bodies" not in payload.get("next_action_hint", "")
+    assert "body" not in payload.get("next_action_hint", "")
 
 
 async def test_degraded_keeps_the_truncation_contract(tmp_path):
@@ -508,11 +508,16 @@ async def test_degraded_carries_the_candidate_justifications(tmp_path):
 
 
 async def test_degraded_names_where_to_start_when_it_has_no_body(tmp_path):
-    """A payload with no body still owes the caller one next step."""
+    """A payload with no body still owes the caller one next step: the projection
+    names the top-ranked file to verify."""
+    from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
+
     ctx = _tree(tmp_path)
     payload = await _degraded(ctx, _hits(end_line=6), {"Blueprint"})
+    out = project_answer_payload(payload, question="where is Blueprint registered")
 
-    assert payload["next_action_hint"].startswith("Start from src/flask/app.py")
+    step = out.get("next_action_hint") or out["answer"]
+    assert "Verify by reading" in step and "src/flask/app.py" in step
 
 
 async def test_degraded_body_hint_still_wins_over_the_candidate_hint(tmp_path):

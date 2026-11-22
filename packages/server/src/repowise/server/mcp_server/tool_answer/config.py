@@ -398,7 +398,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     line citation is not an asserted value.
 # 34: a scoped answer names no file outside its scope: hits, flow paths and
 #     union definitions are filtered after every retrieval stage.
-_ANSWER_SCHEMA_VERSION = 34
+# 35: the generic "start from / verify against the top file" hints are no
+#     longer stored; the projection writes one verify line naming path:line.
+_ANSWER_SCHEMA_VERSION = 35
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
