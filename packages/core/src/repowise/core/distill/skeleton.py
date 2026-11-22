@@ -317,19 +317,20 @@ def _license_header_end(lines: list[str], limit: int) -> int:
     that explains the code is kept.
     """
     end = 0
-    has_comment = False
     for i in range(limit):
         stripped = lines[i].strip()
-        # "#include", "#pragma", "#!" are directives, not comments.
-        directive = (stripped.startswith("#") and stripped[1:2].isalpha()) or stripped[:2] == "#!"
-        if stripped.startswith(_COMMENT_PREFIXES) and not directive:
-            has_comment = True
+        if _is_comment(stripped):
             end = i + 1
         elif stripped and not (i == 0 and stripped.startswith("#!")):
             break
-    if not has_comment or not _LICENSE_RE.search("\n".join(lines[:end])):
-        return 0
-    return end
+    return end if _LICENSE_RE.search("\n".join(lines[:end])) else 0
+
+
+def _is_comment(stripped: str) -> bool:
+    """A comment line; ``#include``, ``#pragma`` and ``#!`` are directives, not comments."""
+    if stripped.startswith("#") and (stripped[1:2].isalpha() or stripped[1:2] == "!"):
+        return False
+    return stripped.startswith(_COMMENT_PREFIXES)
 
 
 def _elide_callable_bodies(
