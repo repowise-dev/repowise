@@ -487,6 +487,24 @@ def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
 _LEAN_SYMBOL_KEYS = ("name", "kind", "signature", "start_line", "end_line")
 
 
+def _strip_row_text(row: dict[str, Any]) -> bool:
+    """Drop a row's page text and symbol text in place; whether anything went."""
+    dropped = False
+    for key in ("excerpt", "snippet"):
+        dropped |= row.pop(key, None) is not None
+    symbols = row.get("key_symbols")
+    if isinstance(symbols, list):
+        lean = [
+            {k: sym[k] for k in _LEAN_SYMBOL_KEYS if sym.get(k) is not None}
+            if isinstance(sym, dict)
+            else sym
+            for sym in symbols
+        ]
+        dropped |= lean != symbols
+        row["key_symbols"] = lean
+    return dropped
+
+
 def _slim_retrieval(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     """Serve a synthesized reply's ``retrieval`` rows as navigation, not page text.
 
@@ -504,29 +522,16 @@ def _slim_retrieval(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     kept: list[Any] = []
     dropped = False
     for row in rows:
-        if not isinstance(row, dict):
-            kept.append(row)
-            continue
-        for key in ("excerpt", "snippet"):
-            dropped |= row.pop(key, None) is not None
-        symbols = row.get("key_symbols")
-        if isinstance(symbols, list):
-            lean = [
-                {k: sym[k] for k in _LEAN_SYMBOL_KEYS if sym.get(k) is not None}
-                if isinstance(sym, dict)
-                else sym
-                for sym in symbols
-            ]
-            dropped |= lean != symbols
-            row["key_symbols"] = lean
-        path = _nav_path(row)
-        if not row.get("key_symbols"):
-            if path in cited:
-                dropped = True
-                continue
-            known = facts.get(path)
-            if isinstance(known, dict) and known.get("functions"):
-                row["functions"] = known["functions"]
+        if isinstance(row, dict):
+            dropped |= _strip_row_text(row)
+            if not row.get("key_symbols"):
+                path = _nav_path(row)
+                if path in cited:
+                    dropped = True
+                    continue
+                known = facts.get(path)
+                if isinstance(known, dict) and known.get("functions"):
+                    row["functions"] = known["functions"]
         kept.append(row)
     payload["retrieval"] = kept
     return dropped
