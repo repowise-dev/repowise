@@ -50,4 +50,6 @@ def test_file_ext_is_memoized_and_unchanged():
     assert file_ext("pkg/retrieval.PY") == "py"
     assert file_ext("Makefile") == ""
     assert file_ext("a.b/c") == ""
-    assert file_ext.cache_info().hits >= 0
+    hits = file_ext.cache_info().hits
+    assert file_ext("pkg/retrieval.PY") == "py"
+    assert file_ext.cache_info().hits == hits + 1
