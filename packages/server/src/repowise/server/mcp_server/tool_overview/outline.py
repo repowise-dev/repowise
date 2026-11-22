@@ -161,11 +161,16 @@ def _fit_outline(sections: list[dict[str, Any]], collector: OmissionCollector) -
         collector.add(
             f"outline children of {node.get('target_path') or node.get('page_id')} "
             f"beyond the outline size cap ({len(kids)} rows)",
-            "\n".join(
-                f"{k.get('title') or k.get('page_type')}: {k.get('target_path', '')}" for k in kids
-            ),
+            "\n".join(_stored_line(k) for k in kids),
         )
     return trimmed
+
+
+def _stored_line(node: dict[str, Any]) -> str:
+    """One trimmed child as text: its path, after its section and own title when it has them."""
+    path = node.get("target_path") or node.get("page_id", "")
+    head = " ".join(str(node[k]) for k in ("section", "title") if node.get(k))
+    return f"{head}: {path}" if head else path
 
 
 def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) -> dict[str, Any]:

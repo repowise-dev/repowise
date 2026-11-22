@@ -297,6 +297,8 @@ async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: 
         if requested and card.query.collector is not None:
             card.query.collector.add(f"{card.target} :: docs.symbols beyond cap={cap}", rest)
             hint = "The rest are stored: restore with the ref in _meta.omitted."
+        elif requested:
+            hint = "The ranked head of the file's symbols; Read the file for the rest."
         docs["symbols_truncated"] = {"shown": cap, "total": len(symbols), "hint": hint}
 
 

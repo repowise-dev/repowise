@@ -324,3 +324,9 @@ def test_explanatory_header_and_directives_are_kept():
     )
     header = "#pragma once\n#ifndef A_H\n#define A_H\n// license-free note\n\nclass A {};\n"
     assert "#pragma once" in build_skeleton(header, [SkeletonSymbol("A", "class", 6, 6)]).text
+
+
+def test_a_comment_about_license_logic_is_not_a_license_header():
+    source = "# Validates license keys on activation.\n\ndef check():\n    return True\n"
+    text = build_skeleton(source, [SkeletonSymbol("check", "function", 3, 4)]).text
+    assert "Validates license keys" in text

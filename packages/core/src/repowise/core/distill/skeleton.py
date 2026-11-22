@@ -305,7 +305,12 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
 
 #: Line comment and block comment openers a file header is written in.
 _COMMENT_PREFIXES = ("#", "//", "/*", "*", "--", ";", "%", "(*")
-_LICENSE_RE = re.compile(r"copyright|licen[cs]e|spdx-", re.IGNORECASE)
+#: Phrases a license header carries and an explanatory comment does not.
+_LICENSE_RE = re.compile(
+    r"copyright|\(c\)\s*\d{4}|spdx-license-identifier|licensed under|"
+    r"permission is hereby granted|general public license|license, version",
+    re.IGNORECASE,
+)
 
 
 def _license_header_end(lines: list[str], limit: int) -> int:

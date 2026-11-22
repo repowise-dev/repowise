@@ -105,13 +105,16 @@ async def _paths_under(card: CardState) -> set[str]:
 
 
 def _by_directory(dir_path: str, paths: list[str]) -> dict[str, int]:
-    """Omitted files counted under the subdirectory one level below *dir_path*."""
+    """Omitted files counted under the subdirectory one level below *dir_path*.
+
+    Files directly in *dir_path* count under ``"."``, never under its own path.
+    """
     prefix = _dir_prefix(dir_path)
     counts: Counter[str] = Counter()
     for path in paths:
         rest = path[len(prefix) :] if path.startswith(prefix) else path
         head, sep, _ = rest.partition("/")
-        counts[f"{prefix}{head}/" if sep else prefix or "."] += 1
+        counts[f"{prefix}{head}/" if sep else "."] += 1
     return dict(counts.most_common(_MAX_OMITTED_DIRS))
 
 
