@@ -30,10 +30,10 @@ Agent calls are faster and sharper: first answers in about half the time, keyles
 
 In the 9 days since 0.61.0:
 
-- **361 pull requests** merged, from **39 contributors**, **23 of them first-time contributors**
-- **1,757 files** changed, **+127,638 / -14,902** lines
-- **201 fixes, 92 features, 19 performance changes**, 11 refactors and 14 documentation changes
-- **632 test files** touched, **254** of them new
+- **370 pull requests** merged, from **39 contributors**, **23 of them first-time contributors**
+- **1,784 files** changed, **+128,700 / -15,483** lines
+- **207 fixes, 94 features, 19 performance changes**, 11 refactors and 15 documentation changes
+- **643 test files** touched, **257** of them new
 - **54 issues** closed
 
 Thank you to everyone who built this release with us.
