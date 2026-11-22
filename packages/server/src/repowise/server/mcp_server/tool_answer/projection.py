@@ -482,6 +482,53 @@ def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     return True
 
 
+#: What a navigation ``key_symbols`` entry keeps: the keys
+#: ``serialize_hits(lean_symbols=True)`` serves on the low path.
+_LEAN_SYMBOL_KEYS = ("name", "kind", "signature", "start_line", "end_line")
+
+
+def _strip_row_text(row: dict[str, Any]) -> bool:
+    """Drop a row's page text and symbol text in place; whether anything went."""
+    dropped = False
+    for key in ("excerpt", "snippet"):
+        dropped |= row.pop(key, None) is not None
+    symbols = row.get("key_symbols")
+    if isinstance(symbols, list):
+        lean = [
+            {k: sym[k] for k in _LEAN_SYMBOL_KEYS if sym.get(k) is not None}
+            if isinstance(sym, dict)
+            else sym
+            for sym in symbols
+        ]
+        dropped |= lean != symbols
+        row["key_symbols"] = lean
+    return dropped
+
+
+def _slim_retrieval(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
+    """Serve a synthesized reply's ``retrieval`` rows as navigation, not page text.
+
+    The answer was written from these page excerpts, so by default a row keeps
+    its path, title, score and lean ``key_symbols`` (name, signature and lines,
+    which point a Read). Rows are never dropped here: the next step and the
+    fallback pruning already counted them. A row without symbols gets the
+    file's ``functions`` instead, as slim ``best_guesses`` rows do. ``include=["evidence"]`` restores the
+    excerpts and symbol text. Returns whether any text was dropped.
+    """
+    rows = payload.get("retrieval")
+    if not isinstance(rows, list) or not rows:
+        return False
+    dropped = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dropped |= _strip_row_text(row)
+        known = facts.get(_nav_path(row))
+        if not row.get("key_symbols") and isinstance(known, dict) and known.get("functions"):
+            row["functions"] = known["functions"]
+    return dropped
+
+
 def _prune_fallback_targets(
     payload: dict[str, Any], raw_fallbacks: list[Any] | None
 ) -> None:
@@ -810,6 +857,12 @@ def _project(
         _default_shape(payload, question, raw_fallbacks=raw_fallbacks)
         if _shape_confidence(payload) == "low":
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
+    # Synthesized replies only: a degraded reply's excerpts are its evidence.
+    excerpts_cut = (
+        not expanded
+        and not payload.get("degraded")
+        and _slim_retrieval(payload, facts if isinstance(facts, dict) else {})
+    )
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
@@ -823,7 +876,7 @@ def _project(
             payload.pop(key, None)
     _record_reductions(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
-        bodies_cut=bodies_cut,
+        bodies_cut=bodies_cut or excerpts_cut,
     )
     if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
