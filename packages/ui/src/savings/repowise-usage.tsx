@@ -42,6 +42,8 @@ export function RepowiseUsage({
   fallback,
   children,
 }: RepowiseUsageProps) {
+  // `{hasLedger && <Ledger />}` passes false: no host body, so the figures show.
+  const hostBody = children || null;
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[var(--color-border-default)] pb-3">
@@ -49,7 +51,7 @@ export function RepowiseUsage({
           <h2 className="text-[18px] font-semibold text-[var(--color-text-primary)]">{copy.usageTitle}</h2>
           <p className="mt-0.5 max-w-[80ch] text-xs text-[var(--color-text-tertiary)]">{copy.usageSub}</p>
         </div>
-        {summary && summary.total_calls > 0 && !fallback && !children && (
+        {summary && summary.total_calls > 0 && !fallback && !hostBody && (
           <Segmented<SpendGrouping>
             label={copy.usageGroupLabel}
             value={grouping}
@@ -61,7 +63,7 @@ export function RepowiseUsage({
           />
         )}
       </div>
-      {fallback ?? children ?? (summary ? <UsageBody copy={copy} summary={summary} rows={rows} grouping={grouping} /> : null)}
+      {fallback ?? hostBody ?? (summary ? <UsageBody copy={copy} summary={summary} rows={rows} grouping={grouping} /> : null)}
     </section>
   );
 }
