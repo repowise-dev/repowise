@@ -13,8 +13,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: repowise-evidence
-  cancel-in-progress: true
+  group: repowise-evidence-${{ github.ref }}
+  # A newer push waits for the running job instead of cancelling it, so a
+  # busy main still finishes a run and uploads both measurements.
+  cancel-in-progress: false
 
 env:
   UV_HTTP_TIMEOUT: "120"
@@ -24,7 +26,7 @@ jobs:
   evidence:
     name: Runtime evidence
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     continue-on-error: true
     permissions:
       contents: read
@@ -61,13 +63,21 @@ jobs:
             sleep $((attempt * 15))
           done
 
-      # Indexing this repository is the CLI's heaviest real workload. A
-      # 10 ms sampling interval keeps the profile well under the upload cap.
+      # Indexing this repository is the CLI's heaviest real workload. py-spy
+      # samples the parse and health worker processes too (most of the run's
+      # time), keeps every frame and records sample counts. 25 samples a
+      # second keeps the profile under the 20 MiB upload cap.
       - name: Profile indexing
         continue-on-error: true
         run: >
-          uv run --with pyinstrument pyinstrument -i 0.01 -r speedscope
-          -o index.speedscope.json .venv/bin/repowise init . --mode fast --no-prose -y
+          uv run --with py-spy py-spy record --subprocesses --rate 25
+          --format speedscope -o index.speedscope.json
+          -- .venv/bin/python .venv/bin/repowise init . --mode fast --no-prose -y
+
+      - name: Profile size
+        if: always()
+        continue-on-error: true
+        run: ls -l index.speedscope.json || true
 
       - name: Time the unit tests
         continue-on-error: true
