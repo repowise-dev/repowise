@@ -152,6 +152,19 @@ def test_render_steering_prompt_escapes_the_frame():
     assert "&lt;/steering&gt;" in rendered
 
 
+def test_render_steering_prompt_keeps_quotes_and_apostrophes():
+    """Quotes and apostrophes reach the model as the reader wrote them.
+
+    ``escape`` defaults to ``quote=True``, which turns ``'`` into ``&#x27;``
+    and ``"`` into ``&quot;`` before the model sees them. Only the angle
+    brackets need neutralising so the ``<steering>`` frame cannot be closed
+    early.
+    """
+    text = 'the page\'s deployment and "host" profiles'
+    rendered = render_steering_prompt(text)
+    assert text in rendered
+
+
 def test_render_steering_prompt_is_empty_for_blank_text():
     assert render_steering_prompt("   \n ") == ""
 

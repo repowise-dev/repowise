@@ -39,11 +39,15 @@ def render_steering_prompt(text: str) -> str:
 
     The instruction is wrapped and escaped so a stray ``<`` in it cannot break
     the frame the surrounding prompt fragments use for their own blocks.
+    ``quote=False`` keeps apostrophes and double quotes as the reader wrote
+    them: the docstring only needs ``<`` and ``>`` neutralised so the frame
+    cannot be closed early, and entity-encoding quotes changes the words the
+    model sees for no benefit.
     """
     body = text.strip()
     if not body:
         return ""
-    return f"{_STEERING_HEADER}<steering>\n{escape(body)}\n</steering>\n"
+    return f"{_STEERING_HEADER}<steering>\n{escape(body, quote=False)}\n</steering>\n"
 
 
 def steering_reuse_digest(reuse_content_hash: str, text: str) -> str:

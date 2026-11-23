@@ -815,7 +815,8 @@ async def test_regenerate_page_carries_steering_into_the_job(client: AsyncClient
     with patch("repowise.server.routers.repos._launch_job_task"):
         resp = await client.post(
             "/api/pages/lookup/regenerate",
-            params={"page_id": page_id, "steering": "  focus on the CLI entry point  "},
+            params={"page_id": page_id},
+            json={"steering": "  focus on the CLI entry point  "},
         )
     assert resp.status_code == 202
 
@@ -832,7 +833,8 @@ async def test_regenerate_page_drops_blank_steering(client: AsyncClient, app) ->
     with patch("repowise.server.routers.repos._launch_job_task"):
         resp = await client.post(
             "/api/pages/lookup/regenerate",
-            params={"page_id": page_id, "steering": "   "},
+            params={"page_id": page_id},
+            json={"steering": "   "},
         )
     assert resp.status_code == 202
 
@@ -848,7 +850,8 @@ async def test_regenerate_page_rejects_overlong_steering(client: AsyncClient, ap
     with patch("repowise.server.routers.repos._launch_job_task") as launch:
         resp = await client.post(
             "/api/pages/lookup/regenerate",
-            params={"page_id": page_id, "steering": "x" * (MAX_STEERING_CHARS + 1)},
+            params={"page_id": page_id},
+            json={"steering": "x" * (MAX_STEERING_CHARS + 1)},
         )
     assert resp.status_code == 422
     launch.assert_not_called()

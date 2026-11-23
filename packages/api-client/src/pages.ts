@@ -182,22 +182,23 @@ export async function updatePageNotes(
  * `steering` is an instruction for this regeneration only, such as which part of
  * the code the page should focus on. It is appended to this page's prompt and
  * dropped afterwards; the page's stored notes are a separate field and this
- * never rewrites them.
+ * never rewrites them. It rides in the request body, not the URL: up to 2000
+ * characters percent-encodes past the proxy's request-line limit (431).
  */
 export async function regeneratePage(
   pageId: string,
   opts?: { cascade?: GenerateCascade; style?: string; repoId?: string; steering?: string },
 ): Promise<JobLaunchResponse> {
+  const steering = opts?.steering?.trim();
   return apiPost<JobLaunchResponse>(
     "/api/pages/lookup/regenerate",
-    undefined,
+    steering ? { steering } : undefined,
     undefined,
     {
       page_id: pageId,
       ...(opts?.repoId ? { repo_id: opts.repoId } : {}),
       ...(opts?.cascade ? { cascade: opts.cascade } : {}),
       ...(opts?.style ? { style: opts.style } : {}),
-      ...(opts?.steering?.trim() ? { steering: opts.steering.trim() } : {}),
     },
   );
 }

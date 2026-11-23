@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.generation.models import MAX_STEERING_CHARS
@@ -283,6 +283,17 @@ class PageNotesUpdate(BaseModel):
     human_notes: str | None = None
 
 
+class PageRegenerateBody(BaseModel):
+    """POST body for /lookup/regenerate.
+
+    ``steering`` lives in the body rather than the URL: the textarea allows
+    2000 characters, which percent-encodes to a request line the Next.js proxy
+    rejects with a 431 before the request reaches the API.
+    """
+
+    steering: str | None = Field(default=None, max_length=MAX_STEERING_CHARS)
+
+
 @router.patch("/lookup/notes", response_model=PageResponse)
 async def update_page_notes(
     body: PageNotesUpdate,
@@ -318,13 +329,7 @@ async def regenerate_page_by_query(
         "none",
         description="What to do with the pages that summarize this one: none / dependents / full.",
     ),
-    steering: str | None = Query(
-        None,
-        max_length=MAX_STEERING_CHARS,
-        description="Optional instruction for this regeneration only, such as which part of "
-        "the code the page should focus on. Carried in the job config and appended to this "
-        "page's prompt; never stored on the page.",
-    ),
+    body: PageRegenerateBody | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Force-regenerate a single wiki page (page_id as query param).
@@ -341,8 +346,11 @@ async def regenerate_page_by_query(
 
     ``steering`` is the reader's lever for a page that came out wrong: a
     sentence about what the page should cover, applied to this request and
-    dropped afterwards. The page's stored notes are a separate, display-only
-    field, so this never rewrites them (issue #2289).
+    dropped afterwards. It rides in the request body — at up to 2000 characters
+    it can percent-encode past the proxy's request-line limit and 431 — and is
+    carried in the job config and appended to this page's prompt; never stored
+    on the page. The page's stored notes are a separate, display-only field, so
+    this never rewrites them (issue #2289).
     """
     from repowise.server.routers.repos import _accepted, _ensure_no_active_job, _launch_job_task
 
@@ -357,7 +365,7 @@ async def regenerate_page_by_query(
         )
 
     job_config: dict = {"mode": "single_page", "page_id": page_id, "cascade": cascade}
-    steering_text = (steering or "").strip()
+    steering_text = ((body.steering if body else None) or "").strip()
     if steering_text:
         job_config["steering"] = steering_text
     if style is not None:
