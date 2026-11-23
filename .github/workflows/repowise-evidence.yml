@@ -65,7 +65,7 @@ jobs:
 
       # Indexing this repository is the CLI's heaviest real workload. py-spy
       # samples the parse and health worker processes too (most of the run's
-      # time), keeps every frame and records sample counts. 50 samples a
+      # time), keeps every frame and records sample counts. 25 samples a
       # second keeps the profile under the 20 MiB upload cap.
       - name: Profile indexing
         continue-on-error: true
