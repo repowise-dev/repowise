@@ -10,6 +10,13 @@ from repowise.core.ingestion.languages.registry import REGISTRY
 _CODE_LANGUAGES = REGISTRY.code_languages()
 
 
+def _language_of(path: str) -> str:
+    """The registry's language tag for *path*, by special file name, else by extension."""
+    name = path.rpartition("/")[2]
+    ext = name[name.rfind(".") :].lower() if "." in name else ""
+    return REGISTRY.from_filename(name) or REGISTRY.from_extension(ext)
+
+
 @dataclass(frozen=True)
 class BuildUnit:
     """One unit a build declares: a .NET project, a crate, a workspace package.
@@ -133,16 +140,11 @@ class BuildUnitIndex:
 
     def _root_owners(self, path: str) -> tuple[str, ...]:
         """Ids of the units that may own *path* at the deepest root above it holding any."""
-        parts = path.split("/")
-        name = parts.pop()
-        language: str | None = None
+        parts = path.split("/")[:-1]
+        language = _language_of(path) if self._scoped else ""
         for depth in range(len(parts), -1, -1):
             ids = self._by_root.get("/".join(parts[:depth]), ())
-            if any(uid in self._scoped for uid in ids):
-                if language is None:
-                    ext = name[name.rfind(".") :].lower() if "." in name else ""
-                    language = REGISTRY.from_filename(name) or REGISTRY.from_extension(ext)
-                ids = tuple(uid for uid in ids if self._may_own(uid, path, language))
+            ids = tuple(uid for uid in ids if self._may_own(uid, path, language))
             if ids:
                 return ids
         return ()

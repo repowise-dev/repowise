@@ -66,6 +66,21 @@ def _add(
                 listed.setdefault(path, []).append(unit.id)
 
 
+def _keep_fallback(
+    fallback: list[tuple[BuildUnit, tuple[str, ...]]], units: dict[str, BuildUnit]
+) -> None:
+    """Add each *fallback* unit to *units* unless an adapter's package unit holds its root.
+
+    A unit declared in a build file holds no package root, so it never hides
+    a fallback; a fallback whose id a unit already names is kept regardless.
+    """
+    claimed = {u.root for u in units.values() if not build_file_languages(u)}
+    referenced = {dep for unit in units.values() for dep in unit.deps}
+    for unit, _files in fallback:
+        if unit.root not in claimed or unit.id in referenced:
+            units[unit.id] = unit
+
+
 def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     """Every build unit of the repo *ctx* resolves, and the units owning each indexed file.
 
@@ -102,11 +117,7 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
         log.warning("build_units_adapter_failed", ecosystem="manifest", error=str(exc))
         failed.add("manifest")
         fallback = []
-    claimed = {u.root for u in units.values() if not build_file_languages(u)}
-    referenced = {dep for unit in units.values() for dep in unit.deps}
-    for unit, _files in fallback:
-        if unit.root not in claimed or unit.id in referenced:
-            units[unit.id] = unit
+    _keep_fallback(fallback, units)
 
     resolved = [
         replace(unit, deps=tuple(sorted({d for d in unit.deps if d in units and d != unit.id})))
