@@ -13,8 +13,6 @@ import json
 import posixpath
 import re
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from configparser import ConfigParser
-from configparser import Error as ConfigError
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -29,6 +27,7 @@ from ..ingestion.workspace_members import (
     manifest_package_name,
     read_toml,
 )
+from ..pytest_roots import PYTEST_CONFIG_SECTIONS, pytest_options
 from . import LANGUAGE_SUFFIXES
 
 #: Each test (an id, or the file a capped list collapses to) of a language in
@@ -37,7 +36,8 @@ from . import LANGUAGE_SUFFIXES
 #: or None to run the whole package. Args of one run are joined with spaces,
 #: except ``--flag=value`` args, whose values merge into one ``--flag "a|b"``
 #: for a runner that keeps only its last such flag. A test the map does not hold
-#: gets no command.
+#: gets no command. Python selector entries from :func:`runs_for_tests` always
+#: have a file-keyed sibling whose argument selects the whole file.
 TestRuns = Mapping[str, Sequence[str | None]]
 
 #: One test's ``(run, arg)``.
@@ -164,22 +164,12 @@ def _js_run(repo: _Checkout, test: str) -> Run | None:
 
 def _declares_pytest(folder: Path) -> bool:
     """Whether *folder* configures pytest rather than merely packaging Python."""
-    data = read_toml(folder / "pyproject.toml")
-    tool = data.get("tool", {}) if isinstance(data, Mapping) else {}
-    pytest = tool.get("pytest", {}) if isinstance(tool, Mapping) else {}
-    if isinstance(pytest, Mapping) and isinstance(pytest.get("ini_options"), Mapping):
-        return True
-    for filename, section in (
-        ("setup.cfg", "tool:pytest"),
-        ("pytest.ini", "pytest"),
-        ("tox.ini", "pytest"),
-    ):
-        parser = ConfigParser(interpolation=None)
+    for filename, _ in PYTEST_CONFIG_SECTIONS:
         try:
-            parser.read(folder / filename, encoding="utf-8")
-        except (OSError, UnicodeError, ConfigError):
+            text = (folder / filename).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
             continue
-        if parser.has_section(section):
+        if pytest_options(filename, text) is not None:
             return True
     return False
 
@@ -525,7 +515,8 @@ def runs_for_tests(
 ) -> dict[str, list[str | None]]:
     """The run (:data:`TestRuns`) of each test in *tests* whose language is in
     :data:`_RUNNERS`, from the package roots in *manifests*. A test whose runner
-    or manifest the repository lacks is left out. Blocking file reads.
+    or manifest the repository lacks is left out. Python selectors also keep
+    their file-wide run for capped lists. Blocking file reads.
     """
     repo = _Checkout(root, manifests)
     runs: dict[str, list[str | None]] = {}
@@ -534,6 +525,12 @@ def runs_for_tests(
         runner = next((run for suffixes, run in _RUNNERS if lowered.endswith(suffixes)), None)
         if runner is not None and (found := runner(repo, test)) is not None:
             runs[test] = list(found)
+            # Capped commands and call-graph plans widen selectors to their
+            # files. Keep that target too, without discarding the exact run.
+            if runner is _python_run and test != file_of_test(test):
+                whole = _python_run(repo, file_of_test(test))
+                if whole is not None:
+                    runs[file_of_test(test)] = list(whole)
     return runs
 
 
