@@ -69,19 +69,21 @@ def test_build_file_unit_passes_other_code_languages_up():
     cmake = _declared("cmake:core", "cmake", "src/CMakeLists.txt")
     paths = [
         "src/CMakeLists.txt", "src/a.cpp", "src/b.c", "src/inc/A.H", "src/gen.py", "src/x.rb",
-        "src/cmake/flags.cmake", "src/README.md", "src/Makefile",
+        "src/cmake/flags.cmake", "src/README.md", "src/Makefile", "src/Lib.hs",
     ]
     index = BuildUnitIndex.from_units([cmake, _unit("top", "")], paths)
     assert index.file_owners == {
         # Its own build file, its languages, and files in no code language.
         "src/CMakeLists.txt": ("cmake:core",),
-        "src/Makefile": ("cmake:core",),
         "src/README.md": ("cmake:core",),
         "src/a.cpp": ("cmake:core",),
         "src/b.c": ("cmake:core",),
         "src/cmake/flags.cmake": ("cmake:core",),
         "src/inc/A.H": ("cmake:core",),
-        # Other code languages.
+        # Other code languages, also those with no parser (Haskell, a
+        # Makefile, which the registry counts as code).
+        "src/Lib.hs": ("top",),
+        "src/Makefile": ("top",),
         "src/gen.py": ("top",),
         "src/x.rb": ("top",),
     }

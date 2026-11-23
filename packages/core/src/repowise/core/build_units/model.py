@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 
 from repowise.core.ingestion.languages.registry import REGISTRY
 
-_CODE_LANGUAGES = REGISTRY.code_languages()
+# Languages that are no code: config, markup, data and ``unknown``. Every
+# other language counts as code, parsed or passthrough (Haskell, a Makefile).
+_NON_CODE_LANGUAGES = REGISTRY.config_languages()
 
 
 def _language_of(path: str) -> str:
@@ -155,6 +157,6 @@ class BuildUnitIndex:
         return (
             langs is None
             or language in langs
-            or language not in _CODE_LANGUAGES
+            or language in _NON_CODE_LANGUAGES
             or path == self.units[uid].manifest
         )

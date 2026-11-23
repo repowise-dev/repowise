@@ -64,10 +64,12 @@ the same rows.
    whose `root` is the deepest directory above it. A unit declared in a
    build file (a manifest the language registry lists as build config, such
    as `CMakeLists.txt` or a Bazel `BUILD`) sits at no package root, so at its
-   root it does not own files in another code language: a `.py` or `.rb`
-   file goes on to the deepest root holding a unit that may own it. Its own
-   build file, files in its languages and files in no code language
-   (`*.cmake`, a README) stay with it.
+   root it does not own files in another code language: a `.py`, `.rb` or
+   `.hs` file, or a `Makefile`, goes on to the deepest root holding a unit
+   that may own it. Code is every language the registry does not class as
+   config, markup or data, parsed or not. Its own build file, files in its
+   languages and files in no code language (`*.cmake`, a README) stay with
+   it.
 3. **Several owners are normal.** Two units at one root (a `Web.csproj` and a
    workspace `package.json` side by side) both own its unlisted files, such as
    `index.ts`. The C# files the .NET project lists are owned by that project
