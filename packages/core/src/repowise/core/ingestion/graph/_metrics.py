@@ -531,21 +531,6 @@ class MetricsMixin:
         # execution_flows reads from the community caches just primed above.
         await _asyncio.to_thread(self.execution_flows)
 
-    def _build_scc_map(self) -> dict[str, int]:
-        """Assign a numeric SCC ID to each node."""
-        result: dict[str, int] = {}
-        # Sorted for the same reason as strongly_connected_components: the
-        # enumerate index is persisted as graph_nodes.scc_id, so it must not
-        # depend on graph insertion order.
-        components = sorted(
-            nx.strongly_connected_components(self.graph()),
-            key=lambda scc: (-len(scc), min(scc)),
-        )
-        for scc_id, scc in enumerate(components):
-            for node in scc:
-                result[node] = scc_id
-        return result
-
     def node_membership_snapshot(self) -> dict[str, dict[str, Any]]:
         """Materialize SCC + symbol-community memberships as a ``node_id → {...}`` map.
 
