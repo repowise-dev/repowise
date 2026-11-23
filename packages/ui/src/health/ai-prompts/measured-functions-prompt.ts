@@ -55,6 +55,9 @@ function entry(row: MeasuredRow, index: number, orderingOnly: boolean): string {
     `${index + 1}. \`${symbolSubject(row.symbol_id)}\` in \`${rowLocation(row)}\`: ${cost}`,
     `   - Symbol id: \`${row.symbol_id}\``,
   ];
+  if (!orderingOnly && row.inclusive != null) {
+    lines.push(`   - Total time, with what it calls: ${shareText(row.inclusive)} of the run`);
+  }
   if (row.callers.length > 0) {
     lines.push(`   - Callers outside tests: ${row.callers.map((c) => `\`${c}\``).join(", ")}`);
   }

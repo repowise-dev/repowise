@@ -2,33 +2,78 @@
 
 import type { EvidenceRunSummary } from "@repowise-dev/types/runtime-evidence";
 
-import { formatNumber, formatPercent } from "../../lib/format";
+import { formatPercent } from "../../lib/format";
 import { CommandLine } from "../../shared/command-line";
 import { AiPromptButton } from "../ai-prompt-button";
 import { buildConnectEvidencePrompt } from "../ai-prompts/setup-prompt";
-import { humanizeToken } from "./presentation";
+import { commitPosition, skippedText } from "./run-signal";
 import type { RuntimeEvidenceView } from "./runtime";
 import { Notice } from "./states";
 
 /**
  * Why stored runtime evidence ranks nothing, or ranks less than it could.
  * Each notice answers a different question, and none of them says the code
- * is fast: a run measured only in tests, runs from another commit, a view an
- * update has not built yet, runs that rank no production function, and runs
- * whose frames mostly did not map.
+ * is fast: a run measured only in tests, a newest run measured ahead of the
+ * index, runs from an older commit, a view an update has not built yet, runs
+ * that rank no production function, and runs whose frames mostly did not map.
  */
+
+/** A commit pair a notice names: where the run was measured, and where the index is. */
+interface Commits {
+  measured: string;
+  indexed: string;
+}
 
 type RuntimeNotice =
   | { kind: "tests_only"; workload: string }
-  | { kind: "stale" | "needs_update" | "not_ranked"; command: string | null }
+  | { kind: "ahead"; commits: Commits; showing: boolean; ranksNothing: boolean; command: string | null }
+  | { kind: "stale"; command: string | null; older: Commits | null }
+  | { kind: "needs_update" | "not_ranked"; command: string | null }
   | { kind: "partial"; run: EvidenceRunSummary };
+
+const sha7 = (sha: string) => sha.slice(0, 7);
+
+/**
+ * Where the newest profile run sits against the index, when it is not at it.
+ * Null until the runs are read, so a status notice it would correct waits.
+ */
+function newestProfile(view: RuntimeEvidenceView) {
+  const runs = view.runs ?? [];
+  const newest = runs.find((r) => r.kind === "profile");
+  const indexed = view.referenceCommit;
+  if (!newest?.commit_sha || !indexed) return null;
+  const position = commitPosition(newest, runs, indexed);
+  if (position !== "ahead" && position !== "older") return null;
+  return { position, commits: { measured: newest.commit_sha, indexed } };
+}
 
 /** The notices a view carries, in reading order. Empty when there is nothing to say. */
 export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   const out: RuntimeNotice[] = [];
   const status = view.overview?.status;
+  const unranked = status === "stale" || status === "not_ranked";
   if (!view.run && view.testRun) out.push({ kind: "tests_only", workload: view.testRun.workload_name });
-  if (status === "stale" || status === "needs_update" || status === "not_ranked") {
+  // An unranked status is explained by the runs; say no more until they are read.
+  if (unranked && view.runs === undefined) return out;
+  const newest = newestProfile(view);
+  if (newest?.position === "ahead") {
+    // The newest run is ahead of the index, not short of samples: say that, never the
+    // sample-count reason, which would be false for it.
+    out.push({
+      kind: "ahead",
+      commits: newest.commits,
+      showing: view.run?.commit === newest.commits.indexed,
+      ranksNothing: unranked,
+      command: unranked ? (view.overview?.command ?? null) : null,
+    });
+  } else if (status === "stale") {
+    out.push({
+      kind: "stale",
+      command: view.overview?.command ?? null,
+      older: newest?.position === "older" ? newest.commits : null,
+    });
+  }
+  if (status === "needs_update" || (status === "not_ranked" && newest?.position !== "ahead")) {
     out.push({ kind: status, command: view.overview?.command ?? null });
   }
   for (const run of view.runs ?? []) {
@@ -36,14 +81,6 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
     if (run.mapping_partial && run.kind === "profile") out.push({ kind: "partial", run });
   }
   return out;
-}
-
-function skippedText(skipped: Record<string, number> | null): string | null {
-  const entries = Object.entries(skipped ?? {}).filter(([, n]) => n > 0);
-  if (entries.length === 0) return null;
-  return entries
-    .map(([reason, n]) => `${formatNumber(n)} ${humanizeToken(reason).toLowerCase()}`)
-    .join(", ");
 }
 
 function PartialNotice({ run }: { run: EvidenceRunSummary }) {
@@ -88,15 +125,37 @@ function NoticeFor({
           </span>
         </Notice>
       );
+    case "ahead":
+      return (
+        <div>
+          <Notice tone="neutral">
+            <strong className="font-semibold text-[var(--color-text-primary)]">
+              The newest run was measured at {sha7(notice.commits.measured)}, ahead of the indexed{" "}
+              {sha7(notice.commits.indexed)}.
+            </strong>{" "}
+            Its functions rank once the index reaches that commit; update the index to rank them
+            now.
+            {notice.showing
+              ? ` Showing the run at ${sha7(notice.commits.indexed)} until then.`
+              : notice.ranksNothing
+                ? " Until then nothing is ranked from it, which is not the same as nothing being slow."
+                : ""}
+          </Notice>
+          {notice.command ? <CommandLine command={notice.command} /> : null}
+        </div>
+      );
     case "stale":
       return (
         <div>
           <Notice tone="warning">
             <strong className="font-semibold text-[var(--color-text-primary)]">
-              Measured at another commit.
+              {notice.older
+                ? `Measured at ${sha7(notice.older.measured)}, older than the indexed ${sha7(notice.older.indexed)}.`
+                : "Measured at another commit."}
             </strong>{" "}
             Every function the stored runs measured has changed since, so nothing is ranked from
-            them. Run the workloads again and add the results.
+            them. Run the workloads again
+            {notice.older ? ` at ${sha7(notice.older.indexed)}` : ""} and add the results.
           </Notice>
           {notice.command ? <CommandLine command={notice.command} /> : null}
         </div>
