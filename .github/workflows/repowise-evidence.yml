@@ -26,7 +26,7 @@ jobs:
   evidence:
     name: Runtime evidence
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     continue-on-error: true
     permissions:
       contents: read
@@ -70,7 +70,7 @@ jobs:
       - name: Profile indexing
         continue-on-error: true
         run: >
-          uv run --with py-spy py-spy record --subprocesses --rate 50
+          uv run --with py-spy py-spy record --subprocesses --rate 25
           --format speedscope -o index.speedscope.json
           -- .venv/bin/python .venv/bin/repowise init . --mode fast --no-prose -y
 
