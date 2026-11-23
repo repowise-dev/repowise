@@ -63,7 +63,13 @@ function PartialNotice({ run }: { run: EvidenceRunSummary }) {
   );
 }
 
-function NoticeFor({ notice }: { notice: RuntimeNotice }) {
+function NoticeFor({
+  notice,
+  connectPrompt = buildConnectEvidencePrompt,
+}: {
+  notice: RuntimeNotice;
+  connectPrompt?: (() => string) | undefined;
+}) {
   switch (notice.kind) {
     case "tests_only":
       return (
@@ -77,7 +83,7 @@ function NoticeFor({ notice }: { notice: RuntimeNotice }) {
           <span className="mt-2 block">
             <AiPromptButton
               label="Copy prompt for your agent"
-              copyText={() => buildConnectEvidencePrompt()}
+              copyText={() => connectPrompt()}
             />
           </span>
         </Notice>
@@ -125,7 +131,14 @@ function NoticeFor({ notice }: { notice: RuntimeNotice }) {
   }
 }
 
-export function RuntimeEvidenceNotices({ notices }: { notices: RuntimeNotice[] }) {
+export function RuntimeEvidenceNotices({
+  notices,
+  connectPrompt,
+}: {
+  notices: RuntimeNotice[];
+  /** The text a notice that asks for more evidence copies. Omitted, the setup prompt. */
+  connectPrompt?: (() => string) | undefined;
+}) {
   if (notices.length === 0) return null;
   return (
     <div className="space-y-3">
@@ -133,6 +146,7 @@ export function RuntimeEvidenceNotices({ notices }: { notices: RuntimeNotice[] }
         <NoticeFor
           key={notice.kind === "partial" ? `partial:${notice.run.run_id}` : notice.kind}
           notice={notice}
+          connectPrompt={connectPrompt}
         />
       ))}
     </div>

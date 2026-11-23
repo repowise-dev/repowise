@@ -1,4 +1,4 @@
-import { configure, fireEvent, render, screen, within } from "@testing-library/react";
+import { configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MeasuredFunction, MeasuredResponse } from "@repowise-dev/types/runtime-evidence";
 
@@ -230,6 +230,25 @@ describe("Runtime evidence notices", () => {
     expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Measured cost in/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt from the tests-only notice", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await measured(opts);
+      return { ...view, measured: null };
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
   });
 
   it("counts what a partly mapped run skipped, by reason", async () => {

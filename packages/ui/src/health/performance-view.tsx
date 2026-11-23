@@ -116,7 +116,7 @@ export function PerformanceView({
    */
   runtimeEvidence?: { connected: boolean; found?: readonly string[] | null } | null;
   /**
-   * The prompt the no-evidence states copy, for a host whose evidence arrives
+   * The prompt the no-evidence states and the tests-only notice copy, for a host whose evidence arrives
    * another way (a CI upload, say). Omitted, they copy the prompt that runs
    * `repowise evidence setup` locally.
    */
@@ -310,6 +310,7 @@ export function PerformanceView({
         onOpenCause={openById}
         canOpenCause={detailById}
         onPrompt={openPrompt}
+        connectPrompt={connectEvidencePrompt}
       />
 
       <section aria-label="Performance causes" className="space-y-4">
