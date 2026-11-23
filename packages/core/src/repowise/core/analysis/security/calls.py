@@ -258,6 +258,8 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
     for pattern, kind, severity in _CALL_PATTERNS:
+        if kind == "eval_call" and file_path.lower().endswith((".java", ".kt", ".kts")):
+            continue  # eval is not a general Java/Kotlin code execution primitive
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):
