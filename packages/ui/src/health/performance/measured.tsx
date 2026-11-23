@@ -5,14 +5,13 @@ import type {
   EvidenceRunSummary,
   MeasuredRow,
   MeasuredRun,
-  SlowTest,
 } from "@repowise-dev/types/runtime-evidence";
 
 import { formatNumber, formatPercent, formatRelativeTimeOrNull } from "../../lib/format";
 import { CollapsibleSection } from "../../shared/collapsible-section";
 import { FilePath } from "../../shared/file-path";
-import { ProportionBar } from "../../shared/proportion-bar";
 import { Segmented } from "../../shared/segmented";
+import { Sparkline } from "../sparkline";
 import { StatRibbon, type RibbonStat } from "../../stats/stat-ribbon";
 import { Skeleton } from "../../ui/skeleton";
 import type { AiPromptRequest } from "../ai-prompt-action";
@@ -37,7 +36,22 @@ import {
   type RuntimeEvidenceView,
 } from "./runtime";
 import { RuntimeEvidenceNotices, runtimeNotices } from "./runtime-states";
+import { overviewRun, RunOverview, SplitBar, type LowSignalPromptBuilder } from "./run-overview";
+import {
+  changeMark,
+  changeText,
+  commitPosition,
+  POSITION_TAG,
+  runHistory,
+  runSeconds,
+  runShares,
+  secondsText,
+  skippedText,
+  truncatedCount,
+  type RunHistory,
+} from "./run-signal";
 import { EvidenceWordTag } from "./tags";
+import { TestsGroup } from "./test-costs";
 
 /**
  * What stored profile runs measured, on the Performance tab: the run's status
@@ -48,35 +62,13 @@ import { EvidenceWordTag } from "./tags";
 
 const sha7 = (sha: string | null) => (sha ? sha.slice(0, 7) : null);
 
-/** Neutral ink for a run's split: green, amber and red stay with health. */
-const SPLIT_INK = {
-  repo: "var(--color-text-primary)",
-  library: "color-mix(in srgb, var(--color-text-tertiary) 55%, var(--color-bg-inset))",
-  wait: "color-mix(in srgb, var(--color-text-tertiary) 28%, var(--color-bg-inset))",
-} as const;
-
-/** Where the run spent its time: repo code, libraries, waits. Null without the split. */
+/** Where the run spent its time: repo code, libraries, waits and the rest. Null without the split. */
 export function RunSplit({ run }: { run: MeasuredRun | null }) {
-  if (run?.repo_self_share == null) return null;
-  const parts = [
-    { key: "repo", label: "Repo code", value: run.repo_self_share },
-    { key: "library", label: "Libraries", value: run.library_share },
-    { key: "wait", label: "Waiting", value: run.wait_share },
-  ] as const;
-  const segments = parts.flatMap((p) =>
-    p.value != null && p.value > 0
-      ? [{ key: p.key, label: p.label, value: p.value, detail: shareText(p.value), color: SPLIT_INK[p.key] }]
-      : [],
-  );
-  if (segments.length === 0) return null;
+  const shares = run ? runShares(run) : null;
+  if (!run || !shares) return null;
   return (
     <div className="max-w-xs">
-      <ProportionBar
-        segments={segments}
-        sort={false}
-        size="sm"
-        label={`Where the ${run.workload_name} run spent its time`}
-      />
+      <SplitBar shares={shares} legend label={`Where the ${run.workload_name} run spent its time`} />
     </div>
   );
 }
@@ -96,8 +88,8 @@ export function RunSplitSentence({ run }: { run: MeasuredRun | null }) {
         {shareText(run.repo_self_share)}
         {run.samples != null ? ` of ${formatNumber(run.samples)} samples` : ""}
       </strong>{" "}
-      in <code className="font-mono text-[0.9em]">{run.workload_name}</code>. The rest is libraries
-      and waits, so a fix in repo code moves at most that share of this run.
+      in <code className="font-mono text-[0.9em]">{run.workload_name}</code>. The rest is libraries,
+      waits and time outside indexed code, so a fix in repo code moves at most that share of this run.
     </p>
   );
 }
@@ -183,19 +175,37 @@ function RowMeta({ row, run }: { row: MeasuredRow; run: MeasuredRun }) {
   );
 }
 
+/** "self 22.0 s · total 76.9 s" when the run's total is a time, else "total 6.8%". */
+function timeText(row: MeasuredRow, seconds: number | null): string | null {
+  if (row.share == null) return null;
+  const total =
+    row.inclusive != null
+      ? `total ${seconds != null ? secondsText(row.inclusive * seconds) : shareText(row.inclusive)}`
+      : null;
+  const self = seconds != null ? `self ${secondsText(row.share * seconds)}` : null;
+  return [self, total].filter(Boolean).join(" · ") || null;
+}
+
 function MeasuredRowItem({
   row,
   run,
   scale,
+  seconds,
+  href,
   onOpenCause,
   onPrompt,
 }: {
   row: MeasuredRow;
   run: MeasuredRun;
   scale: number;
+  /** The run's total in seconds, when its unit is a time. */
+  seconds: number | null;
+  /** Where the location links: the host's symbol page, else its file. */
+  href: string;
   onOpenCause?: ((opportunityId: string) => void) | undefined;
   onPrompt: (row: MeasuredRow) => void;
 }) {
+  const time = timeText(row, seconds);
   const name = symbolSubject(row.symbol_id);
   const findings = row.on_static_findings ?? [];
   const interval = intervalText(row.share_low, row.share_high);
@@ -208,9 +218,9 @@ function MeasuredRowItem({
         <p className="font-mono text-[13px] font-medium text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
           {name}
         </p>
-        <p className="mt-0.5 flex min-w-0 font-mono text-xs text-[var(--color-text-secondary)]">
+        <a href={href} className={`mt-0.5 flex min-w-0 font-mono text-xs ${QUIET_LINK_CLS}`}>
           <FilePath path={rowLocation(row)} fold className="text-xs" />
-        </p>
+        </a>
         <RowMeta row={row} run={run} />
         <p className="mt-1.5">
           {findings.length > 0 ? (
@@ -241,6 +251,11 @@ function MeasuredRowItem({
                 .filter(Boolean)
                 .join(" · ")}
             </span>
+            {time ? (
+              <span className="block font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+                {time}
+              </span>
+            ) : null}
             <ShareMeter row={row} scale={scale} />
           </>
         )}
@@ -343,6 +358,7 @@ function RowsPending({ loading }: { loading: boolean }) {
 function MeasuredRows({
   adapter,
   run,
+  seconds,
   heading,
   description,
   onOpenCause,
@@ -350,6 +366,8 @@ function MeasuredRows({
 }: {
   adapter: PerformanceViewAdapter;
   run: MeasuredRun;
+  /** The run's total in seconds, when its unit is a time. */
+  seconds: number | null;
   /** The heading, or null where a disclosure already names the rows. */
   heading: string | null;
   description: string;
@@ -400,6 +418,8 @@ function MeasuredRows({
                 row={row}
                 run={run}
                 scale={scale}
+                seconds={seconds}
+                href={adapter.symbolHref?.(row.symbol_id) ?? adapter.fileHref(row.file_path)}
                 onOpenCause={onOpenCause}
                 onPrompt={(one) => onPrompt(promptFor([one]))}
               />
@@ -434,16 +454,71 @@ function runMapped(run: EvidenceRunSummary): string {
   return `${formatNumber(matched)} of ${formatNumber(total)}`;
 }
 
+/** Why the rest did not map, "16 outside repo, 5 vendored", with the row cap named apart. */
+function runUnmapped(run: EvidenceRunSummary): string | null {
+  const cut = truncatedCount(run);
+  const rest = Object.fromEntries(
+    Object.entries(run.skipped ?? {}).filter(([reason]) => reason !== "units_truncated"),
+  );
+  return (
+    [skippedText(rest), cut > 0 ? `${formatNumber(cut)} cut at the row cap` : null]
+      .filter(Boolean)
+      .join("; ") || null
+  );
+}
+
+function ChangeCell({ run, history }: { run: EvidenceRunSummary; history: RunHistory }) {
+  const change = history.changes.get(run.run_id);
+  if (!change) return null;
+  const mark = changeMark(change);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {changeText(change, run.unit)}
+      {mark ? <EvidenceWordTag ink={mark === "slower"}>{mark}</EvidenceWordTag> : null}
+    </span>
+  );
+}
+
+/** The workload's totals over its stored runs, on its newest run's row; the words are its text. */
+function TrendCell({ run, history }: { run: EvidenceRunSummary; history: RunHistory }) {
+  const values = history.trends.get(run.run_id);
+  if (!values) return null;
+  const say = (v: number) => {
+    const seconds = runSeconds({ total_value: v, unit: run.unit });
+    return seconds != null ? secondsText(seconds) : `${formatNumber(Math.round(v))} ${run.unit ?? ""}`.trim();
+  };
+  return (
+    <span className="inline-flex items-center text-[var(--color-text-tertiary)]">
+      <Sparkline values={values} width={64} height={16} />
+      <span className="sr-only">
+        {`${values.length} runs, oldest ${say(values[0]!)}, newest ${say(values[values.length - 1]!)}`}
+      </span>
+    </span>
+  );
+}
+
 const TH =
   "whitespace-nowrap px-2.5 pb-2 pt-2.5 text-left font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 const TD = "px-2.5 py-2.5 align-top text-[var(--color-text-secondary)]";
-const RUN_COLUMNS = ["Workload", "Kind", "Class", "Tool", "Commit", "Mapped", "Result", "Added"];
+const RUN_COLUMNS = [
+  "Workload",
+  "Kind",
+  "Class",
+  "Tool",
+  "Commit",
+  "Mapped",
+  "Result",
+  "Change",
+  "Trend",
+  "Added",
+];
 
-/** Every stored run: what it measured, against which commit, and how it mapped. */
-function RunsTable({ runs }: { runs: EvidenceRunSummary[] }) {
+/** Every stored run: what it measured, against which commit, how it mapped and how it moved. */
+function RunsTable({ runs, reference }: { runs: EvidenceRunSummary[]; reference: string | null }) {
+  const history = runHistory(runs);
   return (
     <div className="overflow-x-auto border-t border-[var(--color-border-default)]">
-      <table className="w-full min-w-[720px] border-collapse text-xs">
+      <table className="w-full min-w-[960px] border-collapse text-xs">
         <thead>
           <tr className="border-b border-[var(--color-border-default)]">
             {RUN_COLUMNS.map((h) => (
@@ -454,58 +529,54 @@ function RunsTable({ runs }: { runs: EvidenceRunSummary[] }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border-default)]">
-          {runs.map((run) => (
-            <tr key={run.run_id}>
-              <td className={`${TD} font-mono text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
-                {run.workload}
-              </td>
-              <td className={TD}>{humanizeToken(run.kind).toLowerCase()}</td>
-              <td className={TD}>{workloadClassLabel(run.class)}</td>
-              <td className={`${TD} font-mono`}>
-                {[run.tool, run.tool_version].filter(Boolean).join(" ") || "—"}
-              </td>
-              <td className={`${TD} whitespace-nowrap font-mono`}>
-                {sha7(run.commit_sha) ?? "—"}
-                {run.freshness === "stale" ? (
-                  <span className="ml-1.5">
-                    <EvidenceWordTag>other commit</EvidenceWordTag>
-                  </span>
-                ) : null}
-              </td>
-              <td className={`${TD} whitespace-nowrap font-mono tabular-nums`}>
-                {runMapped(run)}
-                {run.mapping_partial ? (
-                  <span className="ml-1.5">
-                    <EvidenceWordTag>partial</EvidenceWordTag>
-                  </span>
-                ) : null}
-              </td>
-              <td className={`${TD} font-mono tabular-nums`}>{runResult(run)}</td>
-              <td className={`${TD} whitespace-nowrap`}>{formatRelativeTimeOrNull(run.ingested_at)}</td>
-            </tr>
-          ))}
+          {runs.map((run) => {
+            const tag = POSITION_TAG[commitPosition(run, runs, reference)];
+            const unmapped = runUnmapped(run);
+            return (
+              <tr key={run.run_id}>
+                <td className={`${TD} font-mono text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}>
+                  {run.workload}
+                </td>
+                <td className={TD}>{humanizeToken(run.kind).toLowerCase()}</td>
+                <td className={TD}>{workloadClassLabel(run.class)}</td>
+                <td className={`${TD} font-mono`}>
+                  {[run.tool, run.tool_version].filter(Boolean).join(" ") || "—"}
+                </td>
+                <td className={`${TD} whitespace-nowrap font-mono`}>
+                  {sha7(run.commit_sha) ?? "—"}
+                  {tag ? (
+                    <span className="ml-1.5">
+                      <EvidenceWordTag>{tag}</EvidenceWordTag>
+                    </span>
+                  ) : null}
+                </td>
+                <td className={`${TD} font-mono tabular-nums`}>
+                  <span className="whitespace-nowrap">{runMapped(run)}</span>
+                  {run.mapping_partial ? (
+                    <span className="ml-1.5">
+                      <EvidenceWordTag>partial</EvidenceWordTag>
+                    </span>
+                  ) : null}
+                  {unmapped ? (
+                    <span className="mt-0.5 block font-sans text-[11px] text-[var(--color-text-tertiary)]">
+                      {unmapped}
+                    </span>
+                  ) : null}
+                </td>
+                <td className={`${TD} font-mono tabular-nums`}>{runResult(run)}</td>
+                <td className={`${TD} whitespace-nowrap font-mono tabular-nums`}>
+                  <ChangeCell run={run} history={history} />
+                </td>
+                <td className={TD}>
+                  <TrendCell run={run} history={history} />
+                </td>
+                <td className={`${TD} whitespace-nowrap`}>{formatRelativeTimeOrNull(run.ingested_at)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
-  );
-}
-
-/** The slowest timed tests, longest first, with the workload that timed each. */
-function SlowTests({ tests }: { tests: readonly SlowTest[] }) {
-  return (
-    <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)] text-xs">
-      {tests.map((t) => (
-        <li key={`${t.workload}:${t.test_id}`} className="flex items-baseline gap-3 px-1 py-2.5">
-          <span className="min-w-0 flex-1 font-mono text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-            {t.test_id}
-          </span>
-          {t.outcome && t.outcome !== "passed" ? <EvidenceWordTag>{t.outcome}</EvidenceWordTag> : null}
-          <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">
-            {t.duration_s < 0.01 ? "under 0.01" : formatNumber(Math.round(t.duration_s * 100) / 100)} s
-          </span>
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -523,20 +594,29 @@ const disclosureTitle = (title: string, caption?: string) => (
 
 type CauseOpener = ((opportunityId: string) => void) | undefined;
 
-/** The picked workload: its strip with the lens, then its ranked functions. */
+/** The run's total in seconds from its header, when the header is read and its unit is a time. */
+function secondsOf(view: RuntimeEvidenceView, runId: string): number | null {
+  const summary = view.runs?.find((r) => r.run_id === runId);
+  return summary ? runSeconds(summary) : null;
+}
+
+/** The picked workload: its strip with the lens and its header, then its ranked functions. */
 function LeadRun({
   view,
   adapter,
   onOpenCause,
   onPrompt,
+  lowSignalPrompt,
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
   onOpenCause: CauseOpener;
   onPrompt: (request: AiPromptRequest) => void;
+  lowSignalPrompt: LowSignalPromptBuilder | undefined;
 }) {
   const { run, leads, pick, runs } = view;
   if (!run) return null;
+  const summary = overviewRun(runs, run, view.referenceCommit);
   return (
     <>
       <div>
@@ -556,13 +636,25 @@ function LeadRun({
           ) : null}
         </div>
         <StatRibbon stats={stripStats(run, runs)} />
+        {summary && runs ? (
+          <div className="mt-4">
+            <RunOverview
+              summary={summary}
+              measured={run}
+              runs={runs}
+              reference={view.referenceCommit}
+              lowSignalPrompt={lowSignalPrompt}
+            />
+          </div>
+        ) : null}
       </div>
       <MeasuredRows
         key={run.run_id}
         adapter={adapter}
         run={run}
+        seconds={secondsOf(view, run.run_id)}
         heading={`Measured cost in ${run.workload_name}`}
-        description="Production functions ranked by self time, waits excluded. A share is of the whole run, with its interval. A function with no row has no evidence, which is not the same as cheap."
+        description="Production functions ranked by self time, waits excluded; total adds what each one calls. A share is of the whole run, with its interval. A function with no row has no evidence, which is not the same as cheap."
         onOpenCause={onOpenCause}
         onPrompt={onPrompt}
       />
@@ -599,6 +691,7 @@ function TestRunGroup({
           key={testRun.run_id}
           adapter={adapter}
           run={testRun}
+          seconds={secondsOf(view, testRun.run_id)}
           heading={null}
           description="Order within the test run only. A unit-test run never leads the queue: test fixtures decide what is costly there."
           onOpenCause={onOpenCause}
@@ -609,29 +702,21 @@ function TestRunGroup({
   );
 }
 
-function SlowTestsGroup({ slowTests }: { slowTests: RuntimeEvidenceView["slowTests"] }) {
-  if (!slowTests) return null;
-  return (
-    <CollapsibleSection
-      title={disclosureTitle("Slow tests", `Longest first, of ${plural(slowTests.total, "timed test")}`)}
-      hint={plural(slowTests.tests.length, "test")}
-    >
-      <div className="pb-3">
-        <SlowTests tests={slowTests.tests} />
-      </div>
-    </CollapsibleSection>
-  );
-}
-
-function RunsGroup({ runs }: { runs: EvidenceRunSummary[] | undefined }) {
+function RunsGroup({
+  runs,
+  reference,
+}: {
+  runs: EvidenceRunSummary[] | undefined;
+  reference: string | null;
+}) {
   if (!runs || runs.length === 0) return null;
   return (
     <CollapsibleSection
-      title={disclosureTitle("Runs", "Newest first")}
+      title={disclosureTitle("Runs", "Newest first, each with its change from the run before")}
       hint={`${formatNumber(runs.length)} stored`}
     >
       <div className="pb-3">
-        <RunsTable runs={runs} />
+        <RunsTable runs={runs} reference={reference} />
       </div>
     </CollapsibleSection>
   );
@@ -639,9 +724,11 @@ function RunsGroup({ runs }: { runs: EvidenceRunSummary[] | undefined }) {
 
 /**
  * The runtime evidence block between the lede and the queue: why stored runs
- * rank nothing when they do not, the strip with the workload lens, the
- * measured table, then the unit-test run, the slowest tests and every stored
- * run, closed. Renders nothing when there is nothing to say.
+ * rank nothing when they do not, the strip with the workload lens and the
+ * run's header, the measured table, then the unit-test run, the test time and
+ * every stored run, closed. With no ranked workload the newest profile's
+ * header still shows: its total, its split, and whether it carries enough
+ * signal to rank. Renders nothing when there is nothing to say.
  */
 export function RuntimeEvidenceSection({
   view,
@@ -650,6 +737,7 @@ export function RuntimeEvidenceSection({
   canOpenCause = true,
   onPrompt,
   connectPrompt,
+  lowSignalPrompt,
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
@@ -659,19 +747,32 @@ export function RuntimeEvidenceSection({
   onPrompt: (request: AiPromptRequest) => void;
   /** The host's connect-evidence prompt, for a notice that asks for more evidence. */
   connectPrompt?: (() => string) | undefined;
+  /** The host's prompt for collecting a profile that ranks; omitted, the built-in one. */
+  lowSignalPrompt?: LowSignalPromptBuilder | undefined;
 }) {
   const onOpenCause = canOpenCause ? openCause : undefined;
   const notices = runtimeNotices(view);
-  if (!view.run && !view.testRun && !view.slowTests && notices.length === 0) return null;
+  const unranked = view.run ? null : overviewRun(view.runs, null, view.referenceCommit);
+  if (!view.run && !unranked && !view.testRun && !view.tests && notices.length === 0) return null;
   const rows = { view, adapter, onOpenCause, onPrompt };
   return (
     <section aria-label="Runtime evidence" className="space-y-10">
       <RuntimeEvidenceNotices notices={notices} connectPrompt={connectPrompt} />
-      <LeadRun {...rows} />
+      {unranked && view.runs ? (
+        <RunOverview
+          heading
+          summary={unranked}
+          measured={null}
+          runs={view.runs}
+          reference={view.referenceCommit}
+          lowSignalPrompt={lowSignalPrompt}
+        />
+      ) : null}
+      <LeadRun {...rows} lowSignalPrompt={lowSignalPrompt} />
       <div className="border-b border-[var(--color-border-default)]">
         <TestRunGroup {...rows} />
-        <SlowTestsGroup slowTests={view.slowTests} />
-        <RunsGroup runs={view.runs} />
+        <TestsGroup tests={view.tests} fileHref={adapter.fileHref} onPrompt={onPrompt} />
+        <RunsGroup runs={view.runs} reference={view.referenceCommit} />
       </div>
     </section>
   );

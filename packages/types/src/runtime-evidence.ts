@@ -15,6 +15,8 @@ export type {
   EvidenceRunsResponse,
   EvidenceStatusResponse,
   EvidenceUnits,
+  FileTestCost,
+  FileTestCosts,
   MeasuredFunction,
   MeasuredFunctionsResponse,
   MeasuredGroup,

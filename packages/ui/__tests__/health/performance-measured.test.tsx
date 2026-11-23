@@ -89,13 +89,13 @@ describe("PerformanceView runtime evidence", () => {
     expect(evidence.getMeasured).toHaveBeenCalledWith({ runId: "run-tests", limit: 5 });
   });
 
-  it("lists every stored run, marking one from another commit", async () => {
+  it("lists every stored run, marking one from an older commit", async () => {
     render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
     await table();
     fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
     const runs = await screen.findByRole("table");
     expect(within(runs).getAllByRole("row")).toHaveLength(4);
-    expect(within(runs).getByText("other commit")).toBeTruthy();
+    expect(within(runs).getByText("older commit")).toBeTruthy();
     expect(within(runs).getByText("1,240 tests, 2 failed")).toBeTruthy();
     expect(within(runs).getAllByText("96 of 100")).toHaveLength(3);
   });
@@ -253,17 +253,17 @@ describe("Runtime evidence marks", () => {
     const { unmount } = render(
       <PerformanceView adapter={adapter({ ...evidenceAdapter(), getEvidenceTests })} />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: /Slow tests/ }));
-    expect(screen.getByText(/Longest first, of 1,240 timed tests/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Test time/ }));
+    expect(screen.getByText(/1,240 timed tests/)).toBeTruthy();
     expect(screen.getByText("tests/test_site.py::test_build")).toBeTruthy();
-    expect(screen.getByText("4.21 s")).toBeTruthy();
+    expect(screen.getByText("4.2 s")).toBeTruthy();
     expect(screen.getByText("failed")).toBeTruthy();
     expect(getEvidenceTests).toHaveBeenCalledWith({ limit: 10 });
     unmount();
 
     render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
     await table();
-    expect(screen.queryByRole("button", { name: /Slow tests/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Test time/ })).toBeNull();
   });
 });
 

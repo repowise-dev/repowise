@@ -60,6 +60,7 @@ import {
 import { usePerformanceFilters } from "./performance/use-filters";
 import { usePerformanceQueue } from "./performance/use-queue";
 import { useRuntimeEvidenceView } from "./performance/runtime";
+import type { LowSignalPromptBuilder } from "./performance/run-overview";
 import { PerformanceVerdict, verdictOf } from "./performance/verdict";
 import { formatNumber } from "../lib/format";
 
@@ -94,6 +95,7 @@ export function PerformanceView({
   runtimeEvidence = null,
   connectEvidencePrompt,
   connectEvidenceHint,
+  lowSignalPrompt,
 }: {
   adapter: PerformanceViewAdapter;
   /** The tab's URL parameters (or a pre-flat `perf` blob), so a shared link opens the same view. */
@@ -126,6 +128,12 @@ export function PerformanceView({
    * `repowise evidence setup`; null drops it.
    */
   connectEvidenceHint?: React.ReactNode;
+  /**
+   * The prompt a low-signal run copies to collect a profile that ranks, for a
+   * host whose profiles arrive another way. Omitted, a prompt that changes the
+   * profiling step wherever it runs.
+   */
+  lowSignalPrompt?: LowSignalPromptBuilder | undefined;
 }) {
   const { filters, current, apply } = usePerformanceFilters(initialFilters, onFiltersChange);
 
@@ -311,6 +319,7 @@ export function PerformanceView({
         canOpenCause={detailById}
         onPrompt={openPrompt}
         connectPrompt={connectEvidencePrompt}
+        lowSignalPrompt={lowSignalPrompt}
       />
 
       <section aria-label="Performance causes" className="space-y-4">
