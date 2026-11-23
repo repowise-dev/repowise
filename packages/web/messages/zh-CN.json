@@ -1059,6 +1059,8 @@
         "fixWithAgentHint": "为本节所有未处理项复制一个提示词",
         "copyItemPrompt": "复制此项的提示词",
         "moreInApp": "应用中还有 {n} 项",
+        "notInReport": "本报告未包含",
+        "openSection": "打开{title}",
         "linesCovered": "行覆盖率",
         "branchesCovered": "分支覆盖率",
         "table": {
