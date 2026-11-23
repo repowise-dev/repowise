@@ -248,6 +248,7 @@ describe("Runtime evidence: where the run sits against the index", () => {
       await screen.findByText("The stored runs rank no production function."),
     ).toBeTruthy();
     expect(screen.queryByText(/ahead of the indexed/)).toBeNull();
+    expect(screen.getByText(/They have too few samples in repo code/)).toBeTruthy();
   });
 });
 

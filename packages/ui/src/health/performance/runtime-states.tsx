@@ -28,7 +28,9 @@ type RuntimeNotice =
   | { kind: "tests_only"; workload: string }
   | { kind: "ahead"; commits: Commits; showing: boolean; ranksNothing: boolean; command: string | null }
   | { kind: "stale"; command: string | null; older: Commits | null; changed: boolean }
-  | { kind: "needs_update" | "not_ranked"; command: string | null }
+  | { kind: "needs_update"; command: string | null }
+  /** `placed`: the newest profile run is known to be at the indexed commit. */
+  | { kind: "not_ranked"; command: string | null; placed: boolean }
   | { kind: "partial"; run: EvidenceRunSummary };
 
 const sha7 = (sha: string) => sha.slice(0, 7);
@@ -76,8 +78,15 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
       changed: status === "stale",
     });
   }
-  if (status === "needs_update" || (status === "not_ranked" && !newest)) {
-    out.push({ kind: status, command: view.overview?.command ?? null });
+  if (status === "needs_update") out.push({ kind: status, command: view.overview?.command ?? null });
+  if (status === "not_ranked" && !newest) {
+    const indexed = view.referenceCommit;
+    const latest = view.runs?.find((r) => r.kind === "profile");
+    out.push({
+      kind: status,
+      command: view.overview?.command ?? null,
+      placed: Boolean(indexed && latest?.commit_sha === indexed),
+    });
   }
   for (const run of view.runs ?? []) {
     // Only a profile's frames rank functions; other kinds map tests or lines.
@@ -184,8 +193,9 @@ function NoticeFor({
             <strong className="font-semibold text-[var(--color-text-primary)]">
               The stored runs rank no production function.
             </strong>{" "}
-            They have too few samples in repo code, or no frame in it, to rank one. Profile a
-            workload that runs more repo code, or runs it for longer.
+            {notice.placed
+              ? "They have too few samples in repo code, or no frame in it, to rank one. Profile a workload that runs more repo code, or runs it for longer."
+              : "They may be measured at a commit other than the indexed one, or have too few samples in repo code to rank one. The Runs list says which once it can be read."}
           </Notice>
           {notice.command ? <CommandLine command={notice.command} /> : null}
         </div>

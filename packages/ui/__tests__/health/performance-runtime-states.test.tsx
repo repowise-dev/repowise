@@ -219,6 +219,8 @@ describe("Runtime evidence notices", () => {
   it("says when stored runs rank no production function", async () => {
     render(<PerformanceView adapter={adapter({ getMeasured: async () => unranked("not_ranked", null) })} />);
     expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    // Without the runs, where the newest run sits is unknown: no sample-count claim alone.
+    expect(screen.getByText(/They may be measured at a commit other than the indexed one/)).toBeTruthy();
   });
 
   it("keeps the code-shape order when only a unit-test run is measured", async () => {
