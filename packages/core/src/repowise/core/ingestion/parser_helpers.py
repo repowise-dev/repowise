@@ -215,24 +215,61 @@ _TS_TYPE_STATEMENTS = frozenset({"import_statement", "export_statement"})
 _TS_TYPE_POSITIONS = frozenset(
     {"type_query", "type_annotation", "type_alias_declaration", "interface_declaration"}
 )
+_TYPE_CHECKING_MODULES = frozenset({"typing", "typing_extensions"})
+
+
+def _is_aliased_type_checking(root: Node, name: str, src: str) -> bool:
+    """True if ``name`` is imported as ``TYPE_CHECKING`` from ``typing`` or ``typing_extensions``."""
+    def _search(node: Node) -> bool:
+        if node.type in ("function_definition", "class_definition"):
+            return False
+        if node.type == "import_from_statement":
+            mod_node = node.child_by_field_name("module_name")
+            if mod_node is not None and node_text(mod_node, src) in _TYPE_CHECKING_MODULES:
+                for child in node.children:
+                    if child.type == "aliased_import":
+                        orig = child.child_by_field_name("name")
+                        alias = child.child_by_field_name("alias")
+                        if (
+                            orig is not None
+                            and node_text(orig, src) == "TYPE_CHECKING"
+                            and alias is not None
+                            and node_text(alias, src) == name
+                        ):
+                            return True
+        return any(_search(child) for child in node.children)
+
+    return _search(root)
 
 
 def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
-    """``TYPE_CHECKING`` or ``<module>.TYPE_CHECKING``, matched on the node.
+    """``TYPE_CHECKING``, ``<module>.TYPE_CHECKING``, ``False``, ``0``, or an alias.
 
-    Ceiling: anything else is runtime, so ``not``/``and``/``or``, parentheses
-    and an alias (``from typing import TYPE_CHECKING as TC``) are missed on
-    the safe side: the import stays a runtime edge.
+    Ceiling: anything else is runtime, so ``not``/``and``/``or`` and parentheses
+    are missed on the safe side: the import stays a runtime edge.
     """
     if condition is None:
         return False
+    if condition.type == "false":
+        return True
+    if condition.type == "integer" and node_text(condition, src).strip() == "0":
+        return True
     if condition.type == "attribute":
-        condition = condition.child_by_field_name("attribute")
-    return (
-        condition is not None
-        and condition.type == "identifier"
-        and node_text(condition, src) == "TYPE_CHECKING"
-    )
+        attr = condition.child_by_field_name("attribute")
+        return (
+            attr is not None
+            and attr.type == "identifier"
+            and node_text(attr, src) == "TYPE_CHECKING"
+        )
+    if condition.type != "identifier":
+        return False
+    name = node_text(condition, src)
+    if name == "TYPE_CHECKING":
+        return True
+    root = condition
+    while root.parent is not None:
+        root = root.parent
+    return _is_aliased_type_checking(root, name, src)
 
 
 def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
