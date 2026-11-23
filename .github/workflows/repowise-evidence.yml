@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: repowise-evidence
+  group: repowise-evidence-${{ github.ref }}
   # A newer push waits for the running job instead of cancelling it, so a
   # busy main still finishes a run and uploads both measurements.
   cancel-in-progress: false
