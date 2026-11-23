@@ -533,7 +533,7 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 39 values in
+with a `ResolutionOrigin`, a closed vocabulary of 40 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
@@ -1062,8 +1062,15 @@ affected files, modules, tags, and evidence commits. Deduplication key:
 
 Decisions have a `staleness_score` (0.0 = fresh, 1.0 = very stale) computed during
 `repowise init` and recomputed on every `repowise update`. Staleness rises when affected
-files receive commits after the decision was recorded. Decisions with `staleness_score > 0.5`
-are flagged as stale.
+files receive commits after the decision was recorded. Test and docs files never count.
+
+Once files move, a rule check (`analysis/decisions/rule_check.py`) reads whether the rule
+itself still holds: the identifiers and literals the record names and, for a record mined
+from a code comment, that comment. `holds` (nothing the rule points at changed, or the
+comment still sits on its code) keeps the decision active however many files moved;
+`drifted` (the comment, a cited name or a stated literal is gone) flags it for review.
+When the check cannot tell, `staleness_score >= 0.5` flags it, as before. An acceptance
+clears the verdict and the next index checks again from the acceptance.
 
 ### MCP Tools
 

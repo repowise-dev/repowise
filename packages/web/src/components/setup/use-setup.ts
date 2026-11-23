@@ -17,6 +17,7 @@ import {
   type SetupResponse,
   type SetupWriteResponse,
 } from "@/lib/api/setup";
+import { getEvidenceStatus } from "@/lib/api/runtime-evidence";
 import { deriveSetup, type SetupHook, type SetupView } from "./setup-rows";
 
 /** The SWR key every Setup surface shares, so one doctor run feeds them all. */
@@ -38,32 +39,6 @@ export function useSetupData(repoId: string | null) {
 
 export function useOnboardingState(enabled = true) {
   return useSWR(enabled ? ONBOARDING_KEY : null, getOnboardingState, QUIET);
-}
-
-// -- essentials done, remembered ----------------------------------------------
-
-const DONE_KEY = (repoId: string) => `repowise:setup-done:${repoId}`;
-
-/**
- * Once the essentials are done the sidebar pill stops asking, so a page load
- * does not run doctor just to hide it. The Setup page itself always checks
- * and clears this when something comes undone.
- */
-export function rememberSetupDone(repoId: string, done: boolean) {
-  try {
-    if (done) window.localStorage.setItem(DONE_KEY(repoId), "1");
-    else window.localStorage.removeItem(DONE_KEY(repoId));
-  } catch {
-    /* storage blocked: the pill checks every session */
-  }
-}
-
-export function setupRememberedDone(repoId: string): boolean {
-  try {
-    return window.localStorage.getItem(DONE_KEY(repoId)) === "1";
-  } catch {
-    return false;
-  }
 }
 
 // -- agents first seen connected ---------------------------------------------
@@ -108,8 +83,14 @@ function useAgentSeenAt(repoId: string, setup: SetupResponse | undefined) {
   return seen;
 }
 
-/** The rows for a repo, in the reader's locale. */
-export function useSetupView(repoId: string, repoName: string, setup: SetupResponse | undefined) {
+/** The rows for a repo, in the reader's locale. `evidenceConnected` feeds the
+ *  performance evidence row; pages that do not show it leave it out. */
+export function useSetupView(
+  repoId: string,
+  repoName: string,
+  setup: SetupResponse | undefined,
+  evidenceConnected: boolean | null = null,
+) {
   const format = useFormatter();
   const seen = useAgentSeenAt(repoId, setup);
   return useMemo<SetupView | null>(() => {
@@ -120,8 +101,16 @@ export function useSetupView(repoId: string, repoName: string, setup: SetupRespo
       now,
       relative: (iso) => format.relativeTime(new Date(iso), now),
       agentSeenAt: seen,
+      evidenceConnected,
     });
-  }, [setup, repoName, format, seen]);
+  }, [setup, repoName, format, seen, evidenceConnected]);
+}
+
+/** Whether runtime evidence is stored; null while unread or unreadable. */
+export function useEvidenceConnected(repoId: string): boolean | null {
+  const { data, error } = useSWR(["evidence-status", repoId], () => getEvidenceStatus(repoId), QUIET);
+  if (!data || error) return null;
+  return data.status !== "no_runtime_data";
 }
 
 // -- writes ------------------------------------------------------------------
@@ -205,7 +194,7 @@ export function useHideOnThisMachine() {
   const { mutate } = useSWRConfig();
   const [hiddenNow, setHiddenNow] = useState<Set<keyof OnboardingPatch>>(new Set());
   const hide = useCallback(
-    async (field: "setup_pill_hidden" | "hosted_card_hidden") => {
+    async (field: "hosted_card_hidden") => {
       setHiddenNow((prev) => new Set(prev).add(field));
       try {
         const next = await updateOnboardingState({ [field]: true });

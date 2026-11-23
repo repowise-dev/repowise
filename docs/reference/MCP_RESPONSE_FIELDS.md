@@ -67,7 +67,7 @@ Notes:
 
 ## On the wire
 
-- `structuredContent` is `{"result": <payload>}`; tools advertise an `outputSchema`.
+- `structuredContent` is `{"result": <payload>}`. Tools advertise no `outputSchema`.
 - The text block is the same payload as compact JSON, so clients that forward it send fewer tokens.
 - `REPOWISE_MCP_PRETTY_JSON=1` restores indented text.
 
@@ -111,13 +111,13 @@ A value outside a closed vocabulary is dropped, so the response is the one you w
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list |
 | `get_context`, `get_risk`, `get_change_risk`, `get_overview` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given | Top-level list |
+| `search_codebase` | `kind`, `mode`, `pattern` when `query` is also given, `limit` over 20 | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments` list |
 | `get_health` | `refactoring_*`, `performance_*`, `scope`, `counts` | Top-level map, e.g. `{"counts": "code-shape"}` |
 
 - **`get_risk`:** `include` values `tests` and `blast` without `changed_files` land in one entry with `"requires": "changed_files"`, since only PR mode builds them.
 - **`get_answer`:** a keyless reply names `include=["evidence"]` in its own entry with `requires`, the same shape.
-- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`.
+- **`search_codebase`:** an unknown `mode` runs as `auto`; a `pattern` entry carries `"superseded_by": "query"`; a `limit` entry carries `"clamped_to": 20`, the value the call ran with.
 - **`get_health`:** a value meant for the other control (`scope="code_shape"`) adds `ignored_arguments_hint`, except on a detail lookup. A misspelled `only` key lands in `unknown_only_keys`; a detail lookup (`finding_id`, `plan_id`, `opportunity_id`) lists `scope` and `counts` there too, since they cannot act on one row.
 
 ---
@@ -268,7 +268,7 @@ Never complete for:
 
 ### files
 
-On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files before tests and each group by path, with the test evidence `get_risk` reads for its test gaps.
+On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files first, then other files, then tests, each group by path, with the test evidence `get_risk` reads for its test gaps.
 
 - `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
 - Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
@@ -425,7 +425,7 @@ Per file:
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
 
 - **`signal_tier`:** the card keeps commit counts, `last_commit_at`, `trend`, owner and `security_signals`, and omits hotspot, co-change, dependents and classification.
-- Multi-target calls add `global_hotspots`. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
+- `co_change_partners` lists the top three; `co_change_partners_total` counts them all. Floats have 4 significant digits. Direct rows' `structural_score` is in pagerank-weighted hotspot units, not comparable to `get_change_risk`.
 
 | `include` | Adds |
 |-----------|------|
@@ -435,6 +435,7 @@ Per file:
 | `blast` | `pr_blast_radius`: transitive files, co-change warnings, test gaps, structural score; reviewers stay in the directive |
 | `graph` | `dependents` (direct vs transitive), `consumers` (typed contract consumers), `cross_repo_links` (contract rows carry `strategy` and `origin`, see [cross-repo link rows](#cross-repo-link-rows)), `impact_surface`, `direct_risks`, `relationship_analysis` (empty vs unavailable or partial) |
 | `churn` | `change_magnitude`, `risk_type`, `change_pattern` |
+| `hotspots` | `global_hotspots`: up to five hotspots outside the targets, ranked on bug-fix history, then churn |
 | `scales` | Unit, range and calibration per scalar; identical every call |
 
 ### PR mode directive
@@ -566,7 +567,7 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 
 ### branch_overlap
 
-Git-only, no index needed. `branches[]`: `ahead`, `behind`, `last_commit`, `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
+Git-only, no index needed. Up to three `branches[]`: `ahead`, `behind`, `last_commit`, up to five `files[]`, each with a `basis` (`same file` or a co-change pair with its `partner`). A branch of a remote other than `origin` is measured from that remote's default branch. Default branches, including the local copy of the base, are not listed. Scans the newest 50 branches; `scanned`, `total`, `truncated` describe the scan. Absent when no branch shares a file, or on scan timeout.
 
 ### independent_changes
 
@@ -754,6 +755,7 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 
 - `freshness.status`: `current` (at the indexed commit), `stale`, `unknown`. `source_formats` lists merged formats.
 - `report_paths`: ingest mapping `total`, `matched`, `unmatched`, `ambiguous`, `unmatched_sample`.
+- `unreported_file_count`, `unreported_files` (first five): indexed production files with code lines, of a type the report measured, that the report has no row for.
 - Dashboard `history`: one point per complete ingest, newest 10.
 - Targeted `decay`: `confirmed_lines`, `invalidated_lines` (unknown, not uncovered), `drifted` once a fifth has moved.
 

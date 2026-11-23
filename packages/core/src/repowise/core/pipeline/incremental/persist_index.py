@@ -127,6 +127,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist import (
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
+        sweep_deselected_flow_pages,
         sweep_deselected_pages,
         sweep_store_hygiene,
     )
@@ -154,6 +155,10 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.graph_builder,
             _generation_config(ctx.repo_path),
             ctx.git_meta_map,
+        )
+        # A flow page the selection dropped: no update renders it again.
+        deselected += await sweep_deselected_flow_pages(
+            ctx.session, ctx.repo_id, ctx.graph_builder, ctx.parsed_files
         )
         ctx.swept_page_ids += deselected
         ctx.deselected_page_ids = hygiene + deselected

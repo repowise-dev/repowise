@@ -248,3 +248,24 @@ async def test_files_rows_stop_at_the_size_budget(setup_mcp, monkeypatch):
     assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
     assert block["complete"] is False and block["omitted"] == 2
     assert block["counts"] == {"untested": 1}
+
+
+def test_files_list_code_before_other_files_and_tests():
+    from repowise.server.mcp_server.tool_context.files import _listing_order
+
+    paths = {
+        "app/locale/af/django.po",
+        "app/models.py",
+        "app/LICENSE",
+        "app/tests/test_models.py",
+        "app/tests/helpers.py",
+        "app/admin.py",
+    }
+    assert _listing_order(paths, frozenset({"app/tests/test_models.py"})) == [
+        "app/admin.py",
+        "app/models.py",
+        "app/LICENSE",
+        "app/locale/af/django.po",
+        "app/tests/helpers.py",
+        "app/tests/test_models.py",
+    ]

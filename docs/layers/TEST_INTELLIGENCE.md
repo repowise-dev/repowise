@@ -19,7 +19,7 @@ pytest --cov=<package> --cov-context=test   # also records which test ran each l
 # 2. Ingest it.
 repowise coverage add coverage.lcov
 repowise coverage add .coverage             # per-test map
-repowise coverage status                    # files, line and branch %, map counts
+repowise coverage status                    # files, line and branch %, files left out, map counts
 # 3. Use it.
 repowise health                             # untested hotspots now light up
 repowise impacted-tests main...HEAD         # the tests guarding this branch
@@ -122,8 +122,13 @@ the plain range, and a single SHA is one commit; change risk follows the same ru
   guess never passes for evidence: otherwise it says "unknown, run the full suite to be
   safe", and with no map it prompts for `coverage add` on a report with contexts
   ([every case](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
+- Covering tests are matched by changed line whenever the map's line numbers can be
+  told: a map measured at the change's base, its head or any commit before the base
+  ([how](../architecture/test-intelligence.md#matching-changed-lines)). A file whose
+  touched lines were edited after the map's commit is matched by file, and the output
+  names it (`matched_by_file`).
 - When every change to a Python file sits inside function bodies and the map was
-  measured at either end of the change, the test files covering those functions are
+  measured at the change's base or head, the test files covering those functions are
   the answer for that file: tests that only import it are left out. Adding a
   standard-library import, a literal constant or an undecorated function is allowed
   beside them. Any other module-level change (an import, a constant, a decorator, a
@@ -212,7 +217,7 @@ test file path the graph shows reaching the change, a candidate, not proof.
 - `coverage_analysis` says whether coverage is available, partial, degraded or stale;
   without a coverage map the directive carries `coverage: {status, reason}`.
 - `get_change_risk(revspec=...)` returns `impacted_tests`, the same selection over the
-  diff, matching a measured map at either end by line
+  diff, matching the measured map by changed line as `impacted-tests` does
   ([payload](../architecture/test-intelligence.md#the-impacted_tests-payload)). Its
   `line_coverage` holds `untested_changes` (the strong signal: in the map, but nothing
   covers the touched lines), `stale_test_candidates` (covered lines whose guarding test
@@ -305,7 +310,7 @@ across layers, [BENCHMARKS.md](../BENCHMARKS.md).
 ## Reference
 
 `repowise coverage add [PATHS...]` (ingest; auto-discovers with no path),
-`coverage status` (summary plus per-test map counts), `coverage check [REVSPEC]`
+`coverage status` (summary, the indexed production files the report leaves out, and per-test map counts), `coverage check [REVSPEC]`
 (patch-coverage gate, no index needed), `coverage suggest-gates` (proposes
 `coverage.gates` YAML, writes nothing) and `repowise impacted-tests [REVSPEC]` (the tests
 a change exercises, or runner arguments). Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage). MCP:

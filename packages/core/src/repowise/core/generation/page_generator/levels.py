@@ -60,11 +60,16 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     # ---- Level 1: symbol_spotlight (allow-set filtered) ----
     parsed_by_path: dict[str, Any] = {p.file_info.path: p for p in run.parsed_files}
     top_symbols: list[tuple[Any, Any]] = []
+    chosen_ids = getattr(run.selection, "spotlight_symbol_ids", None) or {}
     for file_path, sym_name in run.selection.symbol_spotlights:
         pf = parsed_by_path.get(file_path)
         if pf is None:
             continue
-        sym = next((s for s in pf.symbols if s.name == sym_name), None)
+        # A file can declare the name more than once, so prefer the symbol that
+        # won the ranking over whichever comes first in the file.
+        same_name = [s for s in pf.symbols if s.name == sym_name]
+        chosen_id = chosen_ids.get((file_path, sym_name))
+        sym = next((s for s in same_name if s.id == chosen_id), None) or next(iter(same_name), None)
         if sym is not None:
             top_symbols.append((sym, pf))
 

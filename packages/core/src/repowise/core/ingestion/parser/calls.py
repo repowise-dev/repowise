@@ -542,6 +542,85 @@ def _java_object_is_unnamed(site_node: Node) -> bool:
     return field is None or field.type != "this"
 
 
+# Words before a name a macro declares, or a type it spells, in its tokens.
+_RUST_ITEM_WORDS = frozenset(
+    {"fn", "struct", "enum", "trait", "impl", "type", "mod", "static", "const", "union", "dyn"}
+)
+_RUST_FN_TRAITS = frozenset({"Fn", "FnMut", "FnOnce"})
+# Where a Rust token tree holds no code that runs.
+_RUST_NON_CODE_TOKEN_TREES = frozenset({"macro_definition", "attribute_item", "inner_attribute_item"})
+
+
+def _rust_token_call(name: Node, target_name: str) -> tuple[str, str | None] | None:
+    """``(target, receiver)`` of a call written as tokens in a Rust macro's arguments.
+
+    The name must be followed by a ``(...)`` group, not ``[...]``, ``!`` or
+    ``{...}``. Before it, nothing is a bare call, ``a::b::`` a path and
+    ``self.`` or ``x.`` a receiver. Any other shape (a chained receiver, a
+    turbofish) is dropped rather than read as a bare call, and so are a macro
+    definition's body, a template rather than code that runs, an attribute
+    (``#[cfg(all(unix))]``), which calls nothing, and a name the tokens
+    declare (``fn foo(``, ``struct S(``) or a closure type (``dyn Fn(i32)``).
+    Ceiling: a tuple-struct pattern (``matches!(e, Kind(_))``) reads as a call.
+    """
+    group = name.next_sibling
+    if group is None or group.type != "token_tree" or group.child(0).type != "(":
+        return None
+    if not _rust_tokens_run(name):
+        return None
+    before = name.prev_sibling
+    if target_name in _RUST_FN_TRAITS or (before is not None and before.type in _RUST_ITEM_WORDS):
+        return None
+    if before is None or before.type not in (".", "::"):
+        return target_name, None
+    receiver = _rust_token_receiver(before)
+    return None if receiver is None else (target_name, receiver)
+
+
+def _rust_tokens_run(node: Node) -> bool:
+    """Whether a token sits in code that runs, outside a macro definition or attribute."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type in _RUST_NON_CODE_TOKEN_TREES or _rust_token_attribute(parent):
+            return False
+        parent = parent.parent
+    return True
+
+
+def _rust_token_attribute(node: Node) -> bool:
+    """Whether *node* is the ``[...]`` of an attribute written as macro tokens.
+
+    Inside a macro's tokens ``#[cfg(all(unix))]`` is a ``#`` (``#!`` for an
+    inner one) before a bracket group, never an attribute node.
+    """
+    if node.type != "token_tree" or node.child(0) is None or node.child(0).type != "[":
+        return False
+    before = node.prev_sibling
+    if before is not None and before.type == "!":
+        before = before.prev_sibling
+    return before is not None and before.type == "#"
+
+
+def _rust_token_receiver(joint: Node) -> str | None:
+    """The path or variable before a ``::`` or ``.`` *joint* in macro tokens, or None.
+
+    ``a::b::`` gives ``a::b`` and ``x.`` gives ``x``; a chained receiver
+    (``a.b().``) or a turbofish (``T::<U>::``) gives None.
+    """
+    path: list[str] = []
+    word = joint.prev_sibling
+    while word is not None and word.type in ("identifier", "self", "super", "crate"):
+        path.append((word.text or b"").decode())
+        link = word.prev_sibling
+        if joint.type == "::" and link is not None and link.type == "::":
+            word = link.prev_sibling
+            continue
+        if link is not None and link.type in (".", "::"):
+            return None
+        break
+    return "::".join(reversed(path)) or None
+
+
 def _call_names(
     capture_dict: dict,
     site_node: Node,
@@ -571,6 +650,8 @@ def _call_names(
     # would call itself.
     if language == "elixir" and _elixir_call_is_definitional(site_node, src):
         return None
+    if language == "rust" and site_node.type == "identifier":
+        return _rust_token_call(site_node, target_name)
     receiver_name = None
     if receiver_nodes:
         receiver_name = (

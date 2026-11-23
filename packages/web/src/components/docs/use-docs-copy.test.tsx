@@ -104,12 +104,34 @@ describe("docs copy", () => {
     expect(screen.getByText("src/gone.py")).toBeTruthy();
   });
 
-  it("explains a keyless index once, with the write action beside it", () => {
+  it("asks for a model once, with the write action beside it", () => {
     const onClick = vi.fn();
     inLocale("en", enMessages, <NoProseNotice pages={PAGES} count={83} running={false} onClick={onClick} />);
-    expect(screen.getByText(/has not written the prose for 83 pages yet/)).toBeTruthy();
+    expect(screen.getByText("Add a model to write the how and why on these pages.")).toBeTruthy();
+    expect(screen.getByText(/83 pages are built from the index/)).toBeTruthy();
+    // No source found here: no agent prompt, only the write action.
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Write with AI" }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a model found on this machine and leads with its agent prompt", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    inLocale(
+      "en",
+      enMessages,
+      <NoProseNotice
+        pages={PAGES}
+        count={83}
+        running={false}
+        onClick={vi.fn()}
+        ready={{ source: "Uses your Anthropic key", prompt: "Write the docs with a model." }}
+      />,
+    );
+    expect(screen.getByText(/A model is ready\. Uses your Anthropic key\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs with a model."));
   });
 
   it("stays silent once any page carries model prose", () => {

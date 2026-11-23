@@ -181,6 +181,8 @@ REPOWISE_DIRNAME = ".repowise"
 STATE_FILENAME = "state.json"
 #: Repo-local vector store directory.
 LANCEDB_DIRNAME = "lancedb"
+#: Sealed copies of the MCP server's per-index caches, one file per repo and cache.
+MCP_CACHE_DIRNAME = "mcp_cache"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 
@@ -479,11 +481,18 @@ def _split_blame_line_shares(connection: object) -> int:
     return split_blame_line_shares(connection)  # type: ignore[arg-type]
 
 
+def _fill_static_costs(connection: object) -> int:
+    from repowise.core.persistence.crud.analysis.performance import fill_static_costs
+
+    return fill_static_costs(connection)
+
+
 #: One-time data fixes that must run when the reconciler adds a column, for
 #: rows the new column changes the meaning of. Alembic runs the same step in
 #: the column's migration for managed Postgres. Keyed ``table.column``.
 _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
     "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+    "performance_opportunities.static_cost": _fill_static_costs,
 }
 
 

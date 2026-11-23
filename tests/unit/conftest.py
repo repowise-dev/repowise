@@ -2,7 +2,63 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+
+def _real_grammar_cache() -> str | None:
+    """The language pack's grammar cache, resolved while home is still real."""
+    try:
+        import tree_sitter_language_pack as pack
+
+        return str(pack.cache_dir())
+    except Exception:
+        return None
+
+
+_GRAMMAR_CACHE = _real_grammar_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path_factory, monkeypatch):
+    """Point "home" at a per-test temp directory for every unit test.
+
+    Code under test writes user-level state as a side effect: ``repowise init``
+    registers the MCP server and hooks in ``~/.claude/settings.json``, and the
+    omission store falls back to ``~/.repowise/omissions/omissions.db`` for a
+    directory with no ``.repowise/``, which every ``tmp_path`` repository is. A
+    test would otherwise leak into, or fail on, the developer's real files.
+    Only the variables move, never ``Path.home`` itself, so a test that sets
+    ``HOME``/``USERPROFILE`` for its own fake home still gets it.
+
+    ``XDG_CONFIG_HOME`` is cleared because it is an *absolute* path that wins
+    over ``~`` outright (the OpenCode target reads it on every platform).
+    ``HERMES_HOME``, ``COPILOT_HOME``, ``KIRO_HOME``, ``CODEX_HOME`` and ``LOCALAPPDATA`` are the
+    same hole: the Hermes target reads ``HERMES_HOME`` first and then, on Windows
+    only, ``%LOCALAPPDATA%\\hermes``. ``LOCALAPPDATA`` is *redirected* rather than
+    cleared, because Windows always sets it and other code legitimately reads it.
+
+    Every entry here is an absolute-path variable that outranks ``~``. Any new
+    target that resolves its config through one belongs in this list, and the
+    check is not "does redirecting home cover it", because it does not.
+
+    The language pack's grammar cache derives from home too, so it stays pinned
+    to the real one: a read-only download cache, not user state, and without it
+    every runtime grammar would download again (or fail offline) per test.
+    """
+    if _GRAMMAR_CACHE and not os.environ.get("REPOWISE_GRAMMAR_DIR"):
+        monkeypatch.setenv("REPOWISE_GRAMMAR_DIR", _GRAMMAR_CACHE)
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(fake_home / "AppData" / "Local"))
+    return fake_home
 
 
 @pytest.fixture(autouse=True)

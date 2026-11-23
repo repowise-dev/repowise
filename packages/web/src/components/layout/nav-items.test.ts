@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repoNavGroups, repoNavItems, viewIdFor } from "./nav-items";
+import { WORKSPACE_NAV, repoNavGroups, repoNavItems, viewIdFor } from "./nav-items";
 import en from "../../../messages/en.json";
 import zh from "../../../messages/zh-CN.json";
 
@@ -53,5 +53,11 @@ describe("viewIdFor", () => {
     expect(viewIdFor("/repos/r1")).toBeNull();
     expect(viewIdFor("/repos/r1/zoom")).toBeNull();
     expect(viewIdFor("/nowhere")).toBeNull();
+  });
+});
+
+describe("workspace nav", () => {
+  it("ends with the workspace Setup", () => {
+    expect(WORKSPACE_NAV.at(-1)).toMatchObject({ labelKey: "setup", href: "/workspace/setup" });
   });
 });

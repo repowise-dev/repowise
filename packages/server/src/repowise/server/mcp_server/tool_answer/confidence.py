@@ -276,6 +276,11 @@ def _retrieval_corpus(hits: list[dict], *, include_paths: bool = False) -> str:
                 v = s.get(key)
                 if v:
                     parts.append(str(v))
+        # Implementation bodies the prompt showed beside the page (grounding.py).
+        for g in h.get("_grounding") or []:
+            parts.append(f"{g.get('name', '')}\n{g.get('source', '')}")
+            if include_paths and g.get("path"):
+                parts.append(str(g["path"]))
         # A concept-anchored hit's rationale comment was selected for containing
         # the question's number; without it the value/frame gates would flag the
         # correct number the answer echoes as invented.
@@ -780,6 +785,7 @@ def _degraded_confidence(
     *,
     lead_outside_top: bool = False,
     graph_answered: bool = False,
+    body_answered: bool = False,
 ) -> str:
     """Grade a synthesis-less payload on what a caller can act on, not on prose.
 
@@ -800,12 +806,17 @@ def _degraded_confidence(
 
     ``graph_answered`` (a caller question the call graph answered) grades
     "medium" on its own: the answer then leads with graph edges, not retrieval.
+    ``body_answered`` (the answer leads with the live body of the code the
+    question names, and that body carries the question's words) grades
+    "medium" over a weak retrieval: exact-name resolution found the body, not
+    the ranking that rated weak. A body whose file hybrid retrieval ranks
+    outside its top still grades "low", as any other lead.
     """
     if reason == "no-llm-provider" and graph_answered:
         return "medium"
     if reason != "no-llm-provider" or lead_outside_top:
         return "low"
-    return "low" if retrieval_quality == "weak" else "medium"
+    return "low" if retrieval_quality == "weak" and not body_answered else "medium"
 
 
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:

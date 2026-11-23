@@ -94,12 +94,17 @@ instead of restating *what*.
 
 `repowise init` never requires a key. Without one it renders the whole wiki from
 structure and exits 0. Ask for it explicitly with `--no-prose`, which is what
-free-tier, CI and air-gapped runs want.
+free-tier, CI and [air-gapped runs](../start/OFFLINE.md) want.
 
-What you give up is the subsystem prose, and semantic search until an embedder is
-configured. Full-text and symbol search work either way. File pages, symbol
-pages, hotspots, ownership, dead code, the dependency graph, code health and
-decision archaeology are identical.
+A keyless run builds every page from structure. A model adds the subsystem
+prose, written answers from `get_answer` (keyless, it returns ranked, cited
+evidence), and decisions read from pull requests, history and comments.
+Decisions from inline markers and ADR files are mined either way. Semantic
+search comes from an embedder, which is separate from the model and runs
+locally with Ollama (`ollama pull embeddinggemma`, then
+`repowise reindex --embedder ollama`). Full-text and symbol search, file and
+symbol pages, hotspots, ownership, dead code, the dependency graph and code
+health are identical.
 
 ### Two facts on every page
 

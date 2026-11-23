@@ -371,7 +371,7 @@ async def test_reindex_persists_its_resolved_embedder(
     # _reindex imports build_embedder from this module inside the function, so
     # the module attribute is the one that takes effect.
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -420,7 +420,7 @@ async def test_reindex_does_not_pin_an_embedder_that_wrote_nothing(
         "sqlalchemy.ext.asyncio.async_sessionmaker", lambda *a, **k: lambda: _Session()
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -538,7 +538,7 @@ def test_mock_width_with_a_real_pin_proposes_a_re_embed(
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     _patch_stored_dim(monkeypatch, 8)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -570,7 +570,7 @@ def test_two_real_widths_are_never_compared(
 
     monkeypatch.setattr(
         "repowise.cli.providers.embedders.build_embedder",
-        lambda _n, _p=None: _MisreportingEmbedder(),
+        lambda _n, _p=None, **_kw: _MisreportingEmbedder(),
     )
 
     assert _vector_dims(tmp_path) == (None, None)
@@ -635,7 +635,7 @@ def test_a_real_pin_still_reads_the_stored_table(
 
     monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -1016,7 +1016,7 @@ async def test_an_unchanged_real_embedder_never_opens_lancedb(
     _write_config(tmp_path, embedder="openai")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
     _forbid_lancedb(monkeypatch)
 
@@ -1035,7 +1035,7 @@ async def test_switching_to_a_real_embedder_still_proposes_the_re_embed(
     _write_config(tmp_path, embedder="openai")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None, **_kw: _WideEmbedder()
     )
     with monkeypatch.context() as m:
         _forbid_lancedb(m)

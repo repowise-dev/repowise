@@ -30,6 +30,17 @@ ActionRule = Literal[
     "knowledge_loss",
     "broken_doc_refs",
     "dead_code_batch",
+    # Setup steps (``rules.setup``): live facts about this machine and checkout,
+    # evaluated on every read, never stored. Ahead of the stored signal rules
+    # so a found report outranks "add a report".
+    "sync_hook_missing",
+    "coverage_found",
+    "evidence_found",
+    "decisions_unchecked",
+    "docs_model_ready",
+    "settings_suggested",
+    "always_load_suggested",
+    "distill_suggested",
     "coverage_missing",
     "coverage_stale",
     "runtime_missing",
@@ -67,6 +78,7 @@ ActionSurface = Literal[
     "decisions",
     "commits",
     "coverage",
+    "setup",
 ]
 ACTION_SURFACES: tuple[str, ...] = get_args(ActionSurface)
 

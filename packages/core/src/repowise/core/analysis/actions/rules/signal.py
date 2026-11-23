@@ -128,9 +128,7 @@ def runtime_missing(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     if rt.status != "unknown":
         return RuleOutcome(rule, "evaluated", "Runtime evidence is ingested.")
     if not rt.targets:
-        return RuleOutcome(
-            rule, "not_applicable", "No entry point, benchmark or test suite in the index to run."
-        )
+        return RuleOutcome(rule, "not_applicable", "Evidence setup offers nothing to run.")
     if ctx.production_files < COVERAGE_MIN_FILES:
         return RuleOutcome(rule, "not_applicable", "Too few files for a profile to change the list.")
     found = [_TARGET_WORDS[t] for t in rt.targets if t in _TARGET_WORDS]

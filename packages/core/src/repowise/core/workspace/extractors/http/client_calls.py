@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
-from ..strings import StringSyntax, literal_span, resolve_string
+from ..strings import Arg, StringSyntax, literal_span, resolve_string, select_argument
 from .dialect import build_consumer_contract, method_from_callee
 
 if TYPE_CHECKING:
@@ -86,6 +86,25 @@ def method_from_argument(text: str) -> str | None:
     if not m and word.startswith("Method") and len(word) > len("Method"):
         word = word[len("Method") :]
     return word.upper() if word.lower() in VERBS else None
+
+
+_METHOD_KEY = Arg(keys=("method",))
+# TypeScript casts and checks after a value or an options object (`'DELETE' as
+# const`, `{ ... } as unknown as RequestInit`, `{ ... } satisfies RequestInit`).
+_TS_CAST_RE = re.compile(r"(?:\s+(?:as|satisfies)\s+[\w.<>\[\]]+)+\s*$")
+
+
+def method_from_options(args: list[str]) -> str | None:
+    """The verb a call's options names (``{ method: 'POST' }``, ``method="POST"``), else ``None``.
+
+    *args* are the call's arguments after the URL. Only a top-level ``method``
+    entry of an options object (or a ``method=`` keyword) counts, so a
+    ``method`` key inside a request body is not read as the call's verb. Only
+    an HTTP verb counts: a body passed as the second argument may carry its
+    own ``method`` field (``{ method: 'card' }``).
+    """
+    methods = select_argument([_TS_CAST_RE.sub("", a) for a in args], _METHOD_KEY)
+    return method_from_argument(_TS_CAST_RE.sub("", methods[0]).strip()) if methods else None
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +174,7 @@ def consumer_contracts(
             line=line_at(ctx.content, m.offset),
             origin=m.origin,
             bound_bases=bound_bases,
+            offset=m.offset,
         )
         if c is not None:
             out.append(c)
@@ -201,4 +221,5 @@ __all__ = [
     "join_base",
     "matches_in",
     "method_from_argument",
+    "method_from_options",
 ]

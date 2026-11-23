@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -82,19 +82,45 @@ def _hub_degree_cutoff(degree: dict[str, int]) -> int:
     return max(_HUB_DEGREE_FLOOR, values[idx])
 
 
-def _seed_neighbors(
-    pairs: list[tuple[str, str]], seed_set: set[str], existing: set[Any]
-) -> tuple[set[str], dict[str, int]]:
-    """Files one hop from a seed and not yet a candidate, plus every file's degree."""
-    neighbors: set[str] = set()
+class _ProjectedGraph(NamedTuple):
+    """The projected edges as each file's neighbours, and every file's degree."""
+
+    neighbours: dict[str, set[str]]
+    degree: dict[str, int]
+
+
+async def _projected_graph(session: Any, repo_id: str) -> _ProjectedGraph:
+    """:func:`_projected_edges` indexed by file, so a question reads its seeds'
+    neighbours instead of walking every edge."""
+    neighbours: dict[str, set[str]] = {}
     degree: dict[str, int] = {}
-    for src_file, tgt_file in pairs:
+    for src_file, tgt_file in await _projected_edges(session, repo_id):
         degree[src_file] = degree.get(src_file, 0) + 1
         degree[tgt_file] = degree.get(tgt_file, 0) + 1
-        for mine, theirs in ((src_file, tgt_file), (tgt_file, src_file)):
-            if mine in seed_set and theirs not in existing:
-                neighbors.add(theirs)
-    return neighbors, degree
+        neighbours.setdefault(src_file, set()).add(tgt_file)
+        neighbours.setdefault(tgt_file, set()).add(src_file)
+    return _ProjectedGraph(neighbours, degree)
+
+
+async def projected_graph(session: Any, repo_id: str) -> _ProjectedGraph:
+    """:func:`_projected_graph`, built once per index state. Read-only."""
+    return await per_index(
+        session,
+        repo_id,
+        "projected_graph",
+        lambda: _projected_graph(session, repo_id),
+        persist=True,
+    )
+
+
+def _seed_neighbors(graph: _ProjectedGraph, seed_set: set[str], existing: set[Any]) -> set[str]:
+    """Files one hop from a seed and not yet a candidate."""
+    return {
+        theirs
+        for seed in seed_set
+        for theirs in graph.neighbours.get(seed, ())
+        if theirs not in existing
+    }
 
 
 async def _neighbor_pages(
@@ -178,10 +204,8 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     async with get_session(ctx.session_factory) as session:
         # Every edge type, co-changes included, projected from the symbol layer
         # too so call edges reach the seeds.
-        pairs = await per_index(
-            session, repo_id, "projected_edges", lambda: _projected_edges(session, repo_id)
-        )
-        neighbors, degree = _seed_neighbors(pairs, set(seed_paths), existing)
+        graph = await projected_graph(session, repo_id)
+        neighbors = _seed_neighbors(graph, set(seed_paths), existing)
         if not neighbors:
             return hits
         page_rows, pr_by_path = await _neighbor_pages(session, neighbors)
@@ -189,7 +213,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     if not page_rows:
         return hits
 
-    page_rows = _drop_hubs(page_rows, degree)
+    page_rows = _drop_hubs(page_rows, graph.degree)
     additions = _expansion_candidates(seeds, page_rows, pr_by_path)[:_GRAPH_EXPAND_MAX_NEW]
     if not additions:
         return hits

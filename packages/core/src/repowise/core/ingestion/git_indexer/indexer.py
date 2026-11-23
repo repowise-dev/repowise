@@ -24,6 +24,7 @@ import structlog
 
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.forges import detect_forge
+from repowise.core.procutils import available_memory_bytes as _available_memory_bytes
 from repowise.core.settings.model import flag
 
 from ._constants import (
@@ -65,11 +66,14 @@ from .records import (
     _should_skip_index,
     _tz_offset_minutes,
     capture_repo_totals,
+    repo_people,
 )
 from .tiers import GitIndexTier
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
+
+    from repowise.core.author_identity import IdentityResolver
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
 # When git cat-file streams are GC'd after the subprocess pipe is closed,
@@ -107,39 +111,6 @@ _GIT_WORKER_MEMORY_BYTES = 384 * 1024 * 1024
 _GIT_MEMORY_RESERVE_BYTES = 512 * 1024 * 1024
 
 
-def _available_memory_bytes() -> int | None:
-    """Best-effort available physical memory without an optional dependency."""
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            class _MemoryStatus(ctypes.Structure):
-                _fields_ = [
-                    ("length", ctypes.c_ulong),
-                    ("memory_load", ctypes.c_ulong),
-                    ("total_physical", ctypes.c_ulonglong),
-                    ("available_physical", ctypes.c_ulonglong),
-                    ("total_page_file", ctypes.c_ulonglong),
-                    ("available_page_file", ctypes.c_ulonglong),
-                    ("total_virtual", ctypes.c_ulonglong),
-                    ("available_virtual", ctypes.c_ulonglong),
-                    ("available_extended_virtual", ctypes.c_ulonglong),
-                ]
-
-            status = _MemoryStatus()
-            status.length = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.available_physical)
-        except (AttributeError, OSError, TypeError, ValueError):
-            return None
-    try:
-        pages = os.sysconf("SC_AVPHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return int(pages) * int(page_size)
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-
 def git_worker_count(
     pending: int,
     *,
@@ -155,9 +126,7 @@ def git_worker_count(
     affinity_count = getattr(os, "process_cpu_count", None)
     cpus = cpu_count or (affinity_count() if affinity_count else None) or os.cpu_count() or 1
     available = (
-        available_memory_bytes
-        if available_memory_bytes is not None
-        else _available_memory_bytes()
+        available_memory_bytes if available_memory_bytes is not None else _available_memory_bytes()
     )
     memory_workers = _MAX_GIT_WORKERS
     if available is not None:
@@ -191,6 +160,8 @@ class _FilePassInputs:
     note_agents: dict[str, Any]
     trace_index: Any
     shallow_roots: frozenset[str] = frozenset()
+    # The repo's people resolver; every per-file author figure keys on it.
+    resolve: IdentityResolver | None = None
 
 
 @dataclass
@@ -215,6 +186,7 @@ class _IndexSetup:
     fallback_note_agents: dict[str, Any] = field(default_factory=dict)
     as_of_ts: Any = None
     blame_graph: BlameGraph = field(default_factory=BlameGraph)
+    people: IdentityResolver | None = None
 
 
 class _ChangedScope(NamedTuple):
@@ -225,6 +197,16 @@ class _ChangedScope(NamedTuple):
     history_files: set[str]
     history_changed: set[str]
     co_change_files: set[str] | None
+
+
+def _repo_people_or_none(repo: Any) -> IdentityResolver | None:
+    """The repo's people resolver, or ``None`` when the author walk fails: each
+    file then merges its own authors (see ``index_file``)."""
+    try:
+        return repo_people(repo)
+    except Exception as exc:
+        logger.debug("repo_people_failed", error=str(exc))
+        return None
 
 
 def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
@@ -411,6 +393,7 @@ class GitIndexer:
             note_agents=fallback_note_agents,
             trace_index=trace_index,
             shallow_roots=shallow_roots(str(self.repo_path)),
+            resolve=setup.people,
         )
 
         async def _co_change_task() -> CoChangeWalk:
@@ -458,7 +441,9 @@ class GitIndexer:
             metadata_list, walk, (fix_walk, prior_defects, repo_totals) = await asyncio.gather(
                 _file_pass(),
                 _co_change_task(),
-                asyncio.to_thread(self._repo_wide_passes, set(indexable_files), as_of_ts, timings),
+                asyncio.to_thread(
+                    self._repo_wide_passes, set(indexable_files), as_of_ts, timings, setup.people
+                ),
             )
         finally:
             # Abandon timed-out threads immediately instead of letting
@@ -584,6 +569,7 @@ class GitIndexer:
             fallback_note_agents = load_git_ai_note_agents(repo, None)
 
         as_of_ts = self._resolve_as_of_ts(repo)
+        people = _repo_people_or_none(repo)
         return _IndexSetup(
             outcome="ready",
             repo=repo,
@@ -598,6 +584,7 @@ class GitIndexer:
             fallback_files=fallback_files,
             fallback_note_agents=fallback_note_agents,
             as_of_ts=as_of_ts,
+            people=people,
             blame_graph=graph_job.result() if graph_job else BlameGraph(),
         )
 
@@ -769,6 +756,7 @@ class GitIndexer:
         history_changed -= fallback_files
         fallback_note_agents = fallback_note_agents_for(repo, fallback_files, changed_file_paths)
         as_of_ts = self._resolve_as_of_ts(repo)
+        people = _repo_people_or_none(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
         executor_closed = False
@@ -800,6 +788,7 @@ class GitIndexer:
             note_agents=fallback_note_agents,
             trace_index=trace_index,
             shallow_roots=shallow_roots(str(self.repo_path)),
+            resolve=people,
         )
         try:
             with timed(timings, "rebuild.git.changed_files"):
@@ -859,6 +848,7 @@ class GitIndexer:
                     prov_clf,
                     prior_defects,
                     history_files,
+                    people,
                 ),
             )
 
@@ -986,6 +976,7 @@ class GitIndexer:
                 trace_index=inputs.trace_index,
                 history_only=file_path in inputs.history_only,
                 shallow_roots=inputs.shallow_roots,
+                resolve=inputs.resolve,
             )
         except Exception:
             return {"file_path": file_path}
@@ -1048,6 +1039,7 @@ class GitIndexer:
         walk: CoChangeWalk,
         prior_defects: PriorDefects,
         history_files: set[str],
+        people: IdentityResolver | None = None,
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
 
@@ -1081,6 +1073,7 @@ class GitIndexer:
                     provenance_classifier=prov_clf,
                     history_only=True,
                     shallow_roots=cut,
+                    resolve=people,
                 )
                 continue
             meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts, cut)
@@ -1262,7 +1255,11 @@ class GitIndexer:
                 repo.close()
 
     def _repo_wide_passes(
-        self, indexable_files: set[str], as_of_ts: float | None, timings: Any | None
+        self,
+        indexable_files: set[str],
+        as_of_ts: float | None,
+        timings: Any | None,
+        people: IdentityResolver | None = None,
     ) -> tuple[FixWalk, PriorDefects, RepoTotals]:
         """The fix-commit walk, its prior-defect counts, and whole-history totals.
 
@@ -1302,7 +1299,7 @@ class GitIndexer:
                 except Exception as exc:
                     logger.debug("prior_defect_pass_failed", error=str(exc))
             with timed(timings, "git.repo_totals"):
-                totals = capture_repo_totals(repo)
+                totals = capture_repo_totals(repo, people=people)
         finally:
             repo.close()
         return fix_walk, prior_defects, totals

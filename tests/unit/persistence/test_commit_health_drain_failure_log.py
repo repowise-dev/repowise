@@ -11,7 +11,7 @@ def test_failed_drain_logs_traceback(tmp_path, monkeypatch):
     async def boom(*_a, **_k):
         raise RuntimeError("scan exploded")
 
-    monkeypatch.setattr(drain_mod, "wait_for_turn", lambda _p: True)
+    monkeypatch.setattr(drain_mod, "wait_for_turn", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(drain_mod, "_drain_store", boom)
     monkeypatch.setattr("repowise.core.update_lock.release_commit_health_lock", lambda _p: None)
 

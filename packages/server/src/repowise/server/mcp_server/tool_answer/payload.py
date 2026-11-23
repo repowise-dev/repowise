@@ -617,12 +617,6 @@ async def build_synthesized_payload(
                 + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
             )
         payload["note"] = (payload["note"] + " " + _caveat) if payload.get("note") else _caveat
-        if payload.get("best_guesses") and not rests_on_source:
-            payload.setdefault(
-                "next_action_hint",
-                f"Verify against {payload['best_guesses'][0]['file']} — it scored "
-                "highest, but retrieval was ambiguous across the top candidates.",
-            )
     return payload
 
 

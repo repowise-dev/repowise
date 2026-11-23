@@ -83,7 +83,15 @@ CONTRACTS_FILENAME = "contracts.json"
 # An HTTP or gRPC consumer whose id two or more repos serve, with nothing
 # placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 # Version 16 adds Temporal task queues (workers and clients).
-CONTRACTS_VERSION = 16
+# Version 17 scopes a FastAPI include_router prefix to the router it mounts and
+# keys Express mounts by module; reads a client call's method from its options
+# and a typed wrapper; composes a base left to a class field or a wrapper, drops
+# the prefix a wrapper's own inner call yields, and reads a static field through
+# ``this`` or its class name; keeps a class's name when a comment above its
+# header says class, and strips a base built from a scheme and a host
+# placeholder; and leaves contract ends in test, docs, tooling, generated and
+# vendored code out (#6005, #6012, #6014, #6015, #6089, #6104, #6113, #6119).
+CONTRACTS_VERSION = 17
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -868,6 +876,56 @@ def _extractor_kwargs(
     return {}
 
 
+#: The ``extraction_stats`` key counting contract ends left out for their origin.
+NON_PRODUCTION_ENDS_STAT = "contract_ends_not_production"
+#: Code origins whose calls and routes are not the system's own contract ends: a
+#: test, an e2e or smoke script, a docs example or a tooling script calls real
+#: routes. Generated code is the output of a contract and vendored code a copy
+#: of someone else's library, neither a party to one; a data folder's code is
+#: material the product reads by path.
+_NOT_CONTRACT_ORIGINS = frozenset(
+    {"test", "docs_example", "tooling", "generated", "vendored", "data"}
+)
+
+
+async def _production_ends(
+    contracts: list[Contract], repo_index: RepoIndex | None
+) -> tuple[list[Contract], int]:
+    """*contracts* without the ends in non-production code, and how many were left out.
+
+    The origin is the stored ``code_origin`` when the repo's index has one,
+    else :func:`~repowise.core.code_origin.path_origin`. Only source code is
+    judged: a schema document (an OpenAPI spec under ``docs/``, a ``.proto``,
+    SQL) and a schema migration describe the contract wherever they sit.
+    """
+    from repowise.core.code_origin import is_migration_path, path_origin
+    from repowise.core.evidence.ingest import load_origins
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    code = REGISTRY.all_code_extensions()
+    judged = {
+        c.file_path
+        for c in contracts
+        if Path(c.file_path).suffix.lower() in code and not is_migration_path(c.file_path)
+    }
+    if not judged:
+        return contracts, 0
+    from sqlalchemy.exc import SQLAlchemyError
+
+    origins: dict[str, str] = {}
+    session = repo_index.session if repo_index is not None else None
+    if session is not None:
+        try:
+            origins = await load_origins(session, repo_index.repo_id, judged)
+        except (SQLAlchemyError, AttributeError, TypeError):
+            # An index without health rows, or a stand-in session: the path decides.
+            origins = {}
+    origins = origins or {p: path_origin(p) for p in judged}
+    left_out = {p for p in judged if origins.get(p) in _NOT_CONTRACT_ORIGINS}
+    kept = [c for c in contracts if c.file_path not in left_out]
+    return kept, len(contracts) - len(kept)
+
+
 async def _extract_one_repo(
     extraction: _RepoExtraction, alias: str, repo_path: Path
 ) -> tuple[list[Contract], dict[str, int]]:
@@ -929,6 +987,13 @@ async def _extract_one_repo(
     contracts.extend(code_rows)
     stats.update(code_surface.stats.get(alias, {}))
 
+    # The probe still sees every end a dialect read: a call left out for its
+    # origin was recognised, not missed.
+    read = contracts
+    contracts, dropped = await _production_ends(contracts, repo_index)
+    if dropped:
+        stats[NON_PRODUCTION_ENDS_STAT] = dropped
+
     # The OpenAPI document and a framework route describe one provider: keep the
     # code-backed identity, enriched with the spec's wire shape.
     contracts = merge_openapi_providers(contracts, stats)
@@ -939,7 +1004,7 @@ async def _extract_one_repo(
     # The calls no dialect read, the miss half of any coverage figure.
     stats.update(
         await asyncio.to_thread(
-            _probe_misses, files, contracts, extraction.contract_config.detect_topics
+            _probe_misses, files, read, extraction.contract_config.detect_topics
         )
     )
 

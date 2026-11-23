@@ -14,6 +14,14 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@repowise-dev/ui", "@repowise-dev/types", "@repowise-dev/api-client"],
   experimental: {
     optimizePackageImports: ["lucide-react", "recharts"],
+    // middleware.ts rewrites /api/* to the API, and Next proxies that rewrite
+    // with a 30 s socket idle timeout by default. A model call (report
+    // rewrite, chat before its first token, decision mining) can stay silent
+    // longer, and the proxy then hangs up while the API still finishes the
+    // work. Ten minutes covers any one model call; it is an idle timeout, so
+    // a stream that keeps sending is never cut. This config is serialized into
+    // the standalone server.js that `repowise serve` runs.
+    proxyTimeout: 10 * 60 * 1000,
   },
   // The workspace packages (@repowise-dev/types, @repowise-dev/ui,
   // @repowise-dev/api-client) are ESM

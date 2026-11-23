@@ -34,6 +34,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from repowise.cli.ci import (
@@ -152,9 +153,10 @@ def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain
     from repowise.core.ci.base import in_ci
 
     config = _selection_config(repo_path) if explain or fmt in ("json", "args", "list") else None
+    root = str(repo_root(str(repo_path)))
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
-        revspec = ci_revspec(str(repo_root(str(repo_path))), None)
+        revspec = ci_revspec(root, None)
     return change_set(str(repo_path), revspec, staged=staged), config
 
 
@@ -266,7 +268,7 @@ def _render(
             err_console.print("[yellow]No index - run `repowise init`.[/yellow]")
         elif result["unknown"]:
             err_console.print(
-                f"[yellow]{len(result['unknown'])} changed file(s) have no coverage, no "
+                f"[yellow]{len(result['unknown'])} changed file(s) have no per-test coverage, no "
                 f"test reaching them in the graph and no paired test; run the full suite "
                 f"to be safe.[/yellow]"
             )
@@ -384,6 +386,7 @@ def _render_selection(
             "unknown_files": result["unknown"],
             "indexed_commit": result["indexed_commit"],
             "map_current": result["map_current"],
+            "matched_by_file": result.get("matched_by_file", []),
             "run_all": run_all,
             "reasons": reasons,
             "selected": selected,
@@ -422,10 +425,11 @@ def _print_map_state(result: dict) -> None:
             "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
-    elif not result["map_current"]:
+    elif by_file := result.get("matched_by_file"):
         console.print(
             "[yellow]The test-to-code map was measured at another commit[/yellow], so "
-            "covering tests are matched by file, not by changed line."
+            f"covering tests of {len(by_file)} changed file(s) are matched by file, not "
+            f"by changed line (e.g. {escape(by_file[0])})."
         )
 
 
@@ -439,7 +443,8 @@ def _print_covered(result: dict) -> None:
     table.add_column("Test", style="green")
     table.add_column("Changed file(s) it covers")
     for tid, info in sorted(covered.items()):
-        table.add_row(tid, "\n".join(info["source_files"]))
+        # Paths and test ids are text, not markup: rich drops a Next.js `[slug]` segment.
+        table.add_row(escape(tid), escape("\n".join(info["source_files"])))
     console.print(table)
     console.print(
         f"[green]{len(covered)} test(s)[/green] directly cover the change "
@@ -459,14 +464,14 @@ def _print_inferred(inferred: list[dict]) -> None:
         per_file.setdefault(g["source_file"], []).append(g)
     for rows in per_file.values():
         for g in rows[:_TABLE_CANDIDATES]:
-            table.add_row(g["source_file"], g["test_file"], g["via"])
+            table.add_row(escape(g["source_file"]), escape(g["test_file"]), g["via"])
     for source, rows in per_file.items():
         if len(rows) > _TABLE_CANDIDATES:
-            table.add_row(source, f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
+            table.add_row(escape(source), f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
     console.print(table)
     console.print(
         f"[yellow]{len(inferred)} candidate(s)[/yellow] for {len(per_file)} file(s) "
-        "with no coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
+        "with no per-test coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
         "[dim]call-graph[/dim] = a test whose calls reach this file; "
         "[dim]import-graph[/dim] = a test that imports it, directly or not; "
         "[dim]filename-pattern[/dim] = a name-shaped guess. None proves execution - "
@@ -478,8 +483,8 @@ def _print_unknown(unknown: list[str]) -> None:
     if not unknown:
         return
     console.print(
-        f"[red]{len(unknown)} changed file(s)[/red] have no coverage, no test "
+        f"[red]{len(unknown)} changed file(s)[/red] have no per-test coverage, no test "
         "reaching them in the graph and no paired test - run the full suite to be safe:"
     )
     for path in unknown:
-        console.print(f"  [red]{path}[/red]")
+        console.print(f"  [red]{escape(path)}[/red]")

@@ -668,6 +668,63 @@ def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> N
     assert [r.symbol_id for r in _benchmarks(root)] == [None]
 
 
+_GO_BENCH = Path(__file__).parents[2] / "fixtures" / "go_bench"
+
+
+def _go_bench_repo(root: Path) -> str:
+    """The Go fixture module committed into *root*, its benchmarks indexed; the new HEAD."""
+    import shutil
+
+    import git as gitpython
+
+    shutil.copy(_GO_BENCH / "go.mod", root / "go.mod")
+    shutil.copytree(_GO_BENCH / "strs", root / "strs")
+    repo = gitpython.Repo(root)
+    repo.index.add(["go.mod", "strs/join.go", "strs/join_test.go"])
+    head = repo.index.commit("go").hexsha
+    repo.close()
+
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "strs/join_test.go"
+                session.add(HealthFileMetric(repository_id="r1", file_path=path, code_origin="test"))
+                for name, line in (("BenchmarkJoin", 10), ("BenchmarkConcat", 16)):
+                    session.add(
+                        WikiSymbol(
+                            repository_id="r1", file_path=path, symbol_id=f"{path}::{name}",
+                            name=name, qualified_name=name, kind="function", start_line=line,
+                            end_line=line + 5,
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+    return head
+
+
+def test_go_bench_output_is_stored_with_exact_allocations(indexed) -> None:
+    root, _ = indexed
+    head = _go_bench_repo(root)
+    result = _add(
+        str(_GO_BENCH / "bench.txt"), "--workload", "go bench results ./strs",
+        "--class", "benchmark", "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["matched"], payload["unlinked"]) == (
+        "go-bench", "benchmark", 3, {},
+    )
+    rows = {r.benchmark_key: r for r in _benchmarks(root)}
+    join = rows["example.com/gobench/strs.BenchmarkJoin"]
+    assert (join.symbol_id, join.unit, join.rounds) == ("strs/join_test.go::BenchmarkJoin", "ns", 2)
+    assert (join.allocs_per_op, join.bytes_per_op) == (1, 24)
+    concat = rows["example.com/gobench/strs.BenchmarkConcat/n=5"]
+    assert (concat.symbol_id, concat.allocs_per_op) == ("strs/join_test.go::BenchmarkConcat", 4)
+
+
 def test_a_red_suites_profile_is_stored_with_its_failed_count(indexed) -> None:
     root, head = indexed
     path = root / "suite.speedscope.json"
@@ -711,6 +768,27 @@ def test_a_short_entry_point_run_is_stored_with_a_warning(indexed, seconds, warn
     assert result.exit_code == 0, result.output
     assert ("profile covers 0.4 s" in result.output) is warned
     assert len(_stored(root)[0]) == 1
+
+
+def test_a_directory_of_junit_reports_is_one_run(indexed) -> None:
+    root, head = indexed
+    reports = root / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    for name in ("A", "B"):
+        (reports / f"TEST-com.acme.{name}Test.xml").write_text(
+            f'<testsuite name="com.acme.{name}Test">'
+            f'<testcase classname="com.acme.{name}Test" name="works()" time="0.5"/></testsuite>'
+        )
+    (reports / "com.acme.ATest.txt").write_text("not read")
+
+    result = _add(
+        str(reports), "--workload", "maven tests", "--class", "unit_test",
+        "--commit", head, "--format", "json",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["entries"]) == ("junit", "test_timing", 2)
 
 
 def test_several_profiles_and_a_directory_merge_into_one_tagged_run(
@@ -770,3 +848,91 @@ def test_mixed_formats_in_one_run_are_refused_as_json(indexed) -> None:
     assert result.exit_code == 1, result.output
     assert "different formats" in result.stdout
     assert _stored(root) == ([], [])
+
+
+def _tests(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["tests", *args])
+
+
+def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
+    root, head = indexed
+    assert _json(_tests("--format", "json"))["status"] == "no_test_timings"
+    report = root / "junit.xml"
+    report.write_text(
+        '<testsuite name="pytest">'
+        '<testcase classname="tests.test_app" name="test_fast" time="0.25"/>'
+        '<testcase classname="tests.test_app" name="test_slow" time="4.5"/>'
+        "</testsuite>"
+    )
+    added = _add(str(report), "--workload", "pytest", "--class", "unit_test", "--commit", head)
+    assert added.exit_code == 0, added.output
+
+    payload = _json(_tests("--format", "json", "--limit", "1"))
+
+    assert payload["status"] == "measured"
+    (slowest,) = payload["slow_tests"]
+    assert (slowest["test_id"].endswith("::test_slow"), slowest["duration_s"]) == (True, 4.5)
+    assert payload["tests_total"] == 2
+    assert payload["file_costs"]["basis"] == "inferred"
+    table = _tests()
+    assert table.exit_code == 0
+    assert f"4.50s  {slowest['test_id']}" in table.stdout
+
+
+@pytest.mark.parametrize("elsewhere", [False, True])
+def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
+    indexed, tmp_path_factory: pytest.TempPathFactory, elsewhere: bool
+) -> None:
+    from repowise.core.persistence.models import EvidenceTestTiming
+
+    root, head = indexed
+    # The run may come from another checkout of the repository (--checkout-root).
+    checkout = tmp_path_factory.mktemp("checkout") if elsewhere else root
+
+    async def index_test_file() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(HealthFileMetric(repository_id="r1", file_path="web/src/cart.test.ts",
+                                             code_origin="test"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(index_test_file())
+    # Vitest ran in web/ and names its files from there.
+    (checkout / "web").mkdir()
+    (checkout / "web" / "junit.xml").write_text(
+        '<testsuites><testsuite name="src/cart.test.ts">'
+        '<testcase classname="src/cart.test.ts" name="cart &gt; adds" time="0.5"/></testsuite></testsuites>'
+    )
+
+    where = ["--checkout-root", str(checkout)] if elsewhere else []
+    result = _add(str(checkout / "web" / "junit.xml"), "--workload", "web: vitest tests", "--class",
+                  "unit_test", "--commit", head, *where)
+
+    assert result.exit_code == 0, result.output
+
+    async def stored() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return list((await session.execute(select(EvidenceTestTiming))).scalars())
+        finally:
+            await engine.dispose()
+
+    (row,) = asyncio.run(stored())
+    assert (row.test_id, row.test_file) == ("web/src/cart.test.ts::cart > adds", "web/src/cart.test.ts")
+
+
+def test_tests_says_how_many_files_every_timed_test_runs() -> None:
+    payload = {
+        "runs": [], "tests_total": 2, "slow_tests": [],
+        "file_costs": {
+            "basis": "measured", "files_total": 1, "not_production": 0, "every_test": 3,
+            "files": [{"file_path": "src/app.py", "test_seconds": 3.0, "timed_tests": 1, "tests": 1}],
+        },
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text

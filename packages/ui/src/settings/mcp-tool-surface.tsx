@@ -14,6 +14,7 @@ import * as React from "react";
 import { Switch } from "../ui/switch";
 import { SettingsRow, SettingsRows, type SaveState } from "./settings-primitives";
 import type { RegistrySetting } from "./settings-registry-types";
+import { formatNumber } from "../lib/format";
 
 export type McpToolProfileName = "core" | "lean" | "standard" | "all";
 
@@ -72,9 +73,9 @@ export const DEFAULT_MCP_TOOL_SURFACE_LABELS: McpToolSurfaceLabels = {
     `Claude Code loads tool schemas only when needed, so it lists ${standard} tools. ` +
     `Other clients load every schema each turn, so they list the ${core} core tools. ` +
     "Switches below add or remove tools for every client.",
-  summary: (on, tokens) => `${on} tools on, about ${tokens.toLocaleString()} schema tokens per turn on clients that load schemas up front.`,
+  summary: (on, tokens) => `${on} tools on, about ${formatNumber(tokens)} schema tokens per turn on clients that load schemas up front.`,
   summaryPerClient: (standard, others, tokens) =>
-    `Claude Code lists ${standard} tools. Other clients list ${others}, about ${tokens.toLocaleString()} schema tokens per turn.`,
+    `Claude Code lists ${standard} tools. Other clients list ${others}, about ${formatNumber(tokens)} schema tokens per turn.`,
   restart: "Applies when the MCP server next starts: restart it, or your agent.",
   workspaceOnly: "workspace only",
   coreBadge: "core",

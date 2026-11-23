@@ -72,6 +72,7 @@ from repowise.core.analysis.health.queue.eligibility import (
     Verdict,
     dead_spans,
     finding_verdict,
+    observation,
     path_verdict,
     perf_fix_verdict,
     refactor_verdict,
@@ -405,12 +406,14 @@ def _perf_units(
 
 
 def _interventions(performance: Rows) -> dict[tuple[str, str], list[Any]]:
-    """Open performance rows by (file, intervention symbol)."""
+    """Open performance rows by (file, intervention symbol). An observation
+    (a marker with no fix strategy) is no unit of the queue, so it is left out
+    uncounted."""
     # Ceiling: grouped by the intervention as stored, until persistence writes
     # one row per intervention.
     groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
     for row in performance:
-        if _open(row):
+        if _open(row) and not observation(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
     return groups

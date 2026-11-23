@@ -42,7 +42,9 @@ class ClaudeCodeSetup:
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         from repowise.cli.editor_integrations.claude_config import (
+            _claude_code_user_config_path,
             _resolve_mcp_target,
+            claude_code_entry_pending,
             enable_tool_search_in_claude_code,
             install_claude_code_hooks,
             register_with_claude_code,
@@ -62,6 +64,13 @@ class ClaudeCodeSetup:
         code = register_with_claude_code(repo_path)
         if code:
             console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Code MCP registered ({code})")
+        elif claude_code_entry_pending(repo_path):
+            # The write was refused (a sandbox that denies the home folder, or a
+            # file that does not parse); the project's .mcp.json serves the repo.
+            console_obj.print(
+                f"  [dim]Could not write {_claude_code_user_config_path()}; "
+                "this repo's .mcp.json covers it.[/dim]"
+            )
         _suggest_hosted_rename(console_obj, repo_path)
 
         hooks = install_claude_code_hooks()

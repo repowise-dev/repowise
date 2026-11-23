@@ -45,7 +45,7 @@ from ..strings import (
     select_argument,
 )
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
-from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
 from .wrappers import GENERIC_ARGS
@@ -116,7 +116,6 @@ _GLOBALS = tuple((g, lib) for lib in _LIBRARY_LIST for g in lib.globals)
 # Qualifiers a client is called through: its own class, the browser global, Vue.
 _QUALIFIER_RE = re.compile(r"(?:this|window|Vue)\s*\.\s*$")
 
-_METHOD_KEY = Arg(keys=("method",))
 # A local a call's URL or options may be held in; a dotted name is a member, not a local.
 _LOCAL_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
@@ -372,8 +371,7 @@ def _request(
             return None  # `request` takes a config object
         url_raws = select_argument(args[:1], Arg(keys=library.url_keys)) if config else args[:1]
         options = args[:1] if config else args[1:2]
-        methods = select_argument(options, _METHOD_KEY)
-        method = (method_from_argument(methods[0]) if methods else None) or "GET"
+        method = method_from_options(options) or "GET"
     url = strings.text(local(url_raws[0])) if url_raws else None
     if url is None:
         return None
@@ -381,34 +379,40 @@ def _request(
     return method, join_base(client.base if base is None else base, url)
 
 
-class _Fields:
+class FieldScope:
     """The class fields in scope at a call, settled into the file's strings.
 
     Only the innermost class holding the call is in scope, so a field of one
-    class never folds into another's URL. Holes are allowed, and a field built
-    on another (``users = `${this.base}/users```) resolves on the second
-    round, once the first has settled ``this.base``.
+    class never folds into another's URL, and inside a static member only the
+    class's static fields are. Holes are allowed, and a field built on
+    another (``users = `${this.base}/users```) resolves on the second round,
+    once the first has settled ``this.base``.
     """
 
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
-        self._current: ClassFields | None = None
+        self._current: dict[str, str] | None = None
+
+    def raw(self, name: str) -> str | None:
+        """The source text the class entered last sets field *name* (``this.x``) to."""
+        return self._current.get(name) if self._current else None
 
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        if found is self._current:
+        fields = found.fields_at(pos) if found is not None else None
+        if fields is self._current:
             return
         settled = self._strings.settled
-        for name in self._current.fields if self._current else ():
+        for name in self._current or ():
             settled.pop(name, None)
-        self._current = found
-        if found is None:
+        self._current = fields
+        if not fields:
             return
         for _ in range(2):
-            for name, rhs in found.fields.items():
+            for name, rhs in fields.items():
                 text = self._strings.text(rhs)
                 if text is not None:
                     settled[name] = text
@@ -434,7 +438,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
     if not names:
         return [], frozenset()
-    fields = _Fields(strings)
+    fields = FieldScope(strings)
     out: list[Contract] = []
     for _call, args, m, _strings in call_sites(ctx, _calls_for(names), strings):
         if any("this." in a for a in args[:3]):
@@ -461,10 +465,11 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
             client=client.library.name,
             line=line_at(content, m.start()),
             origin=ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.CLIENT_CALL,
+            offset=m.start(),
         )
         if c is not None:
             out.append(c)
     return out, frozenset(names)
 
 
-__all__ = ["client_calls", "client_mounts"]
+__all__ = ["FieldScope", "client_calls", "client_mounts"]

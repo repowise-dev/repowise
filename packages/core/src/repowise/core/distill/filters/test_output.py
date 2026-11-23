@@ -15,12 +15,7 @@ from typing import ClassVar
 
 from repowise.core.distill.filters.base import OutputFilter, cap_block, is_error_line
 from repowise.core.distill.registry import filter_registry
-
-_COMMAND_RE = re.compile(
-    r"^(pytest\b|py\.test\b|jest\b|vitest\b|cargo(?:\.exe)? (?:test|nextest)\b|"
-    r"go(?:\.exe)? test\b|npm(?:\.cmd)? (?:test|run test)\b|pnpm (?:test|run test)\b|"
-    r"yarn (?:test|run test)\b)"
-)
+from repowise.core.test_commands import DISTILL_TEST_RE
 
 # pytest --------------------------------------------------------------------
 _PYTEST_SEP_RE = re.compile(r"^=+ (?P<title>.+?) =+$")
@@ -58,7 +53,7 @@ class TestOutputFilter(OutputFilter):
     min_lines: ClassVar[int] = 10
 
     def matches_command(self, command: str) -> bool:
-        return bool(_COMMAND_RE.match(command))
+        return DISTILL_TEST_RE.match(command) is not None
 
     def matches_content(self, output: str) -> bool:
         return _detect_format(output) is not None
