@@ -73,7 +73,7 @@ export function useEvidenceTests(adapter: PerformanceViewAdapter, enabled: boole
   return useSWR<SuiteCostResponse>(
     load && enabled ? `evidence-tests:${adapter.cacheKey}:${limit}` : null,
     () => load!({ limit }),
-    { ...QUIET, keepPreviousData: true },
+    QUIET,
   );
 }
 
@@ -131,12 +131,15 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
   );
   // Keyed by repository, so another repository opens on the short lists again.
   const [expanded, setExpanded] = useState<string | null>(null);
-  const testsLimit = expanded === adapter.cacheKey ? SLOW_TESTS_MORE : SLOW_TESTS;
-  const {
-    data: suite,
-    error: suiteError,
-    isLoading: suiteLoading,
-  } = useEvidenceTests(adapter, overview != null, testsLimit);
+  const more = expanded === adapter.cacheKey;
+  const testsLimit = more ? SLOW_TESTS_MORE : SLOW_TESTS;
+  // The short lists stay on screen while the longer read is in flight; both
+  // reads are keyed by repository, so nothing carries over to another one.
+  const short = useEvidenceTests(adapter, overview != null, SLOW_TESTS);
+  const long = useEvidenceTests(adapter, overview != null && more, SLOW_TESTS_MORE);
+  const suite = long.data ?? short.data;
+  const suiteError = more ? long.error : null;
+  const suiteLoading = more && long.isLoading;
   return {
     overview,
     leads,

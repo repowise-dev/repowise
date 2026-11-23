@@ -214,6 +214,22 @@ describe("Runtime evidence: where the run sits against the index", () => {
     ).toBeTruthy();
   });
 
+  it("names the older commit for a not-ranked status too, never the sample-count reason", async () => {
+    const older = { ...aheadRun, run_id: "run-old", commit_sha: "a1b2c3d4e5", ingested_at: ago(120) };
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked"),
+          listEvidenceRuns: runsOf([older, { ...junitRun, commit_sha: INDEXED, ingested_at: ago(5) }]),
+        })}
+      />,
+    );
+    expect(await screen.findByText("Measured at a1b2c3d, older than the indexed 23b6fe4.")).toBeTruthy();
+    expect(screen.getByText(/Nothing is ranked from it at this index\./)).toBeTruthy();
+    expect(screen.queryByText(/has changed since/)).toBeNull();
+    expect(screen.queryByText("The stored runs rank no production function.")).toBeNull();
+  });
+
   it("keeps the no-production-function notice for runs at the indexed commit", async () => {
     render(
       <PerformanceView
@@ -471,7 +487,17 @@ describe("Runtime evidence: test time", () => {
       ),
     ).toBeTruthy();
 
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    getEvidenceTests.mockImplementationOnce(async ({ limit = 10 } = {}) => {
+      await held;
+      return suite(limit);
+    });
     fireEvent.click(screen.getByRole("button", { name: "Show 50" }));
+    // The short lists stay while the longer read is in flight, and say so.
+    expect(await screen.findByText("Reading more rows.")).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Slowest tests" })).getAllByRole("listitem")).toHaveLength(10);
+    release();
     await waitFor(() =>
       expect(
         within(

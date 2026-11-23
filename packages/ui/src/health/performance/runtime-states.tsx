@@ -27,7 +27,7 @@ interface Commits {
 type RuntimeNotice =
   | { kind: "tests_only"; workload: string }
   | { kind: "ahead"; commits: Commits; showing: boolean; ranksNothing: boolean; command: string | null }
-  | { kind: "stale"; command: string | null; older: Commits | null }
+  | { kind: "stale"; command: string | null; older: Commits | null; changed: boolean }
   | { kind: "needs_update" | "not_ranked"; command: string | null }
   | { kind: "partial"; run: EvidenceRunSummary };
 
@@ -66,14 +66,17 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
       ranksNothing: unranked,
       command: unranked ? (view.overview?.command ?? null) : null,
     });
-  } else if (status === "stale") {
+  } else if (status === "stale" || (status === "not_ranked" && newest?.position === "older")) {
+    // An older newest run ranks nothing at this index for the same reason as a stale one:
+    // say its commit, never the sample-count reason.
     out.push({
       kind: "stale",
       command: view.overview?.command ?? null,
       older: newest?.position === "older" ? newest.commits : null,
+      changed: status === "stale",
     });
   }
-  if (status === "needs_update" || (status === "not_ranked" && newest?.position !== "ahead")) {
+  if (status === "needs_update" || (status === "not_ranked" && !newest)) {
     out.push({ kind: status, command: view.overview?.command ?? null });
   }
   for (const run of view.runs ?? []) {
@@ -153,8 +156,10 @@ function NoticeFor({
                 ? `Measured at ${sha7(notice.older.measured)}, older than the indexed ${sha7(notice.older.indexed)}.`
                 : "Measured at another commit."}
             </strong>{" "}
-            Every function the stored runs measured has changed since, so nothing is ranked from
-            them. Run the workloads again
+            {notice.changed
+              ? "Every function the stored runs measured has changed since, so nothing is ranked from them."
+              : "Nothing is ranked from it at this index."}{" "}
+            Run the workloads again
             {notice.older ? ` at ${sha7(notice.older.indexed)}` : ""} and add the results.
           </Notice>
           {notice.command ? <CommandLine command={notice.command} /> : null}
