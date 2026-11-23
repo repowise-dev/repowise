@@ -71,6 +71,10 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
     console.print(f"[bold]repowise update --full[/bold]: bringing {repo_path} fully up to date")
 
     def update() -> Any:
+        from repowise.core.update_lock import release_own_update_lock
+
+        # A pass before this one holds the lock until the process exits.
+        release_own_update_lock(repo_path)
         return run_update(
             path=str(repo_path),
             provider_name=opts.provider_name,
@@ -114,7 +118,8 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
             yes=opts.yes,
         )
         if written is not None and not opts.dry_run:
-            _retire_unproduced(repo_path, written)
+            asked = written.stale_page_ids & written.plan.generate_ids
+            retire_unproduced(repo_path, asked, written.generated_pages)
     # Pages the change reached only at a distance (two hops, co-change) were
     # marked stale above, not rendered; a plain pass renders them, free.
     if not opts.dry_run and _stale(repo_path, model_written=False):
@@ -124,19 +129,26 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
     return outcome
 
 
-def _retire_unproduced(repo_path: Path, written: Any) -> None:
-    """Retire the stale pages the generator was asked for and no longer yields.
+def retire_unproduced(repo_path: Path, asked: set[str], pages: list[Any]) -> None:
+    """Retire the pages a render was asked for and no longer yields.
 
-    Rewriting cannot refresh them, so left alone they would stay stale for good.
+    Rendering again cannot refresh them, so left alone they would stay stale for good.
     """
-    produced = {page.page_id for page in written.generated_pages}
-    gone = (written.stale_page_ids & written.plan.generate_ids) - produced
-    if gone:
-        retired = run_async(_retire(repo_path, gone))
+    gone = asked - {page.page_id for page in pages}
+    if not gone:
+        return
+    retired = run_async(_retire(repo_path, gone))
+    if retired:
         console.print(f"Retired {len(retired)} page(s) the code no longer yields.")
 
 
 async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
+    """Tombstone these pages and take them out of search.
+
+    Their vectors go at the next update's persist (the same run, from the
+    update path), which drains the cleanup debt: no vector store is open here.
+    The debt also retries a full-text delete that fails below.
+    """
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         FullTextSearch,
@@ -145,6 +157,7 @@ async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
         get_repository_by_path,
         get_session,
     )
+    from repowise.core.pipeline.cleanup_debt import record_cleanup_debt
     from repowise.core.pipeline.persist.tombstones import retire_page_ids
 
     engine = create_engine(get_db_url_for_repo(repo_path))
@@ -155,6 +168,8 @@ async def _retire(repo_path: Path, page_ids: set[str]) -> list[str]:
                 return []
             retired = await retire_page_ids(session, repo.id, page_ids)
         if retired:
+            for kind in ("fts", "vectors"):
+                record_cleanup_debt(repo_path, kind, set(retired))
             # Search skips a retired page anyway; this only frees its fetch slot.
             with contextlib.suppress(Exception):
                 await FullTextSearch(engine).delete_many(retired)

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.agent_prompts import CONNECT_EVIDENCE, FLAVORS, render_connect_evidence
-from repowise.core.agent_prompts.preamble import ROLE
+from repowise.core.agent_prompts.preamble import ROLE, WORKSPACE_ROLE
 
 _PROMPTS = Path(__file__).resolve().parents[3] / "packages" / "ui" / "src" / "health" / "ai-prompts"
 
@@ -34,14 +34,17 @@ def test_the_ui_copy_is_the_core_text() -> None:
     assert _literal(match.group(1)) == CONNECT_EVIDENCE
 
 
-def test_the_ui_roles_are_the_core_roles() -> None:
-    block = re.search(r"export const REPO_ROLE: PromptRole = \{(.*?)\};", _ts("shared.ts"), re.S)
-    assert block, "REPO_ROLE is not declared in shared.ts"
+@pytest.mark.parametrize(("name", "core"), [("REPO_ROLE", ROLE), ("WORKSPACE_ROLE", WORKSPACE_ROLE)])
+def test_the_ui_roles_are_the_core_roles(name: str, core: dict[str, str]) -> None:
+    block = re.search(
+        rf"export const {name}: PromptRole = \{{(.*?)\}};", _ts("shared.ts"), re.S
+    )
+    assert block, f"{name} is not declared in shared.ts"
     roles = {
         key.strip('"'): _literal(value)
         for key, value in re.findall(r'([\w"-]+):\s*"((?:[^"\\]|\\.)*)"', block.group(1))
     }
-    assert roles == ROLE
+    assert roles == core
 
 
 @pytest.mark.parametrize("flavor", FLAVORS)

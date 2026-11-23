@@ -66,10 +66,12 @@ export function notesFromAugment(additionalContext: unknown): MarginNote[] {
  * are. Dollars are the input side only, to match the input-token count.
  */
 export function savingsTotals(s: Savings): SavingsDelta {
+  // Optional on the wire type: an unavailable report carries no figures.
+  const tokens = s.saved_input_tokens ?? 0;
   return {
-    tokens: s.saved_input_tokens,
-    inferredTokens: Math.min(s.inferred_saved_input_tokens, s.saved_input_tokens),
-    usd: s.priced_input_savings_usd,
+    tokens,
+    inferredTokens: Math.min(s.inferred_saved_input_tokens ?? 0, tokens),
+    usd: s.priced_input_savings_usd ?? 0,
   };
 }
 

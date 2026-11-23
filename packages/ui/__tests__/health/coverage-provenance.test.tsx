@@ -25,6 +25,8 @@ const SUMMARY: CoverageSummary = {
     unmatched_sample: ["/ci/build/src/gone.py"],
   },
   freshness: { status: "current", indexed_commit: "aaaaaaaa11" },
+  unreported_file_count: 0,
+  unreported_files: [],
 };
 
 describe("CoverageLede freshness", () => {

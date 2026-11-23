@@ -454,8 +454,24 @@ def _format_hits_block(
                     block.append(f"          source{_line_span(s.get('start_line'), src)}:")
                     for line in src.splitlines():
                         block.append(f"              {line}")
+        block.extend(_grounding_lines(h.get("_grounding") or []))
         parts.append("\n".join(block))
     return "\n\n".join(parts)
+
+
+def _grounding_lines(grounding: list[dict]) -> list[str]:
+    """The implementation bodies behind a hit (``tool_answer.grounding``)."""
+    if not grounding:
+        return []
+    lines = ["    implementation (read from source):"]
+    for g in grounding:
+        owner = f"{g['parent']}::" if g.get("parent") else ""
+        span = _line_span(g["start_line"], g["source"])
+        lines.append(f"      - {owner}{g['name']} in {g['path']}{span}:")
+        lines.extend(f"              {line}" for line in g["source"].splitlines())
+        if g.get("truncated"):
+            lines.append(f"              ... (body continues to line {g['end_line']})")
+    return lines
 
 
 def _line_span(start: int | None, src: str) -> str:

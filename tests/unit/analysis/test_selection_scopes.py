@@ -439,6 +439,46 @@ def test_a_blob_read_that_stops_early_does_not_read_as_unmoved(tmp_path) -> None
     assert _unread(tmp_path, specs, None) == set()  # nothing read: the caller fails closed
 
 
+def test_a_gap_reads_what_each_rewired_file_may_newly_reach(tmp_path) -> None:
+    """Rewired gap files get their gained imports resolved at the base; added files are named."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import _rewired_gap
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def commit(files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "c")
+        return git("rev-parse", "HEAD")
+
+    git("init", "-q")
+    indexed = commit({"src/a.py": "X = 1\n", "src/b.py": "import os\n", "src/y.py": "Y = 1\n"})
+    # The gap: b.py gains an import; a file is added. Then the change edits a.py.
+    commit({"src/b.py": "import os\nfrom src import y\n", "src/new.py": "N = 1\n"})
+    commit({"src/a.py": "X = 2\n"})
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+    out = {"indexed_commit": indexed}
+    files = {"src/a.py", "src/b.py", "src/y.py"}
+    _, rewired, rewirings, added = _rewired_gap(tmp_path, change, _NONE, files, out, None)
+    assert sorted(out["index_gap"]) == ["src/b.py", "src/new.py"]
+    assert rewired == ["src/b.py"] and added == {"src/new.py"}
+    assert rewirings["src/b.py"].imports == {"src/y.py"}
+    # Without the indexed files nothing is worked out, and every rewired file stays.
+    assert _rewired_gap(tmp_path, change, _NONE, None, out, None)[2] == {}
+
+
 def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> None:
     """A change read from another worktree's branch: its tests exist at its head, not on disk."""
     import subprocess

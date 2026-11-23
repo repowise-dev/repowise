@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -23,7 +23,7 @@ DAY_LIMIT = 366
 
 
 def breakdown_rows(key: str, rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[str, Any], ...]:
-    """Shape ``(group, events, saved_input_tokens)`` triples into report rows.
+    """Shape ``(group, events, saved_input_tokens, priced_input_usd)`` rows into report rows.
 
     Shared with :mod:`repowise.core.savings.repository` so the SQL path and the
     pure path cannot drift into two different row shapes. They are meant to be
@@ -31,7 +31,13 @@ def breakdown_rows(key: str, rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[s
     them to own the shaping.
     """
     return tuple(
-        {key: row[0], "events": int(row[1]), "saved_input_tokens": int(row[2])} for row in rows
+        {
+            key: row[0],
+            "events": int(row[1]),
+            "saved_input_tokens": int(row[2]),
+            "priced_input_savings_usd": float(row[3]),
+        }
+        for row in rows
     )
 
 
@@ -55,6 +61,70 @@ def agent_breakdown_rows(rows: Iterable[tuple[Any, ...]]) -> tuple[Mapping[str, 
         }
         for row in rows
     )
+
+
+#: The MCP tools an agent runs as a check before changing code, in the order a
+#: page lists them. Their events carry an ``outcome`` (see
+#: :func:`~repowise.core.savings.contracts.normalize_outcome`).
+CHECK_TOOLS = ("get_change_risk", "get_why", "get_risk", "get_health", "get_dead_code")
+
+#: Fields a check row reports per tool. The rest stay null on that row.
+_CHECK_FIELDS: dict[str, tuple[str, ...]] = {
+    "get_change_risk": ("high", "medium", "low"),
+    "get_risk": ("high", "medium", "low"),
+    "get_why": ("decisions_accepted", "decisions_candidate", "decisions_none"),
+    "get_health": ("findings", "files"),
+    "get_dead_code": ("items", "high_confidence"),
+}
+_CHECK_ROW_FIELDS = tuple(dict.fromkeys(f for fields in _CHECK_FIELDS.values() for f in fields))
+_SUMMED_COUNTS = ("high", "medium", "low", "findings", "files", "items", "high_confidence")
+
+
+@dataclass
+class CheckTally:
+    """One check tool's calls and summed outcomes, before shaping."""
+
+    calls: int = 0
+    outcome_calls: int = 0
+    sums: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+    def add_outcome(self, outcome: Mapping[str, Any], tool: str, calls: int = 1) -> None:
+        """Fold in *calls* calls that returned *outcome*. Calls are counted apart."""
+        self.outcome_calls += calls
+        if tool == "get_change_risk":
+            # A change has one level; it counts once under it.
+            level = outcome.get("level")
+            if level:
+                self.sums[level] += calls
+        else:
+            for key in _SUMMED_COUNTS:
+                self.sums[key] += int(outcome.get(key) or 0) * calls
+        decision = outcome.get("decision")
+        if decision:
+            self.sums[f"decisions_{decision}"] += calls
+
+
+def check_rows(tallies: Mapping[str, CheckTally]) -> tuple[Mapping[str, Any], ...]:
+    """One row per check tool, zero calls included, so every surface lists all five.
+
+    Outcome fields are null on a row with no recorded outcome (calls made
+    before outcomes were kept, or a host that records none), and null where a
+    field does not apply to that tool.
+    """
+    rows = []
+    for tool in CHECK_TOOLS:
+        tally = tallies.get(tool) or CheckTally()
+        recorded = tally.outcome_calls > 0
+        row: dict[str, Any] = {
+            "tool": tool,
+            "calls": tally.calls,
+            "outcome_calls": tally.outcome_calls,
+        }
+        for name in _CHECK_ROW_FIELDS:
+            applies = recorded and name in _CHECK_FIELDS[tool]
+            row[name] = int(tally.sums.get(name, 0)) if applies else None
+        rows.append(row)
+    return tuple(rows)
 
 
 #: Surfaces whose events are tool calls Repowise answered: an MCP or VS Code
@@ -231,6 +301,19 @@ def _session_rates(events: Iterable[SavingsEvent]) -> dict[str, float]:
     return {session: rate for session, (_at, rate) in newest.items()}
 
 
+def _check_rows_from(scoped: Iterable[SavingsEvent]) -> tuple[Mapping[str, Any], ...]:
+    """The pure path's check rows, tallied exactly as the SQL path tallies them."""
+    tallies: dict[str, CheckTally] = {}
+    for event in scoped:
+        if event.surface != "mcp" or not event.is_usable or event.operation not in CHECK_TOOLS:
+            continue
+        tally = tallies.setdefault(event.operation, CheckTally())
+        tally.calls += 1
+        if event.outcome is not None:
+            tally.add_outcome(event.outcome, event.operation)
+    return check_rows(tallies)
+
+
 def build_report(
     events: Iterable[SavingsEvent],
     opportunities: Iterable[OpportunityObservation] = (),
@@ -258,8 +341,8 @@ def build_report(
     scoped_opportunities = [
         item for item in opportunities if _included(item.occurred_at, cutoff, as_of)
     ]
-    groups: dict[str, dict[Any, list[int]]] = {
-        name: defaultdict(lambda: [0, 0])
+    groups: dict[str, dict[Any, list[float]]] = {
+        name: defaultdict(lambda: [0, 0, 0.0])
         for name in ("operation", "surface", "agent", "model", "day")
     }
     input_usd = 0.0
@@ -268,6 +351,7 @@ def build_report(
     priced_output = 0
     output_evidence_events = 0
     for event in scoped:
+        input_price = price_tokens(event.saved_input_tokens, event.input_rate_usd_per_million)
         for name, value in (
             ("operation", event.operation),
             ("surface", event.surface),
@@ -278,7 +362,7 @@ def build_report(
             bucket = groups[name][value]
             bucket[0] += 1
             bucket[1] += event.saved_input_tokens
-        input_price = price_tokens(event.saved_input_tokens, event.input_rate_usd_per_million)
+            bucket[2] += input_price or 0.0
         if input_price is not None:
             priced_input += event.saved_input_tokens
             input_usd += input_price
@@ -298,14 +382,14 @@ def build_report(
     limit = max(0, min(max_breakdowns, 100))
 
     def ranked(name: str) -> list[tuple[Any, ...]]:
-        """Sorted ``(group, events, saved)`` triples, matching the SQL order.
+        """Sorted ``(group, events, saved, usd)`` rows, matching the SQL order.
 
         ``-saved`` then group ascending, with a null group first among ties --
         SQLite sorts NULL first on an ascending key, and an unpriced event has
         a null model, so this is the tie the two builders actually hit.
         """
         return [
-            (group, values[0], values[1])
+            (group, values[0], values[1], values[2])
             for group, values in sorted(
                 groups[name].items(),
                 key=lambda item: (-item[1][1], item[0] is not None, item[0] or ""),
@@ -315,7 +399,7 @@ def build_report(
     # Ordered by day ascending, capped to the most recent days, matching the
     # SQL path's newest-first-then-reversed slice.
     day_rows = [
-        (group, values[0], values[1])
+        (group, values[0], values[1], values[2])
         for group, values in sorted(groups["day"].items(), reverse=True)[:DAY_LIMIT]
     ][::-1]
     opportunity_kinds: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -406,4 +490,5 @@ def build_report(
         backfilled_saved_input_tokens=backfilled_tokens,
         backfilled_input_savings_usd=backfilled_usd,
         output_estimate=estimate_output(session_groups(scoped)),
+        checks=_check_rows_from(scoped),
     )

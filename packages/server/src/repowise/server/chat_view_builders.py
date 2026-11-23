@@ -475,7 +475,7 @@ def dead_code_by_kind_view(artifact: ViewArtifact, options: Mapping[str, Any]) -
 def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     hotspots = artifact.data.get("global_hotspots")
     if not isinstance(hotspots, list) or not hotspots:
-        raise ViewError("this result has no global hotspots")
+        raise ViewError('this result has no global hotspots; call get_risk with include=["hotspots"]')
     usable = [h for h in hotspots if isinstance(h, Mapping) and h.get("file_path")]
     shown = usable[: _limit(options, cap=100)]
     rows = [

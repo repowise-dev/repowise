@@ -1,0 +1,12 @@
+goos: windows
+goarch: amd64
+pkg: example.com/gobench/strs
+cpu: x86-64
+BenchmarkJoin-32      	    2000	        56.20 ns/op	      24 B/op	       1 allocs/op
+BenchmarkJoin-32      	    2000	        50.75 ns/op	      24 B/op	       1 allocs/op
+BenchmarkConcat/n=2-32         	    2000	        28.95 ns/op	       3 B/op	       1 allocs/op
+BenchmarkConcat/n=2-32         	    2000	        60.70 ns/op	       3 B/op	       1 allocs/op
+BenchmarkConcat/n=5-32         	    2000	       160.6 ns/op	      40 B/op	       4 allocs/op
+BenchmarkConcat/n=5-32         	    2000	       112.0 ns/op	      40 B/op	       4 allocs/op
+PASS
+ok  	example.com/gobench/strs	0.540s

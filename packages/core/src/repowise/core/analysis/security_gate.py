@@ -11,9 +11,10 @@ database. Two passes over the change:
   still caught: it stays in the history, and in every clone, after HEAD
   drops it. File contents are held in memory for the scan and never written.
 
-Only the masked snippet (:func:`~.security_scan._snippet`) leaves this module,
-and the fingerprint is taken over it too, so neither a CI log nor the committed
-baseline holds a raw value.
+The fingerprint is taken over the masked snippet
+(:func:`~.security_scan._snippet`), and a row shows only what
+:func:`~.security_scan.shown_snippet` allows: a secret is a kind and a place,
+so neither a CI log nor the committed baseline holds any part of its value.
 
 Three repository-owned inputs shape a scan. ``security.patterns`` in
 ``.repowise/config.yaml`` adds secret kinds (``custom:<name>``, see
@@ -51,6 +52,7 @@ from .security_scan import (
     marker_silences,
     masked_snippet,
     scan_source,
+    shown_snippet,
     source_lines,
 )
 
@@ -404,6 +406,7 @@ def _scoped(
     secrets_only: bool,
     patterns: Sequence[CustomPattern] = (),
     path_allowlisted: bool = False,
+    repo_root: str | None = None,
 ) -> tuple[list[dict], set[tuple[str, str]]]:
     """Findings in *source* that span a line in *lines*, as gate rows, and the long lines skipped.
 
@@ -412,13 +415,14 @@ def _scoped(
     secret kinds, matched on the lines in *lines* only; a custom match is also
     masked in a built-in finding's snippet on its line, while that finding keeps
     the fingerprint it has without patterns. *path_allowlisted* drops every
-    secret kind, as an allow marker on each line would.
+    secret kind, as an allow marker on each line would. *repo_root* lets the
+    file's origin read the folders around it, as the indexed scan does.
     """
     secrets_only = secrets_only or PurePosixPath(path).suffix.lower() in DOC_EXTENSIONS
     text = _Text(path, source_lines(source), patterns)
     found = [
         entry
-        for f in scan_source(path, source)
+        for f in scan_source(path, source, repo_root=repo_root)
         if (entry := _builtin_entry(text, f, lines, secrets_only)) is not None
     ]
     custom, long_lines = _custom_entries(text, lines)
@@ -508,7 +512,7 @@ def _row(text: _Text, entry: _Entry) -> dict:
         "line_number": lineno,
         "kind": kind,
         "severity": severity,
-        "snippet": snippet,
+        "snippet": shown_snippet(kind, snippet),
         "fingerprint": fingerprint,
         "commit": None,
     }
@@ -649,6 +653,10 @@ def scan_change(
             secrets_only=False,
             patterns=patterns,
             path_allowlisted=allowlisted(path),
+            # Ceiling: the folder rules (docs site, data folder) read the
+            # working tree, not *rev*'s tree. They agree on a checked-out head;
+            # a scan of another revision reads today's folders.
+            repo_root=root,
         )
         rows += scoped
         skipped |= long_lines
@@ -769,7 +777,8 @@ def write_baseline(
     so accepting this change's findings must not drop earlier ones.
     """
     entries = [
-        *keep,
+        # An entry an older version wrote may still hold a secret's snippet.
+        *({**e, "snippet": shown_snippet(str(e.get("kind", "")), e.get("snippet"))} for e in keep),
         *(
             {
                 "fingerprint": f["fingerprint"],
@@ -819,7 +828,9 @@ def location(finding: Mapping[str, Any]) -> str:
 
 
 def _message(finding: Mapping[str, Any]) -> str:
-    text = f"{finding['kind']} ({finding['severity']}): {finding['snippet']}"
+    text = f"{finding['kind']} ({finding['severity']})"
+    if finding["snippet"]:
+        text += f": {finding['snippet']}"
     if finding["commit"]:
         text += (
             f" Committed in {finding['commit'][:7]} inside this change and not on a "
@@ -864,7 +875,7 @@ def render_markdown(
     if gate.failing:
         lines += [
             "",
-            "| Where | Kind | Severity | Matched (secrets masked) |",
+            "| Where | Kind | Severity | Matched (secrets hidden) |",
             "| --- | --- | --- | --- |",
         ]
         ordered = _order(gate.failing)

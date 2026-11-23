@@ -37,6 +37,17 @@ describe("FileCoverageTab", () => {
     expect(screen.queryByText(/changed after coverage was measured/)).toBeNull();
   });
 
+  it("does not claim a tint when the report saw no line run", () => {
+    render(
+      <FileCoverageTab
+        coverage={makeCoverage({ freshness: "current", covered_line_count: 0, covered_lines: [] })}
+        coverageCodeHtml='<pre><code><span class="line" data-line="1">x = 1</span></code></pre>'
+      />,
+    );
+    expect(screen.getByText("The last report saw no line of this file run.")).toBeTruthy();
+    expect(screen.queryByText(/tinted by whether/)).toBeNull();
+  });
+
   it("shows no tint and says why when the file changed after the run", () => {
     const { container } = render(
       <FileCoverageTab coverage={makeCoverage({ freshness: "stale" })} coverageCodeHtml={HTML} />,

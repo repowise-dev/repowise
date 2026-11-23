@@ -1244,6 +1244,17 @@ def test_resolve_mcp_target_finds_workspace_through_multiple_ancestors(
     assert claude_config._resolve_mcp_target(deep) == workspace
 
 
+def test_resolve_mcp_target_keeps_a_nested_non_member_repo(tmp_path: Path) -> None:
+    """A git repo cloned under a workspace it is not a member of registers itself."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    clone = workspace / "test-repos" / "clone"
+    (clone / ".git").mkdir(parents=True)
+
+    assert claude_config._resolve_mcp_target(clone) == clone
+
+
 def test_register_with_claude_code_new_entry_follows_the_launch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

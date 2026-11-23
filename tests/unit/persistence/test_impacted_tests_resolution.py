@@ -1055,3 +1055,54 @@ async def test_a_change_inside_an_uncovered_function_asks_the_graph(async_sessio
     assert out["inferred"] == [
         {"source_file": "src/foo.py", "test_file": "tests/test_wide.py", "via": "import-graph"}
     ]
+
+
+def _git(cwd, *args: str) -> str:
+    import subprocess
+
+    done = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+async def test_a_map_measured_before_the_base_matches_by_moved_line(
+    async_session, tmp_path
+) -> None:
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import collect
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    src = tmp_path / "src"
+    src.mkdir()
+    ten = [f"v{i} = {i}\n" for i in range(1, 11)]
+
+    def commit(lines: list[str], message: str) -> str:
+        (src / "foo.py").write_text("".join(lines), encoding="utf-8")
+        _git(tmp_path, "add", "-A")
+        _git(tmp_path, "commit", "-qm", message)
+        return _git(tmp_path, "rev-parse", "HEAD")
+
+    measured = commit(ten, "map")
+    base = ["top = 0\n"] * 3 + ten  # the map's line 8 is the base's line 11
+    commit(base, "shift")
+    commit([*base[:10], "v8 = 80\n", *base[11:]], "change")
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+
+    repo = await insert_repo(async_session)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            _rec("tests/test_foo.py::test_a|run", "src/foo.py", [1, 2, 3], "tests/test_foo.py"),
+            _rec("tests/test_foo.py::test_b|run", "src/foo.py", [8, 9], "tests/test_foo.py"),
+        ],
+        source_format="coverage.py",
+        ingested_commit_sha=measured,
+    )
+    await async_session.commit()
+
+    out = await collect(async_session, repo.id, str(tmp_path), change)
+    assert not out["map_current"]
+    assert set(out["covered"]) == {"tests/test_foo.py::test_b|run"}
+    assert out["matched_by_file"] == []

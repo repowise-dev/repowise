@@ -105,8 +105,8 @@ Core flags:
 
 Embeddings:
   --embedder NAME        Embedder for semantic search: gemini, openai,
-                         openrouter, ollama, edenai, mock (default: detected
-                         from keys)
+                         openrouter, ollama, fastembed, edenai, mock (default:
+                         detected from keys)
 
 Cost control:
   --concurrency N        Max parallel LLM calls (default: 10)
@@ -241,7 +241,7 @@ process to exit instead of relying on a fixed timeout, then read its exit code:
 
 stdout is one JSON event per line; the last line is the summary. Keep it for
 Step 7: `restart_required`, `restart_hosts`, `connect`, `mcp_tools`,
-`findings`, `mode` and `files_written`.
+`findings`, `mode`, `files_written`, `long_running` and `first_prompt`.
 
 `repowise status` reports a first run as incomplete until it exits, so read it
 after the process ends. Ctrl+C is safe at any point: running `/repowise:init` again
@@ -270,9 +270,9 @@ After init exits with `0` or `2`, from the summary line:
    file, up to three findings, the docs mode (`mode.label`), what each agent
    lists (`mcp_tools`, one line each), and the files init added. If `connect`
    names agents, add their `command` in one line. End with: "Run `repowise
-   serve` to open the dashboard (needs Node.js 20+)."
-3. Offer one next step: after the restart, ask "Use Repowise to give me a tour
-   of this repo." For documentation built from code, `repowise generate` has a
+   serve` to open the dashboard (needs Node.js 20+)." Never run a command in
+   `long_running` in the foreground: it does not return.
+3. Offer one next step: after the restart, ask `first_prompt`. For documentation built from code, `repowise generate` has a
    model write it, with a cost estimate first; for an Index only run, name
    `repowise update --full` instead. `/repowise:status` checks the index and
    `/repowise:update` keeps it in sync.

@@ -12,10 +12,10 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import tempfile
 from datetime import UTC, datetime
 from typing import Any
 
+from repowise.core.fsutils import make_temp_file
 from repowise.core.platform.telemetry import _platform_json_path
 
 ONBOARDING_KEY = "onboarding"
@@ -88,7 +88,7 @@ def _write_atomic(data: dict[str, Any]) -> None:
     """Replace platform.json in one step, so a reader never sees half a file."""
     path = _platform_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".platform-", suffix=".json")
+    fd, tmp = make_temp_file(path.parent, prefix=".platform-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)

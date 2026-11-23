@@ -22,10 +22,11 @@ import hmac
 import os
 import pickle
 import secrets
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from repowise.core.fsutils import make_temp_file
 
 __all__ = [
     "dump_sealed_pickle",
@@ -76,9 +77,7 @@ def _write_key_atomic(path: Path, key: bytes) -> None:
     cache either way.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".cache_hmac_key.", suffix=".tmp"
-    )
+    fd, tmp_name = make_temp_file(path.parent, prefix=".cache_hmac_key.", suffix=".tmp")
     try:
         os.write(fd, key)
         os.close(fd)
@@ -208,9 +207,7 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd_pkl, tmp_pkl = tempfile.mkstemp(
-        dir=str(path.parent), prefix=path.name, suffix=".pkltmp"
-    )
+    fd_pkl, tmp_pkl = make_temp_file(path.parent, prefix=path.name, suffix=".pkltmp")
     try:
         with os.fdopen(fd_pkl, "wb") as fh:
             fd_pkl = -1
@@ -225,9 +222,7 @@ def dump_sealed_pickle(path: Path, obj: Any, *, domain: str) -> None:
                 h.update(chunk)
         mac = h.digest()
 
-        fd_out, tmp_out = tempfile.mkstemp(
-            dir=str(path.parent), prefix=path.name, suffix=".tmp"
-        )
+        fd_out, tmp_out = make_temp_file(path.parent, prefix=path.name, suffix=".tmp")
         try:
             with os.fdopen(fd_out, "wb") as out, open(tmp_pkl, "rb") as src:
                 fd_out = -1

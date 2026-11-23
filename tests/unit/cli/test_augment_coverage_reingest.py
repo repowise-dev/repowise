@@ -98,6 +98,7 @@ def _config(repo, text: str) -> None:
         "pytest -p no:cacheprovider",
         "pytest -n 4 -W error",
         "go test -count 1 -coverprofile cover.out ./...",
+        "go.exe test -tags integration ./...",
         "go test -p 4 ./...",
         "cargo test --workspaces",
     ],

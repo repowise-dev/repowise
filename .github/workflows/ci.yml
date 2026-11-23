@@ -206,8 +206,11 @@ jobs:
   # the pick. They run beside the tests, every step continues on error, and
   # no branch rule requires them, so none of them can fail a pull request.
   # ---------------------------------------------------------------------------
-  # The index builds beside the tests, then waits for the Python 3.12 shards
-  # (not 3.11 or 3.13) to add the per-test coverage they recorded.
+  # The index builds beside the tests and is saved twice: as
+  # repowise-index-<sha>-early right after the build (carrying the per-test map
+  # it restored), then as repowise-index-<sha>-full once the Python 3.12 shards
+  # (not 3.11 or 3.13) have passed and their per-test coverage is added. A pull
+  # request opened meanwhile gets this commit's graph instead of an older one.
   repowise-index:
     name: Repowise index (main)
     runs-on: ubuntu-latest
@@ -218,6 +221,10 @@ jobs:
       contents: read
       actions: write   # deletes older index caches; main pushes only
       id-token: write  # proves the per-test map upload comes from this repository
+    env:
+      # No detached commit-health drain: one still writing .repowise makes tar
+      # fail, and the cache save then only warns, leaving no index saved.
+      REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"
 
     steps:
       - uses: actions/checkout@v7
@@ -245,8 +252,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .repowise
-          key: repowise-index-${{ github.sha }}
-          restore-keys: repowise-index-
+          key: repowise-index-${{ github.sha }}-full
+          restore-keys: |
+            repowise-index-${{ github.sha }}-
+            repowise-index-
 
       - name: Build the index
         id: build
@@ -262,10 +271,18 @@ jobs:
             uv run repowise init --yes --no-prose --no-editor-setup --no-hook
           fi
 
+      - name: Save the index before the per-test map
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: .repowise
+          key: repowise-index-${{ github.sha }}-early
+
       # Which test ran which lines, the map `repowise impacted-tests` selects
       # from. Taken only when all three shards passed: a map missing a shard's
-      # tests would leave them out of every selection. Otherwise the index
-      # keeps the map it restored.
+      # tests would leave them out of every selection. Otherwise the early save
+      # is this commit's last, with the map it restored.
       - name: Wait for the Python 3.12 shards
         id: shards
         if: steps.build.outcome == 'success'
@@ -330,16 +347,19 @@ jobs:
             https://api.repowise.dev/ci/coverage \
             || echo "::warning::Repowise: per-test map upload failed; see the message above."
 
-      - name: Save the index
-        if: steps.build.outcome == 'success'
+      - name: Save the index with the per-test map
+        if: steps.add-map.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: .repowise
-          key: repowise-index-${{ github.sha }}
+          key: repowise-index-${{ github.sha }}-full
 
-      # Keep the three newest indexes so they never evict the dependency
-      # caches the test jobs restore.
+      # Keep the indexes of the three newest commits so they never evict the
+      # dependency caches the test jobs restore (each is about 300 MB). An
+      # early index goes once its commit's full one is saved. One with no full
+      # index stays while its commit's job may still save one (an hour at
+      # most), even past the three newest commits.
       - name: Delete older indexes
         if: steps.build.outcome == 'success'
         continue-on-error: true
@@ -348,7 +368,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh cache list --key repowise-index- --sort created_at --order desc --limit 100 \
-            --json key --jq '.[].key' | tail -n +4 | xargs -r -n1 gh cache delete || true
+            --json key,createdAt --jq '
+              map(. + {commit: (.key | sub("-(early|full)$"; "")),
+                       age: (now - (.createdAt | sub("[.][0-9]+"; "") | fromdateiso8601))})
+              | . as $all
+              | (reduce $all[].commit as $c ([]; if any(.[]; . == $c) then . else . + [$c] end) | .[:3]) as $keep
+              | [$all[] | select(.key | endswith("-full")) | .commit] as $full
+              | $all[] | .commit as $c
+              | select(if .key | endswith("-early")
+                       then any($full[]; . == $c) or ((any($keep[]; . == $c) | not) and .age > 3600)
+                       else any($keep[]; . == $c) | not end)
+              | .key' \
+            | xargs -r -n1 gh cache delete || true
 
   impacted-tests-shadow:
     name: Test selection (recorded only)
@@ -390,14 +421,17 @@ jobs:
 
       # Read-only: pull requests, forks included, restore main's index and
       # never save one. An older index is used as is.
+      # The base's full index, else its early one, else the newest older one.
       - name: Restore the main index
         id: index
         continue-on-error: true
         uses: actions/cache/restore@v6
         with:
           path: .repowise
-          key: repowise-index-${{ steps.base.outputs.sha }}
-          restore-keys: repowise-index-
+          key: repowise-index-${{ steps.base.outputs.sha }}-full
+          restore-keys: |
+            repowise-index-${{ steps.base.outputs.sha }}-
+            repowise-index-
 
       - name: Select tests
         continue-on-error: true
@@ -415,8 +449,12 @@ jobs:
           uv run repowise impacted-tests "$BASE...HEAD" --format json --runner pytest --prioritize \
             > shadow/selection.json 2> shadow/selection.log || code=$?
           seconds=$SECONDS
+          # full: the base's index and per-test map. early: the base's index
+          # with an older map. older: an earlier commit's index. none: no index.
           cache=none
-          if [ "$CACHE_HIT" = "true" ]; then cache=exact; elif [ -n "$CACHE_KEY" ]; then cache=older; fi
+          if [ "$CACHE_HIT" = "true" ]; then cache=full
+          elif [ "$CACHE_KEY" = "repowise-index-$BASE-early" ]; then cache=early
+          elif [ -n "$CACHE_KEY" ]; then cache=older; fi
           printf '{"base": "%s", "selector_exit": %d, "selector_seconds": %d, "index_cache": "%s"}\n' \
             "$BASE" "$code" "$seconds" "$cache" > shadow/selector.json
           tail -n 20 shadow/selection.log
@@ -504,7 +542,7 @@ jobs:
   python-tests:
     name: Python tests
     runs-on: ubuntu-latest
-    needs: [changes, test-python]
+    needs: [changes, test-python, test-integration]
     if: ${{ !cancelled() }}
     permissions:
       contents: read
@@ -579,12 +617,17 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TESTS: ${{ needs.test-python.result }}
+          INTEGRATION: ${{ needs.test-integration.result }}
         run: |
-          echo "Changed paths: $CHANGES; Python test jobs: $TESTS"
+          echo "Changed paths: $CHANGES; Python test jobs: $TESTS; integration tests: $INTEGRATION"
           [ "$CHANGES" = success ] || { echo "::error::The path filter did not finish ($CHANGES)."; exit 1; }
           case "$TESTS" in
             success|skipped) ;;
             *) echo "::error::A Python test job did not pass ($TESTS)."; exit 1 ;;
+          esac
+          case "$INTEGRATION" in
+            success|skipped) ;;
+            *) echo "::error::The integration tests did not pass ($INTEGRATION)."; exit 1 ;;
           esac
 
   # ---------------------------------------------------------------------------
@@ -879,12 +922,15 @@ jobs:
         run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
 
   # ---------------------------------------------------------------------------
-  # Integration tests (push and nightly only, slower)
+  # Integration tests: every push and the nightly run, and a pull request
+  # whenever its Python suites run, so a break shows before it merges.
   # ---------------------------------------------------------------------------
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v7

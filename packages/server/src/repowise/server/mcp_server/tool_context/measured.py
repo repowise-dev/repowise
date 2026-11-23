@@ -170,11 +170,8 @@ def _share(row: Any) -> str | None:
     """The self share (the cost) with its interval; a tracer run orders and gives none."""
     if row.ordering_only:
         return "ordering only"
-    if row.share_low is not None and row.share_high is not None and row.samples and row.run_samples:
-        return (
-            f"{_pct(row.samples / row.run_samples)} self, "
-            f"{_low(row.share_low)}-{_pct(row.share_high)}"
-        )
+    if row.self_share is not None and row.share_low is not None and row.share_high is not None:
+        return f"{_pct(row.self_share)} self, {_low(row.share_low)}-{_pct(row.share_high)}"
     if row.self_share is not None:
         return f"{_pct(row.self_share)} self"
     return None

@@ -227,6 +227,13 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
         "backfilled_input_savings_usd",
     ):
         assert sql.pop(key) == pytest.approx(pure.pop(key))
+    for key in ("per_operation", "per_surface", "per_model", "per_day"):
+        sql_rows = [dict(row) for row in sql.pop(key)]
+        pure_rows = [dict(row) for row in pure.pop(key)]
+        assert [row.pop("priced_input_savings_usd") for row in sql_rows] == pytest.approx(
+            [row.pop("priced_input_savings_usd") for row in pure_rows]
+        )
+        assert sql_rows == pure_rows
     assert sql == pure
 
     # Guard rails on the fixture itself: if it ever stops covering the mixed
@@ -469,6 +476,20 @@ def test_agent_calls_give_each_agent_its_first_and_last_mcp_call(tmp_path: Path)
     assert calls["codex"][1].startswith("2026-10-03")
 
 
+def test_agent_usage_counts_each_agent_s_calls(tmp_path: Path) -> None:
+    from repowise.core.savings.service import load_agent_usage
+
+    assert load_agent_usage(tmp_path) is None
+    _sidecar(tmp_path)
+    for day in (1, 2, 3):
+        _record(tmp_path, baseline=10, agent="claude_code", occurred_at=f"2026-10-0{day}T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="codex", occurred_at="2026-10-05T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="claude_code", surface="distill")
+    usage = load_agent_usage(tmp_path)
+    assert usage["claude_code"].calls == 3 and usage["codex"].calls == 1
+    assert usage["claude_code"].first.startswith("2026-10-01")
+
+
 @pytest.mark.parametrize(
     ("source", "backfilled"),
     [("session_model:claude_code", 1_000), ("session_model:unknown", 0)],
@@ -500,3 +521,98 @@ def test_the_report_backfills_from_the_cached_rate_but_never_the_default(
     assert report.unpriced_saved_input_tokens == 1_000
     assert report.backfilled_saved_input_tokens == backfilled
     assert report.backfilled_input_savings_usd == pytest.approx(backfilled * 3.0 / 1_000_000)
+
+
+def _record_backfill(
+    repo: Path,
+    *,
+    harness: str,
+    baseline: int,
+    delivered: int,
+    estimator: str = "transcript_marker_v1",
+) -> None:
+    """One transcript-backfill event, with its token fields stored as given."""
+    event_id = new_event_id()
+    assert recorder.record_event(
+        repo,
+        {
+            "event_id": event_id,
+            "idempotency_key": scoped_idempotency_key(str(repo), "distill", event_id),
+            "occurred_at": datetime.now(UTC),
+            "surface": "distill",
+            "integration": harness,
+            "agent": harness,
+            "operation": "distill",
+            "evidence_kind": "measured",
+            "estimator": estimator,
+            "token_unit": "estimated_tokens",
+            "result_state": "success",
+            "is_usable": True,
+            "baseline_input_tokens": baseline,
+            "pre_budget_input_tokens": baseline,
+            "delivered_input_tokens": delivered,
+        },
+    )
+
+
+def _record_old_codex_ledger(repo: Path) -> int:
+    """A ledger with Codex backfill stored above the cap; returns its capped saving."""
+    _sidecar(repo)
+    # Over the cap: reported at the 10,025-token plateau.
+    _record_backfill(repo, harness="codex", baseline=638_062, delivered=500)
+    # Under the cap: untouched.
+    _record_backfill(repo, harness="codex", baseline=5_000, delivered=100)
+    # Delivered more than the cap: the cap never clips below the delivery.
+    _record_backfill(repo, harness="codex", baseline=30_000, delivered=20_000)
+    # Not Codex backfill: another harness, and Codex's live distill.
+    _record_backfill(repo, harness="claude_code", baseline=50_000, delivered=0)
+    _record_backfill(
+        repo, harness="codex", baseline=60_000, delivered=0, estimator="chars_per_token_floor_v1"
+    )
+    return (10_025 - 500) + 4_900 + 0 + 50_000 + 60_000
+
+
+def test_codex_backfill_recorded_under_the_old_cap_reports_at_the_plateau(
+    tmp_path: Path,
+) -> None:
+    """An existing ledger shows what a fresh backfill would record, without a rewrite."""
+    expected = _record_old_codex_ledger(tmp_path)
+
+    report = load_report(tmp_path)
+
+    assert report is not None
+    assert report.saved_input_tokens == expected
+    assert report.unique_events == 5
+    # Every aggregate reads the capped rows, not only the headline.
+    assert sum(row["saved_input_tokens"] for row in report.per_agent) == expected
+    for rows in (report.per_operation, report.per_day, report.per_model, report.per_surface):
+        assert sum(row["saved_input_tokens"] for row in rows) == expected
+        assert sum(row["priced_input_savings_usd"] for row in rows) == pytest.approx(
+            report.priced_input_savings_usd
+        )
+    # The reduction denominator is capped with the saving, so the ratio agrees.
+    assert report.baseline_input_tokens == 10_025 + 5_000 + 50_000 + 60_000
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        # Breaks the SQL: a sqlite3 error inside the cap.
+        ("TRANSCRIPT_ESTIMATOR", "x'"),
+        # Breaks before any SQL: a plain Python error inside the cap.
+        ("CODEX_OUTPUT_CAP_TOKENS", None),
+    ],
+)
+def test_a_failing_codex_cap_never_costs_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: object
+) -> None:
+    """The cap is a correction on top of the report; failing reads the rows as written."""
+    from repowise.core.savings import service
+
+    _record_old_codex_ledger(tmp_path)
+    monkeypatch.setattr(service, name, value)
+
+    report = load_report(tmp_path)
+
+    assert report is not None
+    assert report.saved_input_tokens == (638_062 - 500) + 4_900 + 10_000 + 50_000 + 60_000

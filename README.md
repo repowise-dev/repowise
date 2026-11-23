@@ -72,6 +72,7 @@ uv tool install repowise          # needs Python 3.11+ and Git. Or: pipx install
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
                                   # answers and docs: run repowise generate (one command, no re-index)
+                                  # local semantic search: ollama pull embeddinggemma && repowise reindex --embedder ollama
 repowise serve                    # local dashboard (needs Node 20+; first run downloads the UI)
 ```
 
@@ -745,6 +746,9 @@ repowise suspects         # recent changes ranked against a symptom
 repowise components       # declared and derived components, owners vs activity
 repowise packages where   # where a third-party package is imported
 repowise report           # assessment, change evidence and inventory packs
+repowise report repo      # what Repowise found, most urgent first
+repowise evidence setup   # how to collect coverage, test results and profiles here
+repowise perf measure -- <cmd>  # did a change make a command faster or slower?
 repowise dead-code        # unreachable code by confidence tier
 repowise doc-drift        # documentation the code no longer supports
 repowise security         # secrets and risky patterns, tree or full history

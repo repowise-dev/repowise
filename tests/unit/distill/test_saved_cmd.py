@@ -259,6 +259,25 @@ def test_saved_reports_files_not_opened(repo_cwd: Path) -> None:
     assert data["summary"]["tool_calls_answered"] == 2
 
 
+@pytest.mark.parametrize(
+    ("name", "value"), [("TRANSCRIPT_ESTIMATOR", "x'"), ("CODEX_OUTPUT_CAP_TOKENS", None)]
+)
+def test_saved_is_unchanged_when_the_codex_cap_fails(
+    repo_cwd: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: object
+) -> None:
+    """The report-time Codex cap is best-effort: failing it never fails the command."""
+    from repowise.core.savings import service
+
+    _seed_canonical(repo_cwd)
+    expected = CliRunner().invoke(saved_command, ["--format", "json"])
+    monkeypatch.setattr(service, name, value)
+
+    result = CliRunner().invoke(saved_command, ["--format", "json"])
+
+    assert result.exit_code == 0
+    assert result.output == expected.output
+
+
 def test_saved_by_day(repo_cwd: Path) -> None:
     _seed_canonical(repo_cwd)
     result = CliRunner().invoke(saved_command, ["--by", "day"])

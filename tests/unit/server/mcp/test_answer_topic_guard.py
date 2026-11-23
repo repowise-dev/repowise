@@ -64,7 +64,7 @@ def _write(root, rel, text):
 
 def _index(counts: dict[str, int]) -> _SymbolTextIndex:
     """Name postings carrying each word *counts* times, keyed as the index keys them."""
-    return _SymbolTextIndex((), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
+    return _SymbolTextIndex((), (), (), (), {_stem(w): tuple(range(n)) for w, n in counts.items()})
 
 
 def test_rarest_terms_keep_the_rare_word_over_the_long_one():
@@ -290,6 +290,180 @@ async def test_a_name_only_tests_write_does_not_anchor_a_fixture(tmp_path):
     assert not homonyms["union"]
     assert not any(h.get("_anchor_symbols") for h in out)
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "question"),
+    [
+        (
+            "IncompleteCategoryFormWithFields",
+            "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        ),
+        ("DetailViewTest", "How does DetailViewTest resolve the template name?"),
+        ("test_named", "What does test_named depend on in its setup?"),
+    ],
+)
+async def test_a_test_class_the_question_names_anchors_its_file(tmp_path, name, question):
+    # The question writes the test's own name; nothing in production could be meant.
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", f"class {name}:\n    url = None\n")
+    row = _Sym(name, "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {name},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question=question,
+    )
+    assert out[0]["target_path"] == "tests/forms/tests.py"
+
+
+@pytest.mark.asyncio
+async def test_a_test_class_sharing_a_production_name_does_not_anchor(tmp_path):
+    _write(tmp_path, "core/forms.py", "x = IncompleteCategoryForm()\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryForm:\n    pass\n")
+    row = _Sym("IncompleteCategoryForm", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchor_symbol_hits(
+        _Session([row]),
+        "r",
+        {"IncompleteCategoryForm"},
+        [{"target_path": "core/forms.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does IncompleteCategoryForm validate a missing url?",
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
+
+
+@pytest.mark.asyncio
+async def test_a_named_production_def_keeps_the_lead_over_a_named_test(tmp_path):
+    # The test is an example of the mixin the question also names.
+    _write(tmp_path, "views/detail.py", "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    rows = [
+        _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class"),
+        _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class"),
+    ]
+    out, _ = await _anchor_symbol_hits(
+        _Session(rows),
+        "r",
+        {"SingleObjectMixin", "DetailViewTest"},
+        [{"target_path": "views/base.py", "score": 3.0}],
+        repo_root=tmp_path,
+        question="How does DetailViewTest show SingleObjectMixin resolving the object?",
+    )
+    anchored = [h["target_path"] for h in out if h.get("_anchor_symbols")]
+    assert anchored == ["views/detail.py"]
+
+
+async def _anchored(tmp_path, rows, ids, question, hits=None):
+    out, homonyms = await _anchor_symbol_hits(
+        _Session(rows),
+        "r",
+        ids,
+        list(hits or [{"target_path": "views/base.py", "score": 3.0}]),
+        repo_root=tmp_path,
+        question=question,
+    )
+    return out, homonyms
+
+
+@pytest.mark.asyncio
+async def test_a_production_class_shaped_like_a_test_is_not_promoted_over_its_def(tmp_path):
+    # ``LoadTest`` is production code; the test of the same name never leads.
+    _write(tmp_path, "src/perf/load.py", "class LoadTest:\n    pass\n")
+    _write(tmp_path, "tests/test_load.py", "class LoadTest:\n    pass\n")
+    rows = [
+        _Sym("LoadTest", "src/perf/load.py", 1, 2, kind="class"),
+        _Sym("LoadTest", "tests/test_load.py", 1, 2, kind="class"),
+    ]
+    out, homonyms = await _anchored(
+        tmp_path, rows, {"LoadTest"}, "How does LoadTest schedule its workers?"
+    )
+    anchored = [h["target_path"] for h in out if h.get("_anchor_symbols")]
+    assert anchored == ["src/perf/load.py"]
+    assert not homonyms["union"]
+
+
+@pytest.mark.asyncio
+async def test_a_production_name_with_several_defs_still_outranks_a_named_test(tmp_path):
+    for path in ("views/detail.py", "views/list.py"):
+        _write(tmp_path, path, "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    rows = [
+        _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class"),
+        _Sym("SingleObjectMixin", "views/list.py", 1, 2, kind="class"),
+        _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class"),
+    ]
+    out, homonyms = await _anchored(
+        tmp_path,
+        rows,
+        {"SingleObjectMixin", "DetailViewTest"},
+        "How does DetailViewTest show SingleObjectMixin resolving the object?",
+    )
+    # Narrowed to one mixin by the file the question's words name, or a union of both.
+    anchored = {h["target_path"] for h in out if h.get("_anchor_symbols")}
+    union = {d["file_path"] for defs in homonyms["union"].values() for d in defs}
+    assert "tests/test_detail.py" not in anchored | union
+    assert anchored | union
+
+
+@pytest.mark.asyncio
+async def test_naming_a_test_beside_a_production_def_leaves_the_grade_unchanged(tmp_path):
+    # Retrieval and the anchored hits match the question without the test name,
+    # so the confidence a keyless answer is graded from cannot move.
+    from repowise.server.mcp_server.tool_answer.confidence import _retrieval_quality
+
+    _write(tmp_path, "views/detail.py", "class SingleObjectMixin:\n    pass\n")
+    _write(tmp_path, "tests/test_detail.py", "class DetailViewTest:\n    pass\n")
+    mixin = _Sym("SingleObjectMixin", "views/detail.py", 1, 2, kind="class")
+    test = _Sym("DetailViewTest", "tests/test_detail.py", 1, 2, kind="class")
+    hits = [{"target_path": "views/base.py", "score": 3.0, "_hybrid_rank": 0}]
+    with_test, _ = await _anchored(
+        tmp_path,
+        [mixin, test],
+        {"SingleObjectMixin", "DetailViewTest"},
+        "How does DetailViewTest show SingleObjectMixin resolving the object?",
+        hits,
+    )
+    without, _ = await _anchored(
+        tmp_path,
+        [mixin],
+        {"SingleObjectMixin"},
+        "How does the test show SingleObjectMixin resolving the object?",
+        hits,
+    )
+
+    def shape(out):
+        return [(h["target_path"], h.get("score")) for h in out]
+
+    assert shape(with_test) == shape(without)
+    question = "How does SingleObjectMixin resolve the object?"
+    assert _retrieval_quality(with_test, False, question) == _retrieval_quality(
+        without, False, question
+    )
+
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_stopped_short_does_not_vouch_for_a_test_class(tmp_path, monkeypatch):
+    # Unread files could hold a production use, so the class is not trusted on its name.
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    monkeypatch.setattr(
+        symbols, "word_scan", lambda root, token: ([], False, ["time budget: scanned 1 of 9 files"])
+    )
+    _write(tmp_path, "core/forms.py", "class Form:\n    pass\n")
+    _write(tmp_path, "tests/forms/tests.py", "class IncompleteCategoryFormWithFields:\n    pass\n")
+    row = _Sym("IncompleteCategoryFormWithFields", "tests/forms/tests.py", 1, 2, kind="class")
+    out, _ = await _anchored(
+        tmp_path,
+        [row],
+        {"IncompleteCategoryFormWithFields"},
+        "How does IncompleteCategoryFormWithFields override url and affect validation?",
+        [{"target_path": "core/forms.py", "score": 3.0}],
+    )
+    assert not any(h.get("_anchor_symbols") for h in out)
 
 # --- a file the index left out on size --------------------------------------
 

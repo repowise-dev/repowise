@@ -108,6 +108,12 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.response_chars` | `10979` | Serialised size of the response, a count only |
 | `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
 | `properties.include` | `["callers", "skeleton"]` | Which `include` blocks the call asked for, by the tool's own block names; any other value is sent as `other` |
+| `properties.error_source` | `tool` / `exception` | Where an `error` call's reason came from: the tool's own error payload, or an exception the server caught |
+| `properties.cold_start` | `true` / `false` | Whether this was the first tool call since the MCP server started, so start-up cost can be told apart |
+| `properties.index_mode` | `none` / `template` / `model` / `mixed` | Who wrote the served index's pages; absent when the server has no index to read |
+| `properties.provider_kind` | `none` / `subscription_cli` / `local` / `api_key` / `mock` / `other` | How the model that synthesised the answer runs (an agent CLI login, a local model, a hosted API key); never the provider or model name |
+| `properties.empty_result` | `true` / `false` | Whether the call found nothing; sent only by `search_codebase`, `get_context`, `get_answer` and `get_why`, and not on an `error` call |
+| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo` and `branch_overlap` (`get_change_risk`) |
 
 Example `command_run` payload:
 
@@ -142,7 +148,7 @@ page path, or anything shown on the page**:
 
 | Field | Example | Purpose |
 |---|---|---|
-| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
+| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`, `setup`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
 
 Moving between pages inside one view (two files under Files), or to the same
 view in another repo, sends nothing new.

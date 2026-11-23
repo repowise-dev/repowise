@@ -10,8 +10,11 @@ stacks, nothing joined); joining frames to code and writing the
 ``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
 other kind (benchmark results, test reports) has ``to_v1`` instead, which writes the v1
 document directly: its entries name their functions, and ingest joins
-them. A new format is one module plus one ``register`` call below. A plugin adds
-one the same way from its ``register()``::
+them. A format whose tool names a package rather than a file (Go) sets
+``needs_checkout`` and gets the checkout the run used as a second argument;
+every other ``to_v1`` takes the bytes alone. A new format is one module plus one
+``register`` call below. A plugin adds one the same way from its
+``register()``::
 
     from repowise.core.evidence.profile_formats import ProfileFormat, profile_formats
 
@@ -35,6 +38,7 @@ from . import (
     collapsed,
     cpuprofile,
     criterion,
+    go_bench,
     hyperfine,
     junit,
     pprof,
@@ -56,7 +60,10 @@ class ProfileFormat:
     #: A profile: the whole file as a run, converted by :mod:`..profile_convert`.
     read: Callable[[bytes], ProfileRun] | None = None
     #: Any other kind: the whole file as a ``repowise-evidence-v1`` object.
-    to_v1: Callable[[bytes], dict[str, Any]] | None = None
+    #: Called ``to_v1(data)``, or ``to_v1(data, checkout_root)`` with *needs_checkout*.
+    to_v1: Callable[..., dict[str, Any]] | None = None
+    #: ``to_v1`` also reads the checkout the run used (Go output names packages, not files).
+    needs_checkout: bool = False
     #: Optional v1 reader with a local path, for formats with sibling metadata.
     to_v1_from_path: Callable[[bytes, Path], dict[str, Any]] | None = None
 
@@ -66,11 +73,16 @@ class ProfileFormat:
         if self.to_v1_from_path is not None and self.to_v1 is None:
             raise ValueError("a format with to_v1_from_path also needs to_v1")
 
-    def convert_to_v1(self, data: bytes, name: str | Path) -> dict[str, Any]:
-        """Convert a benchmark, using the source path only for local files."""
+    def convert_to_v1(
+        self, data: bytes, name: str | Path, checkout_root: Path | None = None
+    ) -> dict[str, Any]:
+        """Convert to v1, using the source path only for local files and the
+        checkout only for a format that sets *needs_checkout*."""
         if self.to_v1_from_path is not None and isinstance(name, Path):
             return self.to_v1_from_path(data, name)
         assert self.to_v1 is not None
+        if self.needs_checkout:
+            return self.to_v1(data, checkout_root)
         return self.to_v1(data)
 
 
@@ -82,6 +94,9 @@ profile_formats.register("cpuprofile", ProfileFormat(cpuprofile.sniff, cpuprofil
 profile_formats.register(
     "pytest-benchmark",
     ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
+)
+profile_formats.register(
+    "go-bench", ProfileFormat(go_bench.sniff, to_v1=go_bench.to_v1, needs_checkout=True)
 )
 profile_formats.register("hyperfine", ProfileFormat(hyperfine.sniff, to_v1=hyperfine.to_v1))
 profile_formats.register("junit", ProfileFormat(junit.sniff, to_v1=junit.to_v1))

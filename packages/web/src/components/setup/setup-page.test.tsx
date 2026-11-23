@@ -5,7 +5,7 @@ import { SWRConfig } from "swr";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupResponse } from "@/lib/api/setup";
-import { doneFixture, NOW, setupFixture } from "./setup-fixture";
+import { doneFixture, NOW, setupFixture, stepFixture, stepsFixture } from "./setup-fixture";
 
 const mocks = vi.hoisted(() => ({
   getRepoSetup: vi.fn(),
@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   updateOnboardingState: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
+  setActionState: vi.fn(),
+  evidenceStatus: "no_runtime_data",
 }));
 
 vi.mock("@/lib/api/setup", () => ({
@@ -23,6 +25,10 @@ vi.mock("@/lib/api/setup", () => ({
   disconnectSetupAgent: vi.fn(),
   addSetupCoverage: vi.fn(),
   getOnboardingState: vi.fn(),
+}));
+vi.mock("@/lib/api/actions", () => ({ setActionState: mocks.setActionState }));
+vi.mock("@/lib/api/runtime-evidence", () => ({
+  getEvidenceStatus: async () => ({ status: mocks.evidenceStatus }),
 }));
 vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: mocks.toastSuccess } }));
 // The sheet pulls in the providers and bulk generate flows; Setup only opens it.
@@ -54,6 +60,8 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
+  window.location.hash = "";
+  mocks.evidenceStatus = "no_runtime_data";
 });
 
 describe("SetupPage", () => {
@@ -193,5 +201,112 @@ describe("hosted card", () => {
     expect(hostedCardVisible({ ...on, signed_in: true }, false)).toBe(false);
     expect(hostedCardVisible({ ...on, hosted_card_hidden: true }, false)).toBe(false);
     expect(hostedCardVisible(on, true)).toBe(false);
+  });
+});
+
+describe("finish setup hero", () => {
+  const offered = () =>
+    doneFixture({
+      sync: { installed: false },
+      setup: stepsFixture([stepFixture("sync_hook_missing")], {
+        offer: "finish_setup",
+        first_call_at: "2026-10-25T11:56:00Z",
+        agent_calls: 3,
+      }),
+    });
+
+  it("offers the pass once an agent has called, with one copy button and the CLI twin", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderPage(offered());
+    const heading = await screen.findByRole("heading", { name: "Finish setup with your agent" });
+    expect(within(heading.closest("section") as HTMLElement).getByText(/Claude Code made its first call/)).toBeTruthy();
+    expect(screen.getByText("repowise next --prompt setup")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toContain("Finish setting up Repowise for this repository.");
+  });
+
+  it("is absent without the server's offer, even with steps left", async () => {
+    renderPage(setupFixture({ setup: stepsFixture([stepFixture("sync_hook_missing")], { offer: null }) }));
+    await screen.findByText(/2 of 3 essentials done/);
+    expect(screen.queryByText("Finish setup with your agent")).toBeNull();
+  });
+
+  it("Not now dismisses it for this repo", async () => {
+    mocks.setActionState.mockResolvedValue({ action_id: "setup", state: "dismissed", until: null });
+    renderPage(offered());
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(screen.queryByText("Finish setup with your agent")).toBeNull();
+    expect(mocks.setActionState).toHaveBeenCalledWith("r1", "setup", { state: "dismissed" });
+  });
+});
+
+describe("rows a setup rule raises", () => {
+  it("marks the row a #rule link names, and keeps #row-id links working", async () => {
+    window.location.hash = "#sync_hook_missing";
+    renderPage(setupFixture({ sync: { installed: false } }));
+    await screen.findByText(/essentials done/);
+    const sync = document.querySelector("[data-row='sync']") as HTMLElement;
+    await waitFor(() => expect(sync.dataset.linked).toBe("true"));
+    expect(document.getElementById("rewrite")?.getAttribute("data-row")).toBe("rewrite");
+    expect(document.getElementById("docs_model_ready")?.closest("[data-row]")?.getAttribute("data-row")).toBe("model");
+  });
+
+  it("names the unsynced commits on the sync row", async () => {
+    renderPage(
+      setupFixture({
+        sync: { installed: false },
+        setup: stepsFixture([
+          stepFixture("sync_hook_missing", { why: [{ label: "commits since last sync", value: "1,038", basis: "measured" }] }),
+        ]),
+      }),
+    );
+    expect(await screen.findByText("1,038 commits since the last sync.")).toBeTruthy();
+  });
+
+  it("shows performance evidence found on disk, with the connect-evidence prompt", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderPage(
+      setupFixture({
+        setup: stepsFixture([
+          stepFixture("evidence_found", {
+            surface: "performance",
+            details: [{ path: ".benchmarks/run.json", line: null, symbol: null, marker: null, severity: null, reason: "pytest-benchmark", ref: null }],
+          }),
+        ]),
+      }),
+    );
+    const row = within((await screen.findByText("Performance evidence")).closest("[data-row]") as HTMLElement);
+    expect(row.getByText("repowise evidence setup")).toBeTruthy();
+    fireEvent.click(row.getByRole("button", { name: /Copy prompt/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toContain("repowise evidence setup --format json");
+  });
+
+  it("says evidence is on once runs are stored", async () => {
+    mocks.evidenceStatus = "measured";
+    renderPage(setupFixture({ setup: stepsFixture([]) }));
+    const row = (await screen.findByText("Performance evidence")).closest("[data-row]") as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain("Runtime evidence is stored"));
+  });
+
+  it("lists rows usage unlocked under Suggested from your usage", async () => {
+    renderPage(
+      setupFixture({
+        setup: stepsFixture([
+          stepFixture("always_load_suggested", {
+            title: "Load the four read tools up front",
+            impact: "Costs about 2.5k tokens a turn.",
+            command: "repowise config set mcp.always_load true",
+          }),
+        ]),
+      }),
+    );
+    expect(await screen.findByText("Suggested from your usage")).toBeTruthy();
+    const row = document.getElementById("always_load_suggested")?.closest("[data-row]") as HTMLElement;
+    expect(row.textContent).toContain("Load the four read tools up front");
+    expect(row.textContent).toContain("repowise config set mcp.always_load true");
   });
 });

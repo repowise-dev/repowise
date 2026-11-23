@@ -185,6 +185,18 @@ def default_base(repo_path: str) -> str:
     return "HEAD"
 
 
+def remote_trunk(repo_path: str, remote: str) -> str | None:
+    """*remote*'s default branch as a short ref, ``None`` when git cannot name one."""
+    remotes_prefix = "refs/remotes/"
+    head = _read(repo_path, ["symbolic-ref", f"{remotes_prefix}{remote}/HEAD"])
+    if head.startswith(remotes_prefix):
+        return head[len(remotes_prefix) :]
+    for name in _FALLBACK_BASES:
+        if resolve(repo_path, f"{remotes_prefix}{remote}/{name}"):
+            return f"{remote}/{name}"
+    return None
+
+
 def default_branch(repo_path: str) -> str | None:
     """The repository's default branch name, ``None`` when git cannot name one.
 

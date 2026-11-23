@@ -434,13 +434,11 @@ def test_the_finish_panel_footer_carries_the_link() -> None:
         files=1,
         symbols=1,
         languages="python",
-        graph_nodes=1,
-        graph_edges=0,
         elapsed="1s",
         pr_bot_url=url,
     )
     console = Console(record=True, width=200)
-    for line in _footer(facts, None, Path("."), []):
+    for line in _footer(facts, Path("."), []):
         console.print(line)
     assert url in console.export_text()
-    assert _footer(FinishFacts(**{**facts.__dict__, "pr_bot_url": None}), None, Path("."), []) == []
+    assert _footer(FinishFacts(**{**facts.__dict__, "pr_bot_url": None}), Path("."), []) == []

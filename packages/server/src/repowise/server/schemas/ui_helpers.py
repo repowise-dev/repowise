@@ -165,6 +165,10 @@ class CostGroupResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     cost_usd: float
+    # Calls priced at $0 and why: an agent CLI on the user's plan, or a model
+    # on their own machine. Lets a page say so instead of printing $0.00.
+    subscription_calls: int = 0
+    local_calls: int = 0
 
 
 class CostSummaryResponse(BaseModel):
@@ -173,6 +177,8 @@ class CostSummaryResponse(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     since: str | None
+    subscription_calls: int = 0
+    local_calls: int = 0
 
 
 class SavingsBreakdownRow(BaseModel):
@@ -187,6 +193,8 @@ class SavingsBreakdownRow(BaseModel):
     group: str | None = None
     events: int = 0
     saved_input_tokens: int = 0
+    # Input savings valued at each event's own rate; unpriced events add 0.
+    priced_input_savings_usd: float = 0.0
 
 
 class SavingsAgentRow(BaseModel):
@@ -205,6 +213,36 @@ class SavingsFilesRow(BaseModel):
     files_not_opened: int = 0
     files_not_opened_tokens: int = 0
     tool_calls_answered: int = 0
+
+
+class SavingsCheckRow(BaseModel):
+    """One check tool: the calls agents made and what Repowise returned.
+
+    Outcome fields are null when no call in the window recorded one (calls made
+    before outcomes were kept, or a host that records none) and where a field
+    does not apply to the tool. ``high``/``medium``/``low`` count changes by
+    their repo-relative level for ``get_change_risk`` and assessed files for
+    ``get_risk``. Counts of what was returned, never of what an agent did.
+    """
+
+    tool: str
+    calls: int = 0
+    #: Calls that recorded an outcome; the sums below cover these calls only.
+    outcome_calls: int = 0
+    high: int | None = None
+    medium: int | None = None
+    low: int | None = None
+    #: ``get_why``: replies that served an accepted decision, only candidate
+    #: decisions, or none.
+    decisions_accepted: int | None = None
+    decisions_candidate: int | None = None
+    decisions_none: int | None = None
+    #: ``get_health``: findings reported and files judged, summed over calls.
+    findings: int | None = None
+    files: int | None = None
+    #: ``get_dead_code``: matching items, and the high-confidence share of them.
+    items: int | None = None
+    high_confidence: int | None = None
 
 
 class SavingsOpportunityRow(BaseModel):
@@ -350,3 +388,6 @@ class SavingsResponse(BaseModel):
     output_usd_saved_estimated: float | None = None
     total_usd_saved_estimated: float | None = None
     calibration: SavingsOutputCalibration | None = None
+    #: One row per check tool (get_change_risk, get_why, get_risk, get_health,
+    #: get_dead_code), zero calls included, in that order.
+    checks: list[SavingsCheckRow] = []

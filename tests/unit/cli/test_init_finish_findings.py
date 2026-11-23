@@ -1,11 +1,10 @@
-"""What the init finish panel measured, the model command it names, and the JSON summary."""
+"""What the init finish panel measured, the question it asks first, and the JSON summary."""
 
 from __future__ import annotations
 
 import io
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
@@ -15,8 +14,7 @@ from repowise.cli.commands.init_cmd import reporting
 from repowise.cli.commands.init_cmd._agent_summary import run_summary
 from repowise.cli.editor_setup import EditorSetupOutcome
 from repowise.cli.ui.brand import THEME
-from repowise.cli.ui.finish_panel import ModelUpgrade, StoodOut
-from repowise.cli.ui.subscription import CliAuth
+from repowise.cli.ui.finish_panel import StoodOut
 from repowise.core.analysis.dead_code.models import DeadCodeKind
 
 
@@ -25,11 +23,7 @@ def _dead(path: str, safe: bool, kind: DeadCodeKind = DeadCodeKind.UNREACHABLE_F
 
 
 def _result(**overrides) -> SimpleNamespace:
-    graph = MagicMock()
-    graph.number_of_nodes.return_value = 10
-    graph.number_of_edges.return_value = 5
     fields = dict(
-        graph_builder=MagicMock(graph=lambda: graph),
         dead_code_report=SimpleNamespace(
             findings=[
                 _dead("src/legacy/old_report.py", True),
@@ -61,14 +55,8 @@ def _result(**overrides) -> SimpleNamespace:
 
 @pytest.fixture
 def no_probe(monkeypatch):
-    """No agent CLI, no key, and a store that reports 14 candidates."""
-    monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
-    monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
-    monkeypatch.setattr(
-        reporting,
-        "_decision_counts",
-        lambda _repo: {"decision_candidates": 14, "discovery_records": 9},
-    )
+    """A store that reports 14 candidates."""
+    monkeypatch.setattr(reporting, "_decision_counts", lambda _repo: {"decision_candidates": 14})
 
 
 # -- the findings ------------------------------------------------------------------
@@ -88,7 +76,22 @@ def test_findings_come_from_the_run(no_probe):
     assert stood.dead_safe == sum(1 for f in result.dead_code_report.findings if is_safe(f)) == 1
     assert (stood.hotspot_file, stood.hotspot_commits) == ("auth/session.py", 48)
     assert stood.decision_candidates == 14
-    assert stood.discovery_records == 9
+
+
+def test_docs_and_examples_stay_out_of_the_unreachable_headline(no_probe):
+    """Listed for review, never counted: the stored origin decides, the path backs it up."""
+    findings = [
+        _dead("src/legacy/old_report.py", False),
+        _dead("examples/demo/run.py", False),
+        _dead("website/snippets/sample.py", False),
+    ]
+    metrics = [SimpleNamespace(file_path="website/snippets/sample.py", code_origin="docs_example")]
+    result = _result(
+        dead_code_report=SimpleNamespace(findings=findings),
+        health_report=SimpleNamespace(kpis={}, metrics=metrics, findings=[]),
+    )
+    stood = reporting._stood_out(result, Path("/r"), reporting._top_hotspot(result))
+    assert stood.dead_unreachable == 1
 
 
 def test_unmeasured_findings_stay_none(no_probe):
@@ -109,55 +112,6 @@ def test_too_little_analysed_keeps_the_score_and_drops_the_word():
 
 def test_candidates_are_none_without_a_store(tmp_path):
     assert reporting._decision_counts(tmp_path) == {}
-
-
-# -- the model command -----------------------------------------------------------
-
-
-def test_a_signed_in_cli_comes_first(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "repowise.cli.ui.subscription.logged_in_agent_providers",
-        lambda: {
-            "codex_cli": CliAuth("signed in with ChatGPT", offer=False),
-            "claude_cli": CliAuth("Claude max plan: uses your plan quota"),
-        },
-    )
-    monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: ("openai", "x"))
-    upgrade = reporting._model_upgrade(tmp_path)
-    assert upgrade == ModelUpgrade(
-        "repowise generate --provider claude_cli", "Uses your Claude Code sign-in"
-    )
-
-
-@pytest.mark.parametrize("var", ["REPOWISE_OFFLINE", "DO_NOT_TRACK"])
-def test_no_cli_is_probed_with_the_network_off(monkeypatch, tmp_path, var):
-    monkeypatch.setenv(var, "1")
-    monkeypatch.setattr(
-        "repowise.core.agents.identity.AgentIdentity.which", lambda self: self.executable
-    )
-    monkeypatch.setattr(
-        "repowise.core.providers.llm.subscription.subprocess.run",
-        lambda *a, **k: pytest.fail("probed an agent CLI"),
-    )
-    monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
-    assert reporting._model_upgrade(tmp_path) == ModelUpgrade("repowise generate")
-
-
-def test_a_key_in_the_repo_env_is_named(monkeypatch, tmp_path):
-    monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
-    monkeypatch.setattr(
-        "repowise.core.providers.llm.resolve.credentialed_providers", lambda _repo: ("anthropic",)
-    )
-    upgrade = reporting._model_upgrade(tmp_path)
-    assert upgrade == ModelUpgrade("repowise generate --provider anthropic", "Uses your Anthropic key")
-
-
-def test_nothing_detected_names_the_bare_command(monkeypatch, tmp_path):
-    monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
-    monkeypatch.setattr(
-        "repowise.core.providers.llm.resolve.credentialed_providers", lambda _repo: ()
-    )
-    assert reporting._model_upgrade(tmp_path) == ModelUpgrade("repowise generate")
 
 
 # -- show_completion: the panel, the steps and the hint ----------------------------
@@ -182,22 +136,35 @@ def _complete(monkeypatch, tmp_path, *, index_only: bool, first_index: bool = Fa
     return completion, buf.getvalue(), hints
 
 
-def test_keyless_completion_shows_findings_model_block_and_tour(monkeypatch, tmp_path, no_probe):
+def test_completion_leads_with_the_hotspot_and_asks_about_it(monkeypatch, tmp_path, no_probe):
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
     assert "What stood out" in out
-    assert "7.4/10 Good" in out and "14 background records from history" in out
-    assert "Add a model when you want more" in out
-    assert completion.model_upgrade == ModelUpgrade("repowise generate")
-    assert completion.steps[0][0] == "repowise serve"
-    assert completion.steps[0][1].startswith("a guided tour of all this in your browser")
-    assert not any(c.startswith("repowise generate") for c, _ in completion.steps)
-
-
-def test_model_completion_has_no_model_block(monkeypatch, tmp_path, no_probe):
-    completion, out, _ = _complete(monkeypatch, tmp_path, index_only=False)
-    assert "What stood out" in out
+    assert "auth/session.py, changed in 48 commits" in out
+    assert "health, dead code and 14 background records" in out
+    assert completion.first_prompt == (
+        "Before I change auth/session.py, use Repowise to tell me what depends on it, "
+        "who knows it best, and what tends to break with it."
+    )
+    assert "Then ask your agent" in out
+    assert [c for c, _ in completion.steps] == ["repowise serve"]
+    assert completion.steps[0][1].startswith("open the dashboard (keeps running")
     assert "Add a model" not in out
-    assert completion.model_upgrade is None
+
+
+def test_without_a_hotspot_the_first_question_is_the_tour(monkeypatch, tmp_path, no_probe):
+    buf = io.StringIO()
+    monkeypatch.setattr(reporting, "console", Console(file=buf, width=120, theme=THEME))
+    monkeypatch.setattr("repowise.cli.hints.maybe_hint", lambda h, **_kw: None)
+    completion = reporting.show_completion(
+        repo_path=tmp_path,
+        result=_result(git_summary=SimpleNamespace(files_indexed=3, hotspots=0)),
+        start=0.0,
+        effective_index_only=True,
+        run_mode="standard",
+        provider=None,
+        setup=EditorSetupOutcome(),
+    )
+    assert completion.first_prompt.startswith(f"Use Repowise to give me a tour of {tmp_path.name}:")
 
 
 def test_first_index_never_shows_the_init_success_hint(monkeypatch, tmp_path, no_probe):
@@ -216,15 +183,21 @@ def test_completion_hint_rule():
 # -- --progress json -------------------------------------------------------------------
 
 
-def test_summary_carries_the_findings_and_the_model_command(tmp_path):
+def test_summary_carries_the_findings_restart_and_first_prompt(tmp_path):
     run = SimpleNamespace(
         repo_path=tmp_path,
-        setup_outcome=None,
+        setup_outcome=EditorSetupOutcome(
+            restart_hosts=(
+                {"id": "claude-code", "name": "Claude Code"},
+                {"id": "vscode", "name": "VS Code"},
+            ),
+            unconnected=({"id": "cursor", "name": "Cursor"},),
+        ),
         mcp_repointed=False,
         result=_result(),
         run_warnings=[],
         files_written=[],
-        next_steps=[("repowise serve", "tour"), ("repowise dead-code", "x")],
+        next_steps=[("repowise serve", "dashboard"), ("repowise update --full", "x")],
         stood_out=StoodOut(
             health_score=7.43,
             health_band="good",
@@ -236,7 +209,7 @@ def test_summary_carries_the_findings_and_the_model_command(tmp_path):
             hotspot_commits=48,
             decision_candidates=14,
         ),
-        model_upgrade=ModelUpgrade("repowise generate --provider claude_cli", "x"),
+        first_prompt="Before I change auth/session.py, use Repowise to tell me ...",
     )
     summary = run_summary(run, [])
     assert summary["findings"] == {
@@ -250,17 +223,48 @@ def test_summary_carries_the_findings_and_the_model_command(tmp_path):
         "hotspot": {"file": "auth/session.py", "commits": 48},
         "decision_candidates": 14,
     }
-    assert summary["next"] == [
-        "repowise serve",
-        "repowise generate --provider claude_cli",
-        "repowise dead-code",
+    # Every host this run wrote, not only Claude Code.
+    assert summary["restart_required"] is True
+    assert [h["name"] for h in summary["restart_hosts"]] == ["Claude Code", "VS Code"]
+    assert summary["connect"] == [
+        {"id": "cursor", "name": "Cursor", "command": "repowise agents add --target=cursor --yes"}
     ]
+    # serve does not return: it goes last, and long_running names it.
+    assert summary["next"] == ["repowise update --full", "repowise serve"]
+    assert summary["long_running"] == ["repowise serve"]
+    assert summary["first_prompt"] == run.first_prompt
+    assert summary["report"] is None  # init wrote no repo report
+
+
+def test_summary_names_the_repo_report_for_an_agent(tmp_path):
+    from repowise.cli.ui.finish_panel import FirstLook
+
+    run = SimpleNamespace(
+        repo_path=tmp_path, setup_outcome=None, mcp_repointed=False, result=_result(),
+        run_warnings=[], files_written=[], next_steps=[], stood_out=None, first_prompt=None,
+        first_look=FirstLook(".repowise/reports/repo-report.html", agent=True, open_items=7),
+    )
+    assert run_summary(run, [])["report"] == {
+        "open_items": 7,
+        "summary_command": "repowise report --format md",
+        "json_command": "repowise report --format json",
+    }
+
+
+def test_no_host_to_restart_means_no_restart(tmp_path):
+    run = SimpleNamespace(
+        repo_path=tmp_path, setup_outcome=EditorSetupOutcome(), result=_result(),
+        run_warnings=[], files_written=[], next_steps=[], stood_out=None, first_prompt=None,
+    )
+    summary = run_summary(run, [])
+    assert summary["restart_required"] is False and summary["restart_hosts"] == []
+    assert summary["next"] == ["repowise serve"] and summary["first_prompt"] is None
 
 
 def test_summary_findings_are_null_when_nothing_was_measured(tmp_path):
     run = SimpleNamespace(
         repo_path=tmp_path, setup_outcome=None, mcp_repointed=False, result=_result(),
-        run_warnings=[], files_written=[], next_steps=[], stood_out=StoodOut(), model_upgrade=None,
+        run_warnings=[], files_written=[], next_steps=[], stood_out=StoodOut(), first_prompt=None,
     )
     assert run_summary(run, [])["findings"] == {
         "health": None, "dead_code": None, "hotspot": None, "decision_candidates": None,
@@ -282,17 +286,13 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
         raise error
 
     monkeypatch.setattr(reporting, "_count_decisions", _raise)
-    monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
-    monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
     logged: list[str] = []
     monkeypatch.setattr(reporting.logger, "exception", lambda event, **_kw: logged.append(event))
 
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
 
     assert completion.stood_out.decision_candidates is None
-    assert completion.stood_out.discovery_records is None
     assert "background record" not in out and "Decisions" not in out
-    assert "decision discover" not in out
     assert completion.stood_out.as_summary()["decision_candidates"] is None
     # Only an error a store cannot explain is logged as a bug.
     assert logged == (["decision_candidate_count_failed"] if logged_as_bug else [])
@@ -303,10 +303,10 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
     [
         ("'off'", {}),
         ("read_only", {"decision_candidates": 3}),
-        ("full", {"decision_candidates": 3, "discovery_records": 2}),
+        ("full", {"decision_candidates": 3}),
     ],
 )
-def test_the_mode_decides_the_decisions_row_and_the_discover_step(
+def test_the_mode_decides_the_decisions_finding(
     monkeypatch, tmp_path, mode, expected
 ):
     (tmp_path / ".repowise").mkdir()
@@ -315,7 +315,7 @@ def test_the_mode_decides_the_decisions_row_and_the_discover_step(
     )
 
     async def counts(_repo):
-        return {"decision_candidates": 3, "discovery_records": 2}
+        return {"decision_candidates": 3}
 
     monkeypatch.setattr(reporting, "_count_decisions", counts)
 

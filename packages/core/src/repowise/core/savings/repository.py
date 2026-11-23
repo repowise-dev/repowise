@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -20,17 +21,23 @@ from repowise.core.savings.formulas import (
     reduction_ratio,
 )
 from repowise.core.savings.reporting import (
+    CHECK_TOOLS,
     DAY_LIMIT,
     TOOL_CALL_SURFACES,
+    CheckTally,
     FallbackRate,
     agent_breakdown_rows,
     backfill_usd,
     breakdown_rows,
+    check_rows,
     files_not_opened,
 )
+from repowise.core.savings.schema import is_newer_store
 
 if TYPE_CHECKING:
     from repowise.core.savings.output_estimate import OutputEstimate
+
+logger = logging.getLogger(__name__)
 
 #: Kept under SQLite's 999-variable ceiling with room to spare.
 _REF_QUERY_BATCH = 400
@@ -38,6 +45,11 @@ _REF_QUERY_BATCH = 400
 #: Cap on the ``(day, agent, surface)`` cells the files-not-opened queries
 #: return: a year of days across every agent and surface fits several times.
 _FILE_CELL_LIMIT = 20_000
+
+#: Distinct ``(tool, outcome)`` groups one page of the check-row read folds.
+#: Real ledgers hold a few hundred, so this is one page; a larger window pages
+#: on, so the sums stay exact while each statement stays bounded.
+_CHECK_OUTCOME_PAGE = 5_000
 
 _ANSWERED_SQL = "(result_state = 'success' OR (result_state = 'partial' AND is_usable = 1))"
 #: Unpriced ``(agent, session)`` groups the report-time price backfill reads. A
@@ -79,6 +91,7 @@ _EVENT_COLUMNS = (
     "input_rate_usd_per_million",
     "output_rate_usd_per_million",
     "metadata_json",
+    "outcome_json",
 )
 
 
@@ -87,6 +100,19 @@ class SavingsRepository:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
+        self._newer: bool | None = None
+
+    def _read_only(self) -> bool:
+        """Whether a newer Repowise owns this store, so every write here is dropped.
+
+        Checked once per repository, which callers create per write: one
+        ``PRAGMA`` read, on the writes only.
+        """
+        if self._newer is None:
+            self._newer = is_newer_store(self._conn)
+            if self._newer:
+                logger.debug("savings sidecar is newer than this build; ledger writes dropped")
+        return self._newer
 
     def _grouped(
         self,
@@ -105,21 +131,23 @@ class SavingsRepository:
         sorts the matched slice, which is why every one of these is capped.
         """
         return self._conn.execute(
-            f"SELECT {expression}, COUNT(*), COALESCE(SUM(saved_input_tokens), 0) "
+            f"SELECT {expression}, COUNT(*), COALESCE(SUM(saved_input_tokens), 0), "
+            "COALESCE(SUM(CASE WHEN input_rate_usd_per_million IS NOT NULL "
+            "THEN saved_input_tokens * input_rate_usd_per_million / 1000000.0 ELSE 0 END), 0) "
             f"FROM savings_events WHERE {where} "
             f"GROUP BY 1 ORDER BY {order} LIMIT ?",
             [*params, limit],
         ).fetchall()
 
     def index_call_window(self, repository_id: str) -> list[tuple[Any, ...]]:
-        """``(agent, first, last)`` per agent for calls that read the index, latest first.
+        """``(agent, first, last, calls)`` per agent for calls that read the index, latest first.
 
         MCP tool calls and VS Code language-model tool calls; distill and hook
         rows are output an agent ran, not questions it asked. Bounded like
         every other grouping here.
         """
         return self._conn.execute(
-            "SELECT agent, MIN(occurred_at), MAX(occurred_at) FROM savings_events "
+            "SELECT agent, MIN(occurred_at), MAX(occurred_at), COUNT(*) FROM savings_events "
             "WHERE repository_id = ? AND surface IN ('mcp', 'vscode_lm') "
             "GROUP BY agent ORDER BY 3 DESC LIMIT 100",
             [repository_id],
@@ -149,9 +177,12 @@ class SavingsRepository:
 
     def record_event(self, event: SavingsEvent) -> bool:
         """Atomically insert an event and its links; return false for a retry."""
-        values = [getattr(event, column) for column in _EVENT_COLUMNS[:-1]]
+        if self._read_only():
+            return False
+        values = [getattr(event, column) for column in _EVENT_COLUMNS[:-2]]
         values[18] = int(event.is_usable)
         values.append(event.metadata_json())
+        values.append(event.outcome_json())
         placeholders = ",".join("?" for _ in _EVENT_COLUMNS)
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -214,6 +245,8 @@ class SavingsRepository:
 
     def record_file_read(self, session_key: str, path: str, read_at: str) -> None:
         """Note that the agent Read *path* in this session, keeping the latest time."""
+        if self._read_only():
+            return
         self._conn.execute(
             "INSERT INTO savings_file_reads(session_key, path, read_at) VALUES (?, ?, ?) "
             "ON CONFLICT(session_key, path) DO UPDATE SET read_at = excluded.read_at "
@@ -260,6 +293,57 @@ class SavingsRepository:
             ).fetchall()
         return files_not_opened(credited, calls, limit)
 
+    def _checks(self, where: str, params: list[Any]) -> tuple[Any, ...]:
+        """Per check tool: usable MCP calls and what they returned.
+
+        Calls are counted in SQL. Outcomes are grouped by their stored text and
+        folded in Python, so the read needs no JSON support in SQLite and costs
+        one row per distinct outcome rather than one per call.
+        """
+        import json
+
+        tools = ",".join("?" for _ in CHECK_TOOLS)
+        scope = f"{where} AND surface = 'mcp' AND is_usable = 1 AND operation IN ({tools})"
+        scoped = [*params, *CHECK_TOOLS]
+        tallies: dict[str, CheckTally] = {}
+        for tool, calls in self._conn.execute(
+            f"SELECT operation, COUNT(*) FROM savings_events WHERE {scope} GROUP BY 1 LIMIT ?",
+            [*scoped, len(CHECK_TOOLS)],
+        ):
+            tallies[tool] = CheckTally(calls=int(calls))
+        try:
+            for tool, text, calls in self._outcome_groups(scope, scoped):
+                try:
+                    outcome = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(outcome, dict) and tool in tallies:
+                    tallies[tool].add_outcome(outcome, tool, int(calls))
+        except sqlite3.OperationalError:
+            # A sidecar opened read-only before its first upgrade has no column yet.
+            pass
+        return check_rows(tallies)
+
+    def _outcome_groups(self, scope: str, params: list[Any]) -> Iterator[tuple[Any, ...]]:
+        """Every ``(tool, outcome_json, calls)`` group in *scope*, a bounded page at a time.
+
+        Keyset paging on the group key, so no group is dropped however many
+        distinct outcomes a window holds, and memory stays at one page.
+        """
+        after: tuple[str, str] | None = None
+        while True:
+            keyset = " AND (operation, outcome_json) > (?, ?)" if after else ""
+            page = self._conn.execute(
+                f"SELECT operation, outcome_json, COUNT(*) FROM savings_events "
+                f"WHERE {scope} AND outcome_json IS NOT NULL{keyset} "
+                "GROUP BY 1, 2 ORDER BY 1, 2 LIMIT ?",
+                [*params, *(after or ()), _CHECK_OUTCOME_PAGE],
+            ).fetchall()
+            yield from page
+            if len(page) < _CHECK_OUTCOME_PAGE:
+                return
+            after = (page[-1][0], page[-1][1])
+
     def adopt_rows(self, repository_id: str) -> int:
         """File every row of this sidecar under *repository_id*; return how many moved.
 
@@ -268,6 +352,8 @@ class SavingsRepository:
         whose retry key already exists under the new id keeps its old id.
         Takes no write lock when there is nothing to move.
         """
+        if self._read_only():
+            return 0
         tables = ("savings_events", "savings_opportunities")
         if not any(
             self._conn.execute(
@@ -293,6 +379,8 @@ class SavingsRepository:
 
     def record_opportunity(self, observation: OpportunityObservation) -> bool:
         """Insert an opportunity outside the achieved-event ledger."""
+        if self._read_only():
+            return False
         cursor = self._conn.execute(
             """
             INSERT OR IGNORE INTO savings_opportunities
@@ -496,6 +584,7 @@ class SavingsRepository:
             backfilled_saved_input_tokens=backfilled_tokens,
             backfilled_input_savings_usd=backfilled_usd,
             output_estimate=output_estimate,
+            checks=self._checks(where, params),
         )
 
     def _unpriced_groups(

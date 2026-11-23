@@ -254,3 +254,49 @@ async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
     await replace_symbol_hotness(session, materialized, [{**ranked, "run_id": "r1"}])
     await session.commit()
     assert await _measured() == {"basis": "unknown", "status": "not_ranked"}
+
+
+@pytest.mark.asyncio
+async def test_a_measured_only_cause_stays_off_the_agent_surface(setup_mcp, session, materialized):
+    """A cause minted from a measurement alone is work on the people's
+    surfaces; the agent's default response does not change by one byte."""
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.crud.analysis.fix_first import (
+        clear_fix_first_cache,
+        load_fix_first,
+    )
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
+    from repowise.server.mcp_server import get_health, get_overview
+
+    default = _size(await get_health())
+    overview = _size(await get_overview())
+    performance = await get_health(include=["performance"], limit=50)
+
+    await _seed(session, materialized, [_hot("src/app.py::decode", tier="lead_candidate")])
+    await finalize_performance_opportunities(session, materialized, analyzed_commit="c" * 40)
+    await session.commit()
+    clear_fix_first_cache()
+
+    (minted,) = await measured_hotspot_ids(session, materialized)
+    people = await load_fix_first(session, materialized, limit=None)
+    assert minted in {i.source.opportunity_id for i in people.items}
+
+    plain = await get_health()
+    assert _size(plain) == default
+    assert minted not in json.dumps(plain)
+    after = await get_health(include=["performance"], limit=50)
+    assert minted not in json.dumps(after)
+    # Items, totals, facets and the summary all leave it out: only the
+    # existing measured block is new.
+    for block in (after, performance):
+        block.pop("performance_measured", None)
+        block.pop("_meta", None)
+    # A rebuild writes its plans anew, so only their ids may differ.
+    def plain(block: dict) -> str:
+        return re.sub(r'"plan_id": "[0-9a-f]{32}"', '"plan_id": ""', json.dumps(block))
+
+    assert plain(after) == plain(performance)
+    assert len(json.dumps(after)) == len(json.dumps(performance))
+    shown = await get_overview()
+    assert _size(shown) == overview
+    assert minted not in json.dumps(shown)

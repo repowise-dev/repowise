@@ -18,6 +18,21 @@ def work(horizon: dict[str, Any]) -> int:
     return int(by_tier.get("act_now", 0)) + int(by_tier.get("plan", 0))
 
 
+def setup_steps(horizon: dict[str, Any]) -> int:
+    """The ``improve_signal`` rows: setup steps, counted apart from the work."""
+    return int(horizon.get("by_tier", {}).get("improve_signal", 0))
+
+
+def _setup_part(horizon: dict[str, Any], *, after_work: bool) -> str:
+    """The setup steps after the work count, so a list that shows them never reads as a mismatch."""
+    steps = setup_steps(horizon)
+    if not steps:
+        return ""
+    if after_work:
+        return f" · {plural(steps, 'setup step')}"
+    return f" {plural(steps, 'setup step')} to finish."
+
+
 def _sentence(horizons: dict[str, Any], name: str, anchor: datetime | None) -> str:
     # The window is named because "this week" is the repository's last week of
     # commits, which is not always the calendar's.
@@ -27,18 +42,19 @@ def _sentence(horizons: dict[str, Any], name: str, anchor: datetime | None) -> s
     else:
         window = "this quarter"
     total = work(horizons[name])
+    setup = _setup_part(horizons[name], after_work=total > 0)
     if total == 0:
         other = work(horizons["quarter" if name == "week" else "week"])
         if other == 0:
-            return f"Nothing stands out {window}."
+            return f"Nothing stands out {window}.{setup}"
         if name == "week":
             tail = f"{'is' if other == 1 else 'are'} worth planning this quarter"
         else:
             tail = "came up this week"
-        return f"Nothing needs you {window}. {plural(other, 'thing')} {tail}."
+        return f"Nothing needs you {window}. {plural(other, 'thing')} {tail}.{setup}"
     now = int(horizons[name].get("by_tier", {}).get("act_now", 0))
     now_part = f", {now} of them now" if now else ""
-    return f"{plural(total, 'thing')} worth doing {window}{now_part}."
+    return f"{plural(total, 'thing')} worth doing {window}{now_part}{setup}."
 
 
 def summarize(horizons: dict[str, Any], anchor: datetime | None) -> dict[str, str]:

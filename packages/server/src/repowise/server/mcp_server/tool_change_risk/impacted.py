@@ -111,9 +111,10 @@ async def _impacted_tests_block(
 
     The shared :func:`change_tests_block` (the same one ``repowise risk`` and
     the Review page read), plus ``line_coverage``: the scored files' lines
-    classified against the per-test map, on the side of the diff the map was
-    measured at. Any failure degrades to a ``status`` string with ``run_all``
-    true and never raises, so it cannot fail the surrounding score.
+    classified against the per-test map, in the line numbers of the commit it
+    was measured at (``query_lines``). Any failure degrades to a ``status``
+    string with ``run_all`` true and never raises, so it cannot fail the
+    surrounding score.
     """
     from repowise.core.analysis.missing_test_signal import detect_missing_tests
     from repowise.core.analysis.test_collection import query_lines
@@ -141,7 +142,7 @@ async def _impacted_tests_block(
     if result["map_empty"]:
         return block
     try:
-        lines = query_lines(change, result["measured_commit"])
+        lines = result.get("query_lines") or query_lines(change, result["measured_commit"])
         async with get_session(session_factory) as session:
             repo_id = (await _pkg._get_repo(session)).id
             report = await detect_missing_tests(

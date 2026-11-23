@@ -193,6 +193,23 @@ def test_go_modules_replace_does_not_leak_across_modules(tmp_path):
     }
 
 
+def test_go_replace_of_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": "module example.com/dup\n\ngo 1.22\n",
+        "a/a.go": "package dup\n",
+        "b/go.mod": "module example.com/dup\n\ngo 1.22\n",
+        "b/b.go": "package dup\n",
+        "app/go.mod": "module example.com/app\n\ngo 1.22\n\nreplace example.com/dup => ../b\n",
+        "app/main.go": "package main\n",
+        "web/go.mod": "module example.com/web\n\ngo 1.22\n\nreplace example.com/dup => ../a\n",
+        "web/web.go": "package web\n",
+    })
+    assert index.unit("go:example.com/dup").root == "a"
+    assert index.unit("go:example.com/app").deps == ("manifest:b",)
+    assert index.unit("go:example.com/web").deps == ("go:example.com/dup",)
+    assert _owners(index, "b/b.go") == ["manifest:b"]
+
+
 def test_go_modules_outside_repo_replace_does_not_fall_back_to_same_named_module(tmp_path):
     index = _collect(tmp_path, {
         "a/go.mod": "module example.com/a\n\ngo 1.22\n\nreplace example.com/b => ../../outside/b\n",
@@ -355,9 +372,9 @@ def test_duplicate_id_keeps_the_shallowest_root(tmp_path):
         "b/copy/go.mod": "module example.com/same\n",
         "b/copy/b.go": "package b\n",
     })
-    assert list(index.units) == ["go:example.com/same"]
+    assert list(index.units) == ["go:example.com/same", "manifest:b/copy"]
     assert index.unit("go:example.com/same").root == "a"
-    assert _owners(index, "b/copy/b.go") == []
+    assert _owners(index, "b/copy/b.go") == ["manifest:b/copy"]
 
 
 def test_cargo_crates_outside_the_workspace_get_units(tmp_path):
@@ -472,6 +489,45 @@ def test_root_binary_outside_src_is_one_crate(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert index.unit("cargo:rg").deps == ("cargo:globset",)
     assert _owners(index, "crates/core/main.rs") == ["cargo:rg"]
+
+
+def test_cargo_path_dep_on_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "a/dup/src/lib.rs": "",
+        "b/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "b/dup/src/lib.rs": "",
+        "app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\n'
+            'other = { path = "../b/dup" }\n'
+            'kept = { path = "../a/dup" }\n'
+        ),
+        "app/src/main.rs": "",
+    })
+    assert index.unit("cargo:dup").root == "a/dup"
+    assert index.unit("cargo:app").deps == ("cargo:dup", "manifest:b/dup")
+    assert _owners(index, "b/dup/src/lib.rs") == ["manifest:b/dup"]
+
+
+def test_cargo_path_dep_on_a_dropped_root_keeps_manifest_beside_go(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "a/dup/src/lib.rs": "",
+        "b/dup/Cargo.toml": '[package]\nname = "dup"\n',
+        "b/dup/src/lib.rs": "",
+        "b/dup/go.mod": "module example.com/bdup\n\ngo 1.22\n",
+        "b/dup/dup.go": "package bdup\n",
+        "app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\n'
+            'other = { path = "../b/dup" }\n'
+        ),
+        "app/src/main.rs": "",
+    })
+    assert index.unit("cargo:dup").root == "a/dup"
+    assert index.unit("go:example.com/bdup").root == "b/dup"
+    assert index.unit("manifest:b/dup").manifest == "b/dup/Cargo.toml"
+    assert index.unit("cargo:app").deps == ("manifest:b/dup",)
+    assert _owners(index, "b/dup/src/lib.rs") == ["go:example.com/bdup", "manifest:b/dup"]
 
 
 def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):
@@ -653,7 +709,7 @@ def test_python_unreadable_pyproject_falls_back_alone(tmp_path):
     assert set(index.units) == {"manifest:bad", "python:good"}
 
 
-def test_python_path_source_to_a_dropped_duplicate_links_nothing(tmp_path):
+def test_python_path_source_to_a_dropped_duplicate_links_its_manifest(tmp_path):
     index = _collect(tmp_path, {
         "a/dup/pyproject.toml": '[project]\nname = "dup"\n',
         "b/dup/pyproject.toml": '[project]\nname = "Dup"\n',
@@ -666,7 +722,7 @@ def test_python_path_source_to_a_dropped_duplicate_links_nothing(tmp_path):
         ),
     })
     assert index.unit("python:dup").root == "a/dup"
-    assert index.unit("python:app").deps == ()
+    assert index.unit("python:app").deps == ("manifest:b/dup",)
     assert index.unit("python:web").deps == ("python:dup",)
     assert _owners(index, "b/dup/d.py") == ["manifest:b/dup"]
 
@@ -841,6 +897,27 @@ def test_dart_duplicate_name_keeps_first_root(tmp_path):
     assert set(index.units) == {"dart:same", "manifest:b"}
     assert index.unit("dart:same").root == "a"
     assert _owners(index, "b/b.dart") == ["manifest:b"]
+
+
+def test_dart_path_dep_on_a_dropped_duplicate_links_its_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/pubspec.yaml": "name: dup\n",
+        "a/dup/dup.dart": "",
+        "b/dup/pubspec.yaml": "name: dup\n",
+        "b/dup/dup.dart": "",
+        "app/pubspec.yaml": (
+            "name: app\n"
+            "dependencies:\n"
+            "  other:\n"
+            "    path: ../b/dup\n"
+            "  kept:\n"
+            "    path: ../a/dup\n"
+        ),
+        "app/main.dart": "",
+    })
+    assert index.unit("dart:dup").root == "a/dup"
+    assert index.unit("dart:app").deps == ("dart:dup", "manifest:b/dup")
+    assert _owners(index, "b/dup/dup.dart") == ["manifest:b/dup"]
 
 
 def test_dart_adapter_beats_fallback(tmp_path):
@@ -1069,7 +1146,7 @@ def test_swift_duplicate_name_keeps_first_root(tmp_path):
         "App/Sources/App/main.swift": "",
     })
     assert index.unit("swift:Dup").root == "a/Dup"
-    assert index.unit("swift:App").deps == ()
+    assert index.unit("swift:App").deps == ("manifest:b/Dup",)
     assert _owners(index, "b/Dup/Sources/Dup/Dup.swift") == ["manifest:b/Dup"]
 
 
@@ -1298,10 +1375,185 @@ def test_php_duplicate_name_keeps_the_first_root(tmp_path):
     })
     # The first (in sorted order by rel_dir) root "a" wins the id "php:acme/dup"
     assert index.unit("php:acme/dup").root == "a"
-    # Sorted by root, "a" comes first; "b/dup" falls back.
+    # Sorted by root, "a" comes first; "b/dup" falls back, and the path
+    # repository that points at it links that unit.
     assert "manifest:b/dup" in index.units
-    assert index.unit("php:acme/app").deps == ()
+    assert index.unit("php:acme/app").deps == ("manifest:b/dup",)
     assert _owners(index, "b/dup/B.php") == ["manifest:b/dup"]
+
+
+_MIX_UMBRELLA_ROOT = (
+    "defmodule Umbrella.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [apps_path: \"apps\", version: \"0.1.0\"]\n"
+    "  end\n"
+    "end\n"
+)
+
+_MIX_CORE = (
+    "defmodule Core.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [app: :core, version: \"0.1.0\", elixir: \"~> 1.14\"]\n"
+    "  end\n"
+    "end\n"
+)
+
+_MIX_WEB = (
+    "defmodule Web.MixProject do\n"
+    "  use Mix.Project\n\n"
+    "  def project do\n"
+    "    [\n"
+    "      app: :web,\n"
+    "      version: \"0.1.0\",\n"
+    "      deps: deps()\n"
+    "    ]\n"
+    "  end\n\n"
+    "  defp deps do\n"
+    "    [\n"
+    "      {:core, in_umbrella: true, only: :test},\n"
+    "      {:missing, in_umbrella: true},\n"
+    "      {:ecto, \"~> 3.9\"}\n"
+    "    ]\n"
+    "  end\n"
+    "end\n"
+)
+
+
+def test_elixir_umbrella_apps_linked_by_in_umbrella(tmp_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_UMBRELLA_ROOT,
+        "apps/web/mix.exs": _MIX_WEB,
+        "apps/web/lib/web.ex": "defmodule Web do\nend\n",
+        "apps/core/mix.exs": _MIX_CORE,
+        "apps/core/lib/core.ex": "defmodule Core do\nend\n",
+    })
+    assert _deps(index) == {"elixir:web": ("elixir:core",), "elixir:core": ()}
+    web = index.unit("elixir:web")
+    assert (web.root, web.manifest, web.name, web.source) == (
+        "apps/web", "apps/web/mix.exs", "web", "mix",
+    )
+    # The umbrella root is ruled out, not a unit; no manifest: fallback anywhere.
+    assert "manifest:." not in index.units
+    assert "manifest:apps/web" not in index.units
+    assert "manifest:apps/core" not in index.units
+    assert _owners(index, "apps/web/lib/web.ex") == ["elixir:web"]
+    assert [u.id for u in index.dependents("elixir:core")] == ["elixir:web"]
+
+
+@pytest.mark.parametrize("apps_path", ["apps/", "./apps"])
+def test_elixir_umbrella_apps_path_written_loosely(tmp_path, apps_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_UMBRELLA_ROOT.replace('"apps"', f'"{apps_path}"'),
+        "apps/web/mix.exs": _MIX_WEB,
+        "apps/core/mix.exs": _MIX_CORE,
+    })
+    assert _deps(index) == {"elixir:web": ("elixir:core",), "elixir:core": ()}
+
+
+def test_elixir_path_dep_links_in_repo_app(tmp_path):
+    index = _collect(tmp_path, {
+        "app/mix.exs": (
+            "defmodule App.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [app: :app, deps: deps()]\n"
+            "  end\n\n"
+            "  defp deps do\n"
+            "    [\n"
+            "      {:shared, \"~> 1.0\", path: \"../shared\"},\n"
+            "      {:core, in_umbrella: true}\n"
+            "    ]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "app/lib/app.ex": "",
+        "shared/mix.exs": (
+            "defmodule Shared.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [app: :shared, version: \"0.1.0\"]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "shared/lib/shared.ex": "",
+    })
+    # in_umbrella: true with no umbrella root links nothing.
+    assert _deps(index) == {"elixir:app": ("elixir:shared",), "elixir:shared": ()}
+
+
+def test_elixir_path_dep_outside_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/mix.exs": (
+            "defmodule App.MixProject do\n"
+            "  use Mix.Project\n\n"
+            "  def project do\n"
+            "    [\n"
+            "      app: :app,\n"
+            "      deps: [\n"
+            "        {:gone, path: \"../../elsewhere\"},\n"
+            "        {:abs, path: \"/opt/shared\"}\n"
+            "      ]\n"
+            "    ]\n"
+            "  end\n"
+            "end\n"
+        ),
+        "app/lib/app.ex": "",
+    })
+    assert index.unit("elixir:app").deps == ()
+
+
+def test_elixir_unreadable_mix_exs_falls_back(tmp_path):
+    _write(tmp_path, {
+        "good/mix.exs": _MIX_CORE,
+        "good/lib/core.ex": "",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "mix.exs").write_bytes(
+        b"defmodule Bad.MixProject do\n  app: :caf\xe9\nend\n"
+    )
+    (tmp_path / "bad" / "lib").mkdir()
+    (tmp_path / "bad" / "lib" / "bad.ex").write_text("")
+    (tmp_path / "noname").mkdir()
+    (tmp_path / "noname" / "mix.exs").write_text("# Nothing Mix can read here\n")
+    (tmp_path / "noname" / "lib").mkdir()
+    (tmp_path / "noname" / "lib" / "noname.ex").write_text("")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"elixir:core", "manifest:bad", "manifest:noname"}
+    assert _owners(index, "bad/lib/bad.ex") == ["manifest:bad"]
+    assert _owners(index, "noname/lib/noname.ex") == ["manifest:noname"]
+
+
+def test_elixir_duplicate_app_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/mix.exs": _MIX_CORE,
+        "a/dup/lib/dup.ex": "",
+        "b/dup/mix.exs": _MIX_CORE,
+        "b/dup/lib/dup.ex": "",
+    })
+    assert index.unit("elixir:core").root == "a/dup"
+    assert "manifest:b/dup" in index.units
+    assert _owners(index, "b/dup/lib/dup.ex") == ["manifest:b/dup"]
+
+
+def test_elixir_repo_without_mix_exs_has_no_elixir_units(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/app.ex": "defmodule App do\nend\n",
+        "lib/other.ex": "defmodule Other do\nend\n",
+    })
+    assert index.units == {}
+
+
+def test_elixir_standalone_app_at_root(tmp_path):
+    index = _collect(tmp_path, {
+        "mix.exs": _MIX_CORE,
+        "lib/core.ex": "",
+    })
+    assert _deps(index) == {"elixir:core": ()}
+    core = index.unit("elixir:core")
+    assert (core.root, core.manifest) == ("", "mix.exs")
+    assert "manifest:." not in index.units
 
 
 _PAS = "unit U;\ninterface\nimplementation\nend.\n"
@@ -1712,3 +1964,15 @@ def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch
     index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
     assert list(index.units) == ["manifest:pkg"]
     assert index.failed_ecosystems == frozenset()
+
+
+def test_a_pip_application_in_a_subdirectory_is_a_unit(tmp_path):
+    """A requirements file and no pyproject still makes its directory a unit."""
+    index = _collect(tmp_path, {
+        "backend/requirements.txt": "fastapi\n",
+        "backend/requirements-dev.txt": "pytest\n",
+        "backend/app.py": "",
+        "frontend/package.json": json.dumps({"name": "web"}),
+    })
+    assert index.unit("manifest:backend").manifest == "backend/requirements-dev.txt"
+    assert _owners(index, "backend/app.py") == ["manifest:backend"]

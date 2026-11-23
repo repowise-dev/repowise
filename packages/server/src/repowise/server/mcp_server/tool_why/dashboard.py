@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from repowise.core.analysis.decisions.lifecycle import RULE_DRIFTED, rule_drift_reason
 from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
 from repowise.core.precedent.currency import decision_commits_since
@@ -82,6 +83,13 @@ async def _add_stale_row_currency(
         )
 
 
+def _rule_changed(decision: object) -> dict:
+    """``rule_changed`` naming what went away, on a row flagged because its rule drifted."""
+    if getattr(decision, "rule_check", None) != RULE_DRIFTED:
+        return {}
+    return {"rule_changed": rule_drift_reason(decision.rule_check_basis)}
+
+
 async def _why_health_dashboard(repo: str | None) -> dict:
     """Mode 1: no query — return the decision health dashboard."""
     from repowise.core.persistence.crud import get_decision_health_summary
@@ -112,6 +120,7 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                     "id": d.id,
                     "title": d.title,
                     "staleness_score": d.staleness_score,
+                    **_rule_changed(d),
                     "affected_files": filter_path_list(
                         json.loads(d.affected_files_json), _get_exclude_spec(ctx.path)
                     ),

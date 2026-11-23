@@ -28,9 +28,9 @@ from .interaction import Interaction
 
 logger = logging.getLogger(__name__)
 
-#: Token scale floor(chars / 4), same as v1. v2 marks the revised counterfactual
-#: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
-_ESTIMATOR = "chars_per_token_floor_v2"
+#: Token scale floor(chars / 4), same as v1. The version names the counterfactual
+#: table in force (docs/architecture/savings-accounting.md, "MCP counterfactuals").
+_ESTIMATOR = "chars_per_token_floor_v3"
 _TOKEN_UNIT = "estimated_tokens"
 
 #: The host session this server runs under, when the host exports it to the
@@ -198,6 +198,7 @@ def _record(interaction: Interaction, result: Any) -> bool:
         "delivered_input_tokens": delivered,
         "omission_refs": _omission_refs(result),
         **_files(interaction),
+        **_outcome_field(interaction.tool, result),
         "metadata": interaction.identity_metadata or None,
         **(pricing.as_payload() if pricing else {}),
     }
@@ -217,6 +218,21 @@ def _files(interaction: Interaction) -> dict[str, Any]:
         }
     except Exception:
         return {}
+
+
+def _outcome_field(tool: str, result: Any) -> dict[str, Any]:
+    """What a check tool returned, read off the reply in hand. Never raises.
+
+    A failure costs the field only; the event is written without it.
+    """
+    try:
+        from .outcome import check_outcome
+
+        outcome = check_outcome(tool, result)
+    except Exception:
+        logger.debug("mcp check outcome failed for %s", tool, exc_info=True)
+        return {}
+    return {"outcome": outcome} if outcome is not None else {}
 
 
 def _now() -> str:

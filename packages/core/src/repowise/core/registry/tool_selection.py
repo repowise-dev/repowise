@@ -263,6 +263,29 @@ def resolve_enabled_tools(
     return _apply_deltas(base, rest, catalog, usable, is_workspace=is_workspace)
 
 
+def candidate_tools(
+    override: str | Sequence[str] | None, *, is_workspace: bool
+) -> frozenset[str] | None:
+    """Every tool name *override* could enable, read from the override alone.
+
+    :func:`resolve_enabled_tools` never returns a name outside this set,
+    whatever the catalog holds, so a server can import only these tools'
+    modules and resolve over that smaller catalog to the same surface. ``None``
+    when the answer reads each tool's ``default`` flag (no override, a bare
+    delta on the client's default, ``standard`` or ``all``): that needs the
+    whole catalog.
+    """
+    profile, rest = split_profile(normalize_override(override))
+    if profile is None and rest and not is_delta(rest):
+        return frozenset(rest)
+    if profile not in (CORE, LEAN):
+        return None
+    members = CORE_TOOLS if profile == CORE else LEAN_TOOLS
+    extras = LEAN_WORKSPACE_EXTRAS if is_workspace else frozenset()
+    added = {t[1:].strip() if t[0] in "+-" else t for t in rest if t[0] != "-"}
+    return frozenset(members | extras | added)
+
+
 def _never_called() -> None:
     """Stand-in callable for the name-only entries :func:`listed_default_tools` builds."""
 

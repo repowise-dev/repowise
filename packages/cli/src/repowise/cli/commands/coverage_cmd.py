@@ -435,7 +435,7 @@ def coverage_setup(repo: str | None, fmt: str) -> None:
     """
     from repowise.cli.commands.evidence_cmd import _print_setup
 
-    _print_setup(repo, fmt, coverage_only=True)
+    _print_setup(repo, fmt, coverage_only=True, command="coverage")
 
 
 @coverage_group.command("status")
@@ -522,6 +522,14 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 if paths:
                     console.print(
                         f"  Report paths matched: {paths['matched']} of {paths['total']}"
+                    )
+                unreported = summary.get("unreported_file_count") or 0
+                if unreported:
+                    named = summary.get("unreported_files") or []
+                    more = f" and {unreported - len(named)} more" if unreported > len(named) else ""
+                    console.print(
+                        f"  Not in the report: {unreported} indexed production file(s) "
+                        f"({escape(', '.join(named))}{more})"
                     )
                 if (summary.get("freshness") or {}).get("status") == "stale":
                     console.print(

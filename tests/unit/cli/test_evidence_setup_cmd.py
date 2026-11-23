@@ -21,7 +21,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n')
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("")
-    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n, _c: tmp_path)
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
     return tmp_path
@@ -84,6 +84,35 @@ def test_the_table_names_the_command_the_ingest_line_and_the_next_steps(repo: Pa
     assert "python (pytest, pip) at the repository root" in result.stdout
     assert "ingest (from the repository root): repowise coverage add coverage.xml .coverage" in result.stdout
     assert "repowise init --yes --no-prose" in result.stdout
+
+
+def test_test_timings_name_the_environment_the_report_needs() -> None:
+    timings = {"flag": "--reporters=jest-junit", "env": "A={x}", "report": "junit.xml", "ingest": None}
+    (line,) = evidence_cmd._timings_lines(timings)
+    assert line == (
+        "  test timings: add [cyan]--reporters=jest-junit[/cyan] to the test command "
+        "with [cyan]A={x}[/cyan] in its environment, report junit.xml"
+    )
+
+
+def test_the_text_shows_every_note_the_json_has() -> None:
+    hooks = "This runs the test runner directly: `npm test` would also run the `pretest` script."
+    unit = {
+        "root": "", "stack": "node", "runner": "jest", "package_manager": "npm",
+        "coverage": {"command": "npx jest --coverage", "prerequisites": [], "found": [], "ingest": None,
+                     "reason": None, "notes": [hooks]},
+        "runtime": [{"class": "unit_test", "workload": "python tests", "command": "python -c x",
+                     "reason": None, "ingest": None, "note": "A subset of the tests is enough."}],
+    }
+    text = " ".join(evidence_cmd._setup_lines(unit))
+    assert f"note: {hooks}" in text
+    assert "note: A subset of the tests is enough." in text
+
+    # Without a command, the last note is the reason, shown once.
+    unit["coverage"].update(command=None, reason="No runner.", notes=["First.", "No runner."])
+    lines = evidence_cmd._setup_lines(unit)
+    assert sum("No runner." in line for line in lines) == 1
+    assert any("note: First." in line for line in lines)
 
 
 def test_coverage_setup_prints_the_coverage_part_of_the_plan(repo: Path) -> None:
@@ -168,3 +197,72 @@ def test_an_index_from_an_older_repowise_is_told_to_update(repo: Path, monkeypat
     payload = json.loads(result.stdout)
     assert payload["next_call"]["steps"] == [{"cwd": str(repo), "run": "repowise update"}]
     assert "run `repowise update`" in payload["reason"]
+
+
+def test_setup_writes_nothing_without_write(repo: Path) -> None:
+    assert _setup().exit_code == 0
+    assert not (repo / ".github").exists()
+    assert not (repo / ".gitlab").exists()
+
+
+def test_write_adds_the_ci_file_once_and_never_overwrites_a_different_one(repo: Path) -> None:
+    first = _setup("--write", "--format", "json")
+
+    assert first.exit_code == 0, (first.output, first.exception)
+    ci = json.loads(first.stdout)["ci"]
+    assert ci["ci"] == "github" and ci["written"] is True and "content" not in ci
+    workflow = repo / ".github" / "workflows" / "repowise-evidence.yml"
+    assert "--junitxml=junit.xml" in workflow.read_text(encoding="utf-8")
+
+    again = _setup("--write")
+    assert again.exit_code == 0
+    assert "Unchanged .github/workflows/repowise-evidence.yml" in again.stdout
+
+    workflow.write_text("name: mine\n", encoding="utf-8")
+    refused = _setup("--write", "--format", "json")
+    assert refused.exit_code == 1
+    assert json.loads(refused.stdout)["error"] == "ci_file_exists"
+    assert workflow.read_text(encoding="utf-8") == "name: mine\n"
+
+
+def test_write_picks_gitlab_for_a_gitlab_repository(repo: Path) -> None:
+    (repo / ".gitlab-ci.yml").write_text("test:\n  script: [pytest]\n")
+
+    result = _setup("--write")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert (repo / ".gitlab" / "repowise-evidence.yml").is_file()
+    assert "include it from .gitlab-ci.yml" in result.stdout
+
+
+def test_ci_needs_write(repo: Path) -> None:
+    result = _setup("--ci", "gitlab")
+
+    assert result.exit_code == 2
+    assert not (repo / ".gitlab").exists()
+
+
+def test_workspace_member_prints_the_running_command_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    fx = ws / "fx"
+    fx.mkdir(parents=True)
+    (fx / ".git").mkdir()
+    (fx / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (ws / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: fx\nrepos:\n  - path: fx\n    alias: fx\n    is_primary: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(fx)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    cov = CliRunner().invoke(coverage_group, ["setup"])
+    assert cov.exit_code == 0, (cov.output, cov.exception)
+    assert "coverage reads" in cov.output
+    assert "evidence reads" not in cov.output
+
+    ev = CliRunner().invoke(evidence_cmd.evidence_group, ["setup"])
+    assert ev.exit_code == 0, (ev.output, ev.exception)
+    assert "evidence reads" in ev.output

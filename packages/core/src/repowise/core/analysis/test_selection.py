@@ -98,6 +98,7 @@ from ..test_runners import runner_args as runner_args
 from ..test_runners import runner_notes as runner_notes
 
 if TYPE_CHECKING:
+    from .import_drift import Rewiring
     from .selection_scopes import Scope
 
 SHARED_TEST_DATA_REASON = "shared test data can change any test"
@@ -604,10 +605,10 @@ class SelectionInput:
 
     *changed* are the paths present after the change, *deleted* those it
     removed, *label* names the change; *tiers* is ``impacted-tests``' result
-    (``covered``, ``inferred``, ``unknown``, ``helper_importers``).
-    *map_current* is false when the per-test map was measured at neither end of
-    the change, so its tests were matched by file; *map_truncated* when it holds
-    as many rows as the store keeps. *index_gap* lists the files that changed
+    (``covered``, ``inferred``, ``unknown``, ``helper_importers``, and
+    ``matched_by_file``: changed files whose covering tests the per-test map
+    could only match by file). *map_truncated* is true when the per-test map holds as many rows as
+    the store keeps. *index_gap* lists the files that changed
     between the indexed commit and the change, ``None`` when that cannot be
     told; *index_problem* says why the index's own commit cannot be trusted.
     *graph_error* names a graph read that failed. *missing* are test files the
@@ -629,7 +630,6 @@ class SelectionInput:
     config: TestSelectionConfig = field(default_factory=TestSelectionConfig)
     index_available: bool = True
     label: str = "the base"
-    map_current: bool = True
     map_truncated: bool = False
     index_gap: Collection[str] | None = ()
     index_problem: str | None = None
@@ -700,8 +700,9 @@ def select_tests(inp: SelectionInput) -> Selection:
             *((t, t) for t in always),
         ]
     )
+    gap_note = bool(triage.code and inp.gap and (inp.gap.targets or inp.gap.unreached))
     notes = _function_notes(triage.code, per_file, evidence) + _notes(
-        inp, triage.skipped, always, traced
+        inp, triage.skipped, always, gap_note
     )
     besides = {f for _, f in in_scope} | set(always)
     broadcast = _broadcast(evidence, test_files, besides)
@@ -1025,16 +1026,12 @@ def _index_reasons(inp: SelectionInput, *, has_code: bool) -> list[str]:
 
 
 def _notes(
-    inp: SelectionInput, skipped: list[str], always: Mapping[str, str], traced: bool
+    inp: SelectionInput, skipped: list[str], always: Mapping[str, str], gap_note: bool
 ) -> list[str]:
     """Reasons that explain the selection without forcing a full run."""
     out = []
-    if traced:
-        rewired = len(inp.gap.rewired) if inp.gap else 0
-        out.append(
-            f"The index predates {rewired} changed file(s) outside this change; "
-            "the tests reaching them run too."
-        )
+    if gap_note and inp.gap:
+        out.append(_gap_note(len(inp.gap.rewired), len(inp.gap.unreached)))
     if always:
         detected = sorted(t for t in always if t in inp.always_run_tests)
         unseen = len(always) - len(detected)
@@ -1050,15 +1047,28 @@ def _notes(
                 f"with every selection (e.g. {detected[0]}: "
                 f"{inp.always_run_tests[detected[0]]})."
             )
-    if not inp.map_current and inp.tiers.get("covered"):
+    if by_file := inp.tiers.get("matched_by_file"):
         out.append(
-            "The per-test map was measured at another commit, so covering tests "
-            "are matched by file, not by changed line."
+            f"The per-test map was measured at another commit, so covering tests of "
+            f"{len(by_file)} changed file(s) are matched by file, not by changed line "
+            f"(e.g. {by_file[0]})."
         )
     out.extend(_skipped_notes(inp, skipped))
     # How each conftest on a route was decided (``conftest_routes``).
     out.extend(inp.tiers.get("conftest_notes") or ())
     return out
+
+
+def _gap_note(rewired: int, unreached: int) -> str:
+    if not unreached:
+        return (
+            f"The index predates {rewired} changed file(s) outside this change; "
+            "the tests reaching them run too."
+        )
+    moved = f"The index predates {rewired + unreached} changed file(s) outside this change"
+    if not rewired:
+        return f"{moved}; none of their new imports or strings leads to it."
+    return f"{moved}; the tests reaching the {rewired} that may now lead to it run too."
 
 
 def _skipped_notes(inp: SelectionInput, skipped: list[str]) -> list[str]:
@@ -1135,7 +1145,9 @@ class GapPlan:
     *candidates* are the code files among them whose edges may have moved,
     *packages* the production ``__init__.py`` files among those, and, once
     :func:`with_rewired` has run, *rewired* the candidates whose edges did move
-    and *targets* the files whose tests join the selection.
+    and may now lead to the change, *unreached* those whose new edges lead
+    nowhere near it (:func:`split_rewired`), and *targets* the files whose
+    tests join the selection.
     """
 
     reasons: tuple[str, ...] = ()
@@ -1143,6 +1155,7 @@ class GapPlan:
     packages: frozenset[str] = frozenset()
     rewired: tuple[str, ...] = ()
     targets: tuple[str, ...] = ()
+    unreached: tuple[str, ...] = ()
 
 
 def plan_gap(
@@ -1192,7 +1205,10 @@ def plan_gap(
 
 
 def with_rewired(
-    plan: GapPlan, rewired: Collection[str], indexed_files: Collection[str]
+    plan: GapPlan,
+    rewired: Collection[str],
+    indexed_files: Collection[str],
+    unreached: Collection[str] = (),
 ) -> GapPlan:
     """*plan* with the candidates whose edges moved, and the files standing for them.
 
@@ -1203,11 +1219,138 @@ def with_rewired(
     ``__init__.py`` runs for every module under its directory, an import the
     graph does not record, so it stands for all of them. Ceiling: an unchanged
     file whose import starts resolving to a file added since is not traced.
+    *unreached* are rewired files left out (:func:`split_rewired`).
     """
     out = set(rewired)
     for path in set(rewired) & plan.packages:
         out.update(_files_under(path, indexed_files))
-    return replace(plan, rewired=tuple(sorted(rewired)), targets=tuple(sorted(out)))
+    return replace(
+        plan,
+        rewired=tuple(sorted(rewired)),
+        targets=tuple(sorted(out)),
+        unreached=tuple(sorted(unreached)),
+    )
+
+
+def split_rewired(
+    plan: GapPlan,
+    rewired: Collection[str],
+    rewirings: Mapping[str, Rewiring | None],
+    importers: Collection[Mapping[str, Collection[str]]],
+    seeds: Collection[str],
+    indexed_files: Collection[str],
+    tests: Collection[str] = (),
+    added: Collection[str] = (),
+) -> tuple[list[str], list[str]]:
+    """*rewired* split into the files a test may now reach *seeds* through, and the rest.
+
+    *rewirings* (:func:`~.import_drift.rewiring`) say what each file's new
+    version may reach that the index does not record; *importers* map a file
+    to the files depending on it in the index (imports, package inits, calls);
+    *seeds* are the files whose tests the selection runs; *tests* the index's
+    test files, which the selection's walks never pass through, so neither
+    does this one; *added* the files added since the index, which it has no
+    edges for. One with a rewiring (read whole, every import and string
+    gained) joins the walk like a rewired file; one without seeds it. A
+    rewired file joins too when any of its imports or strings, gained or not,
+    reaches an added file the walk holds.
+
+    A route the index cannot see must leave the first rewired file on it by an
+    edge the index lacks, and the rest of the route is again either in the
+    index or leaves another rewired file the same way. So a rewired file
+    stays when, in the index with every rewired file's new edges added, it
+    reaches a seed: through edges the index has, a new import resolving to a
+    file that does, or a gained string whose words name one. Stays too, and
+    counts as reaching the change, a file whose rewiring is unknown, a
+    production ``__init__.py`` (it stands for every module under it), a test
+    file or test helper. The rest
+    add no route to the change, so their tests are left out. Ceiling, as for a
+    file whose imports did not move: a call or framework binding gained with
+    no import or string is not seen.
+    """
+    reach: set[str] = set()
+    stems: set[str] = set()
+    dirs: set[str] = set()
+    leaves = set(tests)
+    new_files = set(added)
+    # The words naming the added files the walk holds.
+    added_stems: set[str] = set()
+    added_dirs: set[str] = set()
+
+    def grow(start: Iterable[str]) -> None:
+        frontier = [f for f in dict.fromkeys(start) if f not in reach]
+        while frontier:
+            reach.update(frontier)
+            _add_words(frontier, stems, dirs)
+            _add_words([f for f in frontier if f in new_files], added_stems, added_dirs)
+            fresh = [d for node in frontier for edges in importers for d in edges.get(node, ())]
+            frontier = [d for d in dict.fromkeys(fresh) if d not in reach]
+            # A test is reached, never passed through.
+            reach.update(d for d in frontier if d in leaves)
+            frontier = [d for d in frontier if d not in leaves]
+
+    known = set(indexed_files) | new_files
+    pending = {
+        p: rw
+        for p in dict.fromkeys([*rewired, *added])
+        if p not in plan.packages
+        # A test runs only itself, and may now walk a tree or spawn a process.
+        and not is_test_related_path(p)
+        and (rw := rewirings.get(p)) is not None
+        and rw.imports <= known
+    }
+    # A kept file may lead to the change by edges unseen, so it seeds the walk;
+    # a kept test runs only itself, so nothing reaches the change through it.
+    unknown = [p for p in dict.fromkeys([*rewired, *added]) if p not in pending]
+    grow([*seeds, *(p for p in unknown if p not in leaves)])
+    while True:
+        joined = [
+            p
+            for p, rw in pending.items()
+            if p in reach
+            or rw.imports & reach
+            or _names(p, rw.names) & stems
+            or rw.dirs & dirs
+            or _names(p, rw.held) & added_stems
+            or rw.held_dirs & added_dirs
+        ]
+        if not joined:
+            break
+        for p in joined:
+            del pending[p]
+        grow(joined)
+    return sorted(p for p in rewired if p not in pending), sorted(p for p in rewired if p in pending)
+
+
+# A module a name reaches through its directory: ``pkg`` names pkg/__init__.py.
+_PACKAGE_FILES = frozenset({"__init__", "__main__", "index"})
+
+
+def _add_words(paths: Iterable[str], stems: set[str], dirs: set[str]) -> None:
+    """Add the words naming each file to *stems* (its name up to the first and
+    the last dot; a code package file's directory instead, since every package
+    shares the file's own name), and its directory names to *dirs*; a dotfile's
+    words also without the dot, as a string's words are split."""
+    for path in paths:
+        p = PurePosixPath(path)
+        name = p.name.lstrip(".")
+        first = name.split(".", 1)[0]
+        if first in _PACKAGE_FILES and p.parent.name and is_code_file(path):
+            stems.add(p.parent.name)
+        else:
+            stems.update((first, p.stem, PurePosixPath(name).stem))
+        dirs.update(part.lstrip(".") for part in p.parent.parts)
+
+
+def _names(path: str, names: frozenset[str]) -> frozenset[str]:
+    """*names* as they name files: a code package file's own name (``__init__``,
+    ``index``) names a package through its directory, which a relative one
+    (``./index``, ``../index``) leaves as one above the file's own. The word
+    stays too, for the files it names directly (``index.html``, a root
+    ``index.js``)."""
+    if not names & _PACKAGE_FILES:
+        return names
+    return names | set(PurePosixPath(path).parent.parts)
 
 
 def _files_under(init: str, files: Collection[str]) -> list[str]:

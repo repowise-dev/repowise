@@ -878,12 +878,13 @@ hydration boundary.** A host composes them; it does not hand a
 
 `FilePage` used to be `"use client"` and import all seven tab bodies, so
 the whole slice plus a twice-serialised `FileDetailResponse` reached the
-browser to render one tab. `file-health-tab` is now the only file in
-`files/*` carrying `"use client"` — it owns triage state, two virtualised
-lists and a measured trend. Because its triage callback and href builders
+browser to render one tab. `file-health-tab` is now the only tab body in
+`files/*` carrying `"use client"`: it owns triage state, two virtualised
+lists and a measured trend. `file-source-code` is client too, for one
+effect: it scrolls a deep-linked line into view. Because its triage callback and href builders
 are functions, a host wraps it itself and passes the result in as
 `healthPanel`; that wrapper is the page's only client boundary besides
-the shell.
+the shell and the source viewer.
 
 Two consequences a host must honour:
 
@@ -899,6 +900,16 @@ Two consequences a host must honour:
   the shell through `refetchTabs` which tabs need a round trip on first
   click. A tab with nothing behind it is left out of that list rather
   than buying a trip to be shown the same empty state.
+
+**Line deep links.** `files/<path>?line=N` opens the file at line N. The
+route narrows the value with `asLineNumber` (anything but a plain positive
+integer is ignored). On Overview the route highlights the source itself,
+with `data-line` on every shiki line, and passes `sourceCodeHtml` and
+`highlightLine` to `buildFilePanels`; Overview then opens on a Source
+section. On Coverage the tab's own source takes `highlightLine`.
+`FileSourceCode` marks the row (`data-highlighted`, `aria-current="location"`)
+and scrolls it to the middle of the viewport, again each time the tab is
+shown. A line the HTML does not have marks nothing.
 
 Bands come from `bandForScore` (`@repowise-dev/types/health`), never from a
 threshold of the page's own — this page sits one click from the treemap and
