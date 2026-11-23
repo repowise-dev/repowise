@@ -215,3 +215,67 @@ class TestTopLevelFunctionImports:
         assert resolve_kotlin_import("com.acme.util.hidden", "x.kt", ctx) == (
             "external:com.acme.util.hidden"
         )
+
+
+class TestKotlinBuiltinValidationCalls:
+    def test_class_declaring_require_and_check_gets_edges(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+        src_file = tmp_path / "src/main/kotlin/acme/Guard.kt"
+        src_file.parent.mkdir(parents=True)
+        src_file.write_text(
+            "package acme\n"
+            "class Guard {\n"
+            "    fun require(n: Int): Int = n + 1\n"
+            "    fun check(ok: Boolean) { }\n"
+            "    fun ensure(n: Int) { }\n"
+            "    fun run(n: Int): Int { check(n > 0); ensure(n); return require(n) }\n"
+            "}\n"
+        )
+        ft = FileTraverser(tmp_path)
+        files = list(ft.traverse())
+        parser = ASTParser()
+        builder = GraphBuilder(repo_path=tmp_path)
+        for fi in files:
+            builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+        builder.build()
+
+        calls = [
+            (u, v)
+            for u, v, d in builder._graph.edges(data=True)
+            if d.get("edge_type") == "calls"
+        ]
+        caller = "src/main/kotlin/acme/Guard.kt::Guard::run"
+        assert (caller, "src/main/kotlin/acme/Guard.kt::Guard::require") in calls
+        assert (caller, "src/main/kotlin/acme/Guard.kt::Guard::check") in calls
+        assert (caller, "src/main/kotlin/acme/Guard.kt::Guard::ensure") in calls
+
+    def test_class_without_declarations_gets_no_edges(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+        src_file = tmp_path / "src/main/kotlin/acme/Plain.kt"
+        src_file.parent.mkdir(parents=True)
+        src_file.write_text(
+            "package acme\n"
+            "class Plain {\n"
+            "    fun run(n: Int): Int {\n"
+            "        check(n > 0)\n"
+            "        return n\n"
+            "    }\n"
+            "}\n"
+        )
+        ft = FileTraverser(tmp_path)
+        files = list(ft.traverse())
+        parser = ASTParser()
+        builder = GraphBuilder(repo_path=tmp_path)
+        for fi in files:
+            builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+        builder.build()
+
+        calls = [
+            (u, v)
+            for u, v, d in builder._graph.edges(data=True)
+            if d.get("edge_type") == "calls"
+        ]
+        assert calls == []
+

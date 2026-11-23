@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+from repowise.server.schemas._datetime import UTCDateTime
+
+#: Who an identity is: a person, other automation, or a coding agent.
+IdentityKindField = Literal["human", "bot", "agent"]
 
 
 class KnowledgeMapOwner(BaseModel):
@@ -38,6 +43,7 @@ class OwnerListEntry(BaseModel):
     key: str  # stable identifier for the URL (email if known, else name)
     name: str
     email: str | None
+    kind: IdentityKindField
     files_owned: int
     hotspots_owned: int
     silo_modules: int  # modules where this owner is >80%
@@ -46,8 +52,10 @@ class OwnerListEntry(BaseModel):
     # Distinct commits by this person in the 90 days before HEAD; None when the
     # indexed commits do not cover the window.
     commit_count_90d: int | None
-    last_commit_at: datetime | None
-    bus_factor_risk_files: int  # files they own where bus_factor <= 1
+    # A floor of that count when the indexed commits stop inside the window.
+    commit_count_90d_at_least: int | None = None
+    last_commit_at: UTCDateTime | None
+    bus_factor_risk_files: int  # files they own whose bus_factor is exactly 1
 
 
 class OwnerModuleRollup(BaseModel):
@@ -63,7 +71,7 @@ class OwnerFileEntry(BaseModel):
     churn_percentile: float  # 0-100
     bus_factor: int
     is_hotspot: bool
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     primary_owner_commit_pct: float | None
 
 
@@ -74,10 +82,19 @@ class OwnerCoAuthor(BaseModel):
     co_change_strength: float  # 0-1 fraction
 
 
+class OwnerAliases(BaseModel):
+    """Every display name and canonical email folded into one person."""
+
+    names: list[str]
+    emails: list[str]
+
+
 class OwnerProfileResponse(BaseModel):
     key: str
     name: str
     email: str | None
+    kind: IdentityKindField
+    aliases: OwnerAliases
 
     # Headline metrics
     files_owned: int
@@ -86,8 +103,9 @@ class OwnerProfileResponse(BaseModel):
     dead_code_files_owned: int
     dead_code_lines_owned: int
     commit_count_90d: int | None
-    last_commit_at: datetime | None
-    first_commit_at: datetime | None
+    commit_count_90d_at_least: int | None = None
+    last_commit_at: UTCDateTime | None
+    first_commit_at: UTCDateTime | None
     bus_factor_risk_files: int
 
     # 90d activity proxies (approximated from file-level totals weighted by
@@ -107,6 +125,83 @@ class OwnerProfileResponse(BaseModel):
 
     # Commit-category mix across files they touch (sum of categories).
     commit_categories: dict
+
+
+class OwnerRef(BaseModel):
+    key: str
+    name: str
+
+
+class ConcentrationOwner(OwnerRef):
+    files_owned: int
+    share: float  # of all person-owned files (0-1)
+
+
+class OwnershipConcentration(BaseModel):
+    top_n: int
+    # Share of person-owned files the top_n people own; None when nobody owns one.
+    share: float | None
+    owners: list[ConcentrationOwner]
+
+
+class SiloModule(BaseModel):
+    module: str
+    owner: OwnerRef
+    owned_files: int
+    file_count: int
+    share: float  # owned_files / file_count, above 0.8
+
+
+class QuietOwner(OwnerRef):
+    last_commit_at: UTCDateTime | None
+    files_owned: int
+    changing_files_owned: int  # owned files with a commit in the last 90 days
+
+
+class OwnersSummaryResponse(BaseModel):
+    """Repository knowledge risk, people only (automation owns nothing)."""
+
+    truck_factor: int | None
+    people: int
+    automation_identities: int
+    owners: int
+    tracked_files: int
+    owned_files: int
+    single_owner_files: int  # bus factor exactly 1
+    single_owner_hotspots: int
+    concentration: OwnershipConcentration
+    silo_modules: list[SiloModule]
+    activity_window_days: int
+    # People with a commit in the window; a floor when activity_complete is false.
+    active_contributors: int
+    activity_complete: bool
+    # People with no commit in the window who still own files that changed in it.
+    quiet_owners: list[QuietOwner]
+    quiet_owners_total: int
+
+
+class KnowledgeMatrixAuthor(BaseModel):
+    key: str  # the owner key used by /owners/{key}
+    name: str
+    email: str | None
+    last_commit_at: str | None
+    active: bool  # committed in the 90 days before HEAD
+
+
+#: One file: (dir index, file name, nloc, health score, is_hotspot, bus_factor,
+#: primary owner author index, [(author index, share of human commits)],
+#: changed in the last 90 days).
+KnowledgeMatrixFile = tuple[
+    int, str, int, float | None, bool, int, int | None, list[tuple[int, float]], bool
+]
+
+
+class KnowledgeMatrixResponse(BaseModel):
+    """Every code file's top-5 human authors, positional and indexed for size."""
+
+    authors: list[KnowledgeMatrixAuthor]
+    dirs: list[str]  # "" is the repository root
+    files: list[KnowledgeMatrixFile]
 
 
 class ModuleHealthOwner(BaseModel):

@@ -1,234 +1,183 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { OverviewSection } from "@repowise-dev/ui/overview";
-import { Switch } from "@repowise-dev/ui/ui/switch";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repowise-dev/ui/ui/select";
-import {
-  SaveIndicator,
-  SettingsRow,
-  SettingsRows,
-  type SaveState,
+  MCP_ALWAYS_LOAD_KEY,
+  McpToolSurfaceEditor,
+  mcpToolsValue,
+  profileBase,
+  useSaveState,
+  type McpToolProfileName,
+  type McpToolSurfaceLabels,
+  type RegistrySetting,
 } from "@repowise-dev/ui/settings";
-import { listRepos } from "@/lib/api/repos";
 import { getMcpToolSurface, updateMcpTools } from "@/lib/api/mcp-tools";
+import { getSettings, setSetting } from "@/lib/api/settings";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import type { McpToolSurface } from "@/lib/api/types";
 import { useTranslations } from "next-intl";
-
-interface RepoOption {
-  id: string;
-  name: string;
-}
 
 function enabledNames(surface: McpToolSurface): Set<string> {
   return new Set(surface.tools.filter((t) => t.enabled).map((t) => t.name));
 }
 
-/** Selection as +/- deltas off the default set, so it survives a release that
- *  changes which tools are on by default. */
-function toDeltas(surface: McpToolSurface, enabled: Set<string>): string[] {
-  const defaults = new Set(
-    surface.tools.filter((t) => t.default).map((t) => t.name),
-  );
-  const added = [...enabled].filter((n) => !defaults.has(n)).sort();
-  const removed = [...defaults].filter((n) => !enabled.has(n)).sort();
-  return [...added.map((n) => `+${n}`), ...removed.map((n) => `-${n}`)];
-}
-
 /**
- * Which tools the MCP server exposes.
+ * Which tools the MCP server lists in one repository: a profile, or each
+ * client's own default, plus per-tool switches saved as +/- deltas on it.
  *
- * This was the page's only explicit Save button, on a surface where every other
- * control wrote on change. Nothing said which half you were in, so a toggle
- * that silently did nothing until you found the button read as broken. It
- * autosaves now, like everything else, and reports through the one shared
- * indicator.
+ * Autosaves, like everything else in settings: each change writes at once,
+ * shows its tick on its own row, and goes back where the server has it when
+ * the write fails. Only the newest write may land, so a slow older response
+ * cannot undo a newer change. The always-load switch reads and writes
+ * `mcp.always_load` through the settings API, like any registry setting.
  */
-export function McpToolsSection() {
+export function McpToolsSection({ repoId }: { repoId: string }) {
   const t = useTranslations("settings");
-  const [repos, setRepos] = useState<RepoOption[]>([]);
-  const [repoId, setRepoId] = useState<string | null>(null);
   const [surface, setSurface] = useState<McpToolSurface | null>(null);
+  const [profile, setProfile] = useState<McpToolProfileName | null>(null);
   const [enabled, setEnabled] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [savedTool, setSavedTool] = useState<string | null>(null);
+  const [alwaysLoad, setAlwaysLoad] = useState<RegistrySetting | null>(null);
+  const save = useSaveState();
+  // What the server last accepted, from the newest write that succeeded.
+  const server = useRef<{ surface: McpToolSurface | null; seq: number }>({ surface: null, seq: 0 });
+  const writeSeq = useRef(0);
+  // The same for `mcp.always_load`: its last accepted state and the newest write.
+  const alwaysServer = useRef<RegistrySetting | null>(null);
+  const alwaysSeq = useRef(0);
 
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Guards against an older in-flight save landing after a newer one.
-  const saveSeq = useRef(0);
+  function show(s: McpToolSurface) {
+    setSurface(s);
+    setProfile(s.profile ?? null);
+    setEnabled(enabledNames(s));
+  }
 
   useEffect(() => {
-    listRepos()
-      .then((rows) => {
-        const opts = rows
-          .filter((r) => !r.id.startsWith("ws:"))
-          .map((r) => ({ id: r.id, name: r.name }));
-        setRepos(opts);
-        setRepoId((cur) => cur ?? opts[0]?.id ?? null);
-        if (opts.length === 0) setLoading(false);
-      })
-      .catch((e) => {
-        setError(toFriendlyMessage(e, "Could not list repositories"));
-        setLoading(false);
-      });
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-    },
-    [],
-  );
-
-  const loadSurface = useCallback((id: string) => {
+    let live = true;
     setLoading(true);
-    setError(null);
-    getMcpToolSurface(id)
+    setLoadError(null);
+    // Writes started for the previous repository are older than this load and never land.
+    server.current = { surface: null, seq: writeSeq.current };
+    getMcpToolSurface(repoId)
       .then((s) => {
-        setSurface(s);
-        setEnabled(enabledNames(s));
+        server.current = { surface: s, seq: writeSeq.current };
+        show(s);
       })
-      .catch((e) => setError(toFriendlyMessage(e, "Could not load tools")))
+      .catch((e) => setLoadError(toFriendlyMessage(e, "Could not load tools")))
       .finally(() => setLoading(false));
-  }, []);
+    // Without it the page still edits the tool list; the switch is left out.
+    // A write still in flight for the previous repository no longer counts as newest.
+    setAlwaysLoad(null);
+    alwaysServer.current = null;
+    alwaysSeq.current++;
+    getSettings(repoId)
+      .then((r) => {
+        if (!live) return;
+        const found = r.areas.flatMap((a) => a.settings).find((s) => s.key === MCP_ALWAYS_LOAD_KEY);
+        alwaysServer.current = (found as RegistrySetting | undefined) ?? null;
+        setAlwaysLoad(alwaysServer.current);
+      })
+      .catch(() => {
+        if (live) setAlwaysLoad(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [repoId]);
 
-  useEffect(() => {
-    if (repoId) loadSurface(repoId);
-  }, [repoId, loadSurface]);
+  async function writeAlwaysLoad(on: boolean) {
+    const base = alwaysServer.current;
+    if (!base) return;
+    setAlwaysLoad((current) => (current ? { ...current, value: on } : current));
+    setSavedTool(MCP_ALWAYS_LOAD_KEY);
+    const mine = ++alwaysSeq.current;
+    const outcome = await save.track(
+      async () => {
+        const change = await setSetting(repoId, MCP_ALWAYS_LOAD_KEY, on);
+        if (mine === alwaysSeq.current) {
+          alwaysServer.current = { ...base, ...(change.after as Partial<RegistrySetting>) };
+        }
+      },
+      (e) => toFriendlyMessage(e, "Could not save"),
+    );
+    // Only the newest write decides; a failure goes back to what the server has.
+    if (outcome !== "stale" && mine === alwaysSeq.current) setAlwaysLoad(alwaysServer.current);
+  }
 
-  async function toggle(name: string, on: boolean) {
-    if (!surface || !repoId) return;
+  async function write(nextProfile: McpToolProfileName | null, next: Set<string>, row: string) {
+    if (!surface) return;
+    setProfile(nextProfile);
+    setEnabled(next);
+    setSavedTool(row);
 
+    const tools = mcpToolsValue(surface, nextProfile, next);
+    const mine = ++writeSeq.current;
+    const outcome = await save.track(
+      async () => {
+        const updated = await updateMcpTools({ repo_id: repoId, tools });
+        if (mine > server.current.seq) server.current = { surface: updated, seq: mine };
+      },
+      (e) => toFriendlyMessage(e, "Could not save"),
+    );
+    const accepted = server.current.surface;
+    // A failure puts every control back where the server still has it.
+    if (outcome !== "stale" && accepted) show(accepted);
+  }
+
+  function toggle(name: string, on: boolean) {
     const next = new Set(enabled);
     if (on) next.add(name);
     else next.delete(name);
-    setEnabled(next);
-
-    const seq = ++saveSeq.current;
-    setSaveState("saving");
-    setError(null);
-    try {
-      const deltas = toDeltas(surface, next);
-      const updated = await updateMcpTools({
-        repo_id: repoId,
-        tools: deltas.length ? deltas : null,
-      });
-      if (seq !== saveSeq.current) return;
-      setSurface(updated);
-      setEnabled(enabledNames(updated));
-      setSaveState("saved");
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
-    } catch (e) {
-      if (seq !== saveSeq.current) return;
-      // Put the switch back where the server still has it.
-      setEnabled(enabledNames(surface));
-      setError(toFriendlyMessage(e, "Could not save"));
-      setSaveState("error");
-    }
+    void write(profile, next, name);
   }
 
-  const summary = useMemo(() => {
-    if (!surface) return null;
-    const available = surface.tools.filter(
-      (t) => !(t.requires_workspace && !surface.is_workspace),
-    );
-    const on = available.filter((t) => enabled.has(t.name)).length;
-    const mode = surface.is_workspace
-      ? t("mcpTools.summaryWorkspace")
-      : t("mcpTools.summarySingleRepo");
-    return t("mcpTools.summary", { on, total: available.length, mode });
-  }, [surface, enabled, t]);
+  function chooseProfile(next: McpToolProfileName | null) {
+    if (!surface) return;
+    void write(next, new Set(profileBase(surface, next)), "");
+  }
+
+  const labels = useMemo<Partial<McpToolSurfaceLabels>>(
+    () => ({
+      profile: t("mcpTools.profile"),
+      perClient: t("mcpTools.perClient"),
+      profileNames: {
+        core: t("mcpTools.profileCore"),
+        lean: t("mcpTools.profileLean"),
+        standard: t("mcpTools.profileStandard"),
+        all: t("mcpTools.profileAll"),
+      },
+      perClientHint: (core, standard) => t("mcpTools.perClientHint", { core, standard }),
+      summary: (on, tokens) => t("mcpTools.summary", { on, tokens }),
+      summaryPerClient: (standard, others, tokens) =>
+        t("mcpTools.summaryPerClient", { standard, others, tokens }),
+      restart: t("mcpTools.restart"),
+      workspaceOnly: t("mcpTools.workspaceOnly"),
+      coreBadge: t("mcpTools.coreBadge"),
+      tokens: (n) => t("mcpTools.tokens", { n }),
+      sameAs: t("mcpTools.sameAs"),
+      alwaysLoad: t("mcpTools.alwaysLoad"),
+    }),
+    [t],
+  );
+
+  if (loadError) return <p className="text-xs text-[var(--color-error)]">{loadError}</p>;
+  if (loading || !surface) return null;
 
   return (
-    <OverviewSection
-      title={t("mcpTools.title")}
-      // Rule 4: the figure is the point. "9 of 15 exposed" answers the question
-      // the list is there to answer, before you read fifteen rows.
-      description={
-        summary ?? t("mcpTools.description")
-      }
-      action={<SaveIndicator state={saveState} error={error} />}
-    >
-      {repos.length === 0 && !loading && (
-        <p className="text-sm text-[var(--color-text-tertiary)]">
-          {t("mcpTools.empty")}
-        </p>
-      )}
-
-      {repos.length > 1 && (
-        <SettingsRows>
-          <SettingsRow
-            label={t("mcpTools.repoLabel")}
-            hint={t("mcpTools.repoHint")}
-          >
-            <Select value={repoId ?? undefined} onValueChange={setRepoId}>
-              <SelectTrigger className="w-full sm:w-64">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {repos.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </SettingsRows>
-      )}
-
-      {surface && !loading && (
-        <ul className="border-t border-[var(--color-border-default)]">
-          {surface.tools.map((tool) => {
-            const locked = tool.requires_workspace && !surface.is_workspace;
-            return (
-              <li
-                key={tool.name}
-                className="flex items-start gap-3 border-b border-[var(--color-border-default)] py-3"
-              >
-                <Switch
-                  checked={enabled.has(tool.name)}
-                  disabled={locked}
-                  onCheckedChange={(v) => void toggle(tool.name, v)}
-                  aria-label={tool.name}
-                  className="mt-0.5"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
-                    <code className="font-mono text-sm text-[var(--color-text-primary)]">
-                      {tool.name}
-                    </code>
-                    {/* Rule 10: only mark what needs attention. Every non-default
-                        tool carried an "opt-in" badge and every workspace tool a
-                        "workspace" badge, which badged most rows and so said
-                        nothing. The switch already reports opt-in state; only
-                        the unavailable case needs a word. */}
-                    {locked && (
-                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                        {t("mcpTools.workspaceOnly")}
-                      </span>
-                    )}
-                  </div>
-                  {tool.description && (
-                    <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-                      {tool.description}
-                    </p>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </OverviewSection>
+    <McpToolSurfaceEditor
+      surface={surface}
+      profile={profile}
+      enabled={enabled}
+      onProfileChange={chooseProfile}
+      onToggle={toggle}
+      savedTool={savedTool}
+      saveState={save.state}
+      saveError={save.error}
+      labels={labels}
+      alwaysLoad={alwaysLoad}
+      onAlwaysLoadChange={(on) => void writeAlwaysLoad(on)}
+    />
   );
 }

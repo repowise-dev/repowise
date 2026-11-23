@@ -13,6 +13,7 @@ import type {
   RefactoringOpportunity,
 } from "@repowise-dev/types/refactoring";
 
+import { BIOMARKER_LABELS, canonicalBiomarker } from "../health/generated/biomarker-labels";
 import { STRUCTURAL_TYPES } from "./types";
 import { TYPE_ORDER, typeMeta } from "./meta";
 
@@ -54,9 +55,11 @@ export function stepSummary(opportunity: RefactoringOpportunity): string {
   return `${steps}, ${opportunity.mechanical_steps} mechanical`;
 }
 
-/** `nested_complexity` -> `nested complexity`. */
+/** `nested_complexity` -> `deep nesting`: the glossary label mid-sentence, else the token spaced. */
 export function humanizeBiomarker(token: string): string {
-  return token.replace(/_/g, " ").trim();
+  const label = (BIOMARKER_LABELS as Record<string, string>)[canonicalBiomarker(token)];
+  if (!label) return token.replace(/_/g, " ").trim();
+  return /^[A-Z][a-z]/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label;
 }
 
 /** One sentence naming what the opportunity is, for a row's second line. */
@@ -166,21 +169,20 @@ export function salienceOrder(marks: StructuralMark[]): string[] {
 /**
  * Two hues, then neutrals.
  *
- * The accent/secondary pair, and deliberately not the `--color-share-*`
- * steps: those are for shares of a whole, where position means magnitude, so
- * spending them on unrelated categories would claim an order the types do not
- * have. Type is carried in full
+ * The accent/secondary pair, and deliberately not the full `--color-series-*`
+ * palette: eight equal hues would give every type the same weight, and here
+ * hue ranks attention. Type is carried in full
  * by the mark's shape, and named in the legend and the hover card, so hue here
  * only ranks attention - which is why the tail can recede into neutrals without
  * anything becoming unreadable.
  *
  * **`--color-accent-primary`, not `--color-accent-fill`.** They are the same
- * bright orange in dark mode, but light mode deepens the former to `#A16215`
- * precisely so it reads on warm paper: measured against `--color-bg-root`,
+ * bright orange in dark mode, but light mode deepens the former precisely so
+ * it reads on warm paper: measured against `--color-bg-root`,
  * `accent-fill` is 2.12:1 in light and `accent-primary` is 4.58:1, against a
  * 3.0 floor for non-text UI. The theme doc records the same correction being
  * made once already, when the community graph's orange hub had to be deepened
- * from `#F59520` to `#C0641A` for the same reason on the same kind of canvas.
+ * for the same reason on the same kind of canvas.
  *
  * The neutral tiers do *not* clear that floor on their own (1.25 to 2.45:1),
  * and they are not asked to: every mark carries a separating stroke, so the

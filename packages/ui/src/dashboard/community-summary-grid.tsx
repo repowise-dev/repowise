@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
-import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
 import type {
@@ -75,18 +75,12 @@ function DetailPanel({ detail, isLoading, onClose, memberHref }: DetailPanelProp
                   {memberHref ? (
                     <a
                       href={memberHref(m.path)}
-                      className="text-xs font-mono text-[var(--color-text-secondary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
-                      title={m.path}
+                      className="flex min-w-0 text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
                     >
-                      {truncatePath(m.path)}
+                      <FilePath path={m.path} fold />
                     </a>
                   ) : (
-                    <span
-                      className="text-xs font-mono text-[var(--color-text-secondary)] truncate"
-                      title={m.path}
-                    >
-                      {truncatePath(m.path)}
-                    </span>
+                    <FilePath path={m.path} fold className="text-[var(--color-text-secondary)]" />
                   )}
                   <div className="flex items-center gap-1 shrink-0">
                     {m.is_entry_point && (

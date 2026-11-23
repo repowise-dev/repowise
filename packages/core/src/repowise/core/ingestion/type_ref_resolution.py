@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
-from .models import ParsedFile
+from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
+from .symbol_identity import file_of_symbol
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -83,6 +84,12 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     candidate's symbol-successor set cannot change mid-pass. Falsy symbol
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
+
+    Only containment edges count: they are the only edges into symbols a full
+    build has when this pass runs. A patch build starts from the last graph,
+    which also carries heritage, call and reference edges into symbols; read
+    here, an ``impl Trait for T`` edge made ``T`` a second owner of ``Trait``
+    and the patch lost type-use edges a full build draws.
     """
     sym_name: dict[str, str] = {}
     for node, data in graph.nodes(data=True):
@@ -91,7 +98,9 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
             if name:
                 sym_name[node] = name
     index: dict[str, set[str]] = {}
-    for src, dst in graph.edges():
+    for src, dst, edge_type in graph.edges(data="edge_type"):
+        if edge_type not in CONTAINMENT_EDGE_TYPES:
+            continue
         name = sym_name.get(dst)
         if name is not None:
             index.setdefault(src, set()).add(name)
@@ -162,7 +171,7 @@ def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
 
 # Language families a type name can resolve into by file name. A stem match
 # outside the family is a coincidence of names, never a definition.
-_TS_TYPE_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "vue", "svelte"})
+_TS_TYPE_LANGUAGES: frozenset[str] = TS_JS_LANGUAGES
 _C_TYPE_LANGUAGES: frozenset[str] = frozenset({"c", "cpp"})
 
 
@@ -919,6 +928,58 @@ def _find_jvm_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Apex
+# ---------------------------------------------------------------------------
+
+def _resolve_apex_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Apex type references to the type the caller's project declares.
+
+    Apex has no imports: a type name is a top-level class of the file's own
+    sfdx project, compared without case (see ``languages.apex_namespace``).
+    A name the file declares itself is its own, and draws no edge. The edges
+    do not widen call scope: Apex calls bind through the project namespace
+    in the call resolver, never through a file a type was read from.
+    """
+    if not parsed.type_refs or ctx.parsed_files is None:
+        return 0
+    index = _apex_namespaces(ctx)
+    from_path = parsed.file_info.path
+    # Names the file declares itself, then each name already linked.
+    skip = {s.name.lower() for s in parsed.symbols if s.kind in _TYPE_DECLARATION_KINDS}
+    emitted = 0
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name.lower() in skip:
+            continue
+        skip.add(name.lower())
+        type_id = index.top_level_type(from_path, name)
+        target = file_of_symbol(type_id) if type_id else from_path
+        if target == from_path or not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin, widens_scope=False
+        )
+        emitted += 1
+    return emitted
+
+
+def _apex_namespaces(ctx: ResolverContext) -> Any:
+    """The ApexNamespaces index, built once per resolver context."""
+    index = getattr(ctx, "_apex_namespaces", None)
+    if index is None:
+        from .languages.apex_namespace import build_apex_namespaces
+
+        index = build_apex_namespaces(ctx.parsed_files)
+        ctx._apex_namespaces = index  # type: ignore[attr-defined]
+    return index
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -939,6 +1000,7 @@ _STRATEGIES: dict[str, Strategy] = {
     "javascript": _resolve_ts_type_refs,
     "java": _resolve_jvm_type_refs,
     "kotlin": _resolve_jvm_type_refs,
+    "apex": _resolve_apex_type_refs,
 }
 
 

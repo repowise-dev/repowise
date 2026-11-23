@@ -231,7 +231,7 @@ export function SourceCitations({
 
   return (
     <details className="group/cites">
-      <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs text-[var(--color-text-tertiary)] marker:hidden hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+      <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs text-[var(--color-text-tertiary)] marker:hidden hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
         <span className="tabular-nums">Sources · {sources.length}</span>
         <ChevronRight aria-hidden className="h-3 w-3 transition-transform group-open/cites:rotate-90 motion-reduce:transition-none" />
       </summary>
@@ -242,7 +242,7 @@ export function SourceCitations({
           <li key={source.id}>
             <a
               href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-              className="group flex min-h-8 w-full min-w-0 flex-wrap items-baseline gap-x-2 rounded-md py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="group flex min-h-8 w-full min-w-0 flex-wrap items-baseline gap-x-2 rounded-md py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               <SourceIcon
                 pageType={source.pageType}

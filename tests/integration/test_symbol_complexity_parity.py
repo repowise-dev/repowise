@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.exit_codes import EXIT_DEGRADED
 from repowise.cli.helpers import release_update_lock
 from repowise.cli.main import cli
 from repowise.core.persistence import (
@@ -59,10 +60,10 @@ def _copy_without_index(source: Path, destination: Path) -> None:
     (destination / ".repowise").mkdir()
 
 
-def _invoke(runner: CliRunner, repo: Path, *args: str) -> None:
+def _invoke(runner: CliRunner, repo: Path, *args: str, expect_exit: int = 0) -> None:
     try:
         result = runner.invoke(cli, [*args, str(repo)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == expect_exit, result.output
     finally:
         release_update_lock(repo)
 
@@ -171,7 +172,9 @@ def test_symbol_complexity_parity_across_clean_incremental_resume_and_workspace(
             "persist_symbol_analysis",
             _fail_checkpoint_reconciliation,
         )
-        _invoke(runner, clean, *init_args)
+        # The failed checkpoint is a warning, and a run with a warning finishes
+        # with gaps (exit 2), though everything is saved and the run converges.
+        _invoke(runner, clean, *init_args, expect_exit=EXIT_DEGRADED)
     # A later CLI resume re-parses source but reuses the completed analysis.
     # Final persistence must not replace its computed CCN with parser defaults.
     _invoke(runner, clean, *init_args, "--resume")

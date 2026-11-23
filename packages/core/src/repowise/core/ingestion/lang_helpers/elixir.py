@@ -226,7 +226,7 @@ def _elixir_is_template_definition(def_node: Node, src: str) -> bool:
 def _elixir_module_parent(def_node: Node, src: str) -> str | None:
     """Return the enclosing ``defmodule``/``defprotocol`` name, or None.
 
-    The generic nesting walk in ``ASTParser._find_parent`` reads
+    The generic nesting walk in ``parser.symbols._find_parent`` reads
     ``ancestor.child_by_field_name("name")``, and an Elixir ``call`` has no
     ``name`` field -- the module name is the first argument of a call to
     ``defmodule``. Nesting is the only thing that says which module a

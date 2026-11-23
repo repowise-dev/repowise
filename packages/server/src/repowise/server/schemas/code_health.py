@@ -11,8 +11,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from .preview import PreviewLabelled
 
-class HealthFindingResponse(BaseModel):
+
+class HealthFindingResponse(PreviewLabelled, BaseModel):
     """One biomarker finding, as the table and drawer read it."""
 
     id: str
@@ -34,6 +36,9 @@ class HealthFindingResponse(BaseModel):
     verification: str | None = None
     #: Why the finding can wait, on a lower-priority finding; else ``None``.
     lower_priority: str | None = None
+    #: The measurement note on a language health is served as a preview on
+    #: (``finding_registry.preview_note``); absent otherwise.
+    preview: str | None = None
 
 
 class HealthFindingWithSymbolResponse(HealthFindingResponse):
@@ -154,6 +159,10 @@ class HealthTrendResponse(BaseModel):
     file_deltas: list[HealthFileDelta] = []
     #: The count behind the slice, so the UI can say "N of M".
     file_deltas_total: int = 0
+    #: How many of ``file_deltas_total`` fell and rose; half the slice is held
+    #: for each direction while it has rows to fill it.
+    file_deltas_worse: int = 0
+    file_deltas_improved: int = 0
     snapshot_count: int = 0
     #: Which half of the repository these figures describe.
     scope: str = "all"
@@ -174,7 +183,7 @@ class HealthBadgeResponse(BaseModel):
     band: str
 
 
-class HealthWorkItem(BaseModel):
+class HealthWorkItem(PreviewLabelled, BaseModel):
     """One file in the triage queue, ranked by impact over effort."""
 
     file_path: str
@@ -201,6 +210,8 @@ class HealthWorkItem(BaseModel):
     #: S | M | L | XL
     effort_bucket: str
     impact_per_effort: float
+    #: The measurement note on a language health is served as a preview on.
+    preview: str | None = None
 
 
 class HealthWorkQueueResponse(BaseModel):
@@ -275,10 +286,13 @@ class RelatedWorkItem(BaseModel):
     deprecated: bool | None = None
 
 
-class RelatedWorkLens(BaseModel):
+class RelatedWorkLens(PreviewLabelled, BaseModel):
     items: list[RelatedWorkItem] = []
     #: Every row the lens holds for the file; ``items`` stops at the limit.
     total: int = 0
+    #: The measurement note when the lens's layer is a preview on the file's
+    #: language; the file's rows share it.
+    preview: str | None = None
 
 
 class RelatedWorkFile(BaseModel):

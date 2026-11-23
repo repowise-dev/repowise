@@ -73,22 +73,23 @@ def test_type_listed_in_a_reference_assembly_is_never_dead():
 
 
 def test_file_whose_type_another_file_names_is_capped():
-    # A Swift type is used across its module without an import.
-    path = "Sources/App/FilterType.swift"
-    user = "Sources/App/FilterRef.swift"
+    # A Kotlin type is used from another package by its name alone. (A Swift
+    # file in the same position is reachable outright: test_swift_reachability.)
+    path = "core/src/main/kotlin/org/app/model/FilterType.kt"
+    user = "app/src/main/kotlin/org/app/ui/FilterRef.kt"
     report = _analyze(
         {
-            path: {"language": "swift", "symbols": [_cls("FilterType", "swift")]},
-            user: {"language": "swift", "is_entry_point": True},
+            path: {"language": "kotlin", "symbols": [_cls("FilterType", "kotlin")]},
+            user: {"language": "kotlin", "is_entry_point": True},
         },
         {
-            path: b"import Foundation\n\npublic enum FilterType { case a }\n",
-            user: b"struct FilterRef { var t: FilterType }\n",
+            path: b"package org.app.model\n\nenum class FilterType { A }\n",
+            user: b"package org.app.ui\n\nclass FilterRef(val t: FilterType)\n",
         },
     )
     finding = _file_finding(report, path)
     assert finding.confidence == pytest.approx(RISK_CAP_CONFIDENCE)
-    assert any("FilterRef.swift" in line for line in finding.evidence)
+    assert any("FilterRef.kt" in line for line in finding.evidence)
 
 
 def test_file_whose_types_nothing_names_keeps_its_age_score():

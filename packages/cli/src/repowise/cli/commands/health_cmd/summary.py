@@ -41,33 +41,30 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
 
 
-def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
-    """Honest performance headline: risk count + density + coverage + scope.
+def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
+    """Honest performance headline: the open causes + coverage + scope.
 
-    Leads with the open-risk count and how much of the analyzed code a perf
+    Leads with the causes worth fixing now (``crud.performance_headline``, as
+    every surface counts them) and how much of the analyzed code a perf
     detector actually ran on, so a mostly-unsupported-language repo reads a low
     coverage % rather than a meaningless bounded 10/10. Silent when no code file
     carries a supported language (nothing to say).
     """
-    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-
-    coverage = coverage_for_metrics(report.metrics, lang_by_path)
     if not coverage.analyzed_files:
         return
-    perf_findings = sum(
-        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
-    )
     perf_avg = report.kpis.get("performance_average")
 
-    parts = [f"[bold]{perf_findings}[/bold] risk{'s' if perf_findings != 1 else ''}"]
-    if coverage.covered_nloc > 0:
-        density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
-        parts.append(f"{density}/10K covered LOC")
+    parts = []
+    if causes is not None:
+        parts.append(
+            f"[bold]{causes.now:,}[/bold] cause{'s' if causes.now != 1 else ''} worth "
+            f"fixing now · {causes.production:,} open in production code · {causes.all:,} overall"
+        )
+        if causes.per_10k_loc is not None:
+            parts.append(f"{causes.per_10k_loc}/10K covered LOC")
     if isinstance(perf_avg, (int, float)):
         parts.append(f"avg score {perf_avg:.1f}/10")
     console.print(
-        # "risk" sits on the count, where more is worse, not on a heading over
-        # a score where more is better.
         "\n[bold]Performance[/bold] "
         "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
     )
@@ -87,6 +84,102 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     )
 
 
+_MEASURED_GROUPS = (("measured", "Measured"), ("measured_in_tests", "Measured in tests"))
+
+
+def _render_measured_costs(view: dict[str, Any] | None) -> None:
+    """What each workload's newest run measured (``crud.measured_costs``), one
+    block per run.
+
+    Each block opens with its basis and where the run's time went, so a ranked
+    function is never read without its workload. Rows lead with the function's
+    self time, the cost it is ranked by. Silent without ranked evidence.
+    """
+    from rich.markup import escape
+
+    if not view:
+        return
+    for key, title in _MEASURED_GROUPS:
+        group = view.get(key)
+        if not group:
+            continue
+        for run in group["runs"]:
+            console.print(f"\n[bold]{title}[/bold] [dim]({escape(_run_basis(run))})[/dim]")
+            rows = [r for r in group["rows"] if r["run_id"] == run["run_id"]]
+            for row in rows:
+                console.print(f"  {row['rank']}. [cyan]{escape(row['symbol_id'])}[/cyan]")
+                console.print(f"     [dim]{escape(_row_facts(row))}[/dim]")
+
+
+def _render_connect_line(freshness: dict[str, Any] | None) -> None:
+    """One line pointing at ``evidence setup`` when no runtime evidence is
+    stored, so the performance figures above read as code shape. Silent when
+    the store cannot say."""
+    from repowise.core.evidence.setup import EVIDENCE_SETUP
+
+    if not freshness or freshness["runtime"]["present"]:
+        return
+    console.print(
+        "\n[dim]No runtime evidence stored, so performance here is code shape only. "
+        f"Connect a real run: [bold]{EVIDENCE_SETUP}[/bold] prints the profile and "
+        "ingest commands.[/dim]"
+    )
+
+
+def _pct(value: float | None) -> str:
+    return "?" if value is None else f"{value * 100:.0f}%"
+
+
+def _run_basis(run: dict[str, Any]) -> str:
+    """``entry_point "api" at abc1234, 3 days old: repo code itself 47%, waits 30%,
+    libraries 12% of 5,300 samples``."""
+    from repowise.core.evidence.status import split_words
+
+    parts = [f'{run["workload_class"]} "{run["workload_name"]}"']
+    if run.get("commit"):
+        parts.append(f"at {run['commit'][:7]}")
+    if run.get("age_days") is not None:
+        parts.append(f"{run['age_days']} day{'s' if run['age_days'] != 1 else ''} old")
+    basis = ", ".join(parts)
+    samples = run.get("samples")
+    split = split_words(run)
+    if split is None:
+        where = "time split unknown (stored before it was recorded; add the profile again)"
+    else:
+        where = split + (f" of {samples:,} samples" if samples else " of the run")
+    if run.get("ordering_only"):
+        where += "; traced, so the order counts and no share is given"
+    return f"{basis}: {where}"
+
+
+def _row_facts(row: dict[str, Any]) -> str:
+    parts = []
+    if row.get("share") is not None:
+        interval = ""
+        if row.get("share_low") is not None and row.get("share_high") is not None:
+            interval = f" ({_pct(row['share_low'])} to {_pct(row['share_high'])})"
+        parts.append(f"self {_pct(row['share'])} of the run{interval}")
+    if row.get("inclusive") is not None:
+        parts.append(f"with callees {_pct(row['inclusive'])}")
+    if row.get("samples") is not None:
+        parts.append(f"{row['samples']:,} samples")
+    callers = row.get("callers_total")
+    if callers is not None:
+        parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
+    if row.get("owner"):
+        parts.append(f"owner {row['owner']['name']}")
+    tests = row.get("tests")
+    if tests is None:
+        parts.append("tests not mapped")
+    elif tests:
+        parts.append(f"nearest test {tests[0]}")
+    else:
+        parts.append("no test reaches it")
+    if row.get("on_static_findings"):
+        parts.append(f"static cause {', '.join(row['on_static_findings'])}")
+    return " · ".join(parts)
+
+
 def _render_split_line(kpis: dict) -> None:
     """The headline's two halves, so a reader can see which one holds it down."""
     structure = kpis.get("structure_average")
@@ -95,7 +188,7 @@ def _render_split_line(kpis: dict) -> None:
         return
     console.print(
         f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
-        f"{history:.2f}[dim] is history — history answers to time, not to editing.[/dim]"
+        f"{history:.2f}[dim] is history. History answers to time, not to editing.[/dim]"
     )
 
 
@@ -135,7 +228,7 @@ def _render_badge(average_health: object, share: float | None = None) -> None:
     )
 
     if not isinstance(average_health, (int, float)):
-        console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
+        console.print("[yellow]No health score yet. Run `repowise init` first.[/yellow]")
         return
     band = headline_band(float(average_health), share)
     # Neutral, not green, when too little of the repo was analysed for a band.

@@ -2,7 +2,7 @@
   "name": "repowise",
   "displayName": "Repowise",
   "description": "Know what your change breaks before you push. Health signals, architecture maps, and refactoring plans in your editor, and the same intelligence for your AI agent via MCP. Local and free.",
-  "version": "0.11.0",
+  "version": "0.16.0",
   "publisher": "repowise-dev",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://www.repowise.dev",
@@ -326,7 +326,7 @@
       {
         "view": "repowise.home",
         "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
-        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it with `uv tool install repowise` (or `pip install repowise`), then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
       },
       {
         "view": "repowise.home",
@@ -421,8 +421,8 @@
         "icon": "$(pulse)",
         "tags": ["repowise"],
         "when": "repowise.agentToolsEnabled",
-        "modelDescription": "Report on the current branch's changes against a base branch. Lead with the benchmarked repo-relative percentile and classification. Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
-        "userDescription": "Repo-relative review priority for the current branch.",
+        "modelDescription": "Report on the current branch's changes against a base branch. Lead with the repo-relative percentile by size and spread (diff size, not a bug predictor). Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
+        "userDescription": "Repo-relative size and spread for the current branch.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -515,7 +515,7 @@
           {
             "id": "firstInsight",
             "title": "See your first insight",
-            "description": "Open Code Health for a first look at your repository.\n[Open Code Health](command:repowise.showHealthDashboard)",
+            "description": "Open Code Health for a first look at your repository, or run repowise serve for a guided tour in the dashboard.\n[Open Code Health](command:repowise.showHealthDashboard)",
             "media": {
               "markdown": "media/walkthrough/first-insight.md"
             },

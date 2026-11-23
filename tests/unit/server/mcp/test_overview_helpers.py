@@ -32,6 +32,28 @@ class TestCompactOverviewContent:
     def test_empty_content(self):
         assert _compact_overview_content("") == ""
 
+    def test_a_lead_of_title_and_stats_carries_the_summary_under_it(self):
+        # The page built without a model: title and a stats line, then the summary.
+        content = (
+            "# Repository Overview: flask\n\n**Files:** 128 | **Lines:** 16030\n\n"
+            "## Project Summary\n\n\n`flask` is a python codebase of 128 files. "
+            "Execution starts at `src/flask/app.py`.\n\n\n\n"
+            "## System map\n\n```mermaid\nflowchart TB\n```\n\n## Primary Execution Flows\n\n- x"
+        )
+        assert _compact_overview_content(content) == (
+            "# Repository Overview: flask\n\n**Files:** 128 | **Lines:** 16030\n\n"
+            "## Project Summary\n\n`flask` is a python codebase of 128 files. "
+            "Execution starts at `src/flask/app.py`."
+        )
+
+    def test_a_lead_with_prose_is_not_extended(self):
+        content = "# repowise: overview\n\nRepowise indexes code.\n\n## Getting Started\n\nRun it."
+        assert _compact_overview_content(content) == "# repowise: overview\n\nRepowise indexes code."
+
+    def test_a_bold_opening_sentence_is_prose(self):
+        lead = "# x\n\n**Repowise** indexes code. **Usage:** run it."
+        assert _compact_overview_content(f"{lead}\n\n## More\n\nText.") == lead
+
 
 class TestDedupeTourSteps:
     def test_collapses_consecutive_identical_kind_and_reason(self):
@@ -81,3 +103,17 @@ class TestBuildGuidedTourOrder:
 
         orders = [step["order"] for step in result["guided_tour"]]
         assert orders == list(range(1, len(orders) + 1))
+
+
+def test_git_health_without_riskiest_files_sends_no_empty_list():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.history import _build_git_health
+
+    quiet = SimpleNamespace(
+        file_path="a.py", is_hotspot=False, commit_count_30d=0, commit_count_90d=0
+    )  # fmt: skip
+
+    block = _build_git_health([quiet])
+
+    assert block == {"hotspot_count": 0, "churn_trend": "stable"}

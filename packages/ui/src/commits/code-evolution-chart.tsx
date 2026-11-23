@@ -22,7 +22,8 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { cn } from "../lib/cn";
-import { parseDate } from "../lib/format";
+import { formatDateWith, parseDate } from "../lib/format";
+import { commitCategoryColor } from "../shared/series";
 
 /**
  * The repo's development "story arc" — a stacked-area timeline of how the
@@ -42,29 +43,18 @@ interface CategoryMeta {
 // Drawn bottom-to-top in STACK_ORDER; "feature" anchors the base so the growth
 // band reads as the foundation the rest of the work sits on.
 //
-// No hue per category. This used to paint Feature in --color-success and
-// Fix in --color-error, which reads intuitively for about a second and then
-// costs more than it gives: those two tokens carry a health band on every
-// other surface in the app, so a reader arriving from Code Health has been
-// trained that green means good and red means bad. Here they mean "new
-// capability" and "bug fix", and a quarter of commits being fixes is not
-// thereby bad. Seven hues on the largest graphic on the page also set the
-// ceiling for everything under it, leaving the review-priority pills in the
-// table competing with the chart instead of leading.
-//
-// A share over time, so it takes the share steps like every other proportion:
-// no hue. Fix gets the strongest step because it is the series this chart
-// exists to show; the rest step down in rough order of interest, and the
-// unclassified remainder sits on the well.
+// Each category takes its fixed series colour (commitCategoryColor), the same
+// on every chart that shows commit types. Not the health green and red: those
+// carry a verdict elsewhere, and a quarter of commits being fixes is not bad.
 const CATEGORY_META: Record<CommitCategory, CategoryMeta> = {
-  feature: { label: "Feature", color: "var(--color-share-2)", blurb: "new capability" },
-  fix: { label: "Fix", color: "var(--color-share-1)", blurb: "bug / regression" },
-  refactor: { label: "Refactor", color: "var(--color-share-3)", blurb: "reshape / perf" },
-  docs: { label: "Docs", color: "var(--color-share-4)", blurb: "documentation" },
-  test: { label: "Test", color: "var(--color-share-5)", blurb: "tests / coverage" },
-  deps: { label: "Deps", color: "var(--color-share-tail)", blurb: "dependency bumps" },
-  chore: { label: "Chore", color: "var(--color-share-tail)", blurb: "tooling / CI / release" },
-  other: { label: "Other", color: "var(--color-bg-inset)", blurb: "unclassified" },
+  feature: { label: "Feature", color: commitCategoryColor("feature"), blurb: "new capability" },
+  fix: { label: "Fix", color: commitCategoryColor("fix"), blurb: "bug / regression" },
+  refactor: { label: "Refactor", color: commitCategoryColor("refactor"), blurb: "reshape / perf" },
+  docs: { label: "Docs", color: commitCategoryColor("docs"), blurb: "documentation" },
+  test: { label: "Test", color: commitCategoryColor("test"), blurb: "tests / coverage" },
+  deps: { label: "Deps", color: commitCategoryColor("deps"), blurb: "dependency bumps" },
+  chore: { label: "Chore", color: commitCategoryColor("chore"), blurb: "tooling / CI / release" },
+  other: { label: "Other", color: commitCategoryColor("other"), blurb: "unclassified" },
 };
 
 const STACK_ORDER: CommitCategory[] = [
@@ -80,14 +70,18 @@ const STACK_ORDER: CommitCategory[] = [
 
 type Mode = "share" | "volume";
 
+/** Axis label for a bucket: "Nov 3" for a week, "Nov 25" for a month.
+ *  Pinned to UTC on purpose: `start` is a calendar day the server chose
+ *  ("2026-11-03", the bucket's Monday or 1st), so it must read as that day in
+ *  every zone, never as Sunday for a viewer west of Greenwich. */
 function formatBucketLabel(startIso: string, granularity: string): string {
-  const d = parseDate(startIso);
-  if (Number.isNaN(d.getTime())) return startIso;
-  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  if (granularity === "week") {
-    return `${month} ${d.getUTCDate()}`;
-  }
-  return `${month} ${String(d.getUTCFullYear()).slice(2)}`;
+  if (Number.isNaN(parseDate(startIso).getTime())) return startIso;
+  return formatDateWith(
+    startIso,
+    granularity === "week"
+      ? { month: "short", day: "numeric", timeZone: "UTC" }
+      : { month: "short", year: "2-digit", timeZone: "UTC" },
+  );
 }
 
 /** Dominant category across a slice of buckets (by summed count). */
@@ -254,7 +248,7 @@ export function CodeEvolutionChart({
               className={cn(
                 "rounded-md px-2.5 py-1 font-medium capitalize transition-colors",
                 mode === m
-                  ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
               )}
             >

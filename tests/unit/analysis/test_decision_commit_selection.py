@@ -22,7 +22,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from repowise.core.analysis.decisions.commit_mining import pr_candidates, signal_commits
+from repowise.core.analysis.decisions.commit_mining import (
+    drop_subject_restatements,
+    pr_candidates,
+    signal_commits,
+)
 from repowise.core.analysis.decisions.extractor import (
     DecisionExtractor,
     _coerce_paths,
@@ -78,9 +82,7 @@ class _Provider:
 
 def _extractor(tmp_path: Path, payload: list[dict]) -> DecisionExtractor:
     provider = _Provider(payload)
-    ex = DecisionExtractor(
-        repo_path=tmp_path, provider=provider, git_meta_map=_meta_map()
-    )
+    ex = DecisionExtractor(repo_path=tmp_path, provider=provider, git_meta_map=_meta_map())
     ex.test_provider = provider  # type: ignore[attr-defined]
     return ex
 
@@ -137,9 +139,7 @@ async def test_pr_binds_the_selected_file_and_not_the_commit(tmp_path):
 
 
 async def test_pr_drops_a_path_the_commit_never_touched(tmp_path):
-    ex = _extractor(
-        tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"])
-    )
+    ex = _extractor(tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"]))
 
     (decision,) = await ex.mine_pr_bodies()
 
@@ -194,9 +194,7 @@ async def test_pr_shows_the_model_the_commit_files(tmp_path):
 
 async def test_pr_carries_no_unvalidated_path_off_the_miner(tmp_path):
     """``proposed_files`` is cleared, so persistence cannot read it."""
-    ex = _extractor(
-        tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"])
-    )
+    ex = _extractor(tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"]))
 
     (decision,) = await ex.mine_pr_bodies()
 
@@ -235,9 +233,7 @@ async def test_git_archaeology_binds_nothing_when_the_model_selects_nothing(tmp_
 
 
 async def test_git_archaeology_drops_a_path_the_commit_never_touched(tmp_path):
-    ex = _extractor(
-        tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"])
-    )
+    ex = _extractor(tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"]))
 
     decisions = await ex.mine_git_archaeology()
 
@@ -350,3 +346,235 @@ async def test_an_unattributed_archaeology_decision_keeps_no_model_paths(tmp_pat
 
     assert decisions[0].proposed_files is None
     assert decisions[0].affected_files == []
+
+
+def test_pr_candidates_ordered_by_date_and_skips_existing(tmp_path):
+    body_text = (
+        "## Why\n\n"
+        "The hook imported core.workspace.config only to reach "
+        "find_workspace_root, which initialized the extractor stack. We "
+        "chose instead to resolve CLI command modules lazily, because the "
+        "import cost was charged to every invocation."
+    )
+    commits_a = [
+        {
+            "sha": "sha_old",
+            "message": "fix: old change",
+            "body": body_text,
+            "date": "2026-01-01T12:00:00Z",
+            "pr_number": 10,
+        }
+    ]
+    commits_b = [
+        {
+            "sha": "sha_new",
+            "message": "fix: new change",
+            "body": body_text,
+            "date": "2026-06-01T12:00:00Z",
+            "pr_number": 20,
+        }
+    ]
+    commits_c = [
+        {
+            "sha": "sha_already_mined",
+            "message": "fix: already mined",
+            "body": body_text,
+            "date": "2026-07-01T12:00:00Z",
+            "pr_number": 30,
+        }
+    ]
+    meta = {
+        "file_a.py": {"significant_commits_json": json.dumps(commits_a)},
+        "file_b.py": {"significant_commits_json": json.dumps(commits_b)},
+        "file_c.py": {"significant_commits_json": json.dumps(commits_c)},
+    }
+    ex = DecisionExtractor(
+        repo_path=tmp_path,
+        git_meta_map=meta,
+        existing_pr_shas={"sha_already_mined"},
+    )
+    candidates, _ = ex._pr_body_candidates()
+    assert [c["sha"] for c in candidates] == ["sha_new", "sha_old"]
+
+
+@pytest.mark.parametrize("dismissed", [False, True])
+async def test_a_second_real_sync_does_not_send_a_persisted_pr_again(
+    tmp_path, monkeypatch, dismissed
+):
+    """Exercise default constructor wiring and a real durable store, not an injected SHA set."""
+    from dataclasses import asdict
+
+    from repowise.core.persistence import (
+        bulk_upsert_decisions,
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.models import DecisionRecord
+
+    directory = tmp_path / ".repowise"
+    directory.mkdir()
+    url = f"sqlite+aiosqlite:///{directory / 'wiki.db'}"
+    engine = create_engine(url)
+    await init_db(engine)
+    factory = create_session_factory(engine)
+    try:
+        first = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+        decisions = await first.mine_pr_bodies()
+        assert len(decisions) == len(first.test_provider.prompts) == 1
+        async with get_session(factory) as session:
+            repo = await upsert_repository(session, name="sample", local_path=str(tmp_path))
+            ids = await bulk_upsert_decisions(session, repo.id, [asdict(d) for d in decisions])
+            assert len(ids) == 1
+            record = await session.get(DecisionRecord, ids[0])
+            # A higher-ranked source can replace the headline without deleting PR evidence.
+            record.source = "adr"
+            record.evidence_commits_json = "[]"
+            if dismissed:
+                record.status = "dismissed"
+        second = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+        assert await second.mine_pr_bodies() == []
+        assert second.test_provider.prompts == []
+        assert second.planned_model_calls({"pr"}) == 0
+        # The same SHA in a sibling checkout sharing the DB is not this repo's PR.
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+        other = _extractor(sibling, _payload(affected_files=[_SUBJECT]))
+        assert len(await other.mine_pr_bodies()) == 1
+        assert len(other.test_provider.prompts) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_a_failed_history_read_does_not_silently_resend_pr_bodies(tmp_path):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    directory = tmp_path / ".repowise"
+    directory.mkdir()
+    (directory / "wiki.db").write_bytes(b"not a SQLite database")
+    extractor = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+    with pytest.raises(SQLAlchemyError):
+        await extractor.mine_pr_bodies()
+    assert extractor.test_provider.prompts == []
+
+
+async def test_legacy_dismissed_pr_commit_is_not_remined(tmp_path):
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.models import DecisionRecord
+
+    directory = tmp_path / ".repowise"
+    directory.mkdir()
+    engine = create_engine(f"sqlite+aiosqlite:///{directory / 'wiki.db'}")
+    await init_db(engine)
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await upsert_repository(session, name="sample", local_path=str(tmp_path))
+            session.add(
+                DecisionRecord(
+                    id="legacy-pr",
+                    repository_id=repo.id,
+                    title="Older capture",
+                    source="pr",
+                    status="dismissed",
+                    evidence_commits_json=json.dumps([_SHA]),
+                )
+            )
+        extractor = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+        assert await extractor.mine_pr_bodies() == []
+        assert extractor.test_provider.prompts == []
+    finally:
+        await engine.dispose()
+
+
+async def test_an_unindexed_repo_does_not_create_a_store_for_the_pr_history_read(tmp_path):
+    extractor = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+    assert len(await extractor.mine_pr_bodies()) == 1
+    assert not (tmp_path / ".repowise" / "wiki.db").exists()
+
+
+# --- a commit subject line returned as the decision ------------------------
+
+_SQUASH_BODY = (
+    "* refactor(review): drop the pull request change kind no server lists\n\n"
+    "No server ever listed a pull_request change, so we chose to remove the "
+    "tab, because only a hand-built fixture reached it.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        # The subject verbatim, header and all.
+        "perf: stop importing the workspace stack from the hook path",
+        # The subject once its header, case and punctuation are set aside.
+        "Stop importing the workspace stack from the hook path.",
+        # Any conventional header marks a commit line, whichever commit it is.
+        "fix(cli): resolve CLI command modules lazily",
+    ],
+)
+async def test_both_miners_drop_a_decision_that_restates_a_commit_subject(tmp_path, decision):
+    """A subject grounds against the commit text, so the gate cannot catch it."""
+    ex = _extractor(tmp_path, _payload(decision=decision))
+
+    assert await ex.mine_pr_bodies() == []
+    assert await ex.mine_git_archaeology() == []
+
+
+async def test_a_body_sentence_from_the_same_commit_is_kept(tmp_path):
+    decision = "We chose instead to resolve CLI command modules lazily"
+    ex = _extractor(tmp_path, _payload(decision=decision))
+
+    (kept,) = await ex.mine_pr_bodies()
+
+    assert kept.decision == decision
+
+
+def _decision(text: str) -> SimpleNamespace:
+    return SimpleNamespace(decision=text)
+
+
+def test_a_squashed_commit_subject_in_the_body_is_a_subject_too():
+    batch = [{"subject": "fix(review): severity in words (#5571)", "body": _SQUASH_BODY}]
+
+    kept = drop_subject_restatements(
+        [_decision("drop the pull request change kind no server lists")], batch, "subject"
+    )
+
+    assert kept == []
+
+
+def test_subject_matching_is_exact_and_ignores_body_prose():
+    batch = [{"subject": "fix(review): severity in words (#5571)", "body": _SQUASH_BODY}]
+    decisions = [
+        # Adds to the subject: the extra clause may be the rule.
+        _decision("severity in words, never by colour alone"),
+        # A body sentence without a header is not a subject.
+        _decision(
+            "No server ever listed a pull_request change, so we chose to remove the "
+            "tab, because only a hand-built fixture reached it."
+        ),
+        # A label that is not a conventional-commit type.
+        _decision("Decision: severity in words"),
+        _decision(""),
+    ]
+
+    assert drop_subject_restatements(decisions, batch, "subject") == decisions
+
+
+def test_a_trailing_change_number_does_not_hide_a_restatement():
+    batch = [{"message": "Collapse init and generate to a single cost question (#1036)"}]
+
+    kept = drop_subject_restatements(
+        [_decision("collapse init and generate to a single cost question")], batch, "message"
+    )
+
+    assert kept == []

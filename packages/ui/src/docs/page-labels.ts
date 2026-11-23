@@ -72,6 +72,10 @@ export function treeLabel(
 export function displayLabel(page: DocPageSummary): string {
   const metaLabel = page.metadata?.["derived_label"];
   if (typeof metaLabel === "string" && metaLabel) return metaLabel;
+  // The short, correctly cased label the server derives for outline pages
+  // ("CLI" for a page stored as "Cli Overview"). The page's heading keeps
+  // its full title.
+  if (page.nav_title) return page.nav_title;
 
   if (page.page_type === "module_page") {
     const name = page.title.replace(/^Module:\s*/i, "");

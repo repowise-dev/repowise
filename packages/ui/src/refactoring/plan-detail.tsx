@@ -3,6 +3,7 @@
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
 import { getLanguageFromPath } from "../c4/panels/CodeViewer";
 import { HighlightedCodeBlock } from "../shared/code-block";
+import { FilePath, type FilePathMode } from "../shared/file-path";
 import { PlaceholderHint } from "./placeholder-hint";
 import { ProvenancePathList } from "../shared/provenance-path-list";
 import {
@@ -49,25 +50,32 @@ function FileRef({
   line,
   fileHref,
   label,
+  mode = "name-first",
   className = "",
 }: {
   path: string;
   line?: number | null;
   fileHref?: PlanDetailProps["fileHref"];
+  /** A symbol to print instead of the path, which then rides on `title`. */
   label?: string;
-  /** Extra classes, e.g. `block truncate` inside a `min-w-0` flex item. */
+  mode?: FilePathMode;
+  /** Extra classes, e.g. `flex` to let a name-first path clip in its column. */
   className?: string;
 }) {
-  const inner = (
+  const inner = label ? (
     <>
-      {label ?? shortFile(path)}
+      {label}
       {line ? <span className="text-[var(--color-text-tertiary)]">:{line}</span> : null}
     </>
+  ) : (
+    <FilePath path={path} line={line} mode={mode} />
   );
+  const base = `min-w-0 font-mono text-xs text-[var(--color-text-secondary)] ${className}`;
+  const title = label ? path : undefined;
   const href = fileHref?.(path, line ?? null);
   if (!href) {
     return (
-      <span className={`font-mono text-xs text-[var(--color-text-secondary)] ${className}`} title={path}>
+      <span className={base} title={title}>
         {inner}
       </span>
     );
@@ -75,8 +83,8 @@ function FileRef({
   return (
     <a
       href={href}
-      className={`font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline ${className}`}
-      title={path}
+      className={`${base} underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline`}
+      title={title}
     >
       {inner}
     </a>
@@ -176,7 +184,7 @@ function StagedExtract({
                   path={plan.file_path}
                   line={stage.span.start}
                   fileHref={fileHref}
-                  className="min-w-0 break-all"
+                  mode="full"
                 />
                 <span className="ml-auto whitespace-nowrap font-mono text-[var(--color-text-secondary)]">
                   lines {stage.span.start}–{stage.span.end}
@@ -276,7 +284,7 @@ function ReuseDetail({
                     path={s.file}
                     line={s.span.start || null}
                     fileHref={fileHref}
-                    className="block truncate"
+                    className="flex"
                   />
                 </span>
                 <span className="shrink-0 text-2xs tabular-nums text-[var(--color-text-tertiary)]">
@@ -355,7 +363,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                   path={location.file_path}
                   line={location.line_start ?? null}
                   fileHref={fileHref}
-                  className="break-all"
+                  mode="full"
                 />
               </li>
             ))}
@@ -518,7 +526,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                     path={o.file}
                     line={o.line_start}
                     fileHref={fileHref}
-                    className="block truncate"
+                    className="flex"
                   />
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
@@ -602,9 +610,9 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
           {edges.map((e, i) => (
             <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
               <Scissors className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
-              <FileRef path={e.from} fileHref={fileHref} className="min-w-0 truncate" />
+              <FileRef path={e.from} fileHref={fileHref} className="flex" />
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-              <FileRef path={e.to} fileHref={fileHref} className="min-w-0 truncate" />
+              <FileRef path={e.to} fileHref={fileHref} className="flex" />
             </div>
           ))}
           {members.length > 0 ? (
@@ -654,7 +662,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                 path={plan.file_path}
                 line={em.span.start}
                 fileHref={fileHref}
-                className="block truncate"
+                className="flex"
               />
             </div>
             <span className="ml-auto shrink-0 font-mono text-xs text-[var(--color-text-secondary)]">
@@ -766,7 +774,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               {g.suggested_file ? (
                 <div className="mb-2 flex items-center gap-1.5">
                   <FilePlus2 className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
-                  <FileRef path={g.suggested_file} fileHref={fileHref} className="min-w-0 truncate" />
+                  <FileRef path={g.suggested_file} fileHref={fileHref} className="flex" />
                 </div>
               ) : null}
               <ul className="space-y-0.5">
@@ -818,7 +826,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               <ul className="space-y-1">
                 {shownDeps.map((f) => (
                   <li key={f}>
-                    <FileRef path={f} fileHref={fileHref} className="block truncate" />
+                    <FileRef path={f} fileHref={fileHref} className="flex" />
                   </li>
                 ))}
                 {blast.dependent_files.length > shownDeps.length ? (

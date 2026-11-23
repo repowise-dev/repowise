@@ -341,7 +341,7 @@ async def rank_change(
     """
     from .test_collection import query_lines
 
-    lines = query_lines(change, result.get("measured_commit"))
+    lines = result.get("query_lines") or query_lines(change, result.get("measured_commit"))
     tests = [*selection.tests, *(everything or ())]
     if session is None:
         signals = Signals({}, last_failed(read(LAST_FAILED_PATH)))

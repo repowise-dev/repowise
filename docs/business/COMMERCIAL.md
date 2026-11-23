@@ -20,8 +20,9 @@ models. Specific pricing figures are provided in a separate proposal.
 
 The open-source distribution covers the full developer-experience surface: the five
 intelligence layers, the ten MCP tools, multi-repo workspaces, the local dashboard,
-auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
-needs to make their AI coding agents codebase-aware.
+auto-sync, auto-generated `CLAUDE.md`, and change evidence with local policy and
+reports. That is everything an engineer or a team needs to make their AI coding
+agents codebase-aware and to account for what lands.
 
 The commercial license is for organizations that need to roll Repowise out **at
 scale, in a regulated or security-sensitive environment**:
@@ -42,7 +43,7 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 26 languages, two-tier dependency graph, call
+  (tree-sitter AST across 29 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
@@ -52,7 +53,8 @@ All of the following ship in `pip install repowise` today, free for internal use
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
-  risk, dead code and the PR bot make no model calls at all, and the whole wiki
+  risk, dead code and the PR bot's checks make no model calls at all (AI review
+  on pull requests is opt-in), and the whole wiki
   renders from code structure with no API key (`repowise init --no-prose`).
   Model-written prose is opt-in, priced before you confirm it, and runs on your
   own key or fully offline through Ollama. Six of the seven decision sources are
@@ -61,10 +63,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
   `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
-  Measured at **−31.6 % of the agent's own output tokens** against a bare agent
-  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
-  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
-  the sample sizes, all three agent harnesses, and the rows where we lose.
+  Across five models the agent opens **up to 99% fewer files**, writes **up to
+  51% less** and answers **up to 47% faster** (Sonnet 4.6, 71 of 72 answers
+  right), and every model opens fewer files. Side by side with four other context
+  tools, repowise cuts the agent's output by **31.6%** (43 questions,
+  p < 0.0001), the most of the five, in 3.8 tool calls where the bare agent
+  needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample sizes and
+  the method.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -83,10 +88,21 @@ All of the following ship in `pip install repowise` today, free for internal use
   LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
   then does the half a coverage service structurally cannot: answers *which
   tests reach this file* and *which tests does this diff exercise* **with no
-  report at all**, at **95.7% and 97.5% precision** measured against a real
-  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  report at all**, at **97.7% precision** on the files tests call into (against the
+  unit suite's coverage) and **97.5%** on the tests to run (against per-test coverage). Measured and inferred rows are labelled and
   never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
+- **Change evidence and governance**: Change Records with an evidence checklist
+  and outcomes, `repowise suspects`, Backstage-shaped components with declared
+  owners compared against recent activity, local change policy (`repowise check`,
+  SARIF and JUnit), assessment, change and inventory reports, and package usage
+  with a CycloneDX 1.6 export. ([CHANGES.md](../layers/CHANGES.md),
+  [COMPONENTS.md](../layers/COMPONENTS.md), [POLICY.md](../layers/POLICY.md),
+  [REPORTS.md](../layers/REPORTS.md))
+- **Scoped access and plugin seams**: REST, MCP over HTTP and webhooks resolve
+  each caller to a principal scoped to repositories and tools, with hashed,
+  expiring tokens. Authentication, team directory, change metadata, event
+  delivery and report sections are named seams a plugin can fill.
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
   environment only, never code, paths or repo names) can be turned off with
@@ -100,12 +116,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **26 languages to a full AST** and places **40 on a five-rung
+Repowise parses **29 languages to a full AST** and places **43 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 26 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
-JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+The 28 are the top three rungs. At **Full tier sit 15** (Python, TypeScript,
+JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, Ruby and
+Salesforce Apex) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
 dynamic-hint extractors, and code-health markers. A further **11 at Good tier** (C,
@@ -170,6 +187,13 @@ the items that matter most to you can be prioritized.
 | Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
 | Local CI security gate on a change (`repowise security check`, SARIF output, committed baseline) | ✅ | ✅ |
+| Change Records, evidence checklist and suspects | ✅ | ✅ |
+| Local change policy in CI (`repowise check`, SARIF / JUnit) | ✅ | ✅ |
+| Components, declared vs active owners, component events | ✅ | ✅ |
+| Assessment, change evidence and inventory reports | ✅ | ✅ |
+| Package usage with CycloneDX 1.6 usage export | ✅ | ✅ |
+| Scoped tokens for REST, MCP HTTP and webhooks; plugin seams | ✅ | ✅ |
+| Central policy management, org-wide enforcement, approvals and policy audit | — | ✅ *(planned)* |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
@@ -180,7 +204,8 @@ the items that matter most to you can be prioritized.
 | Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(GA on hosted, Teams)* |
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted, security surface)* |
 | Jira / Confluence integration | — | ✅ *(GA on hosted, Teams)* |
-| GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
+| GitLab.com repositories (connect, add projects, sync on push) | — | ✅ *(GA on hosted)* |
+| GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket | — | ✅ *(rolling out)* |
 | Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted, Teams)* |
 | SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
 | RBAC + multi-tenant | — | ✅ *(planned)* |
@@ -283,7 +308,9 @@ integrations beyond this list are available on request.
   page, updated in place and never duplicated; every page carries a link-back and
   a freshness banner stating the exact source commit, with an explicit stale
   warning when the snapshot trails the repository head.
-- **GitHub Enterprise / Azure DevOps / GitLab / Bitbucket**: managed webhooks, a
+- **GitLab.com** *(available on the hosted platform)*: connect a GitLab account,
+  add projects, and keep them current on every push or through polling.
+- **GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket**: managed webhooks, a
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
   from the ownership list.
@@ -316,12 +343,13 @@ presentation and policy layer is what's rolling out commercially.
 - **Cross-repo intelligence at scale** *(dev)*: hotspots, dead code, and ownership
   across the entire estate with centralized dashboards (beyond the local-workspace
   scope already shipping in OSS).
-- **Custom decision policies** *(planned)*: required-reviewer rules, mandatory
-  `get_why` checks for governed paths, and merge-gating policies tied to Repowise
-  findings. Policy authoring and local or CI evaluation are planned for open
-  source, following the local security gate that ships today. The commercial layer adds
-  central policy management, organisation-wide enforcement across repositories,
-  approval workflows and a policy audit trail.
+- **Organisation-wide change policy** *(planned)*: policy authoring and local or
+  CI evaluation ship in open source today (`.repowise/policies.yaml` and
+  `repowise check`). The commercial layer adds central policy management,
+  organisation-wide enforcement across repositories, approval workflows and a
+  policy audit trail.
+
+<a id="55-enterprise-operations"></a>
 
 ### 5.4 Enterprise Operations
 
@@ -372,8 +400,10 @@ an in-memory NetworkX graph. The LLM provider and the git server sit alongside
 Repowise in the same network boundary; no outbound connectivity is required in
 air-gapped mode.
 
-**Indexing:** the graph, git, dead-code, and code-health layers build in minutes with
-zero LLM calls (`repowise init --no-prose`); the documentation layer's one-time
+**Indexing:** the graph, git, dead-code, and code-health layers build with zero LLM
+calls (`repowise init --no-prose`), about 20 minutes for a 1.5M-line repository and
+two hours for a 15M-line one on a single laptop
+([scale](../BENCHMARKS.md#scale)); the documentation layer's one-time
 wiki generation scales with repo size and can run in the background. Incremental
 updates after each commit complete in under 30 seconds.
 

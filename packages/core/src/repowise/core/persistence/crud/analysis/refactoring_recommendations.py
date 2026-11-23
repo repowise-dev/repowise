@@ -17,11 +17,6 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import (
-    TestRuns,
-    js_root_runs,
-    runs_for_tests,
-)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -46,6 +41,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
+    cached_file_paths,
     cached_test_files,
     imported_names_by_test,
     reach_into_symbols,
@@ -53,8 +49,14 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.ingestion.package_roots import scan_package_manifests
+from repowise.core.test_runners.packages import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
+from .._shared import _BATCH_SIZE
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
 from .function_facts import tests_in_files
@@ -176,6 +178,7 @@ async def validation_inputs(
     *in_degree* is the stored fan-in a caller already read; without it, read here.
     With the *checkout*, each test's package is read, for the plans to store;
     without it, JS/TS tests run from the repository root and others get no command.
+    The checkout also names the workload each performance plan is timed with.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -205,7 +208,11 @@ async def validation_inputs(
     )
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
-        inferred.update(tests_matching_by_name(unreached, test_files))
+        inferred.update(
+            tests_matching_by_name(
+                unreached, test_files, await cached_file_paths(session, repository_id)
+            )
+        )
     walked = {path: reached.all_tests or tuple(reached.tests) for path, reached in inferred.items()}
     narrowed = await narrow_scopes(session, repository_id, walked, test_files)
     inferred = {
@@ -227,6 +234,7 @@ async def validation_inputs(
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
             test_runs=runs,
+            timed=await _timed_targets(session, repository_id, checkout, suggestions),
         ),
     )
     return ValidationInputs(
@@ -282,21 +290,52 @@ async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
     return await asyncio.to_thread(runs_for_tests, root, manifests, test_files)
 
 
+async def _timed_targets(
+    session: AsyncSession,
+    repository_id: str,
+    checkout: str | None,
+    suggestions: Sequence[RefactoringSuggestion],
+) -> dict[str, dict[str, Any]]:
+    """The workload ``perf measure`` times for each performance plan's file:
+    the entry point or benchmark ``evidence setup`` names for its unit."""
+    paths = sorted(
+        {s.file_path for s in suggestions if s.refactoring_type == "performance_fix" and s.file_path}
+    )
+    root = Path(checkout) if checkout else None
+    if not paths or root is None or not root.is_dir():
+        return {}
+    from repowise.core.evidence.runtime_setup import load_runtime_inputs
+    from repowise.core.evidence.setup import timed_targets
+
+    from ..build_units import load_build_units
+
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(timed_targets, root, paths, units=units, runtime=runtime)
+
+
 async def _symbol_spans(
     session: AsyncSession, repository_id: str, files: Sequence[str]
 ) -> dict[str, list[SymbolSpan]]:
-    """Each file's symbol ids with their line spans, in one statement."""
+    """Each file's symbol ids with their line spans, in bounded statements."""
     if not files:
         return {}
-    rows = await session.execute(
-        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
-        .where(GraphNode.repository_id == repository_id)
-        .where(GraphNode.node_type == "symbol")
-        .where(GraphNode.file_path.in_(list(files)))
-    )
     spans: dict[str, list[SymbolSpan]] = {}
-    for file_path, node_id, start, end in rows:
-        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    # The finalize ranks every plan at once, so *files* can be the whole
+    # repository. The statement is issued in fixed-size pieces to stay under the
+    # bound-parameter cap; a file appears in one piece, so its order is kept.
+    paths = sorted(set(files))
+    for start in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
+            .where(GraphNode.repository_id == repository_id)
+            .where(GraphNode.node_type == "symbol")
+            .where(GraphNode.file_path.in_(paths[start : start + _BATCH_SIZE]))
+        )
+        for file_path, node_id, start_line, end_line in rows:
+            spans.setdefault(file_path, []).append(
+                (node_id, int(start_line or 0), int(end_line or 0))
+            )
     return spans
 
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field
 
+from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
 # Page freshness values that count as "needs refresh" for ``--stale``.
 #
 # Public because it is the product's one definition of the word. The MCP
@@ -26,6 +28,11 @@ from dataclasses import dataclass, field
 # keyless index a permanently wrong answer. Two spellings of "stale" in one
 # product is how they drift apart, so there is one.
 STALE_STATUSES = frozenset({"stale", "expired"})
+
+
+def is_stale_status(status: str | None) -> bool:
+    """Whether a page's ``freshness_status`` counts as stale."""
+    return status in STALE_STATUSES
 
 
 @dataclass(frozen=True)
@@ -42,10 +49,14 @@ class PageRecord:
     target_path: str
     is_template: bool
     freshness_status: str = "fresh"
+    # A user hand-requested this page (UI "Generate doc"): it must be
+    # regenerated every run regardless of the selection heuristic (issue
+    # #812), so the doc keeps following the code.
+    pinned: bool = False
 
     @property
     def is_stale(self) -> bool:
-        return self.freshness_status in STALE_STATUSES
+        return is_stale_status(self.freshness_status)
 
 
 @dataclass(frozen=True)
@@ -109,8 +120,11 @@ def resolve_page_selection(
     The result is the union of every selector the intent sets:
 
     * ``all_pages`` — every existing page.
-    * ``unwritten`` — every template (deterministic) page, i.e. the pages a
-      model has not written yet.
+    * ``unwritten`` — every model-written page type (``MODEL_WRITTEN_PAGE_TYPES``)
+      still stamped template, i.e. the pages a model has not written yet.
+      Structural pages are always templates and never written by a model, so
+      they are not "unwritten"; seeding them would also make the ``dependents``
+      cascade pull in the module pages above them even when those are written.
     * ``stale`` — every page whose freshness is stale or expired.
     * ``path_globs`` — every page whose ``target_path`` matches a glob/prefix.
     * ``page_ids`` — the named ids, when they exist. Names that match no record
@@ -122,9 +136,14 @@ def resolve_page_selection(
     if intent.all_pages:
         selected.update(by_id)
     if intent.unwritten:
-        selected.update(r.page_id for r in records if r.is_template)
+        selected.update(
+            r.page_id for r in records if r.is_template and r.page_type in MODEL_WRITTEN_PAGE_TYPES
+        )
     if intent.stale:
         selected.update(r.page_id for r in records if r.is_stale)
+    # Pinned pages are regenerated unconditionally: the user asked for this
+    # doc once and it should keep following the code (issue #812).
+    selected.update(r.page_id for r in records if r.pinned)
     if intent.path_globs:
         selected.update(
             r.page_id for r in records if _matches_glob(r.target_path, intent.path_globs)

@@ -14,7 +14,9 @@ from pathlib import Path
 from repowise.core.analysis.health.coverage import (
     parse_contexts_file,
     parse_coverage_sqlite,
+    parse_lcov,
     parse_lcov_contexts,
+    resolve_reports,
     resolve_test_reports,
 )
 
@@ -108,11 +110,46 @@ def test_sqlite_emits_per_test_records(tmp_path: Path) -> None:
     assert report.source_format == "coverage.py"
 
     by_key = {(r.test_id, r.file_path): r for r in report.records}
-    assert by_key[("tests/test_foo.py::test_a|run", "src/foo.py")].covered_lines == [1, 3, 5]
-    assert by_key[("tests/test_foo.py::test_a|run", "src/bar.py")].covered_lines == [10]
-    assert by_key[("tests/test_foo.py::test_b|run", "src/foo.py")].covered_lines == [1, 2]
+    assert by_key[("tests/test_foo.py::test_a", "src/foo.py")].covered_lines == [1, 3, 5]
+    assert by_key[("tests/test_foo.py::test_a", "src/bar.py")].covered_lines == [10]
+    assert by_key[("tests/test_foo.py::test_b", "src/foo.py")].covered_lines == [1, 2]
     # The empty context (id 1) never produces a record.
     assert all(r.test_id for r in report.records)
+    assert {r.test_file for r in report.records} == {"tests/test_foo.py"}
+
+
+def test_sqlite_merges_pytest_cov_phases_into_one_test(tmp_path: Path) -> None:
+    # pytest-cov writes setup, run and teardown as three contexts of one test.
+    db = tmp_path / ".coverage"
+    _write_coverage_db(
+        db,
+        files={1: "src/foo.py", 2: "src/fixtures.py"},
+        contexts={
+            1: "tests/test_foo.py::TestFoo::test_a[x|y]|setup",
+            2: "tests/test_foo.py::TestFoo::test_a[x|y]|run",
+            3: "tests/test_foo.py::TestFoo::test_a[x|y]|teardown",
+        },
+        line_bits=[(2, 1, [4, 5]), (1, 2, [1, 2]), (1, 3, [2, 9]), (2, 3, [7])],
+    )
+    report = parse_coverage_sqlite(db)
+    by_key = {(r.test_id, r.file_path): r for r in report.records}
+    nodeid = "tests/test_foo.py::TestFoo::test_a[x|y]"
+    assert set(by_key) == {(nodeid, "src/foo.py"), (nodeid, "src/fixtures.py")}
+    assert by_key[(nodeid, "src/foo.py")].covered_lines == [1, 2, 9]
+    assert by_key[(nodeid, "src/fixtures.py")].covered_lines == [4, 5, 7]
+    assert by_key[(nodeid, "src/foo.py")].test_file == "tests/test_foo.py"
+
+
+def test_sqlite_drops_a_bare_phase_context(tmp_path: Path) -> None:
+    db = tmp_path / ".coverage"
+    _write_coverage_db(
+        db,
+        files={1: "src/foo.py"},
+        contexts={1: "|run", 2: "tests/test_foo.py::test_a|run"},
+        line_bits=[(1, 1, [1]), (1, 2, [2])],
+    )
+    report = parse_coverage_sqlite(db)
+    assert [r.test_id for r in report.records] == ["tests/test_foo.py::test_a"]
 
 
 def test_sqlite_without_contexts_degrades_loudly(tmp_path: Path) -> None:
@@ -220,6 +257,41 @@ def test_resolve_test_reports_maps_source_and_test_paths() -> None:
     assert rec.file_path == "packages/app/src/foo.py"  # suffix-resolved source
     assert rec.test_file == "packages/app/tests/test_foo.py"  # test path resolved too
     assert rec.covered_lines == [1, 3]
+
+
+def test_per_test_records_resolve_from_the_report_directory_like_the_aggregate() -> None:
+    # A monorepo package's per-test lcov names files from the package root.
+    # The same names exist in two packages, so a match on the path alone ties.
+    text = (
+        "TN:tests/test_a.py::test_one|run\nSF:src/a.py\nDA:1,1\nend_of_record\n"
+        "TN:tests/test_a.py::test_one|run\nSF:src/b.py\nDA:2,1\nend_of_record\n"
+    )
+    repo_keys = {
+        "packages/web/src/a.py",
+        "packages/api/src/a.py",
+        "packages/web/src/b.py",
+        "packages/api/src/b.py",
+        "packages/web/tests/test_a.py",
+        "packages/api/tests/test_a.py",
+    }
+    report = parse_lcov_contexts(text)
+    report.origin_dir = "packages/web/coverage"
+    resolved = resolve_test_reports(report, repo_keys)
+
+    assert [r.file_path for r in resolved.records] == [
+        "packages/web/src/a.py",
+        "packages/web/src/b.py",
+    ]
+    assert {r.test_file for r in resolved.records} == {"packages/web/tests/test_a.py"}
+    assert resolved.unmatched == [] and resolved.ambiguous == []
+
+    # The aggregate read of the same report maps the same files.
+    aggregate = parse_lcov(text)
+    aggregate.origin_dir = "packages/web/coverage"
+    assert sorted(resolve_reports([aggregate], repo_keys).coverage_map) == [
+        "packages/web/src/a.py",
+        "packages/web/src/b.py",
+    ]
 
 
 def test_resolve_test_reports_reports_unmatched() -> None:

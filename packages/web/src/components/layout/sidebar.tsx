@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  ListChecks,
   PanelLeft,
   Search,
 } from "lucide-react";
@@ -25,9 +26,17 @@ import { Separator } from "@repowise-dev/ui/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
+import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import { VersionFooter } from "./version-footer";
+import { NewMark, useNavNewMark } from "./new-mark";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
+import {
+  SetupProgressMark,
+  SetupRingBadge,
+  useSetupEntry,
+  useSetupProgressText,
+} from "@/components/setup/setup-entry";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface SidebarProps {
@@ -70,25 +79,7 @@ export function Sidebar({
       });
     }
   }, [derivedActiveRepoId]);
-  // Docs is a reading surface — auto-collapse the sidebar on entering it so
-  // the page gets the width, and restore the previous state on leaving.
-  // Manual toggles always win while the route type is unchanged.
-  const isDocsRoute = /^\/repos\/[^/]+\/docs(\/|$)/.test(pathname ?? "");
-  const [collapsed, setCollapsed] = React.useState(isDocsRoute);
-  const preDocsCollapsed = React.useRef(false);
-  const wasDocsRoute = React.useRef(isDocsRoute);
-  React.useEffect(() => {
-    if (isDocsRoute === wasDocsRoute.current) return;
-    wasDocsRoute.current = isDocsRoute;
-    if (isDocsRoute) {
-      setCollapsed((c) => {
-        preDocsCollapsed.current = c;
-        return true;
-      });
-    } else {
-      setCollapsed(preDocsCollapsed.current);
-    }
-  }, [isDocsRoute]);
+  const [collapsed, setCollapsed] = React.useState(false);
 
   // Workspace group: collapsed unless the user is on a workspace route, so
   // the (more used) per-repo navigation leads. Tracks route changes in both
@@ -158,16 +149,24 @@ export function Sidebar({
 
       <ScrollArea className="flex-1" id="sidebar-nav">
         <div className={cn("px-3 py-2", isIconOnly && "px-2")}>
-          {/* Global nav */}
-          <nav className="space-y-1">
+          {/* Global nav, at the size of a repo's own rows: these are
+              shortcuts, not headings over the repositories below. */}
+          <nav className="space-y-0.5">
             {GLOBAL_NAV.map((item) => (
               <SidebarNavItem
                 key={item.href}
                 item={item}
-                isActive={pathname === item.href}
+                isActive={isNavItemActive(item, pathname)}
+                size="sm"
                 iconOnly={isIconOnly}
               />
             ))}
+            <SidebarSetupItem
+              repos={repos}
+              activeRepoId={derivedActiveRepoId}
+              pathname={pathname}
+              iconOnly={isIconOnly}
+            />
             <SidebarSearchButton iconOnly={isIconOnly} />
           </nav>
 
@@ -182,7 +181,7 @@ export function Sidebar({
                   onClick={() => setWorkspaceNavOpen((v) => !v)}
                   aria-expanded={workspaceNavOpen}
                   aria-controls="sidebar-workspace-nav"
-                  className="mb-1 mt-4 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
+                  className="mb-1 mt-4 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
                 >
                   <span className="flex-1 truncate text-left">{ts("workspace")}</span>
                   {workspaceNavOpen ? (
@@ -231,7 +230,7 @@ export function Sidebar({
                   {/* A label or a rule, not both: the separator plus the
                       heading plus the brand block above them stacked ~150px
                       of chrome in front of the first repo row. */}
-                  <p className="mb-2 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <p className="mb-1 mt-4 px-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     {ts("repositories")}
                   </p>
                 </>
@@ -305,8 +304,7 @@ export function Sidebar({
 
                   if (isIconOnly) {
                     // Collapsed: the active repo still exposes its full nav as
-                    // icons (so the repository-view options stay reachable, e.g.
-                    // on Docs where the sidebar auto-collapses); inactive repos
+                    // icons (so the repository-view options stay reachable); inactive repos
                     // stay a single dot that jumps to their overview.
                     if (isActive) {
                       return (
@@ -314,16 +312,16 @@ export function Sidebar({
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <div
-                                className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-accent-primary)]"
+                                className="flex w-full items-center justify-center rounded-md bg-[var(--color-bg-selected)] p-2 text-[var(--color-text-primary)]"
                                 aria-label={repo.name}
                               >
-                                <Circle className="h-2.5 w-2.5 fill-[var(--color-accent-primary)]" />
+                                <Circle className="h-2.5 w-2.5 fill-[var(--color-text-primary)]" />
                               </div>
                             </TooltipTrigger>
                             <TooltipContent side="right">{repo.name}</TooltipContent>
                           </Tooltip>
                           {navGroups.map((group, gi) => (
-                            <React.Fragment key={group.label ?? gi}>
+                            <React.Fragment key={group.id}>
                               {gi > 0 && <Separator className="my-1.5" />}
                               {group.items.map((item) => (
                                 <SidebarNavItem
@@ -363,14 +361,14 @@ export function Sidebar({
                         // The name still truncates at ~24 characters, so the
                         // title carries the rest.
                         title={repo.name}
-                        className={cn(ROW, ROW_L1, isActive ? ROW_ACTIVE : ROW_IDLE)}
+                        className={cn(ROW, ROW_L1, isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE)}
                       >
                         <RowGlyph>
                           <Circle
                             className={cn(
                               "h-2 w-2",
                               isActive
-                                ? "fill-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                                ? "fill-[var(--color-text-primary)] text-[var(--color-text-primary)]"
                                 : "fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]",
                             )}
                           />
@@ -389,26 +387,14 @@ export function Sidebar({
                       </button>
                       {isExpanded && (
                         <div id={`sidebar-repo-${repo.id}`} className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                          {navGroups.map((group, gi) => (
-                            <React.Fragment key={group.label ?? gi}>
-                              {group.label ? (
-                                <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                                  {group.labelKey ? t(group.labelKey) : group.label}
-                                </p>
-                              ) : gi > 0 ? (
-                                <div className="pt-1.5" />
-                              ) : null}
-                              {group.items.map((item) => (
-                                <SidebarNavItem
-                                  key={item.href}
-                                  item={item}
-                                  isActive={isNavItemActive(item, pathname)}
-                                  size="sm"
-                                  iconOnly={false}
-                                />
-                              ))}
-                            </React.Fragment>
-                          ))}
+                          <NavGroupList
+                            groups={navGroups}
+                            pathname={pathname}
+                            idPrefix={`sidebar-repo-${repo.id}`}
+                            renderItem={(item, active) => (
+                              <SidebarNavItem item={item} isActive={active} size="sm" />
+                            )}
+                          />
                         </div>
                       )}
                     </div>
@@ -507,9 +493,9 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
   }
 
   return (
-    <button onClick={openPalette} className={cn(ROW, ROW_L1, ROW_IDLE)}>
+    <button onClick={openPalette} className={cn(ROW, ROW_L2, NAV_ROW_IDLE)}>
       <RowGlyph>
-        <Search className="h-4 w-4" />
+        <Search className="h-3.5 w-3.5" />
       </RowGlyph>
       <span className="flex-1 truncate text-left">{ts("openSearch")}</span>
       <kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
@@ -520,26 +506,15 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
 }
 
 /**
- * One row shape for the whole sidebar, so every level-1 row (Dashboard,
- * Settings, Search, each repository) is the same height and every label
- * starts at the same x. The leading slot is a FIXED 18px box whatever it
+ * One row shape for the whole sidebar, so every label starts at the same x.
+ * Dashboard, Settings, Setup and Search share the `sm` size of a repo's own
+ * rows; a repository name is one step up, as the heading of its rows. The leading slot is a FIXED 18px box whatever it
  * holds — an 18px icon or an 8px status dot — because otherwise the repo
  * labels sat 10px left of the global-nav labels and the column read ragged.
  */
 const ROW = "flex w-full items-center gap-2 rounded-lg px-2 transition-colors";
-const ROW_L1 = "py-1.5 text-base";
+const ROW_L1 = "py-1.5 text-sm";
 const ROW_L2 = "py-1.5 text-xs";
-
-/**
- * Selected, quietly. This used to be an accent-muted wash plus accent text,
- * which coloured the entire row; on a sidebar where several rows can look
- * active at once that reads as noise. The ground carries the selection and a
- * single accent touch on the leading glyph carries the identity.
- */
-const ROW_ACTIVE =
-  "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]";
-const ROW_IDLE =
-  "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]";
 
 /** The fixed-width leading slot that keeps every label on the same column. */
 function RowGlyph({ children }: { children: React.ReactNode }) {
@@ -550,20 +525,63 @@ function RowGlyph({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The Setup row: always there, so setup can be reopened once it is done.
+ * Links to the active repo's Setup page, or the workspace one with no
+ * indexed repo active, and carries that repo's progress.
+ */
+function SidebarSetupItem({
+  repos,
+  activeRepoId,
+  pathname,
+  iconOnly,
+}: {
+  repos: RepoResponse[];
+  activeRepoId: string | undefined;
+  pathname: string;
+  iconOnly: boolean;
+}) {
+  const { href, progress } = useSetupEntry(repos, activeRepoId);
+  const text = useSetupProgressText(progress);
+  return (
+    <SidebarNavItem
+      item={{ label: "Setup", labelKey: "setup", href, icon: ListChecks }}
+      isActive={pathname === href}
+      size="sm"
+      iconOnly={iconOnly}
+      trailing={<SetupProgressMark progress={progress} />}
+      badge={<SetupRingBadge progress={progress} />}
+      description={text}
+    />
+  );
+}
+
 function SidebarNavItem({
   item,
   isActive,
   size = "default",
   iconOnly = false,
+  trailing,
+  badge,
+  description,
 }: {
   item: NavItem;
   isActive: boolean;
   size?: "default" | "sm";
   iconOnly?: boolean;
+  /** After the label in the expanded row. */
+  trailing?: React.ReactNode;
+  /** Over the icon in the collapsed row. */
+  badge?: React.ReactNode;
+  /** Appended to the collapsed row's name and tooltip. */
+  description?: string;
 }) {
   const t = useTranslations("nav");
   const label = t(item.labelKey);
   const Icon = item.icon;
+  const newMark = useNavNewMark(item.href, label, item.exact);
+  const { isNew } = newMark;
+  const ariaLabel = description ? `${newMark.ariaLabel}, ${description}` : newMark.ariaLabel;
 
   if (iconOnly) {
     return (
@@ -571,18 +589,18 @@ function SidebarNavItem({
         <TooltipTrigger asChild>
           <Link
             href={item.href}
-            aria-label={label}
+            aria-label={ariaLabel}
             className={cn(
-              "flex items-center justify-center rounded-lg p-2.5 transition-colors",
-              isActive
-                ? "bg-[var(--color-bg-elevated)] text-[var(--color-accent-primary)]"
-                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+              "relative flex items-center justify-center rounded-lg p-2.5 transition-colors",
+              isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
             )}
           >
             <Icon className="h-[18px] w-[18px] shrink-0" />
+            {badge}
+            {isNew && <NewMark dotOnly />}
           </Link>
         </TooltipTrigger>
-        <TooltipContent side="right">{label}</TooltipContent>
+        <TooltipContent side="right">{description ? `${label}, ${description}` : label}</TooltipContent>
       </Tooltip>
     );
   }
@@ -591,17 +609,14 @@ function SidebarNavItem({
     <Link
       href={item.href}
       title={label}
-      className={cn(ROW, size === "sm" ? ROW_L2 : ROW_L1, isActive ? ROW_ACTIVE : ROW_IDLE)}
+      className={cn(ROW, size === "sm" ? ROW_L2 : ROW_L1, isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE)}
     >
       <RowGlyph>
-        <Icon
-          className={cn(
-            size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4",
-            isActive && "text-[var(--color-accent-primary)]",
-          )}
-        />
+        <Icon className={size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4"} />
       </RowGlyph>
       <span className="truncate">{label}</span>
+      {isNew && <NewMark />}
+      {trailing}
     </Link>
   );
 }

@@ -81,6 +81,17 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Static call on a member type: Outer.Inner.method(args). Only a path of
+; capitalised names whose later segments hold a lower-case letter, so a
+; constant (``X.CONST.m()``) or a field path (``a.b.m()``) stays bare. The
+; resolver reads the whole path as a type, never its last segment alone.
+(method_invocation
+  object: (field_access) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+  (#match? @call.receiver "^[A-Z][A-Za-z0-9_]*(\\s*[.]\\s*[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)+$")
+) @call.site
+
 ; Method call on the caller's own field: this.field.method(args).
 ; The pattern above constrains ``object`` to a bare identifier and the bare
 ; pattern constrains nothing, so without this a field receiver arrives with no

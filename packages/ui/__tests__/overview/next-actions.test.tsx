@@ -153,6 +153,58 @@ describe("NextActions", () => {
     const { container } = render(<NextActions data={null} hrefFor={() => null} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders open with the time frame in the header by default", () => {
+    const { container } = render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Do next" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /This quarter/ })).toBeInTheDocument();
+    expect(screen.queryByText(/suggested/)).toBeNull();
+  });
+
+  it("folds behind its heading with a count when defaultOpen is false", () => {
+    const now = action({ id: "act_now", tier: "act_now", horizons: ["week"], title: "Clean up `b.ts`" });
+    const { container } = render(
+      <NextActions
+        data={response([now], [action(), action({ id: "act_2" })])}
+        hrefFor={() => null}
+        defaultOpen={false}
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    // The count is the default time frame's, the same one its chip shows.
+    expect(within(details!.querySelector("summary")!).getByRole("heading", { name: "Do next · 1" })).toBeInTheDocument();
+
+    details!.open = true;
+    fireEvent.click(within(details!).getByRole("radio", { name: /This quarter/ }));
+    expect(within(details!).getByRole("radio", { name: /This quarter/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Do next · 2" })).toBeInTheDocument();
+    // React only writes `open` when the prop changes, so a rerender keeps a
+    // section the user opened open.
+    expect(details!.open).toBe(true);
+  });
+});
+
+describe("the row prompt", () => {
+  it("opens the agent prompt from the row without opening the drawer", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} loadPrompt={loadPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt: Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Why it is on the list")).toBeNull();
+    expect(loadPrompt).toHaveBeenCalledWith(action(), expect.any(String));
+  });
+
+  it("is absent when the host has no prompt", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(screen.queryByRole("button", { name: /Copy prompt/ })).toBeNull();
+  });
 });
 
 describe("the action drawer", () => {
@@ -220,6 +272,23 @@ describe("the status sentence", () => {
     }
   });
 
+  it("counts setup steps beside the work in the sentence, the tab and the folded heading", () => {
+    const now = action({ id: "n", tier: "act_now", horizons: ["week"] });
+    const steps = ["s1", "s2"].map((id) =>
+      action({ id, tier: "improve_signal", rule: "sync_hook_missing", horizons: ["week"] }),
+    );
+    const { container } = render(
+      <NextActions data={response([now, ...steps], [])} hrefFor={() => null} defaultOpen={false} />,
+    );
+    expect(
+      screen.getByText(
+        "1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now · 2 setup steps.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Do next · 1 · 2 setup steps" })).toBeInTheDocument();
+    expect(within(container).getByRole("radio", { name: /This week/ })).toHaveTextContent("1 + 2");
+  });
+
   it("points to the other time frame when the open one is clear and no summary is sent", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
     fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
@@ -243,6 +312,9 @@ describe("actionHref", () => {
         "/repos/r",
       ),
     ).toBe("/repos/r/decisions/d1");
+    expect(
+      actionHref(action({ surface: "setup", rule: "sync_hook_missing" }), "/repos/r"),
+    ).toBe("/repos/r/settings/setup#sync_hook_missing");
   });
 });
 

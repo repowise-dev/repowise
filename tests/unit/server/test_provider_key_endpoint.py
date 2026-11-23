@@ -19,8 +19,10 @@ def isolate_server_store(monkeypatch, tmp_path):
     from repowise.server import provider_config as pc
 
     monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server-store"))
-    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one.
+    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one,
+    # nor an OPENAI_BASE_URL another test exported stand in for a cleared one.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     return pc
 
 
@@ -69,6 +71,50 @@ async def test_remove_key_with_repo_id_clears_repo_env(client: AsyncClient) -> N
     from pathlib import Path
 
     assert "ANTHROPIC_API_KEY" not in load_repo_env(Path(repo["local_path"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", ["   ", "", "\t"])
+async def test_add_blank_key_is_rejected_and_keeps_stored_key(
+    client: AsyncClient, isolate_server_store, blank: str
+) -> None:
+    # A blank paste must not replace a working key behind a 204.
+    from pathlib import Path
+
+    repo = await create_test_repo(client)
+    await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": "sk-ant-real", "repo_id": repo["id"]},
+    )
+
+    resp = await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": blank, "repo_id": repo["id"]},
+    )
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["detail"]
+
+    assert isolate_server_store._get_key_for_provider("anthropic") == "sk-ant-real"
+    providers = (await client.get("/api/providers")).json()["providers"]
+    assert {p["id"]: p["detected"] for p in providers}["anthropic"] == "saved"
+    assert load_repo_env(Path(repo["local_path"]))["ANTHROPIC_API_KEY"] == "sk-ant-real"
+
+
+@pytest.mark.asyncio
+async def test_add_padded_key_is_stored_stripped(client: AsyncClient, isolate_server_store) -> None:
+    from pathlib import Path
+
+    repo = await create_test_repo(client)
+
+    resp = await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": "  sk-ant-x  ", "repo_id": repo["id"]},
+    )
+    assert resp.status_code == 204
+
+    assert isolate_server_store._get_key_for_provider("anthropic") == "sk-ant-x"
+    env_file = Path(repo["local_path"]) / ".repowise" / ".env"
+    assert "ANTHROPIC_API_KEY=sk-ant-x\n" in env_file.read_text()
 
 
 @pytest.mark.asyncio
@@ -185,3 +231,118 @@ async def test_get_providers_returns_no_key_material(client: AsyncClient) -> Non
     for provider in resp.json()["providers"]:
         assert "key" not in provider
         assert "api_key" not in provider
+
+
+@pytest.mark.asyncio
+async def test_patch_active_with_repo_id_writes_config_yaml(client: AsyncClient) -> None:
+    from pathlib import Path
+
+    from repowise.core.repo_config import load_repo_config
+
+    repo = await create_test_repo(client)
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={
+            "provider": "openai",
+            "model": "qwen/qwen3-coder-30b",
+            "base_url": "http://localhost:1234/v1",
+            "repo_id": repo["id"],
+        },
+    )
+    assert resp.status_code == 200
+    active = resp.json()["active"]
+    assert (active["provider"], active["model"]) == ("openai", "qwen/qwen3-coder-30b")
+    assert active["base_url"] == "http://localhost:1234/v1"
+    assert active["provenance"]["base_url"] == "config.yaml"
+    cfg = load_repo_config(Path(repo["local_path"]))
+    assert cfg["openai"] == {"base_url": "http://localhost:1234/v1"}
+
+    # Leaving base_url out keeps it; the existing request shape still works.
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "model": "other", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] == "http://localhost:1234/v1"
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "base_url": "", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_active_rejects_a_non_http_base_url(client: AsyncClient) -> None:
+    resp = await client.patch(
+        "/api/providers/active", json={"provider": "openai", "base_url": "localhost:1234"}
+    )
+    assert resp.status_code == 400
+    assert "http" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.agents.identity import AgentIdentity
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", lambda self: self.slug == "codex")
+
+    plain = (await client.get("/api/providers")).json()
+    detected = (await client.get("/api/providers?detect=true")).json()
+
+    def by_id(body):
+        return {p["id"]: p["detected"] for p in body["providers"]}
+
+    assert by_id(plain)["codex_cli"] is None
+    assert by_id(detected)["codex_cli"] == "signed_in"
+    assert by_id(detected)["claude_cli"] is None
+
+
+@pytest.mark.asyncio
+async def test_detect_names_the_plan_route_timed_by_generate(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.generation import scope
+    from repowise.core.index_scope import FreeRoute
+    from repowise.core.providers.llm import subscription
+    from repowise.server.routers import providers
+
+    monkeypatch.setattr(providers, "_generate_calls", {})
+    repo = await create_test_repo(client)
+    seen: list[str] = []
+    counted: list[str] = []
+
+    def route(path):
+        seen.append(str(path))
+        return FreeRoute(provider="claude_cli", cli_name="Claude Code")
+
+    async def calls(session, repo_id, repo_path):
+        counted.append(repo_id)
+        return 300
+
+    monkeypatch.setattr(subscription, "detect_free_route", route)
+    monkeypatch.setattr(subscription, "process_limit", lambda name: 5)
+    monkeypatch.setattr(scope, "generate_model_calls", calls)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] == {"provider": "claude_cli", "cli_name": "Claude Code", "minutes": 60}
+    assert seen == [repo["local_path"]]
+
+    # Only the detect call probes, and only for a repo.
+    assert (await client.get(f"/api/providers?repo_id={repo['id']}")).json()["plan_route"] is None
+    assert (await client.get("/api/providers?detect=true")).json()["plan_route"] is None
+    assert len(seen) == 1
+
+    # A second open probes the sign-in again but reuses the count.
+    again = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert again["plan_route"]["minutes"] == 60
+    assert len(seen) == 2 and counted == [repo["id"]]
+
+
+@pytest.mark.asyncio
+async def test_detect_names_no_plan_route_without_a_paid_plan(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.providers.llm import subscription
+
+    repo = await create_test_repo(client)
+    monkeypatch.setattr(subscription, "detect_free_route", lambda path: None)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] is None

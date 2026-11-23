@@ -15,9 +15,11 @@ store. Structure alone picks them, so the same index always draws the same map:
   server; an entry point, an HTTP call to another box, or nothing depending on
   it makes it a way in; everything else is engine. A package only ways in
   import is a library of theirs: folded into its one consumer, or into one
-  shared box.
+  shared box. A library larger than its one consumer keeps its own box, so a
+  small tool that imports the main app never draws the app under its name.
 * Actors come from the entry points: one person for every human way in (a
-  terminal, an app), and one box per program that calls in. An entry point
+  terminal, an app, a web page the framework routes to), and one box per
+  program that calls in. An entry point
   that looks like an API but serves no route is a person's way in.
 * Arrows are the import and call graph rolled up to boxes, plus the runtime
   links no import expresses (actor to entry point, HTTP client to route). An
@@ -39,6 +41,7 @@ from repowise.core.analysis.c4.actors import actor_for, classify_entry_point
 from repowise.core.analysis.c4.containers import assign_containers
 from repowise.core.analysis.c4.labels import relation_label
 from repowise.core.analysis.c4.relations import BoxEdges, roll_up_edges
+from repowise.core.ingestion.framework_routes import next_app_router_file
 from repowise.core.ingestion.languages.registry import REGISTRY
 
 TIERS: tuple[str, ...] = ("actor", "surface", "shared", "service", "engine", "store")
@@ -62,6 +65,8 @@ _STORE_ID = "n_store"
 _PERSON_ID = "n_actor_user"
 # Kinds a person enters by, in the order that names the person when alone.
 _PERSON_KINDS = ("cli", "user", "developer")
+# App Router files that render a page a person opens.
+_PAGE_FILES = frozenset({"page", "layout"})
 
 
 @dataclass(frozen=True)
@@ -93,8 +98,8 @@ class MapEdge:
 class SystemMap:
     nodes: tuple[MapNode, ...]
     edges: tuple[MapEdge, ...]
-    #: Code parts left off the map for space.
-    omitted: int = 0
+    #: Names of the code parts left off the map for space, most important first.
+    omitted: tuple[str, ...] = ()
     #: A model-written sentence introducing the map; empty when keyless.
     caption: str = ""
     #: True when the arrow budget left out links that no drawn path shows.
@@ -158,6 +163,7 @@ def build_system_map(
     barrels = (set(barrels) & importing) - set(route_files)
     entries = _forward_entries(entry_points, barrels, edges)
     barrels -= {path for path, _ in entries}
+    entries += _routed_pages(files)
     edges = [e for e in edges if e[0] not in barrels]
     units, opened = _units(files, manifests, weights, barrels)
     store_of = {node: _STORE_ID for node in (stores or {})}
@@ -216,7 +222,7 @@ def build_system_map(
         for a in programs
     ]
     for unit in sorted(kept, key=lambda u: (TIERS.index(tiers[u]), -len(units[u]), u)):
-        name = labels.get(unit) or package_names.get(unit) or _last_segment(unit, repo_name)
+        name = _display_name(unit, labels.get(unit) or package_names.get(unit), repo_name)
         nodes.append(
             _unit_node(unit, ids[unit], tiers[unit], name, units[unit], files, starts, pages)
         )
@@ -240,9 +246,9 @@ def build_system_map(
     ]
     drawn, cut = _dependency_edges(graph.rolled, ids, graph.runtime)
     return SystemMap(
-        nodes=tuple(nodes),
+        nodes=_connected_actors(nodes, map_edges),
         edges=tuple(map_edges + drawn),
-        omitted=len(units) - len(kept),
+        omitted=_left_out(ranked, kept, labels, package_names, repo_name),
         arrows_cut=cut,
     )
 
@@ -262,12 +268,30 @@ def _forward_entries(
         kind = classify_entry_point(path)
         if kind is None:
             continue
-        targets = {t for s, t, etype in edges if s == path and etype == "imports"}
-        if path in barrels and len(targets) == 1:
-            path = targets.pop()
+        if path in barrels:
+            # Scanned only for a launcher: the edge list is repository-sized.
+            targets = {t for s, t, etype in edges if s == path and etype == "imports"}
+            if len(targets) == 1:
+                path = targets.pop()
         if (path, kind) not in out:
             out.append((path, kind))
     return out
+
+
+def _routed_pages(files: Iterable[str]) -> list[tuple[str, str]]:
+    """``(path, "user")`` per web page the framework loads by its file name.
+
+    The curated entry points name launchers only, so a web app entered through
+    its pages had no way in. Only ``page`` and ``layout``: an ``app/`` folder of
+    another framework holds ``middleware`` or ``error`` files too. Covers the
+    Next.js App Router; another file-routed framework needs its own predicate.
+    """
+    return [
+        (path, "user")
+        for path in sorted(files)
+        if next_app_router_file(path)
+        and path.rsplit("/", 1)[-1].split(".", 1)[0] in _PAGE_FILES
+    ]
 
 
 def _graph(units, edges, store_of, http_links) -> _Graph:
@@ -338,8 +362,9 @@ def _tiers(units, kinds, graph: _Graph, route_files: Collection[str]) -> dict[st
 def _fold_libraries(units, kinds, tiers, graph: _Graph) -> tuple[dict[str, list[str]], str]:
     """Fold packages only the ways in import into them.
 
-    A library with one consuming way in joins that box; libraries shared by
-    several join one shared box. Returns the new units and the shared box key.
+    A library with one consuming way in joins that box, unless it is the
+    larger of the two; libraries shared by several join one shared box.
+    Returns the new units and the shared box key.
     """
     surfaces = {u for u, t in tiers.items() if t == "surface" and u in kinds}
     surfaces |= {u for u, t in tiers.items() if t == "surface" and u not in graph.has_in}
@@ -355,22 +380,36 @@ def _fold_libraries(units, kinds, tiers, graph: _Graph) -> tuple[dict[str, list[
         and importers[u]
         and (u, _STORE_ID) not in graph.rolled
     }
-    changed = True
-    while changed:
-        changed = False
-        for u in sorted(libs):
-            if importers[u] - libs - surfaces:
-                libs.discard(u)
-                changed = True
-    # Folding every part behind the ways in would leave a map with no engine.
-    if not libs or not set(tiers) - libs - surfaces:
-        return units, ""
+
+    def settle() -> None:
+        """Drop each library something other than a way in or library imports."""
+        changed = True
+        while changed:
+            changed = False
+            for u in sorted(libs):
+                if importers[u] - libs - surfaces:
+                    libs.discard(u)
+                    changed = True
 
     def roots(u: str, seen: frozenset[str] = frozenset()) -> set[str]:
         found = importers[u] & surfaces
         for lib in (importers[u] & libs) - seen - {u}:
             found |= roots(lib, seen | {u})
         return found
+
+    settle()
+    # A small consumer never absorbs a larger part it imports: a 20-file dev
+    # tool importing the main app would draw the whole app under its name. The
+    # larger part keeps its box and takes in the libraries only it imports.
+    while larger := {
+        u for u in libs if len(r := roots(u)) == 1 and len(units[u]) > len(units[min(r)])
+    }:
+        libs -= larger
+        surfaces |= larger
+        settle()
+    # Folding every part behind the ways in would leave a map with no engine.
+    if not libs or not set(tiers) - libs - surfaces:
+        return units, ""
 
     merged = {u: list(members) for u, members in units.items()}
     shared = [u for u in sorted(libs) if len(roots(u)) != 1]
@@ -413,8 +452,10 @@ def _units(
     owner, _ = assign_containers(manifests, files)
     units: dict[str, list[str]] = defaultdict(list)
     for path in sorted(files):
-        if path in owner:
-            units[owner[path]].append(path)
+        # A file no manifest claims belongs to the repository root. Dropping it
+        # lost whole codebases whose manifest is not a parsed file (a Go
+        # module's go.mod), leaving the map to a side package's few scripts.
+        units[owner.get(path, "")].append(path)
     opened = False
     while len(units) < _MIN_UNITS:
         splits = {u: _split(u, members) for u, members in units.items()}
@@ -431,10 +472,13 @@ def _units(
 
 
 def _split(root: str, members: list[str]) -> dict[str, list[str]]:
-    """Children of *root*: each subdirectory, and each loose file, one level down.
+    """Children of *root*: each subdirectory one level down, and its loose files as one.
 
     Directory chains every member shares (``src/pkg``) are walked through, so a
-    split lands on the first level where the files actually diverge.
+    split lands on the first level where the files actually diverge. The files
+    sitting directly in that directory stay together as one part named for it:
+    a box per loose file drew single files (a lone script, one module) as if
+    each were a part of the system.
     """
     base = root
     while True:
@@ -447,7 +491,7 @@ def _split(root: str, members: list[str]) -> dict[str, list[str]]:
     parts: dict[str, list[str]] = defaultdict(list)
     for path, r in zip(members, rel, strict=True):
         head = r.split("/", 1)[0]
-        child = path if "/" not in r else (f"{base}/{head}" if base else head)
+        child = base if "/" not in r else (f"{base}/{head}" if base else head)
         parts[child].append(path)
     return dict(parts)
 
@@ -497,7 +541,8 @@ def _unit_node(
     dirs = sorted({m.rsplit("/", 1)[0] for m in members if "/" in m})
     if len(dirs) > 1:
         facts.append("directories: " + ", ".join(dirs[:6]))
-    starts = [e for e in entry_points if e in members]
+    held = set(members)
+    starts = [e for e in entry_points if e in held]
     if starts:
         facts.append("entry points: " + ", ".join(starts[:3]))
     facts.append("files: " + ", ".join(m.rsplit("/", 1)[-1] for m in members[:8]))
@@ -512,8 +557,40 @@ def _unit_node(
     )
 
 
-def _last_segment(unit: str, repo_name: str) -> str:
-    return unit.rsplit("/", 1)[-1] if unit else repo_name
+def _connected_actors(nodes: list[MapNode], edges: list[MapEdge]) -> tuple[MapNode, ...]:
+    """*nodes* without an actor whose way in did not make the map: it would float."""
+    linked = {e.source for e in edges}
+    return tuple(n for n in nodes if n.tier != "actor" or n.id in linked)
+
+
+def _left_out(
+    ranked: Sequence[str],
+    kept: Collection[str],
+    labels: Mapping[str, str],
+    package_names: Mapping[str, str],
+    repo_name: str,
+) -> tuple[str, ...]:
+    """Display names of the ranked parts the map did not keep, in rank order."""
+    return tuple(
+        _display_name(u, labels.get(u) or package_names.get(u), repo_name)
+        for u in ranked
+        if u not in kept
+    )
+
+
+def _display_name(unit: str, declared: str | None, repo_name: str) -> str:
+    """The box's name: its label or package name, else its directory.
+
+    Never the product's own name: a package published under the repository's
+    name (an editor extension, the main package) would read as the whole
+    system. Such a box falls back to its directory, and a box at the root or in
+    a directory named for the product is the main package.
+    """
+    product = repo_name.strip().lower()
+    for name in (declared, unit.rsplit("/", 1)[-1] if unit else ""):
+        if name and name.strip().lower() != product:
+            return name
+    return "Main package"
 
 
 def _page_for(unit: str, members: list[str], pages: Sequence[tuple[str, Collection[str]]]) -> str:

@@ -1,0 +1,306 @@
+"""Unit tests for the unified cat_file_batch reader."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from repowise.core.analysis.git_cat_file import cat_file_batch
+
+
+def _run_git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
+@pytest.fixture
+def sample_repo(tmp_path: Path) -> Path:
+    """Create a test repository containing files, directories, and commits."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(repo, "init", "-b", "main")
+    _run_git(repo, "config", "user.name", "Test User")
+    _run_git(repo, "config", "user.email", "test@example.com")
+
+    # Create root files and a subdirectory with a file
+    (repo / "file1.txt").write_text("hello from file1\n")
+    (repo / "file with spaces.txt").write_text("hello spaces\n")
+    sub = repo / "subdir"
+    sub.mkdir()
+    (sub / "nested.txt").write_text("hello nested\n")
+
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "Initial commit")
+    return repo
+
+
+def test_cat_file_batch_empty_specs(sample_repo: Path) -> None:
+    res = cat_file_batch(str(sample_repo), [])
+    assert res == []
+
+
+def test_cat_file_batch_reads_blobs_and_preserves_order(sample_repo: Path) -> None:
+    specs = [
+        "HEAD:file1.txt",
+        "HEAD:subdir/nested.txt",
+        "HEAD:file with spaces.txt",
+    ]
+    res = cat_file_batch(str(sample_repo), specs)
+    assert res is not None
+    assert len(res) == 3
+
+    assert res[0] == ("HEAD:file1.txt", b"hello from file1\n")
+    assert res[1] == ("HEAD:subdir/nested.txt", b"hello nested\n")
+    assert res[2] == ("HEAD:file with spaces.txt", b"hello spaces\n")
+
+
+def test_cat_file_batch_handles_directory_tree_without_stream_desync(sample_repo: Path) -> None:
+    """When a spec resolves to a tree object (e.g. HEAD:subdir), its body is consumed
+
+    and subsequent items in the stream must remain perfectly aligned.
+    """
+    specs = [
+        "HEAD:file1.txt",
+        "HEAD:subdir",  # directory -> tree object
+        "HEAD:file with spaces.txt",
+    ]
+    res = cat_file_batch(str(sample_repo), specs)
+    assert res is not None
+    assert len(res) == 3
+
+    assert res[0] == ("HEAD:file1.txt", b"hello from file1\n")
+    assert res[1] == ("HEAD:subdir", None)
+    assert res[2] == ("HEAD:file with spaces.txt", b"hello spaces\n")
+
+
+def test_cat_file_batch_on_missing_omit(sample_repo: Path) -> None:
+    specs = [
+        "HEAD:file1.txt",
+        "HEAD:non_existent.txt",
+        "HEAD:subdir/nested.txt",
+    ]
+    res = cat_file_batch(str(sample_repo), specs, on_missing="omit")
+    assert res is not None
+    assert len(res) == 3
+    assert res[0] == ("HEAD:file1.txt", b"hello from file1\n")
+    assert res[1] == ("HEAD:non_existent.txt", None)
+    assert res[2] == ("HEAD:subdir/nested.txt", b"hello nested\n")
+
+
+def test_cat_file_batch_on_missing_raise(sample_repo: Path) -> None:
+    specs = [
+        "HEAD:file1.txt",
+        "HEAD:non_existent.txt",
+    ]
+    with pytest.raises(ValueError, match=r"git has no object for 'HEAD:non_existent\.txt'"):
+        cat_file_batch(str(sample_repo), specs, on_missing="raise")
+
+
+def test_cat_file_batch_submodule_gitlink(sample_repo: Path, tmp_path: Path) -> None:
+    """Submodule whose commit is missing or present in repo is parsed as None."""
+    # Create another repo to be added as submodule
+    sub_repo = tmp_path / "sub_repo"
+    sub_repo.mkdir()
+    _run_git(sub_repo, "init", "-b", "main")
+    _run_git(sub_repo, "config", "user.name", "Test User")
+    _run_git(sub_repo, "config", "user.email", "test@example.com")
+    (sub_repo / "subfile.txt").write_text("sub\n")
+    _run_git(sub_repo, "add", ".")
+    _run_git(sub_repo, "commit", "-m", "Sub init")
+
+    # Add submodule to sample_repo
+    _run_git(
+        sample_repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(sub_repo),
+        "sub_mod",
+    )
+    # Staged submodule index specs are resolved without raising
+    staged_specs = [
+        ":0:file1.txt",
+        ":0:sub_mod",
+        ":sub_mod",
+    ]
+    staged_res = cat_file_batch(str(sample_repo), staged_specs, on_missing="raise")
+    assert staged_res is not None
+    assert len(staged_res) == 3
+    assert staged_res[0] == (":0:file1.txt", b"hello from file1\n")
+    assert staged_res[1] == (":0:sub_mod", None)
+    assert staged_res[2] == (":sub_mod", None)
+
+    with pytest.raises(ValueError, match=r"git has no object for ':0:not_found'"):
+        cat_file_batch(str(sample_repo), [":0:not_found"], on_missing="raise")
+
+    _run_git(sample_repo, "commit", "-m", "Add submodule")
+
+    specs = [
+        "HEAD:file1.txt",
+        "HEAD:sub_mod",
+        "HEAD:subdir/nested.txt",
+    ]
+    res = cat_file_batch(str(sample_repo), specs, on_missing="raise")
+    assert res is not None
+    assert len(res) == 3
+    assert res[0] == ("HEAD:file1.txt", b"hello from file1\n")
+    assert res[1] == ("HEAD:sub_mod", None)
+    assert res[2] == ("HEAD:subdir/nested.txt", b"hello nested\n")
+
+
+def test_cat_file_batch_check_flag(sample_repo: Path, tmp_path: Path) -> None:
+    not_a_repo = tmp_path / "not_a_repo"
+    not_a_repo.mkdir()
+
+    # check=False returns None on git failure
+    res = cat_file_batch(str(not_a_repo), ["HEAD:file1.txt"], check=False)
+    assert res is None
+
+    # check=True raises CalledProcessError
+    with pytest.raises(subprocess.CalledProcessError):
+        cat_file_batch(str(not_a_repo), ["HEAD:file1.txt"], check=True)
+
+
+def test_cat_file_batch_timeout_handling(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _mock_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["git", "cat-file", "--batch"], timeout=1.0)
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+
+    # When check=False, timeout returns None
+    assert cat_file_batch(str(sample_repo), ["HEAD:file1.txt"], check=False) is None
+
+    # When check=True, timeout raises TimeoutExpired
+    with pytest.raises(subprocess.TimeoutExpired):
+        cat_file_batch(str(sample_repo), ["HEAD:file1.txt"], check=True)
+
+
+def test_cat_file_batch_sets_env_vars(sample_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_env: dict | None = None
+    real_run = subprocess.run
+
+    def _mock_run(*args, **kwargs):
+        nonlocal captured_env
+        captured_env = kwargs.get("env")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    res = cat_file_batch(str(sample_repo), ["HEAD:file1.txt"])
+    assert res is not None
+    assert captured_env is not None
+    assert captured_env.get("GIT_NO_LAZY_FETCH") == "1"
+    assert captured_env.get("GIT_LITERAL_PATHSPECS") == "1"
+
+
+def test_cat_file_batch_ambiguous_header(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"deadbeef ambiguous\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert cat_file_batch(str(sample_repo), ["deadbeef"], on_missing="omit") == []
+    with pytest.raises(ValueError, match=r"unparseable header"):
+        cat_file_batch(str(sample_repo), ["deadbeef"], on_missing="raise")
+
+
+def test_cat_file_batch_staged_submodule_fallback_on_missing(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When git cat-file outputs 'missing' for staged submodules, cat_file_batch
+
+    falls back to git ls-files to identify mode 160000 gitlinks.
+    """
+    missing_sha = "1111111111111111111111111111111111111111"
+    _run_git(
+        sample_repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{missing_sha},missing_sub",
+    )
+    real_run = subprocess.run
+
+    def _mock_cat_file_missing(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "cat-file":
+            input_data = kwargs.get("input", b"")
+            lines = input_data.decode("utf-8").splitlines()
+            out = b"".join(f"{line} missing\n".encode() for line in lines)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr=b"")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_cat_file_missing)
+
+    # Both :0:missing_sub and :missing_sub resolve as submodule gitlinks (returning None)
+    res = cat_file_batch(
+        str(sample_repo),
+        [":0:missing_sub", ":missing_sub"],
+        on_missing="raise",
+    )
+    assert res == [(":0:missing_sub", None), (":missing_sub", None)]
+
+    # Stage mismatch (:1:missing_sub vs index stage 0) fails closed with ValueError
+    with pytest.raises(ValueError, match=r"git has no object for ':1:missing_sub'"):
+        cat_file_batch(str(sample_repo), [":1:missing_sub"], on_missing="raise")
+
+
+def test_cat_file_batch_staged_submodule_ls_files_error(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When git ls-files encounters an error, cat_file_batch raises ValueError."""
+    real_run = subprocess.run
+
+    def _mock_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "cat-file":
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b":0:missing_sub missing\n",
+                stderr=b"",
+            )
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "ls-files":
+            raise OSError("mocked ls-files failure")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    with pytest.raises(ValueError, match=r"git index lookup failed for ':0:missing_sub'"):
+        cat_file_batch(str(sample_repo), [":0:missing_sub"], on_missing="raise")
+
+
+def test_cat_file_batch_staged_submodule_in_directory_exact_path_match(
+    sample_repo: Path,
+) -> None:
+    """A directory path whose subdirectory contains a submodule must not be treated as a submodule."""
+    missing_sha = "2222222222222222222222222222222222222222"
+    _run_git(
+        sample_repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{missing_sha},lib/nested_sub",
+    )
+
+    # Looking up the nested submodule itself succeeds and resolves as None
+    assert cat_file_batch(str(sample_repo), [":0:lib/nested_sub"], on_missing="raise") == [
+        (":0:lib/nested_sub", None)
+    ]
+
+    # Looking up the parent directory :0:lib must fail closed, not match the submodule under it
+    with pytest.raises(ValueError, match=r"git has no object for ':0:lib'"):
+        cat_file_batch(str(sample_repo), [":0:lib"], on_missing="raise")

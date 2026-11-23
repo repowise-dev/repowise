@@ -31,6 +31,7 @@ from ...models import (
     _now_utc,
 )
 from ...sql import order_by, rule_predicate
+from ._notes import KEEP
 from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
@@ -301,7 +302,9 @@ async def _rank_live_plans(
             select(RefactoringSuggestion).where(
                 RefactoringSuggestion.repository_id == repository_id,
                 RefactoringSuggestion.status.in_(tuple(_LIVE_PLAN_STATUSES)),
-                shown_plan_predicate(),
+                # Test-file plans still rank: the hold is a serving rule, and
+                # ranking without them would move the tests the others list.
+                shown_plan_predicate(file_holds=False),
             )
         )
     ).scalars()
@@ -804,6 +807,7 @@ async def update_refactoring_opportunity_status(
     status: str,
     *,
     reason: str = "user",
+    note: Any = KEEP,
 ) -> tuple[RefactoringOpportunity, int] | None:
     """Transition one opportunity by transitioning the steps it is made of.
 
@@ -847,7 +851,7 @@ async def update_refactoring_opportunity_status(
     updated = 0
     for plan_id in plan_ids:
         plan = await update_refactoring_suggestion_status(
-            session, repository_id, str(plan_id), status, reason=reason
+            session, repository_id, str(plan_id), status, reason=reason, note=note
         )
         # A step whose plan no longer resolves is not silently counted as
         # transitioned; it reads as open, which is what an untriaged step is.

@@ -175,18 +175,12 @@ def test_symbol_json_keeps_the_id_the_next_command_takes() -> None:
         "start_line": 60,
         "end_line": 240,
         "signature": "class LanceDBVectorStore(VectorStore)",
-        "qualified_name": "a.b.LanceDBVectorStore",
-        "language": "python",
-        "score": 12.5,
-        "next": "get_symbol",
     }
 
     assert project({"results": [hit], "mode": "symbol"}, "lancedb", multi=False)["results"] == [
         {
             "type": "symbol",
-            "score": 12.5,
             "name": "LanceDBVectorStore",
-            "qualified_name": "a.b.LanceDBVectorStore",
             "kind": "class",
             "path": LONG_PATH,
             "line": 60,

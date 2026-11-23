@@ -13,6 +13,7 @@ from repowise.core.analysis.selection_scopes import (
     trigger_scopes,
 )
 from repowise.core.analysis.test_selection import (
+    SHARED_TEST_DATA_REASON,
     SelectionInput,
     TestSelectionConfig,
     file_namers,
@@ -105,7 +106,6 @@ def test_a_manifest_or_lockfile_scopes_to_its_ecosystem(path, root, suffix, reac
         "Dockerfile",
         ".tool-versions",
         ".github/workflows/ci.yml",
-        "tests/fixtures/package.json",
         "tests/data/pyproject.toml",
         "__init__.py",
         # Tool configuration, not an asset any code reads.
@@ -439,6 +439,46 @@ def test_a_blob_read_that_stops_early_does_not_read_as_unmoved(tmp_path) -> None
     assert _unread(tmp_path, specs, None) == set()  # nothing read: the caller fails closed
 
 
+def test_a_gap_reads_what_each_rewired_file_may_newly_reach(tmp_path) -> None:
+    """Rewired gap files get their gained imports resolved at the base; added files are named."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import _rewired_gap
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def commit(files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "c")
+        return git("rev-parse", "HEAD")
+
+    git("init", "-q")
+    indexed = commit({"src/a.py": "X = 1\n", "src/b.py": "import os\n", "src/y.py": "Y = 1\n"})
+    # The gap: b.py gains an import; a file is added. Then the change edits a.py.
+    commit({"src/b.py": "import os\nfrom src import y\n", "src/new.py": "N = 1\n"})
+    commit({"src/a.py": "X = 2\n"})
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+    out = {"indexed_commit": indexed}
+    files = {"src/a.py", "src/b.py", "src/y.py"}
+    _, rewired, rewirings, added = _rewired_gap(tmp_path, change, _NONE, files, out, None)
+    assert sorted(out["index_gap"]) == ["src/b.py", "src/new.py"]
+    assert rewired == ["src/b.py"] and added == {"src/new.py"}
+    assert rewirings["src/b.py"].imports == {"src/y.py"}
+    # Without the indexed files nothing is worked out, and every rewired file stays.
+    assert _rewired_gap(tmp_path, change, _NONE, None, out, None)[2] == {}
+
+
 def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> None:
     """A change read from another worktree's branch: its tests exist at its head, not on disk."""
     import subprocess
@@ -463,3 +503,142 @@ def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> N
     at_head = read_checkout(tmp_path, head)
     assert at_head.exists("test_a.py")
     assert not at_head.exists("test_b.py")
+
+
+def test_read_checkout_exists_answers_a_deleted_tracked_file_from_git(tmp_path) -> None:
+    """Tracked files are answered from git's listing, a deletion on disk included."""
+    import subprocess
+
+    from repowise.core.analysis.test_collection import read_checkout
+
+    for name in ("test_kept.py", "test_gone.py"):
+        (tmp_path / name).write_text("def test_x():\n    pass\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    (tmp_path / "test_gone.py").unlink()
+    (tmp_path / "test_new.py").write_text("", encoding="utf-8")
+
+    checkout = read_checkout(tmp_path)
+    assert checkout.exists("test_kept.py")
+    assert not checkout.exists("test_gone.py")
+    assert checkout.exists("test_new.py")  # untracked: read from disk
+    assert not checkout.exists("test_never.py")
+
+
+def test_an_empty_untracked_code_file_needs_no_tests(tmp_path) -> None:
+    """Nothing can run a new file with no content; an empty package init still matters."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    for name, text in (("empty.py", ""), ("blank.py", "\n  \n"), ("__init__.py", "")):
+        (tmp_path / "pkg" / name).write_text(text, encoding="utf-8")
+    (tmp_path / "pkg" / "mod.py").write_text("", encoding="utf-8")  # tracked: keeps its rule
+    changed = ("pkg/empty.py", "pkg/blank.py", "pkg/__init__.py", "pkg/mod.py")
+
+    def change(head):
+        files = {p: FileDiff(path=p) for p in changed}
+        return ChangeSet(files=files, deleted=set(), label="t", base=None, head=head)
+
+    checkout = read_checkout(tmp_path)
+    scopes = plan_scopes(change(None), _NONE, checkout).scopes
+    assert {p for p, s in scopes.items() if s.needs_no_tests} == {"pkg/empty.py", "pkg/blank.py"}
+    # A committed change is not read from the working tree.
+    committed = plan_scopes(change("abc"), _NONE, checkout).scopes
+    assert not any(s.needs_no_tests for s in committed.values())
+
+    only = {"pkg/empty.py": scopes["pkg/empty.py"]}
+    sel = select_tests(SelectionInput(list(only), (), _tiers(), _NONE, scopes=only))
+    assert not sel.run_all
+    assert "1 changed file(s) are new and empty: no tests needed." in sel.reasons
+
+
+def test_an_owner_package_scope_routes_through_one_package_walk(tmp_path) -> None:
+    """The package's code is walked as one ``<package>/`` route, not a route per file."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+
+    for path in ("web/package.json", "web/src/app.ts", "web/src/util.ts"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("{}\n" if path.endswith(".json") else "x\n", "utf-8")
+    css = "web/src/styles/layout.css"
+    (tmp_path / css).parent.mkdir(parents=True)
+    (tmp_path / css).write_text("a {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    # A changed module in the package is looked up as itself, by its lines, not in the walk.
+    files = {p: FileDiff(path=p) for p in (css, "web/src/util.ts")}
+    change = ChangeSet(files=files, deleted=set(), label="t", base=None, head="h")
+    plan = plan_scopes(change, _NONE, read_checkout(tmp_path))
+    assert plan.scopes[css].basis == "owner-package"
+    assert plan.scopes[css].routes == ("web/",)
+    assert plan.routes == ["web/"]
+    assert plan.groups == {"web/": ("web/src/app.ts",)}
+
+
+def test_a_setup_module_has_no_ecosystem_scope_away_from_a_project_root() -> None:
+    """``setup.py`` inside a package is code: the graph decides, not the Python ecosystem."""
+    from repowise.core.analysis.selection_scopes import keeps_full_run
+    from repowise.core.analysis.test_selection import project_dirs
+
+    dirs = project_dirs(_TRACKED)
+    module, packaging = "src/pkg/setup.py", "setup.py"
+    scopes = trigger_scopes([module, packaging], _TRACKED, {}, _NONE, dirs)
+    assert module not in scopes
+    assert scopes[packaging].basis == "ecosystem"
+    assert not needs_namers(module, _NONE, dirs)
+    assert not keeps_full_run(module, _NONE, dirs)
+    # Without the checkout's files the name decides.
+    assert _scopes([module])[module].basis == "ecosystem"
+
+
+def test_plan_scopes_counts_a_manifest_the_change_adds_as_a_project_root() -> None:
+    """A change adding ``libs/new/pyproject.toml`` makes the ``setup.py`` beside it packaging."""
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import Checkout, plan_scopes
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    tracked = ["pyproject.toml", "src/pkg/__init__.py", "src/pkg/setup.py", "libs/new/setup.py"]
+    checkout = Checkout(tracked, [], read_pytest_roots([]), lambda _p: "", lambda _p: True)
+
+    def plan(*changed):
+        files = {p: FileDiff(path=p) for p in changed}
+        change = ChangeSet(files=files, deleted=set(), label="t", base=None, head=None)
+        return plan_scopes(change, _NONE, checkout)
+
+    assert plan("src/pkg/setup.py").scopes == {}
+    assert plan("libs/new/setup.py").scopes == {}
+    added = plan("libs/new/setup.py", "libs/new/pyproject.toml")
+    assert added.scopes["libs/new/setup.py"].basis == "ecosystem"
+    assert "libs/new" in added.project_dirs
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/package.json",
+        "tests/fixtures/app/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+        "pkg/testdata/go.mod",
+    ],
+)
+def test_a_manifest_in_a_test_data_tree_runs_the_tests_reading_it(path) -> None:
+    """No build of this repo reads it: it is test data, like any file beside it."""
+    reader = "tests/test_core.py"
+    assert full_run_reason(path) == SHARED_TEST_DATA_REASON
+    assert _scopes([path], {path: [reader]})[path].basis == "fixture-readers"
+    # A manifest at the root or in a sub-project is still this repo's.
+    assert full_run_reason("package.json") != SHARED_TEST_DATA_REASON
+    assert full_run_reason("crate/Cargo.toml") == "dependencies can change any test"
+
+
+def test_build_code_in_a_test_data_tree_keeps_its_rule() -> None:
+    path = "tests/fixtures/app/build.gradle.kts"
+    assert full_run_reason(path) == "build or test configuration can change any test"

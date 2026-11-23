@@ -177,7 +177,7 @@ async def test_co_change_is_historical_only_and_mixed_evidence_stays_separate(
     mixed = partners["src/direct_0.py"]
     assert mixed["has_import_link"] is True
     assert card["co_change_partners_total"] == 6
-    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 5
+    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 3
     assert card["co_change_partners_truncated"] is True
     assert "src/excluded.py" not in partners
 
@@ -350,3 +350,15 @@ async def test_valid_empty_workspace_analysis_is_not_reported_as_unknown(setup_m
     assert card["cross_repo_links"] == []
     assert card["cross_repo_links_total"] == card["cross_repo_links_emitted"] == 0
     assert card["relationship_analysis"]["cross_repo"]["status"] == "available"
+
+
+def test_empty_deprecated_consumers_list_is_left_out():
+    from repowise.server.mcp_server.tool_risk.enrichment import _attach_impact
+
+    card: dict = {"target": "src/api.py"}
+    links = {"affected": ["web"], "provider": [], "consumer": []}
+    _attach_impact(card, "api", {"status": "ok"}, [], links, None)
+    impact = card["cross_repo_impact"]
+    assert impact["affected_repos"] == ["web"]
+    legacy = {k for k in impact if k.startswith("cross_repo_consumers")}
+    assert legacy == {"cross_repo_consumers_analysis"}

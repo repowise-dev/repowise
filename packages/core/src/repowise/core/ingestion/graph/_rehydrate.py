@@ -24,6 +24,10 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.symbol_identity import module_symbol_id
+
+from ...build_units import BuildUnitIndex
+
 log = structlog.get_logger(__name__)
 
 # Node-dict keys that map onto NetworkX node attributes. ``node_id`` is the key
@@ -65,7 +69,7 @@ def _restore_spawn_lines(graph: Any, parsed: Any) -> None:
     rehydrated ``calls`` edge takes them back from the re-parse: the caller's
     spawned call to the callee's name at a line the edge already records.
     """
-    module = f"{parsed.file_info.path}::__module__"
+    module = module_symbol_id(parsed.file_info.path)
     for call in parsed.calls:
         caller = call.caller_symbol_id or module
         if not call.spawned or caller not in graph:
@@ -93,6 +97,7 @@ class RehydrateMixin:
         metrics: Mapping[str, Mapping[str, Any]] | None = None,
         *,
         repo_path: Path | str | None = None,
+        build_units: BuildUnitIndex | None = None,
     ) -> Any:
         """Rebuild a finalized builder from persisted nodes/edges/metrics.
 
@@ -100,6 +105,9 @@ class RehydrateMixin:
         ``persistence.get_all_graph_nodes`` / ``get_all_graph_edges``. *metrics*
         is the ``graph_metrics`` snapshot (``node_id → metrics``); when supplied
         it pre-fills the file-level metric caches so no centrality kernel runs.
+
+        *build_units* is the stored index (``crud.load_build_units``), carried
+        as the builder's ``build_units`` so nothing re-reads a manifest.
 
         The returned builder has ``_built = True`` — it is ready for traversal
         and generation; calling :meth:`build` again is neither needed nor done.
@@ -156,6 +164,7 @@ class RehydrateMixin:
             edge_count += 1
 
         builder._built = True
+        builder.build_units = build_units
         if metrics:
             builder.load_metrics_from_sql(dict(metrics))
 
@@ -171,15 +180,22 @@ class RehydrateMixin:
         """Stamp the parse-only symbol attributes back onto rehydrated nodes,
         and the spawned call lines back onto their edges.
 
-        The first symbol under an id keeps its values, as in ``add_file``,
-        where the first declared overload keeps the node.
+        Several definitions can share an id (a Python name defined twice, an
+        overload set). The values come from the one whose span the node kept,
+        as ``add_file`` chose it, else from the first.
         """
         graph = self._graph  # type: ignore[attr-defined]
         for parsed in parsed_files:
+            chosen: dict[str, Any] = {}
             for sym in parsed.symbols:
                 node = graph.nodes.get(sym.id)
                 if node is None:
                     continue
+                held = chosen.get(sym.id)
+                if held is None or node.get("start_line") == sym.start_line != held.start_line:
+                    chosen[sym.id] = sym
+            for sym_id, sym in chosen.items():
+                node = graph.nodes[sym_id]
                 for key in _PARSE_ONLY_SYMBOL_ATTRS:
                     node.setdefault(key, getattr(sym, key))
             _restore_spawn_lines(graph, parsed)

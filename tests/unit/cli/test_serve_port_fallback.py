@@ -13,6 +13,7 @@ import socket
 import pytest
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _ports
 
 
 def _bind_listener(host: str = "127.0.0.1") -> tuple[socket.socket, int]:
@@ -64,7 +65,7 @@ def test_find_free_port_handles_contiguous_busy_block(
     to an OS-assigned ephemeral port instead of raising."""
     # Pretend every port in the scan range is busy; the function should still
     # produce a usable port via the wildcard bind path.
-    monkeypatch.setattr(serve_cmd, "_is_port_free", lambda host, port: False)
+    monkeypatch.setattr(_ports, "_is_port_free", lambda host, port: False)
 
     chosen = serve_cmd._find_free_port("127.0.0.1", 3000, "web UI", max_attempts=5)
     assert isinstance(chosen, int)

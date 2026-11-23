@@ -208,6 +208,8 @@ class RustDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == "use_declaration":
+            return
         if t in _ASSIGN_KINDS:
             self._targets(node.child_by_field_name("left"), defs, uses)
             self._process(node.child_by_field_name("right"), defs, uses)

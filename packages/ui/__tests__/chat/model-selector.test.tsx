@@ -47,8 +47,34 @@ describe("ModelSelector shell", () => {
       />,
     );
     fireEvent.click(screen.getByText("Select model"));
-    fireEvent.click(screen.getByText("claude-sonnet-4-6"));
+    fireEvent.mouseDown(screen.getByRole("option", { name: /claude-sonnet-4-6/ }));
     expect(onActivate).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-6");
+  });
+
+  it("takes a typed model id and marks the repo default", () => {
+    const onActivate = vi.fn();
+    const onBrowse = vi.fn();
+    render(
+      <ModelSelector
+        providers={PROVIDERS}
+        activeProvider="anthropic"
+        activeModel="claude-opus-4-7"
+        defaultProvider="anthropic"
+        defaultModel="claude-opus-4-7"
+        onActivate={onActivate}
+        onBrowse={onBrowse}
+        models={[{ id: "claude-opus-4-7" }, { id: "claude-next-1" }]}
+      />,
+    );
+    fireEvent.click(screen.getByText("Anthropic · claude-opus-4-7"));
+    expect(onBrowse).toHaveBeenCalledWith("anthropic");
+    expect(screen.getByRole("option", { name: /claude-next-1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /claude-opus-4-7/ })).toHaveTextContent("repo default");
+
+    const search = screen.getByRole("combobox");
+    fireEvent.change(search, { target: { value: "my-finetune" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(onActivate).toHaveBeenCalledWith("anthropic", "my-finetune");
   });
 
   it("routes API-key configuration to Settings", () => {
@@ -74,7 +100,7 @@ describe("ModelSelector shell", () => {
     expect(panel.className).toContain("left-0");
     const trigger = screen.getByRole("button", { name: "Anthropic · claude-opus-4-7" });
     expect(trigger.className).not.toContain("accent-fill");
-    expect(screen.getByText("claude-opus-4-7").closest("button")?.className).toContain("accent-secondary");
+    expect(screen.getByRole("option", { name: /claude-opus-4-7/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("closes on Escape and restores focus to the model trigger", () => {

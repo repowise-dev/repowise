@@ -7,7 +7,7 @@ import { Command } from "cmdk";
 import useSWR from "swr";
 import { Search, LayoutDashboard, Settings, BookOpen, FileCode, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
-import { truncatePath } from "@repowise-dev/ui/lib/format";
+import { FilePath } from "@repowise-dev/ui/shared/file-path";
 import { commandPaletteShortcutIsClaimed } from "@repowise-dev/ui/lib/command-palette-scope";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { getFilesIndex } from "@/lib/api/files";
@@ -252,8 +252,6 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           {activeRepo && fileMatches.length > 0 && (
             <Command.Group heading={t("files")} className="px-2 pb-1">
               {fileMatches.map((path) => {
-                const name = path.split("/").pop() ?? path;
-                const dir = path.slice(0, path.length - name.length);
                 return (
                   <Command.Item
                     // Embed the query so cmdk's own filter keeps our pre-ranked
@@ -266,12 +264,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                     className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm cursor-pointer hover:bg-[var(--color-bg-elevated)] data-[selected=true]:bg-[var(--color-bg-elevated)]"
                   >
                     <FileCode className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
-                    <span className="min-w-0 truncate font-mono text-[13px]">
-                      <span className="text-[var(--color-text-tertiary)]">
-                        {truncatePath(dir, 36)}
-                      </span>
-                      <span className="text-[var(--color-text-primary)]">{name}</span>
-                    </span>
+                    <FilePath path={path} fold className="text-[13px] text-[var(--color-text-primary)]" />
                   </Command.Item>
                 );
               })}
@@ -295,9 +288,11 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                   className="flex flex-col items-start rounded-md px-3 py-2 text-sm cursor-pointer hover:bg-[var(--color-bg-elevated)] data-[selected=true]:bg-[var(--color-bg-elevated)]"
                 >
                   <span className="text-[var(--color-text-primary)] font-medium">{r.title}</span>
-                  <span className="text-xs text-[var(--color-text-tertiary)] font-mono">
-                    {truncatePath(r.target_path, 50)}
-                  </span>
+                  <FilePath
+                    path={r.target_path}
+                    mode="middle-ellipsis"
+                    className="text-[var(--color-text-tertiary)]"
+                  />
                 </Command.Item>
               ))}
             </Command.Group>

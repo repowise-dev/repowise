@@ -51,7 +51,7 @@ export function MobileBottomNav({ activeTab, onTabChange }: MobileBottomNavProps
               border: "none",
               cursor: "pointer",
               color: isActive
-                ? "var(--color-accent-primary)"
+                ? "var(--color-text-primary)"
                 : "var(--color-text-secondary)",
               fontSize: 10,
               fontWeight: 600,

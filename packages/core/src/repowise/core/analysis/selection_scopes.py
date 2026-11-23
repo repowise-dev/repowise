@@ -1,7 +1,7 @@
 """Scopes: what a changed file runs when every test is more than it can reach.
 
 :func:`~.test_selection.select_tests` runs everything for a file whose tests
-are unknown. For three kinds the reach is known, and :func:`trigger_scopes`
+are unknown. For four kinds the reach is known, and :func:`trigger_scopes`
 names it as a :class:`Scope`:
 
 - A manifest, lockfile or runner config runs its ecosystem's tests. A JS
@@ -20,6 +20,10 @@ names it as a :class:`Scope`:
   names keeps its full run (a test may glob it).
   Other non-code files, dotfiles and root-level data configure tools, not
   code, and keep their full run too.
+- A data file under ``fixtures/`` or ``testdata/`` runs the test code reading
+  it: the code naming the file, or for a file in a fixture tree the code
+  naming the tree (:mod:`~.fixture_readers`). It keeps its full run when no
+  reader is found or code outside the test trees names it.
 
 A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
@@ -42,19 +46,20 @@ from pathlib import PurePosixPath
 
 import pathspec
 
+from ..ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
+from ..test_runners import JS_SUFFIXES, PYTHON_SUFFIXES
 from .test_selection import (
-    JS_SUFFIXES,
     NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
-    PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
     TestSelectionConfig,
     full_run_on_spec,
     full_run_reason,
     is_code_file,
     is_documentation,
+    is_ordinary_module,
     is_runnable_test,
 )
 
@@ -65,17 +70,25 @@ from .test_selection import (
 # is the upgrade.
 MAX_NAMERS = 200
 
+#: The basis of a fixture data file that runs the test code reading it.
+FIXTURE_READERS = "fixture-readers"
+
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
+
+
+def _declared(tag: str) -> tuple[str, ...]:
+    """The manifests and lockfiles the language registry declares for *tag*."""
+    spec = _LANG_REGISTRY.get(tag)
+    return (*spec.manifest_files, *spec.lock_files) if spec else ()
+
+
 # (ecosystem, test suffixes, scoped to the file's directory, gitwildmatch
-# patterns). Each pattern is also a full-run trigger (``_FULL_RUN_GROUPS``),
-# so a file no scope covers still runs everything; a test pins the two lists.
+# patterns). Manifest and lockfile names come from the language registry; the
+# rest are runner, workspace and toolchain configs no spec declares. Each
+# pattern is also a full-run trigger (``_FULL_RUN_GROUPS``), so a file no scope
+# covers still runs everything; a test pins the two lists.
 ECOSYSTEMS: tuple[tuple[str, tuple[str, ...], bool, tuple[str, ...]], ...] = (
-    (
-        "JavaScript",
-        JS_SUFFIXES,
-        True,
-        ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
-    ),
+    ("JavaScript", JS_SUFFIXES, True, _declared("javascript")),
     (
         "JavaScript",
         JS_SUFFIXES,
@@ -91,17 +104,17 @@ ECOSYSTEMS: tuple[tuple[str, tuple[str, ...], bool, tuple[str, ...]], ...] = (
         PYTHON_SUFFIXES,
         False,
         (
-            *("pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "uv.lock", "Pipfile"),
-            *("Pipfile.lock", "requirements*.txt", "constraints*.txt", "requirements*.in"),
-            *("constraints*.in", "**/requirements/**", "pytest.ini", "tox.ini", "noxfile.py"),
-            ".python-version",
+            *_declared("python"),
+            *("Pipfile", "Pipfile.lock", "requirements*.txt", "constraints*.txt"),
+            *("requirements*.in", "constraints*.in", "**/requirements/**", "pytest.ini"),
+            *("tox.ini", "noxfile.py", ".python-version"),
         ),
     ),
-    ("Go", (".go",), True, ("go.mod", "go.sum")),
+    ("Go", (".go",), True, _declared("go")),
     ("Go", (".go",), False, ("go.work", "go.work.sum")),
-    ("Ruby", (".rb",), False, ("Gemfile", "Gemfile.lock")),
-    ("PHP", (".php",), False, ("composer.json", "composer.lock")),
-    ("JVM", _JVM, False, ("build.gradle*", "settings.gradle*", "pom.xml")),
+    ("Ruby", (".rb",), False, _declared("ruby")),
+    ("PHP", (".php",), False, _declared("php")),
+    ("JVM", _JVM, False, (*_declared("java"), "settings.gradle*")),
 )
 _ECOSYSTEM_SPECS = tuple(
     (lang, suffixes, scoped, pathspec.PathSpec.from_lines("gitwildmatch", globs))
@@ -158,11 +171,34 @@ class Scope:
         return self.basis == NO_TESTS_NEEDED
 
 
-def needs_namers(path: str, config: TestSelectionConfig) -> bool:
-    """Whether :func:`trigger_scopes` needs to know who names *path*."""
+def needs_namers(
+    path: str, config: TestSelectionConfig, project_dirs: Collection[str] | None = None
+) -> bool:
+    """Whether :func:`trigger_scopes` needs to know who names *path*.
+
+    *project_dirs* are :func:`~.test_selection.project_dirs`, as for the
+    functions below; ``None`` lets a file's name decide.
+    """
+    if is_fixture_data(path, config):
+        return True
     if is_test_related_path(path) or _configured(path, config):
         return False
-    return _ecosystem(path) is not None or (full_run_reason(path) is None and _is_asset(path))
+    return _ecosystem(path, project_dirs) is not None or (
+        full_run_reason(path, project_dirs=project_dirs) is None and _is_asset(path)
+    )
+
+
+def is_fixture_data(path: str, config: TestSelectionConfig) -> bool:
+    """Whether *path* is a data file in a fixtures directory, which the tests reading it can name.
+
+    Fixture code stays a full run: a test may import it by module name, which
+    no file name search sees.
+    """
+    return (
+        full_run_reason(path) == SHARED_TEST_DATA_REASON
+        and not is_code_file(path)
+        and not _configured(path, config)
+    )
 
 
 def is_manifest(path: str) -> bool:
@@ -170,13 +206,16 @@ def is_manifest(path: str) -> bool:
     return _ecosystem(path) is not None
 
 
-def keeps_full_run(path: str, config: TestSelectionConfig) -> bool:
+def keeps_full_run(
+    path: str, config: TestSelectionConfig, project_dirs: Collection[str] | None = None
+) -> bool:
     """Whether *path* runs everything whatever names it, so no namer search can help."""
-    if full_run_reason(path, config.full_run_on) is None:
+    why = full_run_reason(path, config.full_run_on, project_dirs)
+    if why is None or is_fixture_data(path, config):
         return False
     if is_test_related_path(path) or _configured(path, config):
         return True
-    return full_run_reason(path) != PACKAGE_INIT_REASON and _ecosystem(path) is None
+    return why != PACKAGE_INIT_REASON and _ecosystem(path, project_dirs) is None
 
 
 def trigger_scopes(
@@ -184,6 +223,7 @@ def trigger_scopes(
     tracked: Collection[str],
     namers: Mapping[str, Collection[str]],
     config: TestSelectionConfig,
+    project_dirs: Collection[str] | None = None,
 ) -> dict[str, Scope]:
     """The :class:`Scope` each of *paths* runs instead of every test, where it has one.
 
@@ -194,7 +234,8 @@ def trigger_scopes(
     tree = _Tree(tuple(tracked))
     out: dict[str, Scope] = {}
     for path in paths:
-        if scope := _trigger_scope(path, tree, tuple(namers.get(path, ())), config):
+        named = tuple(namers.get(path, ()))
+        if scope := _trigger_scope(path, tree, named, config, project_dirs):
             out[path] = scope
     return out
 
@@ -248,15 +289,21 @@ class _Tree:
 
 
 def _trigger_scope(
-    path: str, tree: _Tree, namers: tuple[str, ...], config: TestSelectionConfig
+    path: str,
+    tree: _Tree,
+    namers: tuple[str, ...],
+    config: TestSelectionConfig,
+    project_dirs: Collection[str] | None,
 ) -> Scope | None:
-    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
-        return None  # read by tests anywhere: the test-tree rule decides
     if _configured(path, config):
         return None  # the config asked for a full run
-    if eco := _ecosystem(path):
+    if is_fixture_data(path, config):
+        return _readers_scope(namers)
+    why = full_run_reason(path, project_dirs=project_dirs)
+    if is_test_related_path(path) or why == SHARED_TEST_DATA_REASON:
+        return None  # read by tests anywhere: the test-tree rule decides
+    if eco := _ecosystem(path, project_dirs):
         return _ecosystem_scope(path, eco, tree, namers)
-    why = full_run_reason(path)
     if why == PACKAGE_INIT_REASON:
         return _package_scope(path, tree)
     if why is not None or not _is_asset(path):
@@ -264,11 +311,26 @@ def _trigger_scope(
     return _named_scope(path, tree, namers)
 
 
+def _readers_scope(readers: tuple[str, ...]) -> Scope | None:
+    """The test code reading a fixture data file, or ``None`` to keep its full run.
+
+    *readers* come from :func:`~.fixture_readers.with_data_file_readers`, which
+    leaves out a file no test code reads or code outside the test trees names.
+    """
+    if not readers or _too_many(readers):
+        return None
+    return Scope(f"it is read by {_some(readers)}", FIXTURE_READERS, namers=readers)
+
+
 def _configured(path: str, config: TestSelectionConfig) -> bool:
     return bool(config.full_run_on) and full_run_on_spec(config.full_run_on).match_file(path)
 
 
-def _ecosystem(path: str) -> tuple[str, tuple[str, ...], bool] | None:
+def _ecosystem(
+    path: str, project_dirs: Collection[str] | None = None
+) -> tuple[str, tuple[str, ...], bool] | None:
+    if is_ordinary_module(path, project_dirs):
+        return None
     for lang, suffixes, scoped, spec in _ECOSYSTEM_SPECS:
         if spec.match_file(path):
             return lang, suffixes, scoped

@@ -38,8 +38,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import repo_relative
+from repowise.core.pyparse import parse_python
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from repowise.core.workspace.repo_index import IndexedSymbol, RepoIndex, WorkspaceIndex
@@ -51,7 +55,7 @@ CODE_CONTRACT_TYPE = "code"
 
 #: Both sides are index-resolved, not regex-matched — the manifest and the
 #: import edge each name their half outright.
-_CONFIDENCE = 0.9
+_ORIGIN = ContractOrigin.PACKAGE_EXPORT
 
 #: Manifest basenames handled here, mapped to the ecosystem they declare.
 _MANIFESTS: dict[str, str] = {
@@ -101,13 +105,6 @@ class PublishedPackage:
 # ---------------------------------------------------------------------------
 
 
-def _rel(path: Path, repo_path: Path) -> str | None:
-    try:
-        return path.relative_to(repo_path).as_posix()
-    except ValueError:
-        return None
-
-
 def _npm(data: dict[str, Any], root: str) -> tuple[str, frozenset[str]] | None:
     """``name`` plus every file ``exports`` / ``main`` / ``module`` / ``types`` names.
 
@@ -154,11 +151,11 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     project = data.get("project")
     name = project.get("name") if isinstance(project, dict) else None
     if not isinstance(name, str):
-        name = _table(data, "tool", "poetry").get("name")
+        name = toml_table(data, "tool", "poetry").get("name")
     if not isinstance(name, str) or not name:
         return None
     prefix = f"{root}/" if root else ""
-    dirs = _pypi_package_dirs(data)
+    dirs = pypi_package_dirs(data)
     if not dirs:
         # PEP 503 allows `-`/`.` in a distribution name where the module needs
         # an identifier, and the two often differ beyond that. A guess, used
@@ -168,7 +165,7 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     return name, frozenset(f"{prefix}{d}/__init__.py" for d in dirs), frozenset()
 
 
-def _table(data: Any, *keys: str) -> dict[str, Any]:
+def toml_table(data: Any, *keys: str) -> dict[str, Any]:
     """Walk a chain of TOML tables, yielding {} the moment one is not a table."""
     for key in keys:
         if not isinstance(data, dict):
@@ -177,7 +174,7 @@ def _table(data: Any, *keys: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
+def pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     """Package directories the build backend declares, newest layouts first.
 
     Every read is shape-checked: a hand-edited ``pyproject.toml`` must not be
@@ -188,16 +185,52 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     def strings(value: Any) -> list[str]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
-    dirs: list[str] = strings(_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
+    dirs: list[str] = strings(toml_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
     dirs += [
-        p.replace(".", "/") for p in strings(_table(data, "tool", "setuptools").get("packages"))
+        p.replace(".", "/") for p in strings(toml_table(data, "tool", "setuptools").get("packages"))
     ]
-    for entry in _table(data, "tool", "poetry").get("packages") or []:
+    for entry in toml_table(data, "tool", "poetry").get("packages") or []:
         include = entry.get("include") if isinstance(entry, dict) else None
         if isinstance(include, str):
             source = entry.get("from")
             dirs.append(f"{source}/{include}" if isinstance(source, str) else include)
+    dirs += _flit_module_dirs(data)
+    dirs += _uv_build_module_dirs(data)
     return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
+
+
+def _module_paths(module: Any, roots: tuple[str, ...]) -> list[str]:
+    """A dotted module name as package paths, one per *root* it may sit under.
+
+    ``acme.providers.ftp`` is the import path of a namespace package; the
+    directory a build backend ships for it is the dots spelled as separators,
+    ``acme/providers/ftp``, under whichever root that backend uses.
+    """
+    if not isinstance(module, str):
+        return []
+    path = module.strip().replace(".", "/").strip("/")
+    if not path:
+        return []
+    return [f"{root.strip('/')}/{path}" if root.strip("/") else path for root in roots]
+
+
+def _flit_module_dirs(data: dict[str, Any]) -> list[str]:
+    """``[tool.flit.module] name``, under ``src/`` or beside the manifest.
+
+    flit names the import package in the TOML, which is the only reliable
+    source when the distribution name does not spell it - a namespace package
+    such as ``acme-providers-ftp`` shipping ``acme.providers.ftp`` has no
+    top-level directory a guess from the name could find.
+    """
+    return _module_paths(toml_table(data, "tool", "flit", "module").get("name"), ("src", ""))
+
+
+def _uv_build_module_dirs(data: dict[str, Any]) -> list[str]:
+    """uv_build's ``module-name``, under its ``module-root``."""
+    backend = toml_table(data, "tool", "uv", "build-backend")
+    root = backend.get("module-root")
+    roots = (root, "") if isinstance(root, str) else ("src", "")
+    return _module_paths(backend.get("module-name"), roots)
 
 
 def dunder_all(path: Path) -> frozenset[str] | None:
@@ -209,7 +242,7 @@ def dunder_all(path: Path) -> frozenset[str] | None:
     import ast
 
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        tree = parse_python(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, SyntaxError, ValueError):
         return None
     names: set[str] | None = None
@@ -238,8 +271,12 @@ def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
     return frozenset(name for rel in entry_files for name in dunder_all(repo_path / rel) or ())
 
 
-def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
-    """``[package].name`` and the crate root, which is the whole public surface."""
+def _cargo(text: str, root: str, crate_dir: Path) -> tuple[str, frozenset[str]] | None:
+    """``[package].name`` and the crate root, which is the whole public surface.
+
+    A crate with no ``[lib]`` table and no ``src/lib.rs`` is bin-only: a
+    program, not a library, so it publishes nothing.
+    """
     import tomllib
 
     try:
@@ -251,6 +288,8 @@ def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
     if not isinstance(name, str) or not name:
         return None
     lib = data.get("lib")
+    if not isinstance(lib, dict) and not (crate_dir / "src" / "lib.rs").is_file():
+        return None
     path = lib.get("path") if isinstance(lib, dict) else None
     entry = path if isinstance(path, str) else "src/lib.rs"
     return name, frozenset({f"{root}/{entry}" if root else entry})
@@ -275,7 +314,7 @@ def find_published_packages(
     for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=prune):
         if len(dirpath.relative_to(repo_path).parts) >= _MANIFEST_DEPTH:
             dirnames[:] = []
-        rel_dir = _rel(dirpath, repo_path)
+        rel_dir = repo_relative(dirpath, repo_path)
         if rel_dir is None:
             continue
         root = "" if rel_dir == "." else rel_dir
@@ -289,14 +328,14 @@ def find_published_packages(
             if ecosystem is None:
                 continue
             manifest = dirpath / fname
-            rel_manifest = _rel(manifest, repo_path)
+            rel_manifest = repo_relative(manifest, repo_path)
             if rel_manifest is None:
                 continue
             try:
                 text = manifest.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            parsed = _read_manifest(ecosystem, text, root)
+            parsed = _read_manifest(ecosystem, text, root, dirpath)
             if parsed is None:
                 counts["code_unpublished_manifest"] = (
                     counts.get("code_unpublished_manifest", 0) + 1
@@ -320,7 +359,7 @@ def find_published_packages(
 
     for csproj in find_csproj_files(repo_path):
         project = parse_csproj(csproj)
-        rel_manifest = _rel(csproj, repo_path) if project is not None else None
+        rel_manifest = repo_relative(csproj, repo_path) if project is not None else None
         if project is None or rel_manifest is None:
             continue
         root = rel_manifest.rsplit("/", 1)[0] if "/" in rel_manifest else ""
@@ -343,7 +382,7 @@ def find_published_packages(
 
 
 def _read_manifest(
-    ecosystem: str, text: str, root: str
+    ecosystem: str, text: str, root: str, manifest_dir: Path
 ) -> tuple[str, frozenset[str], frozenset[str]] | None:
     if ecosystem == "npm":
         try:
@@ -356,7 +395,7 @@ def _read_manifest(
         return (npm[0], npm[1], frozenset()) if npm else None
     if ecosystem == "pypi":
         return _pypi(text, root)
-    cargo = _cargo(text, root)
+    cargo = _cargo(text, root, manifest_dir)
     return (cargo[0], cargo[1], frozenset()) if cargo else None
 
 
@@ -434,16 +473,40 @@ class CodeSurface:
         return self.by_repo.get(alias, [])
 
 
+def find_workspace_packages(
+    repo_paths: dict[str, Path],
+) -> tuple[list[PublishedPackage], dict[str, dict[str, int]]]:
+    """Every package the workspace repos publish, plus per-repo skip counters.
+
+    Read from manifests alone, so it needs no repo's index open.
+    """
+    published: list[PublishedPackage] = []
+    stats: dict[str, dict[str, int]] = {}
+    for alias, repo_path in repo_paths.items():
+        packages, counts = find_published_packages(alias, repo_path)
+        published.extend(packages)
+        if counts:
+            stats.setdefault(alias, {}).update(counts)
+    return published, stats
+
+
 def build_code_surface(
     repo_paths: dict[str, Path],
     workspace_index: WorkspaceIndex | None,
     exclude: Callable[[str], bool],
+    *,
+    packages: tuple[list[PublishedPackage], dict[str, dict[str, int]]] | None = None,
+    consumers: Collection[str] | None = None,
 ) -> CodeSurface:
     """Build every ``code`` contract in the workspace, providers before consumers.
 
     Workspace-wide by necessity, not by preference: a consumer contract only
     exists when the package it imports is published by *some* repo, so neither
     half can be decided inside a single repo's extraction.
+
+    *packages* is :func:`find_workspace_packages` already run. *consumers*
+    limits the consumer rows to those repos (every repo by default): a caller
+    reusing a repo's stored rows needs none built for it.
     """
     from repowise.core.workspace.contracts import Contract
     from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
@@ -452,12 +515,9 @@ def build_code_surface(
     if workspace_index is None:
         return surface
 
-    published: list[PublishedPackage] = []
-    for alias, repo_path in repo_paths.items():
-        packages, counts = find_published_packages(alias, repo_path)
-        published.extend(packages)
-        if counts:
-            surface.stats.setdefault(alias, {}).update(counts)
+    published, manifest_stats = packages or find_workspace_packages(repo_paths)
+    for alias, counts in manifest_stats.items():
+        surface.stats.setdefault(alias, {}).update(counts)
 
     # -- providers ---------------------------------------------------------
     by_name: dict[str, PublishedPackage] = {}
@@ -497,7 +557,8 @@ def build_code_surface(
                     role="provider",
                     file_path=symbol.file_path,
                     symbol_name=exported,
-                    confidence=_CONFIDENCE,
+                    confidence=origin_confidence(_ORIGIN),
+                    origin=_ORIGIN,
                     line=symbol.start_line,
                     # Known at emission, so bind_symbol_ids is a no-op here and
                     # attach_signature_schemas reaches the parameter list.
@@ -514,7 +575,7 @@ def build_code_surface(
         stats["code_provider_symbols"] = stats.get("code_provider_symbols", 0) + len(seen)
 
     # -- consumers ---------------------------------------------------------
-    for alias in repo_paths:
+    for alias in repo_paths if consumers is None else [a for a in repo_paths if a in consumers]:
         index = workspace_index.get(alias)
         if index is None:
             continue
@@ -541,7 +602,8 @@ def build_code_surface(
                             role="consumer",
                             file_path=edge.source_file,
                             symbol_name=f"{package.name}:{exported}",
-                            confidence=_CONFIDENCE,
+                            confidence=origin_confidence(_ORIGIN),
+                            origin=_ORIGIN,
                             meta={
                         "package": package.name,
                         "ecosystem": package.ecosystem,

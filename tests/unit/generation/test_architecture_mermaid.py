@@ -124,7 +124,8 @@ class TestStructure:
     def test_node_cap_counts_omitted_parts(self):
         sm = _monorepo(extra_packages=12)
         assert len(sm.nodes) <= MAX_NODES
-        assert sm.omitted > 0
+        assert sm.omitted
+        assert all(name for name in sm.omitted)
 
     def test_heavy_edge_is_drawn_thick_and_the_rest_are_capped(self):
         files = {f"p{i}/m.py": "python" for i in range(8)}
@@ -158,8 +159,63 @@ class TestStructure:
             entry_points=["src/pkg/cli.py"],
         )
         paths = {n.path for n in sm.nodes if n.path}
-        assert {"src/pkg/sub", "src/pkg/app.py"} <= paths
-        assert _tier_of(sm)["src/pkg/cli.py"] == "surface"
+        assert paths == {"src/pkg", "src/pkg/sub"}
+        assert _tier_of(sm)["src/pkg"] == "surface"
+
+    def test_loose_files_stay_one_part_and_never_name_the_product(self):
+        """A box per loose file drew single scripts as parts of the system."""
+        files = {f"src/demo/{n}.py": "python" for n in ("app", "cli", "helpers")}
+        files.update({f"src/demo/{d}/x.py": "python" for d in ("json", "web")})
+        edges = [
+            ("src/demo/cli.py", "src/demo/app.py", "imports"),
+            ("src/demo/app.py", "src/demo/json/x.py", "imports"),
+            ("src/demo/web/x.py", "src/demo/app.py", "imports"),
+        ]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=["pyproject.toml"])
+        assert not any(n.path.endswith(".py") for n in sm.nodes)
+        assert {n.name for n in sm.nodes if n.path == "src/demo"} == {"Main package"}
+
+    def test_files_no_manifest_claims_are_not_dropped(self):
+        """A Go module's go.mod is not a parsed file; its code still makes the map."""
+        files = {f"{d}/f{i}.go": "go" for d in ("cmd", "core", "store") for i in range(3)}
+        files["tools/js/a.js"] = "javascript"
+        edges = [("cmd/f0.go", "core/f0.go", "imports"), ("core/f0.go", "store/f0.go", "imports")]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=["tools/js/package.json"])
+        assert {"cmd", "core", "store"} <= {n.path for n in sm.nodes}
+
+    def test_a_setup_module_in_a_package_is_not_a_box_but_a_subproject_setup_py_is(self):
+        files = dict.fromkeys(
+            [
+                "libs/foo/setup.py",
+                "libs/foo/foo/__init__.py",
+                "libs/foo/foo/core.py",
+                "server/routers/__init__.py",
+                "server/routers/setup.py",
+                "server/routers/repos.py",
+                "apps/a/main.py",
+                "apps/b/main.py",
+                "apps/c/main.py",
+            ],
+            "python",
+        )
+        # The overview passes every parsed manifest, the route module included.
+        # Five roots, so no box is opened up a level.
+        manifests = [
+            "libs/foo/setup.py",
+            "server/routers/setup.py",
+            "server/pyproject.toml",
+            "apps/a/pyproject.toml",
+            "apps/b/pyproject.toml",
+            "apps/c/pyproject.toml",
+        ]
+        edges = [
+            (src, "libs/foo/foo/core.py", "imports")
+            for src in ("server/routers/repos.py", "apps/a/main.py", "apps/b/main.py")
+        ]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=manifests)
+        paths = {n.path for n in sm.nodes if n.path}
+        assert {"libs/foo", "server"} <= paths
+        assert "server/routers" not in paths
 
     def test_nothing_to_draw_returns_none(self):
         assert build_system_map({"a.py": "python"}, [], repo_name="x") is None
@@ -198,9 +254,9 @@ class TestStructure:
             route_files={"app/routes/users.js", "app/routes/posts.js"},
         )
         tiers = _tier_of(sm)
-        assert tiers["app/routes/users.js"] == tiers["app/routes/posts.js"] == "service"
+        assert tiers["app/routes"] == "service"
         drawn = {(e.source, e.target) for e in sm.edges}
-        assert ("n_app_routes_users_js", "n_app_lib") in drawn
+        assert ("n_app_routes", "n_app_lib") in drawn
 
     def test_a_stray_route_does_not_make_a_large_library_the_server(self):
         files = {f"lib/m{i}.py": "python" for i in range(40)}
@@ -257,15 +313,66 @@ class TestStructure:
         assert [(n.name, n.role) for n in shared] == [("Shared libraries", "2 TypeScript files")]
         assert _tier_of(sm)["core"] == "engine"
 
-    def test_re_exports_are_not_flow(self):
-        files = {f"src/pkg/{n}.py": "python" for n in ("__init__", "app", "cli", "a", "b", "c")}
-        edges = [("src/pkg/__init__.py", f"src/pkg/{n}.py", "imports") for n in "abc"]
+    @staticmethod
+    def _tool_over_web(web: list[str], tool_files: int):
+        """A dev tool importing a web app that calls an API over a core library.
+
+        The web app imports a UI kit nothing else uses.
+        """
+        files = dict.fromkeys([f"web/{p}" for p in web], "typescript")
+        files.update({f"tool/t{i}.ts": "typescript" for i in range(tool_files)})
+        files["ui/button.ts"] = "typescript"
+        files.update(dict.fromkeys(["api/routes.py", "core/x.py", "cli/main.py"], "python"))
+        edges = [(f"tool/t{i}.ts", f"web/{web[0]}", "imports") for i in range(tool_files)]
         edges += [
-            ("src/pkg/__main__.py", "src/pkg/cli.py", "imports"),
-            ("src/pkg/cli.py", "src/pkg/app.py", "imports"),
-            ("src/pkg/app.py", "src/pkg/a.py", "imports"),
-            ("src/pkg/a.py", "src/pkg/b.py", "imports"),
-            ("src/pkg/b.py", "src/pkg/c.py", "imports"),
+            (f"web/{web[0]}", "ui/button.ts", "imports"),
+            ("api/routes.py", "core/x.py", "imports"),
+            ("cli/main.py", "core/x.py", "imports"),
+        ]
+        return build_system_map(
+            files,
+            edges,
+            repo_name="demo",
+            manifests=["web/package.json", "tool/package.json", "ui/package.json"]
+            + [f"{d}/pyproject.toml" for d in ("api", "core", "cli")],
+            route_files={"api/routes.py"},
+            http_links=[(f"web/{web[-1]}", "api/routes.py")],
+        )
+
+    def test_a_small_tool_does_not_absorb_the_larger_app_it_imports(self):
+        sm = self._tool_over_web([f"src/m{i}.ts" for i in range(6)], tool_files=1)
+        nodes = {n.path: n for n in sm.nodes if n.path}
+        # The app keeps its box and takes in the UI kit only it imports.
+        assert nodes["web"].role == "7 TypeScript files"
+        assert nodes["web"].tier == "surface"
+        assert "ui" not in nodes
+        assert ("n_web", "n_api") in {(e.source, e.target) for e in sm.edges}
+
+    def test_a_routed_web_page_makes_its_app_a_way_in(self):
+        web = ["app/page.tsx", "app/api/items/route.ts", "src/client.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        verbs = {(e.source, e.target): e.verb for e in sm.edges}
+        assert verbs[("n_actor_user", "n_web")] == "uses"
+        assert next(n for n in sm.nodes if n.path == "web").role == "4 TypeScript files"
+        starts = next(f for n in sm.nodes if n.path == "web" for f in n.facts if "entry" in f)
+        assert starts == "entry points: web/app/page.tsx"
+
+    def test_other_files_in_an_app_folder_are_not_a_way_in(self):
+        """An Express or Angular ``app/`` folder holds middleware and error files too."""
+        web = ["app/middleware.js", "app/error.ts", "app/api/items/route.ts", "src/c.ts"]
+        sm = self._tool_over_web(web, tool_files=8)
+        assert ("n_actor_user", "n_web") not in {(e.source, e.target) for e in sm.edges}
+
+    def test_re_exports_are_not_flow(self):
+        files = {f"src/pkg/{n}/m.py": "python" for n in ("app", "cli", "a", "b", "c")}
+        files["src/pkg/__init__.py"] = "python"
+        edges = [("src/pkg/__init__.py", f"src/pkg/{n}/m.py", "imports") for n in "abc"]
+        edges += [
+            ("src/pkg/__main__.py", "src/pkg/cli/m.py", "imports"),
+            ("src/pkg/cli/m.py", "src/pkg/app/m.py", "imports"),
+            ("src/pkg/app/m.py", "src/pkg/a/m.py", "imports"),
+            ("src/pkg/a/m.py", "src/pkg/b/m.py", "imports"),
+            ("src/pkg/b/m.py", "src/pkg/c/m.py", "imports"),
         ]
         files["src/pkg/__main__.py"] = "python"
         sm = build_system_map(
@@ -273,17 +380,17 @@ class TestStructure:
             edges,
             repo_name="pkg",
             manifests=["pyproject.toml"],
-            entry_points=["src/pkg/__main__.py", "src/pkg/app.py"],
+            entry_points=["src/pkg/__main__.py", "src/pkg/app/m.py"],
             barrels={"src/pkg/__init__.py", "src/pkg/__main__.py"},
         )
         paths = {n.path for n in sm.nodes if n.path}
-        assert "src/pkg/__init__.py" not in paths
-        assert not any(e.source == "n_src_pkg_init_py" for e in sm.edges)
+        assert "src/pkg" not in paths
+        assert not any(e.source == "n_src_pkg" for e in sm.edges)
         # The launcher hands its CLI role to the file it runs. app.py serves no
         # route and the CLI already calls it, so it is not a second way in.
         verbs = {(e.source, e.target): e.verb for e in sm.edges}
-        assert verbs[("n_actor_user", "n_src_pkg_cli_py")] == "runs"
-        assert _tier_of(sm)["src/pkg/app.py"] == "engine"
+        assert verbs[("n_actor_user", "n_src_pkg_cli")] == "runs"
+        assert _tier_of(sm)["src/pkg/app"] == "engine"
         assert len(sm.nodes) <= 7
 
 
@@ -294,6 +401,14 @@ class TestCompile:
         assert _compiler_problems(body) == []
         assert 'subgraph tier_service["Server"]' in body
         assert "classDef engine" in body and "#" not in body  # no hardcoded colors
+
+    def test_a_lone_box_named_like_its_tier_does_not_repeat_the_name(self):
+        sm = _monorepo()
+        lone = next(n for n in sm.nodes if n.tier == "service")
+        renamed = apply_names(sm, {"nodes": [{"id": lone.id, "label": "Server", "role": "x"}]})
+        body = compile_mermaid(renamed)
+        assert 'subgraph tier_service[" "]' in body
+        assert _compiler_problems(body) == []
 
     def test_click_goes_to_the_module_page(self):
         body = compile_mermaid(_monorepo())
@@ -395,8 +510,10 @@ class TestEmbed:
         assert out.count("```mermaid") == 1
 
     def test_caption_names_what_was_cut(self):
-        section = system_map_section(_monorepo(extra_packages=12), "demo")
-        assert "more parts are not shown" in section
+        sm = _monorepo(extra_packages=12)
+        section = system_map_section(sm, "demo")
+        assert f"Not drawn here: {sm.omitted[0]}" in section
+        assert "more parts are not shown" not in section
 
     def test_no_map_removes_a_stale_one(self):
         page = embed_system_map("## A\n\nx\n\n## B\n", system_map_section(_monorepo(), "demo"))

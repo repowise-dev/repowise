@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.events.model import KINDS, to_cloudevent
-from repowise.core.events.store import list_events
+from repowise.core.events.store import empty_events_reason, list_events, snapshot_run_count
+from repowise.core.git_sha import FULL_SHA_PATTERN
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas.events import CloudEvent, EventListResponse
@@ -26,6 +27,15 @@ async def get_events(
     since: datetime | None = Query(None, description="Only events at or after this time"),
     kind: list[str] = Query(default_factory=list, description="Only these kinds"),
     limit: int = Query(200, ge=1, le=1000),
+    commit: str | None = Query(
+        None,
+        pattern=f"^{FULL_SHA_PATTERN}$",
+        description="Only events detected at this commit (full sha)",
+    ),
+    important: bool = Query(
+        False,
+        description="Only broken contracts, bus factor and test reach drops, and events above info severity",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> EventListResponse:
     """Stored events, oldest first, as CloudEvents."""
@@ -36,5 +46,21 @@ async def get_events(
         raise HTTPException(status_code=422, detail=f"Unknown event kind(s): {unknown}")
     if since is not None and since.tzinfo is None:
         since = since.replace(tzinfo=UTC)
-    events = await list_events(session, repo_id, since=since, kinds=kind, limit=limit)
-    return EventListResponse(events=[CloudEvent(**to_cloudevent(e)) for e in events])
+    events = await list_events(
+        session,
+        repo_id,
+        since=since,
+        kinds=kind,
+        limit=limit,
+        commit=commit,
+        important_only=important,
+    )
+    runs = await snapshot_run_count(session, repo_id)
+    filtered = bool(since or kind or commit or important)
+    reason = None if events else empty_events_reason(runs, filtered=filtered)
+    return EventListResponse(
+        events=[CloudEvent(**to_cloudevent(e)) for e in events],
+        snapshot_runs=runs,
+        empty_reason=reason[0] if reason else None,
+        empty_note=reason[1] if reason else None,
+    )

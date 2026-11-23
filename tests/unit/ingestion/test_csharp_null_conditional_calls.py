@@ -122,9 +122,8 @@ class TestTheCallSiteIsCaptured:
             "}\n"
         )
         parsed, _ = _build(tmp_path, {"src/Consumer.cs": src})
-        sites = [(c.line, c.target_name) for c in parsed["src/Consumer.cs"].calls]
-        # Same line, same target: the two spellings dedupe to one record.
-        assert sites == [(4, "LogInformation")]
+        # Two calls, one record each, both carrying the receiver.
+        assert _sites(parsed, "src/Consumer.cs") == [("LogInformation", "logger", 4)] * 2
 
 
 class TestTheExistingTiersResolveIt:

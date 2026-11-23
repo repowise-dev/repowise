@@ -155,7 +155,12 @@ def test_check_keeps_scorecard_keys_and_forces_inconclusive_without_evidence():
 # ---------------------------------------------------------------------------
 
 
-async def test_components_section_scores_health_and_marks_gated_languages(ctx):
+async def test_components_section_scores_health_and_marks_gated_languages(ctx, monkeypatch):
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     items = await _section("components", ctx)
     assert items["component-map"]["data"]["derived"] == 2
     summary = items["components"]
@@ -224,7 +229,12 @@ async def test_bus_factor_item_for_a_component_the_catalog_marks(ctx):
     assert items["bus-factor"]["details"] == ["bus factor 1: web"]
 
 
-async def test_dead_code_tiers_and_gated_findings(ctx):
+async def test_dead_code_tiers_and_gated_findings(ctx, monkeypatch):
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     items = await _section("dead-code", ctx)
     assert items["dead-code:high"]["data"]["count"] == 1
     assert items["dead-code:medium"]["data"]["count"] == 0
@@ -279,6 +289,29 @@ async def test_contracts_unavailable_outside_a_workspace_then_measured(ctx, monk
     items = await _section("contracts", ctx)
     assert items["contracts:api"]["data"]["provided"] == {"http::GET::/x": 2}
     assert items["contracts"]["data"]["provided"] == 1
+    assert "outside" not in items["contracts"]["reason"]
+
+
+async def test_contracts_count_providers_outside_every_component(ctx, monkeypatch):
+    from repowise.core.events import snapshot
+
+    store = {
+        "api/a.py": {"http::GET::/x": 2},
+        "web/W.java": {"http::GET::/x": 0},
+        "main.py": {"http::GET::/health": 0, "http::GET::/x": 0},
+    }
+    monkeypatch.setattr(snapshot, "provided_contracts", lambda *_a: store)
+    items = await _section("contracts", ctx)
+    assert items["contracts:(no component)"]["data"]["provided"] == {
+        "http::GET::/health": 0,
+        "http::GET::/x": 0,
+    }
+    head = items["contracts"]
+    # Distinct ids, as the store holds them: /x in three places is one contract.
+    assert head["data"]["provided"] == 2
+    assert head["reason"] == (
+        "2 provided contract(s) detected across 2 component(s), 2 outside every component"
+    )
 
 
 async def test_decisions_per_component_with_stale(ctx, monkeypatch):
@@ -318,7 +351,19 @@ async def test_outcomes_are_left_out_until_a_checklist_kept_them(ctx):
             "title": f"feat: {cid}",
             "head_sha": cid[3:].rjust(40, "a"),
             "files_json": json.dumps([{"path": path, "added": 1, "deleted": 0}]),
-            "evidence_json": json.dumps({"items": items}) if outcomes is not None else None,
+            # A kept checklist as the store writes it; the section reads it as every reader does.
+            "evidence_json": json.dumps(
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-10-14T00:00:00+00:00",
+                    "items": [
+                        {"label": "Outcomes since merge", "basis": "declared", "source": "git history", **i}
+                        for i in items
+                    ],
+                }
+            )
+            if outcomes is not None
+            else None,
         }
 
     assert await report_sections.get("outcomes").collect(ctx) is None

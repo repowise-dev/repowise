@@ -1,6 +1,28 @@
 export { CouplingGraph, type CouplingGraphProps } from "./coupling-graph";
 export { CouplingTable } from "./coupling-table";
 export { CouplingExplorer, type CouplingExplorerProps } from "./coupling-explorer";
+export { CouplingAreaView, type CouplingAreaViewProps } from "./area-coupling-view";
+export {
+  DEFAULT_AREA_COUPLING_COPY,
+  type AreaCouplingCopy,
+  type AreaCouplingCopyOverrides,
+} from "./area-copy";
+export {
+  ALL_FILE_PAIRS,
+  DEFAULT_AREA_FILTERS,
+  areaLabel,
+  parseAreaPair,
+  serializeAreaPair,
+  toCouplingFilters,
+  type AreaPairRef,
+  type CouplingAreaFilters,
+} from "./area-view-state";
+export {
+  couplingIntensityByArea,
+  couplingIntensityByFile,
+  type CouplingIntensity,
+  type CouplingLensOptions,
+} from "./lens";
 export {
   CouplingPairDrawer,
   type CouplingPairDrawerProps,

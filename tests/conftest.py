@@ -2,11 +2,85 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+#: Seconds per test file from a CI run, written by scripts/shard_weights.py.
+SHARD_WEIGHTS = Path(__file__).with_name("shard_weights.json")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        metavar="K/N",
+        help="Run only shard K of N (1-based). Whole test files go to one shard: "
+        "files in tests/shard_weights.json are packed by their recorded time, "
+        "the rest go by a hash of their path, so every run splits the same way.",
+    )
+
+
+def _shard(value: str) -> tuple[int, int]:
+    try:
+        k, n = (int(part) for part in value.split("/"))
+    except ValueError:
+        raise pytest.UsageError(f"--shard takes K/N, e.g. 1/2; got {value!r}") from None
+    if not 1 <= k <= n:
+        raise pytest.UsageError(f"--shard {value}: K must be between 1 and N")
+    return k, n
+
+
+def shard_buckets(files: set[str], n: int, weights: dict[str, float]) -> dict[str, int]:
+    """0-based shard per test file.
+
+    Weighted files are packed greedily, heaviest first, into the lightest
+    shard; ties break by path so every xdist worker agrees. A file with no
+    weight (new, or under the recorded floor) goes by an md5 of its path;
+    ``hash()`` is salted per process.
+    """
+    totals = [0.0] * n
+    out: dict[str, int] = {}
+    for path in sorted(files & weights.keys(), key=lambda p: (-weights[p], p)):
+        out[path] = totals.index(min(totals))
+        totals[out[path]] += weights[path]
+    for path in files - out.keys():
+        out[path] = int(hashlib.md5(path.encode(), usedforsecurity=False).hexdigest(), 16) % n
+    return out
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    value = config.getoption("--shard")
+    if not value:
+        return
+    k, n = _shard(value)
+    rel = {item: item.path.relative_to(config.rootpath).as_posix() for item in items}
+    weights = json.loads(SHARD_WEIGHTS.read_text(encoding="utf-8")) if SHARD_WEIGHTS.exists() else {}
+    buckets = shard_buckets(set(rel.values()), n, weights)
+    keep = [item for item in items if buckets[rel[item]] == k - 1]
+    if len(keep) < len(items):
+        config.hook.pytest_deselected(items=[item for item in items if buckets[rel[item]] != k - 1])
+        items[:] = keep
+
+
+@pytest.fixture(autouse=True)
+def _ceiling_workspace_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep the workspace walk inside each test's tmp_path.
+
+    ``find_workspace_root`` walks up to the filesystem root, so a tmp_path
+    that sits below a directory holding ``.repowise-workspace.yaml`` (say
+    ``~/work/.tmp``) makes unit tests find the developer's real workspace
+    instead of none. Ceiling the walk at tmp_path: the directory itself is
+    still checked, so workspaces a test creates inside it keep working.
+    """
+    from repowise.core.workspace.config import WORKSPACE_CEILING_ENV_VAR
+
+    monkeypatch.setenv(WORKSPACE_CEILING_ENV_VAR, str(tmp_path))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -80,6 +154,51 @@ def _no_real_editor_setup():
 
 
 @pytest.fixture(autouse=True)
+def _no_local_ollama_probe(monkeypatch):
+    """No test reaches an Ollama on this machine: the probe answers "not running".
+
+    Provider checks connect to localhost:11434, so a test would pass or fail by
+    whether the developer has Ollama up. Tests about a running server patch it to True.
+    """
+    from repowise.cli.ui import provider_selection
+
+    monkeypatch.setattr(provider_selection, "endpoint_answers", lambda _url: False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_claude_config_dir():
+    """A developer's CLAUDE_CONFIG_DIR must not send a faked HOME's Claude writes elsewhere."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    yield
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_background_commit_health():
+    """Keep updates and inits under test from leaving detached scanner processes behind."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_COMMIT_HEALTH_BACKGROUND", "0")
+    yield
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_background_pricing_scan():
+    """Keep servers under test from scanning the developer's agent transcripts."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_PRICING_WARM", "0")
+    yield
+    mp.undo()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_db_url_env():
     """Stop one test's database URL from redirecting every later test.
 
@@ -115,6 +234,32 @@ def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
     """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
     missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"
     monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
+
+
+_REAL_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep a developer's ``~/.repowise`` provider and embedder settings out.
+
+    Every LLM resolver reads ``provider_config.json`` (global default, stored
+    keys) and the embedder resolver reads ``~/.repowise/config.yaml``, so real
+    ones on the machine would decide what a test resolves. A test that moves
+    ``Path.home`` on purpose still gets its own home.
+    """
+    scratch = tmp_path_factory.mktemp("provider-config")
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(scratch))
+    from repowise.core.providers.embedding import resolve as embedding_resolve
+
+    def _global_embedder_config() -> Path:
+        home = Path.home()
+        return (scratch if home == _REAL_HOME else home / ".repowise") / "config.yaml"
+
+    monkeypatch.setattr(embedding_resolve, "global_config_path", _global_embedder_config)
+    sys.modules["repowise.core.providers.llm.resolve"].clear_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -206,6 +351,26 @@ def sample_repo_path(repo_root: Path) -> Path:
         f"Sample repo not found at {path}. Run 'make install' to ensure test fixtures are in place."
     )
     return path
+
+
+@pytest.fixture
+def sample_repo_copy(sample_repo_path: Path, tmp_path: Path) -> Path:
+    """A git-backed copy of sample_repo for tests that write into it.
+
+    The pipeline reads git history, so the copy gets one commit of its own.
+    """
+    dest = tmp_path / "sample_repo"
+    shutil.copytree(sample_repo_path, dest)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.x",
+    }
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=dest, check=True, capture_output=True, env=env)
+    return dest
 
 
 @pytest.fixture(scope="session")

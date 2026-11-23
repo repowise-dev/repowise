@@ -115,41 +115,54 @@ which the placeholder comment warns against.
 
 ## 4. What goes into the Repowise section
 
-The section has three parts. Total target length: **150–250 lines**. Conciseness
-is intentional — research shows AI assistants ignore bloated configuration files.
+The block is read into the agent's context on every turn, so it is lean by
+default: about 250 tokens, held there by a test
+(`tests/unit/generation/test_editor_file_sections.py`). `editor_files.sections`
+picks the sections (see
+[CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
+only the queries the chosen sections render. Both templates include the shared
+`_editor_block.j2`; they differ in the pre-edit sentence of the full protocol
+and in which tools they may name. `AGENTS.md` is read by clients that load
+every tool schema up front, which the MCP server lists the core tools by
+default, so its block names only the tools such a client is listed under the
+repository's `mcp.tools` setting (resolved by
+`registry.tool_selection.listed_default_tools`); a moment line whose tool is
+not listed is left out. `CLAUDE.md` names every default tool.
 
-### Part 1: Codebase Intelligence
+Every block leads with one imperative line from `repowise.core.agent_steer`,
+naming the tool for each question kind. A block that listed the tools without
+saying to call one first moved almost no agent.
 
-Auto-generated from indexed data. Updates on every `repowise update`.
+- `AGENTS.md` leads with `AGENT_STEER`: call a Repowise tool first for any
+  question about the codebase. Its readers load every tool schema up front and
+  start with a Repowise call on this line. The same line leads the shared
+  instruction block that Cursor, Copilot, Kiro, opencode and Hermes receive
+  (`agent_targets/instructions.py`).
+- `CLAUDE.md`, the workspace `CLAUDE.md` and the Claude Code session-start hook
+  lead with `AGENT_STEER_DEFERRED`. Claude Code defers MCP tool schemas, so this
+  text is all the model sees before it decides to load one, and a plain "call
+  first" was skipped by models that open with Grep or hand exploration to a
+  subagent. For a question about how, where or why the code works, or which
+  files a task involves, the agent MUST call a Repowise MCP tool before Grep,
+  find or reading files. The line also says to pass the rule on to subagents,
+  to use what the tool returned instead of re-reading it, and to go straight to
+  a file the agent already knows it will edit.
 
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architecture summary | First 4 sentences from `repo_overview` wiki page | 4 sentences |
-| Key Modules | `module_page` pages sorted by PageRank desc, joined with git_metadata for owner | Top 10 |
-| Entry Points | The curated `kg_project_meta` list; otherwise `graph_nodes` where `is_entry_point=True`, ranked on execution-start evidence | Top 10 |
-| Tech Stack | Filesystem scan (package.json, pyproject.toml, Cargo.toml, go.mod, etc.) | All detected |
-| Hotspots | `git_metadata` where `is_hotspot=True`, sorted by `churn_percentile` desc | Top 5 |
-
-### Part 2: MCP Tools Workflow Guide
-
-**Static** — the same text for every repo. Hardcoded in `claude_md.j2`. Teaches
-Claude Code *when* to call each MCP tool using natural workflow framing rather than
-imperatives. One exception: a keyless index (template prose, no semantic search)
-gets a bullet saying low-confidence answers and full-text-only hits are expected,
-and its tool table drops the clauses about `confidence: "high"` and `[fts]` hits.
-
-This is the most important part. The phrasing matters: "Starting a new task?
-Call `get_overview()` first" is more effective than "ALWAYS call `get_overview()`
-before doing anything."
-
-### Part 3: Codebase Conventions
-
-Auto-generated from indexed data.
-
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architectural Decisions | `decision_records` where `status='active'`, sorted by `staleness_score` asc | Top 8 |
-| Commands | Filesystem scan: `package.json` scripts, `Makefile` targets, `pyproject.toml` pytest/ruff | All detected |
+| Section | Default | Source | Cap |
+|---------|---------|--------|-----|
+| Header | always | Date and commit, then the call-first line; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
+| `how_to_work` | on | Static: one line per moment (rename, edit, finish), distill, settings, the record-a-decision command | 6 lines |
+| `decisions` | on | Whether accepted decisions govern files (folded into the edit line), then the pinned ones by title | 5 pins, 80 chars each |
+| `architecture` | off | Lead sentence of the `repo_overview` wiki page | 1 sentence |
+| `key_modules` | off | `module_page` pages by PageRank desc | Top 6 |
+| `entry_points` | off | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
+| `hotspots` | off | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
+| `health` | off | Health score, band and worst file | 1 line |
+| `code_health` | off | Every health signal (replaces `health`) | 1 line |
+| `fix_first` | off | The Fix-first queue | Top 3 |
+| `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
+| `tools` | off | `tool_table.py`, the MCP tool table | All tools |
+| `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
 ---
 
@@ -188,6 +201,10 @@ WHERE repository_id = :repo_id AND is_entry_point = TRUE
 # then centrality as a tiebreak; sliced to 10 after ranking.
 ```
 
+Both lists pass through `orientation_entry_points_view`, the rule
+`get_overview` shares. It sets build and CI tooling (`scripts/`, `docker/`) aside
+unless that is all there is.
+
 PageRank deliberately does **not** lead here. Centrality rewards fan-in, so it
 floats a widely-imported barrel above the real front door — see
 `generation/entry_points.py`.
@@ -206,8 +223,7 @@ LIMIT 5
 SELECT * FROM decision_records
 WHERE repository_id = :repo_id AND status = 'active'
 ORDER BY staleness_score ASC
-LIMIT 8
-# → uses first 100 chars of rationale field
+LIMIT 9   -- 3 shown, titles only; the spare rows cover records in excluded paths
 ```
 
 **Average confidence** (`_get_avg_confidence`)
@@ -293,7 +309,7 @@ EditorFileDataFetcher.fetch()
     │  AsyncSession + repo_id + repo_path
     │
     ├── crud.get_repository()          → repo.name
-    ├── _get_architecture_summary()    → str (2-4 sentences)
+    ├── _get_architecture_summary()    → str (lead sentence)
     ├── _get_key_modules()             → list[KeyModule]
     ├── _get_entry_points()            → list[str]
     ├── detect_tech_stack()            → list[TechStackItem]
@@ -368,8 +384,8 @@ prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
 *Machine-wide*, outside the repo, one shared copy for every repo you index, all
 written by `register_editor_clients()` in `editor_setup.py`:
 
-- the `repowise` MCP entry in `~/.claude/settings.json` and in Claude Desktop's
-  config
+- the `repowise` MCP entry in `~/.claude.json` (Claude Code's user scope) and in
+  Claude Desktop's config
 - the Claude Code PostToolUse and SessionStart hooks
 - `env.ENABLE_TOOL_SEARCH` in `~/.claude/settings.json` (skipped for repos on
   the lean MCP tool profile, and never overwritten if you already set it)
@@ -468,6 +484,7 @@ Returns 422 if `local_path` is not accessible from the server.
 # .repowise/config.yaml
 editor_files:
   claude_md: true     # default: true. Set false to disable entirely.
+  sections: ["+commands"]   # optional; adjusts the default section set
 ```
 
 The `--no-claude-md` CLI flag sets `editor_files.claude_md: false` in

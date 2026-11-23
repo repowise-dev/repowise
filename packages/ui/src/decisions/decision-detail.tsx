@@ -23,9 +23,11 @@ import {
   GitCommitHorizontal,
 } from "lucide-react";
 import type { ChatContext } from "@repowise-dev/types/chat";
-import type {
-  DecisionRecord,
-  DecisionStatus,
+import {
+  decisionAcceptanceBlockers,
+  decisionSourceLabel,
+  type DecisionRecord,
+  type DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
 import { Markdown } from "../shared/markdown";
@@ -50,33 +52,26 @@ import type {
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Marker",
-  git_archaeology: "Git history",
-  readme_mining: "Docs",
-  cli: "Manual",
-  comment: "Comment",
-  pr: "Pull request",
-  adr: "ADR",
-  changelog: "Changelog",
-  session: "Session",
-  conventions: "Convention",
-};
+import { GapList, ReasonField, isKnownGap, isReasonGap, refusedGaps } from "./decision-confirm";
+import { DecisionAcceptedLine, DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import {
+  PIN_LABEL,
+  PIN_TITLE,
+  PUT_IN_FORCE_LABEL,
+  PinnedMark,
+  UNPIN_LABEL,
+  UNPIN_TITLE,
+} from "./decision-review-drawer";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
+// Confirm has no dialog: it is not destructive, and the reason field already
+// asks for the one thing a second click would. Its toast offers the undo.
 const CONFIRM_COPY: Record<
   string,
   { title: string; description: string; confirmLabel: string; destructive: boolean }
 > = {
-  active: {
-    title: "Confirm decision?",
-    description: "Mark this decision as active.",
-    confirmLabel: "Confirm",
-    destructive: false,
-  },
   deprecated: {
     title: "Deprecate decision?",
     description:
@@ -87,11 +82,81 @@ const CONFIRM_COPY: Record<
   dismissed: {
     title: "Dismiss decision?",
     description:
-      "This proposal will be hidden from the list and indexing will not raise it again. Nothing in your code changes.",
+      "It leaves the list, stops guiding reviews and won't be suggested again. Nothing in your code changes.",
     confirmLabel: "Dismiss",
     destructive: true,
   },
 };
+
+/** What the success toast says happened, in the bot's words. */
+const DONE_COPY: Partial<Record<DecisionStatus, string>> = {
+  active: "Decision accepted",
+  dismissed: "Decision dismissed",
+  deprecated: "Decision deprecated",
+};
+
+interface PinState {
+  pinned: boolean;
+  /** The host can pin: it passed `setPinned`. */
+  canPin: boolean;
+  toggle: () => void;
+}
+
+/**
+ * Whether the decision is pinned, and the toggle that asks the host to change
+ * it. Shares the page's busy flag, so a pin in flight disables the other verbs.
+ */
+function usePinState(
+  decision: DecisionRecord,
+  adapter: DecisionDetailAdapter,
+  setLoading: (loading: boolean) => void,
+): PinState {
+  const [pinned, setPinned] = React.useState(decision.pinned === true);
+  const toggle = async () => {
+    if (!adapter.setPinned) return;
+    setLoading(true);
+    try {
+      await adapter.setPinned(!pinned);
+      setPinned(!pinned);
+      toast.success(pinned ? "Decision unpinned" : "Decision pinned");
+    } catch (err) {
+      toast.error(toFriendlyMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return { pinned, canPin: adapter.setPinned !== undefined, toggle: () => void toggle() };
+}
+
+/** The header's pinned mark, on a decision in force only. */
+function ActivePinnedMark({ pinned, active }: { pinned: boolean; active: boolean }) {
+  return pinned && active ? <PinnedMark /> : null;
+}
+
+/** The host's agent prompts for a decision in force (change it, veto it, pin it). */
+function RecordPromptsSlot({ active, adapter }: { active: boolean; adapter: DecisionDetailAdapter }) {
+  return active ? <>{adapter.renderRecordPrompts?.()}</> : null;
+}
+
+/** Pin or Unpin, where the host can pin and the decision is in force. */
+function PinButton({ active, pin, loading }: { active: boolean; pin: PinState; loading: boolean }) {
+  if (!active || !pin.canPin) return null;
+  return (
+    <button
+      onClick={pin.toggle}
+      disabled={loading}
+      title={pin.pinned ? UNPIN_TITLE : PIN_TITLE}
+      className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+    >
+      {pin.pinned ? UNPIN_LABEL : PIN_LABEL}
+    </button>
+  );
+}
+
+/** The sentence under the verbs that says what Pin does, where the host offers it. */
+function PinSentence({ show }: { show: boolean }) {
+  return show ? <> Pin holds it as law: an agent asks before replacing it.</> : null;
+}
 
 export interface DecisionDetailProps {
   decision: DecisionRecord;
@@ -103,11 +168,16 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
 
   const [status, setStatus] = React.useState<DecisionStatus>(decision.status);
   const [loading, setLoading] = React.useState(false);
+  const pin = usePinState(decision, adapter, setLoading);
   const [pendingStatus, setPendingStatus] = React.useState<DecisionStatus | null>(null);
   const [linkedModules, setLinkedModules] = React.useState(decision.affected_modules);
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
   const [linkageSaving, setLinkageSaving] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
+  // The reason typed in place, and what the server named when it refused a
+  // confirm. The second wins over the local reading until the next attempt.
+  const [reason, setReason] = React.useState("");
+  const [refused, setRefused] = React.useState<string[] | null>(null);
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
@@ -212,35 +282,93 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
     }
   };
 
-  const applyStatusChange = async (newStatus: DecisionStatus) => {
-    const previous = status;
+  // The same check the review queue and its drawer run, over the scope as
+  // edited here, so adding files below clears that gap without a reload.
+  const gaps = React.useMemo(
+    () =>
+      refused ??
+      decisionAcceptanceBlockers({
+        ...decision,
+        affected_files: linkedFiles,
+        affected_modules: linkedModules,
+      }),
+    [refused, decision, linkedFiles, linkedModules],
+  );
+  // A refusal reads against the scope it was sent with; editing the scope
+  // hands the reading back to the local check.
+  React.useEffect(() => setRefused(null), [linkedFiles, linkedModules]);
+  const needsReason = gaps.some(isReasonGap);
+  const otherGaps = gaps.filter((g) => !isReasonGap(g));
+  const confirmable = otherGaps.length === 0 && (!needsReason || reason.trim() !== "");
+
+  // The host's undo, which puts the decision back where it was. The status
+  // shown after it is the one the host reports, not a guess at the earlier one.
+  const undoReview = adapter.undoReview;
+  const runUndoReview = async () => {
+    if (!undoReview) return;
     setLoading(true);
     try {
-      await adapter.patchDecision({ status: newStatus });
+      const now = await undoReview();
+      setStatus(now.status);
+      setRefused(null);
+      toast.success("Undone. It is back where it was.");
+    } catch (err) {
+      toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const applyStatusChange = async (newStatus: DecisionStatus) => {
+    const previous = status;
+    const sentReason = newStatus === "active" ? reason.trim() : "";
+    setLoading(true);
+    try {
+      await adapter.patchDecision({
+        status: newStatus,
+        ...(sentReason ? { reason: sentReason } : {}),
+      });
       setStatus(newStatus);
       setPendingStatus(null);
-      toast.success(`Decision marked ${newStatus.replace(/_/g, " ")}`, {
-        action: {
-          label: "Undo",
-          onClick: async () => {
-            try {
-              await adapter.patchDecision({ status: previous });
-              setStatus(previous);
-            } catch (err) {
-              toast.error(
-                `Couldn't undo: ${toFriendlyMessage(err)}`,
-              );
-            }
-          },
-        },
+      setRefused(null);
+      // Where the host can reverse a review, Undo puts the decision back where
+      // it was. Otherwise accepting has no inverse on the server: taking
+      // authority back is a dismissal, so its undo opens that, with the dialog
+      // saying what it does.
+      const reversible = undoReview && (newStatus === "active" || newStatus === "dismissed");
+      const undo = reversible
+        ? runUndoReview
+        : newStatus === "active"
+          ? () => setPendingStatus("dismissed")
+          : async () => {
+              try {
+                await adapter.patchDecision({ status: previous });
+                setStatus(previous);
+              } catch (err) {
+                toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
+              }
+            };
+      toast.success(DONE_COPY[newStatus] ?? `Decision marked ${newStatus.replace(/_/g, " ")}`, {
+        action: { label: "Undo", onClick: () => void undo() },
         duration: 6000,
       });
     } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? `Couldn't update decision: ${toFriendlyMessage(err)}`
-          : "Couldn't update decision",
-      );
+      // Only gaps the page can explain replace the local reading. Any other
+      // refusal is a one-off sentence, said once in the toast, so it never
+      // locks Confirm with no way out.
+      const named = refusedGaps(err);
+      if (named.length > 0 && named.every(isKnownGap)) {
+        setRefused(named);
+        toast.error("Couldn't accept this decision", {
+          description: "It still needs what's listed under Confirm.",
+        });
+      } else {
+        toast.error(
+          err instanceof Error
+            ? `Couldn't update decision: ${toFriendlyMessage(err)}`
+            : "Couldn't update decision",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -294,6 +422,9 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <DecisionStatusMark status={status} />
+            <ActivePinnedMark pinned={pin.pinned} active={status === "active"} />
+            {/* Who accepted it is said beside Undo, below. */}
+            <DecisionOrigin decision={{ ...decision, status }} accepter={false} />
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
@@ -312,15 +443,25 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             verification, so it restated the Source cell beside it as a
             percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
-          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
-          <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
+          <MetaItem label="Source" value={decisionSourceLabel(decision.source)} />
+          <MetaItem label="Recorded" value={formatDate(decision.created_at)} />
         </dl>
+        <DecisionAppliedLine decision={decision} />
 
         <div className="flex flex-wrap items-center gap-2">
-          <AiPromptButton
-            label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
-            onClick={() => setPromptMode("verify")}
-          />
+          {/* One agent action per page: a candidate the host can write a
+              review prompt for gets that, copied in one click; otherwise the
+              shared verification prompt. */}
+          {status === "proposed" && adapter.reviewPrompt ? (
+            // The button's own label for a copy: "Copy prompt".
+            <AiPromptButton copyText={() => adapter.reviewPrompt!(decision)} />
+          ) : (
+            <AiPromptButton
+              label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
+              onClick={() => setPromptMode("verify")}
+            />
+          )}
+          <RecordPromptsSlot active={status === "active"} adapter={adapter} />
           {status === "active" && (
             <AiPromptButton
               label="Enforce this decision"
@@ -419,7 +560,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Affected files last changed {formatDateOrDash(decision.last_code_change)}.
+                Affected files last changed {formatDate(decision.last_code_change)}.
               </p>
             )}
             <div className="flex flex-col gap-1.5">
@@ -477,19 +618,30 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
       )}
 
       {/* Actions */}
-      <div className="space-y-2 border-t border-[var(--color-border-default)] pt-4">
-        <div className="flex gap-2">
+      <div className="space-y-3 border-t border-[var(--color-border-default)] pt-4">
+        {status === "proposed" && needsReason && otherGaps.length === 0 && (
+          <ReasonField
+            id={`decision-reason-${decision.id}`}
+            value={reason}
+            onChange={(v) => {
+              setReason(v);
+              setRefused(null);
+            }}
+            disabled={loading}
+          />
+        )}
+        <div className="flex flex-wrap items-center gap-2">
           {status === "proposed" && (
             <>
               <button
                 onClick={() => handleStatusChange("active")}
-                disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                disabled={loading || !confirmable}
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
-                Confirm
+                {PUT_IN_FORCE_LABEL}
               </button>
               {/* Dismissing a proposal and deprecating a decision are not the
                   same act, and this button used to send `deprecated` for both.
@@ -507,28 +659,52 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               </button>
             </>
           )}
+          <PinButton active={status === "active"} pin={pin} loading={loading} />
           {status === "active" && (
-            <button
-              onClick={() => handleStatusChange("deprecated")}
-              disabled={loading}
-              className="rounded-md border border-[var(--color-error)]/40 px-3 py-1.5 text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50"
-            >
-              Deprecate
-            </button>
+            <>
+              {/* Undo reverses the review where the host can, the same undo an
+                  agent gets. Otherwise it is a dismissal: a decision accepted
+                  by mistake was never right, which is what dismiss records.
+                  Deprecate is for one that was right and is retired. */}
+              <button
+                onClick={() =>
+                  undoReview ? void runUndoReview() : handleStatusChange("dismissed")
+                }
+                disabled={loading}
+                className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+              >
+                Undo
+              </button>
+              <button
+                onClick={() => handleStatusChange("deprecated")}
+                disabled={loading}
+                className="rounded-md border border-[var(--color-error)]/40 px-3 py-1.5 text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50"
+              >
+                Deprecate
+              </button>
+              <DecisionAcceptedLine decision={{ ...decision, status }} className="ml-1" />
+            </>
           )}
         </div>
+        {status === "proposed" && <GapList gaps={otherGaps} id={decision.id} />}
+        {status === "proposed" && needsReason && otherGaps.length === 0 && !reason.trim() && (
+          <p className="text-xs text-[var(--color-text-secondary)]">Add a reason above to confirm.</p>
+        )}
         {status === "proposed" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Confirm marks this as an accurate, current decision for your team.
-            Dismiss hides it and stops indexing from raising it again, for a
-            proposal that was never right. Neither changes any code.
+            Put in force saves this as a decision your team follows. Dismiss hides
+            it and it won&apos;t be suggested again. Neither changes any code.
           </p>
         )}
         {status === "active" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Deprecate marks this decision as no longer current — existing
-            references remain, but it stops being treated as the standard. It
-            doesn&apos;t change any code.
+            {undoReview
+              ? "Undo puts a decision you accepted back where it was."
+              : "Undo dismisses a decision accepted by mistake."}{" "}
+            Deprecate retires one
+            that no longer holds: it stays for history but stops guiding work.
+            <PinSentence show={pin.canPin} />{" "}
+            None of these changes any code.
           </p>
         )}
       </div>
@@ -606,20 +782,6 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       </dd>
     </div>
   );
-}
-
-/** Older/hosted backends can omit decision timestamps — render "—" instead of
- *  "Invalid Date" for a missing or unparseable value.
- *
- *  Uses `formatDate`, which pins the locale, rather than
- *  `toLocaleDateString()`. The latter formats against the *runtime's* locale,
- *  so the server rendered "23/06/2026" and the browser "23/6/2026" — a
- *  hydration mismatch that made React throw away and re-render the tree on
- *  every visit to a decision. */
-function formatDateOrDash(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : formatDate(d);
 }
 
 function PrevNextLink({

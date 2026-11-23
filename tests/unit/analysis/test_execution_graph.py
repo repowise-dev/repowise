@@ -64,6 +64,17 @@ def test_index_builds_all_views_in_one_pass_and_deduplicates_edges():
     )
 
 
+def test_recursion_is_no_caller_of_itself():
+    graph = nx.MultiDiGraph()
+    _symbol(graph, "a.py::fact", "a.py", "fact", 1, 3)
+    graph.add_edge("a.py::fact", "a.py::fact", edge_type="calls", call_lines=[2])
+
+    index = ExecutionGraphIndex(graph)
+
+    assert "a.py::fact" not in index.forward
+    assert index.in_degree.get("a.py::fact", 0) == 0
+
+
 def test_definition_lookup_prefers_exact_then_innermost_range():
     graph = nx.DiGraph()
     _symbol(graph, "a.py::outer", "a.py", "outer", 2, 20)

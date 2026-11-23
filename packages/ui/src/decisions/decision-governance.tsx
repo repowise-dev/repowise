@@ -1,4 +1,5 @@
 import * as React from "react";
+import { FilePath } from "../shared/file-path";
 import type {
   DecisionGraph,
   DecisionGraphNode,
@@ -211,14 +212,12 @@ export function GovernedFiles({
             {fileHref ? (
               <Link
                 href={fileHref(f.path)}
-                className="font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+                className="flex min-w-0 text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
               >
-                {f.path}
+                <FilePath path={f.path} fold />
               </Link>
             ) : (
-              <span className="font-mono text-xs text-[var(--color-text-secondary)]">
-                {f.path}
-              </span>
+              <FilePath path={f.path} fold className="text-[var(--color-text-secondary)]" />
             )}
           </span>
           {/* Proportion bar steps the accent down toward the inset ground
@@ -228,7 +227,7 @@ export function GovernedFiles({
             className="hidden h-1 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg-inset)] sm:block"
           >
             <span
-              className="block h-full rounded-full bg-[var(--color-accent-primary)]"
+              className="block h-full rounded-full bg-[var(--color-progress-fill)]"
               style={{ width: `${Math.round((f.decisionCount / max) * 100)}%` }}
             />
           </span>

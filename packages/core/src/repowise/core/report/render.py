@@ -37,6 +37,10 @@ def _index_line(repo: dict[str, Any]) -> tuple[str, str, str]:
     name = repo.get("alias") or repo.get("name") or ""
     if repo.get("indexed") is False:
         return name, "not indexed", "none"
+    if repo.get("index_state") == "behind":
+        return name, "index behind this version, run repowise update", "none"
+    if repo.get("index_state") == "unreadable":
+        return name, "index could not be read", "none"
     commit = (repo.get("head_commit") or "")[:12]
     taken = f"{snap['taken_at'][:10]} ({snap['stamp']})" if snap else "none"
     return name, commit, taken
@@ -128,17 +132,24 @@ ul.details { margin: .25rem 0 0; padding-left: 1.1rem; color: var(--muted); }
 """
 
 
-def render_html(document: dict[str, Any]) -> str:
-    e = html.escape
-    gen = document["generator"]
-    title = _title(document)
-    out = [
+def html_page(title: str, css: str, body: list[str]) -> str:
+    """One self-contained page: inline *css*, no scripts, every fetch blocked."""
+    head = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         "<meta http-equiv=\"Content-Security-Policy\" "
         "content=\"default-src 'none'; style-src 'unsafe-inline'\">",
-        f"<title>{e(title)}</title><style>{_CSS}</style></head><body>",
+        f"<title>{html.escape(title)}</title><style>{css}</style></head><body>",
+    ]
+    return "\n".join([*head, *body, "</body></html>"]) + "\n"
+
+
+def render_html(document: dict[str, Any]) -> str:
+    e = html.escape
+    gen = document["generator"]
+    title = _title(document)
+    out = [
         f"<h1>{e(title)}</h1>",
         f'<p class="notice">{e(document["notice"])}</p>',
         f'<p class="muted">Generated {e(document["generated_at"])} by {e(gen["name"])} '
@@ -175,14 +186,70 @@ def render_html(document: dict[str, Any]) -> str:
         for method in dict.fromkeys(c["method"] for c in section["checks"]):
             out.append(f'<p class="method">Method: {e(method)}.</p>')
         out.append("</section>")
-    out.append("</body></html>")
-    return "\n".join(out) + "\n"
+    return html_page(title, _CSS, out)
+
+
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_cell(value: Any) -> str:
+    """*value* as text safe to open in a spreadsheet: a leading formula sign is quoted.
+
+    Titles and evidence quote commit messages, which anyone can write.
+    """
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(_FORMULA_LEAD) else text
+
+
+_CSV_COLUMNS = ("section", "repo", "check", "score", "basis", "reason", "details")
+
+
+def render_csv(document: dict[str, Any]) -> str:
+    """One row per check. A check whose ``data`` holds a ``row`` mapping (one
+    change, say) adds its keys as further columns, in first-seen order."""
+    import csv
+    import io
+
+    checks = [(s, c) for s in document["sections"] for c in s["checks"]]
+    extra: dict[str, None] = {}
+    for _section, c in checks:
+        extra.update(dict.fromkeys((c.get("data") or {}).get("row") or {}))
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow([*_CSV_COLUMNS, *extra])
+    for section, c in checks:
+        row = (c.get("data") or {}).get("row") or {}
+        cells = [
+            section["id"],
+            section.get("repo"),
+            c["name"],
+            _score(c["score"]),
+            c["basis"],
+            c["reason"],
+            " | ".join(map(str, c["details"])),
+            *(row.get(k) for k in extra),
+        ]
+        writer.writerow(spreadsheet_cell(v) for v in cells)
+    return buf.getvalue()
 
 
 report_renderers: SeamRegistry[Renderer] = SeamRegistry("report-renderer")
 report_renderers.register("json", render_json, default=True)
 report_renderers.register("markdown", render_markdown)
 report_renderers.register("html", render_html)
+report_renderers.register("csv", render_csv)
 
+# The first-look renderers register themselves on this seam. Imported last, so
+# every reader of ``report_renderers`` sees them.
+from repowise.core.report.first_look import render as _first_look_render  # noqa: E402, F401
 
-__all__ = ["Renderer", "render_html", "render_json", "render_markdown", "report_renderers"]
+__all__ = [
+    "Renderer",
+    "html_page",
+    "render_csv",
+    "render_html",
+    "render_json",
+    "render_markdown",
+    "report_renderers",
+    "spreadsheet_cell",
+]

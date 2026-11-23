@@ -23,8 +23,10 @@ would change the schema every layer is carefully written to preserve.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -52,8 +54,24 @@ class Interaction:
     request_id: str | None = None
     #: The counterfactual the answer replaced, when one could be derived.
     baseline_input_tokens: int | None = None
-    #: Raw tool output, before any budget shed anything.
+    #: Raw tool output before any budget shed anything, sized in the shape it
+    #: is delivered in (trust envelope and lean pass applied to a copy).
     pre_budget_input_tokens: int | None = None
+    #: Why an in-band ``{"error": ...}`` reply failed, as a fixed slug for
+    #: telemetry. Set where the error payload is built; see :data:`ERROR_REASONS`.
+    error_reason: str | None = None
+    #: Where that error was built: ``tool`` (the tool's own error reply) or
+    #: ``exception`` (the failure shield shaped an exception).
+    error_source: str | None = None
+    #: The kind of LLM provider the call synthesised with (see
+    #: :func:`repowise.core.providers.llm.specs.provider_kind`).
+    provider_kind: str | None = None
+    #: Wall time in whole ms per named stage, from :data:`STAGES`.
+    stage_ms: dict[str, int] = field(default_factory=dict)
+    #: Files this call served in place of a Read, with one Read's tokens each,
+    #: noted where the counterfactual already sized them. Capped like the
+    #: ledger's per-event list (``MAX_AVOIDED_FILES``); first size per path wins.
+    avoided_files: dict[str, int] = field(default_factory=dict)
 
     def observe_pre_budget(self, tokens: int | None) -> None:
         """Record the raw size, first positive writer only.
@@ -70,6 +88,14 @@ class Interaction:
         if self.pre_budget_input_tokens is None and tokens is not None and tokens > 0:
             self.pre_budget_input_tokens = tokens
 
+    def note_avoided_file(self, path: str, tokens: int) -> None:
+        """Note *path* as served in place of a Read costing *tokens*."""
+        from repowise.core.savings.contracts import MAX_AVOIDED_FILES
+
+        if path in self.avoided_files or len(self.avoided_files) >= MAX_AVOIDED_FILES:
+            return
+        self.avoided_files[path] = tokens
+
 
 _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction", default=None)
 
@@ -81,10 +107,135 @@ _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction
 #: it rather than accumulating for the life of the server.
 _SESSIONS: WeakKeyDictionary[Any, tuple[str, dict[str, str], str]] = WeakKeyDictionary()
 
+#: File reads each connection has already been credited with. Weak for the same
+#: reason as :data:`_SESSIONS`: the record ends with the connection.
+_CREDITED_READS: WeakKeyDictionary[Any, set[bytes]] = WeakKeyDictionary()
+
 
 def current() -> Interaction | None:
     """The invocation in flight, or ``None`` outside one."""
     return _CURRENT.get()
+
+
+def first_credit(read: bytes) -> bool:
+    """Whether this connection is being credited with *read* for the first time.
+
+    A call with no session to remember it by always counts as the first.
+    """
+    session = _session()
+    if session is None:
+        return True
+    try:
+        credited = _CREDITED_READS.setdefault(session, set())
+    except TypeError:  # a session that cannot be weak-referenced
+        return True
+    if read in credited:
+        return False
+    credited.add(read)
+    return True
+
+
+#: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.
+#: ``git_unavailable``: git is missing or cannot read the repository.
+#: ``timeout``: a bounded git read ran out of time. ``no_provider``: the tool
+#: needs an LLM provider and none is configured.
+ERROR_REASONS = frozenset(
+    {
+        "not_found",
+        "invalid_args",
+        "no_index",
+        "index_behind",
+        "server_stale",
+        "internal",
+        "git_unavailable",
+        "timeout",
+        "no_provider",
+    }
+)
+
+
+#: Where an error reply was built. ``tool``: the tool's own error payload.
+#: ``exception``: the failure shield shaped an exception the tool raised.
+ERROR_SOURCES = frozenset({"tool", "exception"})
+
+#: Every stage a call can time. ``retrieve`` and ``synthesize`` are get_answer's;
+#: the rest are get_change_risk's blocks.
+STAGES = frozenset(
+    {
+        "retrieve",
+        "synthesize",
+        "score",
+        "health_delta",
+        "impacted_tests",
+        "patch_coverage",
+        "prior_fixes",
+        "cross_repo",
+        "branch_overlap",
+    }
+)
+
+
+def note_error_reason(reason: str, *, source: str = "tool") -> None:
+    """Record why the call in flight is answering with an error. Never raises.
+
+    The first note wins: the site that built the payload knows best, and an
+    outer layer that sees the same failure must not overwrite it.
+    """
+    live = _CURRENT.get()
+    if live is not None and live.error_reason is None and reason in ERROR_REASONS:
+        live.error_reason = reason
+        if source in ERROR_SOURCES:
+            live.error_source = source
+
+
+def note_provider_kind(provider: Any) -> None:
+    """Record the kind of provider the call in flight synthesises with. Never raises."""
+    live = _CURRENT.get()
+    if live is None:
+        return
+    with contextlib.suppress(Exception):
+        from repowise.core.providers.llm.specs import provider_kind
+
+        live.provider_kind = provider_kind(getattr(provider, "provider_name", None))
+
+
+def note_stage_ms(stage: str, ms: float) -> None:
+    """Record *stage*'s wall time on the call in flight. Never raises.
+
+    A stage that runs twice in one call keeps the sum.
+    """
+    live = _CURRENT.get()
+    if live is not None and stage in STAGES:
+        live.stage_ms[stage] = live.stage_ms.get(stage, 0) + round(ms)
+
+
+def timed_stage(stage: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate an async function so its wall time is noted as *stage*."""
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            started = time.perf_counter()
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                note_stage_ms(stage, (time.perf_counter() - started) * 1000)
+
+        return wrapped
+
+    return decorate
+
+
+def error_reply(reason: str, reply: dict[str, Any]) -> dict[str, Any]:
+    """Return *reply*, a tool's top-level ``{"error": ...}`` answer, with *reason* noted.
+
+    Every top-level error dict is built inside this call, so none leaves
+    without a reason; a test holds that, and every *reason* passed here to
+    :data:`ERROR_REASONS`. Error cards nested inside an ok reply (one target of
+    several) do not use it: they must not claim the call's reason.
+    """
+    note_error_reason(reason)
+    return reply
 
 
 @contextmanager
@@ -118,6 +269,22 @@ def _context() -> Any | None:
         return None
 
 
+def _session() -> Any | None:
+    """The live connection's session, or ``None`` outside a request.
+
+    ``session`` is a property that raises ``ValueError`` outside a request
+    rather than returning None, and ``getattr`` with a default does not
+    suppress an exception raised by a property, so the access is the guard.
+    """
+    context = _context()
+    if context is None:
+        return None
+    try:
+        return context.session
+    except ValueError:
+        return None
+
+
 def _attribution() -> tuple[str, dict[str, str], str | None]:
     """Resolve who is calling, once per connection.
 
@@ -127,13 +294,7 @@ def _attribution() -> tuple[str, dict[str, str], str | None]:
     """
     from repowise.core.savings.normalization import normalize_mcp_identity
 
-    # ``session`` is a property that raises outside a request rather than
-    # returning None, and ``getattr`` with a default does not suppress an
-    # exception raised *by* a property. So the access itself is the guard.
-    try:
-        session = _context().session  # type: ignore[union-attr]
-    except Exception:
-        session = None
+    session = _session()
     if session is None:
         return UNKNOWN_AGENT, {}, None
 

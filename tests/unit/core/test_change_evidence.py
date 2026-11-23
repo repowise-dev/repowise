@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -26,8 +27,11 @@ from repowise.core.changes.evidence import (
     KINDS,
     ChangeEvidence,
     EvidenceInputs,
+    EvidenceItem,
     Unavailable,
     build_change_evidence,
+    item_line,
+    line_text,
 )
 
 
@@ -131,13 +135,25 @@ def test_every_kind_is_present_in_order_and_round_trips():
     assert all(i.status == "unknown" and i.basis == "unresolved" for i in evidence.items)
 
 
+def test_a_partial_health_comparison_never_reads_ok():
+    partial = dataclasses.replace(_delta([]), status="partial", explanation="base not indexed")
+    evidence = build_change_evidence(_bundle(["src/a.py"], health=partial), change_id=None, revspec="abc")
+    item = next(i for i in evidence.items if i.kind == "health_delta")
+    assert (item.status, item.basis, item.value["complete"]) == ("unknown", "measured", False)
+    # A record kept before this rule reads under it.
+    kept = {**item.to_dict(), "status": "ok"}
+    assert EvidenceItem.from_dict(kept).status == "unknown"
+    full = build_change_evidence(_bundle(["src/a.py"], health=_delta([])), change_id=None, revspec="abc")
+    assert next(i for i in full.items if i.kind == "health_delta").status == "ok"
+
+
 def test_statuses_follow_the_facts():
     paths = ["src/a.py", "src/b.py", "tests/test_a.py"]
     bundle = _bundle(
         paths,
         health=_delta([_finding()]),
         tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown", "tests/test_a.py": "unknown"}),
-        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200, baseline_as_of="6bb3c0c293" * 4),
     )
     inputs = EvidenceInputs(
         code_paths=["src/a.py", "src/b.py"],
@@ -174,7 +190,8 @@ def test_statuses_follow_the_facts():
     assert by["owners"].details[-1] == {"owner": None, "paths": ["src/b.py"]}
     assert by["suggested_reviewers"].value == ["Bob"] and "score" not in by["suggested_reviewers"].details[0]
     tests = by["reaching_tests"]
-    assert tests.status == "attention" and tests.basis == "inferred"
+    # One file reached, one nobody knows about: partly known, never a gap.
+    assert tests.status == "unknown" and tests.basis == "inferred"
     assert tests.value == {
         "measured": 0,
         "inferred": 1,
@@ -194,6 +211,77 @@ def test_statuses_follow_the_facts():
     assert by["provenance"].details == [{"sha": "abc", "label": "agent", "tier": 2}]
     # A high diff-size rank is one row and never a verdict.
     assert by["risk_score"].status == "ok" and by["risk_score"].value == {"percentile": 97.5}
+
+
+def test_a_kept_checklist_reads_reaching_tests_under_the_current_rule():
+    """A checklist kept before the rule changed said attention for an unknown file."""
+    item = {
+        "kind": "reaching_tests",
+        "label": "Tests reaching the change",
+        "status": "attention",
+        "basis": "inferred",
+        "value": {"files_without_tests": 0, "files_unknown": 1},
+        "details": [{"path": "a.py", "tests": ["t"]}, {"path": "b.py", "tests": None}],
+        "source": "test impact",
+    }
+    assert EvidenceItem.from_dict(item).status == "unknown"
+    absent = {**item, "details": [*item["details"], {"path": "c.py", "tests": []}]}
+    assert EvidenceItem.from_dict(absent).status == "attention"
+
+    # The needs-attention list confirms its SQL prefilter through the same parse.
+    from repowise.core.changes.collect import evidence_summary
+    from repowise.core.persistence.crud.changes import dump_evidence
+
+    kept = {"schema_version": 1, "generated_at": "2026-10-14T00:00:00+00:00", "items": [item]}
+    row = SimpleNamespace(evidence_json=dump_evidence(kept))
+    assert evidence_summary(row)["attention"] == 0
+
+    # Health leads the row from its own rollup; its checklist row is not counted.
+    health = {**item, "kind": "health_delta", "label": "Health delta", "details": []}
+    kept = {**kept, "items": [health]}
+    row = SimpleNamespace(evidence_json=dump_evidence(kept))
+    assert evidence_summary(row) | {"generated_at": None} == {
+        "generated_at": None,
+        "ok": 0,
+        "attention": 0,
+        "unknown": 0,
+    }
+
+
+def test_every_item_reads_as_a_plain_line():
+    """Each kind words its value; no raw key, boolean or dict reaches a reader."""
+    bundle = _bundle(
+        ["src/a.py", "src/b.py"],
+        health=_delta([_finding()]),
+        tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown"}),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200, baseline_as_of="6bb3c0c293" * 4),
+    )
+    inputs = dataclasses.replace(_full_inputs(), code_paths=None)
+    evidence = build_change_evidence(bundle, inputs, change_id="c", revspec="r").to_dict()
+    lines = {i["kind"]: line_text(item_line(i)) for i in evidence["items"]}
+
+    assert lines["reaching_tests"] == "1 of 2 changed files reached by a test; 1 not known"
+    assert lines["components_touched"] == "1 component: core"
+    assert lines["owners"] == "@team-core; 1 changed file without one"
+    assert lines["contracts"] == "1 workspace contract touched; signatures not compared"
+    assert lines["decisions_crossed"] == "1 accepted decision, 0 candidates"
+    assert lines["cross_repo_consumers"] == "No consumer in another repo"
+    assert lines["risk_score"] == "Larger than 97.5% of the 200 commits before this change (as of 6bb3c0c293)"
+    # A row kept before the sample was stamped ranked against HEAD at build time: unlabelled.
+    kept = {"kind": "risk_score", "value": {"percentile": 79.8}, "details": [{"baseline_sample_size": 200}]}
+    assert line_text(item_line(kept)) == "Larger than 79.8% of recent commits"
+    assert lines["outcomes"].startswith("Not known: ")
+    assert lines["provenance"] == "provenance: agent, known for 0 of 0 commits"
+    named = item_line(
+        {
+            "kind": "provenance",
+            "value": {"label": "agent", "agent_commits": 1, "human_attested_commits": 0, "unknown_commits": 0},
+            "details": [{"sha": "s", "label": "agent", "tier": 2, "agent": "claude-code", "model": "opus"}],
+        }
+    )
+    assert line_text(named) == "provenance: agent, known for 1 of 1 commit (claude-code, opus)"
+    for text in lines.values():
+        assert text and not any(w in text for w in ("True", "False", "None", "_", "{"))
 
 
 def test_unknown_provenance_stays_unknown_and_unavailable_inputs_name_why():
@@ -544,3 +632,130 @@ async def test_without_an_index_only_git_items_are_filled(repo):
     assert by["owners"].details == [{"reason": "the repository has no index"}]
     assert by["health_delta"].status in {"ok", "attention"}
     assert evidence.index_commit is None
+
+
+def test_files_outside_every_component_are_a_known_answer():
+    outside = {"outside": True, "source": "declared", "files": ["README.md", ".github/ci.yml"]}
+    inputs = dataclasses.replace(_full_inputs(), components=[outside])
+    evidence = build_change_evidence(_bundle(["README.md", ".github/ci.yml"]), inputs, change_id="c", revspec="r")
+    item = evidence.item("components_touched")
+    assert (item.status, item.basis, item.value) == ("ok", "declared", [])
+    assert line_text(item_line(item.to_dict())) == "Outside every component (2 changed files)"
+    mixed = dataclasses.replace(_full_inputs(), components=[*_full_inputs().components, outside])
+    item = build_change_evidence(_bundle(["src/a.py"]), mixed, change_id="c", revspec="r").item(
+        "components_touched"
+    )
+    assert item.value == ["core"] and line_text(item_line(item.to_dict())) == "1 component: core"
+
+
+_CATALOG = """\
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: {name}
+  annotations:
+    repowise.dev/paths: {paths}
+spec: {{type: library, lifecycle: production, owner: group:default/{name}-team}}
+"""
+
+
+async def _set_files(factory, repo_id: str, paths: list[str], total: int) -> None:
+    from sqlalchemy import update
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Change
+
+    files = json.dumps([{"path": p, "added": 1, "deleted": 0} for p in paths])
+    async with get_session(factory) as session:
+        await session.execute(
+            update(Change)
+            .where(Change.repository_id == repo_id, Change.change_id == "pr-7")
+            .values(files_json=files, files_changed=total)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_catalog_edit_is_applied_to_a_kept_checklist_on_read(tmp_path, repo):
+    from repowise.core.changes.collect import (
+        CATALOG_CHANGED,
+        cached_evidence,
+        change_evidence,
+        components_stale,
+    )
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    root, head = repo
+    catalog = root / ".repowise" / "components.yaml"
+    catalog.parent.mkdir()
+    catalog.write_text(_CATALOG.format(name="core", paths="src/core/**"), encoding="utf-8")
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    paths = ["src/core/a.py", "src/web.py"]
+    await _set_files(factory, repo_id, paths, len(paths))
+    try:
+        async with get_session(factory) as session:
+            first = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = first.item("components_touched")
+        assert comps.value == ["core"]
+        assert comps.details[-1] == {"outside": True, "source": "declared", "files": ["src/web.py"]}
+
+        # The catalog gains a component for src/web.py: read back without a rebuild.
+        second = _CATALOG.format(name="web", paths="src/web.py")
+        catalog.write_text(catalog.read_text(encoding="utf-8") + "---\n" + second, encoding="utf-8")
+        async with get_session(factory) as session:
+            got = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = got.item("components_touched")
+        assert comps.value == ["core", "web"] and not any(r.get("outside") for r in comps.details)
+        assert got.item("owners").value == ["@team-core", "web-team"]
+        assert got.generated_at == first.generated_at and got.catalog_digest != first.catalog_digest
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.to_dict() == got.to_dict()
+
+        # A capped file list cannot be resolved again: unknown, naming --refresh,
+        # kept under the new digest so the next read does no work.
+        await _set_files(factory, repo_id, paths, 5000)
+        catalog.write_text(_CATALOG.format(name="core", paths="src/**"), encoding="utf-8")
+        async with get_session(factory) as session:
+            capped = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = capped.item("components_touched")
+        assert comps.status == "unknown" and comps.details == [{"reason": CATALOG_CHANGED}]
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.to_dict() == capped.to_dict()
+        assert not await components_stale(root, stored)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_capped_checklist_kept_before_digests_keeps_its_components(tmp_path, repo):
+    from repowise.core.changes.collect import (
+        cached_evidence,
+        change_evidence,
+        components_stale,
+        save_evidence,
+    )
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    root, head = repo
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    await _set_files(factory, repo_id, ["src/core/a.py"], 5000)
+    comps = EvidenceItem("components_touched", "Components touched", "ok", "inferred", ["core"],
+                         [{"name": "core", "source": "directory", "files": ["src/core/a.py"]}], "components")
+    legacy = ChangeEvidence("pr-7", head, "2026-01-01T00:00:00+00:00", [comps])
+    try:
+        async with get_session(factory) as session:
+            await save_evidence(session, repo_id, "pr-7", legacy)
+        async with get_session(factory) as session:
+            got = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        assert got.item("components_touched") == comps
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.item("components_touched") == comps and stored.catalog_digest is not None
+        assert not await components_stale(root, stored)
+    finally:
+        await engine.dispose()

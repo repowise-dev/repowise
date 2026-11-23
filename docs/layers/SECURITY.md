@@ -125,8 +125,11 @@ re-checked against the live file using its stored snippet:
 name recurs throughout a file. When the file cannot be read, the stored line is
 returned unverified.
 
-Snippets are trimmed to 120 characters with every credential value masked to
-its first four characters and `****`. The raw value is never stored.
+Snippets are stored trimmed to 120 characters with every credential value
+masked to its first four characters and `****`; the raw value is never stored.
+No surface shows a credential's snippet, or any snippet with a masked value on
+it: the REST route, `get_risk` and every `check` format give its kind and
+location only.
 
 ### A suggested reading order
 
@@ -165,8 +168,9 @@ without failing. Exit codes: `0` passed, `1` failed, `2` could not evaluate
 (not a git repo, unknown revision, missing merge-base or commits in a shallow
 clone, unreadable baseline). A git error is never read as a clean change.
 
-Every format carries masked snippets only: `table`, `json`, `markdown`,
-`github` (annotations plus job summary), `sarif` and `gitlab` (Code Quality).
+Every format shows a secret by kind and location only, never a snippet:
+`table`, `json`, `markdown`, `github` (annotations plus job summary), `sarif`,
+`gitlab` (Code Quality) and the baseline file.
 In the Code Quality report a failing finding is `critical` when high and
 `major` otherwise; one below `--fail-on` is `minor`.
 
@@ -285,6 +289,7 @@ result as a place to look.
 | `--fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low` |
 | `--baseline FILE` | none | Accept findings listed in this file |
 | `--write-baseline FILE` | none | Add this change's findings to the file and exit 0 |
+| `--fail-on-baseline-growth` | off | Exit 1 when `--baseline` lists a finding the file at the change's base does not |
 | `--staged` | off | Check staged changes; takes no revspec |
 | `--path DIR` | cwd | A path inside the repository |
 | `--format` | `table` | `table`, `json`, `markdown`, `github`, `sarif`, `gitlab` |

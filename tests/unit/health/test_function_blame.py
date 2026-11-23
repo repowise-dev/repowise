@@ -41,7 +41,8 @@ _PORCELAIN = (
 
 
 def test_parse_porcelain_indexes_each_final_line():
-    lines, authors = _parse_porcelain(_PORCELAIN)
+    lines, authors, boundary_shas = _parse_porcelain(_PORCELAIN)
+    assert boundary_shas == frozenset()
     assert set(lines.keys()) == {1, 2, 3, 4}
     assert authors["a" * 40][0] == "Alice"
     assert authors["b" * 40][0] == "Bob"
@@ -53,10 +54,18 @@ def test_parse_porcelain_indexes_each_final_line():
     assert lines[4] == ("cccccccccccccccccccccccccccccccccccccccc", 1755000000)
 
 
+def test_parse_porcelain_reads_sha256_commit_ids():
+    sha256 = "d" * 64
+    raw = f"{sha256} 1 1 1\nauthor Dana\nauthor-time 1760000000\nfilename foo.py\n\tx = 1\n"
+    lines, authors, _ = _parse_porcelain(raw)
+    assert lines[1] == (sha256, 1760000000)
+    assert authors[sha256][0] == "Dana"
+
+
 def test_parse_porcelain_shares_one_entry_per_commit():
     # Lines from the same commit hold the same tuple, so the index costs one
     # entry per commit rather than one tuple and sha string per line.
-    lines, _ = _parse_porcelain(_PORCELAIN)
+    lines, _, _ = _parse_porcelain(_PORCELAIN)
     assert lines[1] is lines[2]
     assert lines[1] is not lines[3]
 

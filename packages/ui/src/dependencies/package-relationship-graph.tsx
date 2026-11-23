@@ -85,7 +85,7 @@ export function PackageRelationshipGraph({
                   type="button"
                   aria-expanded={expanded}
                   onClick={() => onToggleAggregate(expanded ? null : node.aggregate_key)}
-                  className="group flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left hover:border-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] motion-reduce:transition-none"
+                  className="group flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left hover:border-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-reduce:transition-none"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block break-words text-xs font-medium text-[var(--color-text-primary)]">{node.label}</span>

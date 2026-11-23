@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"build", "target", "out", "node_modules", ".git", ".gradle", ".idea"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"build", "target", "out"}
 
 _TYPE_DECL_RE = re.compile(
     r"\b(?:class|interface|record|enum)\s+([A-Z]\w*)"

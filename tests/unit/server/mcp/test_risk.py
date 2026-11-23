@@ -57,7 +57,6 @@ async def test_get_risk_multiple_targets(setup_mcp):
     result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["churn"])
     targets = result["targets"]
     assert len(targets) == 2
-    assert "global_hotspots" in result
     # Both targets should have trend and risk_type
     for t in targets.values():
         assert "trend" in t
@@ -68,7 +67,7 @@ async def test_get_risk_multiple_targets(setup_mcp):
 async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["hotspots"])
     # service.py is a hotspot but should NOT appear in global_hotspots
     for h in result["global_hotspots"]:
         assert h["file_path"] != "src/auth/service.py"
@@ -388,17 +387,19 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(pr_ch
 async def test_get_risk_pr_directive_runs_tests_in_import_reach(pr_checkout):
     """No map and no call-graph test -> the tests in reverse-import reach, inferred.
 
-    ``tests/test_service.py`` reaches ``models.py`` through ``service.py``. With
-    no coverage the gap list is withheld, not sent empty.
+    ``tests/test_service.py`` reaches ``models.py`` only through ``service.py``,
+    so it runs but is counted apart from the headline. With no coverage the gap
+    list is withheld, not sent empty.
     """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run"] == []
+    assert directive["tests_import_closure_total"] == 1
+    assert "1 more test(s) must still run because they import the change" in directive["summary"]
     assert directive["tests_to_run_basis"] == "inferred"
-    assert directive["tests_to_run_kind"] == "test_file"
     assert "missing_tests" not in directive
     assert directive["coverage"]["status"] == "unavailable"
     assert "test gaps are withheld" in directive["summary"]
@@ -778,6 +779,7 @@ def test_health_filename_heuristic_supports_suffix_test_conventions(source, test
 async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
     """Health and risk agree that suffixed test names are not exact pairs."""
     from repowise.core.analysis.health.engine import _has_paired_test_file
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
     from repowise.core.persistence.models import GraphNode
     from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
 
@@ -789,6 +791,16 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
             node_type="file",
             language="python",
             is_test=True,
+        )
+    )
+    # Indexed: a file the index has not seen is new, never a gap.
+    session.add(
+        GraphNode(
+            id="gn-source",
+            repository_id=repo_id,
+            node_id="src/my_module.py",
+            node_type="file",
+            language="python",
         )
     )
     await session.flush()
@@ -807,16 +819,49 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
         )
     )
     await session.flush()
+    # The test-file set is kept per index state; a node added outside an index run is not one.
+    clear_test_map_cache()
     assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
 
 
 @pytest.mark.asyncio
-async def test_get_risk_omits_global_hotspots_for_a_single_target(setup_mcp):
-    """Ambient orientation earns its place across targets, not on one named file."""
+async def test_get_risk_lists_global_hotspots_only_when_asked(setup_mcp):
+    """Files nobody named cost every caller tokens, so they are opt-in."""
     from repowise.server.mcp_server import get_risk
 
+    many = ["src/auth/service.py", "src/db/models.py"]
     assert "global_hotspots" not in await get_risk(["src/auth/service.py"])
-    assert "global_hotspots" in await get_risk(["src/auth/service.py", "src/db/models.py"])
+    assert "global_hotspots" not in await get_risk(many)
+    assert "global_hotspots" in await get_risk(many, include=["hotspots"])
+    assert "global_hotspots" in await get_risk(["src/auth/service.py"], include=["hotspots"])
+
+
+@pytest.mark.asyncio
+async def test_a_card_shows_three_co_change_partners_and_counts_the_rest(setup_mcp, session):
+    import json
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    partners = [{"file_path": f"src/p{i}.py", "count": 9 - i} for i in range(6)]
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(co_change_partners_json=json.dumps(partners))
+    )
+    await session.flush()
+
+    card = (await get_risk(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
+
+    assert [p["file_path"] for p in card["co_change_partners"]] == [
+        "src/p0.py",
+        "src/p1.py",
+        "src/p2.py",
+    ]
+    assert card["co_change_partners_total"] == 6
+    assert card["co_change_partners_truncated"] is True
 
 
 @pytest.mark.asyncio
@@ -860,7 +905,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "hotspots", "owners", "scales", "tests"],
         }
     ]
 
@@ -1130,6 +1175,46 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
         ("pickle_loads", "high"),
         ("tls_verify_false", "med"),
         ("weak_hash", "low"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_secret_signal_carries_its_kind_only(setup_mcp, session):
+    import json
+    from datetime import UTC, datetime
+
+    from repowise.core.analysis.security_scan import masked_snippet
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    value = "Zq9XjW7vK3pLm2NbQ8tR"  # made up for this test
+    rows = [
+        ("hardcoded_secret", masked_snippet(f'API_KEY = "{value}"')),
+        ("pickle_loads", "pickle.loads(blob)"),
+    ]
+    for line, (kind, snippet) in enumerate(rows, start=1):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity="high",
+                snippet=snippet,
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    text = json.dumps(signals)
+    assert "API_KEY" not in text and "****" not in text
+    for at in range(len(value) - 2):
+        assert value[at : at + 3] not in text
+    assert signals == [
+        {"kind": "hardcoded_secret", "severity": "high"},
+        {"kind": "pickle_loads", "severity": "high", "snippet": "pickle.loads(blob)"},
     ]
 
 

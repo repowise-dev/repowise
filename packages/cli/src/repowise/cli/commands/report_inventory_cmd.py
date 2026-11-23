@@ -23,7 +23,7 @@ from repowise.cli.helpers import (
     "fmt",
     default="markdown",
     show_default=True,
-    help="Renderer: json, markdown or html (or one a plugin registers).",
+    help="Renderer: json, markdown, html or csv (or one a plugin registers).",
 )
 @click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write to this file.")
 @click.option("--workspace", "workspace_flag", is_flag=True, help="Cover every workspace repo.")
@@ -42,17 +42,13 @@ def inventory_command(
         _build,
         _emit,
         _pick_sections,
+        _renderer,
         _scope,
     )
-    from repowise.core.report.render import report_renderers
 
     if not out_path:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report
-    if fmt not in report_renderers.names:
-        raise click.BadParameter(
-            f"unknown format {fmt!r}; available: {', '.join(report_renderers.names)}",
-            param_hint="--format",
-        )
+    render = _renderer(fmt)
     sections = _pick_sections("inventory")
     target = resolve_command_target(
         path=path,
@@ -64,4 +60,4 @@ def inventory_command(
     repos, scope = _scope(target)
     document = run_async(_build(repos, sections, scope))
     document["kind"] = "inventory"
-    _emit(report_renderers.get(fmt)(document), fmt, out_path, document)
+    _emit(render(document), fmt, out_path, document)

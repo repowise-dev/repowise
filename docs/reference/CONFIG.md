@@ -1,73 +1,12 @@
 # Configuration
 
-The `.repowise/` directory, provider setup, API keys, and what's customizable.
-
----
-
-## Contents
-
-**Files and `config.yaml`**
-[The `.repowise/` directory](#the-repowise-directory) ·
-[`config.yaml`](#configyaml) ·
-[Grounded generation context](#grounded-generation-context) ·
-[The `distill:` block](#the-distill-block) ·
-[The `hooks:` block](#the-hooks-block) ·
-[The `mcp:` block](#the-mcp-block) ·
-[The `decisions:` block](#the-decisions-block) ·
-[`policies.yaml`](#repowisepoliciesyaml) ·
-[The `security:` block](#the-security-block) ·
-[The `attribution:` block](#the-attribution-block) ·
-[The `events:` block](#the-events-block) ·
-[The `refactoring:` block](#the-refactoring-block) ·
-[The `assertions:` block](#the-assertions-block)
-
-**Code health rules**
-[The `health-rules.json` file](#the-health-rulesjson-file)
-
-**LLM providers**
-[Overview](#llm-providers) ·
-[Anthropic](#anthropic-claude) ·
-[OpenAI](#openai-gpt) ·
-[OpenRouter](#openrouter) ·
-[Gemini](#gemini-google) ·
-[DeepSeek](#deepseek) ·
-[Kimi](#kimi) ·
-[Ollama](#ollama-local-no-api-key) ·
-[LiteLLM](#litellm-100-providers) ·
-[Provider auto-detection](#provider-auto-detection)
-
-**Embeddings and keys**
-[Embeddings (for semantic search)](#embeddings-for-semantic-search) ·
-[BYOK (Bring Your Own Key)](#byok-bring-your-own-key)
-
-**Environment variables**
-[Overview](#environment-variables) ·
-[Provider API keys](#provider-api-keys) ·
-[Provider base URLs](#provider-base-urls) ·
-[Provider and model overrides](#provider-and-model-overrides) ·
-[Embeddings](#embeddings) ·
-[Server and database](#server-and-database) ·
-[Telemetry](#telemetry) ·
-[Misc](#misc)
-
-**Repo scope**
-[Exclude patterns](#exclude-patterns) ·
-[Submodules](#submodules) ·
-[PostgreSQL](#postgresql)
-
-**Workspace**
-[Workspace config (`.repowise-workspace.yaml`)](#workspace-config-repowise-workspaceyaml) ·
-[The `conformance:` block](#the-conformance-block)
-
-**Reference**
-[Deprecated / legacy aliases](#deprecated--legacy-aliases)
-
----
+The `.repowise/` directory, `config.yaml` and its blocks, providers, keys and
+environment variables.
 
 ## The `.repowise/` directory
 
-Everything repowise knows about your repository lives here. It's created at the
-repo root on first `init`.
+Everything Repowise knows about your repository, created at the repo root by
+`init`.
 
 ```
 .repowise/
@@ -83,424 +22,610 @@ repo root on first `init`.
 └── .env                 # API keys (gitignored automatically)
 ```
 
-repowise adds `.repowise/` to your `.gitignore` automatically. The directory
-should not be committed; it's a local cache, not a source of truth.
-
----
+`.repowise/` is a local cache, not a source of truth: add it to your
+`.gitignore` if you like, as Repowise does not edit that file during `init`. Only
+[`decisions.yaml`](#repowisedecisionsyaml) is meant to be committed. The secrets
+`.env` and `events.key` are ignored by `.repowise/.gitignore`, so they stay out
+of git even where `.repowise/` is committed.
 
 ## `config.yaml`
 
-The main configuration file. Created after first `init`, updated when you pass
-flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
+`init` creates it; flags such as `--commit-limit`, `--follow-renames` and
+`--wiki-style` update it. Hand edits apply on the next `init`, `update` or
+`serve`.
 
-> **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
-> Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect, except in the `security:` block, where they stop
-> `repowise security check`. `max_tokens` must be a positive integer when
-> documentation is generated. The `distill:` block is validated only when you run
-> `repowise doctor`. If a setting doesn't seem to be taking effect, check
-> spelling and indentation first.
+The key and variable tables in this file are generated from the settings
+registry in `repowise.core.settings`, so each lists every key or variable
+its block reads. Where an environment variable sets a key, the `Env var`
+column names it and says whether it or the file wins.
+
+> **Checking the file.** Commands read an unknown or misspelled key as nothing
+> and most bad values as the default. `repowise doctor` checks every key in
+> this file and every variable in these tables against the registry: a value
+> repowise cannot use fails with the form it accepts and the
+> `repowise config set` or `reset` command that fixes it, an unknown key warns
+> with the closest real key, and a variable that decides against the file is
+> named. `repowise doctor --repair` resets bad file values to their defaults
+> (outside `decisions:` and the provider selection, which take the row's command).
 
 ```yaml
-provider: anthropic                  # LLM provider (auto-detected if omitted)
-model: claude-sonnet-4-6             # Model identifier (provider default if omitted)
-embedder: mock                       # Embedding provider (mock if no key detected)
-embedding_model: text-embedding-3-small  # Embedding model (provider default if omitted)
-reasoning: auto                      # auto | off | none | minimal | low | medium | high | xhigh | max
-max_tokens: 16384                    # Max output tokens for each generated documentation page
-commit_limit: 500                    # Max commits per file for git analysis (clamped 1-10000)
-follow_renames: false                # Track file renames in git history
-wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
-language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
-enable_onboarding: true               # Show first-run onboarding prompts
-max_file_pages: 2000                  # Cap file pages (omit = size policy, 0 = one page per file)
-generation_context:                   # Optional source evidence for synthesis pages
-  token_budget: 8000
-  files:
-    repo_overview:
-      - docs/ARCHITECTURE.md
-    onboarding/how_it_works:
-      - docs/runtime-flow.md
-exclude_patterns:                    # Gitignore-style patterns
-  - vendor/
-  - "*.generated.*"
-  - proto/
-
-distill:                             # see "The distill: block" below
-  enabled: true
-
-mcp:                                 # see "The mcp: block" below
-  tools: ["+get_execution_flows", "-get_dead_code"]
-
-refactoring:                         # see "The refactoring: block" below
-  enabled: true
-
-assertions:                          # see "The assertions: block" below
-  extra_names: []
+provider: anthropic
+model: claude-sonnet-4-6
+embedder: mock
+embedding_model: text-embedding-3-small
+reasoning: auto
+max_tokens: 16384
+commit_limit: 5000
+follow_renames: false
+wiki_style: comprehensive
+language: en
+enable_onboarding: true
+max_file_pages: 2000
+folder_coverage: ["src/core=1.0", "src/legacy=0.5"]
+exclude_patterns: [vendor/, "*.generated.*", proto/]
+distill: {enabled: true}
+mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 ```
 
-You can edit this file directly. Changes take effect on the next `init`,
-`update`, or `serve` run.
+<!-- BEGIN GENERATED settings:config-yaml (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does | Env var |
+|-----|---------|--------|--------------|---------|
+| `provider` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset: the saved global choice (provider_config.json), then REPOWISE_PROVIDER, then the first provider whose API key is present. | `REPOWISE_PROVIDER` (when the file is unset) |
+| `model` | unset |  | The model id to use with the provider. Unset: the saved global choice (provider_config.json), then REPOWISE_MODEL, then the provider's default model. | `REPOWISE_MODEL` (when the file is unset) |
+| `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `REPOWISE_REASONING` (wins over the file) |
+| `max_tokens` | `16384` | > 0 | Most output tokens for one generated page. |  |
+| `context_window` | unset | > 0 | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: no limit for hosted models, 16384 for a local server (Ollama reports its own num_ctx). |  |
+| `wiki_style` | `comprehensive` |  | How the wiki reads: comprehensive, caveman, reference, tutorial, or a custom style under .repowise/styles/. |  |
+| `language` | `en` | `en`, `ru`, `es`, `fr`, `de`, `zh`, `ja`, `ko`, `it`, `pt`, `nl`, `pl`, `tr`, `ar`, `hi` | Language the docs are written in. |  |
+| `max_file_pages` | unset | >= 0 | Most per-file pages to write; 0 means every file. Unset lets the repo size decide. |  |
+| `folder_coverage` | `[]` |  | Least share of files per folder that get their own page, as "glob=0.5". |  |
+| `enable_onboarding` | `true` |  | Write the onboarding pages. |  |
+| `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, fastembed (the local-embed extra), openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
+| `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
+| `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
+| `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
+| `follow_renames` | `false` |  | Follow files across renames in git history. |  |
+| `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
+| `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
+| `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
+| `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |
+| `managed_checkout` | `false` |  | This checkout is a clone the server owns: before each server sync it fetches the tracked branch and fast-forwards to it. Leave off for a working tree you edit. |  |
+<!-- END GENERATED settings:config-yaml -->
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
-| `model` | provider default | Model identifier passed to the provider |
-| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` |
-| `embedding_model` | provider default | Embedding model identifier |
-| `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
-| `commit_limit` | `500` | Max commits per file walked for git analysis, clamped to 1-10000 |
-| `follow_renames` | `false` | Track file renames through git history |
-| `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
-| `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
-| `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
-| `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
-| `max_file_pages` | unset | Most file pages a run emits, highest importance first. Three states: **unset** lets the size policy decide (untouched below 4,500 documentable files, held to 4,500 above, which is about 1 repo in 100), **0** means one page per eligible file however many that is, and a **positive value** is a hard cap. `repowise init` offers a tighter cap in advanced mode above 2,000 documentable files, and `--max-file-pages N` sets it non-interactively. `update --full` and `generate` honour whatever is recorded. Capping file pages does not reduce model spend: file pages are rendered from structure |
-| `generation_context` | see below | Repository-source evidence appended to model-written overview and onboarding prompts |
-| `distill` | see below | Output distillation config |
-| `mcp` | see below | MCP tool surface config |
-| `refactoring` | see below | Refactoring-intelligence config |
-| `forges.hosts` | `{}` | Maps a self-managed git host to its forge (`github`, `gitlab`, `azure`, `bitbucket`, `generic`). See [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts) |
+More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
+[`max_tokens`](#max_tokens), [`max_file_pages`](#max_file_pages),
+[`folder_coverage`](#folder_coverage), [`wiki_style`](#wiki_style) and
+[`language`](#language) below; `exclude_patterns` in
+[Exclude patterns](#exclude-patterns), `embedder` in
+[Embeddings](#embeddings-for-semantic-search), `forges.hosts` in
+[GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts), and
+`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes),
+and `managed_checkout` in
+[AUTO_SYNC.md](../scale/AUTO_SYNC.md#7-server-owned-clones).
 
-`reasoning` controls documentation-generation calls for reasoning-capable chat
-models. `auto` preserves provider defaults. `off`/`none` disable Qwen3-style
-thinking for OpenAI-compatible vLLM/SGLang endpoints (sends
-`extra_body.chat_template_kwargs.enable_thinking=false`) and map to
-OpenRouter's `reasoning.effort=none` for effort-capable OpenRouter model
-families. `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` request the
-matching effort level from providers and model families that support it (for
-example OpenAI reasoning models and OpenRouter's `reasoning.effort`).
-Providers or models that cannot translate an explicit mode fail before making
-an API call.
+Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
+[`distill`](#the-distill-block), [`hooks`](#the-hooks-block), [`mcp`](#the-mcp-block),
+[`editor_files`](#the-editor_files-block), [`decisions`](#the-decisions-block),
+[`coverage`](#the-coverage-block), [`security`](#the-security-block),
+[`attribution`](#the-attribution-block), [`agent_provenance`](#the-agent_provenance-block),
+[`events`](#the-events-block), [`refactoring`](#the-refactoring-block),
+[`assertions`](#the-assertions-block), [`tests`](#the-tests-block), and
+[`<provider>.base_url`](#provider-endpoints-in-configyaml).
+Code-health rules live in [`health-rules.json`](#the-health-rulesjson-file).
 
-### Grounded generation context
+`--skip-tests`, `--skip-infra` and `--include-submodules` apply only to their
+run and are not stored here; `--include-submodules` is recorded in `state.json`
+(workspace state).
 
-Use `generation_context.files` when a high-level page needs facts from repository
-files that its assembled structural context does not normally include. Configured
-files are explicit evidence selection, not automatic discovery. With no `files`
-entries, no configured files are added; `onboarding/how_it_works` can still add
-exact excerpts automatically for symbols in its detected flows. The default
-shared `token_budget` is `8000`.
+### `commit_limit`
 
-Keys name model-written synthesis pages: `repo_overview` or `onboarding/<slot>`
-for `getting_started`, `key_concepts`, `how_it_works`, and `active_landscape`.
-`onboarding/project_overview` is invalid because that promoted slot is the
-`repo_overview` page. `onboarding/glossary` is accepted but has no effect: that
-page is rendered from mined vocabulary alone, with no model in its path, so
-there is no prompt for extra evidence to reach. Unknown keys and malformed
-values fail generation with a configuration error instead of being ignored.
+- Sets how far back churn, co-change, the commit list and change records
+  (newest 10,000 at most) see.
+- The first `repowise update` after upgrading re-reads history once, with no
+  model calls.
+- A value written here is kept; below the default, `update` says so once.
 
-`onboarding/guided_tour`, `onboarding/codebase_map` and
-`onboarding/development_guide` named pages that have since been retired. A
-config still carrying one is accepted and the entry is ignored, with a warning
-naming the key — an upgrade must not turn a previously valid config into a
-failed generation. Remove the entry to silence it.
+### `reasoning`
 
-Each value is an ordered list of repository-relative paths. A file is eligible
-only when it was included in the indexed source map and contains non-empty
-UTF-8 text. Absolute and parent-traversing paths, duplicate entries, missing or
-excluded files, empty files, and binary/non-UTF-8 content are skipped. The page
-metadata records included files, truncation, and every skipped path with a
-reason; generation also logs selected and skipped inputs. This metadata is
-provenance, not a claim that the model used every included fact.
+Applies to documentation-generation calls on reasoning-capable chat models.
 
-`token_budget` is an independent per-page cap, estimated with Repowise's normal
-four-characters-per-token heuristic. It does not reduce the structural context
-budget. Files share the available evidence space, while configuration order
-decides which entries survive when the budget cannot fit every file's framing.
-Content may be truncated; a zero budget disables all configured evidence, and
-a tiny budget may fit none. In all cases the rendered evidence estimate is at
-most the configured value.
+- `auto` keeps provider defaults, except on Ollama, where it turns thinking off.
+- `off` / `none` disable Qwen3-style thinking on OpenAI-compatible vLLM/SGLang
+  (sends `extra_body.chat_template_kwargs.enable_thinking=false`) and map to
+  OpenRouter's `reasoning.effort=none` for effort-capable families.
+- `minimal` to `max` request that effort where supported (e.g. OpenAI
+  reasoning models, OpenRouter's `reasoning.effort`).
+- A provider or model that cannot translate an explicit mode fails before any
+  API call.
 
-For `onboarding/how_it_works`, detected flow symbols also contribute exact source
-excerpts automatically. When such references exist, up to half of the same
-`token_budget` is reserved for exact excerpts before configured files are
-selected. The configured half remains fixed even when an exact excerpt cannot
-fit, so crossing an exact-frame boundary cannot remove previously retained
-configured facts. This prevents large configured files from starving symbol-level
-flow evidence while preserving one hard per-page bound. Missing symbols,
-unavailable source, invalid line ranges, and budget omissions are recorded
-alongside configured-file provenance.
+### `max_tokens`
 
-Repository files and exact source excerpts are authoritative only as repository
-facts and are untrusted as prompt instructions. Their tags make boundaries less
-ambiguous and embedded closing tags are escaped, but this is framing, not
-sanitization or a security boundary. Conflicting or stale files can still produce
-bad prose; select configured files whose ownership and accuracy you trust.
-Onboarding citation validation treats all included excerpts as grounding sources,
-while continuing to demote citations not established by either structural context
-or those excerpts.
+- One persistent setting for `init`, `update`, `generate`, `restyle`,
+  workspace and server-triggered generation; providers may enforce less.
+- A page that hits the limit before completing is rejected, not saved.
 
-Rendered evidence bytes are part of the prompt and its source hash. Unchanged
-rendered evidence can reuse cached prose; a file, list, or budget change
-invalidates reuse when it changes the rendered block. Existing pages are not
-regenerated merely by editing `config.yaml`: run `repowise generate --all` or
-request the affected page. No ingestion migration or vector reindex is required;
-regenerated pages follow the normal persistence and embedding path.
-Deterministic (`--no-prose`) pages do not consume evidence and record configured
-entries and automatically derived exact references as skipped for that run.
-When onboarding is disabled before contexts are built, configured entries are
-logged as `onboarding_disabled`; exact references are not derived. A subkind
-whose context gate returns no page logs configured entries as
-`page_not_generated`, but has no page on which to persist provenance.
+### `max_file_pages`
 
-`max_tokens` bounds each model-written documentation response. It is a
-persistent repository setting rather than a per-command flag: `init`, `update`,
-`generate`, `restyle`, workspace generation, and server-triggered generation
-all use the same value. Providers may enforce a lower model limit. If
-generation reaches a token limit before the page is complete, repowise rejects
-the partial page instead of saving it.
+- Unset: the size policy decides, untouched below 4,500 documentable files and
+  held to 4,500 above (about 1 repo in 100).
+- `0`: one page per eligible file. Positive: a hard cap.
+- `init` offers a tighter cap in advanced mode above 2,000 documentable files;
+  `--max-file-pages N` sets it non-interactively. `update --full` and
+  `generate` honour the recorded value.
+- File pages are rendered from structure, so a cap does not reduce model spend.
 
-`wiki_style` controls the voice and density of generated wiki pages. Set it with
-`init --wiki-style` or switch later with `repowise restyle <style>` (which also
-regenerates the wiki). Power users can define their own style under
-`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI.md](../layers/WIKI.md#styles).
-Note: hand-editing `wiki_style` here and running `update` does not regenerate
-existing pages, use `restyle`.
+### `folder_coverage`
 
-`language` controls the natural language of generated wiki content (code, file
-paths, and symbol names stay untranslated). It reaches both the model-written
-pages and the headings and fixed sentences of the template-rendered ones — file,
-symbol, infrastructure, cycle and API-contract pages — for the languages that
-have a label catalog. A language without one keeps the English headings on those
-pages while the model-written prose is still translated. Set it with
-`init --language <code>` or pick it in advanced interactive mode; it persists
-here so `update` regenerates changed pages in the same language. Unknown codes
-fall back to English with a warning. As with `wiki_style`, changing it later
-does not retranslate existing pages, re-run `init --force --language <code>`
-to rebuild the wiki in the new language.
+- `"src/core=1.0"` gives every eligible code file under `src/core` a file page
+  whatever its importance or the cap; `"src/legacy=0.5"` gives the top half.
+- A floor, not a cap: pinned files are added to the selection and never
+  displace a global pick, so the estimate rises with them.
+- `init --folder-coverage GLOB=PCT` (repeatable) sets it. Every run reads it,
+  and editing it re-renders the wiki on the next `update`.
 
-> **Code-health rules** are configured separately in
-> `.repowise/health-rules.json` (per-file marker overrides); see
-> [The `health-rules.json` file](#the-health-rulesjson-file) below.
+### `wiki_style`
 
-**Not stored in `config.yaml`:** `--skip-tests`, `--skip-infra`, and
-`--include-submodules` are CLI-flag-only for a given run; they don't persist
-to `config.yaml`. `--include-submodules` is recorded in `state.json` instead
-(workspace state), not in `config.yaml`.
+- Set with `init --wiki-style`, or `repowise restyle <style>`, which also
+  regenerates the wiki. Hand-editing it and running `update` does not.
+- A custom style lives in `.repowise/styles/<name>/style.yaml`
+  ([WIKI.md](../layers/WIKI.md#styles)). An unknown name falls back to
+  `comprehensive` in generation; the CLI and API validate it up front.
 
-### The `distill:` block
+### `language`
 
-Controls [output distillation](../agent/DISTILL.md) for this repo. Everything defaults
-sensibly when the block is absent; `repowise doctor` validates it.
+- Code, paths and symbol names stay untranslated.
+- Reaches model-written pages, and the headings and fixed sentences of
+  template-rendered ones (file, symbol, infrastructure, cycle, API-contract)
+  for languages with a label catalog; others keep English headings there.
+- Set with `init --language <code>` or advanced interactive mode; `update`
+  regenerates changed pages in it. Unknown codes fall back to English with a
+  warning.
+- Changing it does not retranslate existing pages: run
+  `init --force --language <code>`.
+
+## Grounded generation context
+
+`generation_context` adds chosen repository files as evidence to model-written
+synthesis pages. It is explicit selection, not discovery.
+
+```yaml
+generation_context:
+  token_budget: 8000
+  files:
+    repo_overview: [docs/ARCHITECTURE.md]
+    onboarding/how_it_works: [docs/runtime-flow.md]
+```
+
+<!-- BEGIN GENERATED settings:generation_context (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `token_budget` | `8000` | >= 0 | Most tokens of pinned source files added to a page as evidence. |
+| `files` | `{}` |  | Repo files to show the writer as evidence, by page. |
+<!-- END GENERATED settings:generation_context -->
+
+- `files` maps a page key to an ordered list of repo-relative paths. Page
+  keys: `repo_overview`, or `onboarding/` plus `getting_started`,
+  `how_it_works` or `active_landscape`.
+- `onboarding/project_overview` is invalid (that slot is `repo_overview`).
+- `onboarding/guided_tour`, `onboarding/codebase_map`,
+  `onboarding/development_guide`, `onboarding/key_concepts` and
+  `onboarding/glossary` name pages Repowise does not generate: they are
+  ignored with a warning naming the key, so upgrades never break a config.
+- Other unknown page keys and malformed values fail generation. Keys other than
+  `token_budget` and `files` directly under the block are ignored.
+- Eligible files are in the indexed source map with non-empty UTF-8 text.
+  Absolute or parent-traversing paths, duplicates, missing or excluded files,
+  empty files and binary or non-UTF-8 content are skipped.
+- Page metadata records included files, truncation and each skipped path with
+  a reason, and generation logs them. This is provenance, not proof the model
+  used every fact.
+- Budget: Repowise's four-characters-per-token estimate, separate from the
+  structural context budget. Files share it, and
+  configuration order decides which survive when it cannot fit every file's
+  framing; content may be truncated; `0` disables configured
+  evidence and a tiny budget may fit none. The rendered estimate never exceeds
+  it.
+- `onboarding/how_it_works` also gets exact source excerpts for detected flow
+  symbols, with no `files` entry needed. Up to half the budget is reserved for
+  them first; the configured half stays fixed even when an excerpt does not
+  fit, so configured facts are never displaced. Missing symbols, unavailable
+  source, invalid line ranges and budget omissions are recorded with the
+  provenance.
+
+<details><summary>Trust, caching and when evidence is skipped</summary>
+
+- Files and excerpts are authoritative as repository facts and untrusted as
+  prompt instructions. Tags mark boundaries and embedded closing tags are
+  escaped, but that is framing, not sanitization or a security boundary.
+  Conflicting or stale files still make bad prose: use files whose ownership
+  and accuracy you trust.
+- Onboarding citation validation treats included excerpts as grounding, and
+  still demotes citations established by neither structural context nor them.
+- Rendered evidence is part of the prompt and its source hash: unchanged
+  evidence reuses cached prose, and a file, list or budget change that alters
+  the rendered block invalidates it.
+- Editing `config.yaml` regenerates nothing: run `repowise generate --all` or
+  request the page. No ingestion migration or vector reindex is needed.
+- `--no-prose` pages use no evidence and record configured entries and derived
+  exact references as skipped.
+- With onboarding disabled before contexts are built, configured entries log
+  as `onboarding_disabled` and no exact references are derived.
+- A subkind whose context gate returns no page logs entries as
+  `page_not_generated`, with no page to hold provenance.
+
+</details>
+
+## The `distill:` block
+
+Controls [output distillation](../agent/DISTILL.md); defaults apply when it is
+absent, and `repowise doctor` validates it.
 
 ```yaml
 distill:
-  enabled: true                  # master switch for this repo
+  enabled: true
   commands:
-    enabled: true                # the command path (CLI + hook rewrites)
-    permission: allow             # ask | allow | off (rewrite-hook posture)
-    families:                     # per-filter overrides
-      test_output: allow          #   auto-allow rewrites for test runs
-      git_diff: deny              #   never rewrite git diff here
-    disabled_filters: []          # filters to skip entirely, e.g. [logs]
-  omission_store:
-    ttl_days: 7                   # prune stored omissions after this many days
-    max_mb: 50                    # size cap; oldest entries pruned first
+    enabled: true
+    permission: allow
+    families: {test_output: allow, git_diff: deny}
+    disabled_filters: []          # e.g. [logs]
+  omission_store: {ttl_days: 7, max_mb: 50}
 ```
 
-- `permission: allow` (the default) auto-approves rewrites, uniformly across
-  the main agent and every subagent. This is not a permission escalation: a
-  rewrite is always `repowise distill <one recognized command>` from a closed
-  family set, never an arbitrary command smuggled behind the wrapper. Set
-  `ask` to have each rewritten command shown for approval instead, or `off` to
-  disable rewrites in this repo.
-- `families` keys are filter names (`test_output`, `build_output`,
-  `lint_output`, `install_output`, `infra_plan`, `git_status`, `git_log`,
-  `git_diff`, `search_results`, `file_listing`, `logs`) and accept
-  `ask | allow | off | deny`. `repowise doctor` validates these against the
-  live filter registry, so it always knows the current set.
-- Declining the `repowise init` opt-in prompt writes
-  `commands.enabled: false`, so a rewrite hook installed globally from another
-  repo stays inert in this one.
+<!-- BEGIN GENERATED settings:distill (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `enabled` | `true` |  | Master switch for distill in this repo. |
+| `commands.enabled` | `true` |  | Let the agent hook rewrite noisy shell commands through repowise distill. |
+| `commands.permission` | `allow` | `ask`, `allow`, `off` | How a rewrite is approved: allow, ask each time, or off. |
+| `commands.families` | `{}` |  | Per output family: allow, ask, off or deny. |
+| `commands.disabled_filters` | `[]` |  | Filters never applied, by name (for example logs). |
+| `omission_store.ttl_days` | `7` | > 0 | Days a dropped piece of output stays recoverable. |
+| `omission_store.max_mb` | `50` | > 0 | Size cap of the store of dropped output; oldest goes first. |
+<!-- END GENERATED settings:distill -->
 
-### The `hooks:` block
+- `allow` auto-approves rewrites for the main agent and every subagent. It is
+  not an escalation: a rewrite is always `repowise distill <one recognized
+  command>` from a closed family set. `ask` shows each for approval; `off`
+  disables rewrites here.
+- Filter names: `test_output`, `build_output`, `lint_output`, `install_output`,
+  `infra_plan`, `git_status`, `git_log`, `git_diff`, `git_diff_stat`,
+  `search_results`, `file_listing`, `file_read`, `logs`. `repowise doctor` checks them
+  against the live registry.
+- Declining the `repowise init` opt-in writes `commands.enabled: false`, so a
+  rewrite hook installed globally from another repo stays inert here.
 
-Opt-in behaviour for the agent hooks ([HOOKS.md](../agent/HOOKS.md)). Absent
-means every key below is off.
+## The `hooks:` block
+
+Opt-in behaviour for the [agent hooks](../agent/HOOKS.md); every key is off
+when absent. `REPOWISE_HOOK_<KEY>` (e.g. `REPOWISE_HOOK_READ_REREAD=1`)
+overrides a key for one session.
+
+<!-- BEGIN GENERATED settings:hooks (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does | Env var |
+|-----|---------|--------|--------------|---------|
+| `read_skeleton` | `false` |  | Serve a whole-file Read of a large indexed file as its outline. | `REPOWISE_HOOK_READ_SKELETON` (wins over the file) |
+| `read_reread` | `false` |  | Serve an unchanged repeat Read as a short notice. | `REPOWISE_HOOK_READ_REREAD` (wins over the file) |
+| `search_digest` | `false` |  | Serve a search that floods many files as a digest. | `REPOWISE_HOOK_SEARCH_DIGEST` (wins over the file) |
+| `coverage_reingest` | `false` |  | Re-read coverage reports after an agent's full test run. | `REPOWISE_HOOK_COVERAGE_REINGEST` (wins over the file) |
+| `measure` | `false` |  | On update, check locally whether agents acted on each hook firing. | `REPOWISE_HOOK_MEASURE` (wins over the file) |
+| `health_gate` | `false` |  | Block an agent's commit or push that fails repowise health check. | `REPOWISE_HOOK_HEALTH_GATE` (wins over the file) |
+| `read_skeleton_mode` | `smart` | `smart`, `plus` | What a served outline keeps: smart, or plus to keep all code outside function bodies. | `REPOWISE_HOOK_READ_SKELETON_MODE` (wins over the file) |
+<!-- END GENERATED settings:hooks -->
+
+- `coverage_reingest` starts a process per shell command; see
+  [test intelligence](../layers/TEST_INTELLIGENCE.md).
+- `measure` reads this repo's recent agent transcripts locally, with no model,
+  for `repowise hook stats`. `repowise hook backfill` does the same on demand
+  either way.
+- `health_gate` is set with `repowise hook health-gate install`
+  ([CI](../start/CI.md#before-an-agent-commits-or-pushes)).
+
+**`read_skeleton`**
+
+- Once per file per session, the PostToolUse Read hook returns signatures with
+  bodies as `... N lines (a-b)` markers (1-indexed), so a ranged Read recovers
+  any span and a second Read returns the whole file.
+- `plus` mode keeps imports, constants, class fields, decorators and comments,
+  eliding only function and method bodies.
+- A file whose skeleton is over the 10,000-character hook output cap is served
+  as an outline: one line per symbol, long signatures cut, the same range
+  markers. When the outline is still over the cap, it lists as many symbols as
+  fit (top-level types first, then the longest functions) and says how many.
+- A file edited since the last index is passed through whole, so the line
+  numbers are never off.
+- Savings show in `repowise saved` under `read_skeleton`. Needs Claude Code
+  2.1.218+; older clients get the one-line pointer at
+  `get_context(include=["skeleton"])`.
+- The `repowise init` rewrite-hook question turns it on too (that question
+  already asks whether Repowise's hooks may intervene, and a shell rewrite is
+  the larger intervention); `--no-editor-setup` and `--no-distill-hook` turn
+  it off. Per repo: `repowise hook read-skeleton install | uninstall | status`.
+- While off, skeleton-eligible Reads are measured and `repowise saved` shows
+  them under "Not saved": what replacement would have saved, and nothing about
+  whether the agent wanted the whole file.
+
+**`read_reread`**
+
+- Answers a repeat Read with a notice naming the earlier read and its tool
+  call, when the same range was served this session, no `Edit` or `Write`
+  came between, and the bytes hash the same.
+- A changed file is served in full, with a line saying it changed on disk
+  outside this session's edits, which nothing else in the session can detect.
+- Never twice in a row for one file: compaction can drop the earlier copy and
+  a hook cannot tell, so the next Read returns content, as the notice says.
+- Savings show under `read_reread`. Needs Claude Code 2.1.218+; older clients
+  are untouched.
+
+## The `mcp:` block
+
+Chooses the tools the MCP server advertises. The default is curated: 10 tools
+in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
+--tools` / `--all` override it for one launch.
+
+<!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `tools` | unset | Which MCP tools are offered, for every client: a profile (core, lean, standard, all), optionally followed by +name or -name; +name or -name alone to adjust each client's default; or plain names as the exact list. Unset: Claude Code gets standard, clients that load every schema up front get core. |
+| `always_load` | `false` | Claude Code only: load the four read tools (get_answer, get_context, search_codebase, get_symbol) from the first turn instead of through tool search, for about 2.5k more tokens a turn. |
+<!-- END GENERATED settings:mcp -->
+
+| `tools` value | Effect |
+|---------------|--------|
+| `["+name", "-name"]` | Add to or remove from the default set. |
+| `["get_answer", "get_context"]` | Unprefixed: an explicit allowlist. |
+| `all` | Everything available. |
+| `lean` | `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace mode), small enough for Claude Code to keep every schema loaded. |
+
+The seven opt-in tools are `get_dependency_path`, `get_execution_flows`,
+`generate_refactoring_code`, `set_finding_status` and the workspace-only
+`get_blast_radius`, `get_conformance` and `get_architecture` (ignored in
+single-repo mode). See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
+
+## The `editor_files:` block
+
+The generated block in `.claude/CLAUDE.md` and `AGENTS.md`, read into the
+agent's context every turn, so the default is lean.
 
 ```yaml
-hooks:
-  read_skeleton: false           # serve large indexed files as skeletons
-  read_skeleton_mode: smart      # smart, or plus to keep all non-function code
-  read_reread: false             # serve unchanged re-reads as a pointer
-  search_digest: false           # serve multi-file grep floods as a digest
-  coverage_reingest: false       # re-ingest coverage after an agent's full test run
+editor_files:
+  claude_md: true
+  sections: ["+commands", "+fix_first"]
 ```
 
-- `coverage_reingest` re-ingests coverage after an agent's full test run, at
-  a process start per shell command (`REPOWISE_HOOK_COVERAGE_REINGEST=1` for
-  one session). Details: [test intelligence](../layers/TEST_INTELLIGENCE.md).
+<!-- BEGIN GENERATED settings:editor_files (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `claude_md` | `true` | Write .claude/CLAUDE.md. |
+| `agents_md` | `true` | Write AGENTS.md. |
+| `cursor_rules` | `true` | Write the Cursor rules file. |
+| `kiro_steering` | `true` | Write the Kiro steering file. |
+| `vscode_mcp` | `true` | Write the VS Code MCP entry. |
+| `sections` | `[decisions, how_to_work]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: architecture, key_modules, entry_points, hotspots, health, code_health, fix_first, commands, how_to_work_full, tools. |
+<!-- END GENERATED settings:editor_files -->
 
-- `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
-  short notice instead of the content, when the same range was already served
-  this session, no `Edit`/`Write` came between, and the bytes hash the same.
-  The notice names the earlier read and the tool call it happened on.
-  Savings land in `repowise saved` under the `read_reread` filter.
-  - **Nothing is guessed.** The decision is a hash comparison over what the
-    agent was actually served. A file whose content differs is served in full,
-    with a line saying it changed on disk and not through an edit in this
-    session — which is worth more than the bytes, since nothing else in the
-    session can discover that.
-  - **Never twice in a row for the same file.** The premise is that the earlier
-    copy is still in the agent's context, and a context compaction removes it.
-    That is not detectable from a hook, so reading again always returns the
-    content, and the notice says so.
-  - Requires Claude Code 2.1.218+; older clients are left untouched.
-    `REPOWISE_HOOK_READ_REREAD=1` overrides the file for one session.
-- `read_skeleton` lets the PostToolUse Read hook return the *skeleton* of a
-  file instead of the file, for an unbounded Read of a large indexed file, once
-  per file per session. Signatures stay; bodies become `... N lines (a-b)`
-  markers carrying 1-indexed ranges, so any elided span can be pulled back with
-  a ranged Read — and reading the file a second time returns it whole.
-  Savings land in `repowise saved` under the `read_skeleton` filter.
-- `read_skeleton_mode: plus` keeps every line outside a function or method
-  body (imports, constants, class fields, decorators, comments) and elides
-  only the bodies. Default `smart`. `REPOWISE_HOOK_READ_SKELETON_MODE=plus`
-  overrides the file for one session.
-- **Written by the rewrite-hook question in `repowise init`.** Saying yes there
-  turns this on too; `--no-editor-setup` and `--no-distill-hook` turn it off
-  with everything else. There is no separate prompt, because that question
-  already asks the broader thing — letting repowise's hooks intervene in your
-  agent's tool calls — and rewriting a shell command is the larger
-  intervention of the two. To change your mind for one repo without re-running
-  init, use `repowise hook read-skeleton install | uninstall | status`.
-- **What it costs while off.** Every Read that *would* have been served as a
-  skeleton is measured anyway, and `repowise saved` reports the total under
-  "Not saved". That figure is what the replacement would have taken off the
-  bill and only that — nothing was replaced, so nothing was read back, so it
-  says nothing about how often the agent would have wanted the whole file.
-- `REPOWISE_HOOK_READ_SKELETON=1` overrides the file for one session.
-  Requires Claude Code 2.1.218+ (older clients silently fall back to the
-  one-line pointer at `get_context(include=["skeleton"])`).
+- `false` on a file key stops Repowise writing that file.
+- Every block leads with one line telling the agent to call a Repowise tool
+  first for any question about the codebase.
+- Default sections: `how_to_work` (one line per moment: rename, edit, finish,
+  noisy commands, settings) and `decisions` (whether decisions govern files,
+  plus up to five pinned titles). The default block stays within about 250
+  tokens; a test holds it there.
+- Opt-in: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `code_health` (all health signals, replaces
+  `health`), `fix_first`, `commands` (build, test and lint from manifests),
+  `how_to_work_full`, `tools` (the MCP tool table). For example
+  `sections: [+key_modules, +hotspots]`.
 
-### The `mcp:` block
+## The `decisions:` block
 
-Controls which tools the MCP server advertises. The default surface is curated
-(10 tools in single-repo mode, plus `list_repos` in workspace mode; seven more are opt-in);
-this block lets you opt extra tools in or trim the set down. The `repowise mcp
---tools` / `--all` flags override it for a single launch.
-
-```yaml
-mcp:
-  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
-  # tools: ["get_answer", "get_context"]              # or an explicit allowlist
-  # tools: all                                        # or everything available
-  # tools: lean                                       # or the agent-lean profile
-```
-
-- `+name` / `-name` entries add to or remove from the default set; an
-  unprefixed list is treated as an explicit allowlist.
-- `lean` selects the agent-lean profile: `get_answer`, `get_context`,
-  `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace
-  mode), small enough that Claude Code can keep every schema always loaded.
-- Opt-in tools are `get_dependency_path`, `get_execution_flows`,
-  `generate_refactoring_code`, and `set_finding_status`, plus the workspace-only
-  `get_blast_radius`, `get_conformance` and `get_architecture`. None is on by
-  default. The workspace-only three are ignored if named in single-repo mode. See
-  [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
-
-### The `decisions:` block
-
-Controls decision capture: whether it runs at all, which sources it uses, and
-whether any of them may call a model. One resolved policy backs the CLI, the
-API, and the index pipeline, so all three agree about what will run.
+The decisions layer: one `mode` for the whole layer, then which sources
+`init` mines, whether any may call a model, and the switches for each hook.
+One resolved policy backs the CLI, API, hooks, MCP tools and index pipeline.
+Every key is optional.
 
 ```yaml
 decisions:
-  enabled: true             # master switch for automatic capture
-  llm: true                 # master switch for decision-extraction model calls
-  preset: balanced          # default | off | local_only | balanced | full
+  mode: full
+  preset: balanced
   sources:
-    inline_marker: true     # WHY:/DECISION: markers
-    git_archaeology: true   # commit messages
-    adr: true               # ADR files
-    pr: true                # PR / squash-merge bodies
-    comment: false          # comment archaeology on top central files
-    session:                # off by default; long form runs the deterministic
-      enabled: true         #   parse and skips the model stage
-      llm: false
-    session_discovery: true # one broad model pass over new transcript prose
-    conventions: false      # import patterns the graph proves, no model
-  discovery:                # budget for that one pass, per update
-    max_sessions: 12        # 1-24
-    max_input_tokens: 30000 # 2000-60000
-  harnesses:                # whose transcripts the session lane reads
-    - claude_code           # the default; add codex to read that store too
-  agent_acceptance: false   # may an agent grant a decision authority?
-  capture_prompt: false     # ask the agent to record what it just committed
+    comment: false
+    session: {enabled: true, llm: false}
+    session_discovery: true
+  discovery: {max_sessions: 12, max_input_tokens: 30000}
+  harnesses: [claude_code, codex]
 ```
 
-`agent_acceptance` is the one key here that is not about capture. Off, an agent
-can propose candidates and withdraw authority but never grant it; on, it may
-accept, and the acceptance is recorded as an agent's — with the session that
-signed it — on every surface, never as yours. It ships off and no preset turns
-it on.
+<!-- BEGIN GENERATED settings:decisions (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `mode` | `full` | `off`, `read_only`, `full` | The one switch for decisions: full (capture and show), read_only (show what exists, capture nothing) or off. |
+| `preset` | unset | `default`, `off`, `local_only`, `balanced`, `full` | A named set of capture sources to start from. Unset reads as default. |
+| `enabled` | `true` |  | Master switch for automatic capture. Stored decisions and manual entry work either way. |
+| `llm` | `true` |  | Allow a model call while capturing decisions. Off keeps capture local. |
+| `agent_acceptance` | unset |  | Let a coding agent accept a decision, signed as the agent's. Unset: depends on decisions.mode: off under off, read_only; on under full. |
+| `capture_prompt` | unset |  | Ask the agent to record a decision when a commit states a choice. Unset: depends on decisions.mode: off under off, read_only; on under full. |
+| `require_approval` | `false` |  | Make every new decision wait for a person before it applies. |
+| `sync` | `false` |  | Send this repo's decisions to and from its copy on repowise.dev on update. |
+| `session_start` | `false` |  | Open each agent session with the decisions relevant to its work. |
+| `upkeep_prompt` | `false` |  | After a commit, ask the agent to settle the decisions it touched. |
+| `update_mining` | unset |  | Let repowise update call a model to find decisions in new commits and PRs. Unset: off, unless the decisions block names a preset or lists sources, which keeps an older setup mining. |
+| `discovery.max_sessions` | `12` | 1-24 | Most sessions read in one discovery pass. |
+| `discovery.max_input_tokens` | `30000` | 2000-60000 | Most input tokens one discovery pass may send. |
+| `harnesses` | `[claude_code]` |  | Which coding agents' local session transcripts may be read. |
+<!-- END GENERATED settings:decisions -->
 
-`capture_prompt` is the other. On, a successful `git commit` whose message
-carries two or more decision signals prompts the agent, once per session, to
-run `repowise decision add` — never for a commit a record already cites, and
-never as anything but a proposal. An agent cannot decline a hook, so this also
-ships off and no preset turns it on:
-`repowise decision config capture-prompt --on`.
+More on [`mode`](#mode), [sources](#sources), [presets](#presets),
+[`require_approval`](#require_approval), [`sync`](#sync),
+[`update_mining`](#update_mining), [`session_start`](#session_start) and
+[`upkeep_prompt`](#upkeep_prompt) below.
 
-That command also installs what it needs. The shared PostToolUse matcher
-deliberately excludes the shell tools — measured at 51% of hook invocations
-for 0.7% of emissions — so switching the prompt on adds a separate
-`Bash|PowerShell` PostToolUse entry, and switching it off removes it. The
-entry is per install rather than per repository: other repositories on the
-machine pay a process start on shell calls and emit nothing unless they
-switch it on too, and switching it off here turns it off for all of them.
+### `mode`
 
-Every key is optional. **A config with no `decisions:` block behaves exactly as
-it did before these switches existed**: every source that shipped on is on,
-model stages on. That resolved policy is named `default`. A source added after
-those switches existed (`session_discovery` and `conventions`) stays off until you
-ask for it, so upgrading never starts a model call nobody enabled. `session` is
-the one default that has moved: it now ships **off**, because what it captured
-read as working agreements from a transcript rather than decisions the codebase
-had taken. `repowise decision source set session --on` turns it back on, and
-`local_only` still carries it. The same
-holds for a config that names a preset *and* lists its sources: that list is
-what the preset covered when it was written, so a source added to that preset
-later does not join it retroactively. Re-apply the preset to pick it up.
+The one switch for the layer. Each position sets the defaults of the finer
+switches below; a switch you set explicitly wins over its mode's default,
+except under `off`.
 
-A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
-matters for a source with both a deterministic and a model stage
-(`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
-the model call. A source that is model-only (`git_archaeology`, `pr`,
-`comment`, `session_discovery`) is skipped entirely when its model stage is
-off, because running it would produce a zero indistinguishable from an empty
-repository.
+| Mode | Shows decisions | Records decisions | Defaults it sets |
+|------|-----------------|-------------------|------------------|
+| `full` | Yes | Yes | The defaults in the table above |
+| `read_only` | Yes: the edit notice, `get_why`, `get_answer`, the agent-file pointer and pins, and pulls from repowise.dev when `sync` is on | No: no mining, no capture prompt, no agent putting a decision in force, nothing sent to repowise.dev, no landing granting force | `capture_prompt`, `agent_acceptance` off |
+| `off` | No: every hook, MCP surface and the agent-file block stay silent; `get_why` answers that decisions are off | No | Everything off; explicit switches are ignored |
 
-Unknown keys are reported as warnings rather than discarded, so a typo'd source
-name shows up instead of silently reading as a working switch. Retired names
-(`code_comment`, `changelog`, `readme_mining`) are among them: an old config
-still loads, it just says which key it ignored.
+`repowise decision config mode off|read-only|full` sets it and resets the
+finer switches to that mode's defaults; set one afterwards to differ. A bare
+`mode: off` in YAML reads as off, and an unknown value reads as `read_only`
+with a warning. Manual entry (`repowise decision add` by a person) works in
+every mode.
 
-**Presets** are conveniences that write the same keys:
+### Sources
+
+Keys under `decisions.sources.`:
+
+<!-- BEGIN GENERATED settings:decisions-sources (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `inline_marker.enabled` | `true` | Capture from inline markers. WHY:/DECISION:/TRADEOFF: comment markers in source files. A preset may change the default. |
+| `inline_marker.llm` | `true` | Allow a model call when capturing from inline markers. |
+| `git_archaeology.enabled` | `true` | Capture from git archaeology. Commit messages carrying one of the decision verbs. A preset may change the default. |
+| `git_archaeology.llm` | `true` | Allow a model call when capturing from git archaeology. |
+| `adr.enabled` | `true` | Capture from ADR files. Nygard and MADR architecture decision records. A preset may change the default. |
+| `adr.llm` | `true` | Allow a model call when capturing from ADR files. |
+| `pr.enabled` | `true` | Capture from pull request bodies. Squash-merge and PR bodies that read as a description. A preset may change the default. |
+| `pr.llm` | `true` | Allow a model call when capturing from pull request bodies. |
+| `comment.enabled` | `true` | Capture from comment archaeology. Rationale prose in comments on high-centrality files. A preset may change the default. |
+| `comment.llm` | `true` | Allow a model call when capturing from comment archaeology. |
+| `session.enabled` | `false` | Capture from agent sessions. Durable choices mined from local coding-agent transcripts. A preset may change the default. |
+| `session.llm` | `true` | Allow a model call when capturing from agent sessions. |
+| `session_discovery.enabled` | `false` | Capture from session discovery. One broad model pass over new transcript prose each update. A preset may change the default. |
+| `session_discovery.llm` | `true` | Allow a model call when capturing from session discovery. |
+| `conventions.enabled` | `false` | Capture from conventions. Import patterns the graph proves: a wrapper most files reach a library through. A preset may change the default. |
+<!-- END GENERATED settings:decisions-sources -->
+
+- [Session mining](#session-mining) and [session discovery](#session-discovery)
+  have their own sections below. `git_archaeology`, `pr`, `comment` and
+  `session_discovery` are model-only.
+- A source is a boolean or `{enabled, llm}`. `llm: false` matters only for
+  sources with a deterministic stage (`inline_marker`, `adr`, `session`): it
+  keeps the parse and skips the model.
+- A model-only source with its model stage off is skipped entirely: it would
+  produce a zero indistinguishable from an empty repository.
+- Unknown keys warn instead of silently reading as a switch; `code_comment`,
+  `changelog` and `readme_mining` are unknown keys.
+- With no block, the policy is `default`: long-standing sources and model
+  stages on, except `session`. `session_discovery` and `conventions` stay off
+  until asked for, so upgrading never starts an unrequested model call.
+- `session` ships off because its captures read as working agreements, not
+  decisions. `repowise decision source set session --on` enables it;
+  `local_only` includes it.
+- A config naming a preset and listing sources keeps that list, so a source
+  later added to the preset does not join; re-apply the preset.
+- Legacy `decisions.session_mining: true|false` maps to `session` both ways;
+  an explicit `sources.session` may narrow, never widen it. The first CLI or
+  API write replaces it with `sources.session`.
+
+### Presets
 
 | Preset | Effect |
 |--------|--------|
-| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on; session mining and broad discovery off. |
-| `off` | No automatic capture. Stored decisions and manual entry keep working. |
-| `local_only` | Deterministic capture only, session mining included — it is the only lane that produces without a key. Zero decision-extraction model calls. |
-| `balanced` | The high-signal sources plus session mining and broad session discovery, which is fed by it; comment archaeology off. |
-| `full` | Every source, every model stage. |
+| `default` | No block. Long-standing sources on; session mining and broad discovery off. |
+| `off` | No automatic capture; stored decisions and manual entry still work. |
+| `local_only` | Deterministic only, session mining included (the only lane that produces without a key); zero extraction model calls. |
+| `balanced` | High-signal sources, session mining and the discovery it feeds; comment archaeology off. |
+| `full` | Every source and model stage. |
 
-Editing any individual key after applying a preset drops the `preset` line and
-the resolved policy reads as `custom`.
+Editing a key after a preset drops the `preset` line; the policy reads `custom`.
 
-`llm: false` is a complete mode, not a degraded one: transcripts are still
-read, markers and ADRs are still parsed, episodes are still recorded, manual
-decisions still work, and already-accepted decisions keep governing. It is the
-one switch that proves no decision extraction reaches a model.
+Sources say what is mined at `init` (and `update --full`). Whether `update`
+mines too is [`update_mining`](#update_mining), which no preset changes.
 
-Set these from the CLI rather than by hand if you prefer:
+`llm: false` is complete, not degraded: transcripts are read, markers and ADRs
+parsed, episodes recorded, manual decisions work and accepted ones govern. It
+is the one switch proving no extraction reaches a model.
+
+### `agent_acceptance` and `capture_prompt`
+
+Neither is about capture, and no preset changes them.
+
+- `agent_acceptance` on (default): an agent may accept, recorded as an
+  agent's with the signing session, on every surface, never as yours. Off: an
+  agent can propose and withdraw authority, never grant it. `false` is written
+  to the config so it survives a reload.
+- `capture_prompt` on (default): a successful `git commit` with two or more
+  decision signals prompts the agent, once per session, to run
+  `repowise decision add`; never for a commit a record already cites, and only
+  as a proposal. `false` is written to the config so it survives a reload.
+- It fires from a separate `Bash|PowerShell` PostToolUse entry, which `init`
+  and the Claude Code plugin install. The entry tests the payload for
+  `git commit` in the shell, so other shell calls never start Python.
+- `repowise decision config capture-prompt --off` switches the prompt off for
+  one repository and leaves the per-install entry, which stays silent there.
+  `--on` reinstalls the entry if it is missing.
+
+### `require_approval`
+
+Off by default: a decision an agent records comes into force when the commit
+it cites lands on the default branch. On, the landing grants nothing and an
+agent's own acceptance is refused; a person puts each new decision in force
+with `repowise decision confirm`. `repowise decision config approval --on`
+writes it. A value that is not a boolean reads as on.
+
+### `sync`
+
+Off by default, and no preset changes it. On, and with this machine signed in
+(`repowise login`) and a GitHub `origin`, every `update` runs
+`decision push` then `decision pull` against the repo on repowise.dev. No
+model runs, and a failure prints one line without failing the update. Under
+`mode: read_only` only `pull` runs. A value that is not a boolean reads as off. `repowise decision config sync --on|--off`
+writes it.
+
+### `update_mining`
+
+Off by default: `init` reads PR bodies, commit messages and comments once,
+and the records it mines are background, served by `get_why` when asked.
+`update` then makes no model call for decisions. Inline markers are still read
+on changed files, and decisions an agent recorded still come into force when
+their commit lands.
+
+- On: each `update` also mines new PR bodies and commits, structures new
+  inline markers, and asks the model whether a change replaced a decision it
+  touches. `repowise decision config update-mining --on`.
+- With no `update_mining` key, a `decisions:` block that names a `preset` or
+  lists `sources` reads as on, so a repository configured before this setting
+  keeps mining on update. No block reads as off. The key is written on every
+  CLI or API write.
+- While off, each source's mining pointer stays where it was; switching on
+  mines the missed range, bounded by each miner's cap.
+
+### `session_start`
+
+Off by default: an agent sees a decision when it edits a file the decision
+governs, and `get_why` answers for any path, so a session that never touches
+governed code pays nothing for decisions.
+
+- On: the session start hook also lists up to six decisions in force over the
+  files the session is likely to touch (changed, staged, on the branch, or
+  edited last session), plus at most two labelled background records.
+  `repowise decision config session-start --on`.
+
+### `upkeep_prompt`
+
+Off by default. On, a successful `git commit` that changes files governed by
+decisions in force gets one line naming up to three of them, each once per
+session, with the one command for each outcome:
+
+- still holds: `repowise decision reaffirm <id> --agent <slug>`
+- replaced by this change: `repowise decision deprecate <id> --superseded-by <new id> --agent <slug>`
+- knowingly broken: `repowise decision deprecate <id> --reason '<why>' --agent <slug>`
+
+It fires from the same shell entry as `capture_prompt`; `repowise decision
+config upkeep-prompt --on` installs it if missing. Every firing is logged, and
+`repowise hook stats` reports how often a session settled a decision it named.
+
+### From the CLI
 
 ```bash
 repowise decision config show          # the resolved policy, per source
+repowise decision config mode read-only  # off | read-only | full
 repowise decision config preset local_only
 repowise decision source set comment --off
 repowise decision source set adr --no-llm     # keep the parse, skip the model
@@ -509,75 +634,83 @@ repowise decision config discovery --max-sessions 6 --max-input-tokens 12000
 repowise decision llm --off
 ```
 
-Every mutating command takes `--dry-run` to print the change without writing,
-and `--format json` for scripts. Writes are atomic and preserve every unrelated
-key in `config.yaml`.
+Mutating commands take `--dry-run` and `--format json`; writes are atomic and
+keep unrelated keys.
 
-The legacy `decisions.session_mining: true|false` key is still honoured and
-resolves to the `session` source, in both directions: since that source now
-ships off, a config that says `true` still switches it on. An explicit
-`sources.session` may narrow that, never widen it. The first write through the
-CLI or the API replaces the legacy key with `sources.session`.
+### Session mining
 
-### `.repowise/decisions.yaml`
+`session` (off by default) lets `repowise update` read coding-agent transcripts
+(Claude Code's `~/.claude/projects/`) for user corrections, explicit choices
+with a stated reason, and failed approaches replaced by working ones.
 
-Everything else under `.repowise/` is a local index you can delete and rebuild.
-This one file is not: it holds the decisions you accepted, and it is meant to be
-committed. `repowise decision export` writes it and un-ignores it in your
-`.gitignore` if a `.repowise/` rule was hiding it; `repowise decision import`
-reconciles the store to it, with the file as the authority. Its format carries
-its own `version`, and a file written by a newer repowise is refused rather than
-downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
+- Deterministic gates first, then one batched LLM structuring call per update;
+  any field not quoting the transcript verbatim is dropped.
+- Mined records are background however often they recur; `repowise decision
+  confirm` puts one in force.
+- All local: transcripts are read on your machine, staging is
+  `.repowise/sessions/sessions.db`, and only distilled decision text is stored.
 
-`session` mining is **off by default**. Switched on, it lets `repowise update`
-read coding-agent session transcripts
-(Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
-explicit choices with a stated reason, and failed approaches replaced by working
-ones. Candidates pass deterministic gates first, then one batched LLM
-structuring call per update, and every produced field must quote the transcript
-verbatim or it is dropped. **Mined decisions are stored as candidates**, however
-many sessions they recur across; accepting one with `repowise decision confirm`
-is what makes it govern. Everything stays local: transcripts are read from your
-machine, staging lives in `.repowise/sessions/sessions.db`, and only the
-distilled decision text about the codebase is stored.
+### Session discovery
 
-`session_discovery` is the broad lane beside those gates. Once per update it
-sends the user and assistant prose that update newly read, bounded by
-`discovery.max_sessions` and `discovery.max_input_tokens`, to the model in a
-single call, and asks for durable decisions the gates never surfaced. It reuses
-the transcript read the `session` source already performs, so enabling it does
-not read your transcripts twice.
+`session_discovery` sends the prose an update newly read (bounded by
+`discovery.max_sessions` and `discovery.max_input_tokens`) to the model in one
+call per update, for decisions the gates missed. It reuses the `session`
+source's read and needs it on.
 
-Every candidate it returns must cite the span ids it rests on, and each cited
-quote is verified against that span's exact text before anything is stored.
-A candidate that cites a span that was not sent, quotes something no span
-says, or names a file the cited turns never touched is rejected and counted,
-never stored. Scope comes from the files those turns' tools touched; the model
-may select among them and may not add one. Everything it produces is a
-candidate: like the deterministic lane it is written `proposed`, and only
-`repowise decision confirm` makes a decision govern.
+- Each candidate cites span ids, and each quote is verified against the span.
+  Citing an unsent span, quoting nothing a span says, or naming a file the
+  cited turns never touched is rejected and counted.
+- Scope is the files those turns' tools touched; the model may pick among them,
+  not add.
+- Output is background (`proposed`); only `repowise decision confirm` puts it
+  in force.
+- Prose over budget queues in `sessions.db` and goes oldest-first next update,
+  never aged out unread. A provider failure retries it on the next two updates
+  before dropping it.
+- Switching off keeps the queue; prose read while off is never backfilled.
 
-Prose that does not fit one update's budget is not dropped. It stays queued in
-`.repowise/sessions/sessions.db`, the next update sends it oldest-first, and a
-queued span is never aged out before it is read. A provider failure leaves the
-same prose queued and retries it on the next two updates before retiring it, so
-an outage costs a round rather than the input. Switching the source off leaves
-what is already queued in place; new prose is only captured while the source is
-on, so there is no backfill of what was read while it was off. Discovery reads
-what the `session` source read, so it needs that source on too.
+Dismissals are sticky: `repowise decision dismiss` keeps a `dismissed`
+tombstone, so reindexing never re-proposes it, and re-extraction never moves a
+confirmed (`active`) decision back to `proposed`.
 
-Dismissals are sticky: `repowise decision dismiss` keeps the record as a
-`dismissed` tombstone, so reindexing never re-proposes the same decision, and
-a confirmed (`active`) decision is never walked back to `proposed` by a
-re-extraction.
+## `.repowise/decisions.yaml`
 
-### `.repowise/components.yaml`
+The committed record of decisions in force; the rest of `.repowise/` can be
+deleted and rebuilt.
 
-Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs written with `/`, matched case-sensitively), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match (where two match a file, the first declared wins), and one named like a derived component replaces it and, with no paths of its own, keeps its directory. A derived component is named after its directory, skipping route parameters and groups such as `[id]` or `(group)`; where two would share a name, the shallowest keeps it and each other adds its nearest parent directory other than `src`, `lib` or `app` (`workspace-web`), so a name a catalog already uses stays the same. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
+- `repowise decision export` writes it and un-ignores it if a `.repowise/`
+  rule hid it; `repowise decision import` reconciles the store to it.
+- It carries a `version`; a file from a newer Repowise is refused, not
+  downgraded. Round trip: [DECISIONS.md](../layers/DECISIONS.md).
 
-### `.repowise/policies.yaml`
+## `.repowise/components.yaml`
 
-The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own, and `doc_drift` is scoped to the change (`since`) unless the rule sets it. `require_owner_review` and `require_tests` are advisory: they are reported in every format and `repowise check` still exits 0; only `fail` exits 1.
+Components are what health, hotspots, bus factor, test reach and dead code roll
+up to. The file is multi-document Backstage YAML (`Component`, `System`,
+`Group` on `backstage.io/v1alpha1`); a repo-root `catalog-info.yaml` is read
+the same way, so a developer portal shares it. See
+[examples/components](../../examples/components/components.yaml) and
+`repowise components check`.
+
+| Annotation | Holds |
+|------------|-------|
+| `repowise.dev/paths` | Gitignore-style globs with `/`, case-sensitive. |
+| `repowise.dev/criticality` | `low`, `medium`, `high`, `critical`. |
+| `repowise.dev/tags`, `repowise.dev/capability` | Tags and capability. |
+
+- Without a file, components derive from workspace services, then module pages,
+  then top-level directories.
+- A declared component claims files its globs match; the first declared wins.
+  One named like a derived component replaces it and, without paths, keeps its
+  directory.
+- Derived names come from the directory, skipping route parameters and groups
+  (`[id]`, `(group)`). On a clash the shallowest keeps the name and the others
+  add their nearest parent other than `src`, `lib` or `app` (`workspace-web`),
+  so catalog names stay stable.
+
+## `.repowise/policies.yaml`
+
+The change policy `repowise check` evaluates.
 
 ```yaml
 version: 1
@@ -595,11 +728,32 @@ rules:
     action: fail                         # the default for a gate
 ```
 
-Conditions are `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests` (`missing` or `present`), `contract_break`, `decision_crossed` and `bus_factor_below`; there is no risk-score condition. A condition whose evidence is not available (no index, attribution off) leaves the rule not evaluated, and it never fires. Exit 2 (`policy_invalid`, every problem listed) on an unknown key, condition or gate option, a bad action, or a duplicate rule name.
+| Rule key | What it does |
+|----------|--------------|
+| `name` | Unique; lowercase letters, digits, `_`, `-`, starting alphanumeric, at most 63 characters. |
+| `description`, `message` | Optional text. |
+| `match`, `exclude` | Select components by `names`, `tags`, `criticality`. |
+| `when` | Conditions; all must hold. |
+| `action` | `warn`, `require_owner_review`, `require_tests`, `fail`. |
+| `gate`, `with` | Wrap `security`, `coverage`, `doc_drift` or `health` with that command's options. |
 
-### `.repowise/teams.yaml`
+- Conditions: `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests`
+  (`missing` or `present`), `contract_break`, `decision_crossed`,
+  `bus_factor_below`. No risk-score condition.
+- Missing evidence (no index, attribution off) leaves a rule unevaluated; it
+  never fires.
+- A wrapped gate runs exactly as the command alone; `doc_drift` is scoped to
+  the change (`since`) unless set.
+- `require_owner_review` and `require_tests` are advisory: reported in every
+  format, exit 0. Only `fail` exits 1.
+- Exit 2 (`policy_invalid`, all problems listed): unknown key, condition or
+  gate option, bad action, duplicate name, or a file over 256,000 bytes. Also
+  exit 2 when a `fail` gate cannot be evaluated.
 
-Declared teams with the members who count as the team's activity, for `repowise components ownership` and `get_context(include=["ownership"])` on a component. Each team is a Backstage `Group` whose `spec.members` lists forge logins and whose `repowise.dev/member-emails` annotation lists git author emails; members are used only for matching commits and never appear in output. A CODEOWNERS `@org/team` (GitHub or GitLab, sections included) and a catalog `spec.owner` of `group:default/team` both resolve to the Group named `team`. Group entities in the catalog files add team names; their `spec.members` is not read.
+## `.repowise/teams.yaml`
+
+Teams whose members count as the team's activity, for `repowise components
+ownership` and `get_context(include=["ownership"])` on a component.
 
 ```yaml
 apiVersion: backstage.io/v1alpha1
@@ -614,154 +768,310 @@ spec:
   members: [ana-acme, li-acme]
 ```
 
-### The `security:` block
+- `spec.members` lists forge logins; `repowise.dev/member-emails` lists git
+  author emails. Members only match commits and never appear in output.
+- CODEOWNERS `@org/team` (GitHub or GitLab, sections included) and a catalog
+  `spec.owner` of `group:default/team` resolve to the Group named `team`.
+- Group entities in catalog files add team names; their `spec.members` is not
+  read.
 
-Secret shapes of your own for `repowise security check`.
+## The `coverage:` block
+
+Coverage reports and gates; behaviour in
+[test intelligence](../layers/TEST_INTELLIGENCE.md#configuration), gates in
+[CI.md](../start/CI.md#gate-on-coverage).
+
+<!-- BEGIN GENERATED settings:coverage (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `auto_discover` | `true` |  | Look for coverage reports in the usual places. |
+| `artifacts` | `[]` |  | Where to look for coverage reports instead of the usual places. |
+| `paths` | `[]` |  | Report paths or globs from the repo root, read without discovery. An entry may be {path, path_prefix}. |
+| `ignore` | `[]` |  | Files coverage leaves out. |
+| `format` | unset |  | Force a report format instead of detecting it. |
+| `strip_prefix` | unset |  | Path prefix to strip from report paths. |
+| `path_prefix` | unset |  | Path prefix to add to report paths. |
+| `reingest_on_update` | unset |  | Re-read reports on every update. Unset re-reads only newer reports. |
+| `fail_under` | unset | 0-100 | The coverage gate fails below this percent. |
+| `fail_under_risky` | unset | 0-100 | The coverage gate fails when risky files are below this percent. |
+| `max_drop` | unset | 0-100 | The coverage gate fails when coverage falls from the base by more than this many points. |
+| `fail_under_branches` | unset | 0-100 | The coverage gate fails below this branch percent. |
+| `min_coverable_lines` | unset | >= 0 | Changes with fewer coverable lines than this pass the gate. |
+| `gates` | `[]` |  | Coverage gates scoped to paths. |
+<!-- END GENERATED settings:coverage -->
+
+`gates` holds [path-scoped gates](../start/CI.md#path-scoped-gates).
+
+Unset `reingest_on_update`: `repowise update` re-reads when a report in
+`coverage.paths` or at a fixed discovery location (e.g. `coverage/lcov.info`)
+is newer than the last ingest, replacing hand-added coverage. A report only a
+`**` glob finds is not watched; list it in `paths`.
+
+## The `security:` block
+
+Your own secret shapes for `repowise security check`.
 
 ```yaml
 security:
   patterns:
-    - name: internal_token        # 1 to 40 of a-z, 0-9, _ and -, unique
+    - name: internal_token
       regex: 'itk_[A-Za-z0-9]{32}'
-      severity: high              # low, med or high; high when omitted
+      severity: high
 ```
 
-- Each is the secret kind `custom:<name>` (SARIF rule `custom/<name>`): changed lines only, every commit of the change scanned, a match masked to its first four characters and `****` in every format. It keeps its severity under test, fixture and example paths.
-- A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
-- Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
-- At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
+<!-- BEGIN GENERATED settings:security (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `patterns` | `[]` | Your own secret shapes for security check, each {name, regex, severity}. |
+<!-- END GENERATED settings:security -->
 
-### The `attribution:` block
+Each pattern:
+
+| Field | Default | What it does |
+|-------|---------|--------------|
+| `patterns[].name` | required | 1 to 40 of `a-z`, `0-9`, `_`, `-`; unique. |
+| `patterns[].regex` | required | The secret shape. |
+| `patterns[].severity` | `high` | `low`, `med`, `high`. |
+
+- Each is secret kind `custom:<name>` (SARIF rule `custom/<name>`): changed
+  lines only, every commit of the change, matches masked to four characters
+  and `****` in every format, severity kept under test, fixture and example
+  paths.
+- Findings key on file, kind and masked line, so same-prefix matches on one
+  line share a baseline entry.
+- At most 50 patterns of 500 characters. Lines over 4096 characters are skipped
+  and counted (`long_lines_skipped`); a slow regex that passes the checks stays
+  slow.
+- Exit 2 (`config_invalid`, all problems listed): unknown key, missing name or
+  regex, duplicate or badly shaped name, bad severity, or a regex that does not
+  compile, can match empty, or nests repetition like `(a+)+` or `(a|aa)+`
+  (best effort).
+
+## The `attribution:` block
+
+<!-- BEGIN GENERATED settings:attribution (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `enabled` | `true` |  | Read public AI-authorship markers: bot authors, commit trailers and footers, git-ai notes, Agent Trace files. The same key in ~/.repowise/config.yaml can turn it off for every repo. |
+| `capture` | `off` | `off`, `local`, `notes` | Record listed agents' edits as they write them: local keeps line hashes in .repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. The lower of this and the same key in ~/.repowise/config.yaml applies, so both must turn it on; DO_NOT_TRACK turns it off. |
+| `agents` | `[]` |  | Agent target ids whose edits are recorded, such as claude-code or codex. Only agents named both here and in ~/.repowise/config.yaml are recorded. |
+<!-- END GENERATED settings:attribution -->
+
+- `~/.repowise/config.yaml` may hold the same block for every repository; the
+  stricter value wins per key (`enabled: false` in either, the lower capture,
+  agents both list). A key unset in one file takes its default first, so
+  capture needs both files: repo-only `capture: local` resolves to `off`.
+- `enabled: false` stores and shows nothing about AI in the API, CLI, MCP, web
+  or wiki. `DO_NOT_TRACK=1` keeps capture off.
+- `repowise attribution status` shows effective, repo and user values and
+  history coverage. What leaves the machine: [ATTRIBUTION.md](../layers/ATTRIBUTION.md).
+- The same consent lets `repowise attribution backfill --agent
+  claude-code,codex` bind past commits from those agents' local transcripts.
+
+## The `agent_provenance:` block
+
+Your own bots and footers, added to the built-in agent markers
+([ATTRIBUTION.md](../layers/ATTRIBUTION.md)).
 
 ```yaml
-attribution:
-  enabled: true      # read public AI markers: bot authors, trailers, footers, git-ai notes, Agent Trace files
-  capture: off       # off, local or notes
-  agents: []         # agent target ids, e.g. claude-code, codex
+agent_provenance:
+  service_emails:
+    mybot@example.com: {agent: mybot, tier: 1}
+  footer_patterns:
+    - {pattern: "Generated by MyBot", agent: mybot}
+  coauthor_patterns:
+    - {pattern: "^co-authored-by: mybot <[^>]*@example\\.com>", agent: mybot}
 ```
 
-The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
+<!-- BEGIN GENERATED settings:agent_provenance (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `service_emails` | `{}` | Your bots' commit emails, each mapped to {agent, tier}, so their commits count as that agent's. |
+| `footer_patterns` | `[]` | Commit-message footer regexes that mark an agent's commit, as {pattern, agent}. |
+| `coauthor_patterns` | `[]` | Co-author trailer regexes that mark an agent's commit, as {pattern, agent}. |
+<!-- END GENERATED settings:agent_provenance -->
 
-`capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md). The same consent lets `repowise attribution backfill --agent claude-code,codex` bind past commits from the transcripts these agents keep on this machine.
+## The `events:` block
 
-### The `events:` block
+<!-- BEGIN GENERATED settings:events (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `enabled` | `true` |  | Snapshot components each index run and record what changed. |
+| `retention_days` | `365` | > 0 | Days runs and their events are kept. |
+| `compact_after_days` | `30` | > 0 | Days after which only one run a week is kept. |
+| `kinds.ownership_shift` | `true` |  | Record when a file's main owner changes. |
+| `kinds.owner_inactive` | `true` |  | Record when a file's owner goes quiet. |
+| `kinds.bus_factor_drop` | `true` |  | Record when fewer people know a component. |
+| `kinds.new_hotspot` | `false` |  | Record when a file becomes a hotspot. |
+| `kinds.contract_added` | `true` |  | Record when a new API contract appears. |
+| `kinds.contract_broken` | `true` |  | Record when an API contract breaks. |
+| `kinds.decision_stale` | `true` |  | Record when a decision goes stale. |
+| `kinds.dead_code_growth` | `true` |  | Record when dead code grows. |
+| `kinds.test_reach_drop` | `true` |  | Record when test reach drops. |
+| `sinks` | `[]` |  | Where events go: jsonl, stdout or a plugin sink. Empty writes jsonl. |
+<!-- END GENERATED settings:events -->
 
-```yaml
-events:
-  enabled: true            # snapshot components at each index run and diff them
-  retention_days: 365      # older runs and events are dropped
-  compact_after_days: 30   # older runs keep one per ISO week
-  kinds: {new_hotspot: true}
-  sinks: [jsonl]           # jsonl (.repowise/events.jsonl), stdout, or a plugin's sink
-```
+- A run diffs against the previous one when both share the analyzer and parser
+  stamp; a stamp change or an intervening run without a snapshot starts a new
+  baseline.
+- Owners compare as digests keyed by `.repowise/events.key`; a declared owner
+  is named only when it is a group. Severity follows `repowise.dev/criticality`.
+- `repowise doctor` names values that fell back to defaults. Read events with
+  `repowise events` or `GET /api/repos/{id}/events`.
 
-An index run diffs into typed events against the run right before it when both ran under the same analyzer and parser stamp; a stamp change, or a run in between that took no snapshot, starts a new baseline. Owners are compared as keyed digests made with a random per-repository key in `.repowise/events.key`; a declared owner is named only when it is a group. `repowise doctor` names any value in this block that fell back to its default. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
+## The `evidence:` block
 
-### The `refactoring:` block
+Caps on the runtime evidence `repowise evidence add` stores (profiles,
+benchmark results, test timings, query counts). A capped run keeps its
+costliest entries and counts the rest, so a reader shows them as unknown,
+never as zero. How evidence is collected and joined:
+[RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 
-Controls the refactoring-intelligence layer: the structured Extract Class /
-Extract Helper / Move Method / Break Cycle / Split File plans surfaced by `repowise health
---refactoring-targets`, `get_health(include=["refactoring"])`, and the web
-Refactoring tab. The deterministic detectors run inside the normal health pass;
-this block only tunes which fire and the optional code-generation step.
+<!-- BEGIN GENERATED settings:evidence (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `max_file_mb` | `20` | > 0 | Largest evidence file read, in MB; a bigger one is refused before it is read. |
+| `max_symbols_per_run` | `1500` | >= 1 | Most functions stored from one profile, costliest self time (waits excluded) first; the rest are counted. |
+| `max_rows_per_run` | `30000` | >= 1 | Most benchmark, test or query rows stored from one run; the rest are counted. |
+| `history_runs` | `20` | >= 1 | Runs kept per workload and environment for each evidence kind; oldest go first. |
+| `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
+| `rank_top_n` | `10` | >= 1 | A measured function is ranked when it is among this many production functions with the most self time in its run (built-ins and libraries it calls included, waits excluded). |
+| `rank_min_samples` | `30` | >= 1 | Fewest self samples on a function for it to be ranked; below this the run has not enough samples in repo code. Runs that count no samples rank by their order alone. |
+| `lead_min_share` | `0.025` | 0-1 | Self share of the run's time a ranked function needs to count as a measured cost from one run. |
+| `lead_min_lower_bound` | `0.02` | 0-1 | Lower bound of the 95% interval on that share a lead candidate needs from one run. |
+| `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
+<!-- END GENERATED settings:evidence -->
 
-```yaml
-refactoring:
-  enabled: true               # the deterministic plans (zero LLM, in the health pass)
-  detectors:
-    disabled: []              # e.g. [move_method] to silence one detector
-  min_confidence: null        # low | medium | high (confidence floor; null = no floor)
-  llm:
-    enabled: false            # code generation, off by default; uses chat's provider and model
-```
+## The `refactoring:` block
 
-- The deterministic layer is **zero-LLM** and runs in the `init` / `update`
-  health pass. Code generation is the only part that calls a provider: it is off
-  by default and never runs during indexing, only on an explicit request (set
-  `llm.enabled: true` to enable it).
-- `enabled: false` skips the whole deterministic detector pass; `detectors.disabled`
-  silences named detectors (`extract_class`, `split_file`, ...) while the rest run.
-- `min_confidence` is a floor applied when the plans are detected, so a plan below it
-  is never persisted (just like a disabled marker). Changing it takes effect on the
-  next `init` / `update`. Surfaces that accept a `min_confidence` query parameter can
-  only narrow further from this floor, not below it.
-- Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
-  same one markers use).
-- Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break
+Cycle / Split File plans behind `repowise health --refactoring-targets`,
+`get_health(include=["refactoring"])` and the web Refactoring tab.
 
-### The `assertions:` block
+<!-- BEGIN GENERATED settings:refactoring (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `enabled` | `true` |  | Work out refactoring plans in the health pass. |
+| `detectors.disabled` | `[]` |  | Refactoring detectors to silence, such as extract_class or split_file. |
+| `min_confidence` | unset | `low`, `medium`, `high` | Least confidence a refactoring plan needs to show. |
+| `llm.enabled` | `false` |  | Let a model write refactoring code when asked; indexing never calls it. |
+<!-- END GENERATED settings:refactoring -->
 
-Names your own assertion helpers, for the test-quality markers that divide by a
-test's assertion count.
+- Code generation uses chat's provider and model, and is the only part that
+  calls a provider.
+- `min_confidence` applies at detection, so plans below it are never persisted
+  (like a disabled marker); changes apply on the next `init` / `update`. A
+  `min_confidence` query parameter can only narrow further.
+- Per-path disables use the `health-rules.json` glob mechanism markers use.
+  Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+## The `report:` block
+
+The repo report written after the first index: what Repowise found,
+in order, with a link and an agent prompt per item. The template version is
+free; with a configured provider one model call can write its prose.
+
+<!-- BEGIN GENERATED settings:report (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `first_look.enabled` | `true` | Write the repo report after the first index; the template version costs nothing. |
+| `first_look.llm` | `true` | Let one model call write the report's prose when a provider is configured and prose is on. |
+| `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
+<!-- END GENERATED settings:report -->
+
+## The `assertions:` block
+
+Your own assertion helpers, for test-quality markers that divide by a test's
+assertion count.
 
 ```yaml
 assertions:
   extra_names: [ensureInvariant, mustMatch]   # exact callee names, not prefixes
 ```
 
-Repowise recognises the xUnit and BDD families out of the box (`assert*`,
-`expect*`) plus a per-language vocabulary for the idioms those miss, such as
-Go's `t.Fatalf` and testify's `require`. A house helper that follows neither
-convention is invisible to it, and a test built entirely of those helpers reads
-as having no assertions at all. This block is the escape hatch, the same one
-SonarQube, Qodana and ESLint's `expect-expect` rule each provide.
+<!-- BEGIN GENERATED settings:assertions (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `extra_names` | `[]` | Your own assertion helpers, by exact name, counted as assertions. |
+<!-- END GENERATED settings:assertions -->
 
-- **Names are exact and case-insensitive, never prefixes.** `ensureInvariant`
-  matches `ensureInvariant(...)` and not `ensureConnectionPool(...)`. Prefix
-  matching was measured against three real test corpora and matched production
-  functions under test far more often than assertions.
-- A name matches whether it is the call itself or the receiver of one, so both
-  `ensureInvariant(x)` and `ensureInvariant(x).isTrue()` count.
-- **Nothing here can change a health score.** These names reach only the
-  advisory assertion total; the calibrated `large_assertion_block` and
-  `duplicated_assertion_block` markers read a separate count that takes no
-  configuration. Adding a wrong name costs you signal, never a wrong score.
-- Changing the list re-walks the affected files on the next `init` / `update`.
+Repowise knows the xUnit and BDD families (`assert*`, `expect*`) and
+per-language idioms such as Go's `t.Fatalf` and testify's `require`. A house
+helper outside those is invisible, and a test of only such helpers reads as
+assertion-free; this block is the escape hatch other test linters also offer.
 
----
+- Names are exact and case-insensitive, never prefixes: `ensureInvariant`
+  does not match `ensureConnectionPool`. Prefixes, measured on three real test
+  corpora, matched production functions more often than assertions.
+- A name counts as the call or as its receiver (`ensureInvariant(x).isTrue()`).
+- These names reach only the advisory assertion total; the calibrated
+  `large_assertion_block` and `duplicated_assertion_block` markers use a
+  separate count, so a wrong name costs signal, never a score.
+- Changes re-walk affected files on the next `init` / `update`.
+
+## The `tests:` block
+
+Rules `repowise impacted-tests` adds to its selection; see
+[CI.md](../start/CI.md#selecting-the-tests-a-change-needs).
+
+```yaml
+tests:
+  full_run_on: [schema/**, "*.proto"]
+  always_run: [tests/smoke/test_boot.py]
+```
+
+<!-- BEGIN GENERATED settings:tests (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `full_run_on` | `[]` | Gitignore patterns whose change makes impacted-tests select every test. |
+| `always_run` | `[]` | Tests added to every impacted-tests selection, as written. |
+<!-- END GENERATED settings:tests -->
 
 ## The `health-rules.json` file
 
-A separate JSON file (not part of `config.yaml`) that tunes code-health
-biomarkers: which ones run, their severity, and per-path overrides. Malformed
-JSON never raises, repowise warns and falls back to an empty config.
+A separate JSON file tuning code-health biomarkers: which run, their severity,
+and per-path overrides. Malformed JSON warns and falls back to an empty config.
 
 ```json
 {
   "profile": null,
   "disabled_biomarkers": [],
-  "severity_overrides": {
-    "high_churn": "low"
-  },
+  "severity_overrides": {"high_churn": "low"},
   "rules": [
     {
       "path": "legacy/**",
       "disabled_biomarkers": ["long_function"],
-      "severity_overrides": {
-        "duplication": "critical"
-      }
+      "severity_overrides": {"duplication": "critical"}
     }
   ]
 }
 ```
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `profile` | `null` | Named calibration profile; only `"small-team"` is defined today |
-| `disabled_biomarkers` | `[]` | Biomarker names to skip repo-wide |
-| `severity_overrides` | `{}` | Maps a biomarker name to a severity label |
-| `rules[]` | `[]` | Per-path overrides, evaluated in order |
-| `rules[].path` | required | Glob matched against the file path (aliases `path_glob` and `glob` are also accepted and treated the same) |
-| `rules[].disabled_biomarkers` | `[]` | Biomarkers to skip for files matching `path` |
-| `rules[].severity_overrides` | `{}` | Severity overrides for files matching `path` |
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `profile` | `null` | Calibration profile; only `"small-team"` exists. |
+| `disabled_biomarkers` | `[]` | Biomarkers skipped repo-wide. |
+| `severity_overrides` | `{}` | Biomarker name to severity label. |
+| `rules[]` | `[]` | Per-path overrides, in order. |
+| `rules[].path` | required | Gitignore-style glob (`*` stops at `/`; use `**` for nested files); aliases `path_glob`, `glob`. |
+| `rules[].disabled_biomarkers`, `rules[].severity_overrides` | `[]`, `{}` | As above, for matching files. |
 
-Valid severity labels are `low`, `medium`, `high`, `critical`. Only the
-severity **label** is overridable this way, never the underlying numeric
-weights or caps that produce the health score.
-
+Labels are `low`, `medium`, `high`, `critical`; only the label is overridable,
+never the weights or caps behind the score.
 Full reference: [CODE_HEALTH.md](../layers/CODE_HEALTH.md#configuration).
 
----
+## `~/.repowise/platform.json`
+
+Choices for this machine's user, read in every repository.
+`repowise telemetry disable` writes `telemetry_enabled`; the variables under
+[Telemetry and account](#telemetry-and-account) override both keys.
+
+<!-- BEGIN GENERATED settings:platform-json (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `telemetry_enabled` | `true` | Send anonymous usage counts. DO_NOT_TRACK, REPOWISE_TELEMETRY_DISABLED and REPOWISE_OFFLINE turn it off whatever this says. |
+| `hints_enabled` | `true` | Show occasional repowise.dev tips in the CLI and web UI. |
+<!-- END GENERATED settings:platform-json -->
 
 ## LLM providers
 
@@ -769,17 +1079,11 @@ Full reference: [CODE_HEALTH.md](../layers/CODE_HEALTH.md#configuration).
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-| Model | Notes |
-|-------|-------|
-| `claude-sonnet-4-6` | Best balance of quality and cost |
-| `claude-opus-4-6` | Highest quality, higher cost |
-| `claude-haiku-5-5` | Default, fastest, lowest cost |
-
-```bash
 repowise init --provider anthropic --model claude-haiku-5-5
 ```
+
+Models: `claude-haiku-5-5` (default, fastest, cheapest), `claude-sonnet-5-5`
+(best balance), `claude-opus-5-5` (highest quality, higher cost).
 
 ### OpenAI (GPT)
 
@@ -788,17 +1092,18 @@ export OPENAI_API_KEY="sk-..."
 repowise init --provider openai --model gpt-5.6-luna
 ```
 
-For an OpenAI-compatible Qwen3 endpoint served by vLLM or SGLang:
+An OpenAI-compatible Qwen3 endpoint on vLLM or SGLang:
 
 ```bash
 export OPENAI_BASE_URL="http://localhost:8000/v1"
 repowise init --provider openai --model qwen3 --reasoning off
 ```
 
-The same adapter works with local gateways such as 9router and with any
-OpenAI-compatible custom provider. Set the gateway's API key under
-`OPENAI_API_KEY`, point `OPENAI_BASE_URL` at its `/v1` endpoint, and use the
-model id returned by that endpoint's `/models` response:
+The same adapter serves local gateways such as 9router and any
+OpenAI-compatible provider: the gateway key in `OPENAI_API_KEY`,
+`OPENAI_BASE_URL` at its `/v1` endpoint, and a model id from its `/models`
+(namespaced ids work as-is, no `gpt-` prefix needed). For another local
+provider, swap the key, URL and model.
 
 ```bash
 export OPENAI_API_KEY="your-9router-dashboard-key"
@@ -806,16 +1111,12 @@ export OPENAI_BASE_URL="http://localhost:20128/v1"
 repowise init --provider openai --model ag/gemini-3.7-flash-medium
 ```
 
-Repowise discovers namespaced model ids from compatible gateways as-is, so
-the model does not need to start with `gpt-`. For another local provider,
-replace the key, URL, and model with that provider's values.
+<details><summary>Interactive gateway setup</summary>
 
-In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
-gateway)**. Repowise then validates the endpoint, collects the key without
-echoing it, verifies the gateway through `/models`, and lets you search the
-discovered models or enter an exact model id. If `/models` is unavailable, you
-can retry the endpoint/key, continue with a manual model id, or return to the
-provider menu:
+In interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise validates the endpoint, takes the key without echo,
+verifies it through `/models`, and lets you search the models or type an id.
+Without `/models` you can retry, enter an id manually, or go back:
 
 ```text
 Base URL [http://localhost:20128/v1]:
@@ -824,12 +1125,14 @@ API key (hidden): <paste the gateway key>
 Select model: ag/gemini-3.7-flash-medium
 ```
 
-The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
-saved there only after confirmation, and `--no-save-key` always keeps it
-process-local. The selected runtime provider (`openai`) and exact model id are
-written to `config.yaml`. Choose the separate **openai** row for the official
-OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
-and should continue to use environment variables and `--provider openai`.
+- The endpoint goes in the gitignored `.repowise/.env`; the key only after
+  confirmation, never with `--no-save-key`.
+- `config.yaml` gets `provider: openai` and the exact model id.
+- The separate **openai** row is the official endpoint.
+- Scripted runs (`--yes`, CI, non-TTY) stay non-interactive: use environment
+  variables and `--provider openai`.
+
+</details>
 
 ### OpenRouter
 
@@ -846,13 +1149,13 @@ export GEMINI_API_KEY="AI..."      # or GOOGLE_API_KEY
 repowise init --provider gemini
 ```
 
-Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
+With `GEMINI_API_KEY` set, Gemini is also the default embedder.
 
 ### DeepSeek
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-repowise init --provider deepseek --model deepseek-chat
+repowise init --provider deepseek --model deepseek-flash
 ```
 
 ### Kimi
@@ -862,21 +1165,15 @@ export KIMI_API_KEY="..."
 repowise init --provider kimi --model kimi-for-coding
 ```
 
-The default Kimi Code endpoint supports `kimi-for-coding` and
-`kimi-for-coding-highspeed`. Repowise automatically uses their required
-sampling parameters.
-
-K2.x models use the separate Kimi Open Platform. Supply a key from that
-platform together with its OpenAI-compatible endpoint:
+The default Kimi Code endpoint serves `kimi-for-coding` and
+`kimi-for-coding-highspeed`. K2.x models need a Kimi Open Platform key and its
+OpenAI-compatible endpoint. Repowise sets the required sampling parameters for
+both, including K2.x thinking or instant mode.
 
 ```bash
-export KIMI_API_KEY="..."
 export KIMI_BASE_URL="https://api.moonshot.ai/v1"
 repowise init --provider kimi --model kimi-k2.6
 ```
-
-For K2.x models, Repowise selects the required sampling parameters for
-thinking or instant mode.
 
 ### Ollama (local, no API key)
 
@@ -885,11 +1182,17 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
-Repowise sizes the model's context window (`num_ctx`) to each prompt, so pages
-are not cut to Ollama's small default window. Set `REPOWISE_OLLAMA_NUM_CTX` to
-pin it instead, for example to stay within a machine's memory. Requests are sent
-one at a time; if the server runs with `OLLAMA_NUM_PARALLEL` above 1, set the
-same value where you run repowise to send that many at once.
+- The window is the model's own `num_ctx` if its Modelfile sets one, else
+  16384, never above its trained context length. Page material (code
+  excerpts, source evidence) shrinks to fit it, least important first, so a
+  4B model on a laptop writes a page in seconds instead of minutes.
+- `REPOWISE_OLLAMA_NUM_CTX` pins `num_ctx` and sizes material to it, which
+  gives a bigger model more to read; `context_window` in `config.yaml` sizes
+  material only, and `num_ctx` grows to hold the prompt.
+- `reasoning: auto` turns thinking off for page generation; `low`, `medium` or
+  `high` turn it on, and the window grows to hold the longer answer.
+- Requests go one at a time; with server `OLLAMA_NUM_PARALLEL` above 1, set the
+  same value where Repowise runs.
 
 ### LiteLLM (100+ providers)
 
@@ -901,60 +1204,70 @@ repowise init --provider litellm --model azure/gpt-4
 ### Eden AI (hosted, with an EU endpoint)
 
 [Eden AI](https://www.edenai.co/) is a hosted gateway with an EU endpoint, so
-inference can stay in the EU without self-hosting anything. That is the reason to
-reach for it here: every other hosted provider in this list terminates in the US,
-and the alternatives for a team working under a DPA are Ollama or LiteLLM on your
-own infrastructure.
-
-Point at the EU endpoint with `EDENAI_BASE_URL`. It covers the embedder as well,
-since both read the same variable:
+inference stays in the EU without self-hosting. Every other hosted provider
+here terminates in the US; under a DPA the alternatives are Ollama or LiteLLM
+on your own infrastructure. `EDENAI_BASE_URL` selects the EU endpoint for the
+LLM and the embedder; without it, requests use the global endpoint.
 
 ```bash
 export EDENAI_API_KEY="..."
 export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
 repowise init --provider edenai --model mistral/mistral-small-latest
-```
-
-Without that variable, requests go to the global endpoint:
-
-```bash
-export EDENAI_API_KEY="..."
 repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
 ```
 
-Beyond residency it is also an aggregator: one key reaches many vendors (Mistral,
-GPT, Claude, Gemini, Cohere, DeepSeek, Llama) through a single
-OpenAI-compatible endpoint, with models addressed as `vendor/model`. The live
-catalogue is public and needs no authentication at
-<https://api.edenai.run/v3/models>, with the embedding models at
-<https://api.edenai.run/v3/embeddings/models>.
-
-The same key also selects `edenai` as the embedder for semantic search. Its
-default is `amazon/amazon.titan-embed-text-v2:0`, chosen because it is served
-from an EU region and is the cheapest per token of the models this adapter
-declares. Pick another with `REPOWISE_EMBEDDING_MODEL`:
-
-```bash
-export REPOWISE_EMBEDDING_MODEL="google/gemini-embedding-001"
-```
-
-Only the models in `EdenAIEmbedder._DIMS` are accepted, because a wrong
-dimension count would silently mis-size stored vectors. Adding one means adding
-its measured width to that table.
-
-`reasoning` is forwarded as OpenAI `reasoning_effort` for OpenAI reasoning models
-routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
+- One key reaches many vendors (Mistral, GPT, Claude, Gemini, Cohere,
+  DeepSeek, Llama) through one OpenAI-compatible endpoint, as `vendor/model`.
+- Public catalogue, no auth: <https://api.edenai.run/v3/models>; embedding
+  models: <https://api.edenai.run/v3/embeddings/models>.
+- `reasoning` maps to OpenAI `reasoning_effort` for OpenAI reasoning models
+  (e.g. `openai/gpt-5*`); other models accept only `auto`.
+- The key also selects the `edenai` embedder, default
+  `amazon/amazon.titan-embed-text-v2:0` (EU-served, cheapest per token here).
+  Change it with `REPOWISE_EMBEDDING_MODEL`, e.g.
+  `google/gemini-embedding-001`.
+- Only models in `EdenAIEmbedder._DIMS` are accepted, since a wrong width
+  silently mis-sizes stored vectors; adding one means adding its measured width.
 
 ### Provider auto-detection
 
-If you don't pass `--provider`, repowise detects your provider by checking, in
-order:
+The CLI, `repowise serve` chat and jobs, and the MCP server resolve provider,
+model and base URL the same way; first match wins:
 
-1. `REPOWISE_PROVIDER` environment variable
-2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
+1. `--provider` / `--model` flags, or a per-request choice in the web UI
+2. `provider`, `model`, and `<provider>: {base_url: ...}` in `.repowise/config.yaml`
+3. the global default saved from the web UI (`~/.repowise/provider_config.json`)
+4. `REPOWISE_PROVIDER` / `REPOWISE_MODEL` and the provider's `*_BASE_URL` variable
+5. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
 
----
+- A model picked in the web UI is written to the repo's `config.yaml`, so the
+  CLI uses it too.
+- A local OpenAI-compatible server such as LM Studio: `provider: openai` with
+  `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
+  Page material is sized for a 16384-token window, since the server does not
+  report its own; start the server with at least that context, or set
+  `context_window` to the context length it runs with. A
+  local backend behind LiteLLM is sized the same way.
+- Since `config.yaml` may be committed, a non-local base URL there gets a key
+  not in `.repowise/.env` only after you confirm in Settings or `repowise init`.
+- The repo's Settings page sets all this: the model field lists live models
+  and takes any id, and Test connection checks a base URL before saving.
+
+### Provider endpoints in `config.yaml`
+
+A provider's block in `.repowise/config.yaml` names its endpoint, ahead of
+the provider's `*_BASE_URL` variable (order above).
+
+```yaml
+provider: openai
+openai: {base_url: http://localhost:1234/v1}
+```
+
+<!-- BEGIN GENERATED settings:provider-endpoints (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `<provider>.base_url` | unset | provider: `gemini`, `anthropic`, `openai`, `deepseek`, `kimi`, `edenai`, `ollama`, `litellm` | Custom http(s) endpoint for a provider (openai.base_url and the like), such as a proxy or a local server. |
+<!-- END GENERATED settings:provider-endpoints -->
 
 ## Embeddings (for semantic search)
 
@@ -962,47 +1275,64 @@ The embedder is separate from the LLM provider.
 
 | Embedder | Env var | Notes |
 |----------|---------|-------|
-| `gemini` | `GEMINI_API_KEY` | Default when key is present |
-| `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
+| `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | Default when the key is present |
+| `openai` | `OPENAI_API_KEY` | `text-embedding-3-small` |
 | `openrouter` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
-| `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
-| `mock` | n/a | Dummy embeddings, no semantic search (default when no key is detected) |
+| `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local, no API key |
+| `edenai` | `EDENAI_API_KEY` | See [Eden AI](#eden-ai-hosted-with-an-eu-endpoint) |
+| `mock` | n/a | No semantic search; default when no key is found |
 
 ```bash
 repowise init --embedder openai
 repowise reindex --embedder gemini   # switch embedder and rebuild index
 ```
 
-The `embedder` key in `config.yaml` is the record of what built the vector
-store, so it is what both writers and readers use. `search`, `serve`, and the
-MCP server resolve it from there first and only fall back to the environment
-when nothing is pinned; otherwise a repo indexed without a key would be queried
-with whatever API key happened to be exported, and the wider query vectors
-would match nothing in the narrower stored table.
+Resolution, first match wins: `--embedder`, `REPOWISE_EMBEDDER`, the
+`embedder` pin in `.repowise/config.yaml`, the first key present (gemini,
+openai, openrouter, ollama, edenai), `embedder` in `~/.repowise/config.yaml`,
+then `mock`. `reindex` skips a `mock` pin when a real embedder is found.
 
-`reindex` writes the embedder it used back to `config.yaml`. Without that, the
-next `update` would read the old pin, write vectors at the old width, and the
-store would be rebuilt from scratch, discarding what the reindex just built.
+- The pin records what built the vector store. `search`, `serve` and MCP read
+  it first and use the environment only when unpinned; otherwise a keyless
+  index would be queried with whatever key is exported, and wider query vectors
+  would match nothing in the narrower table.
+- `reindex` writes its embedder back to the pin; otherwise the next `update`
+  would write old-width vectors and rebuild the store, discarding the reindex.
+- `REPOWISE_EMBEDDING_MODEL`, `REPOWISE_EMBEDDING_DIMS` and
+  `REPOWISE_EMBEDDING_TIMEOUT` apply to the active embedder; [provider-prefixed
+  variants](#embeddings) take precedence for theirs.
 
-`REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
-active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
-same way; the provider-prefixed variants below (`OPENAI_*`, `GEMINI_*`,
-`OLLAMA_*`, `OPENROUTER_*`, `EDENAI_*`) narrow a setting to one embedder and take
-precedence over the shared name.
+### Gemini Embedding 2
 
----
+The `gemini` embedder supports `gemini-embedding-2`; its default remains
+`gemini-embedding-001`. To switch an existing index:
+
+```bash
+export GEMINI_API_KEY="..."
+export REPOWISE_EMBEDDER=gemini
+export REPOWISE_EMBEDDING_MODEL=gemini-embedding-2
+export REPOWISE_EMBEDDING_DIMS=768
+repowise reindex --embedder gemini
+```
+
+Keep the same model and dimension settings in the environment of `update`,
+`serve` and the MCP server. Embedding 2 and Embedding 001 use incompatible
+vector spaces, even at the same dimension, so switching requires a full
+reindex. Restart a running server after switching.
+
+Repowise applies Google's code-retrieval instruction to queries and document
+formatting to stored text, and requests a separate vector for each input.
+Embedding 2 does not accept `task_type`. See Google's
+[embedding instructions](https://ai.google.dev/gemini-api/docs/embeddings#task-types-with-embeddings-2).
 
 ## BYOK (Bring Your Own Key)
 
-API keys are resolved in this order:
+Keys resolve in order:
 
-1. **Environment variable**: set before running repowise
-2. **`.repowise/.env`**: persisted from interactive setup, loaded automatically
-3. **Interactive prompt**: repowise asks during `init` if no key is found, then saves to `.repowise/.env`
-
-The `.repowise/.env` file is gitignored automatically.
-
----
+1. **Environment variable**
+2. **`.repowise/.env`**: saved by interactive setup, loaded automatically, gitignored
+3. **`~/.repowise/provider_config.json`**: keys saved from the web UI
+4. **Interactive prompt** during `init`, saved to `.repowise/.env`
 
 ## Environment variables
 
@@ -1010,12 +1340,12 @@ The `.repowise/.env` file is gitignored automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI or OpenAI-compatible gateway API key |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `KIMI_API_KEY` | Kimi API key |
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `OPENAI_API_KEY` | OpenAI or an OpenAI-compatible gateway |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini |
+| `OPENROUTER_API_KEY` | OpenRouter |
+| `DEEPSEEK_API_KEY` | DeepSeek |
+| `KIMI_API_KEY` | Kimi |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `LITELLM_API_BASE` | LiteLLM proxy base URL |
 
@@ -1023,146 +1353,331 @@ The `.repowise/.env` file is gitignored automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
-| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
-| `GEMINI_BASE_URL` | Override the Gemini API base URL |
-| `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
-| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it to each prompt |
-| `OLLAMA_NUM_PARALLEL` | Ollama requests repowise sends at once (default: 1) |
-| `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
-| `KIMI_BASE_URL` | Override the Kimi API base URL |
-| `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
+| `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`, `DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `LITELLM_BASE_URL` | Override that provider's API base URL |
+| `OPENAI_BASE_URL` | Override the OpenAI base URL (vLLM/SGLang, 9router, other compatible endpoints) |
+| `OLLAMA_BASE_URL` | Ollama server (default `http://localhost:11434`) |
+| `OLLAMA_NUM_PARALLEL` | Ollama requests sent at once (default 1) |
 
-### Provider and model overrides
+### Generation and embeddings
 
-| Variable | Description |
-|----------|-------------|
-| `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
-| `REPOWISE_MODEL` | Override model |
-| `REPOWISE_DOC_MODEL` | Override the model used for `get_answer` synthesis specifically |
-| `REPOWISE_REASONING` | Override `reasoning` (see valid values above) |
-| `REPOWISE_ANSWER_TIMEOUT_S` | Seconds `get_answer` waits for synthesis before giving up. Defaults to a per-provider budget: 60s for the remote API providers, 120s for `ollama` and `litellm`, 180s for `codex_cli` and `opencode`. Raise it if your model is slower than its class suggests, lower it if you would rather an agent fail fast than block. Capped at 600s. Note your MCP client enforces its own tool timeout underneath this one, so setting a value above it produces a client-side error instead of repowise's diagnosable "synthesis exceeded its budget" response |
+<!-- BEGIN GENERATED settings:env-generation (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does | Config key |
+|----------|---------|--------|--------------|------------|
+| `REPOWISE_PROVIDER` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset: the saved global choice (provider_config.json), then REPOWISE_PROVIDER, then the first provider whose API key is present. | `provider` (the file wins) |
+| `REPOWISE_MODEL` | unset |  | The model id to use with the provider. Unset: the saved global choice (provider_config.json), then REPOWISE_MODEL, then the provider's default model. | `model` (the file wins) |
+| `REPOWISE_REASONING` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `reasoning` (this wins) |
+| `REPOWISE_EMBEDDER` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, fastembed (the local-embed extra), openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `embedder` (this wins) |
+| `REPOWISE_EMBEDDING_MODEL` | unset |  | The embedding model id. Unset uses the embedder's default. | `embedding_model` (this wins) |
+| `REPOWISE_DOC_MODEL` | unset |  | A different model just for get_answer write-ups. |  |
+| `REPOWISE_EMBEDDING_DIMS` | unset | > 0 | Force the embedding vector width. |  |
+| `REPOWISE_EMBEDDING_DECLARED_DIMS` | unset | > 0 | Vector width an OpenAI-compatible server really returns, when it differs from the width requested. |  |
+| `REPOWISE_EMBEDDING_TIMEOUT` | unset | > 0 | Seconds one embedding request may take. Unset uses the embedder's own. |  |
+| `REPOWISE_EMBED_DOC_PREFIX` | unset |  | Text put before each document before embedding (e.g. "passage: "). |  |
+| `REPOWISE_EMBED_QUERY_PREFIX` | unset |  | Text put before each search query before embedding (e.g. "query: "). |  |
+| `REPOWISE_NO_COST_TRACKING` | off | `1`, `on`, `true`, `yes` | Do not save model cost records to the database. |  |
+<!-- END GENERATED settings:env-generation -->
 
 ### Embeddings
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, `edenai`, or `mock` |
-| `REPOWISE_EMBEDDING_MODEL` | Embedding model, applies to any embedder |
-| `REPOWISE_EMBEDDING_DIMS` | Embedding output dimensions (optional; inferred from the model otherwise) |
-| `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds (default: `30` for `ollama`, `10` elsewhere). Raise it for a local endpoint — one request embeds a whole batch, and an expired batch is reported only as `N/N items failed to embed`. An unparseable value warns and keeps the default |
-| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds one vector-store query may take (default: `30`, capped at `120`). The first query in a process pays for the store open, the first embed and the first ANN probe, which can run past 13s on a cold index where a warm query takes under a second. Raise it on a slow disk or a very large wiki; a timeout drops the semantic leg and logs a warning, leaving full-text hits only. An unparseable value warns and keeps the default |
-| `OPENAI_EMBEDDING_TIMEOUT` | As above, `openai` only; takes precedence over the shared variable |
-| `GEMINI_EMBEDDING_TIMEOUT` | As above, `gemini` only |
-| `OPENROUTER_EMBEDDING_TIMEOUT` | As above, `openrouter` only |
-| `EDENAI_EMBEDDING_TIMEOUT` | As above, `edenai` only |
-| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
-| `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
-| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only. With neither variable set, an Ollama request gets 30s plus 2ms per input character, so a full chunk of long pages on a CPU-only model is not cut off. Setting either variable pins the timeout to that value |
+| `OPENAI_`, `GEMINI_`, `OPENROUTER_`, `EDENAI_`, `OLLAMA_EMBEDDING_TIMEOUT` | That embedder only; wins over the shared variable |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model; also selects the `ollama` embedder |
+| `OLLAMA_EMBEDDING_DIMS` | Ollama output dimensions (optional; inferred from the model) |
+
+- `REPOWISE_EMBEDDING_TIMEOUT` unset: 30 seconds for `ollama`, 10 elsewhere.
+  Raise it for a local endpoint: one request embeds a whole batch, and an
+  expired batch shows only as `N/N items failed to embed`.
+- With no Ollama or shared timeout set, an Ollama request gets 30s plus 2ms
+  per input character, so long pages on a CPU-only model are not cut off.
+- A cold first vector query (`REPOWISE_VECTOR_SEARCH_TIMEOUT_S`) pays for the
+  store open, first embed and first ANN probe (past 13s where a warm query
+  takes under a second). Raise the timeout on a slow disk or large wiki; a
+  timeout drops the semantic leg with a warning, leaving full-text hits.
+- An unparseable timeout warns and keeps the default.
+- The `openai` embedder applies the embed prefixes. Set them only for a model
+  trained with them (such as `query: ` / `passage: `), then run
+  `repowise reindex`: vectors stored before a prefix was set or changed stop
+  matching, with no error.
+
+### Providers
+
+<!-- BEGIN GENERATED settings:env-providers (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_CLAUDE_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Claude Code CLI calls run at once. |
+| `REPOWISE_CODEX_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Codex CLI calls run at once. |
+| `REPOWISE_COPILOT_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Copilot CLI calls run at once. |
+| `REPOWISE_OPENCODE_CONCURRENCY` | `4` | >= 1 (clamped) | How many OpenCode CLI calls run at once. |
+| `REPOWISE_OLLAMA_NUM_CTX` | unset | > 0 | Context window for Ollama. Unset uses the model's own. |
+| `REPOWISE_CONFIG_DIR` | `~/.repowise` |  | Folder holding the saved global provider choice (provider_config.json). |
+<!-- END GENERATED settings:env-providers -->
+
+`REPOWISE_OLLAMA_NUM_CTX` sizes page material to it. Unset: the Modelfile's
+`num_ctx`, else 16384.
+
+### Indexing
+
+<!-- BEGIN GENERATED settings:env-indexing (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_FORGE_HOSTS` | unset |  | Comma-separated host=forge pairs, added to forges.hosts. |
+| `REPOWISE_PARSE_WORKERS` | unset | > 0 | Parallel parse workers for init and update. Unset sizes to the machine. |
+| `REPOWISE_PARSE_TIMEOUT_S` | `60` | >= 0 | Seconds one file may take to parse; 0 turns the limit off. |
+| `REPOWISE_GIT_WORKERS` | unset | > 0 | Parallel git processes while indexing history. Unset sizes to the machine. |
+| `REPOWISE_GIT_INDEX_TIMEOUT_S` | `120` | > 0 | Seconds one file's git history lookup may take. |
+| `REPOWISE_GIT_SCOPE` | `module` |  | Set to repo to index the whole repository's history when indexing one module. |
+| `REPOWISE_GIT_WINDOW_ANCHOR` | unset |  | Set to now to measure git windows (recent churn, prior defects, blame age) from today instead of from the indexed commit's date. |
+| `REPOWISE_GRAMMAR_DIR` | unset |  | Folder of pre-downloaded language grammars, for offline machines. |
+| `REPOWISE_WORKTREE_FALLBACK` | on | on unless `0`, `false`, `no`, `off` | Let a git worktree read its main checkout's index; 0 turns it off. |
+| `REPOWISE_INDEX_INFORMATION_FLOOR` | `0` | >= 0 | Least characters of real prose a wiki page needs to be found by semantic search. Shorter pages stay readable, just not in that search. 0 is off. |
+<!-- END GENERATED settings:env-indexing -->
+
+`REPOWISE_PARSE_WORKERS` defaults to the CPU count capped at 8, never above
+the files to parse. Each worker holds about 50 MB; above 8 is not measurably
+faster.
+
+### MCP server and get_answer
+
+<!-- BEGIN GENERATED settings:env-mcp (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_ANSWER_TIMEOUT_S` | unset | 0-600 (clamped) | Seconds get_answer may spend writing one answer. Unset uses the provider's own. |
+| `REPOWISE_EMBED_TIMEOUT_S` | `8` | 0-120 (clamped) | Seconds a get_answer question may wait to be embedded. |
+| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | `30` | 0-120 (clamped) | Seconds one semantic search may take. |
+| `REPOWISE_WORKSPACE_CONCURRENCY` | `4` | 1-64 (clamped) | How many repos one workspace query asks at once, never more than the server keeps open. |
+| `REPOWISE_WORKSPACE_REPO_TIMEOUT_S` | `60` | 0-300 (clamped) | Seconds each repo gets in a workspace query. |
+| `REPOWISE_MCP_NO_WATCHDOG` | off | `1`, `true`, `yes` | Keep the MCP server running when the app that started it exits. |
+<!-- END GENERATED settings:env-mcp -->
+
+`REPOWISE_ANSWER_TIMEOUT_S` defaults to 60s for remote API providers, 120s
+for `ollama` and `litellm`, and 50s for agent CLI providers (`claude_cli`,
+`codex_cli`, `copilot_cli`, `opencode`). Raise it for a slow model, lower it to
+fail fast. Your MCP client's own tool timeout sits underneath: a higher value
+yields a client error instead of Repowise's "synthesis exceeded its budget".
+
+`REPOWISE_MCP_NO_WATCHDOG` turns off the parent-process watchdog in
+`repowise mcp --transport stdio`, which exits the server when the MCP client
+dies abnormally (crash, force-quit, killed terminal).
+
+### Agent hooks
+
+Each variable sets its [`hooks:`](#the-hooks-block) key for one session.
+
+<!-- BEGIN GENERATED settings:env-hooks (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does | Config key |
+|----------|---------|--------|--------------|------------|
+| `REPOWISE_HOOK_READ_SKELETON` | off | `1`, `on`, `true`, `yes` | Serve a whole-file Read of a large indexed file as its outline. | `hooks.read_skeleton` (this wins) |
+| `REPOWISE_HOOK_READ_REREAD` | off | `1`, `on`, `true`, `yes` | Serve an unchanged repeat Read as a short notice. | `hooks.read_reread` (this wins) |
+| `REPOWISE_HOOK_SEARCH_DIGEST` | off | `1`, `on`, `true`, `yes` | Serve a search that floods many files as a digest. | `hooks.search_digest` (this wins) |
+| `REPOWISE_HOOK_COVERAGE_REINGEST` | off | `1`, `on`, `true`, `yes` | Re-read coverage reports after an agent's full test run. | `hooks.coverage_reingest` (this wins) |
+| `REPOWISE_HOOK_MEASURE` | off | `1`, `on`, `true`, `yes` | On update, check locally whether agents acted on each hook firing. | `hooks.measure` (this wins) |
+| `REPOWISE_HOOK_HEALTH_GATE` | off | `1`, `on`, `true`, `yes` | Block an agent's commit or push that fails repowise health check. | `hooks.health_gate` (this wins) |
+| `REPOWISE_HOOK_READ_SKELETON_MODE` | `smart` | `smart`, `plus` | What a served outline keeps: smart, or plus to keep all code outside function bodies. | `hooks.read_skeleton_mode` (this wins) |
+<!-- END GENERATED settings:env-hooks -->
 
 ### Server and database
 
+<!-- BEGIN GENERATED settings:env-server (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_API_KEY` | unset |  | Shared secret that protects the API and the MCP HTTP server; needed for requests from other machines. |
+| `REPOWISE_HOST` | `127.0.0.1` |  | Address the servers listen on. 0.0.0.0 without an API key prints a warning. |
+| `REPOWISE_PORT` | `7337` | 1-65535 | Port for the API server. |
+| `REPOWISE_API_URL` | `http://localhost:7337` |  | Where the web UI finds the API. repowise serve sets it. |
+| `REPOWISE_NO_OPEN` | off | `1`, `on`, `true`, `yes` | Do not open a browser when repowise serve starts. |
+| `REPOWISE_DB_URL` | unset |  | Database to use instead of the repo's SQLite file, for example Postgres. |
+| `REPOWISE_DATABASE_URL` | unset |  | Older name for REPOWISE_DB_URL, read when that is unset. |
+| `REPOWISE_POSTGRES_KEEPALIVE` | off | `1`, `on`, `true`, `yes` | Send server-side TCP keepalive settings and a command timeout on asyncpg connections. Leave off behind a pooler that rejects startup parameters. |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | >= 1 | Seconds idle before the server's first keepalive probe, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | >= 1 | Seconds between keepalive probes, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | >= 1 | Unanswered keepalive probes before the server drops the connection, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | >= 1 | Seconds one database command may run, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_CORS_ORIGINS` | unset |  | Comma-separated web origins allowed to call the API from a browser. Unset allows any origin without credentials. |
+| `REPOWISE_PUBLIC_URL` | unset |  | Public https address of the MCP server behind a proxy. |
+| `REPOWISE_TOKENS_FILE` | `~/.repowise/tokens.yaml` |  | File of scoped access tokens for the server. |
+| `REPOWISE_GITHUB_WEBHOOK_SECRET` | unset |  | Secret that verifies GitHub webhooks. |
+| `REPOWISE_GITLAB_WEBHOOK_TOKEN` | unset |  | Token that verifies GitLab webhooks. |
+| `REPOWISE_GITEA_WEBHOOK_SECRET` | unset |  | Secret that verifies Gitea webhooks. |
+| `REPOWISE_PLUGINS` | unset |  | Comma-separated extra plugin modules to load (module or module:attr). |
+<!-- END GENERATED settings:env-server -->
+
+- Without `REPOWISE_API_KEY` the server answers local callers only and
+  refuses other hosts with 403.
+- `REPOWISE_HOST` is the default host for `repowise mcp` over HTTP/SSE;
+  `repowise serve` sets it from `--host`.
+- The MCP SSE port is the `repowise mcp --port` flag (default `7338`).
+
+### Telemetry and account
+
+Anonymous usage telemetry is **on by default** (opt-out). `DO_NOT_TRACK` with
+any truthy value turns it off (cross-tool convention).
+
+<!-- BEGIN GENERATED settings:env-account (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_OFFLINE` | off | `1`, `on`, `true`, `yes` | Block repowise's own network calls: telemetry, update checks, plan status, agent sign-in checks and decision sync. |
+| `REPOWISE_TELEMETRY_DISABLED` | off | `1`, `on`, `true`, `yes` | Turn off anonymous usage telemetry. |
+| `REPOWISE_TELEMETRY_DEBUG` | off | `1`, `on`, `true`, `yes` | Print the telemetry payload instead of sending it. |
+| `REPOWISE_NO_HINTS` | off | `1`, `on`, `true`, `yes` | Hide repowise.dev tips in the CLI and web UI. |
+| `REPOWISE_NO_SAVE_KEY` | off | on when set, unless `0`, `false`, `no` | Do not copy an API key into the repo's .repowise/.env. For CI and shared machines. |
+| `REPOWISE_CHANGELOG` | unset |  | A changelog file for the what's-new check to read instead of the bundled one. |
+<!-- END GENERATED settings:env-account -->
+
+`REPOWISE_OFFLINE` also turns off the PyPI release check and the `init` probe
+of signed-in agent CLIs (`DO_NOT_TRACK` and `REPOWISE_TELEMETRY_DISABLED` turn
+those off too).
+
+### Editor setup
+
+<!-- BEGIN GENERATED settings:env-editor (python scripts/gen_config_docs.py) -->
+| Variable | Default | Values | What it does |
+|----------|---------|--------|--------------|
+| `REPOWISE_SKIP_EDITOR_SETUP` | off | on when set, unless `0`, `false`, `no` | Do not register repowise in editors' and agents' global config. |
+<!-- END GENERATED settings:env-editor -->
+
+`REPOWISE_SKIP_EDITOR_SETUP` makes `init` skip machine-wide editor config
+(Claude Code / Claude Desktop MCP entry, Claude Code hooks, distill
+rewrite-hook offer), like `init --no-editor-setup`
+([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)). Use it for CI,
+sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
+`CLAUDE.md`, Codex config) are still written.
+
+### CI gates
+
+<!-- BEGIN GENERATED settings:env-health (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `REPOWISE_GITLAB_TOKEN` | unset | GitLab access token (api scope) that posts the CI summary as a merge-request note. |
+<!-- END GENERATED settings:env-health -->
+
+`REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
+as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
+
+### BLAS thread pool
+
+repowise caps the BLAS thread pool to 1 before numpy loads. An uncapped pool costs about 32 MB of memory per thread (about 750 MB on a 32-core machine) and does not speed up the sparse graph work repowise runs. Spawned worker processes inherit the cap through the environment.
+
+A value you set yourself always wins:
+
+```bash
+OPENBLAS_NUM_THREADS=4 repowise init   # 4 BLAS threads instead of 1
+```
+
+| Variable | Applies to | Default |
+|----------|-----------|---------|
+| `OPENBLAS_NUM_THREADS` | OpenBLAS | `1` unless set |
+| `MKL_NUM_THREADS` | Intel MKL | `1` unless set |
+| `NUMEXPR_NUM_THREADS` | NumExpr | `1` unless set |
+| `VECLIB_MAXIMUM_THREADS` | Apple Accelerate | `1` unless set |
+
+`OMP_NUM_THREADS` is not set: igraph's community detection uses OpenMP threads and is slower without them.
+
+### Cache integrity key
+
+repowise integrity-checks its on-disk caches with a machine-local key.
+
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_DB_URL` | Use PostgreSQL instead of SQLite (e.g. `postgresql+asyncpg://...`) |
-| `REPOWISE_DATABASE_URL` | Legacy alias for `REPOWISE_DB_URL`, still honored |
-| `REPOWISE_HOST` | API server host (default: `127.0.0.1`) |
-| `REPOWISE_PORT` | API server port (default: `7337`) |
-| `REPOWISE_MCP_PORT` | MCP SSE server port (default: `7338`) |
-| `REPOWISE_API_URL` | Frontend only; backend URL for the web UI (default: `http://localhost:7337`) |
-| `REPOWISE_API_KEY` | Bearer token required by clients calling the server API. Without it the server answers local callers only, and refuses any request from another host with 403 |
-| `REPOWISE_CONFIG_DIR` | Override where repowise looks for its config directory |
-| `REPOWISE_GITHUB_WEBHOOK_SECRET` | Secret for verifying GitHub webhook signatures |
-| `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Token for verifying GitLab webhook requests |
-
-### Telemetry
-
-Anonymous usage telemetry is **enabled by default** (opt-out).
-
-| Variable | Description |
-|----------|-------------|
-| `DO_NOT_TRACK` | Any truthy value disables telemetry (respects the cross-tool convention) |
-| `REPOWISE_TELEMETRY_DISABLED` | Disables telemetry, repowise-specific |
-| `REPOWISE_TELEMETRY_DEBUG` | Prints the telemetry payload to stderr instead of sending it |
-
-### Misc
-
-| Variable | Description |
-|----------|-------------|
-| `REPOWISE_GIT_WINDOW_ANCHOR` | Git history windows (90-day churn, prior defects, decay, blame age) are measured from the indexed commit's committer date by default. Set to `now` to measure them from wall-clock time instead |
-| `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
-| `REPOWISE_FORGE_HOSTS` | Self-managed git hosts as `host=forge` pairs separated by commas (`git.corp.com=gitlab,tfs.corp.com=azure`). Wins over `forges.hosts` in `config.yaml` |
-| `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
-| `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |
-
----
+| `REPOWISE_CACHE_HMAC_KEY` | Hex-encoded key (at least 32 hex characters, 16 bytes) used instead of the key file. For CI and tests where the home directory is ephemeral or shared |
+| `REPOWISE_CACHE_KEY_PATH` | Path to the key file. Default `$XDG_CONFIG_HOME/repowise/cache_hmac_key`, or `~/.config/repowise/cache_hmac_key` when `XDG_CONFIG_HOME` is unset |
 
 ## Exclude patterns
 
-repowise respects your `.gitignore` automatically (same `gitwildmatch` format git
-uses). Like git, it reads **nested `.gitignore` files** too, so a `.gitignore` in
-any subdirectory applies to that directory's contents. This matters for
-monorepos and yarn/npm workspaces, where a package keeps its own `.gitignore`
-excluding that package's build output (e.g. `dist/`, `coverage/`, generated
-bundles), so those exclusions are now honoured without duplicating them at the
-repo root.
-
-On top of that, add extra patterns via `--exclude` / `-x`:
+Repowise honours `.gitignore` (git's `gitwildmatch` format), including nested
+`.gitignore` files, so a monorepo or workspace package's own build exclusions
+(`dist/`, `coverage/`, generated bundles) apply without repeating them at the
+root.
 
 ```bash
 repowise init -x vendor/ -x "*.generated.ts" -x proto/ -x "**/*.pb.go"
 ```
 
-Patterns are saved to `config.yaml` (`exclude_patterns`) and applied on
-subsequent `update` runs. You can also create a `.repowiseIgnore` file (same
-gitignore syntax) at the repo root or in any subdirectory for more granular
-control without touching `.gitignore`.
-
-Built-in exclusions (always applied): `.git/`, `.repowise/`, `node_modules/`,
-`__pycache__/`, `*.pyc`, `.venv/`, binary files, lockfiles, and minified assets.
-
-`--skip-tests` excludes test files and `--skip-infra` excludes Dockerfiles,
-Makefiles, and shell scripts. Both are CLI-flag-only for the run they're
-passed on; they aren't written to `config.yaml`, so pass them again on
-subsequent `init`/`update` calls if you want the same exclusions.
-
----
+- `--exclude` / `-x` patterns are saved to `exclude_patterns` and reused by
+  `update`.
+- A `.repowiseIgnore` file (gitignore syntax) at the root or in any
+  subdirectory excludes without touching `.gitignore`.
+- Always excluded: `.git/`, `.repowise/`, `node_modules/`, `__pycache__/`,
+  `*.pyc`, `.venv/`, binary files, lockfiles, minified assets.
+- `--skip-tests` (test files) and `--skip-infra` (Dockerfiles, Makefiles,
+  shell scripts) apply only to their run; pass them again each time.
 
 ## Submodules
 
-Git submodule directories are excluded by default. To include them:
+Submodule directories are excluded by default; Repowise finds them in
+`.gitmodules`.
 
 ```bash
 repowise init --include-submodules
 ```
 
-repowise reads `.gitmodules` to detect submodule paths. This flag isn't
-written to `config.yaml`; for a workspace, the choice is recorded in
-`state.json` instead.
-
----
+The flag is not written to `config.yaml`; a workspace records it in
+`state.json`.
 
 ## PostgreSQL
 
-For team deployments or larger repos, use PostgreSQL instead of SQLite:
+For team deployments or larger repos:
 
 ```bash
 export REPOWISE_DB_URL="postgresql+asyncpg://user:pass@localhost:5432/repowise"
 repowise init
 ```
 
-`REPOWISE_DATABASE_URL` is a legacy alias for `REPOWISE_DB_URL` and is still
-honored. The schema is managed with Alembic migrations.
+`REPOWISE_DATABASE_URL` is a still-honored alias. Alembic manages the schema.
 
----
+### Keepalive and command timeout (opt-in)
+
+For a direct PostgreSQL connection using asyncpg, enable session keepalive
+probes and a bounded wait for commands:
+
+```bash
+export REPOWISE_POSTGRES_KEEPALIVE=1
+# Optional overrides (seconds, except COUNT):
+export REPOWISE_POSTGRES_KEEPALIVES_IDLE=60
+export REPOWISE_POSTGRES_KEEPALIVES_INTERVAL=15
+export REPOWISE_POSTGRES_KEEPALIVES_COUNT=4
+export REPOWISE_POSTGRES_COMMAND_TIMEOUT=300
+```
+
+| Variable | Default when enabled | Meaning |
+|----------|----------------------|---------|
+| `REPOWISE_POSTGRES_KEEPALIVE` | Off unless set to `1`, `true`, `yes`, or `on` (case-insensitive) | Enables all four settings below |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | Seconds of inactivity before the server's first TCP keepalive probe |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | Seconds between subsequent probes |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | Unanswered probes before the server considers the peer dead |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | asyncpg's per-command timeout in seconds; raise it for legitimate long-running statements or bulk writes |
+
+Values must be positive integers; invalid values raise an error naming the
+variable when the engine is created. They are read for each new engine. With
+the switch off (including `0` or `false`), all four overrides are ignored and
+the existing behavior is preserved: server keepalive defaults and no added
+command timeout. SQLite and explicitly selected drivers other than asyncpg
+ignore these variables.
+
+The `tcp_keepalives_*` values are sent in asyncpg `server_settings` as startup
+parameters. **Leave this disabled for PgBouncer or hosted poolers unless the
+pooler supports these parameters** (for example, via PgBouncer's
+`ignore_startup_parameters`). A pooler may reject them, and ignoring them does
+not apply them to the backend; configure backend keepalive separately in that
+case. Repowise does not auto-detect poolers or retry without the parameters.
+
+The defaults let the server detect a dead TCP peer in roughly two minutes
+(`60 + 15 × 4` seconds, subject to OS support). They configure the **server's**
+probes, not the client's socket; a tunnel's peer may only be the tunnel
+endpoint, so SSH keepalive must be configured separately. The command timeout
+bounds an active command, not an idle session, and does not guarantee recovery
+of an interrupted transaction. `pool_pre_ping` still checks connections at
+checkout.
 
 ## Workspace config (`.repowise-workspace.yaml`)
 
-A multi-repo [workspace](../scale/WORKSPACES.md) is configured by a `.repowise-workspace.yaml` at the workspace root. Alongside the repo list it carries two optional blocks.
+A multi-repo [workspace](../scale/WORKSPACES.md) is configured at its root.
+Beside the repo list it takes `repos[].tags`, `conformance:`, and a
+`contracts:` block that tunes cross-repo contract detection.
 
 ### `repos[].tags`
 
-Each repo entry may declare free-form `tags` used to group services in conformance rules:
+Free-form tags that group services in conformance rules:
 
 ```yaml
 repos:
@@ -1176,35 +1691,35 @@ repos:
 
 ### The `conformance:` block
 
-Declares architecture conformance rules (allow/deny dependency rules) checked by `repowise workspace check` and the workspace Conformance view. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
+Allow/deny dependency rules checked by `repowise workspace check` and the
+Conformance view ([Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance)).
 
 ```yaml
 conformance:
   rules:
-    - source: frontend          # matcher: a glob over node id / repo / name
-      target: db                # matcher
-      allow: false               # optional, default false (deny). true = exception
-      description: "..."         # optional, shown in reports
-    - source: "tag:ui"          # matcher: tag:<name> (repos carrying that tag)
+    - source: frontend
+      target: db
+      allow: false
+      description: "..."
+    - source: "tag:ui"
       target: "tag:data"
-    - source: "*"                # matcher: * (any service)
+    - source: "*"
       target: legacy-payments
 ```
 
-| Field | Type | Default | Meaning |
-|-------|------|---------|---------|
-| `source` | string (matcher) | required | The dependent side. `*`, `tag:<name>`, or a glob over node id / repo alias / display name |
-| `target` | string (matcher) | required | The depended-upon side (same matcher forms) |
-| `allow` | bool | `false` | `false` = deny (a matching dependency is a violation); `true` = whitelist an otherwise-denied edge |
-| `description` | string | `""` | Human-readable rationale, surfaced in reports |
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `source` | required | Dependent side: `*` (any service), `tag:<name>` (repos with that tag), or a glob over node id / repo alias / display name |
+| `target` | required | Depended-upon side, same forms |
+| `allow` | `false` | `false` denies (a match is a violation); `true` whitelists an otherwise-denied edge |
+| `description` | `""` | Rationale shown in reports |
 
-Rules are evaluated only against structural edges (HTTP, gRPC, event, package, db); behavioral co-change is never treated as a dependency.
-
----
+Rules apply only to structural edges (HTTP, gRPC, socket, event, package, db),
+never to behavioral co-change.
 
 ## Deprecated / legacy aliases
 
 | Old name | Current name | Notes |
 |----------|--------------|-------|
-| `max_pages_pct` | `coverage_pct` | Internal alias, still read for backward compatibility |
+| `max_pages_pct` | `coverage_pct` | Internal alias, still read |
 | `REPOWISE_DATABASE_URL` | `REPOWISE_DB_URL` | Still honored |

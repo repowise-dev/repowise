@@ -203,3 +203,86 @@ async def test_a_case_only_sibling_keeps_its_spotlight_pages(session, engine):
 
     assert sorted(marked) == ["file_page:pkg/Foo.py", gone]
     assert (await _status(session, kept))[0] == "fresh"
+
+
+async def test_api_contract_page_is_tombstoned_and_returned_with_file_page(session, engine):
+    """An API contract page belongs to its file: deleting the file tombstones
+    both the file page and the api_contract page, and returns both ids (#4713)."""
+    fts = FullTextSearch(engine)
+    await fts.ensure_index()
+    repo = await upsert_repository(session, name="r", local_path="/tmp/r")
+    await session.commit()
+    path = "api/service.proto"
+    for ptype in ("file_page", "api_contract"):
+        pid = f"{ptype}:{path}"
+        await upsert_page(
+            session,
+            page_id=pid,
+            repository_id=repo.id,
+            page_type=ptype,
+            title=f"{ptype}: {path}",
+            content=f"# Service\n\nRPC definitions in {path}.",
+            summary=f"Contract {path}.",
+            target_path=path,
+            source_hash="h",
+            model_name="mock",
+            provider_name="mock",
+        )
+        await fts.index(
+            pid,
+            f"{ptype}: {path}",
+            f"# Service\n\nRPC definitions in {path}.",
+            summary=f"Contract {path}.",
+            target_path=path,
+        )
+    await session.commit()
+
+    marked = await mark_tombstone_pages(session, repo.id, [(path, [])])
+
+    assert sorted(marked) == [f"api_contract:{path}", f"file_page:{path}"]
+    assert (await _status(session, f"file_page:{path}"))[0] == "tombstone"
+    assert (await _status(session, f"api_contract:{path}"))[0] == "tombstone"
+
+
+async def test_postgresql_fts_queries_exclude_tombstoned_pages():
+    """PostgreSQL keeps tombstoned wiki_pages rows, so FTS queries must exclude them."""
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.search import FullTextSearch
+
+    executed_sql: list[str] = []
+
+    class _FakeResult:
+        def fetchall(self):
+            return []
+
+        def scalar(self):
+            return 0
+
+    class _FakeConn:
+        async def execute(self, stmt, params=None):
+            executed_sql.append(str(stmt))
+            return _FakeResult()
+
+    class _FakeCtx:
+        async def __aenter__(self):
+            return _FakeConn()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class _FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def connect(self):
+            return _FakeCtx()
+
+    fts = FullTextSearch(_FakeEngine())
+    await fts.list_indexed_ids()
+    await fts.search("xylophone", limit=5)
+    await fts.search("xylophone", limit=5, repository_id="repo-1")
+
+    assert executed_sql, "expected PostgreSQL FTS queries to run"
+    for sql in executed_sql:
+        if "FROM wiki_pages" in sql:
+            assert "freshness_status != 'tombstone'" in sql, sql

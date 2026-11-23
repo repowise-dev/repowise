@@ -19,7 +19,10 @@ test-suite.
 
 from __future__ import annotations
 
+from .check import health_check
 from .command import health_command
 from .refactoring_targets import _render_refactoring_targets
 
-__all__ = ["_render_refactoring_targets", "health_command"]
+health_command.add_command(health_check)
+
+__all__ = ["_render_refactoring_targets", "health_check", "health_command"]

@@ -4,6 +4,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: ``savings_events.estimator`` of the events recovered from agent transcripts
+#: (``savings/transcript.py``). Here rather than there so the report can name
+#: the population without importing the transcript readers.
+TRANSCRIPT_ESTIMATOR = "transcript_marker_v1"
+
+#: Codex's measured truncation plateau, across 95,814 shell results in this
+#: repository. Above 5,000 characters the commonest lengths are 24,133 (164
+#: texts) and a tight cluster at 40,100-40,104, over 200 texts within four
+#: characters of one another: a cap with a variable-length truncation notice
+#: after it. Claude Code's plateau is the same shape and sharper, 24 texts at
+#: exactly 30,000 and nothing above it.
+#:
+#: Codex does not always stop there: a few results run to 159,585, 434,762,
+#: 1,510,994 and 2,552,250 characters. Capping at that maximum would credit
+#: one command with up to 638k tokens, more than a model's context can hold.
+#: The plateau is what Codex usually hands the model, so it is the defensible
+#: claim. A result that escaped it still banks what was actually delivered:
+#: the transcript accounting never clips below the delivery.
+#:
+#: The report applies the same cap to rows stored above it
+#: (``service.load_report``), so a ledger shows what a fresh backfill records.
+CODEX_OUTPUT_CAP_CHARS = 40_100
+#: The same cap in tokens. Token estimates are ``len // 4`` throughout, so
+#: capping characters and capping tokens agree exactly.
+CODEX_OUTPUT_CAP_TOKENS = CODEX_OUTPUT_CAP_CHARS // 4
+
 
 @dataclass(frozen=True, slots=True)
 class TokenAccounting:

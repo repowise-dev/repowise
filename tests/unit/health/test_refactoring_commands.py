@@ -120,11 +120,18 @@ def test_suffixes_decide_the_runner_not_substrings() -> None:
     assert commands_for_tests(tests, runs={}) == ["pytest tests/test_a.py"]
 
 
-def test_python_tests_run_from_their_pytest_package(tmp_path: Path) -> None:
+@pytest.mark.parametrize("config, contents", [
+    ("pyproject.toml", "[tool.pytest.ini_options]\n"),
+    ("setup.cfg", "[tool:pytest]\n"),
+    ("pytest.ini", "[pytest]\n"),
+    ("tox.ini", "[pytest]\n"),
+])
+def test_python_tests_run_from_their_pytest_package(tmp_path: Path, config: str, contents: str) -> None:
     for package in ("packages/core", "packages/cli"):
         folder = tmp_path / package
         folder.mkdir(parents=True)
-        (folder / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+        (folder / "pyproject.toml").write_text("", encoding="utf-8")
+        (folder / config).write_text(contents, encoding="utf-8")
     tests = [
         "packages/core/tests/test_cart.py::test_total",
         "packages/cli/tests/test_main.py::test_main",
@@ -134,6 +141,17 @@ def test_python_tests_run_from_their_pytest_package(tmp_path: Path) -> None:
         "pytest tests/test_root.py",
         "cd packages/cli && pytest tests/test_main.py::test_main",
         "cd packages/core && pytest tests/test_cart.py::test_total",
+    ]
+
+
+@pytest.mark.parametrize("config", ["pytest.ini", "tox.ini"])
+def test_standalone_pytest_config_keeps_the_root_fallback(tmp_path: Path, config: str) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / config).write_text("[pytest]\n", encoding="utf-8")
+    tests = ["package/tests/test_cart.py::test_total"]
+    assert commands_for_tests(tests, runs=_runs(tmp_path, tests)) == [
+        "pytest package/tests/test_cart.py::test_total"
     ]
 
 

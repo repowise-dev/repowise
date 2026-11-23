@@ -95,9 +95,9 @@ function InspectorBody({
               style={{
                 marginTop: 10,
                 padding: "5px 10px",
-                background: "var(--color-accent-muted, rgba(245,149,32,0.2))",
-                color: "var(--color-accent-primary)",
-                border: "1px solid var(--color-accent-primary)",
+                background: "var(--color-action-primary)",
+                color: "var(--color-text-on-action)",
+                border: "1px solid var(--color-action-primary)",
                 borderRadius: 4,
                 cursor: "pointer",
                 fontSize: 11,

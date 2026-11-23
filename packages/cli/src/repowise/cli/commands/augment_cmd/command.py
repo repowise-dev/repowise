@@ -13,8 +13,9 @@ asymmetric, durable value:
     * Flood digest: a multi-file grep flood is served as a compact
       per-file digest via updatedToolOutput, with match counts and anchor
       line numbers per file, with the dropped tail named. Opt-in
-      (hooks.search_digest), default off, Claude Code only. Falls back
-      to appending the same digest beside the flood, as it always did.
+      (hooks.search_digest), default off, Claude Code only. When it is
+      not served, nothing is added: appending it beside the flood only
+      grew the result.
     * Zero-result rescue: grep returned 0 hits but the wiki has a
       semantic match (FTS on docs, fuzzy symbol match, decision record
       mention). Surfaces the closest hit so the agent doesn't burn
@@ -31,9 +32,9 @@ is still answered for installs predating its retirement, but nothing we ship
 registers it any more — see :mod:`.codex`.)
 
   SessionStart (Claude Code)
-    * Emits a one-paragraph context block: whether the index is current,
-      behind (with a changed-file count), or mid-update, plus the core-tool
-      trust rule. CLAUDE.md stays static and cache-friendly; live freshness
+    * Emits a context block only when it has something new: the index
+      behind (with a changed-file count) or mid-update, plus the core-tool
+      trust rule; a current index is silent. CLAUDE.md stays static and cache-friendly; live freshness
       arrives here instead. When active decisions are relevant to the
       session's working set, a capped standing-decisions block rides along.
 
@@ -117,7 +118,7 @@ from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
 from .edit_capture import capture_edit
-from .read_state import _handle_edit_post, _handle_read_post, _record_edit
+from .read_state import _handle_edit_post, _handle_read_post, _record_edit, bind_agent
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
@@ -177,6 +178,11 @@ def augment_command(
 ) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
+    if client:
+        from repowise.cli.platform import telemetry
+
+        # The hook names its host; that beats reading the environment.
+        telemetry.add_command_outcome(client=client)
     # stdout carries the hook response; logs go to stderr.
     with contextlib.suppress(ImportError):
         import structlog
@@ -202,6 +208,8 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
     except json.JSONDecodeError:
         return
 
+    # A subagent shares its parent's session id; its state must not.
+    bind_agent(payload)
     event = payload.get("hook_event_name", "")
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
@@ -296,7 +304,7 @@ def _run_coverage_only(payload: dict, client: str | None) -> None:
     cwd = payload.get("cwd", "")
     session_id = payload.get("session_id", "")
     session_id = session_id if isinstance(session_id, str) else ""
-    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd))
+    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd, client))
     if result:
         _emit_response(event, result, session_id)
     _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
@@ -366,6 +374,58 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
+_MAX_MARKER_CLEANUP_PER_RUN = 20
+_SWEEP_THROTTLE_FILE = ".repowise-augment-sweep.stamp"
+
+
+def _is_sweep_throttled(temp_dir: Path, now: float) -> bool:
+    """Return True if a sweep was performed within the dedup TTL window."""
+    stamp = temp_dir / _SWEEP_THROTTLE_FILE
+    with contextlib.suppress(OSError):
+        if now - stamp.stat().st_mtime < _EMIT_DEDUP_TTL_SECONDS:
+            return True
+    with contextlib.suppress(OSError):
+        stamp.write_text(str(now), encoding="utf-8")
+    return False
+
+
+def _unlink_if_expired(entry: Path, now: float) -> bool:
+    """Delete entry if older than TTL. Return True if deleted."""
+    if entry.name == _SWEEP_THROTTLE_FILE:
+        return False
+    with contextlib.suppress(OSError):
+        if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+            entry.unlink(missing_ok=True)
+            return True
+    return False
+
+
+def _sweep_dir(temp_dir: Path, now: float, max_delete: int) -> None:
+    deleted = 0
+    with contextlib.suppress(OSError):
+        for entry in temp_dir.glob(".repowise-augment-*"):
+            if _unlink_if_expired(entry, now):
+                deleted += 1
+                if deleted >= max_delete:
+                    break
+
+
+def _cleanup_stale_markers(
+    temp_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+) -> None:
+    """Delete expired .repowise-augment-* markers, throttled to run at most once per TTL window."""
+    if not _is_sweep_throttled(temp_dir, now):
+        _sweep_dir(temp_dir, now, max_delete)
+
+
+def _take_over_stale_marker(marker: Path, now: float) -> bool:
+    """Take over an existing marker if older than TTL. Return True if claimed."""
+    with contextlib.suppress(OSError):
+        if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+            return False
+    with contextlib.suppress(OSError):
+        marker.write_text(str(now), encoding="utf-8")
+    return True
 
 
 def _claim_emission(event: str, context: str) -> bool:
@@ -393,6 +453,7 @@ def _claim_emission(event: str, context: str) -> bool:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
         now = time.time()
+        claimed = False
         try:
             # O_EXCL: only the first concurrent caller creates the file.
             fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -400,19 +461,15 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
-            return True
+            claimed = True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
             # which case take it over (handles a real repeat search later, and
             # a crashed prior run that left the marker behind).
-            try:
-                if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
-                    return False
-            except OSError:
-                return True
-            with contextlib.suppress(OSError):
-                marker.write_text(str(now), encoding="utf-8")
-            return True
+            claimed = _take_over_stale_marker(marker, now)
+        if claimed:
+            _cleanup_stale_markers(marker.parent, now)
+        return claimed
     except Exception:
         return True
 
@@ -487,6 +544,6 @@ def _shell_post(
             _handle_bash_post(tool_input, tool_output, cwd),
             commit_capture_notice(tool_input, tool_output, cwd, session_id),
             # Claude Code gets this from its own ``--coverage-only`` entry.
-            coverage_reingest_notice(tool_input, cwd) if client == "codex" else None,
+            coverage_reingest_notice(tool_input, cwd, client) if client == "codex" else None,
         )
     )

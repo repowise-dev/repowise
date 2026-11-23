@@ -57,7 +57,7 @@ class _AngleEmbedder:
 
     dimensions = 2
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         out = []
         for text in texts:
             marker = next((m for m in _ANGLES if f"@{m}" in text), "far")

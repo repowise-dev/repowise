@@ -168,7 +168,7 @@ def test_model_wiki_marks_prose_stale_without_calling_the_model(
     out = _update(repo)
 
     assert "Wiki renderer changed" in out
-    assert "repowise generate --stale" in out
+    assert "repowise update --full" in out
     pages = asyncio.run(_pages(repo))
     assert pages["file_page:foo.py"][0] != OLD_CONTENT
     assert pages["file_page:foo.py"][1] == "fresh"

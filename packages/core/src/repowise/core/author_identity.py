@@ -164,19 +164,29 @@ class IdentityResolver:
         # Automation identities only; every other key is a person.
         self._kinds = kinds
         self._agents = agents
+        # key -> its member emails, built on the first ``aliases`` call.
+        self._members: dict[str, list[str]] | None = None
 
     def __call__(self, name: str | None, email: str | None) -> str:
         node = _node(name, email)
         return self._key_of.get(node, node)
 
-    def display_name(self, key: str) -> str:
-        """The identity's most frequent name, preferring names of 2+ words."""
+    def display_name(self, key: str, default: str | None = None) -> str:
+        """The identity's most frequent name, preferring names of 2+ words.
+
+        An identity the resolver was not built from has no names: *default*
+        (the caller's own observed name), else the key itself.
+        """
         names = self._names.get(key)
         if not names:
-            return key.removeprefix("name:")
+            return default or key.removeprefix("name:")
         pool = Counter({n: c for n, c in names.items() if len(n.split()) >= 2}) or names
         # Ties break alphabetically so the name is stable across runs.
         return min(pool, key=lambda n: (-pool[n], n))
+
+    def email(self, key: str) -> str:
+        """The identity's email: its key, or ``""`` for a name-only identity."""
+        return "" if key.startswith("name:") else key
 
     def kind(self, key: str) -> IdentityKind:
         return self._kinds.get(key, "human")
@@ -191,6 +201,19 @@ class IdentityResolver:
     def people(self) -> set[str]:
         """Every human identity the resolver was built from."""
         return set(self._names) - set(self._kinds)
+
+    def aliases(self, key: str) -> tuple[list[str], list[str]]:
+        """``(names, emails)`` folded into the identity *key*, each sorted.
+
+        The names are every display name it was seen under; the emails every
+        canonical address that resolves to it, its own key included.
+        """
+        if self._members is None:
+            self._members = defaultdict(list)
+            for node, k in self._key_of.items():
+                if not node.startswith("name:"):
+                    self._members[k].append(node)
+        return sorted(self._names.get(key, ())), sorted(self._members.get(key, ()))
 
 
 def build_identity_resolver(

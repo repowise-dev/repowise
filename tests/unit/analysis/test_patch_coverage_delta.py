@@ -106,7 +106,7 @@ def test_the_project_gate_joins_the_verdict_without_small_change_tolerance() -> 
 
 
 def _scope(*formats: str, ignore=(), partial=False) -> CoverageScope:
-    return CoverageScope(tuple(sorted(formats)), tuple(sorted(ignore)), partial)
+    return CoverageScope(tuple(sorted(formats)), tuple(ignore), partial)
 
 
 def test_same_scope_is_comparable() -> None:
@@ -143,6 +143,19 @@ def test_resolved_reports_record_one_format_per_report() -> None:
     resolved = resolve_reports([parse_lcov(lcov), parse_lcov(lcov)], {"a.py"}, ignore=["x/"])
 
     assert resolved.provenance.scope == _scope("lcov", "lcov", ignore=["x/"])
+
+
+def test_scope_keeps_coverage_ignore_in_the_order_written() -> None:
+    from repowise.core.analysis.health.coverage import parse_lcov, resolve_reports
+
+    lcov = "SF:a.py\nDA:1,1\nend_of_record\n"
+    ignore = ["!gen/keep.py", "gen/", "!gen/keep.py"]
+    resolved = resolve_reports([parse_lcov(lcov)], {"a.py"}, ignore=ignore)
+
+    # The exception must stay below gen/ to keep gen/keep.py, so a repeat keeps its last place.
+    scope = resolved.provenance.scope
+    assert scope.ignore == ("gen/", "!gen/keep.py")
+    assert CoverageScope.from_dict(scope.to_dict()) == scope
 
 
 # -- coverage outside the change ---------------------------------------------

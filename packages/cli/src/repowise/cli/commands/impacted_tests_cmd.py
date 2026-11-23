@@ -34,6 +34,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from repowise.cli.ci import (
@@ -53,8 +54,9 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
-from repowise.core.analysis.test_selection import RUNNERS
+from repowise.core.test_runners import RUNNERS
 
 # Candidates the table prints per changed file; json and list carry them all.
 _TABLE_CANDIDATES = 10
@@ -63,14 +65,7 @@ _TABLE_CANDIDATES = 10
 def _resolve_repo_path(path: str | None, fmt: str):
     """Resolve the repo path (workspace-aware), mirroring ``coverage``."""
     target = resolve_command_target(path=path)
-    target.notice(ci_notices(fmt), command="impacted-tests")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(ci_notices(fmt), command="impacted-tests", repo_option=False)
 
 
 @click.command("impacted-tests")
@@ -89,8 +84,10 @@ def _resolve_repo_path(path: str | None, fmt: str):
     "fmt",
     default="table",
     type=click.Choice(["table", "json", "list", "args"]),
-    help="table (human), json (full report and selection), list (test ids, one per line), "
-    "or args (one line of runner arguments, or :all for a full run; reasons on stderr).",
+    help="table (human), json (full report and selection), list (test ids, one per line; "
+    "nothing on stdout when every test must run, so `| xargs pytest` runs the suite, with "
+    "the reason on stderr), or args (one line of runner arguments, or :all for a full run; "
+    "reasons on stderr).",
 )
 @click.option(
     "--runner",
@@ -155,10 +152,11 @@ def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain
     """``(change set, selection config or None)``, or :class:`CannotEvaluateError`."""
     from repowise.core.ci.base import in_ci
 
-    config = _selection_config(repo_path) if explain or fmt in ("json", "args") else None
+    config = _selection_config(repo_path) if explain or fmt in ("json", "args", "list") else None
+    root = str(repo_root(str(repo_path)))
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
-        revspec = ci_revspec(str(repo_root(str(repo_path))), None)
+        revspec = ci_revspec(root, None)
     return change_set(str(repo_path), revspec, staged=staged), config
 
 
@@ -201,6 +199,8 @@ async def _collect(
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
             read_source=checkout.read,
+            scope_groups=plan.groups if plan else None,
+            project_dirs=plan.project_dirs if plan else None,
         )
         return await _decide(session, repo_id, out, *decide)
 
@@ -249,6 +249,15 @@ def _render(
             click.echo(test)
         return
 
+    selection = result.get("selection")
+    if fmt == "list" and selection is not None and selection.run_all:
+        # One line, not a partial list: piped to `xargs pytest`, an empty stdout
+        # runs the whole suite, which is the selection's verdict.
+        more = len(selection.reasons) - 1
+        extra = f" (and {more} more reason(s); --format json lists them)" if more > 0 else ""
+        click.echo(f"Run every test: {selection.reasons[0]}{extra}", err=True)
+        return
+
     if fmt == "list":
         # Clean stdout for piping (e.g. `... --format list | xargs pytest`).
         # Caveats (unknown files, empty map) go to stderr so they don't corrupt
@@ -259,7 +268,7 @@ def _render(
             err_console.print("[yellow]No index - run `repowise init`.[/yellow]")
         elif result["unknown"]:
             err_console.print(
-                f"[yellow]{len(result['unknown'])} changed file(s) have no coverage, no "
+                f"[yellow]{len(result['unknown'])} changed file(s) have no per-test coverage, no "
                 f"test reaching them in the graph and no paired test; run the full suite "
                 f"to be safe.[/yellow]"
             )
@@ -311,6 +320,22 @@ def _args_header(selection, args: list[str], resolved: str, prioritize: bool) ->
         )
     if selection.run_all:
         return "Run every test:"
+    apart = []
+    if selection.broadcast:
+        apart.append(
+            f"{len(selection.broadcast)} only because a conftest on a route keeps every "
+            "test under it"
+        )
+    if selection.import_closure:
+        apart.append(
+            f"{len(selection.import_closure)} only through imports, with no call path to "
+            "the change"
+        )
+    if apart:
+        return (
+            f"{len(args)} argument(s) for {resolved}; selected test files that must still run "
+            f"but are counted apart: {'; '.join(apart)}."
+        )
     return f"{len(args)} argument(s) for {resolved}."
 
 
@@ -318,7 +343,7 @@ def _render_selection(
     result: dict, fmt: str, runner: str, explain: str | None = None, prioritize: bool = False
 ) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
-    from repowise.core.analysis.test_selection import (
+    from repowise.core.test_runners import (
         format_args,
         left_out,
         resolve_runner,
@@ -361,6 +386,7 @@ def _render_selection(
             "unknown_files": result["unknown"],
             "indexed_commit": result["indexed_commit"],
             "map_current": result["map_current"],
+            "matched_by_file": result.get("matched_by_file", []),
             "run_all": run_all,
             "reasons": reasons,
             "selected": selected,
@@ -395,13 +421,15 @@ def _print_map_state(result: dict) -> None:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
+            "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
-    elif not result["map_current"]:
+    elif by_file := result.get("matched_by_file"):
         console.print(
             "[yellow]The test-to-code map was measured at another commit[/yellow], so "
-            "covering tests are matched by file, not by changed line."
+            f"covering tests of {len(by_file)} changed file(s) are matched by file, not "
+            f"by changed line (e.g. {escape(by_file[0])})."
         )
 
 
@@ -415,7 +443,8 @@ def _print_covered(result: dict) -> None:
     table.add_column("Test", style="green")
     table.add_column("Changed file(s) it covers")
     for tid, info in sorted(covered.items()):
-        table.add_row(tid, "\n".join(info["source_files"]))
+        # Paths and test ids are text, not markup: rich drops a Next.js `[slug]` segment.
+        table.add_row(escape(tid), escape("\n".join(info["source_files"])))
     console.print(table)
     console.print(
         f"[green]{len(covered)} test(s)[/green] directly cover the change "
@@ -435,14 +464,14 @@ def _print_inferred(inferred: list[dict]) -> None:
         per_file.setdefault(g["source_file"], []).append(g)
     for rows in per_file.values():
         for g in rows[:_TABLE_CANDIDATES]:
-            table.add_row(g["source_file"], g["test_file"], g["via"])
+            table.add_row(escape(g["source_file"]), escape(g["test_file"]), g["via"])
     for source, rows in per_file.items():
         if len(rows) > _TABLE_CANDIDATES:
-            table.add_row(source, f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
+            table.add_row(escape(source), f"... and {len(rows) - _TABLE_CANDIDATES} more", "")
     console.print(table)
     console.print(
         f"[yellow]{len(inferred)} candidate(s)[/yellow] for {len(per_file)} file(s) "
-        "with no coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
+        "with no per-test coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
         "[dim]call-graph[/dim] = a test whose calls reach this file; "
         "[dim]import-graph[/dim] = a test that imports it, directly or not; "
         "[dim]filename-pattern[/dim] = a name-shaped guess. None proves execution - "
@@ -454,8 +483,8 @@ def _print_unknown(unknown: list[str]) -> None:
     if not unknown:
         return
     console.print(
-        f"[red]{len(unknown)} changed file(s)[/red] have no coverage, no test "
+        f"[red]{len(unknown)} changed file(s)[/red] have no per-test coverage, no test "
         "reaching them in the graph and no paired test - run the full suite to be safe:"
     )
     for path in unknown:
-        console.print(f"  [red]{path}[/red]")
+        console.print(f"  [red]{escape(path)}[/red]")

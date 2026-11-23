@@ -10,6 +10,7 @@ from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.swift import resolve_swift_import
 from repowise.core.ingestion.resolvers.swift_spm import (
     build_swift_targets,
+    parse_package_manifest,
     parse_package_swift,
 )
 
@@ -66,6 +67,126 @@ class TestPackageSwiftParsing:
 
     def test_missing_file(self, tmp_path: Path) -> None:
         assert parse_package_swift(tmp_path / "missing.swift") == {}
+
+
+class TestParsePackageManifest:
+    def test_name_and_path_deps(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            // swift-tools-version:5.9
+            import PackageDescription
+
+            let package = Package(
+                name: "App",
+                dependencies: [
+                    .package(path: "../Lib"),
+                    .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
+                ],
+                targets: [
+                    .executableTarget(name: "App", dependencies: [.product(name: "Lib", package: "Lib")]),
+                ]
+            )
+        """)
+        result = parse_package_manifest(pkg)
+        assert result is not None
+        assert result.name == "App"
+        assert result.path_deps == ("../Lib",)
+
+    def test_older_name_path_form(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            let package = Package(
+                name: "App",
+                dependencies: [
+                    .package(name: "Lib", path: "../Lib"),
+                ],
+                targets: []
+            )
+        """)
+        result = parse_package_manifest(pkg)
+        assert result is not None
+        assert result.name == "App"
+        assert result.path_deps == ("../Lib",)
+
+    def test_commented_out_package_path_ignored(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            let package = Package(
+                name: "App",
+                dependencies: [
+                    // .package(path: "../Other"),
+                    .package(path: "../Lib"),
+                ],
+                targets: []
+            )
+        """)
+        result = parse_package_manifest(pkg)
+        assert result is not None
+        assert result.name == "App"
+        assert result.path_deps == ("../Lib",)
+
+    def test_url_dependency_ignored(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            let package = Package(
+                name: "App",
+                dependencies: [
+                    .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
+                    .package(url: "https://example.com/foo.git", .upToNextMajor(from: "2.0.0")),
+                    .package(url: "https://example.com/bar.git", branch: "main"),
+                    .package(url: "https://example.com/baz.git", exact: "1.0.0"),
+                ],
+                targets: []
+            )
+        """)
+        result = parse_package_manifest(pkg)
+        assert result is not None
+        assert result.name == "App"
+        assert result.path_deps == ()
+
+    def test_nested_parens_in_url_version(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            let package = Package(
+                name: "App",
+                dependencies: [
+                    .package(url: "https://example.com/foo.git", .upToNextMajor(from: "1.0.0")),
+                    .package(path: "../Lib"),
+                ],
+                targets: []
+            )
+        """)
+        result = parse_package_manifest(pkg)
+        assert result is not None
+        assert result.name == "App"
+        assert result.path_deps == ("../Lib",)
+
+    def test_no_package_name_returns_none(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            // swift-tools-version:5.9
+            import PackageDescription
+            // No Package(...) call
+        """)
+        assert parse_package_manifest(pkg) is None
+
+    def test_name_not_first_argument_returns_none(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_text("""
+            let package = Package(
+                platforms: [.iOS(.v15)],
+                targets: [.target(name: "X")]
+            )
+        """)
+        assert parse_package_manifest(pkg) is None
+
+    def test_unreadable_file_returns_none(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "Package.swift"
+        pkg.write_bytes(b'let package = Package(name: "caf\xe9")\n')  # invalid utf-8
+        assert parse_package_manifest(pkg) is None
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        assert parse_package_manifest(tmp_path / "missing.swift") is None
 
 
 class TestSwiftResolverIntegration:
