@@ -116,9 +116,9 @@ export function PerformanceView({
    */
   runtimeEvidence?: { connected: boolean; found?: readonly string[] | null } | null;
   /**
-   * The prompt the no-evidence states and the tests-only notice copy, for a host whose evidence arrives
-   * another way (a CI upload, say). Omitted, they copy the prompt that runs
-   * `repowise evidence setup` locally.
+   * The prompt the no-evidence states and the tests-only notice copy, for a
+   * host whose evidence arrives another way (a CI upload, say). Omitted, they
+   * copy the prompt that runs `repowise evidence setup` locally.
    */
   connectEvidencePrompt?: (() => string) | undefined;
   /**
