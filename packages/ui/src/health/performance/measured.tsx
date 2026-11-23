@@ -649,6 +649,7 @@ export function RuntimeEvidenceSection({
   onOpenCause: openCause,
   canOpenCause = true,
   onPrompt,
+  connectPrompt,
 }: {
   view: RuntimeEvidenceView;
   adapter: PerformanceViewAdapter;
@@ -656,6 +657,8 @@ export function RuntimeEvidenceSection({
   /** False when the host cannot open a cause by id, so a findings tag stays a word. */
   canOpenCause?: boolean;
   onPrompt: (request: AiPromptRequest) => void;
+  /** The host's connect-evidence prompt, for a notice that asks for more evidence. */
+  connectPrompt?: (() => string) | undefined;
 }) {
   const onOpenCause = canOpenCause ? openCause : undefined;
   const notices = runtimeNotices(view);
@@ -663,7 +666,7 @@ export function RuntimeEvidenceSection({
   const rows = { view, adapter, onOpenCause, onPrompt };
   return (
     <section aria-label="Runtime evidence" className="space-y-10">
-      <RuntimeEvidenceNotices notices={notices} />
+      <RuntimeEvidenceNotices notices={notices} connectPrompt={connectPrompt} />
       <LeadRun {...rows} />
       <div className="border-b border-[var(--color-border-default)]">
         <TestRunGroup {...rows} />
