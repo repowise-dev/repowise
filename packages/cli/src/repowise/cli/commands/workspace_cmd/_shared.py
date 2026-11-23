@@ -11,6 +11,7 @@ import click
 from rich.markup import escape
 
 from repowise.cli.helpers import (
+    _missing_sqlite_file,
     console,
     db_configured,
     find_workspace_root,
@@ -121,12 +122,19 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
     still means the repository is indexed. Collapsing the two would report a
     repository the store has never seen as indexed with a zero count.
 
-    A store that errors (unreachable database, corrupt file, missing table)
-    raises :class:`click.ClickException` rather than returning ``None``:
-    under a configured database ``None`` reads as "not indexed", which would
-    report a fully indexed repository as missing during an outage — the
-    misreport this helper exists to fix, produced by a failure instead of a
-    missing row.
+    A store that errors (unreachable database, corrupt file) raises
+    :class:`click.ClickException` rather than returning ``None``: under a
+    configured database ``None`` reads as "not indexed", which would report a
+    fully indexed repository as missing during an outage — the misreport this
+    helper exists to fix, produced by a failure instead of a missing row.
+    ``workspace list`` catches it per member so one bad store cannot stop the
+    listing.
+
+    A configured store that was never initialised — missing SQLite file, or a
+    database with no tables — is *not* an error: the repository is unindexed
+    there and ``None`` is the right verdict. Returning early on a missing file
+    also keeps a read command from materialising an empty store, which
+    ``create_engine`` would otherwise do the moment it opened the URL.
 
     With ``REPOWISE_DB_URL`` (or ``REPOWISE_DATABASE_URL``) set the local file is
     not consulted at all: a repository indexed into a shared store has no file
@@ -157,6 +165,12 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
         # Without this a store one repowise older reports 0 files: the
         # `no such column` would surface as a store error below.
         await reconcile_schema_best_effort(url)
+        # create_engine materialises a missing SQLite file on open, and the
+        # table-less database it leaves behind would fail the query below as a
+        # store error. A configured store that was never initialised is an
+        # unindexed store, and a read command must never create one anyway.
+        if _missing_sqlite_file(url):
+            return None
         engine = create_engine(url)
         sf = create_session_factory(engine)
         try:
@@ -176,6 +190,11 @@ def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
     except click.ClickException:
         raise
     except Exception as exc:
+        # A store that exists but was never initialised has no tables: the
+        # repository is unindexed there, which is "not indexed", not an
+        # outage. Every other failure is a store error.
+        if "no such table" in str(exc).lower():
+            return None
         raise click.ClickException(
             f"Could not read the index store for {repo_path}: {exc}"
         ) from exc

@@ -52,6 +52,7 @@ def workspace_list(path: str | None) -> None:
 
     indexed_count = 0
     configured_db = db_configured()
+    store_errors: list[str] = []
 
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
@@ -70,7 +71,16 @@ def workspace_list(path: str | None) -> None:
         # a repository row for this path is the index, and its absence is the
         # not-indexed verdict. With no configured URL the directory check is
         # unchanged.
-        counts = _query_store_counts(abs_path)
+        try:
+            counts = _query_store_counts(abs_path)
+        except click.ClickException as exc:
+            # A store error is not the not-indexed verdict, and one bad store
+            # must not stop the listing before it prints any other member —
+            # mark this row, remember it for the summary, and keep going.
+            counts = None
+            store_errors.append(str(exc))
+            table.add_row(label, rel_path, "-", "-", "-", "[red]store unreadable[/red]")
+            continue
         indexed = counts is not None if configured_db else repowise_dir.exists()
 
         if not indexed:
@@ -115,6 +125,13 @@ def workspace_list(path: str | None) -> None:
     if ws_config.default_repo:
         summary += f" Default: {ws_config.default_repo}"
     console.print(summary)
+
+    if store_errors:
+        for error in store_errors:
+            console.print(f"[red]![/red] {error}")
+        raise click.ClickException(
+            f"{len(store_errors)} of {total_repos} index store(s) could not be read"
+        )
 
 
 # ---------------------------------------------------------------------------

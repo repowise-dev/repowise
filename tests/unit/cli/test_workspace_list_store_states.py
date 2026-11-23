@@ -199,6 +199,76 @@ class TestWorkspaceListStoreStates:
         assert "not indexed" not in result.output
         assert "index store" in result.output
 
+    def test_one_bad_store_does_not_stop_the_listing(self, runner, tmp_path, monkeypatch):
+        """A member whose store fails still lets the others print.
+
+        ``workspace_list`` used to call ``_query_store_counts`` bare in the
+        member loop, so the first unreadable store aborted the command before
+        any row reached the table. The healthy members are the point of the
+        listing; the broken one gets its own row and the error after it.
+        """
+        repo_a = tmp_path / "service-a"
+        repo_a.mkdir()
+        (repo_a / ".repowise").mkdir()
+        (repo_a / ".repowise" / "wiki.db").write_bytes(b"this is not a sqlite database")
+        repo_b = tmp_path / "service-b"
+        repo_b.mkdir()
+        _write_workspace_config(
+            tmp_path,
+            repos=[
+                {"path": "service-a", "alias": "service-a"},
+                {"path": "service-b", "alias": "service-b"},
+            ],
+        )
+        _clear_db_env(monkeypatch)
+
+        result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
+        assert result.exit_code != 0, result.output
+        row_a = _row_for(result.output, "service-a")
+        row_b = _row_for(result.output, "service-b")
+        assert "store unreadable" in row_a
+        assert "not indexed" in row_b
+        assert "index store" in result.output
+
+    def test_a_missing_store_file_is_not_indexed_and_not_created(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A read command must never materialise a store.
+
+        With a configured SQLite URL whose file does not exist,
+        ``create_engine`` would create it the moment it opened the URL — and
+        the resulting table-less database then read as a store error instead
+        of the unindexed store it is. The member is unindexed there: no file,
+        no error, no row.
+        """
+        repo_a = tmp_path / "service-a"
+        repo_a.mkdir()
+        _write_workspace_config(tmp_path, repos=[{"path": "service-a", "alias": "service-a"}])
+
+        shared = _configure_shared_db(monkeypatch, tmp_path)
+
+        result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        row = _row_for(result.output, "service-a")
+        assert "not indexed" in row
+        assert not shared.exists()
+
+    def test_an_initialised_store_with_no_tables_is_not_indexed(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """An existing but empty database is unindexed, not a store error."""
+        repo_a = tmp_path / "service-a"
+        repo_a.mkdir()
+        _write_workspace_config(tmp_path, repos=[{"path": "service-a", "alias": "service-a"}])
+
+        shared = _configure_shared_db(monkeypatch, tmp_path)
+        shared.write_bytes(b"")  # the file exists; nothing ever wrote schema
+
+        result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        row = _row_for(result.output, "service-a")
+        assert "not indexed" in row
+
     def test_without_a_configured_database_the_local_directory_decides(
         self, runner, tmp_path, monkeypatch
     ):
