@@ -14,7 +14,9 @@ on:
 
 concurrency:
   group: repowise-evidence
-  cancel-in-progress: true
+  # A newer push waits for the running job instead of cancelling it, so a
+  # busy main still finishes a run and uploads both measurements.
+  cancel-in-progress: false
 
 env:
   UV_HTTP_TIMEOUT: "120"
