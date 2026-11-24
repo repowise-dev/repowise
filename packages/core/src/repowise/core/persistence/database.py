@@ -302,7 +302,7 @@ def read_only_url(db_path: str | Path) -> str:
 
 def is_read_only(engine: AsyncEngine) -> bool:
     """Whether *engine* was opened read-only (``mode=ro``), as by :func:`read_only_url`."""
-    return engine.url.query.get("mode") == "ro"
+    return engine.dialect.name == "sqlite" and engine.url.query.get("mode") == "ro"
 
 
 def _postgres_positive_int(env_name: str, default: int) -> int:

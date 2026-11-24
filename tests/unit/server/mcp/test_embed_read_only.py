@@ -87,3 +87,33 @@ async def test_a_store_without_page_fts_degrades_search_instead_of_erroring(
         await store.dispose()
     assert "error" not in reply
     assert reply["answer"]
+
+
+async def test_get_answer_skips_its_cache_write_on_a_read_only_store(
+    published: tuple[Path, str], engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_answer.cache import _write_answer_cache
+
+    path, repo_id = published
+    store = await embed.open_store(path, repo_id)
+    try:
+        for ctx in (store.context("default"), embed.embedded_context(engine, repo_id, alias="d")):
+            await _write_answer_cache(
+                {"answer": "x"},
+                ctx=ctx,
+                question="q?",
+                repository=SimpleNamespace(head_commit=None),
+                repo_id=repo_id,
+                qhash="h",
+                legacy_qhash="l",
+                provider=None,
+            )
+    finally:
+        await store.dispose()
+    assert "cache write failed" not in caplog.text
+    async with engine.connect() as conn:
+        # Written once: by the writable context only.
+        rows = await conn.execute(text("SELECT count(*) FROM answer_cache"))
+        assert rows.scalar() == 1

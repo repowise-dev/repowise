@@ -138,7 +138,9 @@ class ReadOnlyStore:
 
     Build the serving context with :meth:`context`, which hands
     :func:`embedded_context` this store's full-text search, so a missing or
-    stale ``page_fts`` answers empty instead of erroring. The caller owns the
+    stale ``page_fts`` answers empty instead of erroring. Empty reads the same
+    as no match to the tools, so a host that serves a store whose
+    :attr:`page_fts` is not present should say so itself. The caller owns the
     engine: :meth:`dispose` it when done.
     """
 
@@ -185,7 +187,8 @@ async def open_store(db_path: str | Path, repository_id: str) -> ReadOnlyStore:
     try:
         if await schema_behind(engine):
             raise SchemaBehindError(
-                f"{path} was written by an older repowise; re-index it to serve it read-only"
+                f"{path} lacks tables or columns this repowise reads; "
+                "re-index it with this version to serve it read-only"
             )
         async with engine.connect() as conn:
             found = await conn.execute(
@@ -232,7 +235,9 @@ async def publishable(db_path: str | Path) -> Publishability:
       ``PRAGMA wal_checkpoint(TRUNCATE)``, or publish a backup copy.
     - ``schema_behind``: an older repowise wrote it.
     - ``page_fts_missing`` / ``page_fts_stale``: full-text search would answer
-      empty; run ``FullTextSearch.ensure_index`` on a writable copy first.
+      empty. ``FullTextSearch.ensure_index`` on a writable copy builds a missing
+      index and widens one on an older column set; it refuses a table with
+      columns it does not know, which needs a re-index.
     - ``no_repository``: no repository row to serve.
     - ``unreadable``: SQLite could not read it as a store.
     """
