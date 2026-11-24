@@ -449,9 +449,11 @@ def recent_kpis(
     *,
     doc_drift: bool = False,
     analyzer_version: bool = False,
+    per_day: bool = True,
 ) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* days of snapshots for CLI / API consumers,
-    one row per day (:func:`latest_per_day`).
+    one row per day (:func:`latest_per_day`). ``per_day=False`` keeps every run,
+    for a table of runs rather than a trend.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
@@ -461,7 +463,7 @@ def recent_kpis(
     """
     if not history:
         return []
-    tail = latest_per_day(history)[-limit:]
+    tail = (latest_per_day(history) if per_day else history)[-limit:]
     rows: list[dict[str, Any]] = []
     for snap in reversed(tail):
         rows.append(

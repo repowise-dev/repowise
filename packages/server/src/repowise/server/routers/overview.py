@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.health.snapshots import HEALTH_SNAPSHOT_RETENTION
 from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
@@ -28,10 +29,6 @@ router = APIRouter(
     tags=["overview"],
     dependencies=[Depends(verify_api_key)],
 )
-
-#: How many snapshots the health card's trend line plots. Also the width of the
-#: scalar window this route reads, so the read and the chart cannot drift.
-HEALTH_HISTORY_POINTS = 12
 
 
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
@@ -88,13 +85,14 @@ async def overview_summary(
     # ``total_nloc``.
     health_metrics = await crud.get_health_metrics(session, repo_id)
     # Three scopes, three reads. This payload wants the *count* of retained
-    # snapshots, the newest ``HEALTH_HISTORY_POINTS`` rows' scalars for the
-    # sparkline, and the newest two rows' per-file maps for the file-count
-    # delta. Loading the history as entities pulled every row's
+    # snapshots, every retained row's scalars for the sparkline (it draws one
+    # point per day, ``sections.HEALTH_HISTORY_POINTS`` days; the read selects
+    # every row's three scalars whatever the window), and the newest two rows'
+    # per-file maps for the file-count delta. Loading the history as entities pulled every row's
     # ``per_file_scores_json`` (MBs per page load); capping the read at two rows
     # would flatten the sparkline and report a snapshot count of 2.
     snapshot = await crud.get_health_snapshot_headline(
-        session, repo_id, recent=HEALTH_HISTORY_POINTS
+        session, repo_id, recent=HEALTH_SNAPSHOT_RETENTION
     )
 
     # The same indexed commit as /api/repos and /health/overview: state.json

@@ -34,6 +34,7 @@ from repowise.core.analysis.areas import (
 )
 from repowise.core.analysis.areas.trend import DELTA_WINDOW_DAYS
 from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS, map_held, stored_origin
+from repowise.core.analysis.health.trends import latest_per_day
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
@@ -297,7 +298,9 @@ async def area_detail_payload(
         return _details.get(key)
     trend = []
     kept = set(model.weights) if model.held else None
-    for snap in await crud.list_health_snapshots(session, repo_id, limit=TREND_POINTS):
+    # One point per day, as on the repository trend.
+    snaps = await crud.list_health_snapshots(session, repo_id, limit=TREND_POINTS)
+    for snap in latest_per_day(snaps):
         score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})

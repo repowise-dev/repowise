@@ -741,3 +741,12 @@ def test_recent_kpis_carries_the_analyzer_version_only_when_asked():
     assert "analyzer_version" not in recent_kpis(snaps)[0]
     rows = recent_kpis(snaps, analyzer_version=True)
     assert [r["analyzer_version"] for r in rows] == [42, None]
+
+
+def test_recent_kpis_keeps_every_run_when_asked():
+    """The CLI's table of runs keeps two same-day runs, each with its version."""
+    day = datetime(2026, 11, 23, tzinfo=UTC)
+    snaps = [_S(day, 8.8, 8.8), _S(day + timedelta(hours=9), 8.6, 8.6)]
+
+    assert len(recent_kpis(snaps, per_day=False)) == 2
+    assert len(recent_kpis(snaps)) == 1

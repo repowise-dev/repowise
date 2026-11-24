@@ -107,3 +107,26 @@ def test_snapshot_history_draws_one_point_per_day() -> None:
         ("2026-11-22", 8.0),
         ("2026-11-23", 8.6),
     ]
+
+
+def test_snapshot_history_counts_days_not_runs() -> None:
+    """Many runs on the newest day do not push older days off the sparkline."""
+    from repowise.server.services.overview_payload import HEALTH_HISTORY_POINTS
+
+    days = [
+        SimpleNamespace(
+            taken_at=datetime(2026, 10, d, tzinfo=UTC), average_health=7.0, hotspot_health=None
+        )
+        for d in range(1, HEALTH_HISTORY_POINTS + 2)
+    ]
+    reruns = [
+        SimpleNamespace(
+            taken_at=datetime(2026, 10, 31, h, tzinfo=UTC), average_health=8.0, hotspot_health=None
+        )
+        for h in range(20)
+    ]
+
+    history = snapshot_history(SimpleNamespace(recent=days + reruns))
+
+    assert len(history) == HEALTH_HISTORY_POINTS
+    assert history[-1]["taken_at"].startswith("2026-10-31T19")
