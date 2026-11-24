@@ -41,6 +41,7 @@ separately and any false positive is diagnosable at the source.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..cohesion import SAME_PACKAGE_HINT
@@ -49,6 +50,7 @@ from .scope_scan import FileScope, ScopeTier, collect_source_texts, emit_scope_e
 if TYPE_CHECKING:
     import networkx as nx
 
+    from ...build_units import BuildUnitIndex
     from ..resolvers.jvm_workspace import JvmWorkspaceIndex
 
 _JVM_LANGUAGES = ("java", "kotlin", "scala")
@@ -120,15 +122,37 @@ def resolve_jvm_same_package_refs(
     graph: nx.DiGraph,
     jvm_index: JvmWorkspaceIndex,
     texts: dict[str, str],
+    build_units: BuildUnitIndex | None = None,
 ) -> int:
     """Emit same-package ``imports`` edges for JVM files.
 
     *texts* maps repo-relative path → source text for every Java/Kotlin
     (and Scala, once routed through the index) file to scan.
 
+    *build_units*, when given, enforces the build tool's dependency
+    directions: a candidate edge whose **declaring** file's unit depends,
+    directly or transitively, on the **referencing** file's unit is dropped —
+    Gradle forbids that dependency, so the reference cannot be real (a
+    package split across modules is one scope to the package index, so a
+    KDoc mention alone would otherwise link a library to the app built on
+    it). A file with no unit, or a missing index, keeps every edge.
+
     Returns the number of edges added.
     """
     from ..resolvers.jvm_workspace import _JAVA_LANG_TYPES
+
+    transitive_deps = _transitive_deps_fn(build_units)
+
+    def may_link(referencing: str, declaring: str) -> bool:
+        if build_units is None:
+            return True
+        ref_units = {u.id for u in build_units.units_owning(referencing)}
+        if not ref_units:
+            return True
+        for unit in build_units.units_owning(declaring):
+            if transitive_deps(unit.id) & ref_units:
+                return False  # the declaring module is built on the referrer
+        return True
 
     def plan(path: str, text: str) -> FileScope | None:
         pkg_fqn = jvm_index.package_for_file(path)
@@ -154,7 +178,32 @@ def resolve_jvm_same_package_refs(
         texts.items(),
         plan,
         skip_names=_JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES | _SCALA_DEFAULT_TYPES,
+        may_link=may_link,
     )
+
+
+def _transitive_deps_fn(
+    build_units: BuildUnitIndex | None,
+) -> Callable[[str], frozenset[str]]:
+    """Memoized transitive-dependency closure over the build-unit graph."""
+    closures: dict[str, frozenset[str]] = {}
+    if build_units is None:
+        return lambda unit_id: frozenset()
+
+    def closure(unit_id: str) -> frozenset[str]:
+        done = closures.get(unit_id)
+        if done is not None:
+            return done
+        closures[unit_id] = frozenset()  # cycle guard
+        unit = build_units.unit(unit_id)
+        reached = set(unit.deps) if unit else set()
+        for dep in tuple(reached):
+            reached |= closure(dep)
+        closures[unit_id] = frozenset(reached)
+        return closures[unit_id]
+
+    return closure
+
 
 
 def collect_jvm_source_texts(
