@@ -7,6 +7,7 @@ No imports from ``parser``, so there is no import cycle.
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
@@ -220,9 +221,10 @@ _TS_TYPE_POSITIONS = frozenset(
 _TYPING_MODULES = frozenset({"typing", "typing_extensions"})
 
 
-def _is_type_checking_alias(name: str, root: Node, src: str) -> bool:
-    """True when *root* binds *name* via ``from typing import TYPE_CHECKING as <name>``
-    (or ``typing_extensions``)."""
+@functools.lru_cache(maxsize=256)
+def _type_checking_aliases(root: Node, src: str) -> frozenset[str]:
+    """All names *root* binds as aliases of ``TYPE_CHECKING`` from typing modules."""
+    aliases: set[str] = set()
     stack = [root]
     while stack:
         curr = stack.pop()
@@ -237,16 +239,15 @@ def _is_type_checking_alias(name: str, root: Node, src: str) -> bool:
                             name_node
                             and alias_node
                             and node_text(name_node, src) == "TYPE_CHECKING"
-                            and node_text(alias_node, src) == name
                         ):
-                            return True
+                            aliases.add(node_text(alias_node, src))
         elif curr.type not in (
             "function_definition",
             "async_function_definition",
             "class_definition",
         ):
             stack.extend(reversed(curr.children))
-    return False
+    return frozenset(aliases)
 
 
 def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
@@ -271,7 +272,7 @@ def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
     root = condition
     while root.parent is not None:
         root = root.parent
-    return _is_type_checking_alias(name, root, src)
+    return name in _type_checking_aliases(root, src)
 
 
 def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
