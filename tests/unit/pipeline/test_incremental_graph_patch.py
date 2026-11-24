@@ -375,16 +375,16 @@ def test_surface_changes_fall_back_to_a_full_rebuild(
 
 def test_unsupported_language_falls_back(tmp_path: Path) -> None:
     tree = tmp_path / "repo"
-    helper = "#!/bin/sh\nf() { echo one; }\n"
-    _write(tree, {**_FILES, "tools/helper.sh": helper})
+    helper = "sub f { return 'one'; }\nf();\n"
+    _write(tree, {**_FILES, "tools/helper.pl": helper})
     first = build_repo_graph(tree, [], collect_sources=True)[2]
     seed = _seed_rows(first)
-    (tree / "tools/helper.sh").write_text(helper.replace("echo one", "echo two"))
+    (tree / "tools/helper.pl").write_text(helper.replace("'one'", "'two'"))
 
     patched = _patched(tree, seed)
 
     assert not patched.patch_plan.eligible
-    assert "shell edits are not patched" in (patched.patch_plan.reason or "")
+    assert "perl edits are not patched" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
