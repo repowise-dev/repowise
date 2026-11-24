@@ -40,8 +40,9 @@ _TYPE_KEYWORDS = r"(?:class|interface|enum|record|object|trait|typealias|message
 #: in another source set, not another type.
 _MULTIPLATFORM_RE = re.compile(r"\b(?:expect|actual)\b")
 
-#: Every type name a file declares, nested or not.
-_DECLARED_TYPE_RE = re.compile(rf"\b{_TYPE_KEYWORDS}\s+(\w+)")
+#: Every type name a file declares, nested or not. ``enum class X`` is Kotlin's
+#: enum: the optional ``class`` keeps the capture on ``X``.
+_DECLARED_TYPE_RE = re.compile(rf"\b{_TYPE_KEYWORDS}\s+(?:class\s+)?(\w+)")
 
 
 class JvmNameScope:

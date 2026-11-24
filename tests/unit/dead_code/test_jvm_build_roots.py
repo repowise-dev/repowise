@@ -239,6 +239,19 @@ def test_a_nested_type_written_through_its_parent_refers_to_it():
     )
 
 
+def test_a_kotlin_enum_class_parent_qualifies():
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    declaring = "app/src/main/java/com/ex/utils/Mode.kt"
+    writer = "app/src/main/java/com/ex/dialogs/Dialog.kt"
+    source_map = {
+        declaring: b"package com.ex.utils\n\nenum class Mode {\n    A;\n    object Pending\n}\n",
+        _VOICES: _VOICES_TEXT,
+        writer: b"package com.ex.dialogs\n\nimport com.ex.utils.Mode\n\nval s = Mode.Pending\n",
+    }
+    assert JvmNameScope(source_map).can_refer("Pending", declaring, set(source_map), writer)
+
+
 def test_a_parent_the_writer_cannot_see_does_not_qualify():
     # No import of InitStatus: ``InitStatus.Pending`` cannot mean ours.
     assert not _nested_refers(b"package com.ex.dialogs\n\nval s = InitStatus.Pending\n")
