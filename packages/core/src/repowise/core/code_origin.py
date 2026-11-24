@@ -709,7 +709,12 @@ _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # run the system (tooling below). Unlike ``support_paths`` these count only as
 # the first segment or under a docs root: ``src/pkg/examples/`` is as often
 # shipped code (an example registry, a runner) as a sample.
-_EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
+_EXAMPLE_TOKENS = (EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}) | {
+    "sample-app",
+    "sample-apps",
+    "test-app",
+    "playground",
+}
 _TUTORIAL_PREFIX = "tutorial"
 
 
