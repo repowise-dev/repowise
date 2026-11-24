@@ -212,7 +212,7 @@ async def build_living(
     is its own baseline. *unavailable* maps a section key to why this store
     holds no inputs for it (:func:`.collect.collect_first_look`): the section
     is listed as unavailable instead of collected, and a baseline's items in
-    it are kept as they were, as for a section that could not be read.
+    it are left out (neither carried nor resolved).
     """
     root = Path(repo_root) if repo_root is not None else None
     current, baseline, wrote = await _current(
@@ -224,7 +224,9 @@ async def build_living(
         return LivingReport(report=report, statuses=statuses)
     found = compare(baseline, current.items(), unknown=current.unavailable)
     now_ids = {i.id for i in current.items()}
-    dropped = [i for i in baseline.items() if i.id not in now_ids]
+    # A section the host never stored has no items now; its baseline items are left out.
+    skipped = unavailable or {}
+    dropped = [i for i in baseline.items() if i.id not in now_ids and i.section not in skipped]
     # A section the index cannot read now keeps the baseline's items as they were.
     statuses = await item_statuses(
         session,

@@ -151,3 +151,17 @@ async def test_every_flavor_in_one_pass_reads_the_store_once(async_session, monk
     assert perf_items
     assert reads == {"facts": 1, "perf": len(perf_items)}
     assert len({d["prompts"][perf_items[0].id] for d in docs.values()}) == len(FLAVORS)
+
+
+async def test_a_stored_reports_items_in_those_sections_are_left_out(
+    async_session, tmp_path
+) -> None:
+    rid = await _seed(async_session)
+    first = await build_living(async_session, rid, tmp_path, store_missing=True)
+    assert {"performance", "security"} <= {b.key for b in first.baseline.sections}
+
+    living = await build_living(async_session, rid, tmp_path, unavailable=HOSTED)
+    assert living.baseline is not None and not living.wrote_baseline
+    assert not {"performance", "security"} & {b.key for b in living.report.sections}
+    assert not living.carried and not living.resolved
+    assert {i.section for i in living.report.items()}.isdisjoint(HOSTED)
