@@ -1,8 +1,8 @@
 """The ``changes`` and ``health_trend`` datasets: what happened over time.
 
 ``changes`` is one row per merged change in the indexed history, the records
-get_overview's change block counts; ``health_trend`` is one row per health
-snapshot, the scalars get_health's trend reads.
+get_overview's change block counts; ``health_trend`` is one row per day, the
+day's newest health snapshot, the scalars get_health's trend reads.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def changes_rows(changes: Iterable[Any]) -> list[dict[str, Any]]:
 
 @register_dataset(
     "health_trend",
-    description="One row per health snapshot, oldest first (get_health's trend).",
+    description="One row per day, its newest health snapshot, oldest first (get_health's trend).",
     fields={
         "taken_at": DatasetField("time", "when the snapshot was taken"),
         "average_health": DatasetField("number", "average file health, 0 to 10", AVERAGES, unit="score"),
