@@ -691,6 +691,80 @@ async def test_generate_all_level_values_in_range():
         assert 0 <= page.generation_level <= 8
 
 
+async def _setup_timings(
+    *, file_pages_only: bool = False, only_page_ids: set[str] | None = None
+) -> dict[str, float]:
+    """The timings table of a one-file generation run."""
+    from repowise.core.pipeline.phase_timing import PhaseTimings
+
+    config = GenerationConfig(
+        max_tokens=256, token_budget=500, max_concurrency=2, file_pages_only=file_pages_only
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    p = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=10,
+        entry_points=[],
+    )
+    timings = PhaseTimings()
+    await gen.generate_all(
+        [p],
+        {"pkg/main.py": b"def main(): pass"},
+        _make_builder_with([p]),
+        repo,
+        "test-repo",
+        only_page_ids=only_page_ids,
+        timings=timings,
+    )
+    return timings.totals
+
+
+async def test_generation_setup_steps_are_timed_inside_setup():
+    totals = await _setup_timings()
+
+    steps = {k: v for k, v in totals.items() if k.startswith("generation.setup.")}
+    assert set(steps) == {
+        "generation.setup.resume",
+        "generation.setup.near_clones",
+        "generation.setup.selection",
+        "generation.setup.naming",
+        "generation.setup.flow_plans",
+        "generation.setup.ia",
+    }
+    # The steps are disjoint parts of setup, so together they fit inside it
+    # (each total is rounded to 0.01 s, hence the slack).
+    assert sum(steps.values()) <= totals["generation.setup"] + 0.01 * len(steps)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        {"file_pages_only": True},
+        {"only_page_ids": {compute_page_id("file_page", "pkg/main.py")}},
+    ],
+    ids=["file_pages_only", "only_page_ids"],
+)
+async def test_partial_runs_do_not_select_flows_in_setup(run):
+    # Neither run counts flow pages into its total, so setup must not compute
+    # the flow plans either: a span here would be work the run never did.
+    totals = await _setup_timings(**run)
+
+    assert "generation.setup" in totals
+    assert "generation.setup.flow_plans" not in totals
+
+
 # ---------------------------------------------------------------------------
 # Output-language support
 # ---------------------------------------------------------------------------
