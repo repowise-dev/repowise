@@ -46,7 +46,9 @@ def test_a_script_whose_docstring_runs_it_is_not_unreachable():
 
 def test_a_usage_line_for_another_script_is_not_a_program():
     body = b'"""Helpers for python scripts/run_hero.py."""\nX = 1\n'
-    files = _unreachable({"scripts/hero.py": {"symbols": []}}, {"scripts/hero.py": body})
+    # ``X`` is public: a tooling module with an API is judged on its importers.
+    hero = {"symbols": [{"name": "X", "kind": "variable", "visibility": "public"}]}
+    files = _unreachable({"scripts/hero.py": hero}, {"scripts/hero.py": body})
     assert files == {"scripts/hero.py"}
 
 

@@ -118,6 +118,12 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
 _DEPENDENTS: OrderedDict[str, tuple[str, dict[str, int]]] = OrderedDict()
 
 
+def drop_dependents(repo_id: str) -> None:
+    """Forget the dependents counts read for *repo_id*, in every checkout."""
+    for key in [k for k in _DEPENDENTS if k.endswith(f"|{repo_id}")]:
+        del _DEPENDENTS[key]
+
+
 async def _index_dependents(ctx: Any) -> dict[str, int] | None:
     """The index's dependents count per file, or ``None`` with no readable index."""
     from repowise.core.analysis.change_health.index_context import index_dependents

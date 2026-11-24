@@ -103,6 +103,9 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     deferred = edge_data.get("deferred")
     if deferred is not None:
         existing.deferred = bool(deferred)
+    guarded = edge_data.get("guarded")
+    if guarded is not None:
+        existing.guarded = bool(guarded)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -134,6 +137,7 @@ def _edge_content_values(e: dict) -> dict:
         "call_lines_json": e.get("call_lines_json", "[]"),
         "type_only": bool(e.get("type_only", False)),
         "deferred": bool(e.get("deferred", False)),
+        "guarded": bool(e.get("guarded", False)),
     }
 
 
@@ -584,6 +588,7 @@ async def get_all_graph_edges(
                 "call_lines": call_lines,
                 "type_only": bool(row.type_only),
                 "deferred": bool(row.deferred),
+                "guarded": bool(row.guarded),
             }
         )
     return edges

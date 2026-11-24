@@ -488,6 +488,12 @@ class GraphEdge(Base):
     deferred: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # True when no import along the edge runs at load unguarded and at least
+    # one sits in a ``try`` body with an ``except ImportError`` fallback.
+    # Skipped by cycle detection and persisted for the same reason.
+    guarded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

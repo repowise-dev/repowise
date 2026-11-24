@@ -9,6 +9,7 @@ cached answer costs one read.
 
 from __future__ import annotations
 
+import weakref
 from collections import OrderedDict
 from typing import Any
 
@@ -17,7 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.models import HealthFileMetric, Repository
 
-__all__ = ["IndexStampCache", "index_stamp"]
+__all__ = ["IndexStampCache", "drop_repo_everywhere", "index_stamp"]
+
+# Every live cache, so one call can forget a repository in all of them.
+_INSTANCES: weakref.WeakSet[IndexStampCache] = weakref.WeakSet()
 
 
 async def index_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
@@ -41,6 +45,7 @@ class IndexStampCache:
     def __init__(self, size: int) -> None:
         self._size = size
         self._entries: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        _INSTANCES.add(self)
 
     async def key(self, session: AsyncSession, repo_id: str, *parts: Any) -> tuple[Any, ...]:
         bind = str(session.bind.url) if session.bind is not None else None
@@ -81,3 +86,9 @@ class IndexStampCache:
 
     def clear(self) -> None:
         self._entries.clear()
+
+
+def drop_repo_everywhere(repo_id: str) -> None:
+    """Forget *repo_id*'s answers in every :class:`IndexStampCache` in the process."""
+    for cache in list(_INSTANCES):
+        cache.drop_repo(repo_id)

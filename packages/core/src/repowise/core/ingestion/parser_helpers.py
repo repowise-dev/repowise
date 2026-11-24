@@ -258,22 +258,82 @@ def python_import_scope(stmt_node: Node) -> tuple[tuple[int, int], ...] | None:
     return None
 
 
-def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool]:
-    """``(type_only, deferred)`` for an import, from the statement and where it sits.
+# Handlers that let a module survive its import failing. A broader handler
+# (``Exception``, ``BaseException``, bare ``except:``) usually guards the code
+# after the import too, so it is not read as an import guard.
+_IMPORT_FAILURES = frozenset({"ImportError", "ModuleNotFoundError"})
+
+
+def _catches_import_failure(expr: Node | None, src: str) -> bool:
+    """An ``except`` value naming ``ImportError`` / ``ModuleNotFoundError``,
+    alone, in a tuple, as ``builtins.X``, or with ``as name``."""
+    if expr is None:
+        return False
+    if expr.type in ("as_pattern", "parenthesized_expression"):
+        return bool(expr.named_children) and _catches_import_failure(expr.named_children[0], src)
+    if expr.type == "tuple":
+        return any(_catches_import_failure(item, src) for item in expr.named_children)
+    if expr.type == "attribute":
+        expr = expr.child_by_field_name("attribute")
+    return (
+        expr is not None and expr.type == "identifier" and node_text(expr, src) in _IMPORT_FAILURES
+    )
+
+
+_EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "os._exit"})
+
+
+def _ends_the_module(stmt: Node, src: str) -> bool:
+    """``raise ...`` or a ``sys.exit(...)``-style call statement."""
+    if stmt.type == "raise_statement":
+        return True
+    call = stmt.named_children[0] if stmt.type == "expression_statement" else None
+    function = call.child_by_field_name("function") if call and call.type == "call" else None
+    return function is not None and node_text(function, src) in _EXIT_CALLS
+
+
+def _handler_lets_the_module_go_on(clause: Node, src: str) -> bool:
+    """None of the handler's own statements re-raises or exits. A ``raise``
+    under a nested ``if`` is not followed: the module may still survive."""
+    block = next((c for c in clause.named_children if c.type == "block"), None)
+    return block is None or not any(_ends_the_module(s, src) for s in block.named_children)
+
+
+def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
+    """``child`` is the body of a ``try`` whose import-failure handlers all let
+    the module go on, not its handlers, ``else`` or ``finally``. One fatal
+    handler is enough to leave it runtime: a cycle can raise the exception it
+    catches (``from b import B`` on a half-built ``b`` raises ``ImportError``,
+    not ``ModuleNotFoundError``)."""
+    if node.type != "try_statement" or child != node.child_by_field_name("body"):
+        return False
+    handlers = [
+        clause
+        for clause in node.children
+        if clause.type == "except_clause"
+        and _catches_import_failure(clause.child_by_field_name("value"), src)
+    ]
+    return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
+
+
+def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool, bool]:
+    """``(type_only, deferred, guarded)`` for an import, from the statement and where it sits.
 
     Type-only: ``import type`` / ``export type`` (TS), under ``if
     TYPE_CHECKING:`` (Python), or in a type position such as ``typeof
     import()`` (TS), so it never runs. Deferred: inside a function or lambda
     body, so it runs on first call rather than at module load, the usual way to
-    break an import cycle on purpose. Type-only wins when both hold. Reads the
-    statement and its ancestor chain only.
+    break an import cycle on purpose. Guarded (Python): in the body of a ``try``
+    whose handlers catch ``ImportError``, so it runs at load but the module
+    already survives it failing. Type-only wins over both, deferred over
+    guarded. Reads the statement and its ancestor chain only.
     """
     scopes = _LOAD_DEFERRING_SCOPES.get(language)
     if scopes is None:
-        return False, False
+        return False, False, False
     if stmt_node.type in _TS_TYPE_STATEMENTS and is_type_only_ts_js_import(stmt_node, src):
-        return True, False
-    deferred = False
+        return True, False, False
+    deferred = guarded = False
     child, node = stmt_node, stmt_node.parent
     while node is not None:
         if node.type in scopes:
@@ -283,9 +343,11 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
             if language == "python"
             else node.type in _TS_TYPE_POSITIONS
         ):
-            return True, False
+            return True, False, False
+        elif language == "python" and _is_import_guard_body(node, child, src):
+            guarded = True
         child, node = node, node.parent
-    return False, deferred
+    return False, deferred, guarded and not deferred
 
 
 def _has_missing_scope_separator(qualified: Node) -> bool:

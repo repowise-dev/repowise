@@ -119,6 +119,19 @@ def reset_cache() -> None:
     _LOCKS.clear()
 
 
+def drop_repo(repo_id: str) -> None:
+    """Drop *repo_id*'s projections; a build in flight for it may add them back."""
+    _CACHE.pop(repo_id, None)
+
+
+def set_limit(repos: int) -> None:
+    """Keep at most *repos* repositories, dropping the least recently used now."""
+    global _CACHE_MAX_REPOS
+    _CACHE_MAX_REPOS = repos
+    while len(_CACHE) > repos:
+        _CACHE.popitem(last=False)
+
+
 def _lock_for(name: str) -> asyncio.Lock:
     lock = _LOCKS.get(name)
     if lock is None:

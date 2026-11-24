@@ -408,6 +408,7 @@ def _edge_row(source: str, target: str, data: dict) -> dict:
         "call_lines_json": json.dumps(data.get("call_lines", [])),
         "type_only": bool(data.get("type_only", False)),
         "deferred": bool(data.get("deferred", False)),
+        "guarded": bool(data.get("guarded", False)),
     }
 
 
@@ -680,6 +681,7 @@ _EDGE_ROW_FIELDS = (
     "call_lines",
     "type_only",
     "deferred",
+    "guarded",
 )
 
 

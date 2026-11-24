@@ -830,6 +830,12 @@ def clear_fix_first_cache() -> None:
     _cache.clear()
 
 
+def drop_fix_first_repo(repository_id: str) -> None:
+    """Forget every queue kept for *repository_id*."""
+    for key in [k for k in _cache if k[1] == repository_id]:
+        del _cache[key]
+
+
 async def load_fix_first(
     session: AsyncSession,
     repository_id: str,
@@ -982,6 +988,7 @@ __all__ = [
     "FINDING_FILES",
     "SNAPSHOT_KIND",
     "clear_fix_first_cache",
+    "drop_fix_first_repo",
     "load_fix_first",
     "queue_view",
     "stored_item_counts",

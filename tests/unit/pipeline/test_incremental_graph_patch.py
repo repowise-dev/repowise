@@ -134,6 +134,7 @@ def _edges(graph_builder: Any) -> set[tuple]:
             tuple(d.get("call_lines", [])),
             bool(d.get("type_only", False)),
             bool(d.get("deferred", False)),
+            bool(d.get("guarded", False)),
         )
         for u, v, d in graph_builder.graph().edges(data=True)
     }
@@ -415,6 +416,29 @@ def test_module_level_call_edit_matches_full_build(tmp_path: Path) -> None:
     }
     assert patched_module_calls == {("service.py::__module__", "util.py::second")}
     _assert_equals_full(tree, patched, tmp_path / "module-calls-oracle")
+
+
+def test_a_handler_edit_that_unguards_an_import_matches_full_build(tmp_path: Path) -> None:
+    """``except ImportError`` -> ``except Exception`` moves no line and changes
+    nothing another file resolves against, so it is a body patch; the edited
+    file is re-resolved, so its edge loses the stale mark and closes the cycle."""
+    tree = tmp_path / "guarded"
+    files = {
+        "a.py": "try:\n    from b import B\nexcept ImportError:\n    B = None\nA = 1\n",
+        "b.py": "from a import A\nB = 2\n",
+    }
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert original.graph()["a.py"]["b.py"]["guarded"] is True
+
+    (tree / "a.py").write_text(files["a.py"].replace("ImportError", "Exception"))
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == ("a.py",)
+    assert not patched.graph()["a.py"]["b.py"].get("guarded")
+    _assert_equals_full(tree, patched, tmp_path / "guarded-oracle")
 
 
 def test_go_package_clause_change_falls_back(
