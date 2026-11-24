@@ -10,6 +10,8 @@ attributes that are not persisted in the DB.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -443,8 +445,50 @@ def _graph_matches_snapshot(graph: Any, snapshot: dict[str, list]) -> bool:
     return all(graph.get_edge_data(source, target) == attrs for source, target, attrs in edges)
 
 
-def _kept_snapshot_is_current(kept: Path, graph_builder: Any, header: dict[str, Any]) -> bool:
-    """Whether the snapshot this run set aside holds *header* and the finished graph.
+_HEADER_KEYS = ("version", "repo_id", "edge_count", "parser_fingerprint")
+
+
+@functools.cache
+def _metric_memo_code() -> str:
+    """Hash of the code a stored metric memo, and the node rows built from it, depend on.
+
+    A memo is only replayed under the same hash, so an upgrade or an edit to a
+    metric kernel, the community or flow analysis, or the node row writer
+    computes and writes afresh.
+    """
+    from repowise.core import __version__
+    from repowise.core.analysis import execution_flows
+    from repowise.core.analysis.communities import community_code_fingerprint
+    from repowise.core.ingestion.graph import (
+        _betweenness,
+        _centrality_cache,
+        _metrics,
+        _pagerank,
+        _sampled_betweenness,
+    )
+    from repowise.core.pipeline.persist import graph as persist_graph
+
+    digest = hashlib.sha256(f"{__version__}\0{community_code_fingerprint()}".encode())
+    for module in (
+        _metrics,
+        _pagerank,
+        _betweenness,
+        _sampled_betweenness,
+        _centrality_cache,
+        execution_flows,
+        persist_graph,
+    ):
+        digest.update(Path(module.__file__).read_bytes())
+    return digest.hexdigest()
+
+
+def confirm_kept_snapshot(repo_path: Any, graph_builder: Any) -> Any | None:
+    """Compare the built graph with the snapshot this run set aside, once per update.
+
+    Records the answer on the builder as ``kept_snapshot_match``, which
+    :func:`save_seed_edge_cache` reads instead of comparing again. On a match,
+    returns the metric memo stored with the snapshot when this code may replay
+    it, else ``None``.
 
     Only a file this run moved aside (``seed_snapshot_kept``) is trusted. The
     graph is first compared with the snapshot in memory, which is cheap; a
@@ -452,31 +496,63 @@ def _kept_snapshot_is_current(kept: Path, graph_builder: Any, header: dict[str, 
     seeded graph shares list and set values with the in-memory snapshot, so a
     pass that edited one in place changed both.
     """
+    graph_builder.kept_snapshot_match = False
     previous = getattr(graph_builder, "previous_seed_edges", None)
     if getattr(graph_builder, "seed_snapshot_kept", False) is not True or previous is None:
-        return False
+        return None
+    kept = Path(repo_path).resolve() / ".repowise" / _KEPT_NAME
     graph = graph_builder.graph()
     if not kept.is_file() or not _graph_matches_snapshot(graph, previous):
-        return False
+        return None
     try:
         cache = load_sealed_pickle(kept, domain=_CACHE_NAME)
     except Exception as exc:
         log.warning("graph_seed_cache_unavailable", error=str(exc))
-        return False
-    return (
+        return None
+    if not (
         isinstance(cache, dict)
-        and all(cache.get(key) == value for key, value in header.items())
         and isinstance(cache.get("nodes"), list)
         and isinstance(cache.get("edges"), list)
         and _graph_matches_snapshot(graph, cache)
-    )
+    ):
+        return None
+    graph_builder.kept_snapshot_match = True
+    graph_builder.kept_snapshot_header = {key: cache.get(key) for key in _HEADER_KEYS}
+    memo = cache.get("metrics")
+    graph_builder.kept_snapshot_has_memo = memo is not None
+    if not isinstance(memo, dict) or memo.get("code") != _metric_memo_code():
+        return None
+    return memo
+
+
+def _metric_memo(graph_builder: Any) -> dict[str, Any] | None:
+    """The memo to store with the snapshot, or ``None`` when the store may not match it.
+
+    A memo stands for the graph node rows the store holds, so it is written
+    only when this run's rows came from the builder's own metrics
+    (``graph_nodes_written``, set by ``persist_graph_nodes``), computed on the
+    graph the snapshot holds (``metrics_on_final_graph``, set by an update's
+    rebuild).
+    """
+    if (
+        getattr(graph_builder, "graph_nodes_written", False) is not True
+        or getattr(graph_builder, "metrics_on_final_graph", False) is not True
+    ):
+        return None
+    memo_of = getattr(graph_builder, "metric_memo", None)
+    memo = memo_of() if memo_of is not None else None
+    if memo is None:
+        return None
+    return {"code": _metric_memo_code(), **memo}
 
 
 async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
     """Save a sealed full graph snapshot after the database commit succeeds.
 
-    An update whose graph equals the snapshot it loaded puts that file back
-    instead of writing it again.
+    The snapshot carries the run's global metrics, which an update whose graph
+    comes out the same replays (:func:`confirm_kept_snapshot`). An update
+    whose graph equals the snapshot it loaded, and that replayed its metrics,
+    puts that file back instead of writing it again.
     """
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
@@ -493,15 +569,33 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
             "edge_count": edge_count,
             "parser_fingerprint": stored_fingerprint or parser_fingerprint(),
         }
-        if _kept_snapshot_is_current(kept, graph_builder, header):
+        graph = graph_builder.graph()
+        memo = _metric_memo(graph_builder)
+        previous = getattr(graph_builder, "previous_seed_edges", None) or {}
+        unchanged = (
+            getattr(graph_builder, "kept_snapshot_match", False) is True
+            and getattr(graph_builder, "kept_snapshot_header", None) == header
+            and kept.is_file()
+            # Compared in full during the rebuild, which no later step edits;
+            # the counts are the cheap guard that it still holds.
+            and len(previous.get("nodes", ())) == graph.number_of_nodes()
+            and len(previous.get("edges", ())) == graph.number_of_edges()
+        )
+        # The kept file's memo is current when this run replayed it, or when
+        # neither run has one.
+        if unchanged and (
+            getattr(graph_builder, "graph_metrics_reused", False) is True
+            or (memo is None and not getattr(graph_builder, "kept_snapshot_has_memo", False))
+        ):
             os.replace(kept, root / ".repowise" / _CACHE_NAME)
             log.info("graph_seed_cache_unchanged", edges=edge_count)
             return
-        graph = graph_builder.graph()
         payload = {
             **header,
             "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
-            "edges": [(source, target, dict(attrs)) for source, target, attrs in graph.edges(data=True)],
+            "edges": [
+                (source, target, dict(attrs)) for source, target, attrs in graph.edges(data=True)
+            ],
         }
         if len(payload["edges"]) != edge_count:
             previous_snapshot = getattr(graph_builder, "previous_seed_edges", None)
@@ -514,6 +608,8 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
                     db_edges=edge_count,
                 )
                 return
+            # The memo was computed on the graph before these rows came back.
+            memo = None
             payload["nodes"] = [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)]
             payload["edges"] = [
                 (source, target, dict(attrs)) for source, target, attrs in graph.edges(data=True)
@@ -525,6 +621,8 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
                     db_edges=edge_count,
                 )
                 return
+        if memo is not None:
+            payload["metrics"] = memo
         dump_sealed_pickle(root / ".repowise" / _CACHE_NAME, payload, domain=_CACHE_NAME)
         log.info("graph_seed_cache_saved", nodes=len(payload["nodes"]), edges=edge_count)
     except Exception as exc:

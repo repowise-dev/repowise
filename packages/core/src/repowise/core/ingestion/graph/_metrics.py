@@ -46,6 +46,19 @@ _CHURN_BUDGET_FRACTION = 0.002
 # were paying tens of seconds for every added call edge.
 _CHURN_BUDGET_MIN_COST = 1e6
 
+# The caches :meth:`MetricsMixin.compute_metrics_parallel` primes, which
+# :meth:`MetricsMixin.metric_memo` carries to the next run.
+_MEMO_CACHES = (
+    "_pagerank_cache",
+    "_betweenness_cache",
+    "_symbol_pagerank_cache",
+    "_symbol_betweenness_cache",
+    "_community_cache",
+    "_symbol_community_cache",
+    "_community_info_cache",
+    "_execution_flow_cache",
+)
+
 
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
@@ -798,6 +811,35 @@ class MetricsMixin:
             self._centrality_cache.put_flows(signature=signature, report=report)
         except Exception as exc:
             log.debug("execution_flow_cache_store_failed", error=str(exc))
+
+    def metric_memo(self) -> dict[str, Any] | None:
+        """Every primed global metric as one picklable record, or ``None``.
+
+        ``None`` while any kernel is unprimed or community detection failed: a
+        memo is replayed as the answer for an unchanged graph, so a failure
+        must be retried, not kept.
+        """
+        values = {name: getattr(self, name) for name in _MEMO_CACHES}
+        if any(value is None for value in values.values()) or self._community_algo == "failed":
+            return None
+        return {
+            **values,
+            "_community_algo": self._community_algo,
+            "_betweenness_scoring": dict(self._betweenness_scoring),
+        }
+
+    def restore_metric_memo(self, memo: Any) -> bool:
+        """Prime every metric cache from a :meth:`metric_memo` record; whether it applied.
+
+        The caller vouches that the graph is the one the memo was computed on.
+        """
+        if not isinstance(memo, dict) or any(memo.get(name) is None for name in _MEMO_CACHES):
+            return False
+        for name in _MEMO_CACHES:
+            setattr(self, name, memo[name])
+        self._community_algo = memo.get("_community_algo") or ""
+        self._betweenness_scoring = dict(memo.get("_betweenness_scoring") or {})
+        return True
 
     async def compute_metrics_parallel(self) -> None:
         """Eagerly populate all metric caches with fan-out parallelism.

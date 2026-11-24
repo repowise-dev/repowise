@@ -119,6 +119,12 @@ async def persist_graph_nodes(
     Lifted out of :func:`persist_pipeline_result` so the incremental
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
+
+    A builder that replayed the last run's metrics onto an unchanged graph
+    (``graph_metrics_reused``) writes nothing: the stored rows are the ones
+    that run wrote from the same graph and values. ``graph_nodes_written``
+    records whether the stored rows now follow from the builder alone, which
+    the graph snapshot needs before it may carry the metrics forward.
     """
     from repowise.core.analysis.communities import stored_community_id
     from repowise.core.persistence import (
@@ -127,6 +133,12 @@ async def persist_graph_nodes(
         batch_upsert_graph_nodes,
     )
     from repowise.core.pipeline.phase_timing import timed
+
+    if getattr(graph_builder, "graph_metrics_reused", False) is True:
+        logger.info("graph_nodes_unchanged", reason="graph and metrics match the last run")
+        graph_builder.graph_nodes_written = True
+        return
+    graph_builder.graph_nodes_written = False
 
     graph = graph_builder.graph()
     with timed(timings, "persist.graph_nodes.metrics"):
@@ -142,9 +154,12 @@ async def persist_graph_nodes(
     # untouched. Without this, every ``update`` re-upserted symbol nodes with
     # empty community_meta and wiped the entry_point_scores written at init,
     # leaving get_execution_flows / the dashboard panel permanently empty.
+    with timed(timings, "persist.graph_nodes.entry_points"):
+        derived = _derive_entry_point_scores(graph_builder)
+    # Rows a later run can rebuild from the builder alone; see the docstring.
+    from_builder = ep_scores is None or ep_scores == derived
     if ep_scores is None:
-        with timed(timings, "persist.graph_nodes.entry_points"):
-            ep_scores = _derive_entry_point_scores(graph_builder)
+        ep_scores = derived
 
     bt_commits = _betweenness_commits(graph_builder)
 
@@ -210,6 +225,7 @@ async def persist_graph_nodes(
             )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
+        from_builder = False
 
     # Materialize file-level SCCs (import cycles) + symbol communities as
     # queryable rows (graph_node_membership). Feeds the break-cycle /
@@ -221,6 +237,8 @@ async def persist_graph_nodes(
             )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
+        from_builder = False
+    graph_builder.graph_nodes_written = from_builder
 
 
 def _changed_file_symbols(
