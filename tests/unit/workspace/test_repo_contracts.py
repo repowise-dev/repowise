@@ -177,3 +177,44 @@ def test_outside_git_every_run_extracts(tmp_path: Path) -> None:
 
     assert _run(repo).extracted
     assert _run(repo).extracted
+
+
+def test_an_edit_to_an_ignored_service_name_file_re_extracts(mono: Path) -> None:
+    (mono / ".gitignore").write_text(".env\n")
+    _commit(mono, "ignore env")
+    (mono / ".env").write_text("API_URL=http://api:8000\n")
+    _run(mono)
+    assert not _run(mono).extracted
+
+    (mono / ".env").write_text("API_URL=http://users:8000\n")
+
+    assert _run(mono).extracted
+
+
+def test_a_first_source_file_of_a_boundary_only_language_re_extracts(mono: Path) -> None:
+    _run(mono)
+    (mono / "web" / "src" / "Main.scala").write_text("object Main\n")
+
+    assert _run(mono).extracted
+
+
+def test_rows_read_before_the_index_existed_are_read_again(
+    mono: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(mono)  # no wiki.db yet
+    assert not _run(mono).extracted
+    monkeypatch.setattr(repo_contracts, "_has_index", lambda _p: True)
+
+    assert _run(mono).extracted
+
+
+def test_a_damaged_file_is_re_extracted_quietly(
+    mono: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _run(mono)
+    repo_contracts_path(mono).write_text("{bad", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        assert _run(mono).extracted
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+    assert _store(mono)["contracts"]

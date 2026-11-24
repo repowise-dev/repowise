@@ -34,7 +34,6 @@ from repowise.core.workspace.contracts import (
     CONTRACTS_FILENAME,
     CONTRACTS_VERSION,
     ContractStore,
-    read_contract_store,
     write_contract_store,
 )
 
@@ -42,6 +41,8 @@ _log = logging.getLogger("repowise.workspace.repo_contracts")
 
 #: ``repo_provenance`` key holding the uncommitted-files fingerprint.
 DIRTY_FP_KEY = "dirty_fp"
+#: ``repo_provenance`` key: "1" when the rows were read with wiki.db open.
+INDEXED_KEY = "indexed"
 
 
 def repo_contracts_path(repo_path: Path) -> Path:
@@ -85,7 +86,7 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
         asyncio.to_thread(get_head_commit, repo_path),
         asyncio.to_thread(_dirty_fingerprint, repo_path, wanted),
     )
-    prior = read_contract_store(out_path)
+    prior = _read_quietly(out_path)
     stamped = (prior.repo_provenance.get(alias) if prior is not None else None) or {}
     reuse = (
         prior is not None
@@ -95,6 +96,9 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
         and stamped.get("config_fp") == config_fp
         and stamped.get(DIRTY_FP_KEY) == dirty_fp
         and bool(stamped.get("head"))
+        # Rows read before ingestion wrote wiki.db lack handler bindings and
+        # code origins; once the index exists they are read again.
+        and (stamped.get(INDEXED_KEY) == "1" or not _has_index(repo_path))
     )
     if reuse and stamped.get("head") != head:
         reuse = await asyncio.to_thread(
@@ -110,13 +114,14 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
         assert prior is not None
         return RepoContractsResult(False, len(prior.contracts), len(prior.contract_links), out_path)
 
-    store = await _extract(repo_path, alias, contract_config, head)
+    store, indexed = await _extract(repo_path, alias, contract_config, head)
     store.repo_provenance = {
         alias: {
             "head": head or "",
             "extracted_at": store.generated_at,
             "config_fp": config_fp,
             DIRTY_FP_KEY: dirty_fp or "",
+            INDEXED_KEY: "1" if indexed else "",
         }
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,8 +131,9 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
 
 async def _extract(
     repo_path: Path, alias: str, contract_config: ContractConfig, head: str | None
-) -> ContractStore:
-    """One full read of *repo_path*, matched within itself; nothing written."""
+) -> tuple[ContractStore, bool]:
+    """One full read of *repo_path*, matched within itself, and whether wiki.db
+    was read; nothing written."""
     from .contracts import _extract_one_repo, _RepoExtraction, link_contracts
     from .extractors import build_message_type_index
     from .extractors.base import make_exclude_predicate
@@ -165,7 +171,7 @@ async def _extract(
 
     names = await asyncio.to_thread(build_service_name_map, repos, None)
     matched = link_contracts(contracts, contract_config.service_bases, names)
-    return ContractStore(
+    store = ContractStore(
         version=CONTRACTS_VERSION,
         generated_at=datetime.now(UTC).isoformat(),
         contracts=contracts,
@@ -174,6 +180,24 @@ async def _extract(
         service_links=matched.service_links,
         service_names=names.to_dict(service_names_fingerprint({alias: head}, None)),
     )
+    return store, index is not None
+
+
+def _has_index(repo_path: Path) -> bool:
+    from .registry import repo_db_path
+
+    return repo_db_path(repo_path).is_file()
+
+
+def _read_quietly(path: Path) -> ContractStore | None:
+    """The stored file, or None; a damaged one is simply re-extracted."""
+    try:
+        return ContractStore.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        _log.debug("unreadable %s, re-extracting: %r", path, exc)
+        return None
 
 
 @dataclass(frozen=True)
@@ -205,8 +229,10 @@ class _Relevance:
 
 def _relevance(contract_config: ContractConfig) -> _Relevance:
     from .contracts import _enabled_extractors
+    from .extractors.service_boundary import _SOURCE_EXTENSIONS
 
-    extensions: frozenset[str] = frozenset()
+    # A first source file under a marker makes a new service boundary.
+    extensions: frozenset[str] = frozenset(_SOURCE_EXTENSIONS)
     for extractor in _enabled_extractors(contract_config):
         extensions |= extractor.source_extensions()
     return _Relevance(frozenset(e.lower() for e in extensions))
@@ -228,18 +254,26 @@ def _git_lines(repo_path: Path, args: list[str]) -> list[str] | None:
 def _dirty_fingerprint(repo_path: Path, relevant: _Relevance) -> str | None:
     """Hash of every uncommitted file that can hold a contract, path and bytes.
 
-    Staged, unstaged and untracked (not ignored) alike. None when git cannot
-    say, which forces a re-extraction.
+    Staged, unstaged, untracked and ignored alike: the service-name walk reads
+    an ignored ``.env`` or compose override. An ignored directory is listed
+    whole by ``--directory`` and skipped; the walks prune the usual ones
+    (``node_modules``, ``.venv``, build output), and a source tree kept only in
+    an ignored folder is the ceiling here. None when git cannot say, which
+    forces a re-extraction.
     """
     changed = _git_lines(
         repo_path, ["diff", "--name-only", "--no-renames", "--relative", "-z", "HEAD"]
     )
     untracked = _git_lines(repo_path, ["ls-files", "--others", "--exclude-standard", "-z"])
-    if changed is None or untracked is None:
+    ignored = _git_lines(
+        repo_path,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+    )
+    if changed is None or untracked is None or ignored is None:
         return None
     h = hashlib.sha256()
-    for rel in sorted({*changed, *untracked}):
-        if not relevant(rel):
+    for rel in sorted({*changed, *untracked, *ignored}):
+        if rel.endswith("/") or not relevant(rel):
             continue
         try:
             digest = hashlib.sha256((repo_path / rel).read_bytes()).hexdigest()
