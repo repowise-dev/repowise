@@ -229,3 +229,19 @@ def test_the_repos_exclude_patterns_keep_a_folder_out(mono: Path) -> None:
     files = {c["file_path"] for c in _store(mono)["contracts"]}
     assert files == {"web/src/api.ts"}
     assert not _store(mono)["contract_links"]
+
+
+def test_a_wiki_db_without_a_repository_row_reads_without_it(
+    mono: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.workspace import repo_index
+
+    async def _no_row(*_a, **_k):
+        raise LookupError("No repository row")
+
+    monkeypatch.setattr(repo_index, "open_repo_index", _no_row)
+    monkeypatch.setattr(repo_contracts, "_has_index", lambda _p: True)
+
+    assert _run(mono).extracted
+    assert _store(mono)["contract_links"]
+    assert not _run(mono).extracted  # not re-read every run

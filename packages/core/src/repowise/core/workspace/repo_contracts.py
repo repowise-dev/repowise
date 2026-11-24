@@ -182,7 +182,11 @@ async def _extract(
     )
     # The symbols ingestion stored bind routes to handlers and give each end
     # its code origin; without an index the regex dialects stand alone.
-    index = await open_repo_index(alias, repo_path)
+    indexed = _has_index(repo_path)
+    try:
+        index = await open_repo_index(alias, repo_path)
+    except LookupError:
+        index = None  # wiki.db with no repository row: read without it
     workspace_index = WorkspaceIndex({alias: index} if index is not None else {})
     try:
         from .code_api import CodeSurface
@@ -210,7 +214,9 @@ async def _extract(
         service_links=matched.service_links,
         service_names=names.to_dict(service_names_fingerprint({alias: head}, None)),
     )
-    return store, index is not None
+    # Whether wiki.db was there to read, usable or not: an empty one is not
+    # re-read on every run (see _stamp_holds).
+    return store, indexed
 
 
 def _repo_exclude_patterns(repo_path: Path) -> list[str]:
