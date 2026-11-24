@@ -1900,6 +1900,28 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
         assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "low")]
 
+    def test_root_dir_is_the_gradle_root_not_the_repository(self, tmp_path: Path) -> None:
+        """A build in a subfolder reads ``$rootDir`` from its own settings file."""
+        android = tmp_path / "android"
+        (android / "app").mkdir(parents=True)
+        (android / "settings.gradle.kts").write_text("")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        source = self._SIGNING.format(store="$rootDir/tools/fallback.jks")
+        found = scan_source("android/app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert {f["severity"] for f in found} == {"high"}
+        (android / "tools").mkdir()
+        (android / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        found = scan_source("android/app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert {f["severity"] for f in found} == {"low"}
+
+    def test_a_longer_property_name_is_not_project_dir(self, tmp_path: Path) -> None:
+        (tmp_path / "app" / "Name").mkdir(parents=True)
+        (tmp_path / "app" / "Name" / "d.jks").write_bytes(b"\xfe\xed")
+        assert self._gradle(tmp_path, "$projectDirName/d.jks") == [
+            ("hardcoded_password", "high")
+        ] * 2
+
     def test_a_gitignored_keystore_on_disk_is_not_committed(self, tmp_path: Path) -> None:
         """A developer's own release key sits on disk but git leaves it out."""
         (tmp_path / ".gitignore").write_text("*.jks\n")

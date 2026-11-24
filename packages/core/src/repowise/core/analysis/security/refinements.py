@@ -149,7 +149,7 @@ def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | 
 # (``storeFile = file("$rootDir/tools/debug.jks")``) or Groovy
 # (``storeFile file('debug.keystore')``).
 _GRADLE_STORE_FILE = re.compile(r"""\bstoreFile\s*=?\s*\(?\s*file\(\s*["']([^"']+)["']""")
-_GRADLE_DIR_VARS = re.compile(r"\$\{?(rootDir|projectDir)\}?/?")
+_GRADLE_DIR_VARS = re.compile(r"\$\{?(rootDir|projectDir)\b\}?/?")
 
 
 def _lower_committed_keystore_passwords(
@@ -209,6 +209,19 @@ def _committed_keystore_lines(lines: list[str], root: Path, project_dir: Path) -
     return committed
 
 
+def _gradle_root(project_dir: Path, root: Path) -> Path:
+    """Gradle's ``rootDir``: the nearest folder up from *project_dir* holding a settings file.
+
+    A build can sit in a subfolder of the repository; *root* when none is found.
+    """
+    for folder in (project_dir, *project_dir.parents):
+        if (folder / "settings.gradle").is_file() or (folder / "settings.gradle.kts").is_file():
+            return folder
+        if folder == root:
+            break
+    return root
+
+
 def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
     """Whether the Gradle ``file(...)`` path *written* names a file inside *root* git keeps.
 
@@ -217,7 +230,7 @@ def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
     """
 
     def base(match: re.Match[str]) -> str:
-        return f"{root if match.group(1) == 'rootDir' else project_dir}/"
+        return f"{_gradle_root(project_dir, root) if match.group(1) == 'rootDir' else project_dir}/"
 
     path = _GRADLE_DIR_VARS.sub(base, written)
     if "$" in path:
