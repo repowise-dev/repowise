@@ -29,6 +29,17 @@ def time_split(run: Any) -> dict[str, float | None]:
     }
 
 
+def unattributed_share(run: Any) -> float | None:
+    """The share of a stored profile run's time in none of :func:`time_split`'s
+    buckets: test or tooling code, module bodies, unresolved frames, and
+    stacks that run only the runtime (``evidence.profile_convert``). ``None``
+    when the run did not record the split."""
+    parts = (run.repo_self_value, run.wait_value, run.library_value)
+    if run.total_value is None or any(v is None for v in parts):
+        return None
+    return run_share(run.total_value, max(run.total_value - sum(parts), 0.0))
+
+
 def split_words(shares: Mapping[str, float | None]) -> str | None:
     """The split in words, repo code first: ``repo code itself 47%, waits 30%,
     libraries 12%``. ``None`` when the run did not record it."""
@@ -77,6 +88,7 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "skipped": json.loads(run.skipped_json) if run.skipped_json else None,
         "total_value": run.total_value,
         **time_split(run),
+        "unattributed_share": unattributed_share(run),
         "mapping_partial": bool(run.mapping_partial),
         "tests_failed": run.tests_failed,
     }
@@ -184,4 +196,5 @@ __all__ = [
     "run_status",
     "split_words",
     "time_split",
+    "unattributed_share",
 ]

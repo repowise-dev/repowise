@@ -312,3 +312,39 @@ def test_a_workload_row_carries_its_cost_and_never_a_measured_row() -> None:
         0.1, 0.2, 100, False,
     )
     assert f["share_low"] < 0.1 < f["share_high"]
+
+
+def test_a_newer_run_that_ranks_nothing_leaves_the_one_before_it_listed() -> None:
+    # The newest run of the workload was measured at a commit the index has not
+    # reached: no stored body matches, so it ranks nothing. The run before it,
+    # at the indexed commit, is what the workload view lists.
+    runs = [_run("at-index", day=1), _run("ahead", commit=OLD, day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {
+        "at-index": [_cost("parse", 200), _cost("walk", 100)],
+        "ahead": [_cost("parse", 300, digest=None)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("at-index", 1, "parse"), ("at-index", 2, "walk")]
+
+
+def test_a_newer_run_that_ranks_lists_alone_as_before() -> None:
+    runs = [_run("old", day=1), _run("new", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {"old": [_cost("parse", 200)], "new": [_cost("walk", 100)]}
+    got = [(w["run_id"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("new", "walk")]
+
+
+def test_commit_position_reads_measurement_order_against_the_indexed_commit() -> None:
+    from repowise.core.evidence.hotness import commit_position
+
+    at_index, ahead = _run("i", day=2), _run("a", commit=OLD, day=3)
+    before = _run("b", commit=OLD, day=1)
+    runs = [at_index, ahead, before]
+    assert commit_position(at_index, runs, HEAD) == "indexed"
+    assert commit_position(ahead, runs, HEAD) == "ahead"
+    assert commit_position(before, runs, HEAD) == "older"
+    # No run at the indexed commit to compare with, or no indexed commit.
+    assert commit_position(ahead, [ahead, before], HEAD) == "other"
+    assert commit_position(ahead, runs, None) == "other"

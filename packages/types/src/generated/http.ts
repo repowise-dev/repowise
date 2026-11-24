@@ -2162,6 +2162,7 @@ export interface EvidenceRunSummary {
   repo_self_share: number | null;
   wait_share: number | null;
   library_share: number | null;
+  unattributed_share?: number | null;
   mapping_partial: boolean;
   tests_failed: number | null;
 }
@@ -2174,7 +2175,7 @@ export interface EvidenceRunsResponse {
 
 /** The newest run of every workload, and whether anything is ranked. */
 export interface EvidenceStatusResponse {
-  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
   command: string | null;
   reference_commit: string | null;
   runs_stored: Record<string, number>;
@@ -3232,10 +3233,10 @@ export interface MeasuredOwner {
   commit_pct: number | null;
 }
 
-/** What each workload's newest run ranks, grouped by workload class. */
+/** What each workload's newest run that ranks anything ranks, grouped by workload class. */
 export interface MeasuredResponse {
   basis: "measured" | "unknown";
-  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
@@ -3273,9 +3274,11 @@ export interface MeasuredRun {
   repo_self_share: number | null;
   wait_share: number | null;
   library_share: number | null;
+  unattributed_share?: number | null;
   outside_production: number | null;
   value_kind: string | null;
   ordering_only: boolean;
+  newer_run?: NewerRun | null;
 }
 
 export interface ModuleEdgeResponse {
@@ -3360,6 +3363,14 @@ export interface NeighboringCommunity {
   community_id: number;
   label: string;
   cross_edge_count: number;
+}
+
+/** A workload's newer run that ranks nothing, listed in place of by an older one. */
+export interface NewerRun {
+  run_id: string;
+  commit: string | null;
+  measured_at: string | null;
+  reason: "ahead_of_index" | "not_ranked" | "stale";
 }
 
 export interface NextAction {

@@ -152,6 +152,24 @@ describe("Runtime evidence: where the run sits against the index", () => {
     expect(screen.queryByText(/too few samples/)).toBeNull();
   });
 
+  it("reads the engine's ahead_of_index status as the ahead notice with its command", async () => {
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => ({ ...unranked("ahead_of_index"), command: "repowise update" }),
+          listEvidenceRuns: runsOf([junitRun, aheadRun, indexedRun]),
+        })}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "The newest run was measured at 6898318, ahead of the indexed 23b6fe4.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/not the same as nothing being slow/)).toBeTruthy();
+    expect(screen.getByText("repowise update")).toBeTruthy();
+  });
+
   it("says when a ranked run at the indexed commit is shown in its place", async () => {
     const atIndex = measuredRun({ commit: INDEXED });
     render(

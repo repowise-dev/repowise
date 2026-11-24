@@ -235,10 +235,10 @@ async def test_an_index_from_before_the_workload_view_says_to_update(setup_mcp, 
 
 
 @pytest.mark.asyncio
-async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
+async def test_a_thin_newest_run_beside_a_ranked_older_one_says_to_update(
     setup_mcp, session, materialized
 ):
-    """The view is built and empty: an update could never change that answer."""
+    """Built, the view lists the older run that ranks, so an empty one was never built."""
     from datetime import timedelta
 
     await _seed(session, materialized, [])
@@ -253,7 +253,9 @@ async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
     ranked = {"symbol_id": LOGIN, "rank": 1, "tier": "ranked", "freshness": "current"}
     await replace_symbol_hotness(session, materialized, [{**ranked, "run_id": "r1"}])
     await session.commit()
-    assert await _measured() == {"basis": "unknown", "status": "not_ranked"}
+    assert await _measured() == {
+        "basis": "unknown", "status": "needs_update", "command": "repowise update",
+    }
 
 
 @pytest.mark.asyncio

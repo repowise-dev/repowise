@@ -1168,9 +1168,10 @@ async def measured_costs(
     now: datetime | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """What each workload's newest stored run measured, ranked by what it costs.
+    """What each workload's newest stored run that ranks any function
+    measured, ranked by what it costs.
 
-    *run_id* keeps that one run (a workload's newest); any other id ranks
+    *run_id* keeps that one run (a workload's listed run); any other id ranks
     nothing here and gives ``None``.
 
     Read at request time from ``workload_hotness``, which every ingest and
@@ -1188,7 +1189,9 @@ async def measured_costs(
 
     Each run names its basis (workload class and name, commit, age, samples)
     and where its time went (``repo_self_share``, ``wait_share``,
-    ``library_share``). Each row's ``share`` is the function's self time (its
+    ``library_share``, ``unattributed_share``). A run listed in place of its
+    workload's newer run, which ranks nothing, names that run and why in
+    ``newer_run`` (``crud.newer_unranked``). Each row's ``share`` is the function's self time (its
     cost: built-ins and libraries it called included, waits excluded) with its
     interval; ``inclusive`` is context. A row carries the function's
     lines, callers outside test code, owner, nearest tests and, when an open
@@ -1198,7 +1201,7 @@ async def measured_costs(
     """
     from ....evidence.hotness import LEAD_CLASSES
     from ....ingestion.symbol_identity import file_of_symbol
-    from .evidence import ranked_by_workload
+    from .evidence import newer_unranked, ranked_by_workload
 
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
@@ -1219,12 +1222,16 @@ async def measured_costs(
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
     context = await _function_context(session, repository_id, ids)
+    listed = [run for runs in groups.values() for run, _ in runs]
+    newer = await newer_unranked(session, repository_id, listed)
     at = now or _now_utc()
     view: dict[str, Any] = {}
     for key, runs in shown.items():
         if runs:
             view[key] = {
-                "runs": [_measured_run(run, rows, at) for run, rows in groups[key]],
+                "runs": [
+                    _measured_run(run, rows, at, newer.get(run.id)) for run, rows in groups[key]
+                ],
                 "rows": [
                     _measured_row(r, spans, context, covered) for _, rows in runs for r in rows
                 ],
@@ -1397,13 +1404,16 @@ async def _callers_of(
     return {target: list(dict.fromkeys(found)) for target, found in out.items()}
 
 
-def _measured_run(run: Any, rows: list[Any], at: datetime) -> dict[str, Any]:
+def _measured_run(
+    run: Any, rows: list[Any], at: datetime, newer: dict[str, Any] | None
+) -> dict[str, Any]:
     """A run's basis: workload, commit, age, samples and where its time went.
 
-    *rows* are all the run's ranked functions, not the ones a limit kept.
+    *rows* are all the run's ranked functions, not the ones a limit kept;
+    *newer* is the workload's newer run this one is listed in place of.
     """
     from ....evidence.hotness import run_samples
-    from ....evidence.status import time_split
+    from ....evidence.status import time_split, unattributed_share
 
     measured_at = run.measured_at or run.ingested_at
     if measured_at is not None and measured_at.tzinfo is None:
@@ -1417,9 +1427,11 @@ def _measured_run(run: Any, rows: list[Any], at: datetime) -> dict[str, Any]:
         "age_days": max((at - measured_at).days, 0) if measured_at else None,
         "samples": run_samples(run),
         **time_split(run),
+        "unattributed_share": unattributed_share(run),
         "outside_production": run.unlisted_symbols,
         "value_kind": run.value_kind,
         "ordering_only": any(r.ordering_only for r in rows),
+        "newer_run": newer,
     }
 
 

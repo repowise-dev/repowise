@@ -23,11 +23,15 @@ from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 
 from ._datetime import UTCDateTime
 
-#: ``measured``: a workload's newest run ranks a function. Otherwise why not:
-#: ``no_runtime_data`` (no profile run stored), ``stale`` (every function the
-#: runs mapped changed since), ``not_ranked`` (current evidence ranks nothing),
-#: ``needs_update`` (the per-workload view predates the store; an update builds it).
-EvidenceStatusToken = Literal["measured", "no_runtime_data", "stale", "not_ranked", "needs_update"]
+#: ``measured``: a workload's run ranks a function. Otherwise why not:
+#: ``no_runtime_data`` (no profile run stored), ``ahead_of_index`` (the newest
+#: run was measured after the indexed commit's; it ranks once the index reaches
+#: its commit), ``stale`` (every function the runs mapped changed since),
+#: ``not_ranked`` (current evidence ranks nothing), ``needs_update`` (the
+#: per-workload view predates the store; an update builds it).
+EvidenceStatusToken = Literal[
+    "measured", "no_runtime_data", "ahead_of_index", "stale", "not_ranked", "needs_update"
+]
 
 #: ``current`` at the indexed commit; ``body_unchanged`` from an older commit
 #: whose function body is the same; ``stale`` otherwise (never ranked).
@@ -77,6 +81,8 @@ class EvidenceRunSummary(_Strict):
     repo_self_share: float | None
     wait_share: float | None
     library_share: float | None
+    #: The rest: test or tooling code, module bodies, unresolved frames, runtime only.
+    unattributed_share: float | None = None
     #: Fewer than half the entries mapped: stored, not a basis for ranking.
     mapping_partial: bool
     tests_failed: int | None
@@ -105,6 +111,19 @@ class EvidenceRunsResponse(_Strict):
     runs: list[EvidenceRunSummary]
 
 
+class NewerRun(_Strict):
+    """A workload's newer run that ranks nothing, listed in place of by an older one."""
+
+    run_id: str
+    commit: str | None
+    measured_at: UTCDateTime | None
+    #: ``ahead_of_index``: measured after the indexed commit's run, ranks once
+    #: the index reaches its commit. ``not_ranked``: at the indexed commit, too
+    #: few samples in production code or no production frame. ``stale``: another
+    #: commit whose function bodies changed since.
+    reason: Literal["ahead_of_index", "not_ranked", "stale"]
+
+
 class MeasuredRun(_Strict):
     """A run's basis: workload, commit, age, samples and where its time went."""
 
@@ -121,11 +140,16 @@ class MeasuredRun(_Strict):
     repo_self_share: float | None
     wait_share: float | None
     library_share: float | None
+    #: The rest: test or tooling code, module bodies, unresolved frames, runtime only.
+    unattributed_share: float | None = None
     #: Functions measured outside production code: counted, not listed.
     outside_production: int | None
     value_kind: str | None
     #: A deterministic tracer ran: the rank orders and no share is given.
     ordering_only: bool
+    #: The workload's newer run this one is listed in place of (it ranks
+    #: nothing); null when this is the workload's newest run.
+    newer_run: NewerRun | None = None
 
 
 class MeasuredOwner(_Strict):
@@ -172,7 +196,7 @@ class MeasuredGroup(_Strict):
 
 
 class MeasuredResponse(_Strict):
-    """What each workload's newest run ranks, grouped by workload class."""
+    """What each workload's newest run that ranks anything ranks, grouped by workload class."""
 
     #: ``measured`` with rows, ``unknown`` without: never zero.
     basis: Literal["measured", "unknown"]
