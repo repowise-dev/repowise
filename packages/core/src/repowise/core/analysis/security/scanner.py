@@ -277,7 +277,11 @@ def scan_source(
         if finding["line"] in pem_body_lines:
             finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
-    keystore_lines = _committed_keystore_lines(file_path, lines, repo_root)
+    keystore_lines = (
+        _committed_keystore_lines(file_path, lines, repo_root)
+        if any(f["kind"] == "hardcoded_password" for f in findings)
+        else set()
+    )
     for finding in findings:
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin) or (
             finding["kind"] == "hardcoded_password" and finding["line"] in keystore_lines

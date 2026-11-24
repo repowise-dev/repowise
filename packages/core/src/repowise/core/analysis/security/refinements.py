@@ -158,27 +158,38 @@ def _committed_keystore_lines(file_path: str, lines: list[str], repo_root: str |
     A keystore checked in beside its password is public with it, so the
     password guards nothing: a debug keystore, or the fallback one a project
     ships so forks can build a release. The block runs from its ``storeFile``
-    to the next brace. Ceiling: a password written above its ``storeFile`` line
-    keeps its severity, and without *repo_root* nothing is read from disk.
+    to the brace that closes the block holding it. Ceilings: a password written
+    above its ``storeFile`` line keeps its severity, braces are counted without
+    reading strings, only the root ``.gitignore`` is read, and without
+    *repo_root* nothing is read from disk.
     """
     if not repo_root or not file_path.endswith((".gradle", ".gradle.kts")):
         return set()
     root = Path(repo_root).resolve()
     project_dir = (root / file_path).parent
     committed: set[int] = set()
-    in_committed_block = False
+    depth = 0
+    block_depth: int | None = None  # depth of the block a committed keystore opened
     for lineno, line in enumerate(lines, start=1):
         if match := _GRADLE_STORE_FILE.search(line):
-            in_committed_block = _is_committed_file(match.group(1), root, project_dir)
-        elif line.rstrip().endswith("{") or line.lstrip().startswith("}"):
-            in_committed_block = False
-        elif in_committed_block:
+            before = line[: match.start()]
+            at = depth + before.count("{") - before.count("}")
+            keep = at > 0 and _is_committed_file(match.group(1), root, project_dir)
+            block_depth = at if keep else None
+        elif block_depth is not None and depth >= block_depth:
             committed.add(lineno)
+        depth += line.count("{") - line.count("}")
+        if block_depth is not None and depth < block_depth:
+            block_depth = None
     return committed
 
 
 def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
-    """Whether the Gradle ``file(...)`` path *written* names a file inside *root*."""
+    """Whether the Gradle ``file(...)`` path *written* names a file inside *root* git keeps.
+
+    A keystore the root ``.gitignore`` leaves out is a developer's own release
+    key, however it got onto the disk.
+    """
 
     def base(match: re.Match[str]) -> str:
         return f"{root if match.group(1) == 'rootDir' else project_dir}/"
@@ -187,4 +198,9 @@ def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
     if "$" in path:
         return False  # built from a property or an environment value
     target = (project_dir / path).resolve()
-    return target.is_relative_to(root) and target.is_file()
+    if not (target.is_relative_to(root) and target.is_file()):
+        return False
+    # Imported here: ingestion imports the analysis packages.
+    from repowise.core.ingestion.traverser import load_gitignore_spec
+
+    return not load_gitignore_spec(root).match_file(target.relative_to(root).as_posix())

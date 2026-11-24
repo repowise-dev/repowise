@@ -1868,6 +1868,25 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
         assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
 
+    def test_a_one_line_signing_block_ends_on_its_own_line(self, tmp_path: Path) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = (
+            'signingConfigs.create("d") { storeFile = file("d.jks") }\n'
+            'val dbPassword = "Zq8!realProdPass"\n'
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_gitignored_keystore_on_disk_is_not_committed(self, tmp_path: Path) -> None:
+        """A developer's own release key sits on disk but git leaves it out."""
+        (tmp_path / ".gitignore").write_text("*.jks\n")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        (tmp_path / "app").mkdir()
+        found = self._gradle(tmp_path, "$rootDir/tools/fallback.jks")
+        assert found == [("hardcoded_password", "high")] * 2
+
     def test_a_password_in_a_sample_is_low_but_a_vendor_key_there_stays_high(self) -> None:
         """A sample's ``password = ...`` shows the reader how to log in; a real key still leaks."""
         source = f'password = "Kx7#pQ2mZ9"\naws = "{self.KEY}"\n'
@@ -1879,6 +1898,10 @@ class TestNoAlarmOnCodeThatDoesNotShip:
             ("hardcoded_password", "high"),
             ("aws_access_key", "high"),
         ]
+
+    def test_an_api_secret_in_a_sample_stays_high(self) -> None:
+        source = 'client_secret = "Hj3nB6cX1vM5kS8dQz8vK2mW"\n'
+        assert self._found("samples/demo/app.py", source) == [("hardcoded_secret", "high")]
 
     def test_a_password_in_a_test_class_by_content_is_low(self) -> None:
         """An Apex ``@IsTest`` class is test code by origin, whatever its path says."""
