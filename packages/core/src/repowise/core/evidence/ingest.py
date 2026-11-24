@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -101,6 +102,33 @@ def _exact(sym: IndexedSymbol, function: str) -> bool:
     return function in (sym.qualified_name, local_symbol_id(sym.symbol_id))
 
 
+_GO_RECEIVER_RE = re.compile(r"\(\*?([^)]+)\)")
+_JVM_EXTENSIONS = (".java", ".kt", ".kts", ".scala", ".groovy")
+
+
+def _normalized_function_name(path: str, function: str) -> str:
+    """Normalise Go profiler names (``pkg.(*T).M``, ``pkg.T.M``, ``imp/pkg.F``)
+    and JVM package-qualified names (``com.acme.T.m``) when the package
+    matches the file's path."""
+    if path.endswith(".go"):
+        name = function.rsplit("/", 1)[-1]
+        name = _GO_RECEIVER_RE.sub(r"\1", name)
+        dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
+        if "." in name:
+            head, rest = name.split(".", 1)
+            if "/" in function or "(" in function or head == dir_name or "." in rest:
+                return rest
+        return name
+    if path.endswith(_JVM_EXTENSIONS) and "/" in path and "." in function:
+        dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
+        parts = function.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            pkg = ".".join(parts[:i])
+            if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
+                return ".".join(parts[i:])
+    return function
+
+
 def resolve_location(
     location: Mapping[str, Any],
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
@@ -115,8 +143,10 @@ def resolve_location(
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
-    found = names.get(location["function"], [])
-    by_qualified = [s for s in found if _exact(s, location["function"])]
+    raw_fn = location["function"]
+    fn = raw_fn if raw_fn in names else _normalized_function_name(location["path"], raw_fn)
+    found = names.get(fn, [])
+    by_qualified = [s for s in found if _exact(s, fn)]
     if location.get("exact"):
         found = by_qualified
     line = location.get("line")

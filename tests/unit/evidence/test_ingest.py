@@ -206,3 +206,54 @@ def test_a_failed_test_count_is_part_of_the_run_and_its_key() -> None:
     # Every count is its own run, and a run that reports none differs from one that reports 0.
     keys = {run_key("{}", p, "profile") for p in (base, red, redder, zero)}
     assert len(keys) == 4
+
+
+def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
+    symbols = {
+        "srv/cache.go": symbol_lookup(
+            [
+                IndexedSymbol("srv/cache.go::Cache.Get", "Cache.Get", "Get", 10),
+                IndexedSymbol("srv/cache.go::Store.Get", "Store.Get", "Get", 25),
+                IndexedSymbol("srv/cache.go::Load", "Load", "Load", 40),
+            ]
+        ),
+        "src/main/java/com/acme/Cache.java": symbol_lookup(
+            [
+                IndexedSymbol("src/main/java/com/acme/Cache.java::Cache.get", "Cache.get", "get", 12),
+            ]
+        ),
+    }
+
+    assert resolve_location(_loc("srv/cache.go", "Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "example.com/m/srv.Load"), symbols) == (
+        "srv/cache.go::Load",
+        None,
+    )
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.acme.Cache.get"), symbols
+    ) == ("src/main/java/com/acme/Cache.java::Cache.get", None)
+    assert resolve_location(_loc("src/main/java/com/acme/Cache.java", "Cache.get"), symbols) == (
+        "src/main/java/com/acme/Cache.java::Cache.get",
+        None,
+    )
+
+    # A same-named method on another type stays unknown; a bare ambiguous name stays ambiguous.
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "Get"), symbols) == (None, "ambiguous_symbol")
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.other.Cache.get"), symbols
+    ) == (None, "unknown_symbol")
