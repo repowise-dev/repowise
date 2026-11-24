@@ -613,9 +613,7 @@ class FileTraverser:
             return set()
         from .framework_edges.android_manifest import launcher_application_mains
 
-        return set(
-            launcher_application_mains(self.repo_root, [f.path for f in files if not f.is_test])
-        )
+        return launcher_application_mains(self.repo_root, [f.path for f in files if not f.is_test])
 
     # ------------------------------------------------------------------
     # Internal: walking

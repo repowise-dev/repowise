@@ -176,7 +176,7 @@ def launcher_activity_names(text: str) -> list[str]:
     return names
 
 
-def launcher_application_mains(repo_root: Path, paths: list[str]) -> list[str]:
+def launcher_application_mains(repo_root: Path, paths: list[str]) -> set[str]:
     """Source files of the launcher activities production Android modules declare.
 
     A module is the folder above ``src/main/java`` or ``src/main/kotlin``; its
@@ -191,12 +191,11 @@ def launcher_application_mains(repo_root: Path, paths: list[str]) -> list[str]:
     for path in paths:
         if m := _JVM_MAIN_SOURCE_RE.match(path):
             modules.setdefault(m.group(1) or "", {})[m.group(2)] = path
-    mains: list[str] = []
-    for module, sources in modules.items():
-        for found in _module_launcher_sources(repo_root, module, sources):
-            if found not in mains:
-                mains.append(found)
-    return mains
+    return {
+        found
+        for module, sources in modules.items()
+        for found in _module_launcher_sources(repo_root, module, sources)
+    }
 
 
 def _module_launcher_sources(
