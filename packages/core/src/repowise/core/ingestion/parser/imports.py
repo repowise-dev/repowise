@@ -33,7 +33,7 @@ def _extract_imports(
     seen_imports: dict[str, list[Import]] = {}
     seen_own: set[str] = set()
     # Python: names module-level code mentions at load, read once per file.
-    load_names: frozenset[str] | None = None
+    load_names: list[frozenset[str]] = []
 
     for capture_dict in matches:
         stmt_nodes = capture_dict.get("import.statement", [])
@@ -70,11 +70,9 @@ def _extract_imports(
             continue
 
         found = rules.statement(stmt_node, module_nodes[0], module_text, raw, language, src)
-        module_form = False
-        if language == "python" and stmt_node.type == "import_statement":
-            if load_names is None:
-                load_names = python_load_time_names(_root(stmt_node), src)
-            module_form = python_bound_module_name(module_nodes[0], src) not in load_names
+        module_form = language == "python" and _is_module_form(
+            stmt_node, module_nodes[0], src, load_names
+        )
         for imp in found:
             imp.type_only, imp.deferred, imp.guarded = kind
             imp.scopes = scopes
@@ -87,7 +85,18 @@ def _extract_imports(
     return imports
 
 
-def _root(node: Node) -> Node:
-    while node.parent is not None:
-        node = node.parent
-    return node
+def _is_module_form(
+    stmt_node: Node, module_node: Node, src: str, load_names: list[frozenset[str]]
+) -> bool:
+    """``import b`` whose bound name no module-level code mentions at load.
+
+    *load_names* caches the file's load-time names after the first call.
+    """
+    if stmt_node.type != "import_statement":
+        return False
+    if not load_names:
+        root = stmt_node
+        while root.parent is not None:
+            root = root.parent
+        load_names.append(python_load_time_names(root, src))
+    return python_bound_module_name(module_node, src) not in load_names[0]
