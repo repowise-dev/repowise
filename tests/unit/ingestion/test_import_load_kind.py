@@ -95,6 +95,19 @@ elif TYPE_CHECKING:
 from typing import TYPE_CHECKING as TC
 if TC:
     from .aliased import A
+from typing_extensions import TYPE_CHECKING as TE
+if TE:
+    from .aliased_ext import AE
+if False:
+    from .false_guarded import FG
+else:
+    from .false_else import FE
+if 0:
+    from .zero_guarded import ZG
+if True:
+    from .true_guarded import TG
+if 1:
+    from .one_guarded import OG
 """
 
 
@@ -111,8 +124,13 @@ if TC:
         (".negated", (False, False)),  # `if not TYPE_CHECKING:` runs
         (".negated_attr", (False, False)),
         (".elif_branch", (True, False)),
-        # Ceiling: an alias is not recognised, so the import stays runtime.
-        (".aliased", (False, False)),
+        (".aliased", (True, False)),
+        (".aliased_ext", (True, False)),
+        (".false_guarded", (True, False)),
+        (".false_else", (False, False)),
+        (".zero_guarded", (True, False)),
+        (".true_guarded", (False, False)),
+        (".one_guarded", (False, False)),
     ],
 )
 def test_python_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
@@ -388,3 +406,18 @@ def test_an_unguarded_import_still_closes_the_cycle(a_source: str) -> None:
     plans = _cycles(builder)
     assert len(plans) == 1
     assert set(plans[0].plan["cycle"]) == {"pkg/a.py", "pkg/b.py"}
+
+
+def test_type_checking_guards_do_not_close_import_cycles() -> None:
+    b_source = "from a import A\nclass B: ...\n"
+    cases = {
+        "if TYPE_CHECKING": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from b import B\nclass A: ...\n",
+        "if False": "if False:\n    from b import B\nclass A: ...\n",
+        "if 0": "if 0:\n    from b import B\nclass A: ...\n",
+        "alias TC": "from typing import TYPE_CHECKING as TC\nif TC:\n    from b import B\nclass A: ...\n",
+        "alias TE": "from typing_extensions import TYPE_CHECKING as TE\nif TE:\n    from b import B\nclass A: ...\n",
+    }
+    for name, a_source in cases.items():
+        sccs = _builder({"a.py": a_source, "b.py": b_source}).strongly_connected_components()
+        assert [sorted(s) for s in sccs if len(s) > 1] == [], f"cycle found for {name}"
+

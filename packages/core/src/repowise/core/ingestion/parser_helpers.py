@@ -217,22 +217,61 @@ _TS_TYPE_POSITIONS = frozenset(
 )
 
 
-def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
-    """``TYPE_CHECKING`` or ``<module>.TYPE_CHECKING``, matched on the node.
+_TYPING_MODULES = frozenset({"typing", "typing_extensions"})
 
-    Ceiling: anything else is runtime, so ``not``/``and``/``or``, parentheses
-    and an alias (``from typing import TYPE_CHECKING as TC``) are missed on
-    the safe side: the import stays a runtime edge.
+
+def _is_type_checking_alias(name: str, root: Node, src: str) -> bool:
+    """True when *root* binds *name* via ``from typing import TYPE_CHECKING as <name>``
+    (or ``typing_extensions``)."""
+    stack = [root]
+    while stack:
+        curr = stack.pop()
+        if curr.type == "import_from_statement":
+            module_node = curr.child_by_field_name("module_name")
+            if module_node and node_text(module_node, src) in _TYPING_MODULES:
+                for child in curr.children:
+                    if child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                        alias_node = child.child_by_field_name("alias")
+                        if (
+                            name_node
+                            and alias_node
+                            and node_text(name_node, src) == "TYPE_CHECKING"
+                            and node_text(alias_node, src) == name
+                        ):
+                            return True
+        elif curr.type not in (
+            "function_definition",
+            "async_function_definition",
+            "class_definition",
+        ):
+            stack.extend(reversed(curr.children))
+    return False
+
+
+def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
+    """``TYPE_CHECKING``, ``<module>.TYPE_CHECKING``, an alias, ``False`` or ``0``.
+
+    Ceiling: anything else is runtime, so ``not``/``and``/``or`` and parentheses
+    are missed on the safe side: the import stays a runtime edge.
     """
     if condition is None:
         return False
+    if condition.type == "false":
+        return True
+    if condition.type == "integer" and node_text(condition, src) == "0":
+        return True
     if condition.type == "attribute":
         condition = condition.child_by_field_name("attribute")
-    return (
-        condition is not None
-        and condition.type == "identifier"
-        and node_text(condition, src) == "TYPE_CHECKING"
-    )
+    if condition is None or condition.type != "identifier":
+        return False
+    name = node_text(condition, src)
+    if name == "TYPE_CHECKING":
+        return True
+    root = condition
+    while root.parent is not None:
+        root = root.parent
+    return _is_type_checking_alias(name, root, src)
 
 
 def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
