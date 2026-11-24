@@ -42,9 +42,9 @@ from .patterns import (
     SECRET_KINDS,
 )
 from .refinements import (
-    _committed_keystore_lines,
     _interpolates_sql_value,
     _is_html_type_annotation,
+    _lower_committed_keystore_passwords,
     _match_starting_in,
     _weak_hash_is_an_id,
 )
@@ -277,16 +277,10 @@ def scan_source(
         if finding["line"] in pem_body_lines:
             finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
-    keystore_lines = (
-        _committed_keystore_lines(file_path, lines, repo_root)
-        if any(f["kind"] == "hardcoded_password" for f in findings)
-        else set()
-    )
     for finding in findings:
-        if _is_low_for_path(finding["kind"], is_low_sev_file, origin) or (
-            finding["kind"] == "hardcoded_password" and finding["line"] in keystore_lines
-        ):
+        if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
+    _lower_committed_keystore_passwords(findings, file_path, lines, repo_root)
 
     # Symbol-name scan (informational / low). Machine output and declarations
     # hold no written code, so their names are not ours to flag.

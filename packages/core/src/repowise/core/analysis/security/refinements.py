@@ -152,35 +152,49 @@ _GRADLE_STORE_FILE = re.compile(r"""\bstoreFile\s*=?\s*\(?\s*file\(\s*["']([^"']
 _GRADLE_DIR_VARS = re.compile(r"\$\{?(rootDir|projectDir)\}?/?")
 
 
-def _committed_keystore_lines(file_path: str, lines: list[str], repo_root: str | None) -> set[int]:
-    """Lines of a Gradle signing block whose keystore is a file committed to this repository.
+def _lower_committed_keystore_passwords(
+    findings: list[dict], file_path: str, lines: list[str], repo_root: str | None
+) -> None:
+    """Lower a Gradle signing block's password when its keystore is committed to this repository.
 
     A keystore checked in beside its password is public with it, so the
     password guards nothing: a debug keystore, or the fallback one a project
-    ships so forks can build a release. The block runs from its ``storeFile``
-    to the brace that closes the block holding it. Ceilings: a password written
-    above its ``storeFile`` line keeps its severity, braces are counted without
-    reading strings, only the root ``.gitignore`` is read, and without
-    *repo_root* nothing is read from disk.
+    ships so forks can build a release. Without *repo_root* nothing is read
+    from disk and nothing changes.
     """
-    if not repo_root or not file_path.endswith((".gradle", ".gradle.kts")):
-        return set()
+    passwords = [f for f in findings if f["kind"] == "hardcoded_password"]
+    if not (passwords and repo_root and file_path.endswith((".gradle", ".gradle.kts"))):
+        return
     root = Path(repo_root).resolve()
-    project_dir = (root / file_path).parent
+    committed = _committed_keystore_lines(lines, root, (root / file_path).parent)
+    for finding in passwords:
+        if finding["line"] in committed:
+            finding["severity"] = "low"
+
+
+def _brace_delta(text: str) -> int:
+    return text.count("{") - text.count("}")
+
+
+def _committed_keystore_lines(lines: list[str], root: Path, project_dir: Path) -> set[int]:
+    """Lines inside a block whose ``storeFile`` names a committed keystore.
+
+    The block runs from the ``storeFile`` line to the brace that closes the
+    block holding it. Ceilings: a password written above its ``storeFile``
+    line is not covered, and braces are counted without reading strings.
+    """
     committed: set[int] = set()
     depth = 0
-    block_depth: int | None = None  # depth of the block a committed keystore opened
+    block = -1  # depth of the block a committed keystore opened; -1 when none is open
     for lineno, line in enumerate(lines, start=1):
         if match := _GRADLE_STORE_FILE.search(line):
-            before = line[: match.start()]
-            at = depth + before.count("{") - before.count("}")
-            keep = at > 0 and _is_committed_file(match.group(1), root, project_dir)
-            block_depth = at if keep else None
-        elif block_depth is not None and depth >= block_depth:
+            at = depth + _brace_delta(line[: match.start()])
+            block = at if at > 0 and _is_committed_file(match.group(1), root, project_dir) else -1
+        elif 0 <= block <= depth:
             committed.add(lineno)
-        depth += line.count("{") - line.count("}")
-        if block_depth is not None and depth < block_depth:
-            block_depth = None
+        depth += _brace_delta(line)
+        if depth < block:
+            block = -1
     return committed
 
 
