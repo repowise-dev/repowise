@@ -350,8 +350,8 @@ def _lacking_getsource(root: Path) -> frozenset[str]:
     """Tracked files under *root* (paths relative to it) whose working-tree bytes
     never hold ``getsource``, from one ``git grep``; empty when git cannot answer,
     so every file is read. Untracked files are never listed, so they are read.
-    Ceiling: a skip-worktree or assume-unchanged entry is judged on its staged
-    text, not its file; reading those entries' files too is the upgrade.
+    Git judges an assume-unchanged or skip-worktree entry by its staged text,
+    which its file may no longer match, so those entries are read too.
     """
     from ....analysis.doc_drift.suggest import git_run
 
@@ -362,7 +362,17 @@ def _lacking_getsource(root: Path) -> frozenset[str]:
     # Exit 1 is "nothing to list": every tracked file names it.
     if ran is None or ran[0] not in (0, 1):
         return frozenset()
-    return frozenset(p for p in ran[1].decode("utf-8", errors="surrogateescape").split("\0") if p)
+    listed = git_run(root, "ls-files", "-v", "-z", timeout=_GREP_TIMEOUT_SECONDS)
+    if listed is None or listed[0] != 0:
+        return frozenset()
+    # ``-v`` tags an assume-unchanged entry in lower case, a skip-worktree one ``S``.
+    staged_only = {
+        entry[2:]
+        for entry in listed[1].decode("utf-8", errors="surrogateescape").split("\0")
+        if entry[:1].islower() or entry[:1] == "S"
+    }
+    lacking = ran[1].decode("utf-8", errors="surrogateescape").split("\0")
+    return frozenset(p for p in lacking if p and p not in staged_only)
 
 
 def _unaliased(read: str, text: str) -> str:

@@ -60,6 +60,12 @@ def checkout(tmp_path: Path) -> Path:
     (root / "tests" / "test_edited.py").write_text(
         _PLAIN + "import inspect\nlines = inspect.getsourcelines(so.handle)\n", encoding="utf-8"
     )
+    # Git judges an assume-unchanged file by its staged text, so it is read.
+    _write(root, {"tests/test_assumed.py": _PLAIN})
+    _git(root, "add", "tests/test_assumed.py")
+    _git(root, "commit", "-qm", "assumed")
+    _git(root, "update-index", "--assume-unchanged", "tests/test_assumed.py")
+    (root / "tests" / "test_assumed.py").write_text(_FLOW, encoding="utf-8")
     # Git never lists an untracked file, so it is read.
     _write(root, {"tests/test_new.py": _FLOW})
     return root
@@ -71,6 +77,7 @@ def test_git_skips_only_files_that_never_name_getsource(checkout, monkeypatch) -
         "tests/test_plain.py",
         "tests/test_edited.py",
         "tests/test_new.py",
+        "tests/test_assumed.py",
         "tests/missing.py",
         "../outside.py",
     ]
@@ -96,6 +103,7 @@ def test_git_skips_only_files_that_never_name_getsource(checkout, monkeypatch) -
         assert annotations._sources_read(checkout, files) == fast
     assert fast["tests/test_edited.py"] == frozenset({"so.handle"})
     assert fast["tests/test_new.py"] == frozenset({"orders.handle"})
+    assert fast["tests/test_assumed.py"] == frozenset({"orders.handle"})
     # A root below the repository top is answered relative to itself.
     sub = annotations._sources_read(checkout / "tests", ["test_flow.py", "test_plain.py"])
     assert sub == {"test_flow.py": frozenset({"orders.handle"})}
