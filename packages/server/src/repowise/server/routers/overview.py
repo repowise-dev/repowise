@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.health.snapshots import HEALTH_SNAPSHOT_RETENTION
 from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
@@ -92,7 +91,7 @@ async def overview_summary(
     # ``per_file_scores_json`` (MBs per page load); capping the read at two rows
     # would flatten the sparkline and report a snapshot count of 2.
     snapshot = await crud.get_health_snapshot_headline(
-        session, repo_id, recent=HEALTH_SNAPSHOT_RETENTION
+        session, repo_id, recent=sections.HEALTH_HISTORY_READ
     )
 
     # The same indexed commit as /api/repos and /health/overview: state.json
