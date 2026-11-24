@@ -315,6 +315,14 @@ except ModuleNotFoundError:
     SP = None
 except ImportError:
     raise
+try:
+    from .second import SC
+except OSError, ImportError:
+    SC = None
+try:
+    from .not_import import NI
+except OSError, ValueError:
+    NI = None
 def f():
     try:
         from .lazy import L
@@ -340,6 +348,8 @@ def f():
         (".maybe_raised", (False, False, True)),  # survives unless STRICT
         # A cycle's `cannot import name` is an ImportError: the fatal handler runs.
         (".split", (False, False, False)),
+        (".second", (False, False, True)),  # unparenthesized except with ImportError second
+        (".not_import", (False, False, False)),  # no ImportError in either name
         (".lazy", (False, True, False)),  # deferred wins
     ],
 )
