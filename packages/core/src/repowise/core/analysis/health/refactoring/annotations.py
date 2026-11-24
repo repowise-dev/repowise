@@ -54,6 +54,8 @@ _BATCH = 500
 _GETSOURCE = re.compile(r"\bgetsource(?:lines)?\(\s*([A-Za-z_][\w.]*)\s*\)")
 #: Larger files are not read for it: generated fixtures, not tests.
 _MAX_TEST_BYTES = 1 << 20
+#: Past this the grep is abandoned and every test file is read, as before.
+_GREP_TIMEOUT_SECONDS = 10
 
 FunctionCommits = tuple[int, int, tuple[str, ...]]
 
@@ -319,9 +321,18 @@ def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]
     """Per test file under *root* that reads any, the ``getsource``
     arguments it passes. Read once at finalize; a file outside *root*,
     missing (a hosted index has no checkout) or too large says nothing."""
+    files = list(files)
+    if not files:
+        return {}
     base = root.resolve()
+    lacking = _lacking_getsource(root)
     out: dict[str, frozenset[str]] = {}
     for rel in files:
+        # Opening every test file the plans run took seconds a run on a cold
+        # disk; git has already said which files never name ``getsource``. A
+        # tracked link is still read: git judges its target path, not the file.
+        if rel in lacking and not (root / rel).is_symlink():
+            continue
         path = (root / rel).resolve()
         try:
             if not path.is_relative_to(base) or path.stat().st_size > _MAX_TEST_BYTES:
@@ -333,6 +344,25 @@ def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]
         if reads:
             out[rel] = reads
     return out
+
+
+def _lacking_getsource(root: Path) -> frozenset[str]:
+    """Tracked files under *root* (paths relative to it) whose working-tree bytes
+    never hold ``getsource``, from one ``git grep``; empty when git cannot answer,
+    so every file is read. Untracked files are never listed, so they are read.
+    Ceiling: a skip-worktree or assume-unchanged entry is judged on its staged
+    text, not its file; reading those entries' files too is the upgrade.
+    """
+    from ....analysis.doc_drift.suggest import git_run
+
+    ran = git_run(
+        root, "grep", "-L", "-z", "-F", "--no-color", "-e", "getsource", "--",
+        timeout=_GREP_TIMEOUT_SECONDS,
+    )  # fmt: skip
+    # Exit 1 is "nothing to list": every tracked file names it.
+    if ran is None or ran[0] not in (0, 1):
+        return frozenset()
+    return frozenset(p for p in ran[1].decode("utf-8", errors="surrogateescape").split("\0") if p)
 
 
 def _unaliased(read: str, text: str) -> str:
