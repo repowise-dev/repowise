@@ -124,13 +124,25 @@ def accountable_human(
     """
     if identity_kind(author_name, author_email) != "agent":
         return None
-    for line in _COAUTHOR_LINE_RE.finditer(body or ""):
-        m = TRAILER_PERSON_RE.match(line["value"])
-        if m and m["email"] and identity_kind(m["name"], m["email"]) == "human":
-            return m["name"] or m["email"], m["email"]
-    if committer_email and identity_kind(committer_name, committer_email) == "human":
-        return committer_name or committer_email, committer_email
+    candidates = [
+        (m["name"].strip('"'), m["email"])
+        for line in _COAUTHOR_LINE_RE.finditer(body or "")
+        if (m := TRAILER_PERSON_RE.match(line["value"]))
+    ]
+    candidates.append((committer_name or "", committer_email or ""))
+    for name, email in candidates:
+        if _is_person(name, email):
+            return name or email, email
     return None
+
+
+def _is_person(name: str, email: str) -> bool:
+    """A human with a real address: a machine-local one (a container's
+    ``user@host.local``) names a box, not who answers for the change."""
+    canonical = canonicalize_author_email(email)
+    return bool(canonical) and (
+        identity_kind(name, email) == "human" and not _is_machine_local(canonical)
+    )
 
 
 def _is_machine_local(canonical_email: str) -> bool:

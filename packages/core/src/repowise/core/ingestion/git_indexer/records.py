@@ -552,24 +552,29 @@ def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
 
     out = repo.git.log(
         "--no-merges",
-        "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
+        "--format=%aN%x00%aE%x00%cN%x00%cE%x00"
+        "%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
         rev,
     )
     rows = []
     for line in out.splitlines():
-        name, _, rest = line.partition("\0")
-        email, _, trailers = rest.partition("\0")
-        co_authors = [
-            (m["name"], m["email"])
-            for value in trailers.split("\x1f")
-            if (m := TRAILER_PERSON_RE.match(value))
-        ]
+        name, email, c_name, c_email, trailers = (line.split("\0") + [""] * 5)[:5]
+        values = [v for v in trailers.split("\x1f") if v]
+        co_authors = [(m["name"], m["email"]) for v in values if (m := TRAILER_PERSON_RE.match(v))]
         rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
+        # The person a coding agent's commit is credited to (see
+        # :attr:`_CommitRec.credit`) is one of the repo's people, so their
+        # names and emails fold like any author's.
+        body = "\n".join(f"Co-authored-by: {v}" for v in values)
+        credit = accountable_human(name, email, c_name, c_email, body)
+        if credit:
+            rows.append({"author_name": credit[0], "author_email": credit[1]})
     return people_resolver(commit_rows=rows)
 
 
 def count_people(repo: Any, rev: str) -> int:
-    """Humans who authored a non-merge commit reachable from *rev*.
+    """Humans who authored a non-merge commit reachable from *rev*, or are
+    credited with one a coding agent authored (:func:`repo_people`).
 
     The shared people resolver folds one person's several names and emails
     into one. Automation is not counted.

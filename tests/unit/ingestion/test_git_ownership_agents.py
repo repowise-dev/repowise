@@ -24,6 +24,7 @@ _CLAUDE = "Claude <noreply@anthropic.com>"
 _COPILOT = f"Copilot <198982749+Copilot{_NR}>"
 _BOT = f"dependabot[bot] <49699333+dependabot[bot]{_NR}>"
 _JANE = "Jane Roe <jane@acme.io>"
+_JANE_NR = f"Jane Roe <4242+jroe{_NR}>"
 _OMAR = "Omar Haddad <omar@acme.io>"
 _DEV = "Dev Lee <dev@acme.io>"
 _GITHUB = "GitHub <noreply@github.com>"
@@ -73,6 +74,10 @@ def repo(tmp_path: Path) -> Path:
     _commit(tmp_path, "human.py", _DEV, _DEV, "start")
     _commit(tmp_path, "human.py", _JANE, _OMAR, "rebased by Omar")
     _commit(tmp_path, "human.py", _DEV, _DEV, "more")
+    # Jane's agent commits name her noreply address; she is still one person.
+    _commit(tmp_path, "noreply.py", _JANE, _JANE, "start")
+    for n in range(2):
+        _commit(tmp_path, "noreply.py", _CLAUDE, _CLAUDE, f"agent {n}" + _trailer(_JANE_NR))
     # Bus factor: Jane twice by hand, twice through an agent, Dev twice.
     for n in range(2):
         _commit(tmp_path, "shared.py", _JANE, _JANE, f"jane {n}")
@@ -146,6 +151,21 @@ def test_human_commits_are_unchanged(repo: Path, repo_wide: bool) -> None:
     assert meta["primary_owner_name"] == "Dev Lee"
 
 
+@pytest.mark.parametrize("repo_wide", [True, False])
+def test_credited_noreply_address_folds_into_the_person(repo: Path, repo_wide: bool) -> None:
+    meta = _index(repo, "noreply.py", repo_wide)
+    assert _top(meta) == [("Jane Roe", "jane@acme.io", 3)]
+    assert meta["contributor_count"] == 1
+    assert meta["bus_factor"] == 1
+
+
+def test_credited_people_count_as_people(repo: Path) -> None:
+    from repowise.core.ingestion.git_indexer.records import count_people
+
+    # Jane, Omar (credited through committing an agent's work only) and Dev.
+    assert count_people(git.Repo(repo), "HEAD") == 3
+
+
 def test_bus_factor_and_owner_counts_before_and_after(repo: Path) -> None:
     from repowise.core.ingestion.git_commit_index import load_commit_index
 
@@ -182,6 +202,12 @@ def test_bus_factor_and_owner_counts_before_and_after(repo: Path) -> None:
         (_CLAUDE, _CLAUDE, "\n\nco-authored-by: " + _JANE, ("Jane Roe", "jane@acme.io")),
         # An agent co-author is no human signal; the committer is.
         (_CLAUDE, _OMAR, _trailer(_COPILOT), ("Omar Haddad", "omar@acme.io")),
+        # A quoted trailer name loses its quotes; a nameless one uses the email.
+        (_CLAUDE, _CLAUDE, _trailer('"Jane Roe" <jane@acme.io>'), ("Jane Roe", "jane@acme.io")),
+        (_CLAUDE, _CLAUDE, _trailer("<jane@acme.io>"), ("jane@acme.io", "jane@acme.io")),
+        # A machine-local address names a box, not a person.
+        (_CLAUDE, "runner <runner@buildbox.local>", "", None),
+        (_CLAUDE, _CLAUDE, _trailer("me <me@localhost>"), None),
         # A bot or forge committer is no human signal.
         (_COPILOT, _GITHUB, "", None),
         (_COPILOT, _COPILOT, "", None),
