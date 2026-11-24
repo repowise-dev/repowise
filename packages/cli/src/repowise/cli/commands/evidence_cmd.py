@@ -840,11 +840,12 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
     suite = payload.get("suite")
     cut = sum(r["units"]["truncated"] or 0 for r in payload["runs"])
     if cut:
-        whole = (
-            f"; with them the {suite['timed']:,} timed tests take {suite['seconds']:,.1f}s in all"
-            if suite is not None
-            else ""
-        )
+        whole = ""
+        if suite is not None:
+            whole = f"; with them the {suite['timed']:,} timed tests take {suite['seconds']:,.1f}s"
+            # Folds add up per workload: a test two workloads run counts in each.
+            n = len(payload["runs"])
+            whole += f", summed over {n} workloads" if n > 1 else " in all"
         lines.append(
             f"[dim]{cut:,} faster or untimed tests were left out at the per-run cap{whole}.[/dim]"
         )
