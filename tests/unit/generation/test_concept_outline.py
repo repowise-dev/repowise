@@ -408,9 +408,8 @@ def test_a_layer_label_does_not_prefix_a_title():
 def test_a_trailing_number_stays_with_its_word():
     """``c4`` is the C4 model, not a C and a 4.
 
-    The camel-case splitter treats a digit run as its own token, which is
-    right for ``v2Api`` and wrong for every directory whose name ends in a
-    number. Titles are the one place that leak is visible.
+    A digit run is part of the word it was written against, and titles are
+    the one place a split there would be visible.
     """
     from repowise.core.generation.concept_tree.grouping import ConceptGroup
     from repowise.core.generation.concept_tree.naming import deterministic_title
@@ -422,6 +421,34 @@ def test_a_trailing_number_stays_with_its_word():
     )
 
     assert deterministic_title(group) == "C4"
+
+
+@pytest.mark.parametrize(
+    ("directory", "title"),
+    [
+        # A name written with its own capitals is one product or build word.
+        ("AnkiDroid", "AnkiDroid"),
+        ("buildSrc", "buildSrc"),
+        ("iOS", "iOS"),
+        # An all-lowercase word is title-cased whole, never split.
+        ("libfoo", "Libfoo"),
+        # Separators still split, and each lowercase word is title-cased.
+        ("home-screen-widgets", "Home Screen Widgets"),
+        ("dead_code", "Dead Code"),
+        ("anki-common", "Anki Common"),
+    ],
+)
+def test_a_directory_name_splits_only_on_separators(directory, title):
+    """``AnkiDroid`` is one name; "Anki Droid" reads as not knowing the project."""
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+    group = ConceptGroup(
+        members=[f"{directory}/a.kt", f"{directory}/b.kt"],
+        dirs=[directory],
+        target_path=directory,
+    )
+
+    assert deterministic_title(group) == title
 
 
 class TestCycleNaming:

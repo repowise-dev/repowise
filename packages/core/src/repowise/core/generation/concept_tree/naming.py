@@ -89,19 +89,12 @@ def _humanise(segment: str) -> str:
     for word in words:
         if not word:
             continue
-        # Split camelCase so ``pageGenerator`` reads as two words.
-        parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", word) or [word]
-        cased = [p.capitalize() if p.islower() else p for p in parts]
-        # A trailing number belongs to the word it was written against: the
-        # ``c4`` directory is the C4 model, and "C 4 Nodes" reads as a
-        # tokeniser leaking into a page title.
-        merged: list[str] = []
-        for part in cased:
-            if part.isdigit() and merged:
-                merged[-1] += part
-            else:
-                merged.append(part)
-        out.extend(merged)
+        # Only separators split. A word written with its own capitals is a
+        # name spelled the way its project spells it (``AnkiDroid``,
+        # ``buildSrc``, ``iOS``), and splitting it on case reads as not
+        # knowing the project. Only an all-lowercase word is title-cased, so
+        # ``c4`` reads "C4" (never "C 4") and ``libfoo`` reads "Libfoo".
+        out.append(word.capitalize() if word.islower() else word)
     return " ".join(out)
 
 
