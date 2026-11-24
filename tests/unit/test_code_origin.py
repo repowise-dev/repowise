@@ -122,6 +122,10 @@ _OWN_HEADER = (
         ("src/main/java/org/apache/commons/io/build/AbstractOrigin.java", "production"),
         ("packages/react-devtools-shared/src/devtools/ContextMenu.js", "production"),
         ("drift/lib/src/runtime/devtools/devtools.dart", "production"),
+        ("Src/Build/Compiler.cs", "production"),
+        ("src/build/scripts/bundle.py", "tooling"),
+        ("src/build/generated/x.ts", "generated"),
+        ("src/build/__tests__/a.ts", "test"),
         # A ``tools/`` folder inside the product is its own code.
         ("lib/ai/tools/get-weather.ts", "production"),
         ("src/tools/search.py", "production"),
