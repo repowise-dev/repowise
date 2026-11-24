@@ -102,3 +102,58 @@ def _short_error(name: str, exc: BaseException) -> str:
     if len(first) > 160:
         first = first[:159] + "…"
     return escape(f"{name}: {type(exc).__name__}" + (f": {first}" if first else ""))
+
+
+def refresh_repo_contracts(repo_path: Any) -> None:
+    """Re-read the repo's own contracts into ``.repowise/contracts.json`` (opt-in).
+
+    Off unless ``contracts.in_repo`` is set, and then silent and side-effect
+    free, so an index without it is byte for byte what it was. Best-effort when
+    on: a failure is named and the previous file is left as it was; it never
+    fails the index.
+    """
+    import time
+
+    root = Path(repo_path)
+    if not _in_repo_contracts_on(root):
+        return
+    from repowise.core.workspace.repo_contracts import run_repo_contract_extraction
+
+    start = time.monotonic()
+    try:
+        result = run_async(run_repo_contract_extraction(root))
+    except Exception as exc:
+        log.warning("repo_contracts_failed", error=repr(exc))
+        try:
+            console.print(
+                f"[yellow]Contracts not refreshed: {_short_error('contracts', exc)}[/yellow]"
+            )
+        except Exception:  # reporting must never fail the index
+            log.debug("repo_contracts_report_failed", exc_info=True)
+        return
+    log.info(
+        "repo_contracts",
+        extracted=result.extracted,
+        contracts=result.contracts,
+        links=result.links,
+        seconds=round(time.monotonic() - start, 3),
+    )
+    if result.extracted:
+        console.print(
+            f"  [dim]Contracts: {result.contracts} found, {result.links} linked "
+            f"({time.monotonic() - start:.1f}s)[/dim]"
+        )
+
+
+def _in_repo_contracts_on(repo_path: Path) -> bool:
+    """``contracts.in_repo`` for *repo_path*, read before any workspace import.
+
+    False when the config does not parse: the commands that own it report that,
+    and an opt-in step stays off rather than adding a second warning.
+    """
+    try:
+        from repowise.core.settings.writers import current
+
+        return bool(current(repo_path, "contracts.in_repo").value)
+    except Exception:
+        return False
