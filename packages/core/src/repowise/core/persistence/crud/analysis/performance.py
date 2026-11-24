@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         PerformanceOpportunity as OpportunityModel,
     )
     from ....analysis.health.refactoring.performance_fix import PerformancePlanPolicy
+    from ....evidence.measured_fold import MeasuredFold
 
 _PLAN_TYPE = "performance_fix"
 
@@ -313,112 +314,53 @@ async def _restamp_roles(
     return out
 
 
-class _Measured(NamedTuple):
-    #: Function -> the leading workload that ranks it best.
-    measured: dict[str, str]
-    #: Functions a leading workload measured in the ``lead_candidate`` tier.
-    hot: frozenset[str]
-    #: The leading workloads whose runs measured any function: what a cause
-    #: no facet marks was not exercised in.
-    workloads: tuple[str, ...]
-    #: The same two for ``unit_test`` runs, kept apart as measured in tests.
-    in_tests: dict[str, str]
-    hot_in_tests: frozenset[str]
-    #: Function -> its best place in a leading workload's run (1 is the top).
-    ranks: dict[str, int]
-
-
-async def _measured_functions(session: AsyncSession, repository_id: str) -> _Measured:
-    """Each function a leading workload's newest run ranks, with that workload's
-    name, and the ones any such run puts in ``evidence.hotness``'s
-    ``lead_candidate`` tier (the share and interval rule, or ranked in
-    several runs).
+async def _measured_functions(session: AsyncSession, repository_id: str) -> MeasuredFold:
+    """What the leading and ``unit_test`` workloads measured, per function
+    (``evidence.measured_fold.fold_measured``).
 
     Read off ``workload_hotness``, which the health writers rebuild before
-    this runs, so it describes the current code. Workload classes that may
-    lead (``evidence.hotness.LEAD_CLASSES``) fill ``measured`` and ``hot``;
-    ``unit_test`` runs fill ``in_tests`` and ``hot_in_tests`` apart, since a
-    test run shows what the code costs, not what production runs, and never
-    marks a cause not exercised. A deterministic tracer's order is not a
-    measured cost (``ordering_only``), so it never counts, as it never leads
-    in ``evidence.hotness``. A function two workloads rank takes the one that
-    ranks it best, ties by name. One indexed lookup without evidence.
+    this runs, so it describes the current code. One indexed lookup without
+    evidence.
     """
-    from ....evidence.hotness import LEAD_CLASSES
+    from ....evidence.measured_fold import fold_measured
     from .evidence import ranked_by_workload
 
-    best: dict[bool, dict[str, tuple[int, str]]] = {True: {}, False: {}}
-    hot: dict[bool, set[str]] = {True: set(), False: set()}
-    workloads: set[str] = set()
-    for run, rows in await ranked_by_workload(session, repository_id):
-        leads = run.workload_class in LEAD_CLASSES
-        if not leads and run.workload_class != "unit_test":
-            continue
-        for row in rows:
-            if row.ordering_only:
-                continue
-            if leads:
-                workloads.add(run.workload_name)
-            if row.tier == "lead_candidate":
-                hot[leads].add(row.symbol_id)
-            key = (row.rank, run.workload_name)
-            if row.symbol_id not in best[leads] or key < best[leads][row.symbol_id]:
-                best[leads][row.symbol_id] = key
-
-    def names(by: dict[str, tuple[int, str]]) -> dict[str, str]:
-        return {sid: name for sid, (_rank, name) in by.items()}
-
-    return _Measured(
-        names(best[True]),
-        frozenset(hot[True]),
-        tuple(sorted(workloads)),
-        names(best[False]),
-        frozenset(hot[False]),
-        {sid: rank for sid, (rank, _name) in best[True].items()},
-    )
+    return fold_measured(await ranked_by_workload(session, repository_id))
 
 
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
     """Each call site's query-count reading (``evidence.query_counts``), by symbol id.
 
-    Read from each workload's newest complete ``query_count`` run, so a
-    superseded run never speaks for the current code and a partly mapped one,
-    which is never a basis for ranking either, never decides. Sizes are
-    compared within one run and one scope kind only: a test and a request, or
-    two workloads, are not the same measurement. Ceiling: a newest run
-    measured before the site's body changed still counts; query rows carry
-    no body digest to tell. Two statements, the second only when such a run
-    exists.
+    ``evidence.measured_fold.fold_query_readings`` over this repository's
+    ``query_count`` runs, reading rows only for the runs it keeps. Two
+    statements, the second only when such a run exists.
     """
-    from ....evidence.hotness import newest_runs
-    from ....evidence.query_counts import read_statement, strongest
+    from ....evidence.measured_fold import fold_query_readings, query_runs_to_read
     from ...models import EvidenceQueryCount, EvidenceRun
 
-    runs = (
-        await session.execute(
-            select(EvidenceRun).where(
-                EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "query_count"
+    runs = list(
+        (
+            await session.execute(
+                select(EvidenceRun).where(
+                    EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "query_count"
+                )
             )
-        )
-    ).scalars()
-    keep = sorted(newest_runs(r for r in runs if not r.mapping_partial))
+        ).scalars()
+    )
+    keep = query_runs_to_read(runs)
     if not keep:
         return {}
     q = EvidenceQueryCount
-    points: dict[tuple[str, str, str, str], list[tuple[int | None, int]]] = {}
-    columns = (q.run_id, q.scope_kind, q.site_symbol_id, q.statement_fp)
+    columns = (q.run_id, q.scope_kind, q.site_symbol_id, q.statement_fp, q.scope_items)
+    points: list[Any] = []
     for batch in chunked(keep):
         result = await session.execute(
-            select(*columns, q.scope_items, q.query_count).where(
+            select(*columns, q.query_count).where(
                 q.repository_id == repository_id, q.run_id.in_(batch)
             )
         )
-        for run_id, kind, site, fp, items, count in result:
-            points.setdefault((run_id, kind, site, fp), []).append((items, count))
-    by_site: dict[str, list[Any]] = {}
-    for (_run, _kind, site, _fp), seen in points.items():
-        by_site.setdefault(site, []).append(read_statement(seen))
-    return {site: strongest(readings) for site, readings in by_site.items()}
+        points.extend(tuple(row) for row in result)
+    return fold_query_readings(runs, points)
 
 
 async def _unknown_context_origins(

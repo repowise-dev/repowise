@@ -88,7 +88,11 @@ class HotnessRules:
 
 
 def hotness_rules(config: Mapping[str, Any] | None) -> HotnessRules:
-    """The rules from a repo's ``config.yaml`` mapping, defaults where unset or invalid."""
+    """The rules from a repo's ``config.yaml`` mapping, defaults where unset or invalid.
+
+    ``hotness_rules(None)`` is the default set (the ``evidence.*`` settings'
+    defaults): what a host with no repository config derives with.
+    """
     from repowise.core.settings import resolve
 
     def value(key: str) -> Any:
