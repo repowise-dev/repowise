@@ -126,16 +126,18 @@ async def test_the_newest_listed_run_has_no_newer_run(
 @pytest.mark.parametrize(
     ("anchor", "status", "command"),
     [
-        (True, "ahead_of_index", "repowise update"),
-        (False, "stale", "repowise evidence setup --format json"),
+        # The workload's run at the indexed commit (no production frame) places it.
+        ("profile", "ahead_of_index", "repowise update"),
+        # Another kind at the indexed commit says nothing about the profile.
+        ("test_timing", "stale", "repowise evidence setup --format json"),
+        (None, "stale", "repowise evidence setup --format json"),
     ],
 )
 async def test_nothing_ranked_and_the_newest_run_ahead_of_the_index_says_so(
-    ev_client: AsyncClient, session_factory, anchor: bool, status: str, command: str
+    ev_client: AsyncClient, session_factory, anchor: str | None, status: str, command: str
 ) -> None:
     repo_id = await _repo(ev_client, session_factory)
-    # The only profile is ahead; a test-timing run at the indexed commit places it.
-    runs = [_run("junit", HEAD, AT, kind="test_timing")] if anchor else []
+    runs = [_run("at-index", HEAD, AT, kind=anchor)] if anchor else []
     runs.append(_run("new", NEWER, AT + timedelta(days=1)))
     await _seed(session_factory, repo_id, runs, ranked=False)
 

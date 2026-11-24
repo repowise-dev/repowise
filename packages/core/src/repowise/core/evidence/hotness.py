@@ -256,9 +256,12 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
 def commit_position(run: Any, runs: Iterable[Any], head_commit: str | None) -> str:
     """Where *run*'s commit sits against the indexed *head_commit*.
 
-    ``indexed`` at it; ``ahead`` when added after the newest of *runs* at the
-    indexed commit, ``older`` when added before it; ``other`` when no run is
-    at the indexed commit to compare with, or either commit is unknown.
+    ``indexed`` at it; ``ahead`` when added after the newest of *runs* of the
+    same history (kind, workload, environment) at the indexed commit,
+    ``older`` when added before it; ``other`` when no such run is at the
+    indexed commit to compare with, or either commit is unknown. Another
+    workload's run never places it: a test run added late says nothing about
+    where a profile sits.
     Ingest order (measurement time for a run stored without one), the rule
     the UI's ``commitPosition`` reads from the runs list, so the two agree.
     Ceiling: ingest order is commit order for runs a CI job adds on each
@@ -269,10 +272,17 @@ def commit_position(run: Any, runs: Iterable[Any], head_commit: str | None) -> s
         return "other"
     if run.commit_sha == head_commit:
         return "indexed"
-    anchors = [_ingest_time(r) for r in runs if r.commit_sha == head_commit]
+    history = _history(run)
+    anchors = [
+        _ingest_time(r) for r in runs if r.commit_sha == head_commit and _history(r) == history
+    ]
     if not anchors:
         return "other"
     return "ahead" if _ingest_time(run) > max(anchors) else "older"
+
+
+def _history(run: Any) -> tuple[Any, ...]:
+    return (getattr(run, "kind", None), run.workload_name, run.environment)
 
 
 def _ingest_time(run: Any) -> float:

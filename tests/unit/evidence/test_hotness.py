@@ -336,36 +336,31 @@ def test_a_newer_run_that_ranks_lists_alone_as_before() -> None:
     assert got == [("new", "walk")]
 
 
-def test_commit_position_reads_measurement_order_against_the_indexed_commit() -> None:
-    from repowise.core.evidence.hotness import commit_position
-
-    at_index, ahead = _run("i", day=2), _run("a", commit=OLD, day=3)
-    before = _run("b", commit=OLD, day=1)
-    runs = [at_index, ahead, before]
-    assert commit_position(at_index, runs, HEAD) == "indexed"
-    assert commit_position(ahead, runs, HEAD) == "ahead"
-    assert commit_position(before, runs, HEAD) == "older"
-    # No run at the indexed commit to compare with, or no indexed commit.
-    assert commit_position(ahead, [ahead, before], HEAD) == "other"
-    assert commit_position(ahead, runs, None) == "other"
-
-
-def test_commit_position_reads_ingest_order_as_the_ui_does() -> None:
+def test_commit_position_reads_ingest_order_within_the_runs_history() -> None:
     from types import SimpleNamespace
 
     from repowise.core.evidence.hotness import commit_position
 
-    def run(commit: str, measured: int, ingested: int) -> SimpleNamespace:
+    def run(commit: str, measured: int, ingested: int, *, kind: str = "profile",
+            workload: str = "init") -> SimpleNamespace:
         return SimpleNamespace(
-            commit_sha=commit,
+            commit_sha=commit, kind=kind, workload_name=workload, environment="ci",
             measured_at=datetime(2026, 11, measured, tzinfo=UTC),
             ingested_at=datetime(2026, 11, ingested),  # SQLite drops the zone
         )
 
     anchor = run(HEAD, 2, 2)
+    assert commit_position(anchor, [anchor], HEAD) == "indexed"
     # Measured before the index's run but added after it: ahead, as the runs list reads it.
     late = run(OLD, 1, 3)
     assert commit_position(late, [anchor, late], HEAD) == "ahead"
     # Measured after but added before it: older.
     early = run(OLD, 3, 1)
     assert commit_position(early, [anchor, early], HEAD) == "older"
+    # A test run, or another workload, at the indexed commit never places a profile.
+    junit = run(HEAD, 4, 4, kind="test_timing")
+    other = run(HEAD, 4, 4, workload="serve")
+    assert commit_position(late, [junit, other, late], HEAD) == "other"
+    assert commit_position(late, [anchor, junit, late], HEAD) == "ahead"
+    # No indexed commit.
+    assert commit_position(late, [anchor, late], None) == "other"

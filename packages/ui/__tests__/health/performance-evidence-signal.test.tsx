@@ -215,7 +215,7 @@ describe("Runtime evidence: where the run sits against the index", () => {
           }),
           listEvidenceRuns: runsOf([
             older,
-            { ...junitRun, commit_sha: INDEXED, ingested_at: ago(5) },
+            { ...indexedRun, ingested_at: ago(5) },
           ]),
         })}
       />,
@@ -238,7 +238,7 @@ describe("Runtime evidence: where the run sits against the index", () => {
       <PerformanceView
         adapter={adapter({
           getMeasured: async () => unranked("not_ranked"),
-          listEvidenceRuns: runsOf([older, { ...junitRun, commit_sha: INDEXED, ingested_at: ago(5) }]),
+          listEvidenceRuns: runsOf([older, { ...indexedRun, ingested_at: ago(5) }]),
         })}
       />,
     );

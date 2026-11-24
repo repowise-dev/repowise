@@ -147,6 +147,11 @@ def _measured_run(run: dict[str, Any]) -> dict[str, Any]:
     # Only a tracer's run says so: every other run gives shares.
     if not out["ordering_only"]:
         del out["ordering_only"]
+    # Only a run listed in place of a newer one that ranks nothing says so.
+    newer = run.get("newer_run")
+    if newer:
+        commit = newer["commit"]
+        out["newer_run"] = {"commit": commit[:12] if commit else None, "reason": newer["reason"]}
     return out
 
 
