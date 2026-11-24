@@ -31,7 +31,11 @@ from typing import Any
 
 # Body-only patching is enabled only for languages covered by the resolver
 # convergence fixtures. Expand this set together with those fixtures.
-PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp"})
+# Shell and Dockerfile resolve through no language pass of their own: their
+# imports (``source``, ``FROM``) and calls go through the shared resolvers,
+# and every other file sees only their surface (functions, ENTRYPOINT/EXPOSE,
+# imports), so an edit that leaves it unchanged re-resolves just the file.
+PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp", "shell", "dockerfile"})
 
 # Prose no parser extracts from. Its only edges are ``documents`` links, which
 # the builder re-derives for every doc on every build and no resolver reads
