@@ -19,6 +19,7 @@ from repowise.core.analysis.health.aggregation import (
 )
 from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.trends import latest_per_day
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.shown import ungated
@@ -251,7 +252,7 @@ def snapshot_history(snapshot: Any) -> list[dict]:
             "average_health": round(s.average_health, 2),
             "hotspot_health": (round(s.hotspot_health, 2) if s.hotspot_health is not None else None),
         }
-        for s in snapshot.recent
+        for s in latest_per_day(snapshot.recent)
     ]
 
 

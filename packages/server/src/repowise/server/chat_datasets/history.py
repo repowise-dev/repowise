@@ -104,11 +104,12 @@ def changes_rows(changes: Iterable[Any]) -> list[dict[str, Any]]:
     noun="health snapshots",
 )
 async def load_health_trend(ctx: LoadContext) -> list[dict[str, Any]]:
+    from repowise.core.analysis.health.trends import latest_per_day
     from repowise.core.persistence.crud.analysis.health import get_health_snapshot_headline
 
     # Scalars only: whole snapshot rows carry every file's score.
     headline = await get_health_snapshot_headline(ctx.session, ctx.repository.id, recent=50)
-    return health_trend_rows(headline.recent)
+    return health_trend_rows(latest_per_day(headline.recent))
 
 
 def health_trend_rows(snapshots: Iterable[Any]) -> list[dict[str, Any]]:

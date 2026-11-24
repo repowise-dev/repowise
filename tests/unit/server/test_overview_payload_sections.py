@@ -89,3 +89,21 @@ def test_snapshot_history_rounds_and_keeps_missing_hotspot_none() -> None:
     assert snapshot_history(snap) == [
         {"taken_at": None, "average_health": 7.46, "hotspot_health": None}
     ]
+
+
+def test_snapshot_history_draws_one_point_per_day() -> None:
+    """Two indexes on one day are one point of the sparkline: the later one."""
+
+    def at(day: int, hour: int, avg: float) -> SimpleNamespace:
+        return SimpleNamespace(
+            taken_at=datetime(2026, 11, day, hour, tzinfo=UTC),
+            average_health=avg,
+            hotspot_health=None,
+        )
+
+    snap = SimpleNamespace(recent=[at(22, 9, 8.0), at(23, 9, 8.8), at(23, 18, 8.6)])
+
+    assert [(p["taken_at"][:10], p["average_health"]) for p in snapshot_history(snap)] == [
+        ("2026-11-22", 8.0),
+        ("2026-11-23", 8.6),
+    ]

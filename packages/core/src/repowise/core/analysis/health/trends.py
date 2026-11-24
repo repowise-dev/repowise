@@ -423,6 +423,26 @@ def _point(snap: Any, attr: str) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
+def latest_per_day(history: Sequence[Any]) -> list[Any]:
+    """The newest snapshot of each calendar day, oldest first, for a drawn series.
+
+    Two indexes on one day (a re-run, a deeper history pass) are one day of
+    the trend: a chart or table showing both reads as a repeated point. Only
+    the series a reader looks at collapses; the store keeps every snapshot, and
+    the deltas and alerts still compare against the run before. *history* is
+    oldest first; a snapshot with no ``taken_at`` is kept as it is.
+    """
+    out: list[Any] = []
+    for snap in history:
+        taken = getattr(snap, "taken_at", None)
+        prev = getattr(out[-1], "taken_at", None) if out else None
+        if taken is not None and prev is not None and taken.date() == prev.date():
+            out[-1] = snap
+        else:
+            out.append(snap)
+    return out
+
+
 def recent_kpis(
     history: list[Any],
     limit: int = 10,
@@ -430,7 +450,8 @@ def recent_kpis(
     doc_drift: bool = False,
     analyzer_version: bool = False,
 ) -> list[dict[str, Any]]:
-    """Serialize the most-recent *limit* snapshots for CLI / API consumers.
+    """Serialize the most-recent *limit* days of snapshots for CLI / API consumers,
+    one row per day (:func:`latest_per_day`).
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
@@ -440,7 +461,7 @@ def recent_kpis(
     """
     if not history:
         return []
-    tail = history[-limit:]
+    tail = latest_per_day(history)[-limit:]
     rows: list[dict[str, Any]] = []
     for snap in reversed(tail):
         rows.append(
