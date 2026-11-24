@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from .collect import collect_first_look
 from .config import FirstLookSettings, first_look_settings
 from .living import LivingReport
 from .model import SECTION_CAP, FirstLookReport
-from .prompts import render_item_prompt, render_report_prompt
+from .prompts import render_item_prompts, render_report_prompt
 from .store import REPORTS_DIR, store_report, write_report_file
 from .text import template_prose
 
@@ -66,17 +67,39 @@ async def render_document(
     its agent prompt from what the index holds now; Markdown and JSON exports
     carry none. The whole-report prompt lists the open items.
     """
+    documents = await render_documents(
+        session, repository_id, report, flavors=(flavor,), app_url=app_url, prompts=prompts
+    )
+    return documents[flavor]
+
+
+async def render_documents(
+    session: Any,
+    repository_id: str,
+    report: FirstLookReport | LivingReport,
+    *,
+    flavors: Sequence[str],
+    app_url: str | None = None,
+    prompts: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """:func:`render_document` for each of *flavors*, by flavor, in one pass.
+
+    The index's facts and each listed item's payload are read once and every
+    flavor's prompt is rendered from them. An item whose payload cannot be
+    read gets no prompt in any flavor, as :func:`render_document` leaves it out.
+    """
     from .living import LivingReport
 
+    flavors = list(dict.fromkeys(flavors))
     if isinstance(report, LivingReport):
-        data = report.to_json()
+        to_json = report.to_json
         statuses = {i: s.status for i, s in report.statuses.items()}
         report = report.report
     else:
         report = with_prose(report)
-        data, statuses = report.to_json(), {}
-    rendered: dict[str, str] = {}
-    if prompts:
+        to_json, statuses = report.to_json, {}
+    rendered: dict[str, dict[str, str]] = {flavor: {} for flavor in flavors}
+    if prompts and flavors:
         from repowise.core.analysis.actions.engine import actions_by_id
         from repowise.core.persistence.crud.analysis.actions import load_repo_facts
 
@@ -87,17 +110,23 @@ async def render_document(
             for item in block.items[:SECTION_CAP]:
                 try:
                     async with session.begin_nested():
-                        rendered[item.id] = await render_item_prompt(
-                            session, repository_id, item, flavor=flavor, repo_name=name,
+                        texts = await render_item_prompts(
+                            session, repository_id, item, flavors=flavors, repo_name=name,
                             actions=actions,
                         )
                 except Exception:  # a missing prompt must not cost the page
                     logger.warning("repo report: prompt for %s failed", item.id, exc_info=True)
+                    continue
+                for flavor, text in texts.items():
+                    rendered[flavor][item.id] = text
     return {
-        **data,
-        **({"prompts": rendered} if prompts else {}),
-        "report_prompt": render_report_prompt(report, flavor=flavor, statuses=statuses),
-        "app_url": f"{app_url.rstrip('/')}/repos/{repository_id}" if app_url else None,
+        flavor: {
+            **to_json(),
+            **({"prompts": rendered[flavor]} if prompts else {}),
+            "report_prompt": render_report_prompt(report, flavor=flavor, statuses=statuses),
+            "app_url": f"{app_url.rstrip('/')}/repos/{repository_id}" if app_url else None,
+        }
+        for flavor in flavors
     }
 
 
@@ -112,15 +141,24 @@ async def _setup_facts(session: Any, repository_id: str, repo_root: Path) -> Any
 
 
 async def build_report(
-    session: Any, repository_id: str, repo_root: Path | None, *, setup: Any | None = None
+    session: Any,
+    repository_id: str,
+    repo_root: Path | None,
+    *,
+    setup: Any | None = None,
+    unavailable: Mapping[str, str] | None = None,
 ) -> FirstLookReport:
     """The report at the index now, with its template text: what every writer starts from.
 
     *setup* is this machine's setup facts, read here from *repo_root* when not given.
+    *unavailable* names sections this store has no inputs for
+    (:func:`.collect.collect_first_look`).
     """
     if setup is None and repo_root is not None:
         setup = await _setup_facts(session, repository_id, repo_root)
-    report = await collect_first_look(session, repository_id, repo_root, setup=setup)
+    report = await collect_first_look(
+        session, repository_id, repo_root, setup=setup, unavailable=unavailable
+    )
     return dataclasses.replace(report, prose=template_prose(report))
 
 
@@ -134,6 +172,7 @@ async def write_first_look(
     store: bool = True,
     setup: Any | None = None,
     app_url: str | None = None,
+    unavailable: Mapping[str, str] | None = None,
 ) -> FirstLookReport:
     """Collect the report for *repository_id*, write its prose, and store it.
 
@@ -142,7 +181,8 @@ async def write_first_look(
     the ``reports`` row, then commits. With the setting off it only returns
     the report. *setup* is this machine's setup facts (read here from
     *repo_root* when not given); *app_url* is the running web app's origin,
-    for links in the rendered files.
+    for links in the rendered files. *unavailable* names sections this store
+    has no inputs for (:func:`.collect.collect_first_look`).
 
     *provider* is the configured model provider. Given one, with
     ``report.first_look.llm`` on, one model call rewrites the prose
@@ -152,7 +192,7 @@ async def write_first_look(
     root = Path(repo_root) if repo_root is not None else None
     if settings is None:
         settings = first_look_settings(root) if root is not None else FirstLookSettings()
-    report = await build_report(session, repository_id, root, setup=setup)
+    report = await build_report(session, repository_id, root, setup=setup, unavailable=unavailable)
     if provider is not None and settings.enabled and settings.llm:
         report = await _rewrite(report, provider, settings, root)
     if not (store and settings.enabled):
@@ -209,6 +249,7 @@ __all__ = [
     "RENDERED",
     "build_report",
     "render_document",
+    "render_documents",
     "rendered_path",
     "with_prose",
     "write_files",
