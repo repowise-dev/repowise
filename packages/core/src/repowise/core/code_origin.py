@@ -711,10 +711,19 @@ _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # shipped code (an example registry, a runner) as a sample.
 _EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
 _TUTORIAL_PREFIX = "tutorial"
+# Launcher/demo module names a first segment carries: a library's sample or
+# test app and a playground folder are documentation-by-code too. Counted
+# only as the first segment, like the tokens above: a nested
+# ``src/pkg/playground/`` is as often shipped code as a sample.
+_EXAMPLE_MODULE_NAMES = frozenset({"sample-app", "sample-apps", "test-app", "playground"})
 
 
 def _is_example_dir(segment: str) -> bool:
-    return segment in _EXAMPLE_TOKENS or segment.startswith(_TUTORIAL_PREFIX)
+    return (
+        segment in _EXAMPLE_TOKENS
+        or segment in _EXAMPLE_MODULE_NAMES
+        or segment.startswith(_TUTORIAL_PREFIX)
+    )
 
 
 # Example directories a build tool compiles as examples at any depth, by file

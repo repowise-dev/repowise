@@ -93,6 +93,11 @@ _OWN_HEADER = (
         ("examples/tutorial/app.py", "docs_example"),
         ("example/main.go", "docs_example"),
         ("samples/hello/Program.cs", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/web/a.py", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),  # a nested playground ships
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
         ("scripts/release.py", "tooling"),
