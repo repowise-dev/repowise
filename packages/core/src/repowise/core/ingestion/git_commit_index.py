@@ -159,6 +159,10 @@ _MAX_PATCHED_COMMITS = 2_000
 #: walk (``--skip``/``-N``), which diffs only the run. Deepening the window
 #: leaves one such run below the cached commits however deep the jump.
 _MIN_WALKED_RUN = 400
+#: Each ranged walk re-traverses (without diffing) every commit above its run,
+#: so past this many runs one full walk is cheaper. A deeper window, with or
+#: without new commits on top, leaves at most two.
+_MAX_WALKED_RUNS = 8
 #: Commits per ``git log --no-walk`` call, well inside the Windows command-line limit.
 _PATCH_CHUNK = 400
 
@@ -356,7 +360,8 @@ def _patched(
     scattered = [
         sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
     ]
-    if len(scattered) > _MAX_PATCHED_COMMITS:
+    walked = sum(end - start >= _MIN_WALKED_RUN for start, end in runs)
+    if len(scattered) > _MAX_PATCHED_COMMITS or walked > _MAX_WALKED_RUNS:
         return None
     for start, end in runs:
         if end - start < _MIN_WALKED_RUN:

@@ -363,3 +363,25 @@ def test_a_ranged_walk_that_disagrees_with_the_order_is_a_miss(tmp_path: Path, m
     warm = _walk(repo, {"a.py"}, cache_dir, depth=6)
     monkeypatch.setattr(git_commit_index, "_log_records", real)
     assert warm == _walk(repo, {"a.py"}, None, depth=6)
+
+
+def test_too_many_walked_runs_take_one_full_walk(tmp_path: Path, monkeypatch) -> None:
+    """Every ranged walk re-traverses the commits above it, so many runs walk afresh."""
+    from repowise.core.ingestion import git_commit_index
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    for i in range(4):
+        _commit(repo, "a.py", f"y = {i}\n", f"n{i}", base + 100 + i)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+    monkeypatch.setattr(git_commit_index, "_MAX_WALKED_RUNS", 1)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=8)
+    assert walks == [(repo.head.commit.hexsha, "-8")]
+    assert warm == _walk(repo, {"a.py"}, None, depth=8)
