@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -666,16 +666,13 @@ async def _unreported_production_files(
     A file of declarations only (Go types, a TS interface file) has ``nloc``
     but nothing a report measures, and is still listed.
     """
-    import pathspec
-
     from repowise.core.analysis.patch_coverage.stored import ingest_scope
 
     scope = ingest_scope(ingest) if ingest is not None else None
-    ignored = pathspec.PathSpec.from_lines("gitwildmatch", scope.ignore if scope else ())
-    reported = {r.file_path for r in rows}
-    measured = {PurePosixPath(p).suffix for p in reported}
     result = await session.execute(
-        select(HealthFileMetric.file_path).where(
+        select(
+            HealthFileMetric.file_path, HealthFileMetric.code_origin, HealthFileMetric.nloc
+        ).where(
             HealthFileMetric.repository_id == repository_id,
             HealthFileMetric.code_origin == "production",
             HealthFileMetric.nloc > 0,
@@ -684,10 +681,43 @@ async def _unreported_production_files(
     indexed = _filter_excluded_paths(
         result.all(), await health_exclude_spec(session, repository_id)
     )
+    return unreported_production_files(
+        ({"file_path": r.file_path, "code_origin": r.code_origin, "nloc": r.nloc} for r in indexed),
+        (r.file_path for r in rows),
+        ignore=scope.ignore if scope else (),
+    )
+
+
+def unreported_production_files(
+    metrics: Iterable[Mapping[str, Any]],
+    reported: Iterable[str],
+    *,
+    ignore: Iterable[str] = (),
+) -> list[str]:
+    """The coverage summary's unreported files, over plain rows (#5873).
+
+    *metrics* are per-file health rows with ``file_path``, ``code_origin`` and
+    ``nloc``; *reported* are the paths the coverage report has rows for;
+    *ignore* is the ingest's ``coverage.ignore`` patterns. A row with no stored
+    ``code_origin`` (written before it was stored) is judged by
+    :func:`~repowise.core.code_origin.path_origin`. The caller leaves out the
+    rows the repository's ``exclude_patterns`` keep out of health, as the
+    stored health rows already do. Sorted.
+    """
+    import pathspec
+
+    from repowise.core.code_origin import path_origin
+
+    ignored = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
+    reported = set(reported)
+    measured = {PurePosixPath(p).suffix for p in reported}
     return sorted(
-        row.file_path
-        for row in indexed
-        if row.file_path not in reported
-        and PurePosixPath(row.file_path).suffix in measured
-        and not ignored.match_file(row.file_path)
+        path
+        for row in metrics
+        if (path := row.get("file_path"))
+        and (row.get("code_origin") or path_origin(path)) == "production"
+        and (row.get("nloc") or 0) > 0
+        and path not in reported
+        and PurePosixPath(path).suffix in measured
+        and not ignored.match_file(path)
     )

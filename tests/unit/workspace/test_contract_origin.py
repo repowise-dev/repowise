@@ -102,3 +102,29 @@ def test_a_data_folders_code_is_left_out_on_its_stored_origin(monkeypatch) -> No
     kept, dropped = asyncio.run(_production_ends(contracts, _Index()))
     assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
     assert dropped == 1
+
+
+def test_origins_handed_to_an_index_built_from_rows_judge_its_ends() -> None:
+    """A host builds member indexes with no session; the origins it stored still decide."""
+    from repowise.core.workspace.repo_index import RepoIndex
+
+    index = RepoIndex.from_symbols(
+        "app",
+        [],
+        repo_id="r",
+        origins={
+            "backend/data/problems/p0/solution.js": "data",
+            "frontend/lib/gen/client.ts": "generated",
+        },
+    )
+    contracts = [
+        _end("backend/data/problems/p0/solution.js"),
+        _end("frontend/lib/gen/client.ts"),
+        _end("frontend/lib/api/client.ts"),
+        # Not in the map: its path decides, as load_origins does.
+        _end("frontend/e2e/login.spec.ts"),
+    ]
+    kept, dropped = asyncio.run(_production_ends(contracts, index))
+    assert [c.file_path for c in kept] == ["frontend/lib/api/client.ts"]
+    assert dropped == 3
+    assert RepoIndex.from_symbols("app", [], repo_id="r").origins is None

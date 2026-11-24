@@ -219,7 +219,26 @@ async def get_savings(
 
     missed = scan_missed_savings(Path(repo.local_path))
     reread = scan_missed_mcp_savings(Path(repo.local_path))
+    return savings_response(report, as_of=as_of, days=days, missed=missed, reread=reread)
 
+
+def savings_response(
+    report: Any,
+    *,
+    as_of: datetime,
+    days: int | None,
+    missed: Mapping[str, Any] | None = None,
+    reread: Mapping[str, Any] | None = None,
+) -> SavingsResponse:
+    """A core savings report on the wire, as this endpoint answers it.
+
+    For a host that folds its own stored events into a report
+    (``core.savings.reporting.build_report``). *missed* and *reread* are the
+    transcript scans; a host with no agent transcripts leaves them out and
+    those fields read zero.
+    """
+    missed = missed or {"events": 0, "est_saved_tokens": 0, "window_days": 0.0}
+    reread = reread or {"events": 0, "est_saved_tokens": 0}
     return SavingsResponse(
         available=True,
         window_days=days,

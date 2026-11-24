@@ -893,7 +893,8 @@ async def _production_ends(
 ) -> tuple[list[Contract], int]:
     """*contracts* without the ends in non-production code, and how many were left out.
 
-    The origin is the stored ``code_origin`` when the repo's index has one,
+    The origin is the stored ``code_origin`` when the repo's index has one
+    (handed to :meth:`RepoIndex.from_symbols`, else read through its session),
     else :func:`~repowise.core.code_origin.path_origin`. Only source code is
     judged: a schema document (an OpenAPI spec under ``docs/``, a ``.proto``,
     SQL) and a schema migration describe the contract wherever they sit.
@@ -914,7 +915,11 @@ async def _production_ends(
 
     origins: dict[str, str] = {}
     session = repo_index.session if repo_index is not None else None
-    if session is not None:
+    held = getattr(repo_index, "origins", None)
+    if held is not None:
+        # Handed in by a caller with no health rows to read (load_origins' rule).
+        origins = {p: held.get(p) or path_origin(p) for p in judged}
+    elif session is not None:
         try:
             origins = await load_origins(session, repo_index.repo_id, judged)
         except (SQLAlchemyError, AttributeError, TypeError):

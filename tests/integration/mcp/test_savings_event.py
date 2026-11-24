@@ -478,3 +478,63 @@ async def test_an_unpriced_call_starts_a_background_price_warm(
     await tool_middleware(get_overview)()
     assert warmed == [str(repo)]
     assert _events(repo)[0]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_host_builds_the_payload_record_writes(repo: Path, monkeypatch) -> None:
+    """``event_payload`` is the event ``record`` writes, so a host can store it itself."""
+    from repowise.core.savings import recorder
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    written: list[tuple[object, dict]] = []
+    built: list[dict] = []
+    original = savings_event._record
+
+    def capture(interaction, result):  # type: ignore[no-untyped-def]
+        built.append(
+            savings_event.event_payload(interaction, result, scope=str(interaction.repo_root))
+        )
+        return original(interaction, result)
+
+    monkeypatch.setattr(savings_event, "_record", capture)
+    monkeypatch.setattr(recorder, "record_event", lambda root, p: written.append((root, p)) or True)
+
+    async def get_context(targets: list[str], compact: bool = True) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "_meta": {"timing_ms": 1.0},
+        }
+
+    await tool_middleware(get_context)(["a.py"])
+
+    assert len(written) == 1 and len(built) == 1
+    root, payload = written[0]
+    assert root == str(repo)
+    host = built[0]
+    # Stamped per build; every other field is the same event.
+    assert host.pop("occurred_at") and payload.pop("occurred_at")
+    assert host == payload
+    assert payload["estimator"] == savings_event.ESTIMATOR
+    assert payload["token_unit"] == savings_event.TOKEN_UNIT
+
+
+def test_the_public_event_names_are_the_engine_s_own() -> None:
+    from repowise.server.mcp_server._savings import event as savings_event
+    from repowise.server.mcp_server._savings.interaction import Interaction
+
+    assert savings_event._outcome is savings_event.result_state
+    assert savings_event._ESTIMATOR == savings_event.ESTIMATOR == "chars_per_token_floor_v3"
+    assert savings_event._TOKEN_UNIT == savings_event.TOKEN_UNIT == "estimated_tokens"
+    assert savings_event.result_state({"error": "x"}) == ("error", False)
+    assert savings_event.result_state({"_meta": {"omitted": {"refs": []}, "truncated": 1}}) == (
+        "partial",
+        True,
+    )
+
+    interaction = Interaction(event_id="e1", tool="get_why", agent="claude-code")
+    payload = savings_event.event_payload(
+        interaction, {"answer": "x"}, scope="repo-42", delivered_input_tokens=17
+    )
+    assert payload["delivered_input_tokens"] == 17
+    assert payload["result_state"] == "success"
+    assert "model" not in payload and payload["metadata"] is None
