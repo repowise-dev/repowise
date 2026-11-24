@@ -584,6 +584,18 @@ class FileTraverser:
                 entry_points.append(f.path)
                 if f.is_application_main:
                     application_mains.append(f.path)
+        # An Android app has no main function: its manifest names the activity
+        # the launcher starts, and that activity is where the app begins.
+        if any(f.language in ("java", "kotlin") for f in files):
+            from .framework_edges.android_manifest import launcher_application_mains
+
+            for path in launcher_application_mains(
+                self.repo_root, [f.path for f in files if not f.is_test]
+            ):
+                if path not in application_mains:
+                    application_mains.append(path)
+                if path not in entry_points:
+                    entry_points.append(path)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
