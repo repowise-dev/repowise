@@ -1524,7 +1524,7 @@
       "referenceApi": "API",
       "referenceFiles": "文件",
       "referenceInfrastructure": "基础设施",
-      "referenceCycles": "依赖循环",
+      "referenceCycles": "静态导入循环",
       "projectActivity": "项目动态"
     },
     "reader": {

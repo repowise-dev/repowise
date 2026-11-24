@@ -156,9 +156,9 @@ function fileRows(r: StatsRecords, file: Href): RecordRow[] {
     const c = r.largest_cycle;
     rows.push({
       key: "cycle",
-      title: "Largest import cycle",
+      title: "Largest static import cycle",
       primary: "Files that import each other in a loop",
-      sub: `${formatNumber(c.cycle_count)} circular cluster${c.cycle_count === 1 ? "" : "s"} in total`,
+      sub: `${formatNumber(c.cycle_count)} static import cycle${c.cycle_count === 1 ? "" : "s"} in total`,
       ...count(c.files, "files"),
     });
   }

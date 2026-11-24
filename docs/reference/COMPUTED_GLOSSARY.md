@@ -91,8 +91,9 @@ workspace overlays, MCP responses, and CLI output.
 | File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding self-loops, `co_changes` and `documents` edges |
 | PageRank | File centrality in the import graph. | `GraphBuilder.pagerank()` | `0.01842` |
 | Betweenness | How often a file sits on shortest paths. | `GraphBuilder.betweenness_centrality()` | `0.0067` |
-| SCC | Strongly connected component, used to detect dependency cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
-| SCC page group | Non-singleton SCC that gets a cycle page. | `PageGenerator.generate_all()` | `scc-3` |
+| SCC | Strongly connected component, used to detect static import cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
+| Static import cycle | Two or more files whose import statements, read from the source without running it, form a loop (a non-singleton SCC). Type-only imports, imports deferred into a function body and imports guarded by `except ImportError` cannot close one. It means the files are coupled, not that importing them fails at run time. Every surface that counts or titles cycles uses this term. | `GraphBuilder.strongly_connected_components()` | `src/a.py -> src/b.py -> src/a.py` |
+| SCC page group | Non-singleton SCC that gets a static import cycle page. | `PageGenerator.generate_all()` | `scc-3` |
 | Graph JSON | Node-link serialization of the graph. | `GraphBuilder.to_json()` | `{"directed": true, "nodes": [...], "links": [...]}` |
 
 ## Communities And Execution Flows
@@ -172,7 +173,7 @@ workspace overlays, MCP responses, and CLI output.
 | File page context | Template data for one important source file. | `ContextAssembler.assemble_file_page()` | `{file_path, symbols, imports, dependencies, pagerank_score}` |
 | Symbol spotlight context | Template data for a most-called public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, docstring, resolved callers |
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
-| SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
+| SCC page context | Context for a static import cycle. | `assemble_scc_page()` | `cycle_description: "Static import cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
 | API contract context | Raw API contract plus endpoint/schema hints. | `assemble_api_contract()` | `endpoints: ["GET /users"]`, `schemas: ["User"]` |
 | Infra page context | Raw infra file plus target names. | `assemble_infra_page()` | `Dockerfile`, `Makefile`, `terraform` files |
