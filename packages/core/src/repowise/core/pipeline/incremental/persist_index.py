@@ -309,7 +309,11 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
 async def persist_health(ctx: IncrementalPersist) -> None:
     with timed(ctx.timings, "persist.health"):
         await persist_partial_health(
-            ctx.session, ctx.repo_id, ctx.partial_health_report, ctx.repo_path
+            ctx.session,
+            ctx.repo_id,
+            ctx.partial_health_report,
+            ctx.repo_path,
+            timings=ctx.timings,
         )
 
 
