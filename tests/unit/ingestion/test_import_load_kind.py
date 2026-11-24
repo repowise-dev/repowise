@@ -315,6 +315,18 @@ except ModuleNotFoundError:
     SP = None
 except ImportError:
     raise
+try:
+    from .unparen_guarded import UG
+except OSError, ImportError:
+    UG = None
+try:
+    from .unparen_guarded_as import UGA
+except OSError, ImportError as exc:
+    UGA = None
+try:
+    from .unparen_unguarded import UU
+except OSError, ValueError:
+    UU = None
 def f():
     try:
         from .lazy import L
@@ -340,6 +352,9 @@ def f():
         (".maybe_raised", (False, False, True)),  # survives unless STRICT
         # A cycle's `cannot import name` is an ImportError: the fatal handler runs.
         (".split", (False, False, False)),
+        (".unparen_guarded", (False, False, True)),  # PEP 758 unparenthesized tuple
+        (".unparen_guarded_as", (False, False, True)),  # PEP 758 with `as` binding
+        (".unparen_unguarded", (False, False, False)),  # PEP 758 without ImportError
         (".lazy", (False, True, False)),  # deferred wins
     ],
 )
@@ -355,7 +370,14 @@ _B_IMPORTS_A = "from .a import A\nclass B: ...\n"
 
 
 @pytest.mark.parametrize(
-    "handler", ["ImportError", "ModuleNotFoundError", "(ImportError, OSError)", "ImportError as e"]
+    "handler",
+    [
+        "ImportError",
+        "ModuleNotFoundError",
+        "(ImportError, OSError)",
+        "ImportError as e",
+        "OSError, ImportError",
+    ],
 )
 def test_an_import_guarded_by_except_import_error_closes_no_cycle(handler: str) -> None:
     builder = _builder(
@@ -376,6 +398,7 @@ def test_an_import_guarded_by_except_import_error_closes_no_cycle(handler: str) 
     [
         "try:\n    from .b import B\nexcept Exception:\n    B = None\nclass A: ...\n",
         "try:\n    from .b import B\nexcept:\n    B = None\nclass A: ...\n",
+        "try:\n    from .b import B\nexcept OSError, ValueError:\n    B = None\nclass A: ...\n",
         # One unguarded load-time import of the same target makes the edge runtime.
         "try:\n    from .b import B\nexcept ImportError:\n    B = None\n"
         "from .b import B2\nclass A: ...\n",
