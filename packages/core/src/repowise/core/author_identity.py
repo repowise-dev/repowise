@@ -151,12 +151,14 @@ def _is_person(name: str, email: str) -> bool:
 
 
 def _is_machine_local(canonical_email: str) -> bool:
-    """An address git made up from a hostname: ``(none)``, ``localhost``, a
-    ``.local`` host, or a domain with no dot (so no public TLD)."""
-    domain = canonical_email.rpartition("@")[2].strip("()")
-    if not domain or domain == "none" or "." not in domain:
+    """An address git made up from a hostname: ``(none)`` (alone or after a
+    host, ``root@1a2b3c.(none)``), ``localhost``, a ``.local`` host, or a
+    domain with no dot (so no public TLD)."""
+    domain = canonical_email.rpartition("@")[2]
+    labels = [label.strip("()") for label in domain.split(".")]
+    if not domain or "none" in labels or "." not in domain:
         return True
-    return any(label in _LOCAL_HOST_LABELS for label in domain.split("."))
+    return any(label in _LOCAL_HOST_LABELS for label in labels)
 
 
 def _clean_name(name: str | None) -> str:

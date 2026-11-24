@@ -207,6 +207,7 @@ def test_bus_factor_and_owner_counts_before_and_after(repo: Path) -> None:
         (_CLAUDE, _CLAUDE, _trailer("<jane@acme.io>"), ("jane@acme.io", "jane@acme.io")),
         # A machine-local address names a box, not a person.
         (_CLAUDE, "runner <runner@buildbox.local>", "", None),
+        (_CLAUDE, "root <root@1a2b3c.(none)>", "", None),
         (_CLAUDE, _CLAUDE, _trailer("me <me@localhost>"), None),
         # A bot or forge committer is no human signal.
         (_COPILOT, _GITHUB, "", None),
