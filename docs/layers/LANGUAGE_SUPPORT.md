@@ -70,7 +70,9 @@ Every Full and Good language has a dedicated import resolver except
 Objective-C, which resolves through a generic header-stem match, and Apex,
 which has no imports and resolves names case-insensitively within each sfdx
 project's namespace. Object Pascal resolves `uses` through the project files
-that compile each unit and matches names case-insensitively.
+that compile each unit and matches names case-insensitively; its form files
+(`.dfm`, `.fmx`, `.lfm`) bind the event handlers they name to the unit's form
+class.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
@@ -280,7 +282,7 @@ This table is why a language is Full and not Good.
 | Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
-| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | ✅ | ✅ |
+| Object Pascal | ✅ | ✅ | ✅ | n/a | n/a | ✅ | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
@@ -325,7 +327,7 @@ joins to code only for Python, Go and JavaScript frames.
 | Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
 | PHP | PHPUnit or Pest | no |
 | Apex | none; the Salesforce CLI test-run JSON is read | no |
-| Object Pascal | none | no |
+| Object Pascal | DelphiCodeCoverage on a built test program; the report is read | no |
 | Every other language | none | no |
 
 Formats, the join rules and the workload classes:
@@ -358,7 +360,6 @@ The full list per language, with the mechanics behind each gap, is in
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
 | Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
-| Object Pascal | Form files (`.dfm`, `.fmx`) binding event handlers |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
 | F#, Objective-C, Perl | Health markers beyond complexity |

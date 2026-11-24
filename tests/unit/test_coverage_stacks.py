@@ -1178,3 +1178,27 @@ def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
                       "downloads/notes.txt": ""})
     assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
     assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_delphi_project_gets_a_stack_that_reads_codecoverage_reports():
+    paths = ["App.dproj", "App.dpr", "uMain.pas", "Tests/Tests.dproj", "Tests/Tests.dpr", "Tests/uMainTests.pas"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.language == "delphi"
+    assert stack.runner == "DelphiCodeCoverage"
+    assert stack.report_paths() == ("**/CodeCoverage_Summary.xml",)
+    assert stack.test == ""  # the build command is the project's own
+    assert "CodeCoverage.exe" in stack.notes[0]
+    assert "-xml -xmllines" in stack.notes[0]
+    assert "Tests/Tests.dpr" in stack.notes[0]
+
+
+def test_delphi_without_a_test_project_says_so():
+    (stack,) = detect_stacks(["App.dproj", "App.dpr", "uMain.pas"], {})
+    assert stack.language == "delphi"
+    assert stack.to_dict()["command"] is None
+    assert "no test project" in stack.to_dict()["reason"]
+
+
+def test_a_repository_without_delphi_projects_gets_no_delphi_stack():
+    stacks_found = detect_stacks(["go.mod", "main.go"], {"go.mod": "module x\n"})
+    assert all(s.language != "delphi" for s in stacks_found)

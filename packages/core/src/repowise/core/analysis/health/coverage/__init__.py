@@ -45,6 +45,7 @@ from .freshness import (
     live_head_commit,
     measurement_commit,
 )
+from .delphi import parse_delphi_codecoverage
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -97,6 +98,7 @@ __all__ = [
     "parse_contexts_file",
     "parse_coverage_sqlite",
     "parse_go_coverprofile",
+    "parse_delphi_codecoverage",
     "parse_jacoco",
     "parse_lcov",
     "parse_lcov_contexts",

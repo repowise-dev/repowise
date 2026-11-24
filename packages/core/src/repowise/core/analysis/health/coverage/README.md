@@ -17,12 +17,16 @@ from repowise.core.analysis.health.coverage import (
 
 - `parse(text, format=None)` → `CoverageReport`. Auto-detects format
   when `format` is ``None``; pass an explicit ``"lcov" | "cobertura" |
-  "clover" | "repowise-json" | "go-coverprofile" | "jacoco" | "apex"`` to override
+  "clover" | "repowise-json" | "go-coverprofile" | "jacoco" | "apex" |
+  "delphi-codecoverage"`` to override
   (`detector.PARSERS` is the registry).
 - `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)`,
   `parse_repowise_json(text)`, `parse_go_coverprofile(text)`,
   `parse_jacoco(text)` — format-specific entry points (used by
   tests / programmatic callers).
+- DelphiCodeCoverage XML (`-xml -xmllines`) is read from its `<linehits>` list
+  (`line=hits` per unit); a report written without `-xmllines` gives per-file
+  percentages only. Unit names carry no directory and map by suffix.
 - Go cover profiles (`go test -coverprofile`) are expanded from statement
   blocks to lines, so their percentages are line-based, not Go's statement
   percentage. JaCoCo XML is read from per-line `<sourcefile>` data (lines

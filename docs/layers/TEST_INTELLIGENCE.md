@@ -66,7 +66,7 @@ Each inferred answer about a file is one of six states
 ## Supported formats
 
 **LCOV**, **Cobertura**, **Clover** and **JaCoCo** XML, **Go coverprofile**
-(`go test -coverprofile`), **Salesforce Apex JSON** (`sf apex run test
+(`go test -coverprofile`), **DelphiCodeCoverage XML** (`CodeCoverage.exe -xml -xmllines`), **Salesforce Apex JSON** (`sf apex run test
 --code-coverage --result-format json`), **coverage.py `.coverage`** and **normalized JSON**
 (`repowise-coverage-v1`). Three carry a per-test map: LCOV when each record has
 a non-blank `TN:` test name, `.coverage` when recorded with per-test contexts,
@@ -74,8 +74,9 @@ and the Apex run result (`test-result-<run id>.json`).
 
 - The format is sniffed and found in the usual locations
   ([rules](../architecture/test-intelligence.md#report-formats-and-discovery)); force
-  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco|apex`. Go
-  percentages are line-based, not `go tool cover`'s statement percentage.
+  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco|apex|delphi-codecoverage`. Go
+  percentages are line-based, not `go tool cover`'s statement percentage. DelphiCodeCoverage
+  names units without a directory, so two units of one name in different directories are reported as ambiguous.
 - Paths map by suffix, a tie is reported, never guessed
   ([rules](../architecture/test-intelligence.md#report-path-matching)); `--strict` fails
   on any unmapped report file. The coverage summary (`get_health`, the REST coverage
