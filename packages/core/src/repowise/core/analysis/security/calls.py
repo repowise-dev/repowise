@@ -201,6 +201,123 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     return found
 
 
+
+def _java_script_engine_eval_offsets(source: str, masked: str) -> list[int]:
+    """Find Java ScriptEngine.eval calls using syntactic variable scopes."""
+    from repowise.core.analysis.health.dataflow.parsing import parse_source
+
+    source_bytes = source.encode("utf-8")
+    parsed = parse_source("Source.java", "java", source_bytes)
+    if parsed is None:
+        return []
+
+    root, _ = parsed
+    offsets = []
+
+    def text(node):
+        return source_bytes[node.start_byte:node.end_byte].decode("utf-8")
+
+    def char_offset(byte_offset):
+        return len(source_bytes[:byte_offset].decode("utf-8"))
+
+    has_script_engine_import = any(
+        child.type == "import_declaration"
+        and text(child).strip() in {
+            "import javax.script.ScriptEngine;",
+            "import javax.script.*;",
+        }
+        for child in root.named_children
+    )
+
+    def is_engine_type(node):
+        if node is None:
+            return False
+        type_name = text(node)
+        return (
+            type_name == "javax.script.ScriptEngine"
+            or (type_name == "ScriptEngine" and has_script_engine_import)
+        )
+
+    def register(node, bindings):
+        typ = node.child_by_field_name("type")
+        if typ is None:
+            return
+
+        if node.type == "formal_parameter":
+            name = node.child_by_field_name("name")
+            if name is not None:
+                bindings[text(name)] = is_engine_type(typ)
+
+        elif node.type in {
+            "local_variable_declaration",
+            "field_declaration",
+        }:
+            for child in node.named_children:
+                if child.type == "variable_declarator":
+                    name = child.child_by_field_name("name")
+                    if name is not None:
+                        bindings[text(name)] = is_engine_type(typ)
+
+    def visit(node, bindings, class_fields):
+        if node.type == "class_declaration":
+            class_bindings = {}
+            body = node.child_by_field_name("body")
+
+            if body is not None:
+                for child in body.named_children:
+                    if child.type == "field_declaration":
+                        register(child, class_bindings)
+
+            bindings = class_bindings
+            class_fields = class_bindings
+
+        if node.type == "method_declaration":
+            bindings = bindings.copy()
+            parameters = node.child_by_field_name("parameters")
+
+            if parameters is not None:
+                for parameter in parameters.named_children:
+                    register(parameter, bindings)
+
+        if node.type == "block":
+            bindings = bindings.copy()
+
+        if node.type == "local_variable_declaration":
+            register(node, bindings)
+
+        if node.type == "method_invocation":
+            name = node.child_by_field_name("name")
+            obj = node.child_by_field_name("object")
+
+            if (
+                name is not None
+                and obj is not None
+                and text(name) == "eval"
+                and (
+                    (
+                        obj.type == "identifier"
+                        and bindings.get(text(obj), False)
+                    )
+                    or (
+                        obj.type == "field_access"
+                        and text(obj.child_by_field_name("object")) == "this"
+                        and class_fields.get(
+                            text(obj.child_by_field_name("field")), False
+                        )
+                    )
+                )
+            ):
+                offset = char_offset(name.start_byte)
+                if masked[offset:offset + 4] == "eval":
+                    offsets.append(char_offset(obj.start_byte))
+
+        for child in node.named_children:
+            visit(child, bindings, class_fields)
+
+    visit(root, {}, {})
+    return sorted(set(offsets))
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -264,6 +381,10 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):
             add(kind, severity, match.start())
+
+    if file_path.lower().endswith(".java"):
+        for offset in _java_script_engine_eval_offsets(source, masked_source):
+            add("eval_call", "high", offset)
 
     if not is_python:
         for offset in _child_process_exec_calls(source, masked_source):
