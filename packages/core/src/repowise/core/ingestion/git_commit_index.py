@@ -153,8 +153,12 @@ _DEEP_CACHE_NAME = "commit_deep_cache.json"
 #: Matches every deep region's file (:func:`_deep_cache_name`).
 _DEEP_CACHE_GLOB = "commit_deep_cache*.json"
 _WINDOW_CACHE_VERSION = 3  # v3: records are reused by sha, slices carry their skip
-#: Past this many commits the cache lacks, one full walk beats patching it.
+#: Past this many scattered commits the cache lacks, one full walk beats patching it.
 _MAX_PATCHED_COMMITS = 2_000
+#: A run of at least this many adjacent missing commits is read with one ranged
+#: walk (``--skip``/``-N``), which diffs only the run. Deepening the window
+#: leaves one such run below the cached commits however deep the jump.
+_MIN_WALKED_RUN = 400
 #: Commits per ``git log --no-walk`` call, well inside the Windows command-line limit.
 _PATCH_CHUNK = 400
 
@@ -322,7 +326,7 @@ def _cached_window_records(
 
     order = _slice_order(repo, head, skip, depth)
     pool = _reusable_records(repo, cached["records"], cached.get("shallow") is not False)
-    return _CachedWindow(_patched(repo, order, pool), at_head=False)
+    return _CachedWindow(_patched(repo, order, pool, head, skip), at_head=False)
 
 
 def _taken_at_head(repo: object, cached: dict, head: str, skip: int, depth: int) -> bool:
@@ -335,18 +339,55 @@ def _taken_at_head(repo: object, cached: dict, head: str, skip: int, depth: int)
     return same_slice and cached.get("shallow") is False and not _shallow_commits(repo)
 
 
-def _patched(repo: object, order: list[str], pool: dict[str, str]) -> list[str] | None:
-    """*order*'s records, diffing only the commits *pool* lacks; ``None`` to walk afresh."""
-    missing = [sha for sha in order if sha not in pool]
-    if len(missing) > _MAX_PATCHED_COMMITS:
+def _patched(
+    repo: object, order: list[str], pool: dict[str, str], head: str, skip: int
+) -> list[str] | None:
+    """*order*'s records, diffing only the commits *pool* lacks; ``None`` to walk afresh.
+
+    *order* is the slice of ``head``'s walk that starts *skip* commits down. A
+    long run of adjacent missing commits (a deeper window, or many new
+    commits) is read with one ranged walk over the same revisions, so it
+    costs what diffing those commits costs and nothing more. The rest are
+    diffed by sha, which pays per call and so stops at
+    :data:`_MAX_PATCHED_COMMITS`. A ranged walk whose shas are not exactly the
+    run's is a miss, never a guess.
+    """
+    runs = _missing_runs(order, pool)
+    scattered = [
+        sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
+    ]
+    if len(scattered) > _MAX_PATCHED_COMMITS:
         return None
-    for start in range(0, len(missing), _PATCH_CHUNK):
-        chunk = missing[start : start + _PATCH_CHUNK]
+    for start, end in runs:
+        if end - start < _MIN_WALKED_RUN:
+            continue
+        walked = _log_records(repo, head, f"--skip={skip + start}", f"-{end - start}")
+        if [_record_sha(record) for record in walked] != order[start:end]:
+            return None
+        pool.update(zip(order[start:end], walked, strict=True))
+    for start in range(0, len(scattered), _PATCH_CHUNK):
+        chunk = scattered[start : start + _PATCH_CHUNK]
         for record in _log_records(repo, "--no-walk=unsorted", *chunk):
             pool[_record_sha(record)] = record
     if any(sha not in pool for sha in order):
         return None
     return [pool[sha] for sha in order]
+
+
+def _missing_runs(order: list[str], pool: dict[str, str]) -> list[tuple[int, int]]:
+    """``(start, end)`` positions in *order* of each maximal run of shas *pool* lacks."""
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for position, sha in enumerate(order):
+        if sha in pool:
+            if start is not None:
+                runs.append((start, position))
+                start = None
+        elif start is None:
+            start = position
+    if start is not None:
+        runs.append((start, len(order)))
+    return runs
 
 
 def _slice_order(repo: object, head: str, skip: int, depth: int) -> list[str]:

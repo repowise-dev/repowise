@@ -272,3 +272,94 @@ def test_a_mailmap_change_is_not_served_from_the_cache(tmp_path: Path) -> None:
     warm = _walk(repo, {"a.py"}, cache_dir)
     assert warm == _walk(repo, {"a.py"}, None)
     assert warm["a.py"][0][-1] == "Carol"
+
+
+def _small_patch_limits(monkeypatch, *, scattered: int, run: int) -> None:
+    from repowise.core.ingestion import git_commit_index
+
+    monkeypatch.setattr(git_commit_index, "_MAX_PATCHED_COMMITS", scattered)
+    monkeypatch.setattr(git_commit_index, "_MIN_WALKED_RUN", run)
+
+
+def test_a_deep_jump_walks_only_the_commits_below_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """Deepening past the scattered-patch cap reads the new older commits with
+    one ranged walk, not a full walk, and still answers what a fresh walk does."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    files = {"a.py", "b.py"}
+    base = 1_700_000_000
+    for i in range(12):
+        _commit(repo, "ab"[i % 2] + ".py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, files, cache_dir, depth=3)
+    _small_patch_limits(monkeypatch, scattered=2, run=3)
+
+    walks = _numstat_walks(monkeypatch)
+    deep = _walk(repo, files, cache_dir, depth=10)
+    head = repo.head.commit.hexsha
+    assert walks == [(head, "--skip=3", "-7")]
+    assert deep == _walk(repo, files, None, depth=10)
+    cached = json.loads((cache_dir / _WINDOW_CACHE_NAME).read_text(encoding="utf-8"))
+    assert (cached["depth"], len(cached["records"])) == (10, 10)
+
+
+def test_new_commits_and_a_deeper_window_patch_both_ends(tmp_path: Path, monkeypatch) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(8):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    new = [_commit(repo, "a.py", f"y = {i}\n", f"n{i}", base + 100 + i) for i in range(4)]
+    _small_patch_limits(monkeypatch, scattered=0, run=3)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=12)
+    assert walks == [(new[-1], "--skip=0", "-4"), (new[-1], "--skip=6", "-6")]
+    assert warm == _walk(repo, {"a.py"}, None, depth=12)
+
+
+def test_a_deep_region_extends_from_its_own_skip(tmp_path: Path, monkeypatch) -> None:
+    """A slice that starts below the window offsets its ranged walk by its skip."""
+    from repowise.core.ingestion.git_commit_index import _window_records
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(10):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _window_records(repo, 2, cache_dir, skip=3)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+
+    walks = _numstat_walks(monkeypatch)
+    warm = _window_records(repo, 6, cache_dir, skip=3)
+    assert walks == [(repo.head.commit.hexsha, "--skip=5", "-4")]
+    assert warm == _window_records(repo, 6, None, skip=3)
+
+
+def test_a_ranged_walk_that_disagrees_with_the_order_is_a_miss(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.ingestion import git_commit_index
+
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(9):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py"}, cache_dir, depth=2)
+    _small_patch_limits(monkeypatch, scattered=0, run=2)
+    real = git_commit_index._log_records
+
+    def _off_by_one(repo, *revs):
+        # The run's length, one commit further down: right size, wrong commits.
+        if len(revs) == 3 and revs[1].startswith("--skip="):
+            head, skip, count = revs
+            return real(repo, head, f"--skip={int(skip.split('=')[1]) + 1}", count)
+        return real(repo, *revs)
+
+    monkeypatch.setattr(git_commit_index, "_log_records", _off_by_one)
+    warm = _walk(repo, {"a.py"}, cache_dir, depth=6)
+    monkeypatch.setattr(git_commit_index, "_log_records", real)
+    assert warm == _walk(repo, {"a.py"}, None, depth=6)
