@@ -89,6 +89,49 @@ async def open_repo_db(repo_path: Path) -> tuple[Any, async_sessionmaker[AsyncSe
     return engine, async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+def _repository_sessions(engine: Any, repository_id: str) -> async_sessionmaker[AsyncSession]:
+    """Sessions over a store whose default repository is *repository_id*."""
+    return async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+        info={REPOSITORY_ID_INFO_KEY: repository_id},
+    )
+
+
+def embedded_context(
+    engine: Any,
+    repository_id: str,
+    *,
+    alias: str,
+    vector_store: Any = None,
+    fts: Any = None,
+) -> RepoContext:
+    """A context over an already-open store, for a host serving the tools with no checkout.
+
+    Built the way a workspace builds one over a shared store: sessions default
+    to *repository_id* and full-text search is scoped to it. No path, source or
+    git, so every live read answers from the store. Nothing is written, so a
+    store opened read-only works: the caller runs ``ensure_index`` beforehand
+    if it wants one. The caller owns *engine* and disposes it.
+    """
+    if fts is None:
+        from repowise.core.persistence.search import FullTextSearch
+
+        fts = FullTextSearch(engine, repository_id=repository_id)
+    return RepoContext(
+        alias=alias,
+        path=None,
+        session_factory=_repository_sessions(engine, repository_id),
+        fts=fts,
+        vector_store=vector_store,
+        decision_store=vector_store,  # decisions share the page store, as in a workspace
+        vector_store_ready=None,
+        source=None,
+        git=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # RepoRegistry — lazy loading + LRU eviction
 # ---------------------------------------------------------------------------
@@ -388,12 +431,7 @@ class RepoRegistry:
                     f"No repositories found at {repo_path} in the configured database. "
                     f"Run 'repowise init' in {repo_path} first."
                 )
-            session_factory = async_sessionmaker(
-                engine,
-                expire_on_commit=False,
-                class_=AsyncSession,
-                info={REPOSITORY_ID_INFO_KEY: repository_id},
-            )
+            session_factory = _repository_sessions(engine, repository_id)
             fts = FullTextSearch(engine, repository_id=repository_id)
             owned_engine = None  # shared: disposed by close(), never per context
         else:

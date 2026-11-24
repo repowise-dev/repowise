@@ -15,7 +15,14 @@ def test_public_names_are_the_engine_objects():
     assert embed.tool_middleware is mcp_server.tool_middleware
     assert embed.serving is _state.serving
     assert embed.request_context is _state.request_context
-    assert set(embed.__all__) == {"tool_middleware", "serving", "request_context"}
+    assert set(embed.__all__) == {
+        "embedded_context",
+        "release",
+        "request_context",
+        "serving",
+        "set_repo_cap",
+        "tool_middleware",
+    }
 
 
 def test_serving_sets_and_restores_the_request_context():
