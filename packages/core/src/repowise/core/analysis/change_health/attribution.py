@@ -113,7 +113,8 @@ def changed_symbols_for(
     """``(path, name)`` pairs for the symbols the change edits, findings or not.
 
     Read from the symbols' own line ranges, the way :func:`changed_symbols`
-    lists them, so an edit away from every finding still names its symbol.
+    lists them (the innermost symbol an edit touched), so an edit away from
+    every finding still names its symbol.
     A finding whose span overlaps the added lines adds its symbol too. Pairs
     key on the bare name a finding carries, so a name the file declares twice
     is claimed only when every declaration is touched.
@@ -122,7 +123,9 @@ def changed_symbols_for(
     for path, change in changes.items():
         head = _held(head_symbols, path)
         cut = _lost_lines(change, _held(base_symbols, change.base_path))
-        touched = {id(s) for s in _touched(change, head, cut)}
+        # Innermost only, as the list charges it: a method edit is not an edit
+        # of its class, whose class-wide findings stay away from this basis.
+        touched = {id(s) for s in innermost(_touched(change, head, cut))}
         by_name: dict[str, list[Symbol]] = {}
         for symbol in head:
             by_name.setdefault(symbol.name, []).append(symbol)

@@ -229,8 +229,8 @@ def test_a_name_declared_twice_is_claimed_only_when_both_are_touched():
     one = _pairs(_change(new_lines={4}), head=head, base=head)
     both = _pairs(_change(new_lines={4, 11}), head=head, base=head)
 
-    assert one == {("tool.py", "A")}
-    assert both == {("tool.py", "A"), ("tool.py", "B"), ("tool.py", "run")}
+    assert one == set()
+    assert both == {("tool.py", "run")}
 
 
 def test_the_attributor_charges_an_edited_symbol_not_the_file():
@@ -249,3 +249,31 @@ def test_the_attributor_charges_an_edited_symbol_not_the_file():
         FindingAttributor({"tool.py": change}).attribute(other, changed_symbols=pairs).basis
         == "file_change"
     )
+
+
+def test_a_method_edit_does_not_claim_its_class():
+    # A class-wide finding (god class) names the class; one method edit is not its edit.
+    head = [_sym("Box", 1, 20), _sym("first", 2, 6, "Box"), _sym("second", 8, 20, "Box")]
+    change = _change(new_lines={4})
+
+    got = _pairs(change, [_finding("Box", 1)], head=head, base=head)
+
+    assert got == {("tool.py", "first")}
+
+
+def test_an_edit_in_a_class_body_outside_its_methods_claims_the_class():
+    head = [_sym("Box", 1, 20), _sym("first", 3, 6, "Box")]
+
+    assert _pairs(_change(new_lines={2}), head=head, base=head) == {("tool.py", "Box")}
+
+
+def test_a_renamed_file_reads_its_base_symbols_at_the_old_path():
+    from repowise.core.analysis.change_health.attribution import changed_symbols_for
+    from repowise.core.analysis.change_health.sources import FileChange
+    from repowise.core.analysis.changed_lines import FileDiff
+
+    change = FileChange("new.py", "old.py", "renamed", FileDiff("new.py", old_ranges=[(16, 17)]))
+
+    got = changed_symbols_for({"new.py": change}, {}, {"new.py": HEAD}, {"old.py": HEAD})
+
+    assert got == {("new.py", "third")}
