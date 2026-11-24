@@ -276,3 +276,14 @@ def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
         None,
         "unknown_symbol",
     )
+
+    # JVM file under a directory named like a class does not drop the class prefix.
+    symbols["src/main/java/Cache/Foo.java"] = symbol_lookup(
+        [
+            IndexedSymbol("src/main/java/Cache/Foo.java::Foo.get", "Foo.get", "get", 10),
+        ]
+    )
+    assert resolve_location(_loc("src/main/java/Cache/Foo.java", "Cache.get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )

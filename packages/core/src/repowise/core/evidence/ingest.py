@@ -106,27 +106,37 @@ _GO_RECEIVER_RE = re.compile(r"\(\*?([^)]+)\)")
 _JVM_EXTENSIONS = (".java", ".kt", ".kts", ".scala", ".groovy")
 
 
+def _normalize_go_function(path: str, function: str) -> str:
+    name = function.rsplit("/", 1)[-1]
+    name = _GO_RECEIVER_RE.sub(r"\1", name)
+    dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
+    if "." in name:
+        head, rest = name.split(".", 1)
+        has_receiver = "(" in function
+        if "." in rest or (not has_receiver and ("/" in function or head == dir_name)):
+            return rest
+    return name
+
+
+def _normalize_jvm_function(path: str, function: str) -> str:
+    if "/" in path and "." in function:
+        dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
+        parts = function.split(".")
+        for i in range(len(parts) - 2, 0, -1):
+            pkg = ".".join(parts[:i])
+            if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
+                return ".".join(parts[i:])
+    return function
+
+
 def _normalized_function_name(path: str, function: str) -> str:
     """Normalise Go profiler names (``pkg.(*T).M``, ``pkg.T.M``, ``imp/pkg.F``)
     and JVM package-qualified names (``com.acme.T.m``) when the package
     matches the file's path."""
     if path.endswith(".go"):
-        name = function.rsplit("/", 1)[-1]
-        name = _GO_RECEIVER_RE.sub(r"\1", name)
-        dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
-        if "." in name:
-            head, rest = name.split(".", 1)
-            has_receiver = "(" in function
-            if "." in rest or (not has_receiver and ("/" in function or head == dir_name)):
-                return rest
-        return name
-    if path.endswith(_JVM_EXTENSIONS) and "/" in path and "." in function:
-        dir_dotted = path.rsplit("/", 1)[0].replace("/", ".")
-        parts = function.split(".")
-        for i in range(len(parts) - 1, 0, -1):
-            pkg = ".".join(parts[:i])
-            if dir_dotted == pkg or dir_dotted.endswith("." + pkg):
-                return ".".join(parts[i:])
+        return _normalize_go_function(path, function)
+    if path.endswith(_JVM_EXTENSIONS):
+        return _normalize_jvm_function(path, function)
     return function
 
 
