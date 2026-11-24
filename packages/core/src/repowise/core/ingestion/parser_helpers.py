@@ -283,33 +283,37 @@ def _catches_import_failure(expr: Node | None, src: str) -> bool:
 _EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "os._exit"})
 
 
-def _handler_ends_the_module(clause: Node, src: str) -> bool:
-    """The handler re-raises or exits as one of its own statements, so the
-    module does not survive the import failing. A ``raise`` under a nested
-    ``if`` is not followed: the module may still survive."""
+def _ends_the_module(stmt: Node, src: str) -> bool:
+    """``raise ...`` or a ``sys.exit(...)``-style call statement."""
+    if stmt.type == "raise_statement":
+        return True
+    call = stmt.named_children[0] if stmt.type == "expression_statement" else None
+    function = call.child_by_field_name("function") if call and call.type == "call" else None
+    return function is not None and node_text(function, src) in _EXIT_CALLS
+
+
+def _handler_lets_the_module_go_on(clause: Node, src: str) -> bool:
+    """None of the handler's own statements re-raises or exits. A ``raise``
+    under a nested ``if`` is not followed: the module may still survive."""
     block = next((c for c in clause.named_children if c.type == "block"), None)
-    for stmt in block.named_children if block is not None else ():
-        if stmt.type == "raise_statement":
-            return True
-        call = stmt.named_children[0] if stmt.type == "expression_statement" else None
-        if call is not None and call.type == "call":
-            function = call.child_by_field_name("function")
-            if function is not None and node_text(function, src) in _EXIT_CALLS:
-                return True
-    return False
+    return block is None or not any(_ends_the_module(s, src) for s in block.named_children)
 
 
 def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
-    """``child`` is the body of a ``try`` with an ``except ImportError`` handler
-    that lets the module go on, not its handlers, ``else`` or ``finally``."""
+    """``child`` is the body of a ``try`` whose import-failure handlers all let
+    the module go on, not its handlers, ``else`` or ``finally``. One fatal
+    handler is enough to leave it runtime: a cycle can raise the exception it
+    catches (``from b import B`` on a half-built ``b`` raises ``ImportError``,
+    not ``ModuleNotFoundError``)."""
     if node.type != "try_statement" or child != node.child_by_field_name("body"):
         return False
-    return any(
-        clause.type == "except_clause"
-        and _catches_import_failure(clause.child_by_field_name("value"), src)
-        and not _handler_ends_the_module(clause, src)
+    handlers = [
+        clause
         for clause in node.children
-    )
+        if clause.type == "except_clause"
+        and _catches_import_failure(clause.child_by_field_name("value"), src)
+    ]
+    return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
 
 
 def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool, bool]:

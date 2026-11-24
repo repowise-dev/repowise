@@ -309,6 +309,12 @@ try:
 except ImportError:
     if STRICT:
         raise
+try:
+    from .split import SP
+except ModuleNotFoundError:
+    SP = None
+except ImportError:
+    raise
 def f():
     try:
         from .lazy import L
@@ -332,6 +338,8 @@ def f():
         (".reraised", (False, False, False)),  # the module does not survive
         (".exited", (False, False, False)),
         (".maybe_raised", (False, False, True)),  # survives unless STRICT
+        # A cycle's `cannot import name` is an ImportError: the fatal handler runs.
+        (".split", (False, False, False)),
         (".lazy", (False, True, False)),  # deferred wins
     ],
 )
