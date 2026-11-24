@@ -58,12 +58,13 @@ def form_handlers(text: str) -> tuple[str | None, list[str]]:
     if text.startswith(_BINARY_MARK) or "\x00" in text[:64]:
         return None, []
     root = _ROOT_RE.search(text)
-    names: list[str] = []
+    # A dict keeps first-seen order and tests membership in constant time.
+    names: dict[str, None] = {}
     for match in _ASSIGNMENT_RE.finditer(text):
         name = match.group(1)
-        if name.lower() != "nil" and name not in names:
-            names.append(name)
-    return (root.group(1) if root else None), names
+        if name.lower() != "nil":
+            names.setdefault(name)
+    return (root.group(1) if root else None), list(names)
 
 
 def _unit_index(path_set: set[str]) -> dict[tuple[str, str], str]:
@@ -76,22 +77,32 @@ def _unit_index(path_set: set[str]) -> dict[tuple[str, str], str]:
     return index
 
 
+def _form_members(parsed: Any, root: str, wanted: set[str]) -> tuple[Any, dict[str, Any]]:
+    """The form class and its methods named in *wanted* (lowercase), by symbol id."""
+    root = root.lower()
+    form_class = None
+    handlers: dict[str, Any] = {}
+    for sym in parsed.symbols:
+        if sym.kind == "class" and sym.name.lower() == root:
+            form_class = sym
+        elif _is_form_method(sym, root, wanted):
+            handlers[sym.id] = sym
+    return form_class, handlers
+
+
+def _is_form_method(sym: Any, root: str, wanted: set[str]) -> bool:
+    return (
+        sym.kind == "method"
+        and (sym.parent_name or "").lower() == root
+        and sym.name.lower() in wanted
+    )
+
+
 def _form_edges(graph: nx.DiGraph, form: str, text: str, unit: str, parsed: Any) -> int:
     root, candidates = form_handlers(text)
     if root is None:
         return 0
-    wanted = {name.lower() for name in candidates}
-    form_class = None
-    handlers: dict[str, Any] = {}
-    for sym in parsed.symbols:
-        if sym.kind == "class" and sym.name.lower() == root.lower():
-            form_class = sym
-        elif (
-            sym.kind == "method"
-            and (sym.parent_name or "").lower() == root.lower()
-            and sym.name.lower() in wanted
-        ):
-            handlers[sym.id] = sym
+    form_class, handlers = _form_members(parsed, root, {name.lower() for name in candidates})
     if form_class is None:
         return 0
     names = [form_class.name, *sorted({s.name for s in handlers.values()})]
