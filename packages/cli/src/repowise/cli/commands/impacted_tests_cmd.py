@@ -421,9 +421,9 @@ def _print_map_state(result: dict) -> None:
     if result["map_empty"]:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] For exact impacted tests, "
-            f"run [cyan]{COVERAGE_SETUP}[/cyan]: for pytest its command also records "
-            f"per-test contexts ([cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], needs pytest-cov) "
-            "and its ingest line builds the map. "
+            f"run [cyan]{COVERAGE_SETUP}[/cyan]: a unit that lists a per-test map (pytest, "
+            f"with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], needs pytest-cov) builds it "
+            "when that file is ingested. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif by_file := result.get("matched_by_file"):

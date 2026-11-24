@@ -60,4 +60,5 @@ def test_impacted_tests_no_map_message_uses_the_shared_command(capsys) -> None:
     assert "No test-to-code map ingested" in out
     assert COVERAGE_SETUP in out
     assert f"{PER_TEST_COVERAGE_COMMAND}, needs pytest-cov" in out
+    assert "per-test map" in out
     assert "--contexts" not in out
