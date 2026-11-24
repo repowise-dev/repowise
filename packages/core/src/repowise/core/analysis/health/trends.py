@@ -428,8 +428,9 @@ def latest_per_day(history: Sequence[Any]) -> list[Any]:
 
     Two indexes on one day (a re-run, a deeper history pass) are one day of
     the trend: a chart or table showing both reads as a repeated point. Only
-    the series a reader looks at collapses; the store keeps every snapshot, and
-    the deltas and alerts still compare against the run before. *history* is
+    the series a reader looks at collapses; what the store keeps is unchanged
+    (its newest ``HEALTH_SNAPSHOT_RETENTION`` runs), and the deltas and alerts
+    still compare against the run before. *history* is
     oldest first; a snapshot with no ``taken_at`` is kept as it is.
     """
     out: list[Any] = []

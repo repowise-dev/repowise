@@ -299,11 +299,20 @@ async def area_detail_payload(
     trend = []
     kept = set(model.weights) if model.held else None
     # One point per day, as on the repository trend. Days are picked from every
-    # retained row's scalars; only the kept rows load their per-file map.
+    # retained row's scalars; the kept rows' per-file maps load in one query.
     history = await crud.list_health_snapshots(session, repo_id, file_maps=False)
-    for snap in latest_per_day(history)[-TREND_POINTS:]:
-        await session.refresh(snap, ["per_file_scores_json"])
-        score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
+    days = latest_per_day(history)[-TREND_POINTS:]
+    maps = dict(
+        (
+            await session.execute(
+                select(HealthSnapshot.id, HealthSnapshot.per_file_scores_json).where(
+                    HealthSnapshot.id.in_([s.id for s in days])
+                )
+            )
+        ).all()
+    )
+    for snap in days:
+        score = area_score(_keep(_score_map(maps.get(snap.id)), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})
     coupled = await coupling_answer(

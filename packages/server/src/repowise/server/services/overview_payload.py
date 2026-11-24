@@ -248,8 +248,9 @@ def defect_accuracy(health_metrics: list[Any], findings: list[Any]) -> dict | No
 
 #: How many days the health card's trend line plots, one point per day.
 HEALTH_HISTORY_POINTS = 12
-#: Snapshot rows the overview reads for it: every retained row, so many runs on
-#: one day cannot push older days off the window (scalars only, one query).
+#: Snapshot rows the overview reads for it: every retained row (scalars only,
+#: one query), so same-day runs push older days off the window only once the
+#: store's retention has dropped those days' rows.
 HEALTH_HISTORY_READ = HEALTH_SNAPSHOT_RETENTION
 
 
