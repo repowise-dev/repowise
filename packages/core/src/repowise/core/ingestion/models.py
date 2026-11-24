@@ -324,6 +324,9 @@ class Import:
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
     # Inside a function or lambda body: runs on first call, not at module load.
     deferred: bool = False
+    # Python: in a ``try`` body with an ``except ImportError`` handler; runs at
+    # load, but the module already survives it failing.
+    guarded: bool = False
     # Python: the ``(start_line, end_line)`` of each function whose body holds
     # the statement, the only code its names are bound for. None: file-wide.
     scopes: tuple[tuple[int, int], ...] | None = None
@@ -752,19 +755,24 @@ def is_dynamic_edge(edge_type: str | None) -> bool:
 
 
 def combine_load_kinds(
-    first: tuple[bool, bool], second: tuple[bool, bool]
-) -> tuple[bool, bool]:
-    """``(type_only, deferred)`` for two imports of one target folded together.
+    first: tuple[bool, bool, bool], second: tuple[bool, bool, bool]
+) -> tuple[bool, bool, bool]:
+    """``(type_only, deferred, guarded)`` for two imports of one target folded together.
 
-    Each side is runtime ``R`` (neither flag), type-only ``T`` or deferred
-    ``D``; the result is the one that runs earliest::
+    Each side is runtime ``R`` (no flag), type-only ``T``, deferred ``D`` or
+    guarded ``G`` (runs at load, failure caught); the result is the one that
+    runs earliest, and an unguarded load beats a guarded one::
 
-        T + T -> T      T + D -> D      D + T -> D
-        D + D -> D      D + R -> R      R + D -> R      T + R -> R
+        T + T -> T      T + D -> D      D + T -> D      D + D -> D
+        G + T -> G      G + D -> G      G + G -> G
+        R + anything -> R
     """
+    if not any(first) or not any(second):
+        return False, False, False
+    if first[2] or second[2]:
+        return False, False, True
     type_only = first[0] and second[0]
-    deferred = not type_only and any(first) and any(second)
-    return type_only, deferred
+    return type_only, not type_only, False
 
 
 @dataclass
