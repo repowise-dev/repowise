@@ -142,6 +142,9 @@ def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
         ("The upstream repo keeps `src/check.py` for this.", "src/check.py"),
         ("In the acme/scanner repository, `src/lint.py` does the rest.", "src/lint.py"),
         ("Another project's `docs/setup.md` covers it.", "docs/setup.md"),
+        ("Run `src/validate.py` in that repository.", "src/validate.py"),
+        ("Copy `src/check.py` from the upstream repo.", "src/check.py"),
+        ("See `src/lint.py` in the acme/scanner repo.", "src/lint.py"),
     ],
 )
 def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
@@ -157,7 +160,11 @@ def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
         "This repository keeps `src/gone.py` for this.",
         "The upstream tool calls our `src/gone.py`.",
         "Unlike other projects, we ship `src/gone.py`.",
+        "Like any other project, we keep `src/gone.py` here.",
+        "Their codebase review covers `src/gone.py`.",
+        "Our client/server repo ships `src/gone.py`.",
         "The upstream repo is archived. Our `src/gone.py` replaced it.",
+        "Keep `src/gone.py` in this repository, not the upstream one.",
     ],
 )
 def test_a_missing_path_in_this_repository_still_reports(context: str):

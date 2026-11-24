@@ -36,11 +36,19 @@ _READER_PROJECT_RE = re.compile(
 # repository's `tools/validate.py`", "the upstream repo keeps `src/x.py`", "in
 # the acme/scanner repo, `tools/lint.py`". A qualifier is required, so "this
 # repository" and a bare "repository" still read as this one, and so does
-# "the upstream tool calls our `src/x.py`".
-_OTHER_REPOSITORY_RE = re.compile(
-    r"\b(?:that|another|other|upstream|external|sibling|parent|their)\s+"
-    r"(?:repo|repository|project|codebase)(?:'s)?\b"
-    r"|\b[\w.-]+/[\w.-]+\s+(?:repo|repository)\b",
+# "the upstream tool calls our `src/x.py`". Words that also describe this
+# repository ("like any other project", "their codebase") are left out.
+_OTHER_REPOSITORY = (
+    r"(?:\b(?:that|another|upstream|external|sibling)\s+(?:repo|repository|project|codebase)"
+    r"|\bthe\s+[\w-]+/[\w.-]+\s+(?:repo|repository))"
+)
+_OTHER_REPOSITORY_RE = re.compile(_OTHER_REPOSITORY + r"(?:'s)?\b", re.I)
+# The same qualifier right after the path: "`tools/validate.py` in that
+# repository", "`src/x.py` from the upstream repo".
+_OTHER_REPOSITORY_AFTER_RE = re.compile(
+    r"\A\W{0,3}\s*(?:in|from|of)\s+(?:the\s+(?=upstream|external|sibling))?"
+    + _OTHER_REPOSITORY
+    + r"\b",
     re.I,
 )
 
@@ -310,7 +318,7 @@ def _foreign_project(ref: DocReference) -> str:
     ``"reader-project"`` for the reader's own, ``"other-repository"`` for
     another repository the sentence names or points at.
 
-    ``s =ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
+    ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
     is the source line stripped of leading whitespace, while ``column`` indexes
     the unstripped one, so slicing ``context`` by ``column`` directly would be
     off by exactly the amount of indentation a list item or a blockquote adds.
@@ -319,7 +327,9 @@ def _foreign_project(ref: DocReference) -> str:
 
     Scoped to the current sentence (back to the nearest ``.``/``!``/``?``) so
     "This mirrors your project's layout. See ``src/gone.ts`` for details."
-    still reports the real miss in its own, unrelated sentence.
+    still reports the real miss in its own, unrelated sentence. Another
+    repository may also be named right after the path ("``tools/x.py`` in that
+    repository").
     """
     idx = ref.context.find(ref.raw)
     preceding = ref.context[:idx] if idx != -1 else ref.context
@@ -327,7 +337,8 @@ def _foreign_project(ref: DocReference) -> str:
     sentence = preceding[sentence_start:]
     if _READER_PROJECT_RE.search(sentence):
         return "reader-project"
-    if _OTHER_REPOSITORY_RE.search(sentence):
+    following = ref.context[idx + len(ref.raw) :] if idx != -1 else ""
+    if _OTHER_REPOSITORY_RE.search(sentence) or _OTHER_REPOSITORY_AFTER_RE.match(following):
         return "other-repository"
     return ""
 
