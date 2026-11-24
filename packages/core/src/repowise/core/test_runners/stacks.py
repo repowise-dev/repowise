@@ -29,6 +29,7 @@ from __future__ import annotations
 import configparser
 import fnmatch
 import json
+import os
 import posixpath
 import re
 from collections.abc import Callable, Iterable, Mapping
@@ -1601,6 +1602,29 @@ def files_to_read(
     return list(dict.fromkeys(wanted))
 
 
+def _listing(root: Path) -> list[str]:
+    """The checkout's files, repo-relative POSIX, from a walk that stops where indexing stops.
+
+    Ingestion's boundary test prunes each directory (``.gitignore``,
+    ``.git/info/exclude``, ``.repowiseIgnore``, nested checkouts), so a large
+    ignored download or a worktree folder is never listed and its manifests
+    start no stack. Paths are cut from each directory's string once: a pathlib
+    ``relative_to`` per file cost most of the walk.
+    """
+    from ..ingestion.traverser import FileTraverser
+
+    skipped = FileTraverser(root).dir_chain_skipped
+    top = str(root.absolute())
+    cut = len(top.rstrip("\\/")) + 1
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in walk_repo(top, prune_dirs=INDEX_BLOCKED_DIRS):
+        rel = str(dirpath)[cut:].replace(os.sep, "/")
+        prefix = f"{rel}/" if rel else ""
+        dirnames[:] = [d for d in dirnames if not skipped(Path(prefix + d))]
+        paths += [prefix + name for name in filenames]
+    return paths
+
+
 def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = None) -> list[Stack]:
     """:func:`detect_stacks` over a checkout: one pruned walk, then the manifests it names.
 
@@ -1608,11 +1632,7 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
     empty index counts as none. Blocking file reads.
     """
     root = Path(repo_path)
-    paths = [
-        (Path(dirpath) / name).relative_to(root).as_posix()
-        for dirpath, _, filenames in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
-        for name in filenames
-    ]
+    paths = _listing(root)
     index = units if units is not None and units.units else None
     files: dict[str, str] = {}
     for path in files_to_read(paths, index, str(root)):

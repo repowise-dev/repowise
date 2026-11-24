@@ -8,6 +8,7 @@ always produced for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -1107,3 +1108,54 @@ def test_a_manifest_in_a_data_folder_is_no_unit(tmp_path):
     paths = list(files)
     assert "backend/data/problems/p0" in {s.root for s in detect_stacks(paths, files)}
     assert [(s.root, s.language) for s in detect_repo_stacks(tmp_path)] == [("", "go")]
+
+
+def _walked(root: Path) -> list[str]:
+    """The listing as the walk built it before: a pathlib ``relative_to`` per file."""
+    from repowise.core.fs_walk import INDEX_BLOCKED_DIRS, walk_repo
+
+    return sorted(
+        (Path(d) / name).relative_to(root).as_posix()
+        for d, _, names in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
+        for name in names
+    )
+
+
+def test_the_checkout_listing_matches_the_walk_without_ignored_folders(tmp_path, monkeypatch):
+    files = {
+        ".gitignore": "downloads/\n*.log\n",
+        "pyproject.toml": "[project]\nname = 'app'\n",
+        "app/a/b/c/deep.py": "",
+        "app/debug.log": "",
+        "web/package.json": _package({"test": "vitest run"}),
+        "web/.gitignore": "cache/\n",
+        "web/cache/package.json": _package({"test": "jest"}),
+        "web/src/index.js": "",
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/lib/x.js": "",
+        "node_modules/dep/package.json": _package(),
+        "vendor/lib/go.mod": "module v\n",
+    }
+    _write(tmp_path, files)
+    # Windows without the privilege makes no link; the walk lists a link and never enters it.
+    with contextlib.suppress(OSError):
+        (tmp_path / "linked").symlink_to(tmp_path / "app", target_is_directory=True)
+    ignored = ("downloads/", "web/cache/")
+    expected = [p for p in _walked(tmp_path) if not p.startswith(ignored)]
+    assert "app/debug.log" in expected  # an ignored file in a walked folder is still listed
+    # Separators and the root's spelling do not change the listing.
+    monkeypatch.chdir(tmp_path.parent)
+    for root in (tmp_path, Path(tmp_path.name), Path(str(tmp_path) + os.sep)):
+        assert sorted(stacks._listing(root)) == expected
+    assert all("\\" not in p for p in expected)
+
+
+def test_a_manifest_in_an_ignored_folder_starts_no_stack(tmp_path):
+    """Ignored folders hold downloads and build trees the index never reads."""
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/test/a.test.js": "",
+    })
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
