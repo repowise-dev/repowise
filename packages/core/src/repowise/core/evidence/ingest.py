@@ -116,7 +116,7 @@ def _normalized_function_name(path: str, function: str) -> str:
         dir_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in path else ""
         if "." in name:
             head, rest = name.split(".", 1)
-            if "/" in function or "(" in function or head == dir_name or "." in rest:
+            if "/" in function or head == dir_name or "." in rest:
                 return rest
         return name
     if path.endswith(_JVM_EXTENSIONS) and "/" in path and "." in function:

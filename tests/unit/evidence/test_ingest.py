@@ -232,6 +232,10 @@ def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
         "srv/cache.go::Cache.Get",
         None,
     )
+    assert resolve_location(_loc("srv/cache.go", "(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
     assert resolve_location(_loc("srv/cache.go", "srv.Cache.Get"), symbols) == (
         "srv/cache.go::Cache.Get",
         None,
@@ -250,6 +254,10 @@ def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
 
     # A same-named method on another type stays unknown; a bare ambiguous name stays ambiguous.
     assert resolve_location(_loc("srv/cache.go", "srv.(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "(*Other).Get"), symbols) == (
         None,
         "unknown_symbol",
     )
