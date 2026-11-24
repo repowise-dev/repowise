@@ -124,16 +124,21 @@ def accountable_human(
     """
     if identity_kind(author_name, author_email) != "agent":
         return None
-    candidates = [
-        (m["name"].strip('"'), m["email"])
-        for line in _COAUTHOR_LINE_RE.finditer(body or "")
-        if (m := TRAILER_PERSON_RE.match(line["value"]))
-    ]
-    candidates.append((committer_name or "", committer_email or ""))
+    candidates = [*_co_authors(body or ""), (committer_name or "", committer_email or "")]
     for name, email in candidates:
         if _is_person(name, email):
             return name or email, email
     return None
+
+
+def _co_authors(body: str) -> list[tuple[str, str]]:
+    """``(name, email)`` of each ``Co-authored-by`` trailer in *body*, in order."""
+    people = []
+    for line in _COAUTHOR_LINE_RE.finditer(body):
+        m = TRAILER_PERSON_RE.match(line["value"])
+        if m:
+            people.append((m["name"].strip('"'), m["email"]))
+    return people
 
 
 def _is_person(name: str, email: str) -> bool:
