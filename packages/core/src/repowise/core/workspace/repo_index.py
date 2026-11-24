@@ -125,8 +125,8 @@ class RepoIndex:
         it alone. *names* replaces the name lookup built from *symbols*, for a
         caller that loads only some files but resolves names across the repo.
         *origins* maps a path to its stored ``code_origin``, for a caller whose
-        *session* cannot read the health rows; readers that judge a file by
-        its origin use it in place of the session (see :attr:`origins`).
+        *session* cannot read the health rows; contract extraction judges an
+        end's origin by it in place of the session (see :attr:`origins`).
         """
         index = cls(alias, Path(), session, None, repo_id=repo_id)
         index._index(symbols)

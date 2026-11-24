@@ -538,3 +538,16 @@ def test_the_public_event_names_are_the_engine_s_own() -> None:
     assert payload["delivered_input_tokens"] == 17
     assert payload["result_state"] == "success"
     assert "model" not in payload and payload["metadata"] is None
+
+
+def test_a_host_names_the_session_its_avoided_files_are_keyed_by(monkeypatch) -> None:
+    from repowise.server.mcp_server._savings import event as savings_event
+    from repowise.server.mcp_server._savings.interaction import Interaction
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "server-env")
+    interaction = Interaction(event_id="e1", tool="get_why", session_id="conn")
+    build = savings_event.event_payload
+    assert build(interaction, {}, scope="r")["host_session_id"] == "server-env"
+    assert build(interaction, {}, scope="r", host_session_id="caller")["host_session_id"] == (
+        "caller"
+    )

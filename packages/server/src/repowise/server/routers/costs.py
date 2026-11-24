@@ -237,8 +237,8 @@ def savings_response(
     transcript scans; a host with no agent transcripts leaves them out and
     those fields read zero.
     """
-    missed = missed or {"events": 0, "est_saved_tokens": 0, "window_days": 0.0}
-    reread = reread or {"events": 0, "est_saved_tokens": 0}
+    missed = missed or {}
+    reread = reread or {}
     return SavingsResponse(
         available=True,
         window_days=days,
@@ -276,11 +276,11 @@ def savings_response(
         per_opportunity_kind=[
             SavingsOpportunityRow(**row) for row in report.per_opportunity_kind
         ],
-        missed_events=missed["events"],
-        missed_tokens_est=missed["est_saved_tokens"],
-        missed_window_days=missed["window_days"],
-        reread_events=reread["events"],
-        reread_tokens_est=reread["est_saved_tokens"],
+        missed_events=missed.get("events", 0),
+        missed_tokens_est=missed.get("est_saved_tokens", 0),
+        missed_window_days=missed.get("window_days", 0.0),
+        reread_events=reread.get("events", 0),
+        reread_tokens_est=reread.get("est_saved_tokens", 0),
         files_not_opened=report.files_not_opened,
         files_not_opened_tokens=report.files_not_opened_tokens,
         tool_calls_answered=report.tool_calls_answered,

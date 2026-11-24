@@ -183,6 +183,7 @@ def event_payload(
     scope: str,
     pricing: Any = None,
     delivered_input_tokens: int | None = None,
+    host_session_id: str | None = None,
 ) -> dict[str, Any]:
     """The savings event for *interaction* and its delivered *result*, unwritten.
 
@@ -191,7 +192,9 @@ def event_payload(
     ledger uses the repository root). *pricing* is a frozen pricing snapshot,
     or ``None`` for an unpriced event. *delivered_input_tokens* is the size the
     agent received, when the host measured it on its own wire; by default it
-    is read off *result* as the local server does.
+    is read off *result* as the local server does. *host_session_id* keys the
+    avoided files; by default the local server's host session (the
+    ``CLAUDE_CODE_SESSION_ID`` it was launched with), else the interaction's.
     """
     from .wrapper import response_tokens
 
@@ -222,14 +225,14 @@ def event_payload(
         "pre_budget_input_tokens": interaction.pre_budget_input_tokens,
         "delivered_input_tokens": delivered,
         "omission_refs": _omission_refs(result),
-        **_files(interaction),
+        **_files(interaction, host_session_id),
         **_outcome_field(interaction.tool, result),
         "metadata": interaction.identity_metadata or None,
         **(pricing.as_payload() if pricing else {}),
     }
 
 
-def _files(interaction: Interaction) -> dict[str, Any]:
+def _files(interaction: Interaction, host_session_id: str | None = None) -> dict[str, Any]:
     """Files served in place of a Read, and the session that keys them. Never raises.
 
     Paths and one Read's tokens each, already sized by the counterfactual, so
@@ -238,7 +241,9 @@ def _files(interaction: Interaction) -> dict[str, Any]:
     try:
         return {
             "avoided_files": tuple(interaction.avoided_files.items()),
-            "host_session_id": os.environ.get(_HOST_SESSION_ENV) or interaction.session_id,
+            "host_session_id": host_session_id
+            or os.environ.get(_HOST_SESSION_ENV)
+            or interaction.session_id,
         }
     except Exception:
         return {}

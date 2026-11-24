@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -916,7 +917,7 @@ async def _production_ends(
     origins: dict[str, str] = {}
     session = repo_index.session if repo_index is not None else None
     held = getattr(repo_index, "origins", None)
-    if held is not None:
+    if isinstance(held, Mapping):
         # Handed in by a caller with no health rows to read (load_origins' rule).
         origins = {p: held.get(p) or path_origin(p) for p in judged}
     elif session is not None:
