@@ -1608,20 +1608,20 @@ def _listing(root: Path) -> list[str]:
     Ingestion's boundary test prunes each directory (``.gitignore``,
     ``.git/info/exclude``, ``.repowiseIgnore``, nested checkouts), so a large
     ignored download or a worktree folder is never listed and its manifests
-    start no stack. Paths are cut from each directory's string once: a pathlib
+    start no stack; one git still tracks files in lists only those. Paths are cut from each directory's string once: a pathlib
     ``relative_to`` per file cost most of the walk.
     """
     from ..ingestion.traverser import FileTraverser
 
-    skipped = FileTraverser(root).dir_chain_skipped
+    traverser = FileTraverser(root)
     top = str(root.absolute())
     cut = len(top.rstrip("\\/")) + 1
     paths: list[str] = []
     for dirpath, dirnames, filenames in walk_repo(top, prune_dirs=INDEX_BLOCKED_DIRS):
         rel = str(dirpath)[cut:].replace(os.sep, "/")
         prefix = f"{rel}/" if rel else ""
-        dirnames[:] = [d for d in dirnames if not skipped(Path(prefix + d))]
-        paths += [prefix + name for name in filenames]
+        dirnames[:] = [d for d in dirnames if not traverser.dir_chain_skipped(Path(prefix + d))]
+        paths += [prefix + name for name in traverser.kept_files(rel, filenames)]
     return paths
 
 

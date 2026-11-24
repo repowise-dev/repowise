@@ -1159,3 +1159,22 @@ def test_a_manifest_in_an_ignored_folder_starts_no_stack(tmp_path):
         "downloads/tool/test/a.test.js": "",
     })
     assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
+    """Git keeps a tracked file in an ignored folder; the downloads beside it stay out."""
+    import subprocess
+
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/.gitkeep": "",
+    })
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-f", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    _write(tmp_path, {"downloads/tool/package.json": _package({"test": "jest"}),
+                      "downloads/notes.txt": ""})
+    assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
