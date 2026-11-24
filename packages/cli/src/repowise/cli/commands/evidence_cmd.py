@@ -839,10 +839,14 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
     suite = payload.get("suite")
     cut = sum(r["units"]["truncated"] or 0 for r in payload["runs"])
-    if suite is not None and cut:
+    if cut:
+        whole = (
+            f"; with them the {suite['timed']:,} timed tests take {suite['seconds']:,.1f}s in all"
+            if suite is not None
+            else ""
+        )
         lines.append(
-            f"[dim]{cut:,} faster or untimed tests were left out at the per-run cap; with them the "
-            f"{suite['timed']:,} timed tests take {suite['seconds']:,.1f}s in all.[/dim]"
+            f"[dim]{cut:,} faster or untimed tests were left out at the per-run cap{whole}.[/dim]"
         )
     costs = payload["file_costs"]
     if not costs["files"]:

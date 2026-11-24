@@ -962,3 +962,17 @@ def test_tests_says_how_many_files_every_timed_test_runs() -> None:
     text = " ".join(evidence_cmd._tests_lines(payload))
 
     assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text
+
+
+def test_tests_says_how_many_the_cap_left_out_without_a_fold() -> None:
+    run = {"workload": "pytest", "freshness": "current", "commit_sha": "a" * 40,
+           "units": {"truncated": 7}}
+    payload = {
+        "runs": [run], "tests_total": 2, "slow_tests": [], "suite": None,
+        "file_costs": {"basis": "inferred", "files_total": 0, "not_production": 0,
+                       "every_test": 0, "files": []},
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "7 faster or untimed tests were left out at the per-run cap." in text
