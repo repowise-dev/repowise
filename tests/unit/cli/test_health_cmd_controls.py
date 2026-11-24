@@ -201,6 +201,11 @@ def test_a_performance_item_says_how_to_re_measure() -> None:
         in out
     )
 
+    from repowise.cli.commands.health_cmd.summary import _measure_lines
+
+    at_root = _measure_lines(verify_measure({**target, "cwd": ""}, "load_all"))
+    assert at_root[0].endswith("[dim](from the repository root)[/dim]")
+
 
 def _mostly_unanalysed_output(*args: str) -> str:
     """``repowise health`` over 4 scored files beside 431 it cannot analyse."""

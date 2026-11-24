@@ -50,7 +50,7 @@ def _measure_lines(measure: dict[str, Any] | None) -> list[str]:
 
     if not measure:
         return []
-    where = f" [dim](from {escape(measure['cwd'])})[/dim]" if measure.get("cwd") else ""
+    where = f" [dim](from {escape(measure.get('cwd') or 'the repository root')})[/dim]"
     return [
         f"    [dim]measure before:[/dim] {escape(measure['before'])}{where}",
         f"    [dim]measure after:[/dim] {escape(measure['after'])}",
