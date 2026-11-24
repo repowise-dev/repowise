@@ -265,7 +265,9 @@ def python_bound_module_name(module_node: Node, src: str) -> str:
         alias = parent.child_by_field_name("alias")
         if alias is not None:
             return node_text(alias, src)
-    return node_text(module_node, src).split(".", 1)[0].strip()
+    # ``dotted_name`` holds one identifier per segment; the first is bound.
+    first = module_node.named_children[0] if module_node.named_children else module_node
+    return node_text(first, src)
 
 
 _PY_IMPORT_STATEMENTS = frozenset(
