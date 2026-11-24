@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
+import pytest
 from sqlalchemy import select
 
 from repowise.core.cache_seal import dump_sealed_pickle
@@ -374,6 +375,21 @@ def test_kept_snapshot_is_moved_where_no_load_reads_it(tmp_path: Path) -> None:
 
     assert not cache.exists()
     assert cache.with_name("graph_seed_edges.pkl.kept").read_bytes() == b"loaded snapshot"
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_a_leftover_that_cannot_be_removed_still_lets_the_snapshot_go(
+    tmp_path: Path, keep: bool
+) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"pre-commit snapshot")
+    # A directory in its place makes the leftover's removal fail.
+    cache.with_name("graph_seed_edges.pkl.kept").mkdir()
+
+    assert invalidate_seed_edge_cache(tmp_path, keep=keep) is False
+
+    assert not cache.exists()
 
 
 async def test_a_failed_set_aside_never_puts_a_stale_file_back(tmp_path: Path, monkeypatch) -> None:

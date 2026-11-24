@@ -43,14 +43,15 @@ def invalidate_seed_edge_cache(repo_path: Any, *, keep: bool = False) -> bool:
     index = Path(repo_path) / ".repowise"
     path = index / _CACHE_NAME
     kept = index / _KEPT_NAME
+    discard_set_aside_seed(repo_path)
+    # A leftover that could not be removed is never overwritten or trusted.
+    if keep and path.is_file() and not kept.exists():
+        try:
+            os.replace(path, kept)
+            return True
+        except OSError as exc:
+            log.warning("graph_seed_cache_keep_failed", path=str(path), error=str(exc))
     try:
-        kept.unlink(missing_ok=True)
-        if keep and path.is_file():
-            try:
-                os.replace(path, kept)
-                return True
-            except OSError as exc:
-                log.warning("graph_seed_cache_keep_failed", path=str(path), error=str(exc))
         path.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("graph_seed_cache_invalidate_failed", path=str(path), error=str(exc))
