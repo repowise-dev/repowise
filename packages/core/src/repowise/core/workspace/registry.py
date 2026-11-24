@@ -132,6 +132,143 @@ def embedded_context(
     )
 
 
+@dataclass(frozen=True)
+class ReadOnlyStore:
+    """A store opened by :func:`open_store`: nothing through it can write.
+
+    Build the serving context with :meth:`context`, which hands
+    :func:`embedded_context` this store's full-text search, so a missing or
+    stale ``page_fts`` answers empty instead of erroring. The caller owns the
+    engine: :meth:`dispose` it when done.
+    """
+
+    engine: Any  # AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
+    fts: Any  # FullTextSearch
+    repository_id: str
+    page_fts: Any  # PageFtsState
+
+    def context(self, alias: str, *, vector_store: Any = None) -> RepoContext:
+        """The :class:`RepoContext` a host serves the tools through."""
+        return embedded_context(
+            self.engine, self.repository_id, alias=alias, vector_store=vector_store, fts=self.fts
+        )
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
+
+
+async def open_store(db_path: str | Path, repository_id: str) -> ReadOnlyStore:
+    """Open the SQLite store at *db_path* read-only and immutable, to serve *repository_id*.
+
+    Never writes: no ``init_db``, no ``ensure_index``, and any write through
+    the engine raises. Raises :class:`~repowise.core.persistence.database.SchemaBehindError`
+    when an older repowise wrote the store (a writer would reconcile it; this
+    cannot), ``FileNotFoundError`` when there is no file, and ``LookupError``
+    when the store holds no such repository. Check a store with
+    :func:`publishable` before shipping it to a host.
+    """
+    from sqlalchemy import text
+
+    from repowise.core.persistence.database import (
+        SchemaBehindError,
+        create_engine,
+        read_only_url,
+        schema_behind,
+    )
+    from repowise.core.persistence.search import FullTextSearch, PageFtsState, page_fts_state
+
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"No store at {path}")
+    engine = create_engine(read_only_url(path))
+    try:
+        if await schema_behind(engine):
+            raise SchemaBehindError(
+                f"{path} was written by an older repowise; re-index it to serve it read-only"
+            )
+        async with engine.connect() as conn:
+            found = await conn.execute(
+                text("SELECT 1 FROM repositories WHERE id = :id"), {"id": repository_id}
+            )
+            if found.scalar() is None:
+                raise LookupError(f"No repository {repository_id!r} in {path}")
+        state = await page_fts_state(engine)
+    except BaseException:
+        await engine.dispose()
+        raise
+    if state is not PageFtsState.PRESENT:
+        _log.warning("page_fts is %s in %s: full-text search answers empty", state.value, path)
+    return ReadOnlyStore(
+        engine=engine,
+        session_factory=_repository_sessions(engine, repository_id),
+        fts=FullTextSearch(engine, repository_id=repository_id, page_fts=state),
+        repository_id=repository_id,
+        page_fts=state,
+    )
+
+
+@dataclass(frozen=True)
+class Publishability:
+    """What :func:`publishable` found. ``problems`` is empty when the store can ship."""
+
+    problems: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+async def publishable(db_path: str | Path) -> Publishability:
+    """Whether the store at *db_path* serves in full when opened by :func:`open_store`.
+
+    Read-only checks, each a problem code:
+
+    - ``missing``: no file.
+    - ``wal_pending`` / ``journal_pending``: a non-empty ``-wal`` or
+      ``-journal`` file beside it. An immutable open never reads them, so
+      writes in them would be invisible. Conservative: a WAL already
+      checkpointed but not truncated counts too. Checkpoint with
+      ``PRAGMA wal_checkpoint(TRUNCATE)``, or publish a backup copy.
+    - ``schema_behind``: an older repowise wrote it.
+    - ``page_fts_missing`` / ``page_fts_stale``: full-text search would answer
+      empty; run ``FullTextSearch.ensure_index`` on a writable copy first.
+    - ``no_repository``: no repository row to serve.
+    - ``unreadable``: SQLite could not read it as a store.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import create_engine, read_only_url, schema_behind
+    from repowise.core.persistence.search import PageFtsState, page_fts_state
+
+    path = Path(db_path)
+    if not path.is_file():
+        return Publishability(("missing",))
+    problems: list[str] = []
+    for suffix, code in (("-wal", "wal_pending"), ("-journal", "journal_pending")):
+        side = path.with_name(path.name + suffix)
+        if side.is_file() and side.stat().st_size > 0:
+            problems.append(code)
+    engine = create_engine(read_only_url(path))
+    try:
+        state = await page_fts_state(engine)
+        if state is not PageFtsState.PRESENT:
+            problems.append(f"page_fts_{state.value}")
+        if await schema_behind(engine):
+            problems.append("schema_behind")  # the repositories table may be missing too
+        else:
+            async with engine.connect() as conn:
+                row = await conn.execute(text("SELECT 1 FROM repositories LIMIT 1"))
+                if row.scalar() is None:
+                    problems.append("no_repository")
+    except (SQLAlchemyError, OSError):
+        problems.append("unreadable")
+    finally:
+        await engine.dispose()
+    return Publishability(tuple(problems))
+
+
 # ---------------------------------------------------------------------------
 # RepoRegistry — lazy loading + LRU eviction
 # ---------------------------------------------------------------------------
