@@ -504,12 +504,16 @@ async def persist_result(
                 await fts.index_pages(result.generated_pages)
             await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
+        # No background drain, per #6129: an init that has returned must leave
+        # wiki.db alone, since callers archive or cache the index at once and a
+        # detached drain kept writing it for minutes. What the inline budget
+        # leaves, the next update scans.
         if not index_done:
             from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
             with timed(timings, "persist.commit_health"):
                 await refresh_commit_health_after_update(
-                    sf, persisted_repo_id, str(repo_path), background=True
+                    sf, persisted_repo_id, str(repo_path), background=False
                 )
 
         # Stamp the ledger only after all required SQL and full-text work lands.
