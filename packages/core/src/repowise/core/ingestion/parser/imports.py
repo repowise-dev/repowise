@@ -45,8 +45,8 @@ def _extract_imports(
         if dedup_key in seen_imports:
             # A lazy copy must not hide a load-time twin: runtime wins.
             for imp in seen_imports[dedup_key]:
-                imp.type_only, imp.deferred = combine_load_kinds(
-                    (imp.type_only, imp.deferred), kind
+                imp.type_only, imp.deferred, imp.guarded = combine_load_kinds(
+                    (imp.type_only, imp.deferred, imp.guarded), kind
                 )
                 # The same statement in another function binds there too; a
                 # module-level copy binds it file-wide.
@@ -62,7 +62,7 @@ def _extract_imports(
 
         found = rules.statement(stmt_node, module_nodes[0], module_text, raw, language, src)
         for imp in found:
-            imp.type_only, imp.deferred = kind
+            imp.type_only, imp.deferred, imp.guarded = kind
             imp.scopes = scopes
         seen_imports[dedup_key] = found
         imports.extend(found)

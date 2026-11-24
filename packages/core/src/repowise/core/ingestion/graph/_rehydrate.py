@@ -160,6 +160,8 @@ class RehydrateMixin:
                 edge_attrs["type_only"] = True
             if edge.get("deferred"):
                 edge_attrs["deferred"] = True
+            if edge.get("guarded"):
+                edge_attrs["guarded"] = True
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 

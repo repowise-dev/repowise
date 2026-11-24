@@ -142,13 +142,16 @@ def cannot_close_cycle(data: Any) -> bool:
 
     The one predicate both cycle definitions share (``cycle_subgraph`` and
     ``refactoring.graph_signals``): cohesion edges, type-only imports, deferred
-    (function-local) imports, and ``dynamic_uses`` hints, which match a type by
-    short name rather than resolve a dependency (#2886). The edges stay in the
-    graph for reachability and centrality.
+    (function-local) imports, guarded imports (a ``try`` body with an ``except
+    ImportError`` fallback, so the module survives the import failing), and
+    ``dynamic_uses`` hints, which match a type by short name rather than resolve
+    a dependency (#2886). The edges stay in the graph for reachability and
+    centrality.
     """
     return (
         is_cohesion_edge(data)
         or bool(data.get("type_only"))
         or bool(data.get("deferred"))
+        or bool(data.get("guarded"))
         or data.get("edge_type") == "dynamic_uses"
     )

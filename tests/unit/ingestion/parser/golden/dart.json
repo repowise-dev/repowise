@@ -622,6 +622,7 @@
         "is_module_declaration": false,
         "type_only": false,
         "deferred": false,
+        "guarded": false,
         "scopes": null
       },
       {
@@ -649,6 +650,7 @@
         "is_module_declaration": false,
         "type_only": false,
         "deferred": false,
+        "guarded": false,
         "scopes": null
       }
     ],

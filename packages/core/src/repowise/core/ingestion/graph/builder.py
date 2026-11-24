@@ -70,16 +70,17 @@ def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -
 
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
-    """Fold one more import into an edge's ``type_only`` / ``deferred`` marks,
-    by :func:`~repowise.core.ingestion.models.combine_load_kinds` (one
-    load-time import makes the edge a runtime one). ``deferred`` is stored
-    only when true."""
-    edge = (bool(data.get("type_only")), bool(data.get("deferred")))
-    data["type_only"], deferred = combine_load_kinds(edge, (imp.type_only, imp.deferred))
-    if deferred:
-        data["deferred"] = True
-    else:
-        data.pop("deferred", None)
+    """Fold one more import into an edge's ``type_only`` / ``deferred`` /
+    ``guarded`` marks, by :func:`~repowise.core.ingestion.models.combine_load_kinds`
+    (one unguarded load-time import makes the edge a runtime one). ``deferred``
+    and ``guarded`` are stored only when true."""
+    edge = (bool(data.get("type_only")), bool(data.get("deferred")), bool(data.get("guarded")))
+    data["type_only"], *lazy = combine_load_kinds(edge, (imp.type_only, imp.deferred, imp.guarded))
+    for key, value in zip(("deferred", "guarded"), lazy, strict=True):
+        if value:
+            data[key] = True
+        else:
+            data.pop(key, None)
 
 
 class GraphBuilder(
@@ -770,6 +771,8 @@ class GraphBuilder(
         }
         if imp.deferred:
             edge_attrs["deferred"] = True
+        if imp.guarded:
+            edge_attrs["guarded"] = True
         # ``external:`` targets are excluded before the
         # directory test, not after: an external node id has no
         # directory, and a single-segment one such as
