@@ -258,6 +258,8 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        # Set when a kernel fell back to an empty answer; see ``metric_memo``.
+        self._metric_failed = False
         self._flow_plan_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None

@@ -456,9 +456,18 @@ def _metric_memo_code() -> str:
     metric kernel, the community or flow analysis, or the node row writer
     computes and writes afresh.
     """
-    from repowise.core import __version__
-    from repowise.core.analysis import execution_flows
+    from importlib.metadata import version
+
+    from repowise.core import (
+        __version__,
+        entry_candidacy,
+        ids,
+        support_paths,
+        test_paths,
+    )
+    from repowise.core.analysis import execution_flows, execution_graph
     from repowise.core.analysis.communities import community_code_fingerprint
+    from repowise.core.ingestion import cohesion, symbol_identity, symbol_use
     from repowise.core.ingestion.graph import (
         _betweenness,
         _centrality_cache,
@@ -466,20 +475,54 @@ def _metric_memo_code() -> str:
         _pagerank,
         _sampled_betweenness,
     )
+    from repowise.core.persistence.crud import graph as crud_graph
     from repowise.core.pipeline.persist import graph as persist_graph
 
-    digest = hashlib.sha256(f"{__version__}\0{community_code_fingerprint()}".encode())
+    digest = hashlib.sha256(
+        "|".join(
+            (__version__, community_code_fingerprint(), version("numpy"), version("scipy"))
+        ).encode()
+    )
     for module in (
         _metrics,
         _pagerank,
         _betweenness,
         _sampled_betweenness,
         _centrality_cache,
+        cohesion,
+        symbol_identity,
+        symbol_use,
         execution_flows,
+        execution_graph,
+        ids,
+        test_paths,
+        support_paths,
+        entry_candidacy,
         persist_graph,
+        crud_graph,
     ):
         digest.update(Path(module.__file__).read_bytes())
     return digest.hexdigest()
+
+
+def discard_snapshot_metrics(repo_path: Any) -> None:
+    """Drop the metric memo from the stored snapshot, keeping its graph.
+
+    For a writer of graph node rows that saves no snapshot (the config-only
+    health re-score): the memo stands for the rows the store holds, so after
+    such a write the next update must compute and write them.
+    """
+    path = Path(repo_path).resolve() / ".repowise" / _CACHE_NAME
+    try:
+        cache = load_sealed_pickle(path, domain=_CACHE_NAME)
+        if isinstance(cache, dict) and cache.pop("metrics", None) is not None:
+            dump_sealed_pickle(path, cache, domain=_CACHE_NAME)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        log.warning("graph_seed_cache_metrics_discard_failed", error=str(exc))
+        # A snapshot that may still carry a memo is not left behind.
+        invalidate_seed_edge_cache(repo_path)
 
 
 def confirm_kept_snapshot(repo_path: Any, graph_builder: Any) -> Any | None:

@@ -501,6 +501,7 @@ class MetricsMixin:
         except Exception as exc:
             log.warning("symbol_community_detection_failed", error=str(exc))
             self._symbol_community_cache = {}
+            self._metric_failed = True
         return self._symbol_community_cache
 
     def _community_key(self, kind: str, build: Callable[[], Any]) -> Any | None:
@@ -768,6 +769,8 @@ class MetricsMixin:
             report = trace_execution_flows(self._graph, merged_cd, config)
         except Exception as exc:
             log.warning("execution_flow_tracing_failed", error=str(exc))
+            if config is None:
+                self._metric_failed = True
             report = ExecutionFlowReport(
                 total_entry_points_scored=0,
                 total_flows=0,
@@ -815,12 +818,16 @@ class MetricsMixin:
     def metric_memo(self) -> dict[str, Any] | None:
         """Every primed global metric as one picklable record, or ``None``.
 
-        ``None`` while any kernel is unprimed or community detection failed: a
+        ``None`` while any kernel is unprimed or fell back after a failure: a
         memo is replayed as the answer for an unchanged graph, so a failure
         must be retried, not kept.
         """
         values = {name: getattr(self, name) for name in _MEMO_CACHES}
-        if any(value is None for value in values.values()) or self._community_algo == "failed":
+        if (
+            any(value is None for value in values.values())
+            or self._community_algo == "failed"
+            or getattr(self, "_metric_failed", False)
+        ):
             return None
         return {
             **values,
@@ -838,6 +845,7 @@ class MetricsMixin:
         for name in _MEMO_CACHES:
             setattr(self, name, memo[name])
         self._community_algo = memo.get("_community_algo") or ""
+        self._metric_failed = False
         self._betweenness_scoring = dict(memo.get("_betweenness_scoring") or {})
         return True
 

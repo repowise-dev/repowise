@@ -106,6 +106,19 @@ def _community_meta(
     return community_meta
 
 
+async def _stored_node_count(session: Any, repo_id: str) -> int:
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import GraphNode
+
+    return int(
+        await session.scalar(
+            select(func.count()).select_from(GraphNode).where(GraphNode.repository_id == repo_id)
+        )
+        or 0
+    )
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -134,13 +147,17 @@ async def persist_graph_nodes(
     )
     from repowise.core.pipeline.phase_timing import timed
 
+    graph = graph_builder.graph()
     if getattr(graph_builder, "graph_metrics_reused", False) is True:
-        logger.info("graph_nodes_unchanged", reason="graph and metrics match the last run")
-        graph_builder.graph_nodes_written = True
-        return
+        # The one cheap check that the rows are still there; a store that
+        # lost some is written in full below, from the same values.
+        if await _stored_node_count(session, repo_id) == graph.number_of_nodes():
+            logger.info("graph_nodes_unchanged", reason="graph and metrics match the last run")
+            graph_builder.graph_nodes_written = True
+            return
+        logger.info("graph_nodes_rewritten", reason="stored node rows do not match the graph")
     graph_builder.graph_nodes_written = False
 
-    graph = graph_builder.graph()
     with timed(timings, "persist.graph_nodes.metrics"):
         pr = graph_builder.pagerank()
         bc = graph_builder.betweenness_centrality()

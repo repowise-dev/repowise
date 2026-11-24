@@ -1080,17 +1080,23 @@ def _replay_graph_metrics(
 
     Every metric is a function of the graph, so an unchanged graph replays the
     values the last run computed and stored, and the node rows need no write
-    (``graph_metrics_reused``). A full re-score always computes afresh.
+    (``graph_metrics_reused``). A full re-score always computes afresh, and
+    any error here only costs the shortcut.
     """
     from .graph_seed import confirm_kept_snapshot
 
     graph_builder.graph_metrics_reused = False
-    with timed(timings, "rebuild.snapshot_match"):
-        memo = confirm_kept_snapshot(repo_path, graph_builder)
-    if memo is None or graph_builder.fresh_communities:
-        return False
-    restore = getattr(graph_builder, "restore_metric_memo", None)
-    if restore is None or not restore(memo):
+    try:
+        with timed(timings, "rebuild.snapshot_match"):
+            memo = confirm_kept_snapshot(repo_path, graph_builder)
+        if memo is None or graph_builder.fresh_communities:
+            return False
+        restore = getattr(graph_builder, "restore_metric_memo", None)
+        if restore is None or not restore(memo):
+            return False
+    except Exception as exc:
+        graph_builder.kept_snapshot_match = False
+        log(f"[yellow]Graph metrics recomputed: the snapshot check failed: {exc}[/yellow]")
         return False
     graph_builder.graph_metrics_reused = True
     log("Graph unchanged: reusing the last run's graph metrics")

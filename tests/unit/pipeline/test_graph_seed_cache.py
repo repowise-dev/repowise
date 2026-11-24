@@ -788,3 +788,108 @@ async def test_no_memo_is_stored_unless_the_rows_follow_from_the_final_graph(
         assert builder.kept_snapshot_match is True
     finally:
         await engine.dispose()
+
+
+async def test_a_kernel_that_fell_back_is_not_stored_as_a_memo(tmp_path: Path, monkeypatch) -> None:
+    builder = GraphBuilder(tmp_path)
+    builder._graph = _gb().graph().copy()
+    builder._built = True
+
+    def fail(*_args: object) -> object:
+        raise RuntimeError("detector crashed")
+
+    monkeypatch.setattr("repowise.core.analysis.communities.detect_symbol_communities", fail)
+    await builder.compute_metrics_parallel()
+
+    assert builder._symbol_community_cache == {}
+    assert builder.metric_memo() is None
+
+
+async def test_a_failed_snapshot_check_only_costs_the_shortcut(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+
+        def broken(*_args: object) -> object:
+            raise OSError("snapshot unreadable")
+
+        monkeypatch.setattr(
+            "repowise.core.pipeline.incremental.graph_seed.confirm_kept_snapshot", broken
+        )
+
+        assert _replay(root, builder) is False
+        assert builder.graph_metrics_reused is False
+        assert builder.kept_snapshot_match is False
+    finally:
+        await engine.dispose()
+
+
+async def test_replayed_metrics_still_write_node_rows_the_store_lost(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.pipeline.persist import persist_graph_nodes
+
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        assert _replay(root, builder) is True
+        async with get_session(sf) as session:
+            repo = (await session.execute(select(Repository))).scalar_one()
+            # The store holds no node rows: the replay must not skip the write.
+            await persist_graph_nodes(session, repo.id, builder)
+        conn_count = await _node_count(sf)
+        assert conn_count == builder.graph().number_of_nodes()
+        assert builder.graph_nodes_written is True
+
+        # With the rows in place, the next replayed write is skipped.
+        writes: list[object] = []
+        from repowise.core.persistence.crud import graph as crud_graph
+
+        real = crud_graph.batch_upsert_graph_nodes
+        monkeypatch.setattr(
+            "repowise.core.persistence.batch_upsert_graph_nodes",
+            lambda *a, **k: writes.append(a) or real(*a, **k),
+        )
+        async with get_session(sf) as session:
+            await persist_graph_nodes(session, repo.id, builder)
+        assert writes == []
+    finally:
+        await engine.dispose()
+
+
+async def _node_count(sf) -> int:
+    from sqlalchemy import func
+
+    from repowise.core.persistence.models import GraphNode
+
+    async with get_session(sf) as session:
+        return int(await session.scalar(select(func.count()).select_from(GraphNode)))
+
+
+async def test_a_rescore_that_rewrites_node_rows_drops_the_memo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.pipeline.incremental.graph_seed import discard_snapshot_metrics
+
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        # Undo the set-aside so the stored snapshot is where a re-score finds it.
+        kept = root / ".repowise" / "graph_seed_edges.pkl.kept"
+        kept.replace(root / ".repowise" / "graph_seed_edges.pkl")
+
+        discard_snapshot_metrics(root)
+
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None, "the graph snapshot itself survives"
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+        assert _replay(root, builder) is False
+        assert builder.kept_snapshot_match is True
+    finally:
+        await engine.dispose()
