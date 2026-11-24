@@ -27,17 +27,24 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+_TABLE = "graph_edges"
+_COLUMN = "guarded"
+
+
+def _columns() -> set[str]:
+    return {c["name"] for c in sa.inspect(op.get_bind()).get_columns(_TABLE)}
+
+
 def upgrade() -> None:
-    op.add_column(
-        "graph_edges",
-        sa.Column(
-            "guarded",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.text("false"),
-        ),
-    )
+    # init_db may already have added it through create_all.
+    if _COLUMN not in _columns():
+        op.add_column(
+            _TABLE,
+            sa.Column(_COLUMN, sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("graph_edges", "guarded")
+    if _COLUMN in _columns():
+        with op.batch_alter_table(_TABLE) as batch:
+            batch.drop_column(_COLUMN)

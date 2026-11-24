@@ -295,6 +295,20 @@ else:
     from .else_branch import E
 finally:
     from .finally_branch import F
+try:
+    from .reraised import RR
+except ImportError as exc:
+    raise ImportError("install the extra") from exc
+try:
+    from .exited import EX
+except ImportError:
+    print("missing")
+    sys.exit(1)
+try:
+    from .maybe_raised import MR
+except ImportError:
+    if STRICT:
+        raise
 def f():
     try:
         from .lazy import L
@@ -315,6 +329,9 @@ def f():
         (".handler", (False, False, False)),  # the fallback itself runs unguarded
         (".else_branch", (False, False, False)),
         (".finally_branch", (False, False, False)),
+        (".reraised", (False, False, False)),  # the module does not survive
+        (".exited", (False, False, False)),
+        (".maybe_raised", (False, False, True)),  # survives unless STRICT
         (".lazy", (False, True, False)),  # deferred wins
     ],
 )
