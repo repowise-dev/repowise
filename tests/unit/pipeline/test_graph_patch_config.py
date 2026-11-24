@@ -593,6 +593,106 @@ def test_cmake_digest_ignores_the_checkout_path(tmp_path: Path) -> None:
     assert _digest(tmp_path / "a", "CMakeLists.txt") != _digest(tmp_path / "b", "CMakeLists.txt")
 
 
+# --- build outputs a package.json names ---------------------------------------
+
+# The TypeScript resolver reads a subpath export into gitignored build output
+# as the source it was built from, and a checked-in build as itself.
+_BUILDS_TREE = {
+    "package.json": json.dumps({"name": "root", "private": True, "workspaces": ["packages/*"]}) + "\n",
+    "packages/lib/package.json": json.dumps(
+        {"name": "@acme/lib", "version": "1.0.0", "exports": {"./x": "./dist/impl/x.js"}}
+    )
+    + "\n",
+    "packages/lib/src/impl/x.ts": "export function f() { return 1; }\n",
+    "packages/lib/dist/impl/x.js": "exports.f = function () { return 1; };\n",
+    "packages/app/package.json": json.dumps({"name": "app", "dependencies": {"@acme/lib": "*"}}) + "\n",
+    "packages/app/src/main.ts": "import { f } from '@acme/lib/x';\nexport const x = f();\n",
+    "packages/app/src/other.ts": "export const y = 1;\n",
+    ".gitignore": "dist/\n",
+}
+_MAIN = "packages/app/src/main.ts"
+
+
+@pytest.fixture
+def builds(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    import subprocess
+
+    tree = tmp_path / "repo"
+    _write(tree, _BUILDS_TREE)
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    assert first.graph().has_edge(_MAIN, "packages/lib/src/impl/x.ts")
+    return tree, _snapshot(first)
+
+
+def test_gitignore_that_checks_a_build_in_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """Un-ignoring dist/ leaves the indexed set alone but moves the import to the build."""
+    tree, seed = builds
+
+    patched = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "changed whether it is checked in" in (patched.patch_plan.reason or "")
+    assert not patched.graph().has_edge(_MAIN, "packages/lib/src/impl/x.ts")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_gitignore_that_leaves_builds_alone_is_patched(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, seed = builds
+
+    patched = _update(tree, seed, {".gitignore": "dist/\ncoverage/\n"})
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_a_local_build_the_diff_never_names_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """With dist/ not ignored, a build that appears on disk is checked in from then on."""
+    tree, seed = builds
+    (tree / ".gitignore").write_text("# nothing ignored\n")
+    (tree / "packages/lib/dist/impl/x.js").unlink()
+    first = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+    (tree / "packages/lib/dist/impl/x.js").write_text("exports.f = function () { return 2; };\n")
+
+    patched = _update(tree, _snapshot(first), {"packages/app/src/other.ts": "export const y = 2;\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "changed whether it is checked in" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_gitignore_edit_without_a_builds_record_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record written before builds were recorded cannot clear a .gitignore edit."""
+    from repowise.core.pipeline.incremental import config_inputs
+
+    real = config_inputs.record_inputs
+
+    def without_builds(*args: Any, **kwargs: Any) -> Any:
+        record = real(*args, **kwargs)
+        record.pop("builds")
+        return record
+
+    tree = tmp_path / "repo"
+    _write(tree, _TREE)
+    monkeypatch.setattr(config_inputs, "record_inputs", without_builds)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    monkeypatch.undo()
+    assert "builds" not in (load_config_inputs(tree / ".repowise") or {"builds": 1})
+
+    patched = _update(tree, _snapshot(first), {".gitignore": "dist/\ncoverage/\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "no record of which build outputs" in (patched.patch_plan.reason or "")
+
+
 # --- files parsed without their grammar ---------------------------------------
 
 

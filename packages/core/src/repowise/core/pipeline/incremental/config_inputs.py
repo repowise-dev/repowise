@@ -16,8 +16,9 @@ configs, lockfiles, assets and data files.
   A file the walk does not index, edited in place, is narrower still: the
   readers that see only indexed files (the API-contract flag) never open it,
   and neither does any step for prose and data opened by no name.
-- ``.gitignore`` is read only by the walk; an edit that leaves the indexed
-  set as the last build had it cannot change the graph.
+- ``.gitignore`` decides which files the walk indexes and which build
+  outputs ``package.json`` names count as checked in (``git check-ignore``).
+  An edit that leaves both as the last build had them cannot change the graph.
 - A manifest the build does read can still be edited in a way no reader sees,
   such as a version bump. For ``package.json``, ``pyproject.toml``,
   ``go.mod`` and ``CMakeLists.txt`` the last build records a digest of what
@@ -307,30 +308,46 @@ def stack_names(root: Path) -> list[str]:
     return sorted(item.name for item in detect_tech_stack(root))
 
 
-def record_inputs(root: Path, paths: Iterable[str]) -> dict[str, Any] | None:
+def record_inputs(
+    root: Path, paths: Iterable[str], *, prune_nested_git: bool = True
+) -> dict[str, Any] | None:
     """What the build reads from its manifests, for the next patch to compare.
+
+    ``builds`` are the build outputs ``package.json`` files name that count as
+    checked in: on disk and not gitignored (``git check-ignore``). The
+    TypeScript resolver reads a gitignored one as the source it was built
+    from, so a ``.gitignore`` edit, or a local build, can move an import edge
+    without changing any indexed file.
 
     Best effort: ``None`` (no record, so manifest edits fall back) on any error.
     """
+    from repowise.core.ingestion.resolvers.ts_workspace.builds import recorded_checked_in_builds
+
     root = Path(root)
     try:
         files = {path: _digest(root, path) for path in sorted(set(paths)) if has_projection(path)}
-        return {"files": files, "stack": stack_names(root)}
+        builds = recorded_checked_in_builds(root, prune_nested_git=prune_nested_git)
+        return {"files": files, "stack": stack_names(root), "builds": builds}
     except Exception:
         return None
 
 
 def inputs_refusal(
-    current: dict[str, Any] | None, record: dict[str, Any] | None, views: Collection[str]
+    current: dict[str, Any] | None,
+    record: dict[str, Any] | None,
+    views: Collection[str],
+    ignores: Collection[str] = (),
 ) -> str | None:
     """Why the manifests now differ from what the last build read, or ``None``.
 
     Every recorded manifest is compared, not just the changed ones: an edit
     the update's diff missed (uncommitted, or before its base) must not be
-    taken as already seen.
+    taken as already seen. *ignores* are edited ``.gitignore`` files, which
+    patch only against a record of the checked-in build outputs.
     """
     if current is None or record is None:
-        return f"{min(views)}: no record of what the last build read from it" if views else None
+        needs = [*views, *ignores]
+        return f"{min(needs)}: no record of what the last build read from it" if needs else None
     before, now = record.get("files") or {}, current.get("files") or {}
     for path in sorted(set(before) | set(now)):
         if before.get(path, "absent") != now.get(path, "absent"):
@@ -340,6 +357,13 @@ def inputs_refusal(
         return f"{missing[0]}: no record of what the last build read from it"
     if record.get("stack") != current.get("stack"):
         return "the detected tech stack changed"
+    if "builds" not in record:
+        # A record from before builds were recorded: unknown, so an edit that
+        # can move them, or builds that count now, must refuse.
+        if ignores or current.get("builds"):
+            return "no record of which build outputs were checked in"
+    elif record["builds"] != current.get("builds"):
+        return "a build output a package.json names changed whether it is checked in"
     return None
 
 
@@ -384,12 +408,15 @@ def _unindexed_refusal(
     presence_changed: Collection[str] | None,
     views: list[str],
     index_moved: bool,
+    ignores: list[str],
 ) -> str | None:
     """Why an unindexed change could reach the graph; manifests go to *views*.
 
-    A ``.gitignore`` is read only by the walk, to decide what it indexes:
-    while that set is what the last build indexed (*index_moved* false), an
-    edit to it changed nothing the graph sees.
+    A ``.gitignore`` decides two things the graph reads: which files the walk
+    indexes, and which build outputs ``package.json`` names count as checked
+    in. An edit to one goes to *ignores* when the indexed set is what the last
+    build indexed (*index_moved* false); :func:`inputs_refusal` then compares
+    the checked-in builds with the record.
     """
     for path in sorted(unparsed):
         if has_projection(path):
@@ -397,8 +424,11 @@ def _unindexed_refusal(
         elif presence_changed is None or path in presence_changed:
             return f"{path}: an unindexed file was added or removed"
         elif PurePosixPath(path).name == ".gitignore":
+            # Cleared only by both checks: the indexed set here (index_moved)
+            # and the recorded checked-in builds (record_inputs, inputs_refusal).
             if index_moved:
                 return f"{path}: it changed which files the walk indexes"
+            ignores.append(path)
         elif not _unread_unindexed(path):
             return f"{path}: the graph build reads this file"
     return None
@@ -446,7 +476,8 @@ def plan_non_source_changes(
     *presence_changed*, the added, deleted and renamed paths; ``None`` when
     unknown), or a manifest whose recorded view is unchanged. A ``.gitignore``
     qualifies when the walk indexes the files the last build did, give or
-    take the paths in *presence_changed* (*index_moved* false).
+    take the paths in *presence_changed* (*index_moved* false), and the build
+    outputs that count as checked in match the record.
 
     *cleared* are the indexed data and manifest files in *changed* whose edit
     no graph step can see: an empty parse before and after, and either no
@@ -457,9 +488,10 @@ def plan_non_source_changes(
     the last build; when both exist they must match whatever changed.
     """
     views: list[str] = []
-    refusal = _unindexed_refusal(unparsed, presence_changed, views, index_moved)
+    ignores: list[str] = []
+    refusal = _unindexed_refusal(unparsed, presence_changed, views, index_moved, ignores)
     if refusal is not None:
         return refusal, frozenset()
     cleared = _cleared_edits(changed, previous_parse, config_reads, views)
-    reason = inputs_refusal(current, record, views)
+    reason = inputs_refusal(current, record, views, ignores)
     return reason, (frozenset() if reason else frozenset(cleared))
