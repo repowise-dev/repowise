@@ -424,6 +424,48 @@ def test_a_trailing_number_stays_with_its_word():
     assert deterministic_title(group) == "C4"
 
 
+@pytest.mark.parametrize(
+    ("directory", "title"),
+    [
+        # A PascalCase name is one product or type name.
+        ("AnkiDroid", "AnkiDroid"),
+        ("GitHub", "GitHub"),
+        ("UserService", "UserService"),
+        # A brand with a short lowercase lead, and Gradle's fixed folder name.
+        ("iOS", "iOS"),
+        ("macOS", "macOS"),
+        ("iPhone", "iPhone"),
+        ("buildSrc", "buildSrc"),
+        # lowerCamelCase still reads as words, digits stay with their word.
+        ("pageGenerator", "Page Generator"),
+        ("userProfile", "User Profile"),
+        ("v2Api", "V2 API"),
+        ("userID", "User ID"),
+        ("myApp", "My App"),
+        # An all-lowercase word is title-cased whole, never split.
+        ("libfoo", "Libfoo"),
+        # Separators still split, and each lowercase word is title-cased.
+        ("home-screen-widgets", "Home Screen Widgets"),
+        ("dead_code", "Dead Code"),
+        ("anki-common", "Anki Common"),
+    ],
+)
+def test_a_directory_name_keeps_product_names_whole(directory, title):
+    """``AnkiDroid`` is one name; "Anki Droid" reads as not knowing the project.
+
+    ``pageGenerator`` is two words and still reads as two.
+    """
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+    group = ConceptGroup(
+        members=[f"{directory}/a.kt", f"{directory}/b.kt"],
+        dirs=[directory],
+        target_path=directory,
+    )
+
+    assert deterministic_title(group) == title
+
+
 class TestCycleNaming:
     """A cycle page was titled by the hash of its members, which nothing searches for."""
 
