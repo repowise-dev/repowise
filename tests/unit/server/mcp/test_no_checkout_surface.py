@@ -109,3 +109,5 @@ def test_no_checkout_definitions_change_only_the_checkout_words(workspace):
         promised = json.dumps(after)
         assert not [w for w in _CHECKOUT_PROMISES if w in promised], before["name"]
     assert _size(variant) < _size(default)
+    # The variant rewords a fresh dump: a default call after it is unchanged.
+    assert json.dumps(tool_definitions(names, workspace=workspace)) == json.dumps(default)

@@ -226,6 +226,8 @@ def resolve_scope_over(paths: Iterable[str], raw: str | None) -> ScopeResolution
     """
     if _normalize_scope(raw) is None:
         return ScopeResolution(None, [], [])
+    # Ceiling: each prefix test scans the list, so a call costs prefixes x paths
+    # (a scope names a handful). Upgrade path: a sorted list and bisect.
     listed = list(dict.fromkeys(p for p in paths if p))
 
     def under(path: str, prefix: str) -> bool:
