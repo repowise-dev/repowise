@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
@@ -14,9 +14,10 @@ from repowise.core.analysis.decisions.lifecycle import (
     status_rank,
 )
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS, stored_origin
 from repowise.core.test_paths import is_test_related_path
 
-from ..models import DecisionRecord, GitMetadata
+from ..models import DecisionRecord, GitMetadata, HealthFileMetric
 from .decision_staleness import is_stale
 
 
@@ -212,22 +213,35 @@ async def _ungoverned_hotspots(
     """Hotspot production files no accepted decision names, hottest first.
 
     Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
-    Test files are left out: churn in a test is not a design choice to record.
+    The hotspots are the ones the Code Health list shows by default: a file whose
+    stored origin the list holds out (tests, build, generated, ...) is left out,
+    as churn there is not a design choice to record. So this list is never longer
+    than the hotspot count the overview quotes.
     """
+    h = HealthFileMetric
     hotspot_result = await session.execute(
         select(
             GitMetadata.file_path,
             GitMetadata.temporal_hotspot_score,
             GitMetadata.churn_percentile,
-        ).where(
+            h.code_origin,
+            h.is_test,
+        )
+        .outerjoin(
+            h,
+            and_(
+                h.repository_id == GitMetadata.repository_id, h.file_path == GitMetadata.file_path
+            ),
+        )
+        .where(
             GitMetadata.repository_id == repository_id,
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
     hotspot_rows = {
-        row[0]: (row[1], row[2])
-        for row in hotspot_result.all()
-        if not is_test_related_path(row[0])
+        path: (score, churn)
+        for path, score, churn, origin, is_test in hotspot_result.all()
+        if stored_origin(origin, is_test) not in MAP_HELD_ORIGINS
     }
 
     def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:

@@ -253,11 +253,17 @@ def _create_workspace_repo_db(
             CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
             CREATE TABLE git_metadata (
                 id TEXT PRIMARY KEY,
+                repository_id TEXT,
+                file_path TEXT,
                 churn_percentile REAL,
                 is_hotspot INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE health_file_metrics (
                 id TEXT PRIMARY KEY,
+                repository_id TEXT,
+                file_path TEXT,
+                code_origin TEXT,
+                is_test INTEGER,
                 score REAL NOT NULL,
                 nloc INTEGER NOT NULL
             );
@@ -967,16 +973,26 @@ class TestQueryRepoStats:
                 CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
                 CREATE TABLE git_metadata (
                     id TEXT PRIMARY KEY,
+                    repository_id TEXT,
+                    file_path TEXT,
                     is_hotspot INTEGER NOT NULL DEFAULT 0,
                     churn_percentile REAL NOT NULL DEFAULT 0.0
+                );
+                CREATE TABLE health_file_metrics (
+                    id TEXT PRIMARY KEY,
+                    repository_id TEXT,
+                    file_path TEXT,
+                    code_origin TEXT,
+                    is_test INTEGER
                 );
                 INSERT INTO repositories (id) VALUES ('repo-1');
                 """
             )
             for idx, (is_hotspot, churn) in enumerate(rows):
                 conn.execute(
-                    "INSERT INTO git_metadata (id, is_hotspot, churn_percentile) VALUES (?, ?, ?)",
-                    (f"src/f{idx}.py", is_hotspot, churn),
+                    "INSERT INTO git_metadata (id, repository_id, file_path, is_hotspot,"
+                    " churn_percentile) VALUES (?, 'repo-1', ?, ?, ?)",
+                    (f"g{idx}", f"src/f{idx}.py", is_hotspot, churn),
                 )
             for node_id, node_type, language in graph_nodes or []:
                 conn.execute(
@@ -1001,6 +1017,19 @@ class TestQueryRepoStats:
         stats = query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 2
+
+    def test_hotspot_count_leaves_out_held_origins(self, tmp_path: Path) -> None:
+        """The workspace card counts the hotspots the Code Health list shows:
+        a hotspot whose stored origin the list holds out (a test here) is not one."""
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(db_path, rows=[(1, 0.99), (1, 0.95), (0, 0.10)])
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO health_file_metrics (id, repository_id, file_path, code_origin)"
+                " VALUES ('h0', 'repo-1', 'src/f0.py', 'test')"
+            )
+
+        assert query_repo_stats(db_path)["hotspot_count"] == 1
 
     def test_symbol_count_is_the_symbol_index(self, tmp_path: Path) -> None:
         """The figure `/api/repos/{id}/stats` reports: symbol index rows, not
@@ -1294,7 +1323,13 @@ class TestGetSystemGraph:
             resp = await c.get("/api/workspace/system-graph", params={"view": "map"})
             bad = await c.get("/api/workspace/system-graph", params={"view": "nope"})
         assert resp.status_code == 200
-        assert resp.json() == {"version": 1, "generated_at": "", "nodes": [], "edges": [], "groups": []}
+        assert resp.json() == {
+            "version": 1,
+            "generated_at": "",
+            "nodes": [],
+            "edges": [],
+            "groups": [],
+        }
         assert bad.status_code == 422
 
 

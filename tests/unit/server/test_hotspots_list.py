@@ -223,3 +223,31 @@ async def test_origin_clause_matches_stored_origin(app, code_origin, is_test) ->
         )
         await session.rollback()
     assert got == stored_origin(code_origin, is_test)
+
+
+@pytest.mark.asyncio
+async def test_every_hotspot_count_is_the_lists_count(client: AsyncClient, app) -> None:
+    """One number per repository: the overview card, the dashboard row, the
+    git summary and the list a card links to all count the same hotspots, and
+    the decisions page never names more ungoverned hotspots than that.
+
+    Before, the cards counted every flagged row (6 here, a test and a build
+    file included) while the list they open shows 4.
+    """
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    await _seed(app.state.session_factory, repo_id)
+
+    listed = (await _list(client, repo_id, hold="map"))["total"]
+    overview = (await client.get(f"/api/repos/{repo_id}/overview-summary")).json()
+    dashboard = (await client.get("/api/repos/summary")).json()["repos"][0]
+    git_summary = (await client.get(f"/api/repos/{repo_id}/git-summary")).json()
+    decisions = (await client.get(f"/api/repos/{repo_id}/decisions/health")).json()
+
+    assert listed == 4
+    assert overview["stats"]["hotspot_count"] == listed
+    assert dashboard["hotspot_count"] == listed
+    assert git_summary["hotspot_count"] == listed
+    assert sorted(decisions["ungoverned_hotspots"]) == sorted(
+        ["src/core.py", "src/api.py", "src/new.py", "src/legacy.py"]
+    )

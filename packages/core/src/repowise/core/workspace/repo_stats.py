@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
+from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS
 from repowise.core.docs_mode import resolve_docs_mode
 
 _log = logging.getLogger("repowise.workspace.repo_stats")
@@ -126,8 +127,19 @@ def _read_counts(c: sqlite3.Cursor, result: dict[str, Any]) -> None:
     # of the codebase (module_health, extract-demo-data). The earlier
     # churn_percentile >= 90 predicate never matched: churn_percentile is
     # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
+    # Counted in the Code Health list's scope (its held origins left out), the
+    # count every other surface quotes: services.hotspots.count_hotspots in SQL.
+    held = ",".join("?" * len(MAP_HELD_ORIGINS))
     try:
-        row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
+        row = c.execute(
+            "SELECT COUNT(*) FROM git_metadata g LEFT JOIN health_file_metrics h"
+            " ON h.repository_id = g.repository_id AND h.file_path = g.file_path"
+            " WHERE g.is_hotspot = 1 AND CASE"
+            " WHEN h.code_origin IS NOT NULL AND h.code_origin != '' THEN h.code_origin"
+            " WHEN h.is_test = 1 THEN 'test' ELSE 'production' END"
+            f" NOT IN ({held})",
+            MAP_HELD_ORIGINS,
+        ).fetchone()
         result["hotspot_count"] = row[0] if row else 0
     except sqlite3.OperationalError:
         _log.debug("No hotspot flags in this index")  # table or column may not exist
