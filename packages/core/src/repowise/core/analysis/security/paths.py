@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
-from .patterns import SECRET_KINDS
+from .patterns import _KEYWORD_KINDS, SECRET_KINDS
 
 # Broader than ``is_test_related_path`` on purpose. That one asks whether a file
 # is a test and keeps bare ``fixtures/``, ``mocks/`` and ``spec/`` as production
@@ -32,8 +32,13 @@ _LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
 )
 
 
-def _is_low_severity_path(file_path: str) -> bool:
-    """True when *file_path* is test material or under fixture, spec, mock, or example directories."""
+def _is_low_severity_path(file_path: str, origin: str = "") -> bool:
+    """True when *file_path* is test material or under fixture, spec, mock, or example directories.
+
+    *origin* is the file's ``code_origin``; a test by origin is low wherever it sits.
+    """
+    if origin == "test":
+        return True
     posix_path = file_path.replace("\\", "/")
     parts = [p.lower() for p in PurePosixPath(posix_path).parts]
     return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
@@ -57,9 +62,15 @@ def _is_low_for_path(kind: str, is_low_sev_file: bool, origin: str) -> bool:
     """Test and fixture material never carries a shipped sink, whatever the kind.
 
     Nor do scripts, tools, docs examples or a data folder's code, though a
-    secret there still leaks.
+    secret there still leaks. A docs example or sample is the exception for a
+    keyword-named credential (``password = "..."``): written to show the reader
+    how to log in, it is a demo value, while a vendor key shape there is real.
     """
-    return is_low_sev_file or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
+    return (
+        is_low_sev_file
+        or (origin in _NON_SHIPPING_ORIGINS and kind not in SECRET_KINDS)
+        or (origin == "docs_example" and kind in _KEYWORD_KINDS)
+    )
 
 
 # Prose is documentation, not executable code. Only secret kinds scan it,

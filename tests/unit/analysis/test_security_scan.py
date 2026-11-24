@@ -1808,6 +1808,85 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = "eval(payload)  # nosec\n"
         assert self._found("src/app.py", source) == [("eval_call", "high")]
 
+    _SIGNING = (
+        "android {{\n"
+        "    signingConfigs {{\n"
+        '        create("release") {{\n'
+        '            storeFile = file("{store}")\n'
+        '            storePassword = "Kx7#pQ2mZ9"\n'
+        '            keyAlias = "release"\n'
+        '            keyPassword = "Kx7#pQ2mZ9"\n'
+        "        }}\n"
+        "    }}\n"
+        "}}\n"
+    )
+
+    def _gradle(self, root: Path, store: str) -> list[tuple[str, str]]:
+        source = self._SIGNING.format(store=store)
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(root))
+        return [(f["kind"], f["severity"]) for f in found if f["kind"] == "hardcoded_password"]
+
+    def test_a_password_beside_a_committed_keystore_is_low(self, tmp_path: Path) -> None:
+        """The keystore ships in the repository, so its password guards nothing."""
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "fallback.jks").write_bytes(b"\xfe\xed")
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "debug.keystore").write_bytes(b"\xfe\xed")
+        low = [("hardcoded_password", "low")] * 2
+        assert self._gradle(tmp_path, "$rootDir/tools/fallback.jks") == low
+        assert self._gradle(tmp_path, "${rootDir}/tools/fallback.jks") == low
+        assert self._gradle(tmp_path, "debug.keystore") == low
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            "$rootDir/tools/release.jks",  # not in the repository
+            "/home/ci/release.jks",  # outside it
+            "../../outside.jks",  # escapes the root
+            "$keystoreDir/release.jks",  # read at build time
+        ],
+    )
+    def test_a_password_for_a_keystore_kept_elsewhere_stays_high(
+        self, tmp_path: Path, store: str
+    ) -> None:
+        root = tmp_path / "repo"
+        (root / "app").mkdir(parents=True)
+        (tmp_path / "outside.jks").write_bytes(b"\xfe\xed")
+        assert self._gradle(root, store) == [("hardcoded_password", "high")] * 2
+
+    def test_a_committed_keystore_does_not_lower_a_password_in_another_block(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "debug.keystore").write_bytes(b"\xfe\xed")
+        source = (
+            'debug { storeFile = file("debug.keystore") }\n'
+            "release {\n"
+            '    storePassword = "Kx7#pQ2mZ9"\n'
+            "}\n"
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_password_in_a_sample_is_low_but_a_vendor_key_there_stays_high(self) -> None:
+        """A sample's ``password = ...`` shows the reader how to log in; a real key still leaks."""
+        source = f'password = "Kx7#pQ2mZ9"\naws = "{self.KEY}"\n'
+        assert self._found("samples/demo/app.py", source) == [
+            ("hardcoded_password", "low"),
+            ("aws_access_key", "high"),
+        ]
+        assert self._found("src/app.py", source) == [
+            ("hardcoded_password", "high"),
+            ("aws_access_key", "high"),
+        ]
+
+    def test_a_password_in_a_test_class_by_content_is_low(self) -> None:
+        """An Apex ``@IsTest`` class is test code by origin, whatever its path says."""
+        source = '@IsTest\nprivate class LoginFlow {\n    String password = "Kx7#pQ2mZ9";\n}\n'
+        assert self._found("force-app/classes/LoginFlow.cls", source) == [
+            ("hardcoded_password", "low")
+        ]
+
     def test_a_secret_in_testdata_is_low(self) -> None:
         source = f'var k = "{self.KEY}"\n'
         assert self._found("pkg/testdata/creds.go", source) == [("aws_access_key", "low")]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .credentials import _string_end
 
@@ -142,3 +143,48 @@ def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | 
         if start < len(kept) and not kept[start].isspace():
             return match
     return None
+
+
+# A Gradle signing block that names its keystore by a literal path, Kotlin DSL
+# (``storeFile = file("$rootDir/tools/debug.jks")``) or Groovy
+# (``storeFile file('debug.keystore')``).
+_GRADLE_STORE_FILE = re.compile(r"""\bstoreFile\s*=?\s*\(?\s*file\(\s*["']([^"']+)["']""")
+_GRADLE_DIR_VARS = re.compile(r"\$\{?(rootDir|projectDir)\}?/?")
+
+
+def _committed_keystore_lines(file_path: str, lines: list[str], repo_root: str | None) -> set[int]:
+    """Lines of a Gradle signing block whose keystore is a file committed to this repository.
+
+    A keystore checked in beside its password is public with it, so the
+    password guards nothing: a debug keystore, or the fallback one a project
+    ships so forks can build a release. The block runs from its ``storeFile``
+    to the next brace. Ceiling: a password written above its ``storeFile`` line
+    keeps its severity, and without *repo_root* nothing is read from disk.
+    """
+    if not repo_root or not file_path.endswith((".gradle", ".gradle.kts")):
+        return set()
+    root = Path(repo_root).resolve()
+    project_dir = (root / file_path).parent
+    committed: set[int] = set()
+    in_committed_block = False
+    for lineno, line in enumerate(lines, start=1):
+        if match := _GRADLE_STORE_FILE.search(line):
+            in_committed_block = _is_committed_file(match.group(1), root, project_dir)
+        elif line.rstrip().endswith("{") or line.lstrip().startswith("}"):
+            in_committed_block = False
+        elif in_committed_block:
+            committed.add(lineno)
+    return committed
+
+
+def _is_committed_file(written: str, root: Path, project_dir: Path) -> bool:
+    """Whether the Gradle ``file(...)`` path *written* names a file inside *root*."""
+
+    def base(match: re.Match[str]) -> str:
+        return f"{root if match.group(1) == 'rootDir' else project_dir}/"
+
+    path = _GRADLE_DIR_VARS.sub(base, written)
+    if "$" in path:
+        return False  # built from a property or an environment value
+    target = (project_dir / path).resolve()
+    return target.is_relative_to(root) and target.is_file()

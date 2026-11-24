@@ -42,6 +42,7 @@ from .patterns import (
     SECRET_KINDS,
 )
 from .refinements import (
+    _committed_keystore_lines,
     _interpolates_sql_value,
     _is_html_type_annotation,
     _match_starting_in,
@@ -137,7 +138,7 @@ def scan_source(
     # Line-by-line pattern scan. A line's edges and the newline around it read
     # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
     # search rejects has no matching line, and most files are such.
-    is_low_sev_file = _is_low_severity_path(file_path)
+    is_low_sev_file = _is_low_severity_path(file_path, origin)
     is_python = file_path.lower().endswith((".py", ".pyi"))
     tls_lines: list[set[int] | None] = []
     scan_lines = lines if _ANY_PATTERN.search(source) else []
@@ -276,8 +277,11 @@ def scan_source(
         if finding["line"] in pem_body_lines:
             finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
+    keystore_lines = _committed_keystore_lines(file_path, lines, repo_root)
     for finding in findings:
-        if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
+        if _is_low_for_path(finding["kind"], is_low_sev_file, origin) or (
+            finding["kind"] == "hardcoded_password" and finding["line"] in keystore_lines
+        ):
             finding["severity"] = "low"
 
     # Symbol-name scan (informational / low). Machine output and declarations
