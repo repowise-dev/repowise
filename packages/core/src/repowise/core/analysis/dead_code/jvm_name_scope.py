@@ -15,6 +15,10 @@ declare or explicitly import another ``C`` (either shadows it), and one of:
 * no other file declares or imports a type named ``C``, so the name has
   nothing else to mean. A Kotlin ``expect``/``actual`` pair is one type.
 
+A qualified ``O.C``, where ``O`` is a type C's own file declares and W can see
+``O`` by the same rules, refers to ``C`` whatever else is named ``C``: that is
+how a nested type is written from outside its parent.
+
 Text-level, like the rest of the name scan. A declaration keyword followed by
 the name in a comment reads as a second declaration, which only keeps a
 finding reported.
@@ -36,6 +40,9 @@ _TYPE_KEYWORDS = r"(?:class|interface|enum|record|object|trait|typealias|message
 #: in another source set, not another type.
 _MULTIPLATFORM_RE = re.compile(r"\b(?:expect|actual)\b")
 
+#: Every type name a file declares, nested or not.
+_DECLARED_TYPE_RE = re.compile(rf"\b{_TYPE_KEYWORDS}\s+(\w+)")
+
 
 class JvmNameScope:
     """Answers :meth:`can_refer` over one source map.
@@ -52,6 +59,7 @@ class JvmNameScope:
         self._imports: dict[str, list[str]] = {}
         self._others: dict[tuple[str, str, str], bool] = {}
         self._declared_elsewhere: dict[tuple[str, str], bool] = {}
+        self._types: dict[str, frozenset[str]] = {}
 
     def can_refer(self, name: str, declaring: str, writers: set[str], writer: str) -> bool:
         """Whether *name* written in *writer* can mean the class *declaring* declares.
@@ -60,6 +68,8 @@ class JvmNameScope:
         is declared anywhere else.
         """
         package = self._package(declaring)
+        if self._qualified_by_own_type(name, declaring, writer, package):
+            return True
         fqn = f"{package}.{name}" if package else name
         if self._means_other(writer, name, fqn):
             return False
@@ -73,6 +83,34 @@ class JvmNameScope:
             )
             self._declared_elsewhere[key] = elsewhere
         return not elsewhere
+
+    def _qualified_by_own_type(self, name: str, declaring: str, writer: str, package: str) -> bool:
+        """Whether *writer* writes ``O.name`` for a type ``O`` of *declaring* it can see.
+
+        A nested type (a sealed class's ``data object``, an enum's holder) is
+        written through its parent, ``InitStatus.Pending``, so its bare name
+        repeats across unrelated parents. The parent's name settles which one.
+        """
+        text = self._text(writer)
+        if f".{name}" not in text:
+            return False
+        for outer in self._declared_types(declaring):
+            if outer == name or not re.search(
+                rf"(?<!\w){re.escape(outer)}\.{re.escape(name)}\b", text
+            ):
+                continue
+            outer_fqn = f"{package}.{outer}" if package else outer
+            if self._means_other(writer, outer, outer_fqn):
+                continue
+            if self._package(writer) == package or _names_fqn(text, outer_fqn, package):
+                return True
+        return False
+
+    def _declared_types(self, path: str) -> frozenset[str]:
+        types = self._types.get(path)
+        if types is None:
+            types = self._types[path] = frozenset(_DECLARED_TYPE_RE.findall(self._text(path)))
+        return types
 
     def _means_other(self, path: str, name: str, fqn: str) -> bool:
         """Whether *path* declares its own *name* or imports one other than *fqn*."""

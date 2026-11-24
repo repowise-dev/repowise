@@ -211,6 +211,43 @@ def test_kotlin_typealias_shadows_the_name():
     )
 
 
+_STATUS = "app/src/main/java/com/ex/utils/ViewModelUtils.kt"
+_STATUS_TEXT = (
+    b"package com.ex.utils\n\nsealed class InitStatus {\n"
+    b"    data object Pending : InitStatus()\n}\n"
+)
+# Another parent's nested ``Pending``: the bare name is ambiguous.
+_VOICES = "app/src/main/java/com/ex/tts/Voices.kt"
+_VOICES_TEXT = b"package com.ex.tts\n\nsealed interface Load {\n    data object Pending : Load\n}\n"
+
+
+def _nested_refers(writer_text: bytes) -> bool:
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    writer = "app/src/main/java/com/ex/dialogs/Dialog.kt"
+    source_map = {_STATUS: _STATUS_TEXT, _VOICES: _VOICES_TEXT, writer: writer_text}
+    return JvmNameScope(source_map).can_refer("Pending", _STATUS, set(source_map), writer)
+
+
+def test_a_nested_type_written_through_its_parent_refers_to_it():
+    assert _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.utils.InitStatus\n\n"
+        b"val s: InitStatus = InitStatus.Pending\n"
+    )
+    assert _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.utils.InitStatus.Pending\n\nval s = Pending\n"
+    )
+
+
+def test_a_parent_the_writer_cannot_see_does_not_qualify():
+    # No import of InitStatus: ``InitStatus.Pending`` cannot mean ours.
+    assert not _nested_refers(b"package com.ex.dialogs\n\nval s = InitStatus.Pending\n")
+    # Another parent's ``Pending`` stays another type.
+    assert not _nested_refers(
+        b"package com.ex.dialogs\n\nimport com.ex.tts.Load\n\nval s = Load.Pending\n"
+    )
+
+
 def test_each_writer_is_read_once(monkeypatch):
     from repowise.core.analysis.dead_code import jvm_name_scope
 
