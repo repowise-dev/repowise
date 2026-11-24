@@ -23,6 +23,7 @@ from repowise.core.persistence.crud import (
     get_graph_node,
     get_node_degree_counts,
     load_coverage_for_repo,
+    percentile_rank,
 )
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding, Repository
@@ -60,25 +61,16 @@ async def _resolve_metrics(
         node.node_id,
         edge_types=(
             # Every use edge type, as `routers/graph/intelligence.py` reports it.
-            _SYMBOL_USE_EDGE_TYPES
-            if node.node_type == "symbol"
-            else _FILE_DEPENDENCY_EDGE_TYPES
+            _SYMBOL_USE_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES
         ),
     )
 
-    # Percentile computation against same-type peers
+    # Percentile computation against same-type peers (#5745)
     all_nodes = await get_all_file_metrics(session, repo_id)
-    pr_values = [n.pagerank for n in all_nodes if n.pagerank is not None]
-    bt_values = [n.betweenness for n in all_nodes if n.betweenness is not None]
-
-    def _pct(value: float, all_vals: list[float]) -> int:
-        if not all_vals:
-            return 0
-        return round(100 * sum(1 for v in all_vals if v < value) / len(all_vals))
 
     metrics: dict[str, Any] = {
         "pagerank": round(node.pagerank or 0.0, 6),
-        "pagerank_percentile": _pct(node.pagerank or 0.0, pr_values),
+        "pagerank_percentile": percentile_rank(node.pagerank or 0.0, all_nodes, attr="pagerank"),
         "in_degree": degrees["in_degree"],
         "out_degree": degrees["out_degree"],
         "community_id": node.community_id,
@@ -91,7 +83,9 @@ async def _resolve_metrics(
         metrics["betweenness_note"] = "not scored yet: added since the last centrality run"
     else:
         metrics["betweenness"] = round(node.betweenness or 0.0, 6)
-        metrics["betweenness_percentile"] = _pct(node.betweenness or 0.0, bt_values)
+        metrics["betweenness_percentile"] = percentile_rank(
+            node.betweenness or 0.0, all_nodes, attr="betweenness"
+        )
     result_data["metrics"] = metrics
 
 

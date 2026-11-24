@@ -6,12 +6,15 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import bisect
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import is_external
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from ..models import (
@@ -440,14 +443,10 @@ async def batch_upsert_graph_node_membership(
         gate=UpsertGate(
             key_column=GraphNodeMembership.node_id,
             columns=_MEMBERSHIP_FIELDS,
-            item_values_fn=lambda kv: {
-                k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS
-            },
+            item_values_fn=lambda kv: {k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS},
             # Pruned keys are excluded: their rows are gone by the time the
             # upsert runs, and a snapshot never sends a key it just pruned.
-            prefetched={
-                row[0]: row[1:] for row in existing_rows if row[0] in current
-            },
+            prefetched={row[0]: row[1:] for row in existing_rows if row[0] in current},
         ),
         insert_fn=lambda kv: {
             "id": _new_uuid(),
@@ -825,40 +824,103 @@ async def get_all_file_metrics(
     return list(result.scalars().all())
 
 
+def _extract_owned_items(
+    nodes: Sequence[Any] | Mapping[str, float],
+    attr: str,
+) -> list[tuple[str, float]]:
+    """Extract (id, metric) pairs for owned files, skipping external/framework nodes."""
+    if isinstance(nodes, Mapping):
+        return [(k, float(v or 0.0)) for k, v in nodes.items() if not is_external(k)]
+    items: list[tuple[str, float]] = []
+    for idx, item in enumerate(nodes):
+        if hasattr(item, "node_id"):
+            if not is_external(item.node_id):
+                items.append((item.node_id, float(getattr(item, attr, 0.0) or 0.0)))
+        elif isinstance(item, tuple) and len(item) == 2:
+            if not is_external(item[0]):
+                items.append((item[0], float(item[1] or 0.0)))
+        elif isinstance(item, (int, float)):
+            items.append((str(idx), float(item)))
+    return items
+
+
+def _percentile_of(value: float, ordered: list[float]) -> float:
+    """Compute percentile rank for a single value against ordered peer values."""
+    n = len(ordered)
+    if n == 1:
+        return 100.0 if float(value) >= ordered[0] else 0.0
+    below = min(bisect.bisect_left(ordered, float(value)), n - 1)
+    return round(below / (n - 1) * 100.0, 1)
+
+
+def percentile_rank(
+    value: float | None = None,
+    nodes: Sequence[Any] | Mapping[str, float] = (),
+    attr: str = "pagerank",
+) -> float | dict[str, float]:
+    """Compute percentile rank (0.0-100.0) among owned file nodes (#5745).
+
+    Filters out external and framework nodes (``is_external``).
+    Uses the Files table formula: ``round(below / (n - 1) * 100.0, 1)`` for
+    ``n > 1``, ``100.0`` for a single file, and ``0.0`` for empty.
+
+    When *value* is ``None``, returns ``dict[str, float]`` mapping each
+    owned node's id to its percentile rank.
+    When *value* is a float, returns the percentile rank of that value
+    among the owned nodes as a ``float``.
+    """
+    items = _extract_owned_items(nodes, attr)
+    if not items:
+        return 0.0 if value is not None else {}
+
+    ordered = sorted(v for _, v in items)
+    if value is not None:
+        return _percentile_of(value, ordered)
+
+    if len(ordered) == 1:
+        return {k: 100.0 for k, _ in items}
+
+    n = len(ordered)
+    return {k: round(bisect.bisect_left(ordered, v) / (n - 1) * 100.0, 1) for k, v in items}
+
+
 async def get_pagerank_percentile(
     session: AsyncSession,
     repository_id: str,
     pagerank: float,
-) -> int:
-    """Percentile rank (0-100) of *pagerank* among the repo's file nodes.
+) -> float:
+    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes.
 
     Counted in SQL. The callers that want one file's rank used to load every
     file node through :func:`get_all_file_metrics` and scan the list in Python,
     which is the whole repo graph materialized as ORM objects to produce a
-    single integer.
+    single number.
 
-    The arithmetic deliberately matches ``mcp_server._graph_utils.percentile_rank``
-    — ``round(100 * below / n)`` over every ``node_type == "file"`` row — so
-    swapping a caller over does not move the number it prints. Note this is not
-    the same figure the Files *index* shows under ``pagerank_pct``: that one
-    drops external and framework nodes first and divides by ``n - 1``.
-    Reconciling the two is a behaviour change and not this function's job.
+    Counted in SQL over owned repository files (excluding ``external:`` and
+    ``framework:`` nodes), matching the Files table's formula:
+    ``round(100.0 * below / (n - 1), 1)`` for ``n > 1``, and ``100.0`` for
+    a single file (#5745).
     """
     row = (
         await session.execute(
             select(
                 func.count().label("total"),
                 func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+                func.min(GraphNode.pagerank).label("min_pr"),
             ).where(
                 GraphNode.repository_id == repository_id,
                 GraphNode.node_type == "file",
+                not_(GraphNode.node_id.startswith("external:")),
+                not_(GraphNode.node_id.startswith("framework:")),
             )
         )
     ).one()
     total = row.total or 0
     if not total:
-        return 0
-    return round(100.0 * (row.below or 0) / total)
+        return 0.0
+    if total == 1:
+        return 100.0 if row.min_pr is None or pagerank >= row.min_pr else 0.0
+    return min(100.0, round(100.0 * (row.below or 0) / (total - 1), 1))
 
 
 async def get_cross_community_edges(
@@ -965,13 +1027,21 @@ async def get_node_degree_counts(
     in-degree is rendered as "Dependents (N)" above a dependents list, and
     the two disagreed by the file's own symbol count.
     """
-    in_q = select(func.count()).select_from(GraphEdge).where(
-        GraphEdge.repository_id == repository_id,
-        GraphEdge.target_node_id == node_id,
+    in_q = (
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
     )
-    out_q = select(func.count()).select_from(GraphEdge).where(
-        GraphEdge.repository_id == repository_id,
-        GraphEdge.source_node_id == node_id,
+    out_q = (
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
     )
     if edge_types:
         in_q = in_q.where(GraphEdge.edge_type.in_(edge_types))

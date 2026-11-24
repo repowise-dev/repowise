@@ -21,8 +21,17 @@ from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
+    percentile_rank,
 )
 from repowise.core.persistence.models import GraphNode
+
+__all__ = [
+    "bfs_trace",
+    "entry_point_score",
+    "parse_community_meta",
+    "percentile_rank",
+    "resolve_trace_communities",
+]
 
 # Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
 _CALLEE_FETCH_LIMIT = 20
@@ -70,14 +79,6 @@ def entry_point_score(node: GraphNode) -> float:
     """Extract entry_point_score from community_meta_json (symbol nodes only)."""
     meta = parse_community_meta(node)
     return float(meta.get("entry_point_score", 0.0) or 0.0)
-
-
-def percentile_rank(value: float, all_values: list[float]) -> int:
-    """Compute the percentile rank (0-100) of *value* within *all_values*."""
-    if not all_values:
-        return 0
-    count_below = sum(1 for v in all_values if v < value)
-    return round(100.0 * count_below / len(all_values))
 
 
 async def bfs_trace(

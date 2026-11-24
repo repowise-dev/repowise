@@ -91,9 +91,7 @@ def test_unique_by_symbol_keeps_the_first_entry_per_symbol_in_order():
 
 
 @pytest.mark.asyncio
-async def test_call_graph_unknown_target_answers_empty_lists_without_a_note(
-    session, populated_db
-):
+async def test_call_graph_unknown_target_answers_empty_lists_without_a_note(session, populated_db):
     """A target with no graph node gets empty lists, not a misleading type note."""
     out: dict = {}
     await enrichment._resolve_call_graph(
@@ -151,9 +149,7 @@ async def test_call_graph_file_target_with_both_directions_rolls_up_callers_and_
 
 
 @pytest.mark.asyncio
-async def test_call_graph_fuzzy_fallback_prefers_the_node_in_the_hinted_file(
-    session, populated_db
-):
+async def test_call_graph_fuzzy_fallback_prefers_the_node_in_the_hinted_file(session, populated_db):
     """``b.py::helper`` misses the exact id ``b.py::Cls.helper`` and falls back by name.
 
     Two symbols share the bare name; the one in the file the caller named must
@@ -243,7 +239,7 @@ async def test_metrics_for_an_unknown_target_is_null(session, populated_db):
 async def test_metrics_report_measured_betweenness_with_its_percentile(session, populated_db):
     """Once centrality has run, betweenness is a number with a peer percentile.
 
-    models.py ranks above two of the four seeded file nodes, so both percentiles are 50.
+    models.py ranks above two of the four seeded file nodes, so both percentiles are 66.7.
     """
     node = (
         await session.execute(select(GraphNode).where(GraphNode.node_id == "src/db/models.py"))
@@ -258,13 +254,13 @@ async def test_metrics_report_measured_betweenness_with_its_percentile(session, 
     )
     assert out["metrics"] == {
         "pagerank": 0.6,
-        "pagerank_percentile": 50,
+        "pagerank_percentile": 66.7,
         "in_degree": 1,
         "out_degree": 0,
         "community_id": 2,
         "community_label": "Persistence",
         "betweenness": 0.3,
-        "betweenness_percentile": 50,
+        "betweenness_percentile": 66.7,
     }
 
 
@@ -309,10 +305,7 @@ async def test_community_names_members_by_pagerank_and_neighbours_by_crossing_ed
     Members come back in PageRank order; the neighbour's label falls back to
     ``cluster_<id>`` when its own meta blob does not parse.
     """
-    rows = {
-        n.node_id: n
-        for n in (await session.execute(select(GraphNode))).scalars().all()
-    }
+    rows = {n.node_id: n for n in (await session.execute(select(GraphNode))).scalars().all()}
     rows["src/auth/service.py"].community_meta_json = '{"label": "Auth", "cohesion": 0.4567}'
     rows["src/db/models.py"].community_meta_json = "{not json"
     await session.flush()
@@ -410,10 +403,17 @@ async def test_health_for_a_symbol_target_reads_its_file_with_stored_coverage_an
     assert health["module"] == "auth"
     coverage = health["coverage"]
     assert "covered_lines" not in coverage
-    assert {k: coverage[k] for k in (
-        "file_path", "source_format", "line_coverage_pct", "branch_coverage_pct",
-        "total_coverable_lines", "covered_line_count",
-    )} == {
+    assert {
+        k: coverage[k]
+        for k in (
+            "file_path",
+            "source_format",
+            "line_coverage_pct",
+            "branch_coverage_pct",
+            "total_coverable_lines",
+            "covered_line_count",
+        )
+    } == {
         "file_path": "src/auth/service.py",
         "source_format": "lcov",
         "line_coverage_pct": 61.5,

@@ -65,9 +65,7 @@ class CallerCalleeEntry(BaseModel):
             if other and other.name
             else (other_id.split("::")[-1] if "::" in other_id else other_id),
             kind=other.kind if other and other.kind else "unknown",
-            file=other.file_path
-            if other and other.file_path
-            else file_of_symbol(other_id),
+            file=other.file_path if other and other.file_path else file_of_symbol(other_id),
             start_line=other.start_line if other else None,
             edge_type=edge.edge_type,
             confidence=round(edge.confidence or 0.0, 3),
@@ -205,9 +203,9 @@ class GraphMetricsResponse(BaseModel):
     target: str
     node_type: str
     pagerank: float
-    pagerank_percentile: int
+    pagerank_percentile: float
     betweenness: float
-    betweenness_percentile: int
+    betweenness_percentile: float
     # False when this node appeared after the last exact centrality scoring, so
     # the two fields above are the column default rather than a measurement.
     # Additive and defaulted so existing clients keep their shape.
