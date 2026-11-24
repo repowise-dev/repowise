@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.generation.architecture_map import MAX_NODES, build_system_map
 from repowise.core.generation.architecture_mermaid import (
     HEADING,
@@ -312,6 +314,38 @@ class TestStructure:
         shared = [n for n in sm.nodes if n.tier == "shared"]
         assert [(n.name, n.role) for n in shared] == [("Shared libraries", "2 TypeScript files")]
         assert _tier_of(sm)["core"] == "engine"
+
+    @pytest.mark.timeout(30)
+    def test_a_dense_library_graph_folds_in_linear_time(self):
+        """Libraries that each import every later one, behind a single way in.
+
+        Every import path from the last library back to the app is a subset of
+        the others, so walking paths rather than libraries never returns.
+        """
+        libs = [f"lib{i}" for i in range(40)]
+        files = dict.fromkeys(["web/a.ts", *(f"{lib}/a.ts" for lib in libs)], "typescript")
+        files.update(dict.fromkeys(["cli/a.py", "core/a.py"], "python"))
+        edges = [
+            ("web/a.ts", "lib0/a.ts", "imports"),
+            ("web/a.ts", "core/a.py", "imports"),
+            ("cli/a.py", "core/a.py", "imports"),
+            ("core/a.py", "external:db", "imports"),
+        ]
+        edges += [
+            (f"{a}/a.ts", f"{b}/a.ts", "imports")
+            for i, a in enumerate(libs)
+            for b in libs[i + 1 :]
+        ]
+        sm = build_system_map(
+            files,
+            edges,
+            repo_name="demo",
+            manifests=[f"{d}/package.json" for d in ("web", "cli", "core", *libs)],
+            stores={"external:db": "db"},
+        )
+        # The one app reaching them all takes every library in.
+        web = next(n for n in sm.nodes if n.path == "web")
+        assert (web.tier, web.role) == ("surface", "41 TypeScript files")
 
     @staticmethod
     def _tool_over_web(web: list[str], tool_files: int):

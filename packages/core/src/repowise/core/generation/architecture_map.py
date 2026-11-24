@@ -391,10 +391,21 @@ def _fold_libraries(units, kinds, tiers, graph: _Graph) -> tuple[dict[str, list[
                     libs.discard(u)
                     changed = True
 
-    def roots(u: str, seen: frozenset[str] = frozenset()) -> set[str]:
-        found = importers[u] & surfaces
-        for lib in (importers[u] & libs) - seen - {u}:
-            found |= roots(lib, seen | {u})
+    def roots(u: str) -> set[str]:
+        """The ways in that reach *u*, directly or through other libraries.
+
+        One walk with one visited set: following every import path instead is
+        exponential in a dense library graph, and a large monorepo's never
+        finished.
+        """
+        found: set[str] = set()
+        seen, frontier = {u}, [u]
+        while frontier:
+            here = frontier.pop()
+            found |= importers[here] & surfaces
+            for lib in (importers[here] & libs) - seen:
+                seen.add(lib)
+                frontier.append(lib)
         return found
 
     settle()
