@@ -408,8 +408,9 @@ def test_a_layer_label_does_not_prefix_a_title():
 def test_a_trailing_number_stays_with_its_word():
     """``c4`` is the C4 model, not a C and a 4.
 
-    A digit run is part of the word it was written against, and titles are
-    the one place a split there would be visible.
+    The camel-case splitter treats a digit run as its own token, which is
+    right for ``v2Api`` and wrong for every directory whose name ends in a
+    number. Titles are the one place that leak is visible.
     """
     from repowise.core.generation.concept_tree.grouping import ConceptGroup
     from repowise.core.generation.concept_tree.naming import deterministic_title
@@ -426,10 +427,21 @@ def test_a_trailing_number_stays_with_its_word():
 @pytest.mark.parametrize(
     ("directory", "title"),
     [
-        # A name written with its own capitals is one product or build word.
+        # A PascalCase name is one product or type name.
         ("AnkiDroid", "AnkiDroid"),
-        ("buildSrc", "buildSrc"),
+        ("GitHub", "GitHub"),
+        ("UserService", "UserService"),
+        # A brand with a short lowercase lead, and Gradle's fixed folder name.
         ("iOS", "iOS"),
+        ("macOS", "macOS"),
+        ("iPhone", "iPhone"),
+        ("buildSrc", "buildSrc"),
+        # lowerCamelCase still reads as words, digits stay with their word.
+        ("pageGenerator", "Page Generator"),
+        ("userProfile", "User Profile"),
+        ("v2Api", "V2 API"),
+        ("userID", "User ID"),
+        ("myApp", "My App"),
         # An all-lowercase word is title-cased whole, never split.
         ("libfoo", "Libfoo"),
         # Separators still split, and each lowercase word is title-cased.
@@ -438,8 +450,11 @@ def test_a_trailing_number_stays_with_its_word():
         ("anki-common", "Anki Common"),
     ],
 )
-def test_a_directory_name_splits_only_on_separators(directory, title):
-    """``AnkiDroid`` is one name; "Anki Droid" reads as not knowing the project."""
+def test_a_directory_name_keeps_product_names_whole(directory, title):
+    """``AnkiDroid`` is one name; "Anki Droid" reads as not knowing the project.
+
+    ``pageGenerator`` is two words and still reads as two.
+    """
     from repowise.core.generation.concept_tree.grouping import ConceptGroup
 
     group = ConceptGroup(
