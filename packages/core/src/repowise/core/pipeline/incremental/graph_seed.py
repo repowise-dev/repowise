@@ -11,28 +11,40 @@ attributes that are not persisted in the DB.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
+from repowise.core.ingestion.graph._scoped import detached_attrs
 
 log = structlog.get_logger(__name__)
 _CACHE_NAME = "graph_seed_edges.pkl"
 _CACHE_VERSION = 2
+# The loaded snapshot, set aside for the update (:func:`invalidate_seed_edge_cache`).
+_KEPT_NAME = "graph_seed_edges.kept.pkl"
 
 
-def invalidate_seed_edge_cache(repo_path: Any) -> None:
+def invalidate_seed_edge_cache(repo_path: Any, *, keep: bool = False) -> None:
     """Remove a snapshot before an update can change the authoritative DB.
 
     If the process exits after the DB commit but before writing a replacement,
     the next update must rebuild from current sources rather than trust a
-    pre-commit snapshot.
+    pre-commit snapshot. With *keep*, the snapshot the update just loaded is
+    moved aside instead, where no load reads it: an update whose graph comes
+    out equal to it moves it back rather than writing the same bytes again
+    (:func:`save_seed_edge_cache`).
     """
-    path = Path(repo_path) / ".repowise" / _CACHE_NAME
+    index = Path(repo_path) / ".repowise"
+    path = index / _CACHE_NAME
     try:
+        if keep and path.is_file():
+            os.replace(path, index / _KEPT_NAME)
+            return
         path.unlink(missing_ok=True)
+        (index / _KEPT_NAME).unlink(missing_ok=True)
     except OSError as exc:
         log.warning("graph_seed_cache_invalidate_failed", path=str(path), error=str(exc))
 
@@ -308,13 +320,13 @@ def restore_unparsed_graph_rows(
         return
 
     for node_id in required_nodes:
-        graph.add_node(node_id, **previous_nodes[node_id])
+        graph.add_node(node_id, **detached_attrs(previous_nodes[node_id]))
     restored_edges = 0
     for source, target, attrs in previous_edges:
         existing = graph.get_edge_data(source, target)
         if existing is not None:
             continue
-        graph.add_edge(source, target, **attrs)
+        graph.add_edge(source, target, **detached_attrs(attrs))
         restored_edges += 1
     if restored_edges:
         log.info(
@@ -362,9 +374,9 @@ def _restore_snapshot_rows(
         return False
     previous_nodes, previous_edges = rows
     for node_id in missing_node_ids:
-        graph.add_node(node_id, **previous_nodes[node_id])
+        graph.add_node(node_id, **detached_attrs(previous_nodes[node_id]))
     for source, target, attrs in previous_edges.values():
-        graph.add_edge(source, target, **attrs)
+        graph.add_edge(source, target, **detached_attrs(attrs))
     return True
 
 
@@ -408,16 +420,61 @@ async def _restore_persisted_graph_rows(
     return True
 
 
+def _graph_matches_snapshot(graph: Any, snapshot: dict[str, list]) -> bool:
+    """Whether *graph* holds exactly the snapshot's nodes and edges, attributes included.
+
+    Order is not compared: no reader of the snapshot depends on it.
+    """
+    nodes, edges = snapshot["nodes"], snapshot["edges"]
+    if len(nodes) != graph.number_of_nodes() or len(edges) != graph.number_of_edges():
+        return False
+    graph_nodes = graph.nodes
+    if any(node not in graph_nodes or graph_nodes[node] != attrs for node, attrs in nodes):
+        return False
+    return all(graph.get_edge_data(source, target) == attrs for source, target, attrs in edges)
+
+
+def _kept_snapshot_is_current(
+    kept: Path, graph_builder: Any, edge_count: int, stored_fingerprint: str
+) -> bool:
+    """Whether the snapshot this update loaded and set aside still describes the store.
+
+    It was validated against the store when loaded (:func:`load_seed_edges`),
+    so its stamp holds while the edge count and parser fingerprint stay and
+    the graph equals it. The graph never shares a mutable attribute value with
+    it (``detached_attrs``), so an in-place edit cannot hide in both.
+    """
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
+
+    previous = getattr(graph_builder, "previous_seed_edges", None)
+    return (
+        previous is not None
+        and kept.is_file()
+        and stored_fingerprint == parser_fingerprint()
+        and len(previous["edges"]) == edge_count
+        and _graph_matches_snapshot(graph_builder.graph(), previous)
+    )
+
+
 async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
-    """Save a sealed full graph snapshot after the database commit succeeds."""
+    """Save a sealed full graph snapshot after the database commit succeeds.
+
+    An update whose graph equals the snapshot it loaded puts that file back
+    instead of writing it again.
+    """
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
     root = Path(repo_path).resolve()
+    kept = root / ".repowise" / _KEPT_NAME
     try:
         stamp = await _database_stamp(root)
         if stamp is None:
             return
         repo_id, edge_count, stored_fingerprint = stamp
+        if _kept_snapshot_is_current(kept, graph_builder, edge_count, stored_fingerprint):
+            os.replace(kept, root / ".repowise" / _CACHE_NAME)
+            log.info("graph_seed_cache_unchanged", edges=edge_count)
+            return
         graph = graph_builder.graph()
         payload = {
             "version": _CACHE_VERSION,
@@ -454,3 +511,8 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
     except Exception as exc:
         # The cache is optional; the next update can always rebuild from sources.
         log.warning("graph_seed_cache_save_failed", error=str(exc))
+    finally:
+        try:
+            kept.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("graph_seed_cache_invalidate_failed", path=str(kept), error=str(exc))

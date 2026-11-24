@@ -478,3 +478,47 @@ def test_editing_one_decorated_file_keeps_the_graph_patchable(
         ("src/app/registry.py::rule", "src/app/checks_b.py::check_b"),
     }, "fixture must register both checks"
     assert _store(incremental)["graph_edges"] == expected
+
+
+def test_an_update_that_leaves_the_graph_unchanged_keeps_its_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An edit no graph step reads leaves the graph snapshot file as it was,
+    the next update still patches from it, and the store ends as init's."""
+    incremental = tmp_path / "incremental" / "repo"
+    incremental.mkdir(parents=True)
+    _write(incremental, {**_REGISTRAR, "NOTES.txt": "first\n"})
+    _git(incremental, "init", "-q")
+    _commit(incremental, "seed")
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT)
+    snapshot = incremental / ".repowise" / "graph_seed_edges.pkl"
+    before = (snapshot.read_bytes(), snapshot.stat().st_mtime_ns)
+
+    _write(incremental, {"NOTES.txt": "second\n"})
+    _commit(incremental, "docs: notes")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
+    assert (snapshot.read_bytes(), snapshot.stat().st_mtime_ns) == before
+    assert not snapshot.with_name("graph_seed_edges.kept.pkl").exists()
+
+    # An edge change rewrites it, and that update patches from the kept file.
+    util = "def helper(value):\n    return value + 2\n\n\ndef other():\n    return helper(1)\n"
+    _write(incremental, {"src/app/util.py": util})
+    _commit(incremental, "feat: other")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
+    assert snapshot.read_bytes() != before[0]
+
+    control = tmp_path / "control" / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT)
+    assert _store(incremental)["graph_edges"] == _store(control)["graph_edges"]

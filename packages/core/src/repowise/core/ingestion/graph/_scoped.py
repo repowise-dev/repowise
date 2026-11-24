@@ -26,6 +26,21 @@ _SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})
 _FRAMEWORK_EDGE_TYPES = frozenset({"framework", "framework_binds"})
 
 
+# Attribute values a build pass can edit in place (``call_lines``,
+# ``local_type_uses``). Values taken from a snapshot are copied, so such an
+# edit never reaches the snapshot, which the seed cache save compares the
+# finished graph against.
+_MUTABLE_VALUES = (list, set, dict)
+
+
+def detached_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
+    """*attrs* with every list, set and dict value copied."""
+    return {
+        key: value.copy() if isinstance(value, _MUTABLE_VALUES) else value
+        for key, value in attrs.items()
+    }
+
+
 def _seed_nodes(
     graph: Any, nodes: Any, drop: set[str], rescoped: set[str]
 ) -> set[str]:
@@ -41,7 +56,7 @@ def _seed_nodes(
         if gone or (node_id not in graph and owner in rescoped):
             dropped.add(node_id)
         elif node_id not in graph:
-            graph.add_node(node_id, **attrs)
+            graph.add_node(node_id, **detached_attrs(attrs))
         else:
             _fill_node_attrs(graph.nodes[node_id], attrs, node_id in rescoped or owner in rescoped)
     return dropped
@@ -51,8 +66,8 @@ def _fill_node_attrs(node: dict[str, Any], attrs: dict[str, Any], rescoped: bool
     """Fill the attributes the parse does not set and this build will not stamp again."""
     rebuilt = _REBUILT_NODE_ATTRS | _SCOPE_REBUILT_NODE_ATTRS if rescoped else _REBUILT_NODE_ATTRS
     for key, value in attrs.items():
-        if key not in rebuilt:
-            node.setdefault(key, value)
+        if key not in rebuilt and key not in node:
+            node[key] = value.copy() if isinstance(value, _MUTABLE_VALUES) else value
 
 
 # Import edges the build adds after it has read every file's import targets:
@@ -137,7 +152,7 @@ class ScopedBuildMixin:
                 graph.add_node(source, language="external", symbol_count=0, has_error=False)
             if target not in graph:
                 graph.add_node(target, language="external", symbol_count=0, has_error=False)
-            graph.add_edge(source, target, **attrs)
+            graph.add_edge(source, target, **detached_attrs(attrs))
             added += 1
         return added
 

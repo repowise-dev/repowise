@@ -1052,7 +1052,9 @@ async def _load_update_seed(
         previous_seed_edges = seed_edges or await load_seed_edges_for_reconciliation(repo_path)
     if seed_edges is None:
         log("[yellow]Full graph rebuild: no valid persisted edge snapshot[/yellow]")
-    invalidate_seed_edge_cache(repo_path)
+    # A valid snapshot is set aside, not deleted: if the graph comes out equal
+    # to it, the save puts it back instead of writing it again.
+    invalidate_seed_edge_cache(repo_path, keep=seed_edges is not None)
     return seed_edges, previous_seed_edges
 
 
