@@ -238,7 +238,30 @@ def _java_script_engine_eval_offsets(source: str, masked: str) -> list[int]:
             or (type_name == "ScriptEngine" and has_script_engine_import)
         )
 
+    def is_var_engine(declarator):
+        """Check whether a var initializer creates a ScriptEngine."""
+        value = declarator.child_by_field_name("value")
+        if value is None or value.type != "method_invocation":
+            return False
+
+        method = value.child_by_field_name("name")
+        receiver = value.child_by_field_name("object")
+
+        if method is None or receiver is None:
+            return False
+        if text(method) != "getEngineByName":
+            return False
+        if receiver.type != "object_creation_expression":
+            return False
+
+        return any(
+            child.type == "type_identifier"
+            and text(child) == "ScriptEngineManager"
+            for child in receiver.named_children
+        )
+
     def register(node, bindings):
+        """Register explicitly typed Java variables."""
         typ = node.child_by_field_name("type")
         if typ is None:
             return
@@ -251,38 +274,29 @@ def _java_script_engine_eval_offsets(source: str, masked: str) -> list[int]:
             name = node.child_by_field_name("name")
             if name is not None:
                 bindings[text(name)] = is_engine_type(typ)
+            return
 
-        elif node.type in {
+        if node.type not in {
             "local_variable_declaration",
             "field_declaration",
             "constant_declaration",
         }:
-            for child in node.named_children:
-                if child.type == "variable_declarator":
-                    name = child.child_by_field_name("name")
-                    if name is not None:
-                        is_engine = is_engine_type(typ)
+            return
 
-                        if text(typ) == "var":
-                            value = child.child_by_field_name("value")
-                            if value is not None and value.type == "method_invocation":
-                                method = value.child_by_field_name("name")
-                                receiver = value.child_by_field_name("object")
+        engine_type = is_engine_type(typ)
+        inferred_type = text(typ) == "var"
 
-                                if (
-                                    method is not None
-                                    and receiver is not None
-                                    and text(method) == "getEngineByName"
-                                    and receiver.type == "object_creation_expression"
-                                    and any(
-                                        child.type == "type_identifier"
-                                        and text(child) == "ScriptEngineManager"
-                                        for child in receiver.named_children
-                                    )
-                                ):
-                                    is_engine = True
+        for declarator in node.named_children:
+            if declarator.type != "variable_declarator":
+                continue
 
-                        bindings[text(name)] = is_engine
+            name = declarator.child_by_field_name("name")
+            if name is None:
+                continue
+
+            bindings[text(name)] = engine_type or (
+                inferred_type and is_var_engine(declarator)
+            )
 
     def visit(node, bindings, class_fields):
         if node.type in {
