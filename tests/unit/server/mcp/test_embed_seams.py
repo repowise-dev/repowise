@@ -51,3 +51,15 @@ async def test_serving_records_telemetry_by_default(monkeypatch: pytest.MonkeyPa
 @pytest.mark.asyncio
 async def test_serving_without_telemetry_records_no_event(monkeypatch: pytest.MonkeyPatch):
     assert await _calls_inside(monkeypatch, telemetry=False) == []
+
+
+def test_nested_serving_inherits_the_outer_opt_out_unless_it_sets_its_own():
+    ctx = SimpleNamespace(path=None, git=False)
+    with embed.serving(ctx, telemetry=False):
+        with embed.serving(ctx):
+            assert _state.telemetry_allowed() is False
+        with embed.serving(ctx, telemetry=True):
+            assert _state.telemetry_allowed() is True
+        assert _state.telemetry_allowed() is False
+    with embed.serving(ctx):
+        assert _state.telemetry_allowed() is True

@@ -107,13 +107,16 @@ def request_context() -> Any:
 
 
 @contextmanager
-def serving(ctx: Any, *, telemetry: bool = True) -> Iterator[Any]:
+def serving(ctx: Any, *, telemetry: bool | None = None) -> Iterator[Any]:
     """Serve every tool call inside the block from *ctx*, a ``RepoContext``.
 
-    ``telemetry=False`` stops those calls sending the anonymous usage event.
+    ``telemetry=False`` stops those calls sending the anonymous usage event;
+    ``None`` keeps whatever an enclosing ``serving`` block set.
     """
     token = _request_context.set(ctx)
-    telemetry_token = _request_telemetry.set(telemetry)
+    telemetry_token = _request_telemetry.set(
+        _request_telemetry.get() if telemetry is None else telemetry
+    )
     try:
         yield ctx
     finally:
