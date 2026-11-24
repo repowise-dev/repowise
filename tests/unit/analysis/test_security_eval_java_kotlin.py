@@ -269,3 +269,149 @@ class Runner {
 
     assert len(eval_findings) == 1
     assert eval_findings[0]["line"] == 8
+
+
+def test_java_script_engine_constructor_parameter():
+    source = """
+import javax.script.ScriptEngine;
+
+class Runner {
+    Runner(ScriptEngine engine, String input) throws Exception {
+        engine.eval(input);
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+
+    assert any(f["kind"] == "eval_call" and f["line"] == 6 for f in findings)
+
+
+def test_java_var_script_engine_eval_is_reported():
+    source = """
+import javax.script.ScriptEngineManager;
+
+class Runner {
+    void run(String input) throws Exception {
+        var engine = new ScriptEngineManager().getEngineByName("JavaScript");
+        engine.eval(input);
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+
+    assert any(finding["kind"] == "eval_call" and finding["line"] == 7 for finding in findings)
+
+
+def test_java_unrelated_var_get_engine_by_name_is_not_reported():
+    source = """
+class MyScriptEngineManager {
+    Parser getEngineByName(String name) {
+        return new Parser();
+    }
+}
+
+class Runner {
+    void run() {
+        var engine = new MyScriptEngineManager().getEngineByName("test");
+        engine.eval("1 + 2");
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+    assert not any(f["kind"] == "eval_call" for f in findings)
+
+
+def test_java_local_class_captures_script_engine():
+    source = """
+import javax.script.ScriptEngine;
+
+class Runner {
+    void run(ScriptEngine engine, String input) {
+        class LocalRunner {
+            void execute() {
+                engine.eval(input);
+            }
+        }
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+
+    assert any(f["kind"] == "eval_call" and f["line"] == 8 for f in findings)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """
+import javax.script.ScriptEngine;
+
+enum Runner {
+    INSTANCE;
+
+    private ScriptEngine engine;
+
+    void run(String input) throws Exception {
+        engine.eval(input);
+    }
+}
+""",
+        """
+import javax.script.ScriptEngine;
+
+record Runner(ScriptEngine engine) {
+    void run(String input) throws Exception {
+        engine.eval(input);
+    }
+}
+""",
+        """
+import javax.script.ScriptEngine;
+
+interface Runner {
+    ScriptEngine engine = null;
+
+    default void run(String input) throws Exception {
+        engine.eval(input);
+    }
+}
+""",
+    ],
+)
+def test_java_script_engine_in_other_type_declarations(source):
+    findings = _call_findings("Runner.java", source, lambda: source)
+    assert any(f["kind"] == "eval_call" for f in findings)
+
+
+def test_java_script_engine_in_enhanced_for_loop():
+    source = """
+import javax.script.ScriptEngine;
+
+class Runner {
+    void run(Iterable<ScriptEngine> engines, String input) throws Exception {
+        for (ScriptEngine engine : engines) {
+            engine.eval(input);
+        }
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+
+    assert any(f["kind"] == "eval_call" and f["line"] == 7 for f in findings)
+
+
+def test_java_script_engine_in_resource_declaration():
+    source = """
+import javax.script.ScriptEngine;
+
+class Runner {
+    void run(String input) throws Exception {
+        try (ScriptEngine engine = createEngine()) {
+            engine.eval(input);
+        }
+    }
+}
+"""
+    findings = _call_findings("Runner.java", source, lambda: source)
+
+    assert any(f["kind"] == "eval_call" and f["line"] == 7 for f in findings)
