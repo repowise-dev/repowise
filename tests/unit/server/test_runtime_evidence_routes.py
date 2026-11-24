@@ -332,3 +332,44 @@ async def test_tests_lists_slow_tests_with_their_basis_run(
     assert [t["test_id"] for t in out["slow_tests"]] == ["tests/test_a.py::test_2", "tests/test_a.py::test_1"]
     assert out["runs"][0]["freshness"] == "current"
     assert out["file_costs"] == {"basis": "inferred", "files": [], "files_total": 0, "not_production": 0, "every_test": 0}
+
+
+@pytest.mark.asyncio
+async def test_routes_return_what_the_payload_builders_make_from_the_same_rows(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    """A host that reads the same rows elsewhere returns the same payloads."""
+    from repowise.core.evidence.payloads import (
+        functions_payload,
+        measured_payload,
+        runs_payload,
+        status_payload,
+    )
+    from repowise.core.persistence import crud
+    from repowise.server.schemas.runtime_evidence import (
+        EvidenceRunsResponse,
+        EvidenceStatusResponse,
+        MeasuredFunctionsResponse,
+        MeasuredResponse,
+    )
+
+    repo_id = await _repo(ev_client, session_factory)
+    await _seed(session_factory, repo_id)
+    async with session_factory() as session:
+        runs = await crud.list_evidence_runs(session, repo_id)
+        status = await crud.measured_status(session, repo_id)
+        view = await crud.measured_costs(session, repo_id, limit=10)
+        none = await crud.measured_costs(session, repo_id, limit=10, run_id="nope")
+        rows = await crud.hotness_for_symbols(session, repo_id, [], files=["src/auth/service.py"])
+        built = {
+            "status": EvidenceStatusResponse(**status_payload(runs, status, HEAD)),
+            "runs": EvidenceRunsResponse(**runs_payload(runs, HEAD)),
+            "measured": MeasuredResponse(**measured_payload(view, status)),
+            "measured?run_id=nope": MeasuredResponse(**measured_payload(none, status)),
+            "functions?file=src/auth/service.py": MeasuredFunctionsResponse(
+                **functions_payload(rows)
+            ),
+        }
+    for path, model in built.items():
+        served = (await ev_client.get(f"/api/repos/{repo_id}/evidence/{path}")).json()
+        assert served == model.model_dump(mode="json", by_alias=True), path
