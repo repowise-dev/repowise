@@ -1037,10 +1037,14 @@ async def _load_update_seed(
     enabled: bool,
     timings: PhaseTimings | None,
     log: LogFn,
-) -> tuple[Any | None, Any | None]:
-    """Load and invalidate the optional seed before any update write that uses it."""
+) -> tuple[Any | None, Any | None, bool]:
+    """Load and invalidate the optional seed before any update write that uses it.
+
+    The last value says whether the loaded snapshot was set aside for the save
+    to put back (:func:`~.graph_seed.invalidate_seed_edge_cache`).
+    """
     if not enabled:
-        return None, None
+        return None, None, False
     from .graph_seed import (
         invalidate_seed_edge_cache,
         load_seed_edges,
@@ -1052,8 +1056,10 @@ async def _load_update_seed(
         previous_seed_edges = seed_edges or await load_seed_edges_for_reconciliation(repo_path)
     if seed_edges is None:
         log("[yellow]Full graph rebuild: no valid persisted edge snapshot[/yellow]")
-    invalidate_seed_edge_cache(repo_path)
-    return seed_edges, previous_seed_edges
+    # A valid snapshot is set aside, not deleted: if the graph comes out equal
+    # to it, the save puts it back instead of writing it again.
+    kept = invalidate_seed_edge_cache(repo_path, keep=seed_edges is not None)
+    return seed_edges, previous_seed_edges, kept
 
 
 async def _prime_graph_metrics(
@@ -1124,7 +1130,7 @@ async def rebuild_graph_and_git(
     if timings is not None:
         timings.start("rebuild")
 
-    seed_edges, previous_seed_edges = await _load_update_seed(
+    seed_edges, previous_seed_edges, seed_kept = await _load_update_seed(
         repo_path, enabled=patch_graph, timings=timings, log=log
     )
 
@@ -1162,6 +1168,7 @@ async def rebuild_graph_and_git(
             if path and not _excluded(path)
         },
     )
+    graph_builder.seed_snapshot_kept = seed_kept
     if previous_seed_edges is not None:
         graph_builder.previous_seed_edges = previous_seed_edges
         if not getattr(getattr(graph_builder, "patch_plan", None), "eligible", False):

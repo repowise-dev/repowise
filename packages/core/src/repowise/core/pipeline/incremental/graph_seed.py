@@ -11,6 +11,7 @@ attributes that are not persisted in the DB.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +22,40 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 log = structlog.get_logger(__name__)
 _CACHE_NAME = "graph_seed_edges.pkl"
 _CACHE_VERSION = 2
+# The loaded snapshot, set aside for the length of one update
+# (:func:`invalidate_seed_edge_cache`). A work file, not a cache: nothing
+# carries it between runs, and every update removes it.
+_KEPT_NAME = _CACHE_NAME + ".kept"
 
 
-def invalidate_seed_edge_cache(repo_path: Any) -> None:
+def invalidate_seed_edge_cache(repo_path: Any, *, keep: bool = False) -> bool:
     """Remove a snapshot before an update can change the authoritative DB.
 
     If the process exits after the DB commit but before writing a replacement,
     the next update must rebuild from current sources rather than trust a
-    pre-commit snapshot.
+    pre-commit snapshot. With *keep*, the snapshot the update just loaded is
+    moved aside instead, where no load reads it: an update whose graph comes
+    out equal to it moves it back rather than writing the same bytes again
+    (:func:`save_seed_edge_cache`). Returns whether this call moved it aside;
+    any earlier set-aside file is removed first, so a later move back can only
+    restore what this run loaded.
     """
-    path = Path(repo_path) / ".repowise" / _CACHE_NAME
+    index = Path(repo_path) / ".repowise"
+    path = index / _CACHE_NAME
+    kept = index / _KEPT_NAME
+    discard_set_aside_seed(repo_path)
+    # A leftover that could not be removed is never overwritten or trusted.
+    if keep and path.is_file() and not kept.exists():
+        try:
+            os.replace(path, kept)
+            return True
+        except OSError as exc:
+            log.warning("graph_seed_cache_keep_failed", path=str(path), error=str(exc))
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("graph_seed_cache_invalidate_failed", path=str(path), error=str(exc))
+    return False
 
 
 async def _database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
@@ -408,22 +429,77 @@ async def _restore_persisted_graph_rows(
     return True
 
 
+def _graph_matches_snapshot(graph: Any, snapshot: dict[str, list]) -> bool:
+    """Whether *graph* holds exactly the snapshot's nodes and edges, attributes included.
+
+    Order is not compared: no reader of the snapshot depends on it.
+    """
+    nodes, edges = snapshot["nodes"], snapshot["edges"]
+    if len(nodes) != graph.number_of_nodes() or len(edges) != graph.number_of_edges():
+        return False
+    graph_nodes = graph.nodes
+    if any(node not in graph_nodes or graph_nodes[node] != attrs for node, attrs in nodes):
+        return False
+    return all(graph.get_edge_data(source, target) == attrs for source, target, attrs in edges)
+
+
+def _kept_snapshot_is_current(kept: Path, graph_builder: Any, header: dict[str, Any]) -> bool:
+    """Whether the snapshot this run set aside holds *header* and the finished graph.
+
+    Only a file this run moved aside (``seed_snapshot_kept``) is trusted. The
+    graph is first compared with the snapshot in memory, which is cheap; a
+    mismatch there is final. A match is confirmed against the file itself: the
+    seeded graph shares list and set values with the in-memory snapshot, so a
+    pass that edited one in place changed both.
+    """
+    previous = getattr(graph_builder, "previous_seed_edges", None)
+    if getattr(graph_builder, "seed_snapshot_kept", False) is not True or previous is None:
+        return False
+    graph = graph_builder.graph()
+    if not kept.is_file() or not _graph_matches_snapshot(graph, previous):
+        return False
+    try:
+        cache = load_sealed_pickle(kept, domain=_CACHE_NAME)
+    except Exception as exc:
+        log.warning("graph_seed_cache_unavailable", error=str(exc))
+        return False
+    return (
+        isinstance(cache, dict)
+        and all(cache.get(key) == value for key, value in header.items())
+        and isinstance(cache.get("nodes"), list)
+        and isinstance(cache.get("edges"), list)
+        and _graph_matches_snapshot(graph, cache)
+    )
+
+
 async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
-    """Save a sealed full graph snapshot after the database commit succeeds."""
+    """Save a sealed full graph snapshot after the database commit succeeds.
+
+    An update whose graph equals the snapshot it loaded puts that file back
+    instead of writing it again.
+    """
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
     root = Path(repo_path).resolve()
+    kept = root / ".repowise" / _KEPT_NAME
     try:
         stamp = await _database_stamp(root)
         if stamp is None:
             return
         repo_id, edge_count, stored_fingerprint = stamp
-        graph = graph_builder.graph()
-        payload = {
+        header = {
             "version": _CACHE_VERSION,
             "repo_id": repo_id,
             "edge_count": edge_count,
             "parser_fingerprint": stored_fingerprint or parser_fingerprint(),
+        }
+        if _kept_snapshot_is_current(kept, graph_builder, header):
+            os.replace(kept, root / ".repowise" / _CACHE_NAME)
+            log.info("graph_seed_cache_unchanged", edges=edge_count)
+            return
+        graph = graph_builder.graph()
+        payload = {
+            **header,
             "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
             "edges": [(source, target, dict(attrs)) for source, target, attrs in graph.edges(data=True)],
         }
@@ -454,3 +530,14 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
     except Exception as exc:
         # The cache is optional; the next update can always rebuild from sources.
         log.warning("graph_seed_cache_save_failed", error=str(exc))
+    finally:
+        discard_set_aside_seed(root)
+
+
+def discard_set_aside_seed(repo_path: Any) -> None:
+    """Remove the snapshot an update set aside, once nothing will move it back."""
+    kept = Path(repo_path) / ".repowise" / _KEPT_NAME
+    try:
+        kept.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("graph_seed_cache_invalidate_failed", path=str(kept), error=str(exc))
