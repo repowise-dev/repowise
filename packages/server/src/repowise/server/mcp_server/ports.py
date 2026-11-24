@@ -10,14 +10,15 @@ module and never from a private one.
   lines read around a line outside every symbol.
 - :data:`SYMBOL_CAP`: rows ``get_context``'s compact symbol list carries.
 - :func:`normalize_scope`: a ``get_answer`` scope in canonical form.
-- :func:`nearest`, :func:`outermost`, :data:`NEAREST_DIRS`: the directories a
-  scope that matched nothing is pointed to, and how many.
+- :func:`nearest`, :data:`NEAREST_DIRS`: the directories a scope that matched
+  nothing is pointed to, and how many; :func:`outermost`: scope prefixes
+  without any another one already holds.
 - :func:`by_alternative`, :data:`MAX_ALTERNATIVES`: an ``a|b`` query's rows one
   alternative at a time, and the most alternatives a query keeps.
 - :data:`ENCLOSING_KINDS`, :class:`Span`: the symbols a line hit names as its
   ``in``.
-- :func:`include_facets`: a call's ``include`` as known facet names, for usage
-  events.
+- :func:`include_facets`: a call's ``include`` as known facet names (``other``
+  for any other), ``None`` when it passed none, for usage events.
 """
 
 from __future__ import annotations
