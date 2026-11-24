@@ -153,6 +153,53 @@ def test_the_report_leads_with_fix_first() -> None:
     assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 " in out
     assert "src/core.py:10" in out
     assert "verify: pytest tests/test_core_0.py" in out
+    # No item here carries a timing, so no measure line is printed.
+    assert "measure before" not in out
+
+
+def test_a_performance_item_says_how_to_re_measure() -> None:
+    """``verify.measure`` reaches the Fix-first lead: the baseline, then the comparison."""
+    from dataclasses import replace
+
+    from repowise.cli.commands.health_cmd.summary import _render_fix_first
+    from repowise.core.analysis.health.fix_first import build_fix_first
+    from repowise.core.perf_measure import verify_measure
+    from tests.unit.health.fix_first_rows import (
+        FINDINGS,
+        METRICS,
+        PERFORMANCE,
+        PLANS,
+        REFACTORING,
+    )
+
+    queue = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        limit=1,
+    )
+    target = {
+        "command": "python -m app build",
+        "workload": "app",
+        "class": "entry_point",
+        "cwd": "svc",
+    }
+    item = queue.items[0]
+    timed = replace(item, verify=replace(item.verify, measure=verify_measure(target, "load_all")))
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    with patch("repowise.cli.commands.health_cmd.summary.console", console):
+        _render_fix_first((replace(queue, items=(timed,)), queue.counts(1)))
+    out = console.file.getvalue()
+    assert (
+        "measure before: repowise perf measure --save before-load_all -- python -m app build "
+        "(from svc)" in out
+    )
+    assert (
+        "measure after: repowise perf measure --against before-load_all -- python -m app build"
+        in out
+    )
 
 
 def _mostly_unanalysed_output(*args: str) -> str:
