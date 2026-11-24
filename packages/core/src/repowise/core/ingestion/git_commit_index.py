@@ -357,19 +357,14 @@ def _patched(
     run's is a miss, never a guess.
     """
     runs = _missing_runs(order, pool)
+    long_runs = [(start, end) for start, end in runs if end - start >= _MIN_WALKED_RUN]
     scattered = [
         sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
     ]
-    walked = sum(end - start >= _MIN_WALKED_RUN for start, end in runs)
-    if len(scattered) > _MAX_PATCHED_COMMITS or walked > _MAX_WALKED_RUNS:
+    if len(scattered) > _MAX_PATCHED_COMMITS or len(long_runs) > _MAX_WALKED_RUNS:
         return None
-    for start, end in runs:
-        if end - start < _MIN_WALKED_RUN:
-            continue
-        walked = _log_records(repo, head, f"--skip={skip + start}", f"-{end - start}")
-        if [_record_sha(record) for record in walked] != order[start:end]:
-            return None
-        pool.update(zip(order[start:end], walked, strict=True))
+    if not _walk_runs(repo, order, long_runs, pool, head, skip):
+        return None
     for start in range(0, len(scattered), _PATCH_CHUNK):
         chunk = scattered[start : start + _PATCH_CHUNK]
         for record in _log_records(repo, "--no-walk=unsorted", *chunk):
@@ -377,6 +372,23 @@ def _patched(
     if any(sha not in pool for sha in order):
         return None
     return [pool[sha] for sha in order]
+
+
+def _walk_runs(
+    repo: object,
+    order: list[str],
+    runs: list[tuple[int, int]],
+    pool: dict[str, str],
+    head: str,
+    skip: int,
+) -> bool:
+    """Read each run of *order* into *pool* with one ranged walk; ``False`` on any mismatch."""
+    for start, end in runs:
+        records = _log_records(repo, head, f"--skip={skip + start}", f"-{end - start}")
+        if [_record_sha(record) for record in records] != order[start:end]:
+            return False
+        pool.update(zip(order[start:end], records, strict=True))
+    return True
 
 
 def _missing_runs(order: list[str], pool: dict[str, str]) -> list[tuple[int, int]]:
