@@ -41,16 +41,20 @@ _READER_PROJECT_RE = re.compile(
 _OTHER_REPOSITORY = (
     r"(?:\b(?:that|another|upstream|external|sibling)\s+(?:repo|repository|project|codebase)"
     r"|\bthe\s+[\w-]+/[\w.-]+\s+(?:repo|repository))"
+    r"(?:'s|s'|s)?(?!\w)"
 )
-_OTHER_REPOSITORY_RE = re.compile(_OTHER_REPOSITORY + r"(?:'s)?\b", re.I)
-# The same qualifier right after the path: "`tools/validate.py` in that
-# repository", "`src/x.py` from the upstream repo".
+_OTHER_REPOSITORY_RE = re.compile(_OTHER_REPOSITORY, re.I)
+# The same qualifier right after the path, or after a list the path opens:
+# "`tools/validate.py` in that repository", "`a.py` and `b.py` from the
+# upstream repo". Never across a sentence end.
 _OTHER_REPOSITORY_AFTER_RE = re.compile(
-    r"\A\W{0,3}\s*(?:in|from|of)\s+(?:the\s+(?=upstream|external|sibling))?"
-    + _OTHER_REPOSITORY
-    + r"\b",
+    r"\A`?(?:\s*(?:,|and|or)\s*`[^`]*`)*[`),;:\]]{0,3}\s*(?:in|from|of)\s+"
+    r"(?:the\s+(?=upstream|external|sibling))?" + _OTHER_REPOSITORY,
     re.I,
 )
+# A code span, blanked before looking for a sentence end: the dot in
+# `tools/validate.py` does not end a sentence.
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
 
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
@@ -325,7 +329,8 @@ def _foreign_project(ref: DocReference) -> str:
     A plain substring search sidesteps the mismatch, since ``context`` already
     strips consistently from both.
 
-    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``) so
+    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``
+    outside a code span) so
     "This mirrors your project's layout. See ``src/gone.ts`` for details."
     still reports the real miss in its own, unrelated sentence. Another
     repository may also be named right after the path ("``tools/x.py`` in that
@@ -333,7 +338,8 @@ def _foreign_project(ref: DocReference) -> str:
     """
     idx = ref.context.find(ref.raw)
     preceding = ref.context[:idx] if idx != -1 else ref.context
-    sentence_start = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?")) + 1
+    prose = _CODE_SPAN_RE.sub(lambda m: " " * len(m.group()), preceding)
+    sentence_start = max(prose.rfind("."), prose.rfind("!"), prose.rfind("?")) + 1
     sentence = preceding[sentence_start:]
     if _READER_PROJECT_RE.search(sentence):
         return "reader-project"

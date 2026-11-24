@@ -145,6 +145,10 @@ def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
         ("Run `src/validate.py` in that repository.", "src/validate.py"),
         ("Copy `src/check.py` from the upstream repo.", "src/check.py"),
         ("See `src/lint.py` in the acme/scanner repo.", "src/lint.py"),
+        ("In that repository, run `src/validate.py` and `src/lint.py`.", "src/lint.py"),
+        ("`src/validate.py` and `src/lint.py` in that repository do this.", "src/validate.py"),
+        ("The upstream projects keep `src/check.py`.", "src/check.py"),
+        ("Run the upstream repos' `src/check.py`.", "src/check.py"),
     ],
 )
 def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
@@ -165,6 +169,7 @@ def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
         "Our client/server repo ships `src/gone.py`.",
         "The upstream repo is archived. Our `src/gone.py` replaced it.",
         "Keep `src/gone.py` in this repository, not the upstream one.",
+        "See `src/gone.py`. In that repository, run it.",
     ],
 )
 def test_a_missing_path_in_this_repository_still_reports(context: str):
