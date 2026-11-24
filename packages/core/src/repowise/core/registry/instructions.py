@@ -34,12 +34,12 @@ CHECK_CLAUSES = {
 #: lines above that promise live files, a verified edit set or uncommitted work.
 NO_CHECKOUT_TOOL_LINES = {
     "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` come "
-    "from the index, never every match; grep your checkout before editing each use.",
+    "from the index, not every match; grep before editing.",
     "get_context": "- get_context(targets) for a file's docs, symbols, owners and decisions. "
     'include=["files"] on a directory lists its files and tests.',
 }
 NO_CHECKOUT_CHECK_CLAUSES = {
-    "get_change_risk": "get_change_risk to review an indexed commit",
+    "get_change_risk": "get_change_risk for a commit",
 }
 NO_INDEX_LINE = (
     "No index: tell the user to run 'repowise init --yes --no-prose' (no "

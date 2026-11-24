@@ -111,3 +111,18 @@ def test_no_checkout_definitions_change_only_the_checkout_words(workspace):
     assert _size(variant) < _size(default)
     # The variant rewords a fresh dump: a default call after it is unchanged.
     assert json.dumps(tool_definitions(names, workspace=workspace)) == json.dumps(default)
+
+
+@pytest.mark.parametrize("name", _ALL)
+def test_no_reworded_line_is_longer_than_the_one_it_replaces(name):
+    """No served set grows, even one tool with no no-index line to drop."""
+    for new, old in (
+        (NO_CHECKOUT_TOOL_LINES, TOOL_LINES),
+        (NO_CHECKOUT_CHECK_CLAUSES, CHECK_CLAUSES),
+    ):
+        if name in new:
+            assert len(new[name].encode()) <= len(old[name].encode())
+    default = server_instructions([name], indexed=True)
+    assert len(server_instructions([name], indexed=True, no_checkout=True).encode()) <= len(
+        default.encode()
+    )
