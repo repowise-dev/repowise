@@ -755,11 +755,26 @@ async def test_generation_setup_steps_are_timed_inside_setup():
     assert sum(steps.values()) <= totals["generation.setup"] + 0.01 * len(steps)
 
 
-async def test_level_builds_are_timed_inside_generation_llm():
+async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
+    import time
+
+    from repowise.core.generation.page_generator import levels as _levels
+
+    # A slow level-2 build, so a span that overlapped its neighbours, or missed
+    # the build, would show in the totals instead of rounding to zero.
+    real_build = _levels.build_level2_coros
+
+    async def slow_build(run):
+        time.sleep(0.1)
+        return await real_build(run)
+
+    monkeypatch.setattr(_levels, "build_level2_coros", slow_build)
     totals = await _setup_timings()
 
     builds = {k: v for k, v in totals.items() if k.startswith("generation.llm.")}
     assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 8)}
+    assert builds["generation.llm.build.level2"] >= 0.09
+    assert totals["generation.level2"] < 0.09
     # The builds, the levels they feed and the finalize pass are disjoint parts
     # of generation.llm, so together they fit inside it (each total is rounded
     # to 0.01 s, hence the slack).
