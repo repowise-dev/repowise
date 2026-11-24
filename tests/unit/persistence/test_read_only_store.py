@@ -119,8 +119,7 @@ async def test_every_write_on_a_read_only_store_fails_loudly(store_path: Path) -
             )
             with pytest.raises(OperationalError, match="readonly"):
                 await session.commit()
-        with pytest.raises(ReadOnlyStoreError):
-            await init_db(store.engine)
+        await init_db(store.engine)  # stamped current: opens without a write
         with pytest.raises(ReadOnlyStoreError):
             await store.fts.ensure_index()
         with pytest.raises(OperationalError, match="readonly"):

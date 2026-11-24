@@ -283,7 +283,11 @@ class SchemaBehindError(RuntimeError):
 
 
 class ReadOnlyStoreError(RuntimeError):
-    """A write path was called on a store opened with :func:`read_only_url`."""
+    """``FullTextSearch.ensure_index`` was called on a store opened read-only.
+
+    ``init_db`` keeps its own contract there: a store already on the current
+    schema opens without a write, anything else fails on the write itself.
+    """
 
     code = "read_only_store"
 
@@ -895,8 +899,6 @@ async def init_db(engine: AsyncEngine) -> None:
 
     Safe to call on an already-initialised database (idempotent).
     """
-    if is_read_only(engine):
-        raise ReadOnlyStoreError("init_db writes the schema; this store was opened read-only")
     from repowise.core.registry.plugins import load_plugins
     from repowise.core.registry.storage_migrations import storage_migrations
 
