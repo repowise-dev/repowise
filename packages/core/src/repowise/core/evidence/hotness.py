@@ -256,21 +256,29 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
 def commit_position(run: Any, runs: Iterable[Any], head_commit: str | None) -> str:
     """Where *run*'s commit sits against the indexed *head_commit*.
 
-    ``indexed`` at it; ``ahead`` when measured after the newest of *runs* at
-    the indexed commit, ``older`` when measured before it; ``other`` when no
-    run is at the indexed commit to compare with, or either commit is unknown.
-    Ceiling: this reads measurement order, which is commit order for runs a
-    CI job adds on each push, so an old commit measured late reads as ahead.
-    Git order needs a checkout, which a host's read path does not have.
+    ``indexed`` at it; ``ahead`` when added after the newest of *runs* at the
+    indexed commit, ``older`` when added before it; ``other`` when no run is
+    at the indexed commit to compare with, or either commit is unknown.
+    Ingest order (measurement time for a run stored without one), the rule
+    the UI's ``commitPosition`` reads from the runs list, so the two agree.
+    Ceiling: ingest order is commit order for runs a CI job adds on each
+    push; an old commit added late reads as ahead. Git order needs a
+    checkout, which a host's read path does not have.
     """
     if not run.commit_sha or not head_commit:
         return "other"
     if run.commit_sha == head_commit:
         return "indexed"
-    anchors = [_age_key(r)[0] for r in runs if r.commit_sha == head_commit]
+    anchors = [_ingest_time(r) for r in runs if r.commit_sha == head_commit]
     if not anchors:
         return "other"
-    return "ahead" if _age_key(run)[0] > max(anchors) else "older"
+    return "ahead" if _ingest_time(run) > max(anchors) else "older"
+
+
+def _ingest_time(run: Any) -> float:
+    at = getattr(run, "ingested_at", None) or run.measured_at
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).timestamp() if at else 0.0
 
 
 def _age_key(run: Any) -> tuple[float, str]:

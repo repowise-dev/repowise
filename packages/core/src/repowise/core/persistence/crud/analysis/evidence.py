@@ -408,7 +408,7 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
 
     ``no_runtime_data``: no profile run is stored. ``ahead_of_index``: every
     function the stored runs mapped is stale, and a workload's newest run was
-    measured after the newest run at the indexed commit
+    added after the newest run at the indexed commit
     (``evidence.hotness.commit_position``): it ranks once the index reaches
     its commit. ``stale``: every function the stored runs mapped is stale
     otherwise (measured at another commit, body changed since).
@@ -443,7 +443,7 @@ async def newer_unranked(
     not its workload's newest complete run, that newest run, which ranks
     nothing, and why, by the listed run's id.
 
-    ``reason`` is ``ahead_of_index`` when the newer run was measured after
+    ``reason`` is ``ahead_of_index`` when the newer run was added after
     the newest run at the indexed commit (``evidence.hotness.commit_position``:
     it ranks once the index reaches its commit), ``not_ranked`` when it is at
     the indexed commit (too few samples in production code, or no production

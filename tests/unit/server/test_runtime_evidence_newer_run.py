@@ -43,6 +43,7 @@ def _run(run_id: str, commit: str, at: datetime, *, kind: str = "profile") -> Ev
         unit="seconds",
         commit_sha=commit,
         measured_at=at,
+        ingested_at=at,
         total_value=1000.0,
         repo_self_value=130.0,
         wait_value=580.0,

@@ -348,3 +348,24 @@ def test_commit_position_reads_measurement_order_against_the_indexed_commit() ->
     # No run at the indexed commit to compare with, or no indexed commit.
     assert commit_position(ahead, [ahead, before], HEAD) == "other"
     assert commit_position(ahead, runs, None) == "other"
+
+
+def test_commit_position_reads_ingest_order_as_the_ui_does() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.evidence.hotness import commit_position
+
+    def run(commit: str, measured: int, ingested: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            commit_sha=commit,
+            measured_at=datetime(2026, 11, measured, tzinfo=UTC),
+            ingested_at=datetime(2026, 11, ingested),  # SQLite drops the zone
+        )
+
+    anchor = run(HEAD, 2, 2)
+    # Measured before the index's run but added after it: ahead, as the runs list reads it.
+    late = run(OLD, 1, 3)
+    assert commit_position(late, [anchor, late], HEAD) == "ahead"
+    # Measured after but added before it: older.
+    early = run(OLD, 3, 1)
+    assert commit_position(early, [anchor, early], HEAD) == "older"

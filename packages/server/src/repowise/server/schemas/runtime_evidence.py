@@ -25,7 +25,7 @@ from ._datetime import UTCDateTime
 
 #: ``measured``: a workload's run ranks a function. Otherwise why not:
 #: ``no_runtime_data`` (no profile run stored), ``ahead_of_index`` (the newest
-#: run was measured after the indexed commit's; it ranks once the index reaches
+#: run was added after the indexed commit's; it ranks once the index reaches
 #: its commit), ``stale`` (every function the runs mapped changed since),
 #: ``not_ranked`` (current evidence ranks nothing), ``needs_update`` (the
 #: per-workload view predates the store; an update builds it).
@@ -117,7 +117,7 @@ class NewerRun(_Strict):
     run_id: str
     commit: str | None
     measured_at: UTCDateTime | None
-    #: ``ahead_of_index``: measured after the indexed commit's run, ranks once
+    #: ``ahead_of_index``: added after the indexed commit's run, ranks once
     #: the index reaches its commit. ``not_ranked``: at the indexed commit, too
     #: few samples in production code or no production frame. ``stale``: another
     #: commit whose function bodies changed since.
