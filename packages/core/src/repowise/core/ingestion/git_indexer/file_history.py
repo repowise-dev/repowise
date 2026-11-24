@@ -42,6 +42,7 @@ from .records import (
     _CommitRec,
     _extract_rename_paths,
     _parse_commit_record,
+    commit_credit,
 )
 
 
@@ -202,6 +203,7 @@ def _parse_per_file_log(
             is_merge=header["is_merge"],
             subject=header["subject"],
             body=header["body"],
+            credit=commit_credit(header),
         )
         commits.append(current)
         changed_paths = _add_own_churn(current, numstat_lines, known_paths)
@@ -387,7 +389,7 @@ def index_file(
         _add_agent_rollup(meta, commits)
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(authored, now)
         if include_blame:
-            _add_blame_ownership(meta, repo, repo_path, now, authors)
+            _add_blame_ownership(meta, repo, repo_path, now, authors, authored)
         _add_commit_messages(meta, authored, forge)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
@@ -513,13 +515,15 @@ class _Authors:
         """*resolve* is the repo's people resolver; without one, the file's own
         authors are merged by the same rules."""
         authored = [c for c in commits if not c.pure_move]  # moving a file is not authoring it
+        # A coding agent's commit counts for the person behind it, when git names one.
+        credited = [c.credit or (c.author_name, c.author_email) for c in authored]
         if resolve is None:
-            resolve = build_identity_resolver((c.author_name, c.author_email) for c in authored)
+            resolve = build_identity_resolver(credited)
         authors = cls(resolve)
-        for c in authored:
-            key = resolve(c.author_name, c.author_email)
+        for c, (name, email) in zip(authored, credited, strict=True):
+            key = resolve(name, email)
             authors.counts[key] += 1
-            authors.seen_names.setdefault(key, c.author_name)
+            authors.seen_names.setdefault(key, name)
             if c.ts >= recent_since_ts:
                 authors.recent_counts[key] += 1
             if c.ts > 0:
@@ -620,7 +624,12 @@ def _bus_factor(author_counts: Counter[str], total_commits: int) -> int:
 
 
 def _add_blame_ownership(
-    meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime, authors: _Authors
+    meta: dict[str, Any],
+    repo: Any,
+    repo_path: Path,
+    now: datetime,
+    authors: _Authors,
+    commits: list[_CommitRec],
 ) -> None:
     """Blame ownership plus the per-line ``BlameIndex`` (FULL tier), best effort.
 
@@ -633,6 +642,10 @@ def _add_blame_ownership(
     signal and the index ``function_hotspot`` / ``code_age_volatility`` read.
     Files over the size cap are skipped: blame is O(lines) and can block the
     executor thread. The commit floor only gates whether the index is kept.
+
+    Lines from a coding agent's commit go to the person the commit tally
+    credits (:attr:`_CommitRec.credit`). *commits* are the file's walked
+    commits, so an agent commit older than the walk keeps its agent author.
     """
     file_path = meta["file_path"]
     try:
@@ -645,6 +658,9 @@ def _add_blame_ownership(
         if meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME:
             meta["blame_index"] = blame_idx
         # Blame credits lines to the same identities the commit tally counts.
+        blame_idx.authors.update(
+            {c.sha: c.credit for c in commits if c.credit and c.sha in blame_idx.authors}
+        )
         blame_idx.resolve = authors.resolve
         for name, email in blame_idx.authors.values():
             authors.seen_names.setdefault(authors.resolve(name, email), name)

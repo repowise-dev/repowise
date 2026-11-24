@@ -18,6 +18,7 @@ email match is guarded and can be rolled back.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from functools import lru_cache
@@ -99,6 +100,37 @@ def identity_kind(name: str | None, email: str | None) -> IdentityKind:
 def is_bot(name: str | None, email: str | None) -> bool:
     """True when this author is automation (CI or a coding agent's own identity)."""
     return identity_kind(name, email) != "human"
+
+
+# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
+TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
+_COAUTHOR_LINE_RE = re.compile(r"^co-authored-by:(?P<value>.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def accountable_human(
+    author_name: str | None,
+    author_email: str | None,
+    committer_name: str | None,
+    committer_email: str | None,
+    body: str | None,
+) -> tuple[str, str] | None:
+    """The person to credit for a commit a coding agent authored, from git alone.
+
+    Only an author of kind ``agent`` is re-credited; a human or bot author
+    returns ``None`` (kept as is). The first ``Co-authored-by`` trailer naming
+    a human wins, else a human committer (who then differs from the agent
+    author). With neither, ``None``: the commit stays the agent's, and every
+    owner figure shows it as an agent, never as a person.
+    """
+    if identity_kind(author_name, author_email) != "agent":
+        return None
+    for line in _COAUTHOR_LINE_RE.finditer(body or ""):
+        m = TRAILER_PERSON_RE.match(line["value"])
+        if m and m["email"] and identity_kind(m["name"], m["email"]) == "human":
+            return m["name"] or m["email"], m["email"]
+    if committer_email and identity_kind(committer_name, committer_email) == "human":
+        return committer_name or committer_email, committer_email
+    return None
 
 
 def _is_machine_local(canonical_email: str) -> bool:

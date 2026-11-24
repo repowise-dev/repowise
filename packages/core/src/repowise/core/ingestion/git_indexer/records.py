@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.author_identity import TRAILER_PERSON_RE, accountable_human
 
 from ._constants import _CODE_EXTENSIONS
 
@@ -94,6 +95,20 @@ class _CommitRec:
     # The commit only moved this file (a rename row with 0/0 lines). It counts
     # as one of the file's commits but credits nobody with ownership.
     pure_move: bool = False
+    # The person ownership credits when a coding agent authored the commit
+    # (``author_identity.accountable_human``); None keeps the author.
+    credit: tuple[str, str] | None = None
+
+
+def commit_credit(header: dict) -> tuple[str, str] | None:
+    """:attr:`_CommitRec.credit` for one parsed commit header."""
+    return accountable_human(
+        header["author_name"],
+        header["author_email"],
+        header.get("committer_name"),
+        header.get("committer_email"),
+        header.get("body"),
+    )
 
 
 def _tz_offset_minutes(iso: str) -> int | None:
@@ -524,10 +539,6 @@ def _lifetime_churn(
     return _walk_churn(repo, rev)
 
 
-# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
-_TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
-
-
 def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
     """The shared people resolver over every non-merge author reachable from *rev*.
 
@@ -551,7 +562,7 @@ def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
         co_authors = [
             (m["name"], m["email"])
             for value in trailers.split("\x1f")
-            if (m := _TRAILER_PERSON_RE.match(value))
+            if (m := TRAILER_PERSON_RE.match(value))
         ]
         rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
     return people_resolver(commit_rows=rows)

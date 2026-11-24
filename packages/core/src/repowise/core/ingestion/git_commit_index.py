@@ -573,7 +573,9 @@ class _FileBuckets:
     ) -> None:
         """File one commit under each of its changed paths that is tracked here."""
         from .git_indexer import _CommitRec
+        from .git_indexer.records import commit_credit
 
+        credit = commit_credit(header)
         for target, added, deleted in changes:
             if target not in self.files:
                 continue
@@ -594,6 +596,7 @@ class _FileBuckets:
                         agent_tier=prov.autonomy_tier,
                         attribution=prov.attribution,
                         pure_move=target in pure_moves,
+                        credit=credit,
                     )
                 )
 
