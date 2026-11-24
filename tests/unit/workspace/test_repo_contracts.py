@@ -218,3 +218,14 @@ def test_a_damaged_file_is_re_extracted_quietly(
         assert _run(mono).extracted
     assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
     assert _store(mono)["contracts"]
+
+
+def test_the_repos_exclude_patterns_keep_a_folder_out(mono: Path) -> None:
+    _run(mono)
+    config = mono / ".repowise" / "config.yaml"
+    config.write_text("exclude_patterns:\n  - services/\n")
+
+    assert _run(mono).extracted  # the patterns key reuse
+    files = {c["file_path"] for c in _store(mono)["contracts"]}
+    assert files == {"web/src/api.ts"}
+    assert not _store(mono)["contract_links"]

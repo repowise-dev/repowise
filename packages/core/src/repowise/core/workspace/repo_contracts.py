@@ -25,6 +25,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -80,7 +81,13 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
     out_path = repo_contracts_path(repo_path)
     contract_config = repo_contract_config()
     wanted = _relevance(contract_config)
-    config_fp = _extraction_config_fingerprint(contract_config, set(), MessageTypeIndex())
+    excludes = _repo_exclude_patterns(repo_path)
+    # The repo's own exclude_patterns decide the walk too, so they key reuse.
+    config_fp = hashlib.sha256(
+        json.dumps(
+            [_extraction_config_fingerprint(contract_config, set(), MessageTypeIndex()), excludes]
+        ).encode()
+    ).hexdigest()[:16]
 
     head, dirty_fp = await asyncio.gather(
         asyncio.to_thread(get_head_commit, repo_path),
@@ -105,7 +112,7 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
                 False, len(prior.contracts), len(prior.contract_links), out_path
             )
 
-    store, indexed = await _extract(repo_path, alias, contract_config, head)
+    store, indexed = await _extract(repo_path, alias, contract_config, head, excludes)
     store.repo_provenance = {
         alias: {
             "head": head or "",
@@ -147,7 +154,11 @@ def _stamp_holds(
 
 
 async def _extract(
-    repo_path: Path, alias: str, contract_config: ContractConfig, head: str | None
+    repo_path: Path,
+    alias: str,
+    contract_config: ContractConfig,
+    head: str | None,
+    excludes: list[str],
 ) -> tuple[ContractStore, bool]:
     """One full read of *repo_path*, matched within itself, and whether wiki.db
     was read; nothing written."""
@@ -158,7 +169,9 @@ async def _extract(
     from .repo_index import WorkspaceIndex, open_repo_index
     from .service_names import build_service_name_map, service_names_fingerprint
 
-    exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
+    exclude = _with_repo_excludes(
+        make_exclude_predicate(tuple(contract_config.exclude_globs)), excludes
+    )
     repos = {alias: repo_path}
     message_types = (
         await asyncio.to_thread(
@@ -198,6 +211,27 @@ async def _extract(
         service_names=names.to_dict(service_names_fingerprint({alias: head}, None)),
     )
     return store, index is not None
+
+
+def _repo_exclude_patterns(repo_path: Path) -> list[str]:
+    """The repo's ``exclude_patterns`` from ``.repowise/config.yaml``, as the index reads them."""
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        patterns = load_repo_config(repo_path).get("exclude_patterns") or []
+    except Exception:
+        return []  # a broken config is reported by the command that owns it
+    return [str(p) for p in patterns] if isinstance(patterns, list) else []
+
+
+def _with_repo_excludes(base: Callable[[str], bool], patterns: list[str]) -> Callable[[str], bool]:
+    """*base*, plus the gitignore-style patterns the index's own walk skips."""
+    if not patterns:
+        return base
+    from repowise.core.ingestion.traverser import _compile_gitignore
+
+    spec = _compile_gitignore(patterns)
+    return lambda rel: base(rel) or spec.match_file(rel)
 
 
 def _has_index(repo_path: Path) -> bool:
