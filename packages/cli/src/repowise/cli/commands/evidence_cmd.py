@@ -589,6 +589,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
     if cov["command"]:
         lines += [f"  needs: [cyan]{escape(p)}[/cyan]" for p in cov["prerequisites"]]
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
+        if cov.get("per_test_map"):
+            lines.append(f"  per-test map: also written, to {escape(cov['per_test_map'])}")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
     # The reason is the last note when there is no command; the rest say what the command installs or skips.

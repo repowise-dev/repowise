@@ -56,6 +56,7 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json
 from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
+from repowise.core.evidence.setup import COVERAGE_SETUP
 from repowise.core.test_runners import RUNNERS
 
 # Candidates the table prints per changed file; json and list carry them all.
@@ -419,10 +420,10 @@ def _render_table(result: dict) -> None:
 def _print_map_state(result: dict) -> None:
     if result["map_empty"]:
         console.print(
-            "[yellow]No test-to-code map ingested.[/yellow] Run "
-            "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
-            "impacted tests. "
+            "[yellow]No test-to-code map ingested.[/yellow] For exact impacted tests, "
+            f"run [cyan]{COVERAGE_SETUP}[/cyan]: for pytest its command also records "
+            f"per-test contexts ([cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], needs pytest-cov) "
+            "and its ingest line builds the map. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif by_file := result.get("matched_by_file"):
