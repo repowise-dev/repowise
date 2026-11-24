@@ -2,10 +2,10 @@
 
 Cycles are the stored file-level strongly connected components of two to four
 production files (``graph_node_membership``); one made only of Python
-``import b`` edges is marked static only, unlikely to fail at import. Vendored files are the stored
-origin ``vendored`` outside a directory the index already skips as vendor
-code. Here the origin is the finding, so it is the one section that lists
-code that is not production.
+``import b`` edges is marked static only, unlikely to fail at import.
+Vendored files are the stored origin ``vendored`` outside a directory the
+index already skips as vendor code. Here the origin is the finding, so it is
+the one section that lists code that is not production.
 """
 
 from __future__ import annotations
