@@ -45,14 +45,16 @@ def _without_query(module_path: str, importer_path: str, ctx: ResolverContext) -
     (``raw-loader!./kit.js``, ``!!style-loader!css-loader?modules!./a.css``):
     the file is what follows the last ``!``, and is cut out first because a
     loader may carry a query of its own. A ``!`` is also legal in a file
-    name, so a relative specifier that names a file as written
-    (``./components/Oops!.tsx``) is kept whole. A loader given by a relative
-    path (``./my-loader!./kit.js``) names no file as written, and is cut.
+    name, so a specifier that names a file in the repository as written is
+    kept whole, whether relative (``./components/Oops!.tsx``) or through an
+    alias, subpath import or workspace package (``@/components/Oops!.tsx``).
+    A loader given by a relative path (``./my-loader!./kit.js``) names no
+    file as written, and is cut.
     """
     _, bang, resource = module_path.rpartition("!")
     if bang and resource:
         whole = _strip_query(module_path)
-        if not (whole.startswith(".") and _resolve_relative(whole, importer_path, ctx)):
+        if _resolve_in_repo(whole, importer_path, ctx) is None:
             module_path = resource
     return _strip_query(module_path)
 
@@ -125,7 +127,16 @@ def _resolve_relative(module_path: str, importer_path: str, ctx: ResolverContext
 def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a TypeScript or JavaScript import to a repo-relative file path."""
     module_path = _without_query(module_path, importer_path, ctx)
+    resolved = _resolve_in_repo(module_path, importer_path, ctx)
+    if resolved is not None or module_path.startswith("."):
+        return resolved
 
+    # Fallback: external npm package.
+    return ctx.add_external_node(module_path)
+
+
+def _resolve_in_repo(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    """The file in the repository a specifier names, or ``None`` when it names none."""
     if module_path.startswith("."):
         return _resolve_relative(module_path, importer_path, ctx)
 
@@ -156,12 +167,7 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
 
     # Workspace package (npm/yarn/pnpm ``workspaces``): turn ``@myorg/foo``
     # into the sibling package's entry point rather than an external node.
-    workspace_resolved = resolve_via_workspaces(module_path, ctx)
-    if workspace_resolved is not None:
-        return workspace_resolved
-
-    # Fallback: external npm package.
-    return ctx.add_external_node(module_path)
+    return resolve_via_workspaces(module_path, ctx)
 
 
 def resolve_ts_js_import_all(

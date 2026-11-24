@@ -22,6 +22,7 @@ from repowise.core.ingestion.resolvers.typescript import (
     resolve_ts_js_import,
     resolve_ts_js_import_all,
 )
+from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
 
 
 def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext:
@@ -1071,3 +1072,34 @@ class TestQuerySuffix:
         # ``./my-loader!./worker`` names no file as written, so it is a loader chain.
         ctx = _ctx(tmp_path, [*self._PATHS, "src/my-loader.js"])
         assert resolve_ts_js_import("./my-loader!./worker", "src/main.ts", ctx) == "src/worker.ts"
+
+    @staticmethod
+    def _alias_ctx(repo: Path, paths: list[str]) -> ResolverContext:
+        """A repository on disk whose tsconfig maps ``@/*`` to ``src/*``."""
+        (repo / "tsconfig.json").write_text(
+            json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+            encoding="utf-8",
+        )
+        for rel in paths:
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("export {};\n", encoding="utf-8")
+        ctx = _ctx(repo, paths)
+        ctx.tsconfig_resolver = TsconfigResolver(repo, ctx.path_set)
+        return ctx
+
+    @pytest.mark.parametrize(
+        "spec",
+        ["@/components/Oops!.tsx", "@/components/Oops!", "@/components/Oops!.tsx?raw"],
+    )
+    def test_an_aliased_file_named_with_a_bang_keeps_its_path(
+        self, tmp_path: Path, spec: str
+    ) -> None:
+        # The alias names the file as written, so the ``!`` is part of its name.
+        ctx = self._alias_ctx(tmp_path, ["src/main.ts", "src/components/Oops!.tsx"])
+        expected = "src/components/Oops!.tsx"
+        assert resolve_ts_js_import(spec, "src/main.ts", ctx) == expected
+        assert resolve_ts_js_import_all(spec, "src/main.ts", ctx) == (expected,)
+
+    def test_a_loader_before_an_aliased_file_is_still_cut(self, tmp_path: Path) -> None:
+        ctx = self._alias_ctx(tmp_path, ["src/main.ts", "src/worker.ts"])
+        assert resolve_ts_js_import("worker-loader!@/worker", "src/main.ts", ctx) == "src/worker.ts"
