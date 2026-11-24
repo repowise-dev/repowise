@@ -18,6 +18,8 @@ from repowise.core.persistence.models import Page, Repository
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.registry import REPOSITORY_ID_INFO_KEY, RepoRegistry
 from repowise.server.mcp_server import _basis, _components, _graph_files, embed
+from repowise.server.mcp_server.tool_answer import cache as answer_cache
+from repowise.server.mcp_server.tool_change_risk import health as change_health
 from repowise.server.mcp_server.tool_overview import graph as overview_graph
 
 _NOW = datetime(2026, 11, 24, 10, 0, 0, tzinfo=UTC)
@@ -32,6 +34,8 @@ def fresh_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_components, "_CACHE", {})
     monkeypatch.setattr(overview_graph, "_DEPENDENCY_CACHE", {})
     monkeypatch.setattr(fix_first, "_cache", OrderedDict())
+    monkeypatch.setattr(answer_cache, "_KEYLESS_REPLIES", OrderedDict())
+    monkeypatch.setattr(change_health, "_DEPENDENTS", OrderedDict())
     for module, name in (
         (_graph_files, "_CACHE_MAX_REPOS"),
         (_basis, "_CACHE_MAX"),
@@ -50,6 +54,8 @@ def _fill(repo_ids: list[str]) -> IndexStampCache:
         overview_graph._DEPENDENCY_CACHE[(rid, "state", 0)] = {}
         fix_first._cache[("sqlite://", rid, None, ("stamp",), True, None, None)] = rid
         stamped.remember(("sqlite://", rid, ("stamp",)), rid)
+        answer_cache._KEYLESS_REPLIES[(rid, "qhash")] = ((), {})
+        change_health._DEPENDENTS[f"None|{rid}"] = ("state", {})
     return stamped
 
 
@@ -61,15 +67,17 @@ def _repos_held(stamped: IndexStampCache) -> list[set[str]]:
         {k[0] for k in overview_graph._DEPENDENCY_CACHE},
         {k[1] for k in fix_first._cache},
         {k[1] for k in stamped._entries},
+        {k[0] for k in answer_cache._KEYLESS_REPLIES},
+        {k.rpartition("|")[2] for k in change_health._DEPENDENTS},
     ]
 
 
 def test_release_drops_only_that_repository(fresh_caches: None) -> None:
     stamped = _fill(["a", "b"])
     embed.release("a")
-    assert _repos_held(stamped) == [{"b"}] * 6
+    assert _repos_held(stamped) == [{"b"}] * 8
     embed.release("missing")  # nothing held: a no-op
-    assert _repos_held(stamped) == [{"b"}] * 6
+    assert _repos_held(stamped) == [{"b"}] * 8
 
 
 def test_limits_stay_as_shipped_without_a_cap() -> None:

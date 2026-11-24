@@ -16,6 +16,8 @@ from repowise.core.persistence.index_cache import drop_repo_everywhere
 from repowise.core.workspace.registry import embedded_context
 from repowise.server.mcp_server import _basis, _components, _graph_files, tool_middleware
 from repowise.server.mcp_server._state import request_context, serving
+from repowise.server.mcp_server.tool_answer.cache import drop_keyless_replies
+from repowise.server.mcp_server.tool_change_risk.health import drop_dependents
 from repowise.server.mcp_server.tool_overview import graph as _overview_graph
 
 __all__ = [
@@ -42,6 +44,8 @@ def release(repo_id: str) -> None:
         cache.drop_repo(repo_id)
     drop_repo_everywhere(repo_id)
     drop_fix_first_repo(repo_id)
+    drop_keyless_replies(repo_id)
+    drop_dependents(repo_id)
 
 
 def set_repo_cap(repos: int) -> None:

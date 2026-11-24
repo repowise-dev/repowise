@@ -241,6 +241,12 @@ def remember_keyless_reply(payload: dict, *, repository, repo_id, qhash: str) ->
         _KEYLESS_REPLIES.popitem(last=False)
 
 
+def drop_keyless_replies(repo_id: str) -> None:
+    """Forget every keyless reply kept for *repo_id*."""
+    for key in [k for k in _KEYLESS_REPLIES if k[0] == repo_id]:
+        del _KEYLESS_REPLIES[key]
+
+
 def serve_keyless_reply(*, repository, repo_id, qhash: str, exclude_spec, t0: float) -> dict | None:
     """The kept keyless reply for this question, or None to answer afresh.
 
