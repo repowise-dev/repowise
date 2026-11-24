@@ -354,7 +354,7 @@ async def test_snapshot_written_with_a_checkout_path_still_loads(
 
 def test_invalidation_removes_snapshot_before_update_write(tmp_path: Path) -> None:
     cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
-    kept = cache.with_name("graph_seed_edges.kept.pkl")
+    kept = cache.with_name("graph_seed_edges.pkl.kept")
     cache.parent.mkdir()
     cache.write_bytes(b"previous snapshot")
     kept.write_bytes(b"set aside by a run that never saved")
@@ -373,7 +373,7 @@ def test_kept_snapshot_is_moved_where_no_load_reads_it(tmp_path: Path) -> None:
     assert invalidate_seed_edge_cache(tmp_path, keep=True)
 
     assert not cache.exists()
-    assert cache.with_name("graph_seed_edges.kept.pkl").read_bytes() == b"loaded snapshot"
+    assert cache.with_name("graph_seed_edges.pkl.kept").read_bytes() == b"loaded snapshot"
 
 
 async def test_a_failed_set_aside_never_puts_a_stale_file_back(tmp_path: Path, monkeypatch) -> None:
@@ -381,7 +381,7 @@ async def test_a_failed_set_aside_never_puts_a_stale_file_back(tmp_path: Path, m
     try:
         await save_seed_edge_cache(root, _gb())
         cache = root / ".repowise" / "graph_seed_edges.pkl"
-        kept = cache.with_name("graph_seed_edges.kept.pkl")
+        kept = cache.with_name("graph_seed_edges.pkl.kept")
         kept.write_bytes(b"left by a run that crashed before its save")
         snapshot = await load_seed_edges(root)
         assert snapshot is not None
@@ -456,7 +456,7 @@ async def test_unchanged_update_graph_puts_the_loaded_snapshot_back(
         cache = root / ".repowise" / "graph_seed_edges.pkl"
         assert writes == []
         assert cache.read_bytes() == saved
-        assert not cache.with_name("graph_seed_edges.kept.pkl").exists()
+        assert not cache.with_name("graph_seed_edges.pkl.kept").exists()
         # The next update still seeds from it.
         assert await load_seed_edges(root) is not None
     finally:
@@ -479,7 +479,7 @@ async def test_an_edge_edited_in_place_still_rewrites_the_snapshot(
         snapshot = await load_seed_edges(root)
         assert snapshot is not None
         assert ("a.py::run", "b.py::work", "calls", (), (4, 7)) in _seed_identity(snapshot)
-        assert not (root / ".repowise" / "graph_seed_edges.kept.pkl").exists()
+        assert not (root / ".repowise" / "graph_seed_edges.pkl.kept").exists()
     finally:
         await engine.dispose()
 
@@ -557,7 +557,7 @@ async def test_a_full_index_writes_and_clears_a_leftover_kept_snapshot(
 ) -> None:
     root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
     try:
-        kept = root / ".repowise" / "graph_seed_edges.kept.pkl"
+        kept = root / ".repowise" / "graph_seed_edges.pkl.kept"
         kept.write_bytes(b"left by an update that crashed before its save")
         writes = _count_writes(monkeypatch)
 

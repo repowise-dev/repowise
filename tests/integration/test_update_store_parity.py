@@ -504,7 +504,7 @@ def test_an_update_that_leaves_the_graph_unchanged_keeps_its_snapshot(
 
     assert _graph_update(incremental)["mode"] == "patch", _graph_update(incremental)
     assert (snapshot.read_bytes(), snapshot.stat().st_mtime_ns) == before
-    assert not snapshot.with_name("graph_seed_edges.kept.pkl").exists()
+    assert not snapshot.with_name("graph_seed_edges.pkl.kept").exists()
 
     # An edge change rewrites it, and that update patches from the kept file.
     util = "def helper(value):\n    return value + 2\n\n\ndef other():\n    return helper(1)\n"

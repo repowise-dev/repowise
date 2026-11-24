@@ -22,8 +22,10 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 log = structlog.get_logger(__name__)
 _CACHE_NAME = "graph_seed_edges.pkl"
 _CACHE_VERSION = 2
-# The loaded snapshot, set aside for the update (:func:`invalidate_seed_edge_cache`).
-_KEPT_NAME = "graph_seed_edges.kept.pkl"
+# The loaded snapshot, set aside for the length of one update
+# (:func:`invalidate_seed_edge_cache`). A work file, not a cache: nothing
+# carries it between runs, and every update removes it.
+_KEPT_NAME = _CACHE_NAME + ".kept"
 
 
 def invalidate_seed_edge_cache(repo_path: Any, *, keep: bool = False) -> bool:
@@ -528,7 +530,13 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
         # The cache is optional; the next update can always rebuild from sources.
         log.warning("graph_seed_cache_save_failed", error=str(exc))
     finally:
-        try:
-            kept.unlink(missing_ok=True)
-        except OSError as exc:
-            log.warning("graph_seed_cache_invalidate_failed", path=str(kept), error=str(exc))
+        discard_set_aside_seed(root)
+
+
+def discard_set_aside_seed(repo_path: Any) -> None:
+    """Remove the snapshot an update set aside, once nothing will move it back."""
+    kept = Path(repo_path) / ".repowise" / _KEPT_NAME
+    try:
+        kept.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("graph_seed_cache_invalidate_failed", path=str(kept), error=str(exc))

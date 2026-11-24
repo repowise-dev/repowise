@@ -783,13 +783,15 @@ async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist.graph import _graph_is_complete
 
     from .feature import incremental_graph_enabled
+    from .graph_seed import discard_set_aside_seed, save_seed_edge_cache
 
-    if not incremental_graph_enabled() or ctx.graph_builder is None:
+    if (
+        not incremental_graph_enabled()
+        or ctx.graph_builder is None
+        or not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or [])
+    ):
+        discard_set_aside_seed(ctx.repo_path)
         return
-    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
-        return
-    from .graph_seed import save_seed_edge_cache
-
     with timed(ctx.timings, "persist.graph_seed_cache"):
         await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
@@ -870,5 +872,9 @@ async def _write(ctx: IncrementalPersist) -> None:
 
     if persisted:
         await save_graph_snapshot(ctx)
+    else:
+        from .graph_seed import discard_set_aside_seed
+
+        discard_set_aside_seed(ctx.repo_path)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
