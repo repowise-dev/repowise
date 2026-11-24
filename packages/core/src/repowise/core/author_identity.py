@@ -155,10 +155,12 @@ def _is_machine_local(canonical_email: str) -> bool:
     host, ``root@1a2b3c.(none)``), ``localhost``, a ``.local`` host, or a
     domain with no dot (so no public TLD)."""
     domain = canonical_email.rpartition("@")[2]
-    labels = [label.strip("()") for label in domain.split(".")]
-    if not domain or "none" in labels or "." not in domain:
+    if "(none)" in domain.split("."):
         return True
-    return any(label in _LOCAL_HOST_LABELS for label in labels)
+    domain = domain.strip("()")
+    if not domain or domain == "none" or "." not in domain:
+        return True
+    return any(label in _LOCAL_HOST_LABELS for label in domain.split("."))
 
 
 def _clean_name(name: str | None) -> str:

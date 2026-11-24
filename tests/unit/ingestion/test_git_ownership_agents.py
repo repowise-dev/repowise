@@ -208,6 +208,8 @@ def test_bus_factor_and_owner_counts_before_and_after(repo: Path) -> None:
         # A machine-local address names a box, not a person.
         (_CLAUDE, "runner <runner@buildbox.local>", "", None),
         (_CLAUDE, "root <root@1a2b3c.(none)>", "", None),
+        # A real domain that has a "none" label is still a real address.
+        (_CLAUDE, "Jane Roe <jane@none.example.org>", "", ("Jane Roe", "jane@none.example.org")),
         (_CLAUDE, _CLAUDE, _trailer("me <me@localhost>"), None),
         # A bot or forge committer is no human signal.
         (_COPILOT, _GITHUB, "", None),
