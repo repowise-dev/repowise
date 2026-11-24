@@ -64,7 +64,7 @@ logger = structlog.get_logger(__name__)
 #: Levels one tree request may unfold below its root. Deeper is a second request.
 MAX_TREE_DEPTH = 4
 
-#: Snapshots an area trend reads, newest last; the repo trend's default window.
+#: Days an area trend draws, newest last; the repo trend's default window.
 TREND_POINTS = 20
 
 #: Folded indexes per repository and held-origin set (older index states are
@@ -288,7 +288,7 @@ def _held_block(model: AreaReadModel) -> dict[str, Any]:
 async def area_detail_payload(
     session: AsyncSession, repo_id: str, model: AreaReadModel, area: str
 ) -> dict[str, Any] | None:
-    """The area card, its trend read from the newest :data:`TREND_POINTS` snapshots."""
+    """The area card, its trend over the newest :data:`TREND_POINTS` days."""
     if area not in model.index.nodes:
         return None
     key = await _details.key(
@@ -298,9 +298,11 @@ async def area_detail_payload(
         return _details.get(key)
     trend = []
     kept = set(model.weights) if model.held else None
-    # One point per day, as on the repository trend.
-    snaps = await crud.list_health_snapshots(session, repo_id, limit=TREND_POINTS)
-    for snap in latest_per_day(snaps):
+    # One point per day, as on the repository trend. Days are picked from every
+    # retained row's scalars; only the kept rows load their per-file map.
+    history = await crud.list_health_snapshots(session, repo_id, file_maps=False)
+    for snap in latest_per_day(history)[-TREND_POINTS:]:
+        await session.refresh(snap, ["per_file_scores_json"])
         score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})

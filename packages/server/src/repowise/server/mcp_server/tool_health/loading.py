@@ -486,7 +486,10 @@ async def _read_snapshots(
     per-file trajectory attached in targeted mode."""
     if "trend" not in req.include_set and not (pop.scoped and req.wants("trends")):
         return []
-    # Same scope as the KPIs, so both describe the same files.
+    # Same scope as the KPIs, so both describe the same files. Deliberate
+    # ceiling: 20 runs with their per-file maps; the trend block draws up to 10
+    # days from them, fewer when several runs share a day. Picking days from
+    # every row's scalars first (as the area trend does) lifts it.
     return project_scope(
         await list_health_snapshots(session, repository.id, limit=20), pop.reported_scope
     )
