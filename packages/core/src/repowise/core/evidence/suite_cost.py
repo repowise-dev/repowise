@@ -44,7 +44,8 @@ HISTOGRAM_BOUNDS = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
 
 
 def timing_summary(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Every test row of one run folded, before any cap: JSON-ready, stored on the run.
+    """Every test row the join kept for one run (skipped entries are counted on
+    the run, not here), folded before any cap: JSON-ready, stored on the run.
 
     ``tests`` counts the rows, ``timed`` those with a duration, ``seconds`` their
     sum. ``histogram`` holds ``[tests, seconds]`` per bucket of
@@ -84,6 +85,17 @@ def _rounded(seconds: float) -> float:
     return round(seconds, 6)
 
 
+def _fold(raw: str | None) -> dict[str, Any] | None:
+    """A stored fold, or ``None`` when absent or not of this shape (another bucket set)."""
+    try:
+        fold = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    if not isinstance(fold, dict) or len(fold.get("histogram") or ()) != len(HISTOGRAM_BOUNDS) + 1:
+        return None
+    return fold
+
+
 def suite_summary(runs: Iterable[Any], limit: int = DEFAULT_LIMIT) -> dict[str, Any] | None:
     """The basis runs' stored :func:`timing_summary` folds added up, JSON-ready.
 
@@ -94,7 +106,7 @@ def suite_summary(runs: Iterable[Any], limit: int = DEFAULT_LIMIT) -> dict[str, 
     Ceiling: workloads that run the same test each count it, where the slow
     list charges a test once.
     """
-    folds = [json.loads(r.timing_summary_json) if r.timing_summary_json else None for r in runs]
+    folds = [_fold(r.timing_summary_json) for r in runs]
     if not folds or any(f is None for f in folds):
         return None
     files: dict[str, list[Any]] = {}

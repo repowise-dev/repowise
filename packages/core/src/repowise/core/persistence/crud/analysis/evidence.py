@@ -108,6 +108,9 @@ async def save_evidence_run(
         ).scalar_one_or_none()
         if same is not None:
             same.ingested_at = at
+            # A run stored before the fold existed gets it from the same file.
+            if same.timing_summary_json is None and run.get("timing_summary_json"):
+                same.timing_summary_json = run["timing_summary_json"]
             await session.flush()
             return EvidenceWrite(same.id, restamped=True, rows_written=0, runs_pruned=0)
 

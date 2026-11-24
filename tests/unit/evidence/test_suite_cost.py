@@ -231,6 +231,10 @@ def test_the_suite_adds_up_each_runs_fold_or_says_nothing() -> None:
     assert suite["histogram"][-1]["le"] is None
     # A run stored before the fold would leave the totals short: none is given.
     assert suite_summary([*runs, SimpleNamespace(timing_summary_json=None)]) is None
+    # A fold of another bucket set (or garbage) reads as absent, never a crash.
+    other = json.dumps({**first, "histogram": first["histogram"][:3]})
+    assert suite_summary([SimpleNamespace(timing_summary_json=other)]) is None
+    assert suite_summary([SimpleNamespace(timing_summary_json="{")]) is None
     assert suite_summary([]) is None
 
 
@@ -247,3 +251,14 @@ async def test_the_suite_covers_tests_the_cap_left_out(session) -> None:
     assert out["suite"]["test_files"] == [
         {"test_file": "tests/test_app.py", "seconds": 3.3, "tests": 3}
     ]
+
+
+async def test_adding_the_same_report_again_backfills_a_missing_fold(session) -> None:
+    repo = await insert_repo(session)
+    rows = [_t(SLOW, 3.0)]
+    await _timings(session, repo.id, rows)  # stored before the fold existed
+    assert (await suite_costs(session, repo.id, HEAD))["suite"] is None
+
+    await _timings(session, repo.id, rows, summary=json.dumps(timing_summary(rows)))
+
+    assert (await suite_costs(session, repo.id, HEAD))["suite"]["tests"] == 1

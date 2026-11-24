@@ -901,7 +901,7 @@ def test_a_capped_junit_run_keeps_its_slowest_tests_and_folds_them_all(indexed) 
     assert [t["test_id"].rsplit("::", 1)[1] for t in payload["slow_tests"]] == ["test_slow"]
     suite = payload["suite"]
     assert (suite["tests"], suite["timed"], suite["seconds"]) == (3, 3, 6.0)
-    assert "2 faster tests were left out at the per-run cap" in _tests().stdout
+    assert "2 faster or untimed tests were left out at the per-run cap" in _tests().stdout
 
 
 
