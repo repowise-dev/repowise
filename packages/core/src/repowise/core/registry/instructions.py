@@ -30,6 +30,17 @@ CHECK_CLAUSES = {
     "get_change_risk": "get_change_risk before committing",
     "get_why": "get_why before changing an established pattern",
 }
+#: What a server with no checkout of the repository says in place of the
+#: lines above that promise live files, a verified edit set or uncommitted work.
+NO_CHECKOUT_TOOL_LINES = {
+    "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` come "
+    "from the index, never every match; grep your checkout before editing each use.",
+    "get_context": "- get_context(targets) for a file's docs, symbols, owners and decisions. "
+    'include=["files"] on a directory lists its files and tests.',
+}
+NO_CHECKOUT_CHECK_CLAUSES = {
+    "get_change_risk": "get_change_risk to review an indexed commit",
+}
 NO_INDEX_LINE = (
     "No index: tell the user to run 'repowise init --yes --no-prose' (no "
     "API key or model calls). Suggest it, do not run it yourself."
@@ -56,6 +67,7 @@ def server_instructions(
     indexed: bool | None = None,
     root: str | None = None,
     member_roots: Sequence[tuple[str, str]] = (),
+    no_checkout: bool = False,
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
@@ -71,16 +83,24 @@ def server_instructions(
     ``None`` (not known) keeps it. *root* names the directory reply paths are
     relative to, for a server started outside the repository it serves.
     *member_roots* does the same per repo of a workspace, as (alias, root).
+    *no_checkout* is for a server that answers from a stored index with no
+    checkout of the repository: the lines that promise live files, a verified
+    edit set or uncommitted work are reworded, and the no-index line, whose
+    remedy runs in a checkout, is left out.
     """
     if brief:
         return _HEAD
     names = set(served) if served is not None else set(TOOL_LINES) | set(CHECK_CLAUSES)
+    tool_lines, check_clauses = TOOL_LINES, CHECK_CLAUSES
+    if no_checkout:
+        tool_lines = {**TOOL_LINES, **NO_CHECKOUT_TOOL_LINES}
+        check_clauses = {**CHECK_CLAUSES, **NO_CHECKOUT_CHECK_CLAUSES}
     lines = [_HEAD]
-    lines += [line for name, line in TOOL_LINES.items() if name in names]
-    clauses = [clause for name, clause in CHECK_CLAUSES.items() if name in names]
+    lines += [line for name, line in tool_lines.items() if name in names]
+    clauses = [clause for name, clause in check_clauses.items() if name in names]
     if clauses:
         lines.append(f"- {', '.join(clauses)}.")
-    if indexed is not True:
+    if indexed is not True and not no_checkout:
         lines.append(NO_INDEX_LINE)
     if root:
         lines.append(f"Paths in replies are relative to {root}.")
@@ -115,6 +135,8 @@ def _member_roots_line(member_roots: Sequence[tuple[str, str]], *, list_repos: b
 
 __all__ = [
     "CHECK_CLAUSES",
+    "NO_CHECKOUT_CHECK_CLAUSES",
+    "NO_CHECKOUT_TOOL_LINES",
     "NO_INDEX_LINE",
     "TOOL_LINES",
     "WORKSPACE_TOOL_LINES",

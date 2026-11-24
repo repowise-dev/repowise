@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -212,3 +213,57 @@ async def resolve_scope(
     if nearest is None:
         return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(prefixes)), [], [])
     return ScopeResolution(None, missing, nearest)
+
+
+def resolve_scope_over(paths: Iterable[str], raw: str | None) -> ScopeResolution:
+    """:func:`resolve_scope` over a list of indexed file paths instead of a store.
+
+    For a host that holds the indexed paths (a search index, a file listing)
+    but no session and no checkout. The rules are the session resolver's: a
+    prefix holds a path equal to it or under it as a directory, exact case,
+    and with no prefix held the nearest directories are picked the same way.
+    With no checkout, no document directory is found on disk.
+    """
+    if _normalize_scope(raw) is None:
+        return ScopeResolution(None, [], [])
+    listed = list(dict.fromkeys(p for p in paths if p))
+
+    def under(path: str, prefix: str) -> bool:
+        return path == prefix or path.startswith(f"{prefix}/")
+
+    def holds(prefix: str) -> bool:
+        return any(under(p, prefix) for p in listed)
+
+    def split(piece: str, sep: str | None) -> list[str]:
+        norm = _normalize_scope(piece)
+        if norm is None:
+            return []
+        parts = norm.split(sep)
+        if len(parts) == 1 or holds(norm):
+            return [norm]
+        return [n for part in parts if (n := _normalize_scope(part))]
+
+    prefixes = list(dict.fromkeys(p for piece in split(raw or "", ",") for p in split(piece, None)))
+    if not prefixes:
+        return ScopeResolution(None, [], [])
+    found = [p for p in prefixes if holds(p)]
+    missing = [p for p in prefixes if p not in found]
+    if found:
+        return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(found)), missing, [])
+    picked: list[str] = []
+    for m in missing:
+        parts = m.split("/")
+        ancestor = next(
+            (a for i in range(len(parts) - 1, 0, -1) if holds(a := "/".join(parts[:i]))), ""
+        )
+        dir_files: Counter = Counter()
+        for path in listed:
+            if ancestor and not under(path, ancestor):
+                continue
+            segments = path.split("/")[:-1]
+            for i in range(1, len(segments) + 1):
+                dir_files["/".join(segments[:i])] += 1
+        if not dir_files and not ancestor:
+            return ScopeResolution(SCOPE_SEPARATOR.join(_outermost(prefixes)), [], [])
+        picked.extend(d for d in _nearest(m, ancestor, dir_files) if d not in picked)
+    return ScopeResolution(None, missing, [f"{d}/" for d in picked[:_NEAREST_DIRS]])
