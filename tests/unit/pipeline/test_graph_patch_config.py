@@ -667,6 +667,23 @@ def test_a_local_build_the_diff_never_names_falls_back(
     _assert_equals_full(tree, patched, tmp_path / "full")
 
 
+def test_a_failed_record_with_checked_in_builds_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When this run cannot record its inputs, builds the last record holds still count."""
+    from repowise.core.pipeline.incremental import config_inputs
+
+    tree, seed = builds
+    first = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+    assert load_config_inputs(tree / ".repowise")["builds"] == ["packages/lib/dist/impl/x.js"]
+    monkeypatch.setattr(config_inputs, "record_inputs", lambda *_a, **_k: None)
+
+    patched = _update(tree, _snapshot(first), {"packages/app/src/other.ts": "export const y = 2;\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "no record of which build outputs" in (patched.patch_plan.reason or "")
+
+
 def test_gitignore_edit_without_a_builds_record_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

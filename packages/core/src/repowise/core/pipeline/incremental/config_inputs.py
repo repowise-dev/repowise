@@ -347,7 +347,13 @@ def inputs_refusal(
     """
     if current is None or record is None:
         needs = [*views, *ignores]
-        return f"{min(needs)}: no record of what the last build read from it" if needs else None
+        if needs:
+            return f"{min(needs)}: no record of what the last build read from it"
+        # Checked-in builds can move with no diff (a local build), so they
+        # are compared whenever either side holds some.
+        if (record or {}).get("builds") or (current or {}).get("builds"):
+            return "no record of which build outputs are checked in"
+        return None
     before, now = record.get("files") or {}, current.get("files") or {}
     for path in sorted(set(before) | set(now)):
         if before.get(path, "absent") != now.get(path, "absent"):
