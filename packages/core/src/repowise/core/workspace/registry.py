@@ -222,6 +222,16 @@ class Publishability:
         return not self.problems
 
 
+def _pending_sidecars(path: Path) -> list[str]:
+    """``wal_pending`` / ``journal_pending`` for each non-empty sidecar beside *path*."""
+    sidecars = (("-wal", "wal_pending"), ("-journal", "journal_pending"))
+    return [
+        code
+        for suffix, code in sidecars
+        if (side := path.with_name(path.name + suffix)).is_file() and side.stat().st_size > 0
+    ]
+
+
 async def publishable(db_path: str | Path) -> Publishability:
     """Whether the store at *db_path* serves in full when opened by :func:`open_store`.
 
@@ -250,11 +260,7 @@ async def publishable(db_path: str | Path) -> Publishability:
     path = Path(db_path)
     if not path.is_file():
         return Publishability(("missing",))
-    problems: list[str] = []
-    for suffix, code in (("-wal", "wal_pending"), ("-journal", "journal_pending")):
-        side = path.with_name(path.name + suffix)
-        if side.is_file() and side.stat().st_size > 0:
-            problems.append(code)
+    problems = _pending_sidecars(path)
     engine = create_engine(read_only_url(path))
     try:
         state = await page_fts_state(engine)
