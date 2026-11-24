@@ -388,6 +388,8 @@ def _report_stored(
         )
     if summary["mapping_partial"]:
         report_stored_partial("evidence", out=notices)
+    if summary.get("low_signal"):
+        notices.print(_low_signal_note(summary["low_signal"]).strip())
     _report_staleness(notices, summary, index_commit)
 
 
@@ -723,7 +725,17 @@ def _status_line(run: dict[str, Any]) -> str:
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
+        + _low_signal_note(run.get("low_signal"))
     )
+
+
+def _low_signal_note(token: str | None) -> str:
+    """The cause and fix of a profile run with no sample counts; empty otherwise."""
+    from repowise.core.evidence.status import LOW_SIGNAL_FIX
+
+    if token is None:
+        return ""
+    return f"\n  [yellow]Low signal: {escape(LOW_SIGNAL_FIX[token])}.[/yellow]"
 
 
 def _total(value: float) -> str:
@@ -825,6 +837,13 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
         shared = " [dim](may include its class's shared fixtures)[/dim]" if test["first_in_class"] else ""
         failed = f" [red]{test['outcome']}[/red]" if test["outcome"] in ("failed", "error") else ""
         lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
+    suite = payload.get("suite")
+    cut = sum(r["units"]["truncated"] or 0 for r in payload["runs"])
+    if suite is not None and cut:
+        lines.append(
+            f"[dim]{cut:,} faster tests were left out at the per-run cap; with them the "
+            f"{suite['timed']:,} timed tests take {suite['seconds']:,.1f}s in all.[/dim]"
+        )
     costs = payload["file_costs"]
     if not costs["files"]:
         lines.append(f"No production file is tied to a timed test ({costs['basis']}).")

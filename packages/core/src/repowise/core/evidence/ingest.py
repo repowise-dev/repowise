@@ -22,6 +22,7 @@ from repowise.core.ingestion.symbol_identity import local_symbol_id
 from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .suite_cost import timing_summary
 
 #: Every workload class a run may carry, in the order of how far a claim may go.
 WORKLOAD_CLASSES = ("unit_test", "benchmark", "entry_point", "load_test", "production")
@@ -344,8 +345,10 @@ def cap_rows(
 
     A profile keeps its costliest symbols (self, the cost waits excluded,
     then inclusive, then id, so the cut is stable): a leaf that does the work
-    outlives the frames that only call it. Other kinds keep the document's
-    order.
+    outlives the frames that only call it. A test run keeps its slowest tests
+    (untimed last, ties in the document's order); what every test adds up to
+    is folded before the cut (``suite_cost.timing_summary``). Other kinds keep
+    the document's order.
     """
     if kind == "profile":
         limit = caps.max_symbols_per_run
@@ -353,6 +356,9 @@ def cap_rows(
             rows,
             key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
         )
+    elif kind == "test_timing":
+        limit = caps.max_rows_per_run
+        rows = sorted(rows, key=lambda r: (r["duration_s"] is None, -(r["duration_s"] or 0.0)))
     else:
         limit = caps.max_rows_per_run
     return rows[:limit], max(len(rows) - limit, 0)
@@ -434,6 +440,11 @@ def run_fields(
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
         "tests_failed": provenance.tests_failed,
+        "timing_summary_json": (
+            json.dumps(timing_summary(joined.rows), separators=(",", ":"))
+            if doc.kind == "test_timing"
+            else None
+        ),
     }
 
 

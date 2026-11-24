@@ -3141,6 +3141,10 @@ class EvidenceRun(Base):
     # Tests that failed in a profiled test suite (the run is still a full
     # workload); NULL when the profile does not say.
     tests_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A test-timing run's every test folded before the row cap: seconds and
+    # tests per test file and a duration histogram (``evidence.suite_cost.
+    # timing_summary``). NULL for other kinds and for runs stored before it.
+    timing_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_evidence_runs_repo_ingested", "repository_id", "ingested_at"),

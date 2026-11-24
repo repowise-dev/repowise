@@ -755,6 +755,8 @@ def _summary(
     """What the run held and how it mapped, stored or not."""
     from collections import Counter
 
+    from .status import low_signal
+
     commit = provenance.commit_sha
     return {
         "kind": doc.kind,
@@ -772,6 +774,7 @@ def _summary(
         "mapping_partial": partial,
         "unmatched_sample": joined.unmatched_sample,
         "tests_failed": provenance.tests_failed,
+        "low_signal": low_signal(doc),
     }
 
 

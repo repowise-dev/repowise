@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -10,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from repowise.core.analysis.function_test_map import MappedTest, encode_tests
 from repowise.core.analysis.health.coverage.model import TestCoverage
-from repowise.core.evidence.suite_cost import suite_costs
+from repowise.core.evidence.suite_cost import suite_costs, suite_summary, timing_summary
 from repowise.core.persistence.crud import save_evidence_run
 from repowise.core.persistence.crud.analysis.coverage_map import save_test_coverage
 from repowise.core.persistence.database import init_db
@@ -36,12 +38,14 @@ async def session():
 
 
 async def _timings(session, repo_id: str, rows: list[dict], *, workload: str = "pytest",
-                   environment: str = "linux-ci", at: datetime = T0, partial: bool = False) -> None:
+                   environment: str = "linux-ci", at: datetime = T0, partial: bool = False,
+                   summary: str | None = None) -> None:
     run = {
         "run_key": f"{workload}-{environment}-{at.isoformat()}", "kind": "test_timing",
         "format": "junit", "source": "cli", "workload_name": workload, "workload_class": "unit_test",
         "environment": environment, "value_kind": "wall", "unit": "s", "commit_sha": HEAD,
         "ingested_at": at, "measured_at": at, "mapping_partial": partial,
+        "timing_summary_json": summary,
     }
     await save_evidence_run(session, repo_id, run, rows, history_runs=5, max_runs=20)
 
@@ -189,3 +193,57 @@ async def test_a_newer_partial_run_elsewhere_never_displaces_a_complete_one(sess
 
     assert [(r["environment"], r["mapping_partial"]) for r in out["runs"]] == [("linux-ci", False)]
     assert out["slow_tests"][0]["duration_s"] == 3.0
+
+
+def test_the_fold_covers_every_test_by_file_and_by_duration() -> None:
+    rows = [
+        _t("tests/a.py::one", 0.0005),
+        _t("tests/a.py::two", 0.001),  # on a bound: that bound's bucket
+        _t("tests/a.py::three", 2.5),
+        _t("tests/b.py::four", 250.0),
+        _t("tests/b.py::skipped", None),
+        {"test_id": "Loose", "test_file": None, "duration_s": 0.05},
+    ]
+
+    fold = timing_summary(rows)
+
+    assert (fold["tests"], fold["timed"], fold["seconds"]) == (6, 5, 252.5515)
+    assert fold["histogram"] == [
+        [2, 0.0015], [0, 0.0], [1, 0.05], [0, 0.0], [1, 2.5], [0, 0.0], [1, 250.0]
+    ]
+    assert fold["files"] == {"tests/a.py": [2.5015, 3], "tests/b.py": [250.0, 1]}
+
+
+def test_the_suite_adds_up_each_runs_fold_or_says_nothing() -> None:
+    first = timing_summary([_t("tests/a.py::one", 1.0), _t("tests/b.py::two", 3.0)])
+    second = timing_summary([_t("tests/a.py::three", 4.0)])
+    runs = [SimpleNamespace(timing_summary_json=json.dumps(f)) for f in (first, second)]
+
+    suite = suite_summary(runs, limit=1)
+
+    assert (suite["tests"], suite["timed"], suite["seconds"]) == (3, 3, 8.0)
+    assert suite["test_files"] == [{"test_file": "tests/a.py", "seconds": 5.0, "tests": 2}]
+    assert suite["test_files_total"] == 2
+    assert suite["histogram"][3:5] == [
+        {"le": 1.0, "tests": 1, "seconds": 1.0},
+        {"le": 10.0, "tests": 2, "seconds": 7.0},
+    ]
+    assert suite["histogram"][-1]["le"] is None
+    # A run stored before the fold would leave the totals short: none is given.
+    assert suite_summary([*runs, SimpleNamespace(timing_summary_json=None)]) is None
+    assert suite_summary([]) is None
+
+
+async def test_the_suite_covers_tests_the_cap_left_out(session) -> None:
+    repo = await insert_repo(session)
+    every = [_t(SLOW, 3.0), _t(FAST, 0.1), _t(OTHER, 0.2)]
+    stored = every[:1]  # the cap kept the slowest
+    await _timings(session, repo.id, stored, summary=json.dumps(timing_summary(every)))
+
+    out = await suite_costs(session, repo.id, HEAD)
+
+    assert out["tests_total"] == 1
+    assert out["suite"]["tests"] == 3
+    assert out["suite"]["test_files"] == [
+        {"test_file": "tests/test_app.py", "seconds": 3.3, "tests": 3}
+    ]
