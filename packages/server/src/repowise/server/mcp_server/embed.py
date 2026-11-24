@@ -32,9 +32,9 @@ _REPO_CACHES = (_graph_files, _overview_graph, _components, _basis)
 
 
 def release(repo_id: str) -> None:
-    """Drop every entry the engine's per-repository caches hold for *repo_id*.
+    """Drop every entry the engine's in-process caches hold for *repo_id*.
 
-    Other repositories' entries stay. Call it on the serving event loop: the
+    Other repositories' entries stay, and so do sealed copies on disk. Call it on the serving event loop: the
     caches are loop-confined, so it runs between other calls' steps and never
     inside one. A call already in flight for *repo_id* may add its entry back.
     """
@@ -45,10 +45,13 @@ def release(repo_id: str) -> None:
 
 
 def set_repo_cap(repos: int) -> None:
-    """Hold at most *repos* repositories in each whole-repository cache.
+    """Hold at most *repos* entries in each whole-repository cache.
 
-    Each cache keeps its own eviction (least recently used, oldest first, or
-    clear when full) and trims to the cap now. Without a call the limits stay
+    An entry is one repository at one index state (a component or dependency
+    entry also varies with exclusion rules), so the cap bounds repositories
+    held. Each cache keeps its own eviction (least recently used, oldest
+    first, or clear when full) and trims to the cap now. Call it on the
+    serving event loop, like :func:`release`. Without a call the limits stay
     as shipped: 8, 16, 16 and 32 entries.
     """
     if repos < 1:
