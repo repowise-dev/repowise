@@ -230,6 +230,12 @@ def _plan_graph_patch(
             None,
         )
     resolutions, record = load_cache(Path(repo_path) / ".repowise")
+    # Whether the walk indexes other files than the last build did, beyond
+    # the ones the diff added, deleted or renamed.
+    indexed = {pf.file_info.path for pf in parsed_files}
+    index_moved = presence_changed is None or bool(
+        (indexed ^ parse_cache.known_paths()) - presence_changed
+    )
     refusal, cleared = _checked_non_source(
         repo_path,
         graph_builder,
@@ -239,6 +245,7 @@ def _plan_graph_patch(
         presence_changed,
         current_inputs=current_inputs,
         record=record,
+        index_moved=index_moved,
     )
     if refusal is not None:
         return PatchPlan(False, reason=refusal), None
@@ -340,6 +347,7 @@ def _plan_non_source(
     *,
     current_inputs: dict[str, Any] | None,
     record: dict[str, Any] | None,
+    index_moved: bool = True,
 ) -> tuple[str | None, frozenset[str]]:
     """Check the update's config, data and unindexed files (:mod:`.config_inputs`)."""
     from .config_inputs import plan_non_source_changes
@@ -362,6 +370,7 @@ def _plan_non_source(
         config_reads=config_reads,
         current=current_inputs,
         record=record,
+        index_moved=index_moved,
     )
 
 
