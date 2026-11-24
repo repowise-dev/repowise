@@ -1182,8 +1182,8 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         from .catch_up import catch_up_command
 
         console.print(
-            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
-            "left stale refresh with the next commit, or now with "
+            f"[dim]{run.stale_pages_planned} page(s) the last update at this commit left "
+            "stale will refresh with the next commit, or now with "
             f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
         )
     if not opts.dry_run:

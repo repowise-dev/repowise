@@ -22,13 +22,13 @@ import type { FirstLookCopy } from "./copy";
 export const CONTROL = "first-look-control print:hidden";
 
 export const GHOST =
-  "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-inset)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+  "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-inset)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export const BUTTON =
-  "inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+  "inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 const MENU_ROW =
-  "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-inset)] focus-visible:bg-[var(--color-bg-inset)] focus-visible:outline-none";
+  "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-inset)] focus-visible:bg-[var(--color-bg-inset)] focus-visible:outline-none";
 
 /**
  * Copies text that is still being fetched. Safari only keeps the user's click
@@ -68,7 +68,7 @@ function MenuRow({
       {icon ? <span className="mt-0.5 text-[var(--color-text-secondary)] [&_svg]:size-4">{icon}</span> : null}
       <span>
         {label}
-        {hint ? <small className="block text-xs text-[var(--color-text-secondary)]">{hint}</small> : null}
+        {hint ? <small className="block text-xs font-normal text-[var(--color-text-secondary)]">{hint}</small> : null}
       </span>
     </button>
   );
@@ -231,7 +231,7 @@ export function MarkMenu({
                 required
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                className="rounded-md border border-[var(--color-field-border)] bg-[var(--color-field-bg)] px-2 py-1 text-[13px] text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+                className="rounded-md border border-[var(--color-field-border)] bg-[var(--color-field-bg)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               />
             </label>
             <div className="flex justify-end gap-1.5">

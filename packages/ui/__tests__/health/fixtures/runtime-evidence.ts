@@ -172,6 +172,8 @@ export const RUNS: EvidenceRunsResponse = {
       tool_version: null,
       commit_sha: "b81d0e7aa",
       freshness: "stale",
+      // Added before the runs at the indexed commit: an older commit.
+      ingested_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
       total_value: 1240,
       unit: "tests",
       tests_failed: 2,

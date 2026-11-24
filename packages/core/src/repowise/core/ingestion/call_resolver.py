@@ -1585,12 +1585,16 @@ class CallResolver(
         if language == "java" and self._returns_java_self_type(callee_id):
             # A self-bounded ``B`` is the type of whatever the call was made on.
             # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
-            nested = self._nested_receiver_call(file_path, call, inner, language)
+            # The next hop is read from *inner*'s own site, so each step looks
+            # strictly left of the last: ``x.name(a).name(b)`` walks down
+            # instead of finding the outer ``name`` again forever.
+            site = self._nested_receiver_site(file_path, call, inner, language)
+            nested = site.receiver_call if site is not None else None
             if nested is None:
                 return None
-            nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
+            nested_callee = self._chain_inner_callee(file_path, site, nested, caller_id, language)
             return self._callee_chain_return_type(
-                file_path, call, nested, nested_callee, caller_id, language
+                file_path, site, nested, nested_callee, caller_id, language
             )
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
@@ -1610,7 +1614,12 @@ class CallResolver(
     def _nested_receiver_site(
         self, file_path: str, call: CallSite, inner: CallReceiver, language: str
     ) -> CallSite | None:
-        """The CallSite in the same chain that corresponds to `inner`."""
+        """The CallSite in the same chain that corresponds to `inner`.
+
+        A receiver records one hop, but the parser keeps every link of a chain
+        as its own site on the chain's first line, so the hop below `inner` is
+        that site's receiver. The nearest such site left of `call` is taken.
+        """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
         matches = self._chained_sites_for(file_path).get(
@@ -1623,20 +1632,6 @@ class CallResolver(
             if inner.argument_count is None or c.argument_count == inner.argument_count:
                 return c
         return None
-
-    def _nested_receiver_call(
-        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
-    ) -> CallReceiver | None:
-        """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
-
-        A receiver records one hop, but the parser keeps every link of a chain
-        as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
-        builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it.
-        """
-        matched = self._nested_receiver_site(file_path, call, inner, language)
-        return matched.receiver_call if matched is not None else None
 
     def _callee_return_type(
         self, callee_id: str, argument_count: int | None, language: str

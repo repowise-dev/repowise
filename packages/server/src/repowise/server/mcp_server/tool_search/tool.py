@@ -30,6 +30,7 @@ from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import keyless_search_note_meta
+from repowise.server.mcp_server._origin_rank import file_origins
 from repowise.server.mcp_server._page_paths import file_candidates
 from repowise.server.mcp_server._query_shape import (
     _VALID_MODES,
@@ -141,6 +142,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
         page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         path_index = await file_path_index(session, repo_id)
         minor = await _minor_spotlights(session, output, query, repo_id)
+        origins = await file_origins(session, repo_id, page_info.values())
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
     _attach_paths(output, page_info)
@@ -154,8 +156,8 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     boost_named_paths(
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
-    _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query, minor)
+    _downweight_test_pages(output, query, origins)
+    _sort_demoting_noise(output, query, minor, origins)
     return _dedup_decisions(output)
 
 
@@ -280,8 +282,8 @@ async def search_codebase(
         # The keyword names no symbol; ranked with it, ``class Article`` found
         # a docstring that says "class" and none of the classes.
         query, mode = declared, "symbol"
-    grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
+    grep_hint = _grep_hint_for(query, names, resolved_mode)
     issue = await _issue_files(repo, query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):

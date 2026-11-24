@@ -203,7 +203,11 @@ def _search_scope(run: InitRun) -> dict[str, Any]:
     if not result.generated_pages:
         # Fast mode has no pages for reindex to embed.
         return {"full_text": "unavailable", "semantic": "unavailable", "next_command": None}
-    semantic = semantic_search_status(run.scope_embedder, getattr(result, "embed_failed_pages", 0))
+    semantic = semantic_search_status(
+        run.scope_embedder,
+        getattr(result, "embed_failed_pages", 0),
+        getattr(result, "vector_store", None),
+    )
     return {
         "full_text": "available",
         "semantic": semantic,

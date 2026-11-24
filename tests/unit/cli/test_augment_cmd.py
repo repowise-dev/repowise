@@ -99,7 +99,7 @@ def _session_start(runner: CliRunner, cwd: Path, monkeypatch: pytest.MonkeyPatch
 def test_claude_session_start_gives_a_plugin_only_install_the_call_first_line(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from repowise.core.agent_steer import AGENT_STEER
+    from repowise.core.agent_steer import AGENT_STEER_DEFERRED as AGENT_STEER
 
     _init_repowise_repo(tmp_path)
 

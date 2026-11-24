@@ -22,7 +22,9 @@ _INPUT_TOO_LONG_RETRIES = 4
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
+    type=click.Choice(
+        ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock", "auto"]
+    ),
     default="auto",
     help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
     "when the repo has none or only the keyless mock.",
@@ -439,7 +441,6 @@ def _stamp_scope(repo_path, embedder_name: str, *, clean: bool) -> None:
 def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
     """Resolve, build and announce the embedder; exit when auto finds none."""
     from repowise.cli.providers.embedders import build_embedder, semantic_search_setup_hint
-    from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.providers.embedding.resolve import (
         embedder_reason,
         resolve_reindex_embedder,
@@ -461,14 +462,16 @@ def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
             )
             raise click.exceptions.Exit(1)
 
-    embedder_impl = build_embedder(embedder_name, repo_path)
-    # A named backend that could not be built fell back to mock: an error, not
-    # a run to finish with test vectors.
-    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
+    # A named backend that cannot be built is an error, not a run to finish
+    # with test vectors. build_embedder has said why; exit 1 the way the
+    # nothing-found case above does.
+    embedder_impl = build_embedder(embedder_name, repo_path, fallback=False)
+    if embedder_impl is None:
         console.print(
-            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
+            "[red]Nothing was re-embedded.[/red] Fix the embedder above, or pass "
+            "[bold]--embedder mock[/bold] for test vectors."
         )
-        raise click.Abort()
+        raise click.exceptions.Exit(1)
     if embedder_name == "mock":
         console.print(
             f"Embedder: [yellow]mock[/yellow] ({reason}). Test vectors, no semantic search."

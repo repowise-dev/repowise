@@ -28,6 +28,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.core.analysis.health import health_analyzer_changed
+from repowise.core.analysis.security.patterns import security_scanner_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.pipeline.incremental.prune import (
@@ -1255,20 +1256,6 @@ def parser_changed(repo_path: Path) -> bool:
         return False
 
 
-def security_scanner_changed(state: dict) -> bool:
-    """Whether the stored security findings were written by a different scanner.
-
-    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
-    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
-    written by an older scanner. Reading absence as current would also keep it
-    unstamped forever, since only the rescan this gates writes the stamp.
-    ``init`` stamps every fresh index, so a new install never reads as stale.
-    """
-    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
-
-    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
-
-
 def renderer_changed(
     stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
 ) -> bool:
@@ -1384,30 +1371,9 @@ async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: lis
     scan. ``replace_findings`` only ever deletes/replaces working-tree rows
     (``commit_sha`` empty); history rows from ``scan --history`` are untouched.
     """
-    from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-        upsert_repository,
-    )
+    from repowise.core.pipeline.persist import rescan_repo_security
 
     parsed_files, source_map, _graph_builder, _repo_structure, _file_count = _build_repo_graph(
         repo_path, exclude_patterns, collect_sources=True
     )
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    try:
-        await init_db(engine)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
-            await SecurityScanner(session, repo.id).replace_findings(
-                findings_by_file, scanned_paths
-            )
-    finally:
-        await engine.dispose()
+    await rescan_repo_security(repo_path, parsed_files, source_map)

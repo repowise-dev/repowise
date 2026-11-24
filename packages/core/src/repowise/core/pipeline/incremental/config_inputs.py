@@ -13,9 +13,16 @@ configs, lockfiles, assets and data files.
   warmups, framework edges, dynamic hints) plus the traverser, the tech stack
   detector and the manifest names the language registry declares. The list
   is deliberately wide: a file it names wrongly only costs a full build.
+  A file the walk does not index, edited in place, is narrower still: the
+  readers that see only indexed files (the API-contract flag) never open it,
+  and neither does any step for prose and data opened by no name.
+- ``.gitignore`` decides which files the walk indexes and which build
+  outputs ``package.json`` names count as checked in (``git check-ignore``).
+  An edit that leaves both as the last build had them cannot change the graph.
 - A manifest the build does read can still be edited in a way no reader sees,
-  such as a version bump. For ``package.json``, ``pyproject.toml`` and
-  ``go.mod`` the last build records a digest of what its readers can consume
+  such as a version bump. For ``package.json``, ``pyproject.toml``,
+  ``go.mod`` and ``CMakeLists.txt`` the last build records a digest of what
+  its readers can consume
   (:func:`record_inputs`), and an edit that leaves the digest and the detected
   tech stack unchanged leaves the graph unchanged.
 
@@ -41,8 +48,9 @@ from typing import Any
 _READ_NAMES = frozenset(
     name.lower()
     for name in (
-        # traversal: ignore rules, submodules, console scripts, test roots
-        ".gitignore", ".gitattributes", ".gitmodules", ".repowiseignore",
+        # traversal: ignore rules, submodules, console scripts, test roots.
+        # ``.gitattributes`` is not here: no graph step opens it.
+        ".gitignore", ".gitmodules", ".repowiseignore",
         "pytest.ini", "tox.ini",
         "phpunit.xml", "phpunit.dist.xml", "phpunit.xml.dist", "ProjectVersion.txt",
         # JS / TS workspaces, entries, aliases, tool configs
@@ -72,15 +80,36 @@ _READ_GLOBS = (
     "*.dproj", "*.lpi", "*.dpr", "*.dpk", "*.lpr",
     "*.xml", "*.xaml", "*.axaml", "*.asax", "*.aspx", "*.ascx", "*.ashx", "*.asmx", "*.master",
     "*.imports", "*.properties", "*.flexipage", "*.quickaction", "*.tab",
-    # API specs are read whole to flag the file itself
-    "*openapi*", "*swagger*", "api.json", "api.yaml", "api.yml",
 )
+
+# API specs, read whole to flag the file itself as an API contract. Only the
+# traverser reads them, and only a file it indexes, so they are no input of a
+# build that does not index them.
+_INDEXED_READ_GLOBS = ("*openapi*", "*swagger*", "api.json", "api.yaml", "api.yml")
 
 # Directory segments under which steps read files by directory, not by name.
 _READ_DIR_SEGMENTS = frozenset(
     {"meta-inf", "web-inf", ".cmake", ".repowise", "res", "resources",
      "flexipages", "quickactions", "tabs", "experiences"}
 )
+# Of those, the ones whose readers open only files of a known language
+# (Android ``res/**/*.xml``, ``src/main/resources/*.yml`` and the like, Laravel
+# views), so an unknown-language file under them (``Localizable.xcstrings``)
+# is not opened.
+_LANGUAGE_READ_DIR_SEGMENTS = frozenset({"res", "resources"})
+
+# Files under ``.repowise/`` the engine writes and no graph step opens. The
+# rest of the directory stays read: ``config.yaml`` sets the SQL dialect and
+# the exclude patterns.
+_UNREAD_REPOWISE_NAMES = frozenset({"decisions.yaml"})
+
+# Languages no graph step opens by extension or by walking a directory: prose
+# and data, which steps open only by name (manifests, configs) or under the
+# directories above. A file of one of these the walk does not index, edited
+# in place, is therefore not opened at all. Source languages stay out: live
+# walks open unindexed ``.py``, ``.cs``, ``.rb``, ``.go``, ``.ts`` files.
+# ``.mdx`` is matched by glob first (the TypeScript warmup reads it).
+_UNWALKED_LANGUAGES = frozenset({"markdown", "asciidoc", "json", "yaml", "toml"})
 
 # Languages whose files may be data no step reads: an edit to one is then
 # inert like prose, provided its parse is empty and it is not read by name.
@@ -104,15 +133,45 @@ def _read_globs() -> tuple[str, ...]:
     return (*_READ_GLOBS, *sorted(g.lower() for g in REGISTRY.package_manifest_globs()))
 
 
+def _read_by_name(name: str) -> bool:
+    """Whether a step opens files of this (lowercased) name wherever they sit."""
+    if name in _READ_NAMES or name in _registry_names():
+        return True
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in _read_globs())
+
+
+def _read_dirs(pure: PurePosixPath) -> set[str]:
+    """The directory segments of lowercased *pure* under which a step reads it."""
+    dirs = set(_READ_DIR_SEGMENTS.intersection(pure.parts[:-1]))
+    if pure.parent.name == ".repowise" and pure.name in _UNREAD_REPOWISE_NAMES:
+        dirs.discard(".repowise")
+    return dirs
+
+
 def presence_read(path: str) -> bool:
     """Whether some graph step opens *path* or checks that it exists."""
     pure = PurePosixPath(path.lower())
-    name = pure.name
-    if name in _READ_NAMES or name in _registry_names():
+    if _read_by_name(pure.name) or _read_dirs(pure):
         return True
-    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _read_globs()):
+    if any(fnmatch.fnmatchcase(pure.name, pattern) for pattern in _INDEXED_READ_GLOBS):
         return True
-    if _READ_DIR_SEGMENTS.intersection(pure.parts[:-1]):
+    from repowise.core.ingestion.framework_edges.test_runner_setup import is_runner_config
+
+    return is_runner_config(path)
+
+
+def _opened_unindexed(path: str, language: str | None) -> bool:
+    """Whether some graph step opens *path* though the walk does not index it.
+
+    :func:`presence_read` without the readers that see only indexed files.
+    """
+    pure = PurePosixPath(path.lower())
+    if _read_by_name(pure.name):
+        return True
+    dirs = _read_dirs(pure)
+    if language in (None, "unknown"):
+        dirs -= _LANGUAGE_READ_DIR_SEGMENTS
+    if dirs:
         return True
     from repowise.core.ingestion.framework_edges.test_runner_setup import is_runner_config
 
@@ -192,10 +251,26 @@ def _go_mod(_text: str, path: Path, root: Path) -> object:
     return [_read_module_directive(path), _read_local_replacements(path, root)]
 
 
+def _cmake_lists(_text: str, path: Path, root: Path) -> object:
+    # The C/C++ workspace index reads a CMakeLists.txt only through this
+    # parse (targets, sources, include dirs, defines, subdirectories), and
+    # combines the parses of every file the reactor reaches: equal parses,
+    # equal index. Comments, messages and commands it skips drop out.
+    from dataclasses import asdict
+
+    from repowise.core.ingestion.external_systems.cmake import parse_cmake_lists
+
+    view = json.dumps(asdict(parse_cmake_lists(path, repo_root=root)), sort_keys=True)
+    # The parse seeds PROJECT_SOURCE_DIR with the checkout's absolute path,
+    # which says nothing about the tree.
+    return view.replace(root.resolve().as_posix(), "<root>")
+
+
 _PROJECTORS: dict[str, Callable[[str, Path, Path], object]] = {
     "package.json": _package_json,
     "pyproject.toml": _pyproject,
     "go.mod": _go_mod,
+    "CMakeLists.txt": _cmake_lists,
 }
 
 
@@ -233,30 +308,52 @@ def stack_names(root: Path) -> list[str]:
     return sorted(item.name for item in detect_tech_stack(root))
 
 
-def record_inputs(root: Path, paths: Iterable[str]) -> dict[str, Any] | None:
+def record_inputs(
+    root: Path, paths: Iterable[str], *, prune_nested_git: bool = True
+) -> dict[str, Any] | None:
     """What the build reads from its manifests, for the next patch to compare.
+
+    ``builds`` are the build outputs ``package.json`` files name that count as
+    checked in: on disk and not gitignored (``git check-ignore``). The
+    TypeScript resolver reads a gitignored one as the source it was built
+    from, so a ``.gitignore`` edit, or a local build, can move an import edge
+    without changing any indexed file.
 
     Best effort: ``None`` (no record, so manifest edits fall back) on any error.
     """
+    from repowise.core.ingestion.resolvers.ts_workspace.builds import recorded_checked_in_builds
+
     root = Path(root)
     try:
         files = {path: _digest(root, path) for path in sorted(set(paths)) if has_projection(path)}
-        return {"files": files, "stack": stack_names(root)}
+        builds = recorded_checked_in_builds(root, prune_nested_git=prune_nested_git)
+        return {"files": files, "stack": stack_names(root), "builds": builds}
     except Exception:
         return None
 
 
 def inputs_refusal(
-    current: dict[str, Any] | None, record: dict[str, Any] | None, views: Collection[str]
+    current: dict[str, Any] | None,
+    record: dict[str, Any] | None,
+    views: Collection[str],
+    ignores: Collection[str] = (),
 ) -> str | None:
     """Why the manifests now differ from what the last build read, or ``None``.
 
     Every recorded manifest is compared, not just the changed ones: an edit
     the update's diff missed (uncommitted, or before its base) must not be
-    taken as already seen.
+    taken as already seen. *ignores* are edited ``.gitignore`` files, which
+    patch only against a record of the checked-in build outputs.
     """
     if current is None or record is None:
-        return f"{min(views)}: no record of what the last build read from it" if views else None
+        needs = [*views, *ignores]
+        if needs:
+            return f"{min(needs)}: no record of what the last build read from it"
+        # Checked-in builds can move with no diff (a local build), so they
+        # are compared whenever either side holds some.
+        if (record or {}).get("builds") or (current or {}).get("builds"):
+            return "no record of which build outputs are checked in"
+        return None
     before, now = record.get("files") or {}, current.get("files") or {}
     for path in sorted(set(before) | set(now)):
         if before.get(path, "absent") != now.get(path, "absent"):
@@ -266,6 +363,13 @@ def inputs_refusal(
         return f"{missing[0]}: no record of what the last build read from it"
     if record.get("stack") != current.get("stack"):
         return "the detected tech stack changed"
+    if "builds" not in record:
+        # A record from before builds were recorded: unknown, so an edit that
+        # can move them, or builds that count now, must refuse.
+        if ignores or current.get("builds"):
+            return "no record of which build outputs were checked in"
+    elif record["builds"] != current.get("builds"):
+        return "a build output a package.json names changed whether it is checked in"
     return None
 
 
@@ -286,32 +390,51 @@ def _unread_unindexed(path: str) -> bool:
 
     Live walks read unindexed files of known source extensions (an oversized
     ``.cs``, a gitignored ``.rb``), so only files the language registry cannot
-    name, lockfiles, and manifests the build only looks for, qualify.
+    name, prose and data no step opens by extension
+    (:data:`_UNWALKED_LANGUAGES`), lockfiles, and manifests the build only
+    looks for, qualify. The update has checked that the walk indexes the file
+    neither now nor before, so readers of indexed files never see it.
     """
     from repowise.core.ingestion.languages.registry import REGISTRY
 
-    name = PurePosixPath(path.lower()).name
-    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _PRESENCE_ONLY_GLOBS):
-        return True
-    if presence_read(path):
-        return False
     pure = PurePosixPath(path)
     name = pure.name.lower()
-    if name in _LOCKFILE_NAMES or name.endswith(".lock"):
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _PRESENCE_ONLY_GLOBS):
         return True
     language = REGISTRY.from_filename(pure.name) or REGISTRY.from_extension(pure.suffix.lower())
-    return language in (None, "unknown")
+    if _opened_unindexed(path, language):
+        return False
+    if name in _LOCKFILE_NAMES or name.endswith(".lock"):
+        return True
+    return language in (None, "unknown") or language in _UNWALKED_LANGUAGES
 
 
 def _unindexed_refusal(
-    unparsed: Collection[str], presence_changed: Collection[str] | None, views: list[str]
+    unparsed: Collection[str],
+    presence_changed: Collection[str] | None,
+    views: list[str],
+    index_moved: bool,
+    ignores: list[str],
 ) -> str | None:
-    """Why an unindexed change could reach the graph; manifests go to *views*."""
+    """Why an unindexed change could reach the graph; manifests go to *views*.
+
+    A ``.gitignore`` decides two things the graph reads: which files the walk
+    indexes, and which build outputs ``package.json`` names count as checked
+    in. An edit to one goes to *ignores* when the indexed set is what the last
+    build indexed (*index_moved* false); :func:`inputs_refusal` then compares
+    the checked-in builds with the record.
+    """
     for path in sorted(unparsed):
         if has_projection(path):
             views.append(path)
         elif presence_changed is None or path in presence_changed:
             return f"{path}: an unindexed file was added or removed"
+        elif PurePosixPath(path).name == ".gitignore":
+            # Cleared only by both checks: the indexed set here (index_moved)
+            # and the recorded checked-in builds (record_inputs, inputs_refusal).
+            if index_moved:
+                return f"{path}: it changed which files the walk indexes"
+            ignores.append(path)
         elif not _unread_unindexed(path):
             return f"{path}: the graph build reads this file"
     return None
@@ -350,13 +473,17 @@ def plan_non_source_changes(
     config_reads: Collection[str],
     current: dict[str, Any] | None,
     record: dict[str, Any] | None,
+    index_moved: bool = True,
 ) -> tuple[str | None, frozenset[str]]:
     """``(refusal, cleared)`` for the non-source part of an update.
 
     *unparsed* are changed paths the walk does not index now and did not
     before. Each must be a file no graph step opens, edited in place (not in
     *presence_changed*, the added, deleted and renamed paths; ``None`` when
-    unknown), or a manifest whose recorded view is unchanged.
+    unknown), or a manifest whose recorded view is unchanged. A ``.gitignore``
+    qualifies when the walk indexes the files the last build did, give or
+    take the paths in *presence_changed* (*index_moved* false), and the build
+    outputs that count as checked in match the record.
 
     *cleared* are the indexed data and manifest files in *changed* whose edit
     no graph step can see: an empty parse before and after, and either no
@@ -367,9 +494,10 @@ def plan_non_source_changes(
     the last build; when both exist they must match whatever changed.
     """
     views: list[str] = []
-    refusal = _unindexed_refusal(unparsed, presence_changed, views)
+    ignores: list[str] = []
+    refusal = _unindexed_refusal(unparsed, presence_changed, views, index_moved, ignores)
     if refusal is not None:
         return refusal, frozenset()
     cleared = _cleared_edits(changed, previous_parse, config_reads, views)
-    reason = inputs_refusal(current, record, views)
+    reason = inputs_refusal(current, record, views, ignores)
     return reason, (frozenset() if reason else frozenset(cleared))

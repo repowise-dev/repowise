@@ -49,6 +49,8 @@ export function useFirstLookCopy(): FirstLookCopy {
       copyItemPrompt: s("copyItemPrompt"),
       countOf: (n, total) => t("countOf", { n, total }),
       moreInApp: (n) => t("moreInApp", { n }),
+      notInReport: s("notInReport"),
+      openSection: (title) => t("openSection", { title }),
       linesCovered: s("linesCovered"),
       branchesCovered: s("branchesCovered"),
       table: record("table") as FirstLookCopy["table"],

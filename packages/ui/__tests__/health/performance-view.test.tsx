@@ -356,6 +356,50 @@ describe("PerformanceView states", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.calls[0]![0]).toContain("repowise evidence setup --format json");
+    expect(screen.getByText("repowise evidence setup")).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt and hint in place of the local setup ones", async () => {
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => empty })}
+        runtimeEvidence={{ connected: false, found: null }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+        connectEvidenceHint={<a href="/docs/evidence">Read the setup guide</a>}
+      />,
+    );
+    expect(await screen.findByText("Add runtime evidence to rank by measured time")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Read the setup guide" })).toBeTruthy();
+    expect(screen.queryByText("repowise evidence setup")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
+  });
+
+  it("copies the host's connect prompt from the row above a queue with causes", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter()}
+        runtimeEvidence={{ connected: false }}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Ranked by code shape.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
   });
 
   it("keeps the good state once runtime evidence is connected", async () => {
@@ -829,6 +873,45 @@ describe("PerformanceView measured hotspot drawer", () => {
     expect(await screen.findByText("Runs that measured it")).toBeTruthy();
     expect(screen.getByText(measurement)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Read the raw observations/ })).toBeNull();
+  });
+});
+
+describe("PerformanceView measured hotspot with no static finding", () => {
+  it("renders an evidence row whose finding_id is null", async () => {
+    const measurement = 'Measured: rank 2 of repo code in entry_point "cli serve" (8% self), 1d old';
+    const hotspot = opportunity({
+      opportunity_id: "perf2_hotspot_null",
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "src/b.py::serve",
+      observations_total: 0,
+      evidence: [
+        {
+          finding_id: null,
+          file_path: "src/b.py",
+          biomarker_type: "measured_hotspot",
+          function_name: "serve",
+          line_start: null,
+          line_end: null,
+          reason: measurement,
+          path: [],
+          provenance: "measured",
+        },
+      ],
+    });
+    const one = page({ items: [hotspot], total: 1, next_offset: null });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => one,
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions: undefined,
+        })}
+      />,
+    );
+    await openFirstRow();
+    expect(await screen.findByText("Runs that measured it")).toBeTruthy();
+    expect(screen.getByText(measurement)).toBeTruthy();
   });
 });
 

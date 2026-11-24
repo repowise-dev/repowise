@@ -223,6 +223,8 @@ class RepoRegistry:
                 return entry.alias
             if candidate.is_absolute() and candidate.resolve() == absolute:
                 return entry.alias
+        if candidate_text == ".":  # no member sits at the root: "." is the default
+            return self.get_default_alias()
         matched = self.match_checkout(repo)
         if matched is not None:
             return matched[0]

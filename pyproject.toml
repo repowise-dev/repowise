@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.61.0"
+version = "0.62.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -117,6 +117,13 @@ postgres = [
 ]
 graph-extra = [
     "graspologic>=3.4,<4",
+]
+# In-process local embeddings (`repowise reindex --embedder fastembed`): ONNX
+# runtime + a ~65 MB model, no server, no key. Never a default dependency.
+# Python 3.12 and older only: on 3.13+ fastembed needs numpy 2, which
+# graspologic (graph-extra) refuses, and the lock must keep holding both.
+local-embed = [
+    "fastembed>=0.7,<1; python_version < '3.13'",
 ]
 dev = [
     "pytest>=9.0.3,<10",

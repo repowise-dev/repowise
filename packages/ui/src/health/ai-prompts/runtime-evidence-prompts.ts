@@ -1,0 +1,154 @@
+import type {
+  FileTestCost,
+  SlowTest,
+} from "@repowise-dev/types/runtime-evidence";
+
+import {
+  lowSignalText,
+  secondsText,
+  type LowSignalCause,
+} from "../performance/run-signal";
+import {
+  bulletList,
+  closingSections,
+  joinSections,
+  preamble,
+  REPO_ROLE,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
+
+// ─────────────────────────────────────────────────────────────────────
+// A profile with too little signal: collect one that ranks
+// ─────────────────────────────────────────────────────────────────────
+
+export interface BuildRichProfilePromptOptions {
+  /** The workload the weak run profiled, as stored. */
+  workload: string;
+  /** The profiler that wrote it, when the run names one. */
+  tool: string | null;
+  causes: readonly LowSignalCause[];
+  flavor?: AiPromptFlavor;
+}
+
+/** What fixes each cause, said once per kind. */
+const FIX: Record<LowSignalCause["kind"], string> = {
+  pruned:
+    "Do not export with `pyinstrument -r speedscope`: it drops every frame under 1% of the run. Use the sampled recipe `repowise evidence setup` prints for this workload, which keeps every frame and its sample count.",
+  no_samples:
+    "Use a sampling profiler that records sample counts (py-spy, or the recipe `repowise evidence setup` prints), not an evented export.",
+  wait: "Most of the run waits on work the profiler did not sample. If the program fans out to worker processes, profile them too: `py-spy record --subprocesses --format speedscope -o <file> -- <command>`.",
+  few_mapped:
+    "Profile from the repository root at the indexed commit, with no uncommitted changes, so frames map to indexed functions, and run a workload long enough to reach most of the code.",
+};
+
+/**
+ * Re-profile a workload whose stored run ranks too little. Names each cause
+ * the run showed and its fix, and leaves the ingest step to wherever the
+ * last run was added (a CI job or a local `repowise evidence add`).
+ */
+export function buildRichProfilePrompt({
+  workload,
+  tool,
+  causes,
+  flavor = "generic",
+}: BuildRichProfilePromptOptions): string {
+  const fixes = Array.from(new Set(causes.map((c) => FIX[c.kind])));
+  return joinSections([
+    `${REPO_ROLE[flavor]} Repowise stores a runtime profile of \`${workload}\`${tool ? ` (${tool})` : ""}, but the run carries too little signal to rank functions by measured time.`,
+    "",
+    "## What the stored run shows",
+    "",
+    bulletList(causes.map(lowSignalText)),
+    "",
+    "## What to change",
+    "",
+    bulletList(fixes),
+    "",
+    `Change the profiling step where \`${workload}\` is profiled today (a CI workflow or a local script), keep the workload name, run it once, and add the new profile the same way the last one was added. Then run \`repowise evidence status\` and report its answer.`,
+    "",
+    ...closingSections(
+      [
+        "Do not change the program being profiled, only how it is profiled.",
+        "Keep the profile file under the evidence size limit; lower the sampling rate if it is not.",
+      ],
+      [
+        "1. The profiling command you changed, before and after.",
+        "2. What `repowise evidence status` reports for the new run.",
+      ],
+    ),
+  ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Slow tests, or the tests that run one costly file
+// ─────────────────────────────────────────────────────────────────────
+
+const TEST_PARTS = {
+  source:
+    "Repowise read the durations below from stored JUnit timings of the test suite. A duration is wall time on the machine that ran the suite.",
+  open: "each test, its fixtures and the code it runs",
+  mcpTail:
+    "For each test file, call `get_context([file])` for what it covers, then read the fixtures it uses.",
+};
+
+const TEST_CONSTRAINTS = [
+  "Keep every assertion and what it covers; a faster test that checks less is not the goal.",
+  "Look first at setup: fixtures rebuilt per test, real I/O or sleeps, network calls, and data larger than the assertion needs.",
+  "One change per test or fixture, each independently revertible.",
+  "Run the changed tests before and after, and report both durations.",
+];
+
+const TEST_EXPECTED = [
+  "1. Where each test's time goes, and whether it is worth changing.",
+  "2. For each change: the edit, the durations before and after, and why coverage is unchanged.",
+];
+
+export type SlowTestsSubject =
+  | { kind: "tests"; tests: readonly SlowTest[] }
+  | { kind: "file"; file: FileTestCost; basis: "measured" | "inferred" };
+
+export interface BuildSlowTestsPromptOptions {
+  subject: SlowTestsSubject;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+function testLine(t: SlowTest, i: number): string {
+  const where = t.test_file ? ` in \`${t.test_file}\`` : "";
+  const outcome = t.outcome && t.outcome !== "passed" ? `, ${t.outcome}` : "";
+  return `${i + 1}. \`${t.test_id}\`${where}: ${secondsText(t.duration_s)}${outcome} (workload \`${t.workload}\`)`;
+}
+
+/** Make slow tests faster, or the tests that run one production file, without losing coverage. */
+export function buildSlowTestsPrompt({
+  subject,
+  flavor = "generic",
+  repoName,
+}: BuildSlowTestsPromptOptions): string {
+  const body =
+    subject.kind === "tests"
+      ? [
+          `## Slow tests${repoSuffix(repoName)}`,
+          "",
+          subject.tests.map(testLine).join("\n"),
+        ]
+      : [
+          `## Tests that run \`${subject.file.file_path}\`${repoSuffix(repoName)}`,
+          "",
+          bulletList([
+            `Their summed duration: ${secondsText(subject.file.test_seconds)} over ${subject.file.timed_tests} timed test${subject.file.timed_tests === 1 ? "" : "s"} (${subject.file.tests} run the file).`,
+            subject.basis === "inferred"
+              ? "Which tests run the file is inferred from the call graph, not from a coverage map."
+              : "Which tests run the file comes from the per-test coverage map.",
+            "Find those tests, then make the slowest of them faster without losing what they cover.",
+          ]),
+        ];
+  return joinSections([
+    preamble(flavor, TEST_PARTS),
+    "",
+    ...body,
+    "",
+    ...closingSections(TEST_CONSTRAINTS, TEST_EXPECTED),
+  ]);
+}

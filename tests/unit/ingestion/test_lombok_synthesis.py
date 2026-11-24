@@ -461,6 +461,23 @@ class TestSelfBoundedReturn:
             "p/Outer.java::Sub::extra",
         ]
 
+    def test_a_self_bounded_method_called_twice_in_one_chain(self, tmp_path: Path) -> None:
+        """Each hop is read left of the last, so a repeated name ends instead of recursing."""
+        outer = (
+            "package p;\npublic class Outer {\n"
+            "    public abstract static class Base<B extends Base<B>> {\n"
+            "        public B name(String n) { return null; }\n    }\n"
+            "    public static class Sub extends Base<Sub> {\n"
+            "        public Sub extra(int x) { return this; }\n    }\n"
+            "    public static Sub sub() { return new Sub(); }\n}\n"
+        )
+        use = (
+            "package p;\nclass Use {\n    void go() {\n"
+            '        Outer.sub().name("a").name("b").name("c").extra(1);\n    }\n}\n'
+        )
+        files = {"p/Outer.java": outer, "p/Use.java": use}
+        assert "p/Outer.java::Sub::extra" in _resolve_with_heritage(tmp_path, files, "p/Use.java")
+
     def test_a_type_parameter_bounded_by_another_type_is_not_the_receiver(
         self, tmp_path: Path
     ) -> None:

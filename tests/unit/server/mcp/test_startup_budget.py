@@ -248,3 +248,79 @@ def test_package_import_stays_near_bare_interpreter_startup():
         f"importing {_PKG} costs {overhead:.3f}s over a bare interpreter "
         f"(budget {_IMPORT_BUDGET_S}s) — something is being imported eagerly again"
     )
+
+
+# Tool modules the default surface serves and the core profile does not: each
+# pulls in its own analysis stack (change health, refactoring, the health
+# pillars), which was most of a server's start-up time.
+_OUTSIDE_CORE = ("tool_change_risk", "tool_health", "tool_overview", "tool_refactoring")
+
+
+def test_a_core_boot_imports_only_the_core_tools():
+    """A server booted on the core profile skips the other tool modules.
+
+    Then completing the surface (what get_overview's tool table or chat would
+    ask for) fills the registry and the selection snapshot without changing
+    the tools the running server lists.
+    """
+    seen = _probe(
+        f"""
+        import json, sys
+        from {_PKG} import _tool_selection
+        from {_PKG}._server import mcp
+        enabled = _tool_selection.apply_tool_selection(mcp, repo_path=None, override="core")
+        skipped = [m for m in {_OUTSIDE_CORE!r} if "{_PKG}." + m not in sys.modules]
+        listed = sorted(mcp._tool_manager._tools)
+        import {_PKG} as pkg
+        pkg.ensure_full_surface()
+        from repowise.core.registry import mcp_tool_registry
+        print(json.dumps({{
+            "enabled": sorted(enabled),
+            "skipped": skipped,
+            "listed": listed,
+            "listed_after": sorted(mcp._tool_manager._tools),
+            "entries": sorted(e.name for e in mcp_tool_registry.entries()),
+            "snapshot": sorted(_tool_selection._full_surface),
+        }}))
+        """
+    )
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    assert set(seen["enabled"]) == CORE_TOOLS
+    assert seen["skipped"] == list(_OUTSIDE_CORE)
+    assert set(seen["listed"]) == CORE_TOOLS
+    assert seen["listed_after"] == seen["listed"]
+    assert set(seen["entries"]) == set(_TOOL_MODULES)
+    assert set(seen["snapshot"]) == set(_TOOL_MODULES)
+
+
+def test_a_wider_selection_after_a_core_boot_sees_every_tool():
+    """Authorising a served tool stays narrow; selecting a wider profile completes the surface."""
+    seen = _probe(
+        f"""
+        import json, sys
+        from {_PKG} import _tool_selection
+        from {_PKG}._server import mcp
+        from {_PKG}._http_auth import tool_action
+        _tool_selection.apply_tool_selection(mcp, repo_path=None, override="core")
+        action = str(tool_action("get_answer"))
+        still_narrow = "{_PKG}.tool_change_risk" not in sys.modules
+        wider = _tool_selection.apply_tool_selection(mcp, repo_path=None, override="standard")
+        print(json.dumps({{
+            "action": action,
+            "still_narrow": still_narrow,
+            "wider": sorted(wider),
+            "listed": sorted(mcp._tool_manager._tools),
+        }}))
+        """
+    )
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import resolve_enabled_tools
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    standard = resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=False)
+    assert seen["still_narrow"]
+    assert "READ" in seen["action"].upper()
+    assert set(seen["wider"]) == standard
+    assert set(seen["listed"]) == standard

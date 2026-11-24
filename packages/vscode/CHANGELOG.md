@@ -30,6 +30,8 @@ wording of repowise 0.61.
 
 - The decisions summary counts decisions in force and background records, and
   its attention row lists in-force decisions drifting from their code.
+- Setup steps share one ranking with the other next actions, and a finish-setup
+  prompt hands the remaining steps to your agent.
 
 ## 0.15.0
 

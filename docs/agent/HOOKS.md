@@ -93,7 +93,10 @@ nothing: the generated `CLAUDE.md` already carries the indexed commit.
 
 - **No generated `CLAUDE.md` block** (a plugin-only install): the one line
   telling the agent to call a Repowise tool first, the same line the block
-  leads with.
+  leads with. The generated `CLAUDE.md` says that for a how, where or why
+  question about the code, or which files a task involves, Claude Code must
+  call a Repowise MCP tool before Grep, find or reading files. `AGENTS.md`
+  keeps the plain call-first line.
 - **Update running**: a "catching up" notice.
 - **Index behind**: indexed commit vs `HEAD` with a changed-file count, and the
   trust rule (a `stale_warning` fires only when a file a response served has

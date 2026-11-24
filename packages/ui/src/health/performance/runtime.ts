@@ -7,7 +7,6 @@ import type {
   EvidenceRunsResponse,
   MeasuredResponse,
   MeasuredRun,
-  SlowTest,
   SuiteCostResponse,
 } from "@repowise-dev/types/runtime-evidence";
 
@@ -59,18 +58,21 @@ export function useEvidenceRuns(adapter: PerformanceViewAdapter, enabled: boolea
   );
 }
 
-/** Slow tests listed before the list folds. */
+/** Slow tests and costly files listed before "Show 50". */
 export const SLOW_TESTS = 10;
+/** Rows each tests list shows after "Show 50" (the route allows up to 100). */
+export const SLOW_TESTS_MORE = 50;
 
 /**
- * The slowest timed tests; read once the measured view has answered. Not
- * gated on its status: test timings are stored without any profile run.
+ * The slowest timed tests and the test time per production file; read once
+ * the measured view has answered. Not gated on its status: test timings are
+ * stored without any profile run.
  */
-export function useEvidenceTests(adapter: PerformanceViewAdapter, enabled: boolean) {
+export function useEvidenceTests(adapter: PerformanceViewAdapter, enabled: boolean, limit = SLOW_TESTS) {
   const load = adapter.getEvidenceTests;
   return useSWR<SuiteCostResponse>(
-    load && enabled ? `evidence-tests:${adapter.cacheKey}` : null,
-    () => load!({ limit: SLOW_TESTS }),
+    load && enabled ? `evidence-tests:${adapter.cacheKey}:${limit}` : null,
+    () => load!({ limit }),
     QUIET,
   );
 }
@@ -86,10 +88,24 @@ export interface RuntimeEvidenceView {
   testRun: MeasuredRun | null;
   /** Ranked functions in that run, when it is the only one; else 0. */
   testsTotal: number;
-  /** Every stored run, once read. */
+  /** Every stored run, newest first, once read; empty when the read failed. */
   runs: EvidenceRunSummary[] | undefined;
-  /** The slowest timed tests, longest first, and how many tests were timed. */
-  slowTests: { tests: SlowTest[]; total: number } | null;
+  /** The commit the index is at, as the runs route names it. */
+  referenceCommit: string | null;
+  /** Stored test timings: the slowest tests and the test time per file. */
+  tests: TestsView | null;
+}
+
+export interface TestsView {
+  suite: SuiteCostResponse;
+  /** Rows each list asked for. */
+  limit: number;
+  /** Ask for {@link SLOW_TESTS_MORE} rows; null once asked. */
+  more: (() => void) | null;
+  /** The longer read is in flight. */
+  loading: boolean;
+  /** The longer read failed; the shorter lists stay. */
+  failed: boolean;
 }
 
 /**
@@ -109,11 +125,21 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
   const leads = overview?.measured?.runs ?? [];
   const tests = overview?.measured_in_tests;
   // Read once anything is stored: the runs explain an unranked status too.
-  const { data: runs } = useEvidenceRuns(
+  const { data: runs, error: runsError } = useEvidenceRuns(
     adapter,
     overview != null && overview.status !== "no_runtime_data",
   );
-  const { data: suite } = useEvidenceTests(adapter, overview != null);
+  // Keyed by repository, so another repository opens on the short lists again.
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const more = expanded === adapter.cacheKey;
+  const testsLimit = more ? SLOW_TESTS_MORE : SLOW_TESTS;
+  // The short lists stay on screen while the longer read is in flight; both
+  // reads are keyed by repository, so nothing carries over to another one.
+  const short = useEvidenceTests(adapter, overview != null, SLOW_TESTS);
+  const long = useEvidenceTests(adapter, overview != null && more, SLOW_TESTS_MORE);
+  const suite = long.data ?? short.data;
+  const suiteError = more ? long.error : null;
+  const suiteLoading = more && long.isLoading;
   return {
     overview,
     leads,
@@ -121,10 +147,19 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     pick: setPicked,
     testRun: tests?.runs[0] ?? null,
     testsTotal: tests && tests.runs.length === 1 ? tests.total : 0,
-    runs: runs?.runs,
-    slowTests:
-      suite?.status === "measured" && suite.slow_tests.length > 0
-        ? { tests: suite.slow_tests, total: suite.tests_total }
+    // A failed read, or a host that cannot list runs, is no runs, so the
+    // notices fall back to the status alone.
+    runs: runs?.runs ?? (runsError || !adapter.listEvidenceRuns ? [] : undefined),
+    referenceCommit: runs?.reference_commit ?? null,
+    tests:
+      suite?.status === "measured" && (suite.slow_tests.length > 0 || (suite.file_costs?.files.length ?? 0) > 0)
+        ? {
+            suite,
+            limit: testsLimit,
+            more: testsLimit < SLOW_TESTS_MORE ? () => setExpanded(adapter.cacheKey) : null,
+            loading: suiteLoading,
+            failed: Boolean(suiteError),
+          }
         : null,
   };
 }

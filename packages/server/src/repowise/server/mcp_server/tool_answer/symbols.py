@@ -24,7 +24,8 @@ from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._helpers import read_repo_file_text
-from repowise.server.mcp_server._line_hits import production_only, word_scan
+from repowise.server.mcp_server._line_hits import prefetch_word_scans, production_only, word_scan
+from repowise.server.mcp_server._page_paths import in_scope
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
@@ -319,6 +320,10 @@ async def _anchor_symbol_hits(
     if repo_root is not None:
         origins = await _stored_origins(session_factory, repo_id, by_name)
         guard = _TopicGuard(repo_root, hits, question, qids_lower, origins)
+        # The scans below run one after another; their git greps need not.
+        await prefetch_word_scans(
+            repo_root, _scanned_tokens(by_name, homonyms["unindexed"], prose=prose)
+        )
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal, homonyms["unindexed_lines"] = await _literal_holders(
@@ -339,6 +344,17 @@ async def _anchor_symbol_hits(
         await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits, homonyms
+
+
+def _scanned_tokens(by_name: dict[str, list], unindexed: list[str], *, prose: bool) -> list[str]:
+    """The tokens the guard may scan for: a prose question's named defs
+    (:func:`_trusted_over_topic`), its code-shaped names no symbol carries
+    (:func:`_literal_holders`), and those :func:`_absent_names` checks."""
+    plain = [t for t in unindexed if "." not in t]
+    literal = sorted((t for t in plain if _looks_like_code_name(t)), key=lambda t: (-len(t), t))
+    absent = [t for t in plain if _unmistakably_code(t)]
+    named = [*by_name, *literal[:_LITERAL_SCAN_MAX_TOKENS]] if prose else []
+    return [*named, *absent[:_LITERAL_SCAN_MAX_TOKENS]]
 
 
 async def _stored_origins(session_factory: Any, repo_id: str, by_name: dict[str, list]) -> dict:
@@ -463,7 +479,7 @@ class _TopicGuard:
         None when the scan stopped short. See :func:`_writes_as_code`."""
         rows, complete, _unread = await self._scan(token)
         if scope:
-            rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
+            rows = [r for r in rows if in_scope(r["path"], scope)]
         if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
             return True
         return False if complete else None

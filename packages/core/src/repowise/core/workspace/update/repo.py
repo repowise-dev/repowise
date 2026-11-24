@@ -149,6 +149,9 @@ class RepoUpdateResult:
     # reached the store, so the caller can stamp ``last_full_rescore_at`` /
     # ``health_analyzer_version``.
     health_rescored: bool = False
+    # True when every tracked file's security findings were rescanned with this
+    # build's scanner, so the caller can stamp ``security_scanner_version``.
+    security_rescanned: bool = False
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
     graph_update: dict[str, Any] | None = None
@@ -192,6 +195,7 @@ async def _incremental_repo_update(
     force_full_git: bool = False,
     products_sink: list[UpdateProducts] | None = None,
     rescore_health: bool = False,
+    rescan_security: bool = False,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -206,6 +210,8 @@ async def _incremental_repo_update(
     rebuilt; a run with no relevant changes rebuilds nothing and appends
     nothing. *rescore_health* re-scores every file's health after persisting,
     in place of the changed-files health pass that re-score would replace.
+    *rescan_security* rescans every file's security findings after persisting,
+    for a scanner version bump the changed-files scan cannot reach.
 
     The result's ``phase_timings`` carries the seconds each phase took.
 
@@ -231,11 +237,12 @@ async def _incremental_repo_update(
         not file_diffs
         and not force_full_git
         and not rescore_health
+        and not rescan_security
         and PRUNE_REFUSED_AT not in state
     ):
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever. A re-score
-        # still runs: it is owed for every file, changed or not.
+        # or rescan still runs: it is owed for every file, changed or not.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
 
     # A moved or copied checkout's store still names the old path; adopt its
@@ -338,6 +345,10 @@ async def _incremental_repo_update(
             rescored_report = await _rescore_repo_health(
                 repo_path, graph_builder, parsed_files, merged_excludes, timings
             )
+    security_rescanned = False
+    if rescan_security:
+        with timed(timings, "security_rescan"):
+            security_rescanned = await _rescan_repo_security(repo_path, parsed_files, source_map)
     if products_sink is not None:
         health_report = (
             rescored_report
@@ -374,6 +385,7 @@ async def _incremental_repo_update(
         # The re-score reads git rows from the store: scored over rows that did
         # not land, it is not stamped, so the next run re-scores with the walk.
         health_rescored=rescored_report is not None and "Git persist" not in failed_steps,
+        security_rescanned=security_rescanned,
         graph_update=getattr(graph_builder, "incremental_graph_decision", None),
         pending_repair=marker.get("pending_repair"),
     )
@@ -407,6 +419,22 @@ async def _rescore_repo_health(
     except Exception:
         _log.warning("Health re-score failed for %s", repo_path, exc_info=True)
     return None
+
+
+async def _rescan_repo_security(repo_path: Path, parsed_files: Any, source_map: Any) -> bool:
+    """Every file's security findings rescanned, or ``False`` when the rescan failed.
+
+    Best-effort, as the CLI update's rescan is: a failure leaves the old stamp,
+    so the next update retries.
+    """
+    from ...pipeline.persist import rescan_repo_security
+
+    try:
+        await rescan_repo_security(repo_path, parsed_files, source_map)
+    except Exception:
+        _log.warning("Full security rescan failed for %s", repo_path, exc_info=True)
+        return False
+    return True
 
 
 async def _stored_health_report(repo_path: Path) -> Any:
@@ -600,6 +628,7 @@ async def update_single_repo_index(
     products_sink: list[UpdateProducts] | None = None,
     full_index_fallback: bool = True,
     rescore_health: bool = False,
+    rescan_security: bool = False,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
 
@@ -621,6 +650,8 @@ async def update_single_repo_index(
       changed ones, after the incremental write. The products' health report
       covers the whole repo either way, so a caller needs it only to refresh
       every file's scores, not to get a whole-repo report.
+    - ``rescan_security=True`` rescans every file's security findings, not
+      only the changed ones: the rescan a ``SECURITY_SCANNER_VERSION`` bump owes.
     """
     from ...repo_config import load_repo_config
 
@@ -665,6 +696,7 @@ async def update_single_repo_index(
             include_working_tree,
             products_sink=products_sink,
             rescore_health=rescore_health,
+            rescan_security=rescan_security,
         )
         if incremental_result is not None:
             if unrepaired is not None and incremental_result.pending_repair is None:
@@ -776,6 +808,7 @@ async def _try_incremental_update(
     *,
     products_sink: list[UpdateProducts] | None = None,
     rescore_health: bool = False,
+    rescan_security: bool = False,
 ) -> tuple[RepoUpdateResult | None, str | None]:
     """The incremental update's result, or ``None`` and the error to fall back on."""
     from ...ingestion.document_extractors import DocumentExtractionError
@@ -790,6 +823,7 @@ async def _try_incremental_update(
             force_full_git=git_history_stale(state),
             products_sink=products_sink,
             rescore_health=rescore_health,
+            rescan_security=rescan_security,
         )
     except PruneHoldError as exc:
         return RepoUpdateResult(
@@ -848,6 +882,8 @@ async def _full_index_update(
             git_history_refreshed=getattr(result, "git_summary", None) is not None,
             # The full pipeline scores every file with this build's analyzer.
             health_rescored=getattr(result, "health_report", None) is not None,
+            # The full pipeline scans every file with this build's scanner.
+            security_rescanned=True,
         )
     except Exception as exc:
         return RepoUpdateResult(

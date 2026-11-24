@@ -925,10 +925,18 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
 
 It is used as is. Files changed in between whose imports or module-name
 strings moved (outside Python and JavaScript/TypeScript, any non-whitespace
-change) add the tests reaching them; CI config and test data do not, since
-neither is imported. Everything runs when that commit is not in the clone,
-over 1,000 files changed in between, or one is a lockfile, manifest, build or
-test config, or `.repowise/config.yaml`.
+change) are re-read. A Python or JavaScript/TypeScript file adds the tests
+reaching it only when it may now lead to the change: the imports it gained,
+resolved the way the indexer resolves them, or a file its gained strings
+name, reach a changed file in the index (through other such files too), or
+it reached one before. The walk stops at test files, as selection does. Any
+other language, a file that no longer parses, one that gained a dynamic-load
+marker or a package-listing loop, one whose imports or strings (gained or
+not) name a file added since, a test file or helper, and a production
+`__init__.py` always add the tests reaching them. CI config and test data add
+none, since neither is imported. Everything runs when that commit is not in the clone, over 1,000 files
+changed in between, or one is a lockfile, manifest, build or test config, or
+`.repowise/config.yaml`.
 
 ### Ceilings and expectations
 

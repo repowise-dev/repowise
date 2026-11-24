@@ -221,3 +221,48 @@ def test_listed_workspace_mode_matches_served_mode(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_state, "_force_single_repo", True)
     assert _is_workspace(str(tmp_path)) is False
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "core",
+        "lean",
+        "core +get_health",
+        "lean -get_why +get_dead_code",
+        "core get_overview",
+        "get_answer,get_context,search_codebase,get_symbol",
+        "get_answer nonexistent_tool",
+        "core +get_architecture",
+    ],
+)
+@pytest.mark.parametrize("is_workspace", [False, True])
+@pytest.mark.parametrize("client", [None, "claude_code", "codex"])
+def test_candidate_catalog_resolves_like_the_full_one(override, is_workspace, client):
+    """A boot that imports only the candidate tools resolves the same surface."""
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import candidate_tools
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    entries = mcp_tool_registry.entries()
+    names = candidate_tools(override, is_workspace=is_workspace)
+    assert names is not None
+    full = resolve_enabled_tools(
+        entries, is_workspace=is_workspace, override=override, client=client
+    )
+    narrowed = resolve_enabled_tools(
+        [e for e in entries if e.name in names],
+        is_workspace=is_workspace,
+        override=override,
+        client=client,
+    )
+    assert full <= names
+    assert narrowed == full
+
+
+@pytest.mark.parametrize("override", [None, "", "standard", "all", "+get_health", "all -get_why"])
+def test_profiles_reading_default_flags_need_the_whole_catalog(override):
+    from repowise.core.registry.tool_selection import candidate_tools
+
+    assert candidate_tools(override, is_workspace=False) is None

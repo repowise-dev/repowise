@@ -37,6 +37,7 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     leaves full-text search working.
     """
     from repowise.cli.providers import resolve_embedder
+    from repowise.cli.providers.embedders import is_free_embedder
     from repowise.core.providers.llm.resolve import repo_getenv
 
     env_lookup = repo_getenv(repo_path)
@@ -47,7 +48,7 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     # Nothing was chosen, so whatever resolve_embedder returns was inferred
     # from a key. Only the ones that cannot bill survive that.
     resolved = resolve_embedder(None, repo_path=repo_path)
-    return resolved if resolved in ("mock", "ollama") else "mock"
+    return resolved if is_free_embedder(resolved) else "mock"
 
 
 def load_prior_page_ids(

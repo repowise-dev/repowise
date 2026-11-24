@@ -14,11 +14,9 @@ import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import { AGENT_PROMPT_LABEL, useAiPromptAction } from "@repowise-dev/ui/health/ai-prompt-action";
 import { buildSetupAiPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
 import {
-  ACCOUNTING_METHOD_VERSION,
   RepowiseUsage,
   SavingsNudge,
   SavingsPageBody,
-  SavingsResetNotice,
   type SpendGrouping,
 } from "@repowise-dev/ui/savings";
 import { getCostSummary, getSavings, listCosts } from "@/lib/api/costs";
@@ -44,12 +42,6 @@ import {
 const METHODOLOGY_HREF =
   "https://github.com/repowise-dev/repowise/blob/main/docs/architecture/savings-accounting.md";
 const BENCHMARK_HREF = "https://github.com/repowise-dev/repowise/blob/main/docs/BENCHMARKS.md";
-
-/** Dismissal is scoped to a repository *and* an accounting-method version, so
- *  a later methodology change announces itself once more. */
-function resetNoticeKey(repoId: string): string {
-  return `repowise:savings-reset-dismissed:${repoId}:v${ACCOUNTING_METHOD_VERSION}`;
-}
 
 type Range = "7" | "30" | "all";
 const RANGE_DAYS: Record<Range, number | undefined> = { "7": 7, "30": 30, all: undefined };
@@ -134,8 +126,6 @@ export default function CostsPage() {
         />
       }
     >
-      <ResetNotice repoId={id} />
-
       {savings.error ? (
         <div className="flex flex-col gap-14">
           <ApiError
@@ -256,31 +246,4 @@ function SavingsSkeleton() {
       </div>
     </SkeletonRegion>
   );
-}
-
-/** The savings-reset disclosure, once per repository and accounting version.
- *  Starts hidden and reveals after the storage read. */
-function ResetNotice({ repoId }: { repoId: string }) {
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    try {
-      setVisible(!window.localStorage.getItem(resetNoticeKey(repoId)));
-    } catch {
-      // Storage unavailable: show it. Shown twice beats never explained.
-      setVisible(true);
-    }
-  }, [repoId]);
-
-  const dismiss = useCallback(() => {
-    try {
-      window.localStorage.setItem(resetNoticeKey(repoId), "1");
-    } catch {
-      // Not remembered; hidden for now.
-    }
-    setVisible(false);
-  }, [repoId]);
-
-  if (!visible) return null;
-  return <SavingsResetNotice onDismiss={dismiss} methodologyHref={METHODOLOGY_HREF} LinkComponent={Link} />;
 }

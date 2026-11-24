@@ -672,7 +672,11 @@ def _stamp_repo_scope(
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
     semantic = (
-        semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+        semantic_search_status(
+            scope_embedder,
+            getattr(result, "embed_failed_pages", 0),
+            getattr(result, "vector_store", None),
+        )
         if result.generated_pages
         else "unavailable"
     )
