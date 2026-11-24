@@ -6,10 +6,17 @@ What each statement yields is the language's ``LanguageConfig.import_extractor``
 
 from __future__ import annotations
 
+from tree_sitter import Node
+
 from ..extractors import node_text
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
-from ..parser_helpers import import_load_kind, python_import_scope
+from ..parser_helpers import (
+    import_load_kind,
+    python_bound_module_name,
+    python_import_scope,
+    python_load_time_names,
+)
 
 
 def _extract_imports(
@@ -25,6 +32,8 @@ def _extract_imports(
     # kind into them rather than adding a duplicate.
     seen_imports: dict[str, list[Import]] = {}
     seen_own: set[str] = set()
+    # Python: names module-level code mentions at load, read once per file.
+    load_names: frozenset[str] | None = None
 
     for capture_dict in matches:
         stmt_nodes = capture_dict.get("import.statement", [])
@@ -61,12 +70,24 @@ def _extract_imports(
             continue
 
         found = rules.statement(stmt_node, module_nodes[0], module_text, raw, language, src)
+        module_form = False
+        if language == "python" and stmt_node.type == "import_statement":
+            if load_names is None:
+                load_names = python_load_time_names(_root(stmt_node), src)
+            module_form = python_bound_module_name(module_nodes[0], src) not in load_names
         for imp in found:
             imp.type_only, imp.deferred, imp.guarded = kind
             imp.scopes = scopes
+            imp.module_form = module_form
         seen_imports[dedup_key] = found
         imports.extend(found)
 
     if rules.finalize is not None:
         imports = rules.finalize(imports)
     return imports
+
+
+def _root(node: Node) -> Node:
+    while node.parent is not None:
+        node = node.parent
+    return node

@@ -1,7 +1,8 @@
 """Repo hygiene: import cycles and vendored code in the code tree.
 
 Cycles are the stored file-level strongly connected components of two to four
-production files (``graph_node_membership``). Vendored files are the stored
+production files (``graph_node_membership``); one made only of Python
+``import b`` edges is marked static only, unlikely to fail at import. Vendored files are the stored
 origin ``vendored`` outside a directory the index already skips as vendor
 code. Here the origin is the finding, so it is the one section that lists
 code that is not production.
@@ -31,18 +32,25 @@ CYCLE_SIZES = range(2, 5)
 
 
 async def _cycles(ctx: FirstLookContext) -> list[Item]:
-    from repowise.core.persistence.crud.graph import get_scc_members
+    from repowise.core.persistence.crud.graph import get_scc_members, get_static_only_scc_ids
 
+    sccs = {
+        scc_id: members
+        for scc_id, members in (await get_scc_members(ctx.session, ctx.repository_id)).items()
+        if len(members) in CYCLE_SIZES and all(ctx.is_production(m) for m in members)
+    }
+    static_only = await get_static_only_scc_ids(ctx.session, ctx.repository_id, sccs)
     items = []
-    for members in (await get_scc_members(ctx.session, ctx.repository_id)).values():
-        if len(members) not in CYCLE_SIZES or not all(ctx.is_production(m) for m in members):
-            continue
+    for scc_id, members in sccs.items():
+        facts: dict = {"files": len(members)}
+        if scc_id in static_only:
+            facts["static_only"] = True
         items.append(
             Item(
                 id=item_id(SECTION, "import_cycle", members[0], ",".join(members)),
                 section=SECTION,
                 rule="import_cycle",
-                title_facts={"files": len(members)},
+                title_facts=facts,
                 locations=tuple(Location(m) for m in members),
                 locations_total=len(members),
                 confidence="high",

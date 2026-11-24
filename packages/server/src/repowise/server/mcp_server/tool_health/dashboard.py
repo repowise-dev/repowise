@@ -76,6 +76,9 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         # Files in a language health has no dialect for: no score, so in no
         # figure here. Only said when there are some.
         **({"unanalysed_file_count": len(pop.unanalysed_paths)} if pop.unanalysed_paths else {}),
+        # Stored import cycles; ``static_only`` ones are Python ``import b``
+        # loops unlikely to fail at import. Only said when there are some.
+        **({"import_cycles": data.import_cycles} if data.import_cycles else {}),
         # KPIs keep test files unless ``scope`` narrows them. Tests score better
         # than production code, so narrowing lowers the number with no new defect
         # found: a caller should ask for it knowingly.

@@ -258,6 +258,52 @@ def python_import_scope(stmt_node: Node) -> tuple[tuple[int, int], ...] | None:
     return None
 
 
+def python_bound_module_name(module_node: Node, src: str) -> str:
+    """The name ``import a.b`` binds (``a``), or its alias (``import a.b as c``)."""
+    parent = module_node.parent
+    if parent is not None and parent.type == "aliased_import":
+        alias = parent.child_by_field_name("alias")
+        if alias is not None:
+            return node_text(alias, src)
+    return node_text(module_node, src).split(".", 1)[0].strip()
+
+
+_PY_IMPORT_STATEMENTS = frozenset(
+    {"import_statement", "import_from_statement", "future_import_statement"}
+)
+
+
+def python_load_time_names(root: Node, src: str) -> frozenset[str]:
+    """Every identifier a Python module mentions while it loads.
+
+    Module and class bodies, decorators, default values, annotations and base
+    classes run at import; function and lambda bodies do not, so they are
+    skipped, as are import statements, the ``.attr`` half of an attribute and
+    a keyword argument's name. Ceiling: any load-time mention counts, an
+    assignment or an ``if __name__ == "__main__":`` body included, so an
+    import stays in the ordinary cycle tier when in doubt.
+    """
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if kind == "identifier":
+            names.add(node_text(node, src))
+        elif kind == "attribute":
+            stack.extend(c for c in (node.child_by_field_name("object"),) if c is not None)
+        elif kind == "keyword_argument":
+            stack.extend(c for c in (node.child_by_field_name("value"),) if c is not None)
+        elif kind not in _PY_IMPORT_STATEMENTS:
+            body = (
+                node.child_by_field_name("body")
+                if kind in ("function_definition", "lambda")
+                else None
+            )
+            stack.extend(c for c in node.children if body is None or c != body)
+    return frozenset(names)
+
+
 # Handlers that let a module survive its import failing. A broader handler
 # (``Exception``, ``BaseException``, bare ``except:``) usually guards the code
 # after the import too, so it is not read as an import guard.

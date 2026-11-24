@@ -209,8 +209,11 @@ def _stale_decision(item: Item) -> str:
 
 def _cycle(item: Item) -> str:
     n = int(item.title_facts.get("files") or item.locations_total or 2)
+    static = (
+        ", static only: unlikely to fail at import" if item.title_facts.get("static_only") else ""
+    )
     return (
-        f"Import cycle between {_num(n)} files. Move what they share into a module "
+        f"Import cycle between {_num(n)} files{static}. Move what they share into a module "
         "neither imports back."
     )
 
@@ -385,12 +388,16 @@ def _decisions_intro(block: SectionBlock) -> str:
 
 def _hygiene_intro(block: SectionBlock) -> str:
     cycles = sum(1 for i in block.items if i.rule == "import_cycle")
+    static_only = sum(
+        1 for i in block.items if i.rule == "import_cycle" and i.title_facts.get("static_only")
+    )
     vendored = sum(
         int(i.title_facts.get("files") or 0) for i in block.items if i.rule == "vendored_in_tree"
     )
     parts = []
     if cycles:
-        parts.append(f"{plural(cycles, 'import cycle')}.")
+        of_them = f", {_num(static_only)} of them static only" if static_only else ""
+        parts.append(f"{plural(cycles, 'static import cycle')}{of_them}.")
     if vendored:
         parts.append(f"{plural(vendored, 'vendored file')} inside the code tree.")
     return " ".join(parts)

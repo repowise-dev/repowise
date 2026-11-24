@@ -73,10 +73,22 @@ def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
     """Fold one more import into an edge's ``type_only`` / ``deferred`` /
     ``guarded`` marks, by :func:`~repowise.core.ingestion.models.combine_load_kinds`
     (one unguarded load-time import makes the edge a runtime one). ``deferred``
-    and ``guarded`` are stored only when true."""
+    and ``guarded`` are stored only when true.
+
+    ``module_form`` holds while every load-time import along the edge is one:
+    a runtime import replaces the lazy imports' mark, a lazy one leaves a
+    runtime edge's mark alone."""
     edge = (bool(data.get("type_only")), bool(data.get("deferred")), bool(data.get("guarded")))
-    data["type_only"], *lazy = combine_load_kinds(edge, (imp.type_only, imp.deferred, imp.guarded))
-    for key, value in zip(("deferred", "guarded"), lazy, strict=True):
+    kind = (imp.type_only, imp.deferred, imp.guarded)
+    module_form = bool(data.get("module_form"))
+    if not any(kind):
+        module_form = imp.module_form and (module_form or any(edge))
+    elif any(edge):
+        module_form = module_form and imp.module_form
+    data["type_only"], *lazy = combine_load_kinds(edge, kind)
+    for key, value in zip(
+        ("deferred", "guarded", "module_form"), (*lazy, module_form), strict=True
+    ):
         if value:
             data[key] = True
         else:
@@ -773,6 +785,8 @@ class GraphBuilder(
             edge_attrs["deferred"] = True
         if imp.guarded:
             edge_attrs["guarded"] = True
+        if imp.module_form:
+            edge_attrs["module_form"] = True
         # ``external:`` targets are excluded before the
         # directory test, not after: an external node id has no
         # directory, and a single-segment one such as
