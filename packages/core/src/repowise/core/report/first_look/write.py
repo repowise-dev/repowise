@@ -73,6 +73,31 @@ async def render_document(
     return documents[flavor]
 
 
+async def _item_prompts(
+    session: Any, repository_id: str, report: FirstLookReport, flavors: Sequence[str]
+) -> dict[str, dict[str, str]]:
+    """Each listed item's prompt (``SECTION_CAP`` per section) by flavor, then item id."""
+    from repowise.core.analysis.actions.engine import actions_by_id
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+
+    name = report.repo.get("name")
+    # Read the facts once; each action prompt would otherwise read them again.
+    actions = actions_by_id(await load_repo_facts(session, repository_id))
+    rendered: dict[str, dict[str, str]] = {flavor: {} for flavor in flavors}
+    for item in (i for block in report.sections for i in block.items[:SECTION_CAP]):
+        try:
+            async with session.begin_nested():
+                texts = await render_item_prompts(
+                    session, repository_id, item, flavors=flavors, repo_name=name, actions=actions
+                )
+        except Exception:  # a missing prompt must not cost the page
+            logger.warning("repo report: prompt for %s failed", item.id, exc_info=True)
+            continue
+        for flavor, text in texts.items():
+            rendered[flavor][item.id] = text
+    return rendered
+
+
 async def render_documents(
     session: Any,
     repository_id: str,
@@ -98,27 +123,11 @@ async def render_documents(
     else:
         report = with_prose(report)
         to_json, statuses = report.to_json, {}
-    rendered: dict[str, dict[str, str]] = {flavor: {} for flavor in flavors}
-    if prompts and flavors:
-        from repowise.core.analysis.actions.engine import actions_by_id
-        from repowise.core.persistence.crud.analysis.actions import load_repo_facts
-
-        name = report.repo.get("name")
-        # Read the facts once; each action prompt would otherwise read them again.
-        actions = actions_by_id(await load_repo_facts(session, repository_id))
-        for block in report.sections:
-            for item in block.items[:SECTION_CAP]:
-                try:
-                    async with session.begin_nested():
-                        texts = await render_item_prompts(
-                            session, repository_id, item, flavors=flavors, repo_name=name,
-                            actions=actions,
-                        )
-                except Exception:  # a missing prompt must not cost the page
-                    logger.warning("repo report: prompt for %s failed", item.id, exc_info=True)
-                    continue
-                for flavor, text in texts.items():
-                    rendered[flavor][item.id] = text
+    rendered = (
+        await _item_prompts(session, repository_id, report, flavors)
+        if prompts and flavors
+        else {flavor: {} for flavor in flavors}
+    )
     return {
         flavor: {
             **to_json(),

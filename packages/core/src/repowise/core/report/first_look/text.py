@@ -493,6 +493,18 @@ def template_prose(report: FirstLookReport) -> dict[str, Any]:
     }
 
 
+def _first_place(item: Mapping[str, Any]) -> tuple[str | None, int]:
+    """*item*'s first place as ``path:line`` (``None`` without one) and how many others it names."""
+    locations = item.get("locations") or ()
+    # A file's symbols on one line are one place, as the report's chips show them.
+    places = list(dict.fromkeys((loc["path"], loc.get("line")) for loc in locations))
+    if not places:
+        return None, 0
+    path, line = places[0]
+    unlisted = max(int(item.get("locations_total") or 0) - len(locations), 0)
+    return (f"{path}:{line}" if line else path), len(places) - 1 + unlisted
+
+
 def top_items_summary(report_json: Mapping[str, Any], n: int | None = None) -> list[dict[str, Any]]:
     """The "Do these first" lines of a report's JSON, as the Markdown export writes them.
 
@@ -513,15 +525,7 @@ def top_items_summary(report_json: Mapping[str, Any], n: int | None = None) -> l
     out = []
     for item_id in ids if n is None else ids[:n]:
         section, item = by_id[item_id]
-        locations = item.get("locations") or ()
-        # A file's symbols on one line are one place, as the report's chips show them.
-        places = list(dict.fromkeys((loc["path"], loc.get("line")) for loc in locations))
-        where, more = None, 0
-        if places:
-            path, line = places[0]
-            where = f"{path}:{line}" if line else path
-            unlisted = max(int(item.get("locations_total") or 0) - len(locations), 0)
-            more = len(places) - 1 + unlisted
+        where, more = _first_place(item)
         out.append(
             {
                 "id": item_id,
