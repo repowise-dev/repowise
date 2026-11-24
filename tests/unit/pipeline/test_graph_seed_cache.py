@@ -370,10 +370,47 @@ def test_kept_snapshot_is_moved_where_no_load_reads_it(tmp_path: Path) -> None:
     cache.parent.mkdir()
     cache.write_bytes(b"loaded snapshot")
 
-    invalidate_seed_edge_cache(tmp_path, keep=True)
+    assert invalidate_seed_edge_cache(tmp_path, keep=True)
 
     assert not cache.exists()
     assert cache.with_name("graph_seed_edges.kept.pkl").read_bytes() == b"loaded snapshot"
+
+
+async def test_a_failed_set_aside_never_puts_a_stale_file_back(tmp_path: Path, monkeypatch) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+        cache = root / ".repowise" / "graph_seed_edges.pkl"
+        kept = cache.with_name("graph_seed_edges.kept.pkl")
+        kept.write_bytes(b"left by a run that crashed before its save")
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+
+        def locked(_src: object, _dst: object) -> None:
+            raise PermissionError("file is in use")
+
+        from repowise.core.pipeline.incremental import graph_seed
+
+        with monkeypatch.context() as patched:
+            patched.setattr(graph_seed.os, "replace", locked)
+            set_aside = invalidate_seed_edge_cache(root, keep=True)
+
+        assert set_aside is False
+        assert not kept.exists()
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = set_aside
+        # Even if the stale file came back, a run that did not set it aside never restores it.
+        kept.write_bytes(b"left by a run that crashed before its save")
+
+        await save_seed_edge_cache(root, builder)
+
+        assert not kept.exists()
+        assert await load_seed_edges(root) is not None
+    finally:
+        await engine.dispose()
 
 
 async def _seeded_update(root: Path) -> tuple[GraphBuilder, bytes]:
@@ -383,11 +420,12 @@ async def _seeded_update(root: Path) -> tuple[GraphBuilder, bytes]:
     saved = cache.read_bytes()
     snapshot = await load_seed_edges(root)
     assert snapshot is not None
-    invalidate_seed_edge_cache(root, keep=True)
     builder = GraphBuilder(root)
     builder.seed_graph_snapshot(snapshot)
     builder._built = True  # the patch's re-resolution over an empty scope adds nothing
     builder.previous_seed_edges = snapshot
+    builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+    assert builder.seed_snapshot_kept
     return builder, saved
 
 
@@ -432,7 +470,7 @@ async def test_an_edge_edited_in_place_still_rewrites_the_snapshot(
     try:
         builder, _saved = await _seeded_update(root)
         writes = _count_writes(monkeypatch)
-        # A pass appending to a seeded list must not edit the snapshot too.
+        # A pass appending to a seeded list edits the in-memory snapshot too.
         builder.graph()["a.py::run"]["b.py::work"]["call_lines"].append(7)
 
         await save_seed_edge_cache(root, builder)
@@ -461,6 +499,39 @@ async def test_a_changed_node_still_rewrites_the_snapshot(tmp_path: Path, monkey
         assert dict(snapshot["nodes"])["a.py::run"]["end_line"] == 12
     finally:
         await engine.dispose()
+
+
+async def test_a_node_set_edited_in_place_still_rewrites_the_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb_with_type_uses())
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+        writes = _count_writes(monkeypatch)
+        # The type-reference pass adds to a file's set in place.
+        builder.graph().nodes["a.py"]["local_type_uses"].add("Other")
+
+        await save_seed_edge_cache(root, builder)
+
+        assert len(writes) == 1
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        assert dict(snapshot["nodes"])["a.py"]["local_type_uses"] == {"Local", "Other"}
+    finally:
+        await engine.dispose()
+
+
+def _gb_with_type_uses() -> SimpleNamespace:
+    builder = _gb()
+    builder.graph().nodes["a.py"]["local_type_uses"] = {"Local"}
+    return builder
 
 
 async def test_a_new_parser_fingerprint_rewrites_an_equal_graph(
