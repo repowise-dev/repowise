@@ -976,3 +976,20 @@ def test_tests_says_how_many_the_cap_left_out_without_a_fold() -> None:
     text = " ".join(evidence_cmd._tests_lines(payload))
 
     assert "7 faster or untimed tests were left out at the per-run cap." in text
+
+
+def test_tests_names_a_suite_total_over_several_workloads_as_a_sum() -> None:
+    def run(name: str) -> dict:
+        return {"workload": name, "freshness": "current", "commit_sha": "a" * 40,
+                "units": {"truncated": 1}}
+
+    payload = {
+        "runs": [run("pytest"), run("vitest")], "tests_total": 2, "slow_tests": [],
+        "suite": {"timed": 4, "seconds": 9.0},
+        "file_costs": {"basis": "inferred", "files_total": 0, "not_production": 0,
+                       "every_test": 0, "files": []},
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "the 4 timed tests take 9.0s, summed over 2 workloads." in text
