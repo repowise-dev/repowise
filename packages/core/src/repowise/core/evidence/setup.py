@@ -436,13 +436,16 @@ def timed_targets(
     *,
     units: BuildUnitIndex | None,
     runtime: RuntimeInputs,
+    stacks: Sequence[Stack] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """For each repo-relative path in *paths*, the workload ``perf measure``
     times for a change there (:func:`~.runtime_setup.timed_target`); a path
-    with none is left out. One stack detection for all of them. Blocking reads.
+    with none is left out. One stack detection for all of them, or *stacks*
+    when the caller already detected them for this tree. Blocking reads.
     """
     root = Path(repo_root)
-    stacks = detect_repo_stacks(root, units)
+    if stacks is None:
+        stacks = detect_repo_stacks(root, units)
     mains = _go_mains(root, stacks)
     out: dict[str, dict[str, Any]] = {}
     # Files of one language in one directory share a unit, so its targets are read once.

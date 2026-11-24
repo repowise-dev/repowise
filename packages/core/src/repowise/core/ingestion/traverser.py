@@ -1092,6 +1092,16 @@ class FileTraverser:
             self._dir_skipped[key] = skipped
         return skipped
 
+    def kept_files(self, rel_dir: str, names: list[str]) -> list[str]:
+        """*names* in the POSIX *rel_dir*, less the untracked ones when it is a
+        gitignored directory :meth:`dir_chain_skipped` kept only for the files
+        git tracks in it. Ask after :meth:`dir_chain_skipped` decided *rel_dir*.
+        """
+        prefix = f"{rel_dir}/"
+        if not rel_dir or not self._in_ignored_tracked_dir(f"{prefix}_"):
+            return names
+        return [name for name in names if self._is_tracked(prefix + name)]
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
