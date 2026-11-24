@@ -135,6 +135,43 @@ def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
     assert res.verdict is DriftVerdict.MISSING
 
 
+@pytest.mark.parametrize(
+    "context,raw",
+    [
+        ("To validate a rule, run that repository's `src/validate.py`.", "src/validate.py"),
+        ("The upstream repo keeps `src/check.py` for this.", "src/check.py"),
+        ("In the acme/scanner repository, `src/lint.py` does the rest.", "src/lint.py"),
+        ("Another project's `docs/setup.md` covers it.", "docs/setup.md"),
+    ],
+)
+def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
+    """``src``/``docs`` exist here too, but the sentence puts these paths elsewhere."""
+    res = resolve(_index(), _sentence_ref(context, raw))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "This repository keeps `src/gone.py` for this.",
+        "The upstream tool calls our `src/gone.py`.",
+        "Unlike other projects, we ship `src/gone.py`.",
+        "The upstream repo is archived. Our `src/gone.py` replaced it.",
+    ],
+)
+def test_a_missing_path_in_this_repository_still_reports(context: str):
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_path_climbing_out_of_the_repository_is_never_missing():
+    text = "See [it](../../other-repo/src/x.py) and `../other-repo/src/y.py`.\n"
+    refs = extract(text, "docs/guide.md")
+    assert {r.raw for r in refs} == {"../../other-repo/src/x.py", "../other-repo/src/y.py"}
+    assert {resolve(_index(), r).verdict for r in refs} == {DriftVerdict.UNCHECKABLE}
+
+
 def test_a_bare_your_with_no_recognised_phrase_is_still_checked():
     """'you can find it in ...' must not be swallowed by a bare 'your'."""
     context = "You can find it in `src/gone.py`."

@@ -104,8 +104,11 @@ finding's confidence, and Repowise never rewrites your documents.
 A path that exists on disk but sits outside the index (a test fixture, an
 excluded directory) counts as uncheckable, not missing, so it is not reported.
 A path the surrounding prose places in the reader's own project ("add this to
-your project's `src/setupTests.ts`") is uncheckable the same way, since it was
-never a claim about this repository.
+your project's `src/setupTests.ts`") or in another repository ("run that
+repository's `tools/validate.py`", "the upstream repo keeps `src/x.py`", "in the
+acme/scanner repo, `tools/lint.py`") is uncheckable the same way, since it was
+never a claim about this repository. A path that climbs out of the repository
+(`../other-repo/x.py`) and a link to another site are never checked either.
 
 ## Silencing a finding you mean to keep
 

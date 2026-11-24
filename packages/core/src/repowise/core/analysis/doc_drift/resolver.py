@@ -32,6 +32,18 @@ _READER_PROJECT_RE = re.compile(
     re.I,
 )
 
+# The same kind of phrase for a path in another repository: "run that
+# repository's `tools/validate.py`", "the upstream repo keeps `src/x.py`", "in
+# the acme/scanner repo, `tools/lint.py`". A qualifier is required, so "this
+# repository" and a bare "repository" still read as this one, and so does
+# "the upstream tool calls our `src/x.py`".
+_OTHER_REPOSITORY_RE = re.compile(
+    r"\b(?:that|another|other|upstream|external|sibling|parent|their)\s+"
+    r"(?:repo|repository|project|codebase)(?:'s)?\b"
+    r"|\b[\w.-]+/[\w.-]+\s+(?:repo|repository)\b",
+    re.I,
+)
+
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
 # ``#`` reports every inbound link to a setext heading as broken.
@@ -292,10 +304,13 @@ def _under_opaque(idx: RepoIndex, path: str) -> bool:
     return any(path == d or path.startswith(f"{d}/") for d in idx.opaque_dirs)
 
 
-def _is_reader_project_reference(ref: DocReference) -> bool:
-    """Whether *ref*'s own sentence places the path in the reader's project, not this one.
+def _foreign_project(ref: DocReference) -> str:
+    """Which other project *ref*'s own sentence places the path in, or ``""`` for this one.
 
-    ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
+    ``"reader-project"`` for the reader's own, ``"other-repository"`` for
+    another repository the sentence names or points at.
+
+    ``s =ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
     is the source line stripped of leading whitespace, while ``column`` indexes
     the unstripped one, so slicing ``context`` by ``column`` directly would be
     off by exactly the amount of indentation a list item or a blockquote adds.
@@ -309,7 +324,12 @@ def _is_reader_project_reference(ref: DocReference) -> bool:
     idx = ref.context.find(ref.raw)
     preceding = ref.context[:idx] if idx != -1 else ref.context
     sentence_start = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?")) + 1
-    return bool(_READER_PROJECT_RE.search(preceding[sentence_start:]))
+    sentence = preceding[sentence_start:]
+    if _READER_PROJECT_RE.search(sentence):
+        return "reader-project"
+    if _OTHER_REPOSITORY_RE.search(sentence):
+        return "other-repository"
+    return ""
 
 
 def readings(doc: str, raw: str, target: str, *, is_link: bool) -> tuple[str, ...]:
@@ -350,8 +370,10 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     # at all, and must not even reach the anchoring rule below: `src`, `config`,
     # `app` and the like are exactly the top-level directories most repos have,
     # so such a path passes anchoring and falls through to a false MISSING.
-    if _is_reader_project_reference(ref):
-        return Resolution(ref, DriftVerdict.UNCHECKABLE, "reader-project")
+    # The same holds for a path in another repository ("run that repository's
+    # `tools/validate.py`").
+    if foreign := _foreign_project(ref):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, foreign)
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the
