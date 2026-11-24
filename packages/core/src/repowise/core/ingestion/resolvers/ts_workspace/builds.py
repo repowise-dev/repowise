@@ -79,6 +79,20 @@ def checked_in_builds(
     return _git_checked_in(repo_path, _named_build_outputs(manifests) - path_set)
 
 
+def recorded_checked_in_builds(repo_path: Path, *, prune_nested_git: bool = True) -> list[str]:
+    """Every build output the repo's manifests name that is on disk and not gitignored.
+
+    :func:`checked_in_builds` over the same scan and parse as the resolver,
+    before the indexed files are taken out, so an update can tell whether a
+    ``.gitignore`` edit or a local build changed which outputs count as checked in.
+    """
+    from .scan import _read_package_json_objects, _scan_repo_files
+
+    scan = _scan_repo_files(repo_path, prune_nested_git=prune_nested_git)
+    manifests = _read_package_json_objects(repo_path, scan.package_jsons)
+    return sorted(_git_checked_in(repo_path, _named_build_outputs(manifests)))
+
+
 def _git_checked_in(repo_path: Path, paths: set[str]) -> frozenset[str]:
     """The *paths* that exist on disk and are not gitignored, in one git call."""
     on_disk = {path for path in paths if (repo_path / path).is_file()}

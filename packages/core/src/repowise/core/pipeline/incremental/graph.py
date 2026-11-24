@@ -796,7 +796,11 @@ pass reads the sources.
     if not read_only and (patch_requested or cache_resolutions):
         from .config_inputs import record_inputs
 
-        current_inputs = record_inputs(Path(repo_path), walked)
+        current_inputs = record_inputs(
+            Path(repo_path),
+            walked,
+            prune_nested_git=not (include_submodules or include_nested_repos),
+        )
 
     # Structural episodes, minus the formatter check: this path is the hot one
     # (every update, plus the config-triggered re-score), so it derives only
