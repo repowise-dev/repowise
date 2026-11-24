@@ -186,6 +186,30 @@ def test_bus_factor_and_owner_counts_before_and_after(repo: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "committer",
+    [
+        "GitHub <noreply@github.com>",
+        "GitLab <noreply@gitlab.com>",
+        "GitLab <noreply@git.example.com>",
+        "Bitbucket <commits-noreply@bitbucket.org>",
+        "Gitea <noreply@gitea.example.com>",
+        "Forgejo <noreply@forge.example.com>",
+        "Codeberg <noreply@codeberg.org>",
+    ],
+)
+def test_forge_web_committer_is_no_human_signal(committer: str) -> None:
+    assert accountable_human(*_split(_COPILOT), *_split(committer), "") is None
+
+
+def test_a_person_with_a_noreply_address_is_still_a_person() -> None:
+    # Only a forge's own name with a bare no-reply address is the forge.
+    assert accountable_human(*_split(_COPILOT), "Jane Roe", "noreply@acme.io", "") == (
+        "Jane Roe",
+        "noreply@acme.io",
+    )
+
+
+@pytest.mark.parametrize(
     ("author", "committer", "body", "expected"),
     [
         # Human or bot authors are never re-credited.
