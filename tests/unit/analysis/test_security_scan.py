@@ -1878,6 +1878,28 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
         assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
 
+    def test_a_block_closed_and_reopened_on_one_line_ends_the_committed_one(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = (
+            "if (ci) {\n"
+            '    storeFile = file("d.jks")\n'
+            "} else {\n"
+            '    storePassword = "Zq8!realProdPass"\n'
+            "}\n"
+        )
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
+    def test_a_password_on_the_store_file_line_is_low(self, tmp_path: Path) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        source = 'create("d") { storeFile = file("d.jks"); storePassword = "Kx7#pQ2mZ9" }\n'
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "low")]
+
     def test_a_gitignored_keystore_on_disk_is_not_committed(self, tmp_path: Path) -> None:
         """A developer's own release key sits on disk but git leaves it out."""
         (tmp_path / ".gitignore").write_text("*.jks\n")

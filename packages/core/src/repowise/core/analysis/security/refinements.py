@@ -172,28 +172,39 @@ def _lower_committed_keystore_passwords(
             finding["severity"] = "low"
 
 
-def _brace_delta(text: str) -> int:
-    return text.count("{") - text.count("}")
+def _walk_braces(text: str, depth: int) -> tuple[int, int]:
+    """The brace depth after *text*, and the lowest it reached on the way."""
+    lowest = depth
+    for char in text:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            lowest = min(lowest, depth)
+    return depth, lowest
 
 
 def _committed_keystore_lines(lines: list[str], root: Path, project_dir: Path) -> set[int]:
     """Lines inside a block whose ``storeFile`` names a committed keystore.
 
     The block runs from the ``storeFile`` line to the brace that closes the
-    block holding it. Ceilings: a password written above its ``storeFile``
-    line is not covered, and braces are counted without reading strings.
+    block holding it, even when another opens on the same line (``} else {``).
+    Ceilings: a password written above its ``storeFile`` line is not covered,
+    and braces are counted without reading strings.
     """
     committed: set[int] = set()
     depth = 0
     block = -1  # depth of the block a committed keystore opened; -1 when none is open
     for lineno, line in enumerate(lines, start=1):
         if match := _GRADLE_STORE_FILE.search(line):
-            at = depth + _brace_delta(line[: match.start()])
-            block = at if at > 0 and _is_committed_file(match.group(1), root, project_dir) else -1
-        elif 0 <= block <= depth:
+            depth = _walk_braces(line[: match.start()], depth)[0]
+            committed_file = _is_committed_file(match.group(1), root, project_dir)
+            block = depth if depth > 0 and committed_file else -1
+            line = line[match.start() :]
+        if 0 <= block <= depth:
             committed.add(lineno)
-        depth += _brace_delta(line)
-        if depth < block:
+        depth, lowest = _walk_braces(line, depth)
+        if lowest < block:
             block = -1
     return committed
 
