@@ -12,15 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services import overview_payload as sections
+from repowise.server.services.hotspots import DEFAULT_HELD, HotspotQuery, list_hotspots
 from repowise.server.services.overview_counts import explore_counts
 
 router = APIRouter(
@@ -53,22 +52,9 @@ def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
 
 async def _top_hotspots(session: AsyncSession, repo_id: str) -> list[dict[str, Any]]:
     # Here rather than in the service: rows are shaped by the git router's helper.
-    rows = (
-        (
-            await session.execute(
-                select(GitMetadata)
-                .where(GitMetadata.repository_id == repo_id, GitMetadata.is_hotspot.is_(True))
-                .order_by(
-                    GitMetadata.temporal_hotspot_score.desc().nulls_last(),
-                    GitMetadata.churn_percentile.desc(),
-                )
-                .limit(8)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [_hotspot_from_row(r).model_dump(mode="json") for r in rows]
+    # The first rows of the list the card links to, in the scope its count reads.
+    listing = await list_hotspots(session, repo_id, HotspotQuery(limit=8, held=DEFAULT_HELD))
+    return [_hotspot_from_row(r).model_dump(mode="json") for r, _rank in listing.rows]
 
 
 @router.get("/{repo_id}/overview-summary")

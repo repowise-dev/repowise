@@ -20,6 +20,7 @@ from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GitMetadata, HealthFileMetric
 
 __all__ = [
+    "DEFAULT_HELD",
     "FILTERS",
     "SORTS",
     "HotspotListing",

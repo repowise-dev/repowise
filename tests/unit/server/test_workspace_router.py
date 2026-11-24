@@ -1018,6 +1018,15 @@ class TestQueryRepoStats:
 
         assert stats["hotspot_count"] == 2
 
+    def test_hotspot_count_on_a_store_without_origins(self, tmp_path: Path) -> None:
+        """A store from before health rows carried an origin still counts its flags."""
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(db_path, rows=[(1, 0.99), (1, 0.95), (0, 0.10)])
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("DROP TABLE health_file_metrics")
+
+        assert query_repo_stats(db_path)["hotspot_count"] == 2
+
     def test_hotspot_count_leaves_out_held_origins(self, tmp_path: Path) -> None:
         """The workspace card counts the hotspots the Code Health list shows:
         a hotspot whose stored origin the list holds out (a test here) is not one."""
@@ -1323,13 +1332,7 @@ class TestGetSystemGraph:
             resp = await c.get("/api/workspace/system-graph", params={"view": "map"})
             bad = await c.get("/api/workspace/system-graph", params={"view": "nope"})
         assert resp.status_code == 200
-        assert resp.json() == {
-            "version": 1,
-            "generated_at": "",
-            "nodes": [],
-            "edges": [],
-            "groups": [],
-        }
+        assert resp.json() == {"version": 1, "generated_at": "", "nodes": [], "edges": [], "groups": []}
         assert bad.status_code == 422
 
 

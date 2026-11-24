@@ -251,3 +251,6 @@ async def test_every_hotspot_count_is_the_lists_count(client: AsyncClient, app) 
     assert sorted(decisions["ungoverned_hotspots"]) == sorted(
         ["src/core.py", "src/api.py", "src/new.py", "src/legacy.py"]
     )
+    # The overview's top rows are the list's first rows.
+    first = _paths(await _list(client, repo_id, hold="map", limit=8))
+    assert [h["file_path"] for h in overview["top_hotspots"]] == first

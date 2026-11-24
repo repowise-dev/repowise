@@ -8,6 +8,7 @@ a few aggregates.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -142,6 +143,10 @@ def _read_counts(c: sqlite3.Cursor, result: dict[str, Any]) -> None:
         ).fetchone()
         result["hotspot_count"] = row[0] if row else 0
     except sqlite3.OperationalError:
+        # A store from before health rows carried an origin: count the flags.
+        with contextlib.suppress(sqlite3.OperationalError):
+            row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
+            result["hotspot_count"] = row[0] if row else 0
         _log.debug("No hotspot flags in this index")  # table or column may not exist
 
 
