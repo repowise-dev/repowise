@@ -342,7 +342,10 @@ def _emit_telemetry(
     ledger can't aggregate across installs.
     """
     from repowise.core.platform import telemetry
+    from repowise.server.mcp_server import _state
 
+    if not _state.telemetry_allowed():
+        return
     telemetry.record_event(
         "mcp_tool_call",
         _telemetry_properties(tool, result, duration_ms, cold_start=cold_start, include=include),
