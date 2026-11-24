@@ -265,3 +265,14 @@ def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
     assert resolve_location(
         _loc("src/main/java/com/acme/Cache.java", "com.other.Cache.get"), symbols
     ) == (None, "unknown_symbol")
+
+    # Receiver matching directory does not drop the type and mistakenly resolve to another receiver's method.
+    symbols["pkg/node/list.go"] = symbol_lookup(
+        [
+            IndexedSymbol("pkg/node/list.go::list.Get", "list.Get", "Get", 10),
+        ]
+    )
+    assert resolve_location(_loc("pkg/node/list.go", "(*node).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
