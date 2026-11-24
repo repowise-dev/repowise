@@ -584,18 +584,9 @@ class FileTraverser:
                 entry_points.append(f.path)
                 if f.is_application_main:
                     application_mains.append(f.path)
-        # An Android app has no main function: its manifest names the activity
-        # the launcher starts, and that activity is where the app begins.
-        if any(f.language in ("java", "kotlin") for f in files):
-            from .framework_edges.android_manifest import launcher_application_mains
-
-            for path in launcher_application_mains(
-                self.repo_root, [f.path for f in files if not f.is_test]
-            ):
-                if path not in application_mains:
-                    application_mains.append(path)
-                if path not in entry_points:
-                    entry_points.append(path)
+        launchers = self._android_launchers(files)
+        application_mains = list(set(application_mains) | launchers)
+        entry_points = list(set(entry_points) | launchers)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -613,6 +604,17 @@ class FileTraverser:
             total_loc=total_loc,
             entry_points=sorted(entry_points),
             application_mains=sorted(application_mains),
+        )
+
+    def _android_launchers(self, files: list[FileInfo]) -> set[str]:
+        """Launcher activity sources: an Android app has no main function, its
+        manifest names the activity the launcher starts and the app begins there."""
+        if not any(f.language in ("java", "kotlin") for f in files):
+            return set()
+        from .framework_edges.android_manifest import launcher_application_mains
+
+        return set(
+            launcher_application_mains(self.repo_root, [f.path for f in files if not f.is_test])
         )
 
     # ------------------------------------------------------------------

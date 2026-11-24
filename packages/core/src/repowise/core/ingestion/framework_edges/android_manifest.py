@@ -187,37 +187,43 @@ def launcher_application_mains(repo_root: Path, paths: list[str]) -> list[str]:
     module, else to the module's only source file of that class name (Kotlin
     does not tie the folder to the package).
     """
-    from repowise.core.code_origin import path_origin
-
     modules: dict[str, dict[str, str]] = {}
     for path in paths:
         if m := _JVM_MAIN_SOURCE_RE.match(path):
             modules.setdefault(m.group(1) or "", {})[m.group(2)] = path
     mains: list[str] = []
     for module, sources in modules.items():
-        manifest_rel = (
-            f"{module}/src/main/AndroidManifest.xml" if module else "src/main/AndroidManifest.xml"
-        )
-        if path_origin(manifest_rel) != "production":
-            continue
-        manifest = repo_root / manifest_rel
-        try:
-            text = manifest.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        names = launcher_activity_names(text)
-        if not names:
-            continue
-        package = _manifest_package(manifest, text)
-        for name in names:
-            class_path = _qualify(name, package).split("$", 1)[0].replace(".", "/")
-            if (found := sources.get(class_path)) is None:
-                stem = class_path.rpartition("/")[2]
-                same_name = [p for rel, p in sources.items() if rel.rpartition("/")[2] == stem]
-                found = same_name[0] if len(same_name) == 1 else None
-            if found is not None and found not in mains:
+        for found in _module_launcher_sources(repo_root, module, sources):
+            if found not in mains:
                 mains.append(found)
     return mains
+
+
+def _module_launcher_sources(
+    repo_root: Path, module: str, sources: dict[str, str]
+) -> Iterator[str]:
+    """The launcher activity sources of one module, *sources* keyed by class path."""
+    from repowise.core.code_origin import path_origin
+
+    manifest_rel = f"{module}/src/main/AndroidManifest.xml".lstrip("/")
+    if path_origin(manifest_rel) != "production":
+        return
+    manifest = repo_root / manifest_rel
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    names = launcher_activity_names(text)
+    package = _manifest_package(manifest, text) if names else ""
+    for name in names:
+        class_path = _qualify(name, package).split("$", 1)[0].replace(".", "/")
+        if (found := sources.get(class_path)) is not None:
+            yield found
+            continue
+        stem = class_path.rpartition("/")[2]
+        same_name = [p for rel, p in sources.items() if rel.rpartition("/")[2] == stem]
+        if len(same_name) == 1:
+            yield same_name[0]
 
 
 class _AndroidManifestHandler:
