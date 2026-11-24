@@ -1900,6 +1900,24 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
         assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "low")]
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            # The committed block closes and another opens on the password's line.
+            'create("d") {\n    storeFile = file("d.jks")\n} release { storePassword = "Zq8!realProd" }\n',
+            # A brace in a comment or a string does not keep the committed block open.
+            'create("d") {\n    storeFile = file("d.jks") // {\n    keyAlias = "{"\n}\n'
+            'release {\n    storePassword = "Zq8!realProd"\n}\n',
+        ],
+    )
+    def test_a_password_past_the_committed_block_stays_high(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "d.jks").write_bytes(b"\xfe\xed")
+        found = scan_source("app/build.gradle.kts", source, repo_root=str(tmp_path))
+        assert [(f["kind"], f["severity"]) for f in found] == [("hardcoded_password", "high")]
+
     def test_root_dir_is_the_gradle_root_not_the_repository(self, tmp_path: Path) -> None:
         """A build in a subfolder reads ``$rootDir`` from its own settings file."""
         android = tmp_path / "android"

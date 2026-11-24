@@ -280,7 +280,9 @@ def scan_source(
     for finding in findings:
         if _is_low_for_path(finding["kind"], is_low_sev_file, origin):
             finding["severity"] = "low"
-    _lower_committed_keystore_passwords(findings, file_path, lines, repo_root)
+    _lower_committed_keystore_passwords(
+        findings, file_path, lines, lambda: mask()[1], repo_root
+    )
 
     # Symbol-name scan (informational / low). Machine output and declarations
     # hold no written code, so their names are not ours to flag.
