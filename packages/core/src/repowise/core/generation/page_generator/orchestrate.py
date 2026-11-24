@@ -321,11 +321,12 @@ class _GenerationRun:
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
-        drop_paths = near_clone_paths(
-            code_files,
-            self.pagerank,
-            enabled=getattr(self.config, "dedupe_near_clones", True),
-        )
+        with timed(self.timings, "generation.setup.near_clones"):
+            drop_paths = near_clone_paths(
+                code_files,
+                self.pagerank,
+                enabled=getattr(self.config, "dedupe_near_clones", True),
+            )
         if drop_paths:
             log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
             code_files = [p for p in code_files if p.file_info.path not in drop_paths]
@@ -333,35 +334,36 @@ class _GenerationRun:
                 p for p in self.parsed_files if p.file_info.path not in drop_paths
             ]
 
-        try:
-            community_info_map = self.graph_builder.community_info() or {}
-        except Exception:
-            community_info_map = {}
-
         from ..selection import SelectionInputs, select_pages
 
-        kg_scores = _compute_kg_file_scores(self.kg_ctx)
+        with timed(self.timings, "generation.setup.selection"):
+            try:
+                community_info_map = self.graph_builder.community_info() or {}
+            except Exception:
+                community_info_map = {}
 
-        selection = select_pages(
-            SelectionInputs(
-                parsed_files=parsed_files_for_selection,
-                pagerank=self.pagerank,
-                betweenness=self.betweenness,
-                community=self.community,
-                community_info=community_info_map,
-                sccs=list(self.sccs),
-                git_meta_map=self.git_meta_map,
-                config=self.config,
-                kg_file_scores=kg_scores or None,
-                # Curated wiki modules: prefer the in-memory pipeline
-                # result (fresh); the artifact file is absent on first init
-                # and one run stale on update. Read only for the file -> layer
-                # map that steers concept grouping, so absence costs taste and
-                # never coverage.
-                kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
-                symbol_uses=self.graph_builder.symbol_uses(),
+            kg_scores = _compute_kg_file_scores(self.kg_ctx)
+
+            selection = select_pages(
+                SelectionInputs(
+                    parsed_files=parsed_files_for_selection,
+                    pagerank=self.pagerank,
+                    betweenness=self.betweenness,
+                    community=self.community,
+                    community_info=community_info_map,
+                    sccs=list(self.sccs),
+                    git_meta_map=self.git_meta_map,
+                    config=self.config,
+                    kg_file_scores=kg_scores or None,
+                    # Curated wiki modules: prefer the in-memory pipeline
+                    # result (fresh); the artifact file is absent on first init
+                    # and one run stale on update. Read only for the file ->
+                    # layer map that steers concept grouping, so absence costs
+                    # taste and never coverage.
+                    kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                    symbol_uses=self.graph_builder.symbol_uses(),
+                )
             )
-        )
 
         self.selection = selection
         self.gen.selection = selection
@@ -377,7 +379,8 @@ class _GenerationRun:
         # structure: the grouper decides what a page covers, the model decides
         # what to call it. Kept out of ``select_pages`` so the cost estimator
         # and scope resolution, which call it too, stay free of the model.
-        await self._name_concept_groups()
+        with timed(self.timings, "generation.setup.naming"):
+            await self._name_concept_groups()
 
         # Sort code_files for stable level-2 ordering: selected files first
         # (so dep summaries land in the store earliest), then by PageRank desc.
@@ -834,12 +837,23 @@ class _GenerationRun:
     # ------------------------------------------------------------------
 
     async def execute(self) -> list[GeneratedPage]:
+        # Each step of setup is also timed on its own, as
+        # ``generation.setup.<step>``, because setup is one figure that ranges
+        # from under a second to minutes between repos of the same size.
+        # The steps nest inside ``generation.setup``; never add them to it.
         with timed(self.timings, "generation.setup"):
             self._setup_job()
-            await self._seed_resume()
+            with timed(self.timings, "generation.setup.resume"):
+                await self._seed_resume()
             await self._compute_selection()
+            # The flow plans are memoised; computed here, under their own
+            # name, exactly when the total below would compute them anyway.
+            if self.only_page_ids is None and not getattr(self.config, "file_pages_only", False):
+                with timed(self.timings, "generation.setup.flow_plans"):
+                    self.flow_plans()
             self._announce_total()
-            self._compute_ia()
+            with timed(self.timings, "generation.setup.ia"):
+                self._compute_ia()
 
         all_pages: list[GeneratedPage] = []
 

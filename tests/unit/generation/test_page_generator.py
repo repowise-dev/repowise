@@ -691,6 +691,53 @@ async def test_generate_all_level_values_in_range():
         assert 0 <= page.generation_level <= 8
 
 
+async def test_generation_setup_steps_are_timed_inside_setup():
+    from repowise.core.pipeline.phase_timing import PhaseTimings
+
+    config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=2)
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    p = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=10,
+        entry_points=[],
+    )
+    timings = PhaseTimings()
+    await gen.generate_all(
+        [p],
+        {"pkg/main.py": b"def main(): pass"},
+        _make_builder_with([p]),
+        repo,
+        "test-repo",
+        timings=timings,
+    )
+
+    totals = timings.totals
+    steps = {k: v for k, v in totals.items() if k.startswith("generation.setup.")}
+    assert set(steps) == {
+        "generation.setup.resume",
+        "generation.setup.near_clones",
+        "generation.setup.selection",
+        "generation.setup.naming",
+        "generation.setup.flow_plans",
+        "generation.setup.ia",
+    }
+    # The steps are disjoint parts of setup, so together they fit inside it
+    # (each total is rounded to 0.01 s, hence the slack).
+    assert sum(steps.values()) <= totals["generation.setup"] + 0.01 * len(steps)
+
+
 # ---------------------------------------------------------------------------
 # Output-language support
 # ---------------------------------------------------------------------------
