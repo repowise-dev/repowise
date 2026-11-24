@@ -1,8 +1,10 @@
 """/api/repos/{repo_id}/evidence/*: what stored runtime evidence measured.
 
-Read-only and thin: run status is ``evidence.status``, the ranked rows are
-``crud.measured_costs``, the per-function view is ``symbol_hotness``
-through ``crud.hotness_for_symbols``, and test time is
+Read-only and thin: each handler reads its rows and returns what
+``evidence.payloads`` builds from them, so a host that keeps evidence
+elsewhere returns the same payloads. Run status is ``evidence.status``, the
+ranked rows are ``crud.measured_costs``, the per-function view is
+``symbol_hotness`` through ``crud.hotness_for_symbols``, and test time is
 ``evidence.suite_cost.suite_costs``, the readers the CLI and MCP tools use.
 Every measured value names its basis (workload class and name, commit, age,
 samples); no row means unknown, never zero.
@@ -15,9 +17,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.evidence.status import evidence_status, run_status
+from repowise.core.evidence.payloads import (
+    functions_payload,
+    measured_payload,
+    runs_payload,
+    status_payload,
+)
 from repowise.core.evidence.suite_cost import DEFAULT_LIMIT, suite_costs
-from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas.runtime_evidence import (
@@ -54,11 +60,7 @@ async def get_evidence_status(
     repo = await _repo(session, repo_id)
     runs = await crud.list_evidence_runs(session, repo_id)
     status = await crud.measured_status(session, repo_id)
-    return {
-        "status": status,
-        "command": crud.unranked_command(status),
-        **evidence_status(runs, repo.head_commit),
-    }
+    return status_payload(runs, status, repo.head_commit)
 
 
 @router.get("/{repo_id}/evidence/runs", response_model=EvidenceRunsResponse)
@@ -69,10 +71,7 @@ async def list_evidence_runs(
     workload, so the list is complete without paging."""
     repo = await _repo(session, repo_id)
     runs = await crud.list_evidence_runs(session, repo_id)
-    return {
-        "reference_commit": repo.head_commit,
-        "runs": [run_status(run, repo.head_commit) for run in runs],
-    }
+    return runs_payload(runs, repo.head_commit)
 
 
 @router.get("/{repo_id}/evidence/measured", response_model=MeasuredResponse)
@@ -89,26 +88,8 @@ async def get_measured(
     ``measured``, unit-test runs under ``measured_in_tests``."""
     await _repo(session, repo_id)
     view = await crud.measured_costs(session, repo_id, limit=limit, run_id=run_id)
-    if view is None:
-        status = await crud.measured_status(session, repo_id)
-        # Something is ranked, just not in the asked run (an older run of its
-        # workload, or one that ranks nothing).
-        if status == "measured":
-            status = "not_ranked"
-        return {
-            "basis": "unknown",
-            "status": status,
-            "command": crud.unranked_command(status),
-            "measured": None,
-            "measured_in_tests": None,
-        }
-    return {
-        "basis": "measured",
-        "status": "measured",
-        "command": None,
-        "measured": view.get("measured"),
-        "measured_in_tests": view.get("measured_in_tests"),
-    }
+    status = "measured" if view is not None else await crud.measured_status(session, repo_id)
+    return measured_payload(view, status)
 
 
 @router.get("/{repo_id}/evidence/functions", response_model=MeasuredFunctionsResponse)
@@ -128,7 +109,7 @@ async def get_measured_functions(
     rows = await crud.hotness_for_symbols(
         session, repo_id, [symbol_id] if symbol_id else [], files=files
     )
-    return {"functions": [_function(row) for _, row in sorted(rows.items())]}
+    return functions_payload(rows)
 
 
 @router.get("/{repo_id}/evidence/tests", response_model=SuiteCostResponse)
@@ -142,32 +123,3 @@ async def get_suite_costs(
     ``inferred`` from the call graph."""
     repo = await _repo(session, repo_id)
     return await suite_costs(session, repo_id, repo.head_commit, limit=limit)
-
-
-def _function(row: Any) -> dict[str, Any]:
-    return {
-        "symbol_id": row.symbol_id,
-        "file_path": file_of_symbol(row.symbol_id),
-        # Tiers above ranked are not calibrated, so no surface claims them.
-        "tier": "ranked" if row.tier in ("ranked", "lead_candidate") else "measured",
-        "rank": row.rank,
-        "self_share": row.self_share,
-        "total_share": row.total_share,
-        "share_low": row.share_low,
-        "share_high": row.share_high,
-        "samples": row.samples,
-        "run_samples": row.run_samples,
-        "run_id": row.run_id,
-        "run_count": row.run_count,
-        "workload_name": row.workload_name,
-        "workload_class": row.workload_class,
-        "value_kind": row.value_kind,
-        "ordering_only": row.ordering_only,
-        "freshness": row.freshness,
-        "evidence_commit_sha": row.evidence_commit_sha,
-        "measured_at": row.measured_at,
-        "repo_self_share": row.repo_self_share,
-        "wait_share": row.wait_share,
-        "library_share": row.library_share,
-        "run_unlisted": row.run_unlisted,
-    }
