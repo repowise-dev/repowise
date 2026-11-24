@@ -88,31 +88,22 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
     )
     prior = _read_quietly(out_path)
     stamped = (prior.repo_provenance.get(alias) if prior is not None else None) or {}
-    reuse = (
-        prior is not None
-        and prior.version == CONTRACTS_VERSION
-        and head is not None
-        and dirty_fp is not None
-        and stamped.get("config_fp") == config_fp
-        and stamped.get(DIRTY_FP_KEY) == dirty_fp
-        and bool(stamped.get("head"))
-        # Rows read before ingestion wrote wiki.db lack handler bindings and
-        # code origins; once the index exists they are read again.
-        and (stamped.get(INDEXED_KEY) == "1" or not _has_index(repo_path))
-    )
-    if reuse and stamped.get("head") != head:
-        reuse = await asyncio.to_thread(
+    if prior is not None and _stamp_holds(stamped, prior, head, dirty_fp, config_fp, repo_path):
+        assert head is not None
+        if stamped["head"] == head:
+            return RepoContractsResult(
+                False, len(prior.contracts), len(prior.contract_links), out_path
+            )
+        if await asyncio.to_thread(
             _commits_leave_contracts_alone, repo_path, stamped["head"], head, wanted
-        )
-        if reuse:
+        ):
             # Same rows, read at an older commit no contract file has moved
             # since: re-stamp so the next diff starts here.
-            assert prior is not None
             prior.repo_provenance[alias] = {**stamped, "head": head}
             write_contract_store(prior, out_path)
-    if reuse:
-        assert prior is not None
-        return RepoContractsResult(False, len(prior.contracts), len(prior.contract_links), out_path)
+            return RepoContractsResult(
+                False, len(prior.contracts), len(prior.contract_links), out_path
+            )
 
     store, indexed = await _extract(repo_path, alias, contract_config, head)
     store.repo_provenance = {
@@ -127,6 +118,32 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_contract_store(store, out_path)
     return RepoContractsResult(True, len(store.contracts), len(store.contract_links), out_path)
+
+
+def _stamp_holds(
+    stamped: dict[str, str],
+    prior: ContractStore,
+    head: str | None,
+    dirty_fp: str | None,
+    config_fp: str,
+    repo_path: Path,
+) -> bool:
+    """Whether the stored rows were read under today's settings and dirty tree.
+
+    HEAD is checked by the caller: a moved HEAD can still keep the rows when no
+    commit since touched a contract file. Anything unknown answers no.
+    """
+    return (
+        prior.version == CONTRACTS_VERSION
+        and head is not None
+        and dirty_fp is not None
+        and bool(stamped.get("head"))
+        and stamped.get("config_fp") == config_fp
+        and stamped.get(DIRTY_FP_KEY) == dirty_fp
+        # Rows read before ingestion wrote wiki.db lack handler bindings and
+        # code origins; once the index exists they are read again.
+        and (stamped.get(INDEXED_KEY) == "1" or not _has_index(repo_path))
+    )
 
 
 async def _extract(
