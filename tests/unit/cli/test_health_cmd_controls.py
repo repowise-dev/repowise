@@ -197,14 +197,14 @@ def test_a_performance_item_says_how_to_re_measure() -> None:
         "(from svc)" in out
     )
     assert (
-        "measure after: repowise perf measure --against before-load_all -- python -m app build"
-        in out
+        "measure after: repowise perf measure --against before-load_all -- python -m app build "
+        "(from svc)" in out
     )
 
     from repowise.cli.commands.health_cmd.summary import _measure_lines
 
     at_root = _measure_lines(verify_measure({**target, "cwd": ""}, "load_all"))
-    assert at_root[0].endswith("[dim](from the repository root)[/dim]")
+    assert all(line.endswith("[dim](from the repository root)[/dim]") for line in at_root)
 
 
 def _mostly_unanalysed_output(*args: str) -> str:

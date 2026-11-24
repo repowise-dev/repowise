@@ -53,7 +53,7 @@ def _measure_lines(measure: dict[str, Any] | None) -> list[str]:
     where = f" [dim](from {escape(measure.get('cwd') or 'the repository root')})[/dim]"
     return [
         f"    [dim]measure before:[/dim] {escape(measure['before'])}{where}",
-        f"    [dim]measure after:[/dim] {escape(measure['after'])}",
+        f"    [dim]measure after:[/dim] {escape(measure['after'])}{where}",
     ]
 
 
