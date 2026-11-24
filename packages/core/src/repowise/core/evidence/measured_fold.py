@@ -2,7 +2,7 @@
 
 Two pure folds over rows a host already holds, with no store or session:
 
-- :func:`fold_measured`: each workload's newest run with its ranked functions
+- :func:`fold_measured`: each workload's newest ranking run with its ranked functions
   (the ``workload_hotness`` read model) into what
   ``analysis.health.perf.opportunities.build_performance_opportunities``
   takes as ``measured``, ``hot``, ``in_tests``, ``hot_in_tests`` and ``ranks``;
@@ -42,12 +42,12 @@ class MeasuredFold(NamedTuple):
 
 
 def fold_measured(ranked: Iterable[tuple[Any, Sequence[Any]]]) -> MeasuredFold:
-    """Each function a leading workload's newest run ranks, with that workload's
+    """Each function a leading workload's newest ranking run ranks, with that workload's
     name, and the ones any such run puts in ``evidence.hotness``'s
     ``lead_candidate`` tier (the share and interval rule, or ranked in
     several runs).
 
-    *ranked* is ``(run, rows)`` per workload's newest run, as
+    *ranked* is ``(run, rows)`` per workload's newest ranking run, as
     ``crud.ranked_by_workload`` returns it: a run carries ``workload_class``
     and ``workload_name``, a row ``symbol_id``, ``rank``, ``tier`` and
     ``ordering_only`` (``workload_hotness`` columns).
