@@ -91,6 +91,9 @@ def _class_name(node: Node) -> str:
     ``impl T`` exposes the implemented type there), then F#'s nested
     ``type_name`` and the generic identifier scan.
     """
+    if node.type == "declClass" and node.parent is not None and node.parent.type == "declType":
+        # Pascal names the type on ``declType``; the class node itself has no name.
+        node = node.parent
     for field_name in ("name", "type"):
         child = node.child_by_field_name(field_name)
         if child is not None and child.text is not None:
@@ -346,7 +349,79 @@ def _collect_implicit_members(
             bound.update(_bound_names(node, lmap))
         elif node.type in lmap.identifier_kinds and not in_signature:
             refs.add(_text(node))
+    if lmap.case_insensitive_names:
+        canon = _canonical_names(declared)
+        shadowed = {name.lower() for name in bound}
+        return {canon[k] for k in {r.lower() for r in refs} & canon.keys() - shadowed}
     return (refs & declared) - bound
+
+
+def _canonical_names(declared: frozenset[str] | set[str]) -> dict[str, str]:
+    """Lowercased name -> its declared spelling, for a case-insensitive language."""
+    canon: dict[str, str] = {}
+    for name in sorted(declared):
+        canon.setdefault(name.lower(), name)
+    return canon
+
+
+class _ClassFacts(NamedTuple):
+    """What a class declares beyond its fields and method bodies."""
+
+    #: Lowercased property name -> the names its ``getter`` / ``setter`` give.
+    properties: dict[str, tuple[str, ...]]
+    #: Lowercased names of constructors, destructors and overrides.
+    contracts: frozenset[str]
+
+
+_NO_FACTS = _ClassFacts({}, frozenset())
+
+
+def _class_facts(class_node: Node, lmap: LanguageNodeMap, language: str) -> _ClassFacts:
+    """Properties and contract methods declared in a Pascal class body.
+
+    An override is marked on the declaration in the class, not on the
+    ``defProc`` that implements it, so it is read here.
+    """
+    if language != "pascal":
+        return _NO_FACTS
+    properties: dict[str, tuple[str, ...]] = {}
+    contracts: set[str] = set()
+    stack: list[Node] = list(class_node.children)
+    while stack:
+        node = stack.pop()
+        if node.type in lmap.class_kinds or node.type in lmap.function_kinds:
+            continue
+        name = node.child_by_field_name("name")
+        if node.type in lmap.property_kinds and name is not None:
+            targets = tuple(
+                _text(t)
+                for t in (node.child_by_field_name("getter"), node.child_by_field_name("setter"))
+                if t is not None
+            )
+            properties[_text(name).lower()] = targets
+        elif node.type == "declProc" and name is not None:
+            kinds = {c.type for c in node.children} | {
+                g.type for c in node.children if c.type == "procAttribute" for g in c.children
+            }
+            if kinds & {"kConstructor", "kDestructor", "kOverride"}:
+                contracts.add(_text(name).lower())
+        else:
+            stack.extend(node.children)
+    return _ClassFacts(properties, frozenset(contracts))
+
+
+def _resolve_properties(
+    refs: set[str], properties: dict[str, tuple[str, ...]], canon: dict[str, str]
+) -> set[str]:
+    """*refs* with each property replaced by the declared fields and methods it forwards to."""
+    out: set[str] = set()
+    for name in refs:
+        targets = properties.get(name.lower())
+        if targets is None:
+            out.add(name)
+        else:
+            out.update(canon[t.lower()] for t in targets if t.lower() in canon)
+    return out
 
 
 def _member_links(
@@ -395,6 +470,7 @@ def _class_member_refs(
     method_fcs: list[FunctionComplexity],
     lmap: LanguageNodeMap,
     class_name: str,
+    facts: _ClassFacts = _NO_FACTS,
 ) -> _MemberRefs:
     """Each method's member references.
 
@@ -416,26 +492,43 @@ def _class_member_refs(
         out_of_line.update(decl_methods)
         named_decls.append((decl, decl_fields))
     declared = frozenset(fields | out_of_line | {fc.name for fc in method_fcs})
+    if lmap.case_insensitive_names:
+        canon = _canonical_names(declared)
+        explicit = _MemberRefs(
+            [{canon.get(m.lower(), m) for m in members} for members in explicit.per_method],
+            frozenset(canon.get(m.lower(), m) for m in explicit.call_targets),
+        )
+        declared |= frozenset(facts.properties)
     links = _member_links(named_decls, body.nested, lmap, declared)
     per_method = [
         _method_refs(node, members, lmap, declared, links)
         for node, members in zip(body.methods, explicit.per_method, strict=True)
     ]
+    if facts.properties:
+        per_method = [_resolve_properties(refs, facts.properties, canon) for refs in per_method]
     # A declared field may be read by bare name where ``this->f()`` only calls it.
     call_targets = out_of_line | (explicit.call_targets - fields)
     return _MemberRefs(
-        per_method, frozenset(call_targets), _contract_indices(body.methods, method_fcs, class_name)
+        per_method,
+        frozenset(call_targets),
+        _contract_indices(body.methods, method_fcs, class_name, facts.contracts),
     )
 
 
 def _contract_indices(
-    method_nodes: list[Node], method_fcs: list[FunctionComplexity], class_name: str
+    method_nodes: list[Node],
+    method_fcs: list[FunctionComplexity],
+    class_name: str,
+    declared_contracts: frozenset[str] = frozenset(),
 ) -> frozenset[int]:
-    """Indices of the constructors and overrides among *method_nodes*."""
+    """Indices of the constructors and overrides among *method_nodes*.
+
+    *declared_contracts* are lowercased names the class body marks (Pascal).
+    """
     return frozenset(
         i
         for i, (node, fc) in enumerate(zip(method_nodes, method_fcs, strict=True))
-        if fc.name == class_name or _is_override(node)
+        if fc.name == class_name or fc.name.lower() in declared_contracts or _is_override(node)
     )
 
 
@@ -716,6 +809,40 @@ def _collect_cpp_out_of_line(
     return out
 
 
+def _pascal_class_key(fc_name: str, header: Node | None) -> str | None:
+    """Lowercased class name of ``procedure TFoo.Bar``, from the header's qualifier.
+
+    ``None`` for a free routine. Pascal is case-insensitive, hence the lowering.
+    """
+    name = header.child_by_field_name("name") if header is not None else None
+    if name is None or name.type != "genericDot":
+        return None
+    lhs = name.child_by_field_name("lhs")
+    if lhs is None or lhs.text is None:
+        return None
+    return lhs.text.decode("utf-8", errors="replace").split(".")[-1].strip().lower() or None
+
+
+def _collect_pascal_out_of_line(
+    fn_nodes: list[Node],
+    fc_by_node_id: dict[int, FunctionComplexity],
+) -> dict[str, list[tuple[Node, FunctionComplexity]]]:
+    out: dict[str, list[tuple[Node, FunctionComplexity]]] = {}
+    for fn_node in fn_nodes:
+        fc = fc_by_node_id.get(fn_node.id)
+        if fc is None:
+            continue
+        key = _pascal_class_key(fc.name, fn_node.child_by_field_name("header"))
+        if key is not None:
+            out.setdefault(key, []).append((fn_node, fc))
+    return out
+
+
+def _is_forward_declaration(node: Node) -> bool:
+    """``TFoo = class;``: a Pascal class node with no ``end``, so no members."""
+    return node.type == "declClass" and not any(c.type == "kEnd" for c in node.children)
+
+
 def _build_synthetic_class(
     cname: str, entries: list[tuple[Node, FunctionComplexity]]
 ) -> ClassComplexity:
@@ -761,6 +888,9 @@ def _collect_classes(
     out_of_line_by_class: dict[str, list[tuple[Node, FunctionComplexity]]] = {}
     if language in ("cpp", "c") and fn_nodes is not None and root_node is not None:
         out_of_line_by_class = _collect_cpp_out_of_line(fn_nodes, fc_by_node_id, root_node)
+    elif language == "pascal" and fn_nodes is not None:
+        out_of_line_by_class = _collect_pascal_out_of_line(fn_nodes, fc_by_node_id)
+        class_nodes = [n for n in class_nodes if not _is_forward_declaration(n)]
 
     matched_classes: set[str] = set()
     # A class the grammar fused into a misread scope's head runs on over the
@@ -768,7 +898,12 @@ def _collect_classes(
     trusted = [n for n in class_nodes if n.parent is None or not is_misread_scope(n.parent, lmap)]
     for class_node in trusted:
         cname = _class_name(class_node)
-        normalized_cname = re.sub(r"<.*>$", "", cname).strip() if language in ("cpp", "c") else cname
+        if language in ("cpp", "c"):
+            normalized_cname = re.sub(r"<.*>$", "", cname).strip()
+        elif language == "pascal":
+            normalized_cname = cname.lower()
+        else:
+            normalized_cname = cname
         body = _collect_class_body(class_node, lmap, language, source_str)
         ool_entries = [] if normalized_cname in matched_classes else out_of_line_by_class.get(normalized_cname, [])
         ool_nodes = [n for n, _ in ool_entries]
@@ -780,7 +915,9 @@ def _collect_classes(
         method_fcs = [fc_by_node_id[m.id] for m in body.methods if m.id in fc_by_node_id]
         body = body._replace(methods=[m for m in body.methods if m.id in fc_by_node_id])
         contract_impl = is_trait_impl(class_node, lmap)
-        refs = _class_member_refs(body, method_fcs, lmap, cname)
+        refs = _class_member_refs(
+            body, method_fcs, lmap, cname, _class_facts(class_node, lmap, language)
+        )
         if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
@@ -807,8 +944,10 @@ def _collect_classes(
             )
         )
 
+    # A Pascal method whose class is not in this file (inherited from another
+    # unit) has no members to measure, so it gets no synthetic class.
     for cname, entries in sorted(
-        out_of_line_by_class.items(), key=lambda it: min(fc.start_line for _, fc in it[1])
+        {} if language == "pascal" else out_of_line_by_class.items(), key=lambda it: min(fc.start_line for _, fc in it[1])
     ):
         if cname not in matched_classes and entries:
             classes.append(_build_synthetic_class(cname, entries))
