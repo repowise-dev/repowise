@@ -10,6 +10,7 @@ a docstring carries over; a test fails when a phrase no longer matches.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: Tool name -> (where, old, new). *where* is ``"description"`` or the name of
@@ -74,11 +75,21 @@ NO_CHECKOUT_WORDING: dict[str, tuple[tuple[str, str, str], ...]] = {
 }
 
 
+def phrase_pattern(old: str) -> re.Pattern[str]:
+    """*old* matched across any run of whitespace.
+
+    Docstring indentation is not stable: Python 3.13 strips it at compile
+    time, so a phrase that wraps onto an indented line must not depend on it.
+    """
+    return re.compile(r"\s+".join(map(re.escape, old.split())))
+
+
 def without_checkout(definition: dict[str, Any]) -> dict[str, Any]:
     """*definition* (a dumped ``tools/list`` entry) worded for no checkout, in place."""
     properties = definition.get("inputSchema", {}).get("properties", {})
     for where, old, new in NO_CHECKOUT_WORDING.get(definition["name"], ()):
         holder = definition if where == "description" else properties.get(where)
-        if holder and old in (holder.get("description") or ""):
-            holder["description"] = holder["description"].replace(old, new)
+        if holder and holder.get("description"):
+            text = holder["description"]
+            holder["description"] = phrase_pattern(old).sub(lambda _m, new=new: new, text)
     return definition
