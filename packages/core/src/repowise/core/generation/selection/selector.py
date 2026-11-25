@@ -603,7 +603,7 @@ def _doc_app_roots(parsed_files: list[Any]) -> frozenset[str]:
 
     A ``docs/package.json`` makes ``docs/`` a separately built app (a docs
     site), which is part of the subject. Read from the parsed file list, so a
-    manifest the traverser drops (``go.mod``, ``Gemfile``) is not seen here;
+    manifest the traverser drops (``go.mod``, ``pom.xml``) is not seen here;
     a docs app is in practice an npm or Python package.
     """
     names = package_manifest_names()

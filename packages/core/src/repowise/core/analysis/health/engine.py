@@ -469,7 +469,7 @@ class HealthAnalyzer:
 
         Read off disk when a ``repo_root`` is known, because the analyzed file
         list only carries manifests the traverser could language-detect, and it
-        drops ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``,
+        drops ``go.mod``, ``pom.xml``, ``build.gradle``,
         ``build.sbt`` and a dozen more. Falls back to the file list otherwise
         (in-memory callers and tests), which is the previous behaviour.
         """
