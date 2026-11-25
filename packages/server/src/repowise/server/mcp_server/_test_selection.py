@@ -36,6 +36,9 @@ _BASIS_LIMIT = 10
 #: Share of the suite past which a selection made on a lagging index is
 #: labelled ``degraded``: the files the index has not seen filled it, not the change.
 _DEGRADED_SHARE = 0.5
+#: Below this many test files a subset still reads as targeted, however much of
+#: the suite it holds: running all of it costs little either way.
+_RUN_ALL_SHARE_MIN_SUITE = 10
 #: Past this the agent is told to run the CLI instead of waiting. Ceiling: the
 #: call walk is per-level SQL; loading call edges once is the upgrade.
 SELECTION_TIMEOUT_SECONDS = 30.0
@@ -417,10 +420,13 @@ def selection_block(
     held, suite = suite_share(selection)
     broad = covers_most_of_suite(selection)
     degraded = broad and not selection.run_all and bool(result.get("index_gap"))
+    # A lagging index explains a broad selection better, so it keeps its verdict.
+    share = None if degraded else share_run_all_reason(selection)
+    run_all = selection.run_all or share is not None
     # Most of the suite under a verdict to run all of it: the tail restores nothing to act on.
-    if rest and not (broad and (selection.run_all or degraded)):
+    if rest and not (broad and (run_all or degraded)):
         collector.add(f"{label}.tests_to_run not listed ({len(rest)})", rest)
-    reasons = list(selection.reasons)
+    reasons = [share] if share else list(selection.reasons)
     if len(reasons) > _REASONS_LIMIT:
         collector.add(
             f"{label}.reasons beyond cap={_REASONS_LIMIT} "
@@ -429,10 +435,10 @@ def selection_block(
         )
     basis_rows = sorted(selection.basis.items())
     always = sum(not selected_by_change(selection, t) for t in selection.test_files)
-    status = "run_all" if selection.run_all else "degraded" if degraded else "selected"
+    status = "run_all" if run_all else "degraded" if degraded else "selected"
     block: dict[str, Any] = {
         "status": status,
-        "run_all": selection.run_all,
+        "run_all": run_all,
         "reasons": reasons[:_REASONS_LIMIT],
         "reasons_total": len(reasons),
         "basis": basis_of(selection),
@@ -448,7 +454,7 @@ def selection_block(
             "run the whole suite, or `repowise update` to narrow it."
             if degraded
             else _summary(
-                selection, len(run_list), always, len(shown), len(broadcast), len(closure)
+                selection, len(run_list), always, len(shown), len(broadcast), len(closure), share
             )
         ),
     }
@@ -483,6 +489,19 @@ def covers_most_of_suite(selection: Selection) -> bool:
     """Whether the selection holds over half the suite, so it is no targeted subset."""
     held, suite = suite_share(selection)
     return bool(suite) and held > suite * _DEGRADED_SHARE
+
+
+def share_run_all_reason(selection: Selection) -> str | None:
+    """The run-all reason for a subset holding most of a suite of
+    :data:`_RUN_ALL_SHARE_MIN_SUITE` or more test files; None otherwise.
+
+    One rule for every surface that renders a selection, so ``get_risk`` and
+    ``get_change_risk`` never disagree on whether a change runs everything.
+    """
+    held, suite = suite_share(selection)
+    if selection.run_all or suite < _RUN_ALL_SHARE_MIN_SUITE or not covers_most_of_suite(selection):
+        return None
+    return f"selection_covers_most_of_suite: {held} of {suite} test files."
 
 
 def of_the_change(selection: Selection, test: str) -> bool:
@@ -532,10 +551,11 @@ def _summary(
     listed: int,
     broadcast: int = 0,
     closure: int = 0,
+    share: str | None = None,
 ) -> str:
     shown = f"; showing {listed}" if 0 < listed < total else ""
-    if selection.run_all:
-        lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
+    if selection.run_all or share:
+        lead = share or (selection.reasons[0] if selection.reasons else "the selection could not vouch")
         named = f" Run these {total} first{shown}." if total else ""
         return f"Run every test: {lead}{named}"
     spread = apart_sentence(broadcast, closure, APART_KEYS)

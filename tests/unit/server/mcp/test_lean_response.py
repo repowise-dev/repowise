@@ -117,7 +117,9 @@ def test_meta_keeps_the_directive_and_drops_its_diagnostics() -> None:
         # No checkout to compare (a hosted index): age alone decides.
         ({"index_age_days": 8}, True),
         ({"index_age_days": 7}, False),
-        ({"index_age_days": 30, "stale_warning": "Facts below describe abc; HEAD is def."}, False),
+        ({"index_age_days": 30, "stale_warning": "Facts below describe abc1234; HEAD is d."}, False),
+        # The age-only warning names no commit, so the stamp stays.
+        ({"index_age_days": 120, "stale_warning": "Facts below describe an index 120 days old; HEAD is unreadable."}, True),
     ],
 )
 def test_a_lagging_index_keeps_its_commit_and_a_current_one_does_not(freshness, stamped) -> None:

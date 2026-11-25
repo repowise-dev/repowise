@@ -919,11 +919,13 @@ def drop_false_status_flags(result: Any) -> Any:
 
 def keeps_indexed_commit(meta: dict[str, Any]) -> bool:
     """Whether a lean ``_meta`` keeps ``indexed_commit``: the index is behind HEAD
-    or older than :data:`_STAMP_AGE_DAYS`, and no ``stale_warning`` names it already.
+    or older than :data:`_STAMP_AGE_DAYS`, and no ``stale_warning`` names it already
+    (the age-only warning names none).
 
     A current index says nothing by its hash, so the default reply stays its size.
     """
-    if meta.get("stale_warning"):
+    commit = meta.get("indexed_commit")
+    if commit and commit in (meta.get("stale_warning") or ""):
         return False
     age = meta.get("index_age_days")
     return meta.get("index_behind") is True or (isinstance(age, int) and age > _STAMP_AGE_DAYS)

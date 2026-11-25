@@ -32,10 +32,9 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
-    covers_most_of_suite,
     of_the_change,
+    share_run_all_reason,
     split_apart,
-    suite_share,
 )
 from repowise.server.mcp_server.tool_risk.directives_pr import (
     _WORKSPACE_FAMILIES,  # noqa: F401  re-exported
@@ -86,9 +85,6 @@ _MAY_BREAK_LIMIT = 5
 _TESTS_TO_RUN_LIMIT = 10
 #: Run-all reasons carried on the directive; the rest go to the omission store.
 _RUN_ALL_REASONS_LIMIT = 3
-#: Below this many test files a subset still reads as targeted, however much of
-#: the suite it holds: running all of it costs little either way.
-_RUN_ALL_SHARE_MIN_SUITE = 10
 #: Cap on the edit-list: the test files this change will probably need edited.
 _TESTS_TO_UPDATE_LIMIT = 3
 
@@ -595,13 +591,12 @@ def _tests_to_run(
         if tests:
             collector.add(f"directive.{key.removesuffix('_total')} ({len(tests)})", tests)
     reasons = list(selection.reasons)
-    run_all = selection.run_all
-    held, suite = suite_share(selection)
-    if not run_all and suite >= _RUN_ALL_SHARE_MIN_SUITE and covers_most_of_suite(selection):
-        # A subset holding most of the suite saves little; the ranked head still leads.
-        # Its notes were never on the wire for a subset, so only this reason is.
-        run_all = True
-        reasons = [f"selection_covers_most_of_suite: {held} of {suite} test files."]
+    # A subset holding most of the suite saves little; the ranked head still leads.
+    # Its notes were never on the wire for a subset, so only this reason is.
+    share = share_run_all_reason(selection)
+    run_all = selection.run_all or share is not None
+    if share:
+        reasons = [share]
     if len(reasons) > _RUN_ALL_REASONS_LIMIT:
         collector.add(
             f"directive.tests_run_all_reasons beyond cap={_RUN_ALL_REASONS_LIMIT} "
