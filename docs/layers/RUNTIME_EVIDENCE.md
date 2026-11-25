@@ -291,11 +291,16 @@ The format is detected from the content, never the file name;
   output is wall clock and pprof says its own sample type; for py-spy,
   collapsed stacks and other Speedscope exporters pass `--value-kind`.
 - **TypeScript and bundled code.** A profile whose frames name TypeScript files
-  of the checkout is refused: its positions are in the compiled JavaScript. So
-  is one that ran a JavaScript file of the checkout ending in a
-  `//# sourceMappingURL=` comment (a bundle or a compiler's output), whose
-  positions belong to other files; dependencies are not checked. Source maps are
-  not read: profile the JavaScript sources themselves.
+  of the checkout directly is refused: its positions are in compiled JavaScript.
+  Profile the emitted JavaScript with a `//# sourceMappingURL=` comment and a
+  local Source Map v3 file instead. Before joining, the shared converter maps
+  positions to the original checkout source (JavaScript or TypeScript), then
+  applies the usual position, dirty-file and code-origin checks. Generated
+  bundles with usable maps can resolve to maintained sources; vendored files
+  remain libraries. Missing maps for maintained files and unmapped positions
+  are refused. Inline, remote and indexed maps are unsupported; map paths and
+  sources must stay inside the checkout. Collapsed frames without columns need
+  exactly one mapping segment starting at column zero on their generated line.
 - **Go `-trimpath`.** A binary built with `-trimpath` names its files by import
   path, under no checkout, so its profile is refused. Profile a build without
   it. A build made in another directory (CI, a container) joins with that

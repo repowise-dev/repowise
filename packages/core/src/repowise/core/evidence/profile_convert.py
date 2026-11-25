@@ -272,11 +272,13 @@ def convert_profile(
     origins: Mapping[str, str] | None = None,
     read_lines: Callable[[str], Sequence[str] | None] | None = None,
     value_kind: str | None = None,
+    map_sources: bool = True,
 ) -> ProfileConversion:
     """*run*'s frames joined to the symbols at *root*, as a v1 profile document.
 
     The arguments after *run* are :func:`resolve_frames`'; *value_kind*
-    (``cpu`` or ``wall``) overrides what the format says.
+    (``cpu`` or ``wall``) overrides what the format says. The ingest path sets
+    *map_sources* to False after mapping before loading original symbols.
     """
     kind = value_kind or run.value_kind
     if kind is None:
@@ -284,6 +286,11 @@ def convert_profile(
             "the profile does not say whether it timed CPU or wall-clock",
             "name the clock the profiler sampled: cpu or wall",
         )
+    from .source_maps import remap_profile
+
+    if map_sources:
+        run = remap_profile(run, root=root, read_lines=read_lines, origins=origins,
+                            dirty_paths=dirty_paths)
     refuse_compiled_positions(run, root, read_lines, origins)
     resolution = resolve_frames(
         run.frames,
