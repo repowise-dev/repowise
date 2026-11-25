@@ -322,3 +322,27 @@ async def test_no_map_naming_a_timed_test_gives_the_concentration_only(session) 
 
     assert (cost["verdict"], cost["clusters"]) == ("no_test_map", [])
     assert cost["concentration"] == {"tests": 1, "share": round(50 / 70, 4)}
+
+
+def test_tests_the_row_cap_cut_count_among_the_others() -> None:
+    seconds, reach, _ = _store_suite()
+    stored = {t: s for t, s in seconds.items() if s >= 2.0}  # the cap cut the 10 quick tests
+
+    (store, plugins) = cost_fold(stored, reach, timed=20, suite_seconds=65.0)["clusters"]
+
+    # The same answer as with every row: the cut tests are the others' pace.
+    assert (store["excess_s"], store["others_mean_s"]) == (45.0, 1.0)
+    assert plugins["excess_s"] == 7.5
+
+
+async def test_two_workloads_running_the_same_tests_count_each_test_once(session) -> None:
+    repo = await insert_repo(session)
+    rows = [_t(SLOW, 40.0), _t(FAST, 1.0)]
+    for env in ("linux-ci", "windows-ci"):
+        await _timings(session, repo.id, rows, workload=f"pytest {env}", environment=env,
+                       summary=json.dumps(timing_summary(rows)))
+
+    cost = (await suite_costs(session, repo.id, HEAD))["cost"]
+
+    # The folds add up to 82 s over 4 tests; the suite is 41 s over 2.
+    assert (cost["verdict"], cost["seconds"], cost["timed"]) == ("small_suite", 41.0, 2)

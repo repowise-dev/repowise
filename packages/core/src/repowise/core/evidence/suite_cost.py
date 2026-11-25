@@ -245,6 +245,8 @@ def excess_clusters(
     reach: Mapping[str, Collection[str]],
     suite_seconds: float,
     fixtures: Mapping[str, Collection[Fixture]] | None = None,
+    *,
+    unseen: tuple[int, float] = (0, 0.0),
 ) -> list[dict[str, Any]]:
     """Up to :data:`MAX_CLUSTERS` groups of tests that run the same production code
     and take longer than the rest, most excess first.
@@ -262,10 +264,12 @@ def excess_clusters(
 
     *fixtures* maps every timed test to the fixtures it asks for; a cluster
     names the one most of its tests use and few other timed tests do
-    (:func:`_shared_fixture`). ``share`` is of *suite_seconds*.
+    (:func:`_shared_fixture`). ``share`` is of *suite_seconds*. *unseen* is the
+    count and seconds of timed tests *seconds* lacks (the ingest's row cap keeps
+    the slowest): they count among the others, never in a cluster.
     """
     pool = {t: seconds[t] for t in sorted(reach) if reach[t] and t in seconds}
-    ceiling = MAX_REACH * len(pool)
+    ceiling = MAX_REACH * (len(pool) + unseen[0])
     fixtures = fixtures or {}
     users = Counter(f for fs in fixtures.values() for f in set(fs))
     clusters: list[dict[str, Any]] = []
@@ -274,14 +278,15 @@ def excess_clusters(
         for test in pool:
             for path in reach[test]:
                 by_file[path].append(test)
-        total = sum(pool.values())
+        total = sum(pool.values()) + unseen[1]
+        size = len(pool) + unseen[0]
         ranked: list[tuple[float, str, frozenset[str]]] = []
         for path, tests in by_file.items():
             n = len(tests)
-            if n < MIN_CLUSTER_TESTS or n > ceiling or n == len(pool):
+            if n < MIN_CLUSTER_TESTS or n > ceiling or n == size:
                 continue
             inside = sum(pool[t] for t in tests)
-            ranked.append((inside - n * (total - inside) / (len(pool) - n), path, frozenset(tests)))
+            ranked.append((inside - n * (total - inside) / (size - n), path, frozenset(tests)))
         ranked.sort(key=lambda c: (-c[0], c[1]))
         if not ranked or ranked[0][0] < MIN_EXCESS_S:
             break
@@ -296,7 +301,7 @@ def excess_clusters(
                 "files_total": len(files),
                 "tests": len(members),
                 "mean_s": _rounded(inside / len(members)),
-                "others_mean_s": _rounded((total - inside) / (len(pool) - len(members))),
+                "others_mean_s": _rounded((total - inside) / (size - len(members))),
                 "excess_s": _rounded(excess),
                 "share": round(excess / suite_seconds, 4) if suite_seconds > 0 else None,
                 "slowest": [{"test_id": t, "duration_s": pool[t]} for t in slowest],
@@ -389,7 +394,9 @@ def cost_fold(
     elif reach is None:
         verdict = "no_test_map"
     else:
-        clusters = excess_clusters(seconds, reach, total, fixtures)
+        # Tests the row cap cut are the fastest: they run at the others' pace.
+        unseen = (max(0, timed - len(seconds)), max(0.0, total - sum(seconds.values())))
+        clusters = excess_clusters(seconds, reach, total, fixtures, unseen=unseen)
         verdict = "clusters" if clusters else "small_excess"
     return {
         "verdict": verdict,
@@ -515,9 +522,12 @@ async def suite_costs(
     slow = sorted(timings.values(), key=lambda r: (-r.duration_s, r.test_id))
     suite = suite_summary(runs, limit)
     seconds = {t: row.duration_s for t, row in timings.items()}
-    # The fold covers the tests the row cap left out; the stored rows are the slowest.
-    timed = suite["timed"] if suite else len(seconds)
-    total = suite["seconds"] if suite else sum(seconds.values())
+    # One run's fold covers the tests its row cap left out (the stored rows are the
+    # slowest). Folds of several runs add up a test each workload ran, where
+    # *seconds* charges it once, so they would inflate the suite. Ceiling: with
+    # several capped workloads the cut tests are not counted.
+    timed = suite["timed"] if suite and len(runs) == 1 else len(seconds)
+    total = suite["seconds"] if suite and len(runs) == 1 else sum(seconds.values())
     reach = fixtures = None
     if total >= QUIET_SUITE_S:
         reach = await _test_reach(session, repository_id, timings)

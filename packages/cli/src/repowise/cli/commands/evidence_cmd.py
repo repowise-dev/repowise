@@ -939,11 +939,16 @@ def _cluster_lines(i: int, cluster: dict[str, Any]) -> list[str]:
             f"{fx['tests']:,} of them and {others}"
         )
     slowest = ", ".join(
-        f"{escape(t['test_id'].rsplit('/', 1)[-1])} {t['duration_s']:.2f} s"
-        for t in cluster["slowest"]
+        f"{escape(_short_test(t['test_id']))} {t['duration_s']:.2f} s" for t in cluster["slowest"]
     )
     lines.append(f"     slowest: {slowest}")
     return lines
+
+
+def _short_test(test_id: str) -> str:
+    """``tests/unit/test_add.py::test_a[x/y]`` as ``test_add.py::test_a[x/y]``."""
+    path, sep, name = test_id.partition("::")
+    return f"{path.rsplit('/', 1)[-1]}{sep}{name}"
 
 
 def _files(group: dict[str, Any], cap: int | None = 1) -> str:
