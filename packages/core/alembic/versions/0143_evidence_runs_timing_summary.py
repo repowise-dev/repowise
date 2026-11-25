@@ -5,8 +5,8 @@ run adds up to is folded before the cap and kept on the run. One nullable
 column on ``evidence_runs``. Local SQLite stores get it from the model through
 the reconciler.
 
-Revision ID: 0142
-Revises: 0141
+Revision ID: 0143
+Revises: 0142
 Create Date: 2026-11-25
 """
 
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0142"
-down_revision: str | None = "0141"
+revision: str = "0143"
+down_revision: str | None = "0142"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
