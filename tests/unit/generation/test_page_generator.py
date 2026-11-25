@@ -772,7 +772,7 @@ async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
     totals = await _setup_timings()
 
     builds = {k: v for k, v in totals.items() if k.startswith("generation.llm.")}
-    assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 8)}
+    assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 7, 8)}
     assert builds["generation.llm.build.level2"] >= 0.09
     assert totals["generation.level2"] < 0.09
     # The builds, the levels they feed and the finalize pass are disjoint parts

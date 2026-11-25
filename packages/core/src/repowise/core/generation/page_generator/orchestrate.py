@@ -915,8 +915,10 @@ class _GenerationRun:
         # The front page and How It Works are written from the walkthroughs,
         # so levels 6 (repo_overview) and 8 (onboarding) wait for them.
         with timed(self.timings, "generation.llm.build.level5"):
-            level5 = _levels.build_flow_coros(self) + _levels.build_level7_coros(self)
-        walkthroughs = await self.run_level(level5, 5)
+            level5 = _levels.build_flow_coros(self)
+        with timed(self.timings, "generation.llm.build.level7"):
+            level7 = _levels.build_level7_coros(self)
+        walkthroughs = await self.run_level(level5 + level7, 5)
         all_pages.extend(walkthroughs)
         # Model-written walkthroughs only: a template stub's step list is not
         # a journey a reader can be told about.
