@@ -337,7 +337,7 @@ repowise generate --page module_page:src/api --cascade none   # one page, nothin
 | `--unwritten` | Pages still on a stub ("finish writing the wiki"). | on, non-interactive |
 | `--all` | Every page; rewrites written prose. | off |
 | `--stale` | Pages whose code changed since written. | off |
-| `--path <glob>` | Pages under a prefix or glob. Repeatable. | |
+| `--path <glob>` | Pages under a prefix or glob, matched like `.gitignore`: `*` stays within one directory (`src/*.py` skips `src/a/b.py`), `**` crosses directories, a name without a slash also matches deeper down (`/src` pins it to the root). Repeatable. | |
 | `--page <id>` | One page id. Repeatable; structural ids error. | |
 | `--cascade none\|dependents\|full` | Dependent-page policy, below. | `dependents` |
 | `--provider` / `--model` / `--reasoning` | LLM overrides. | |
@@ -2134,7 +2134,7 @@ repowise workspace scan --yes
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--yes` / `-y` | Add all without prompting. | off |
-| `--exclude` | Skip paths matching this glob, relative to the workspace root (e.g. `'test-repos/*'`). Repeatable. | |
+| `--exclude` | Skip paths matching this glob, matched like `.gitignore`: `*` stays within one directory, `**` crosses directories, and a slash at the start or in the middle (e.g. `'/legacy'`, `'test-repos/*'`) ties the pattern to the workspace root. A trailing slash only means "directory": `legacy` and `legacy/` both match at any depth. **Changed:** before, `--exclude legacy` skipped only the top-level `legacy`; it now also skips nested repos of that name such as `svc/legacy`. Write `/legacy` to keep the old, top-level-only scope. Repeatable. | |
 | `--verbose`, `-v` | Debug logs. | off |
 
 ### `repowise workspace update`
