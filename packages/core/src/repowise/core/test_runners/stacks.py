@@ -1015,9 +1015,11 @@ def _pinned_manager(package: dict) -> str | None:
 def _pinned_node(root: set[str], package: dict, pinned: str, scripts: dict, deps: dict) -> Stack:
     """A package whose pinned package manager Repowise does not know.
 
-    No install is printed: its commands are that tool's. The runner runs through
+    No install is printed: its commands are that tool's. Jest and Vitest run through
     ``npx --no``, which fails at once on a runner that is not installed instead of
-    fetching one. With no plain runner line (:attr:`Stack.suite`) there is no command.
+    fetching one; Mocha runs under c8 (fetched as on every other Mocha unit), which
+    starts ``mocha`` from ``node_modules`` and fails when it is not there. With no
+    plain runner line (:attr:`Stack.suite`) there is no command.
     """
     suite = _suite(scripts, deps)
     head = suite.split()[0] if suite else None

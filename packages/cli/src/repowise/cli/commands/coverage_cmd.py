@@ -259,8 +259,9 @@ def coverage_add(
                 allow_partial=allow_partial,
             )
             for path, err in errors:
-                # A coverage.py data file is said for below, once its contexts are read.
-                if not is_coverage_data_file(path):
+                # A coverage.py data file's note is said below, once its contexts are read;
+                # any other error about it is printed here as for every report.
+                if err != COVERAGE_DATA_FILE_NOTE:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
             if stale := resolved.alignment.warning():
                 console.print(f"[yellow]{escape(stale)}[/yellow]")

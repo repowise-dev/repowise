@@ -1261,3 +1261,10 @@ def test_an_unknown_package_manager_with_a_script_it_cannot_run_has_no_command()
                                       packageManager="nub@0.8.3")}
     (stack,) = detect_stacks(["package.json"], files)
     assert stack.test == "" and stack.to_dict()["reason"].startswith("`package.json` pins `nub`")
+
+
+def test_a_pinned_mocha_unit_runs_mocha_from_node_modules_under_c8():
+    files = {"package.json": _package({"test": "mocha test/"}, packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    # c8 is fetched as for every Mocha unit; mocha itself is never fetched.
+    assert stack.test == "npx --yes c8 --reporter=lcov mocha test/"
