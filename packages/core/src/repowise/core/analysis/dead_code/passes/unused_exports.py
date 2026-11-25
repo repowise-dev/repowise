@@ -143,7 +143,7 @@ class UnusedExportPass:
         # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        # A JVM ``main`` launches its file the same way.
+        # A JVM or C# ``main`` launches its file the same way.
         if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
