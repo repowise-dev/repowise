@@ -1,7 +1,9 @@
 """Stable names for a host that serves the MCP tools inside its own process.
 
-Build a context with :func:`embedded_context`, wrap a tool with
-:func:`tool_middleware`, then call it inside ``with serving(ctx):``. Pass
+Open a published store read-only with :func:`open_store` (check it first with
+:func:`publishable`) and build its context with ``store.context(alias)``, or
+build one over an engine you opened with :func:`embedded_context`. Wrap a tool
+with :func:`tool_middleware`, then call it inside ``with serving(ctx):``. Pass
 ``telemetry=False`` when the host does its own usage accounting.
 
 The engine keeps whole-repository projections in process-wide caches.
@@ -13,7 +15,7 @@ from __future__ import annotations
 
 from repowise.core.persistence.crud.analysis.fix_first import drop_fix_first_repo
 from repowise.core.persistence.index_cache import drop_repo_everywhere
-from repowise.core.workspace.registry import embedded_context
+from repowise.core.workspace.registry import embedded_context, open_store, publishable
 from repowise.server.mcp_server import _basis, _components, _graph_files, tool_middleware
 from repowise.server.mcp_server._state import request_context, serving
 from repowise.server.mcp_server.tool_answer.cache import drop_keyless_replies
@@ -22,6 +24,8 @@ from repowise.server.mcp_server.tool_overview import graph as _overview_graph
 
 __all__ = [
     "embedded_context",
+    "open_store",
+    "publishable",
     "release",
     "request_context",
     "serving",
