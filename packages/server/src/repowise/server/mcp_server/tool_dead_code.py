@@ -67,11 +67,9 @@ async def _get_dead_code_all_repos(
             )
             repo_findings, withheld = filters.split_withheld(repo_findings)
             repo_findings, gated = filters.split_gated(repo_findings)
-            git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
         served = serve_findings(repo_findings, **_cross_repo_cut(ctx.alias))
         serialized = [
-            serialize_finding(f, git_meta_map, repository=ctx.alias)
-            for f in apply_filters(served, filters)
+            serialize_finding(f, repository=ctx.alias) for f in apply_filters(served, filters)
         ]
         return serialized, summary_counts(served), withheld, gated
 
@@ -156,7 +154,7 @@ async def get_dead_code(
     kind: str | None = None,
     min_confidence: float | str = RISK_CAP_CONFIDENCE,
     safe_only: bool = False,
-    limit: int = 20,
+    limit: int = 10,
     tier: str | None = None,
     directory: str | None = None,
     owner: str | None = None,
@@ -183,7 +181,7 @@ async def get_dead_code(
         include_internals: also scan private symbols.
         include_zombie_packages, no_unreachable, no_unused_exports,
             include_unverified: switch finding kinds on or off.
-        finding_id: one finding by its ``id``.
+        finding_id: one finding by its ``id``, any status, every field.
         repo: usually omitted.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
@@ -263,6 +261,8 @@ async def get_dead_code(
 
     # --- Single repo path ---
     ctx = await _resolve_repo_context(repo)
+    if finding_id:
+        return await _finding_by_id(ctx, finding_id, filters)
     # Findings beyond the per-tier limit are persisted, not silently dropped —
     # the response carries an expandable [repowise#<ref>] marker for them.
     collector = OmissionCollector("get_dead_code", repo_root=ctx.path)
@@ -282,55 +282,15 @@ async def get_dead_code(
                 },
             )
         every_shown_kind, withheld = filters.split_withheld(every_finding)
-        # A lookup by id still answers for a gated finding; lists do not show it.
         all_findings, gated = filters.split_gated(every_shown_kind)
-
-        # Phase 4: load git metadata for "last meaningful change" enrichment,
-        # over the gated rows too so a lookup by id is enriched the same way.
-        git_meta_map = await _load_git_meta_map(session, repository.id, every_shown_kind)
-        resolution_basis = (
-            []
-            if finding_id
-            else await call_resolution_bases(
-                session, repository.id, cache_key=index_state_key(repository)
-            )
+        resolution_basis = await call_resolution_bases(
+            session, repository.id, cache_key=index_state_key(repository)
         )
 
-    reference_repository = ctx.alias or repository.name
-    cut = _cross_repo_cut(ctx.alias)
-    if finding_id:
-        match = next(
-            (
-                row
-                for row in serve_findings(every_shown_kind, **cut)
-                if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
-            ),
-            None,
-        )
-        return {
-            "mode": "finding",
-            "finding_id": finding_id,
-            "finding": (
-                serialize_finding(
-                    match,
-                    git_meta_map,
-                    repository=reference_repository,
-                )
-                if match
-                else None
-            ),
-            "resolved": match is not None,
-            "_meta": _build_meta(
-                repository=repository,
-                targets=[match.file_path] if match else None,
-            ),
-        }
-
-    served = serve_findings(all_findings, **cut)
+    served = serve_findings(all_findings, **_cross_repo_cut(ctx.alias))
     filtered = apply_filters(served, filters)
-    serialized = [
-        serialize_finding(f, git_meta_map, repository=reference_repository) for f in filtered
-    ]
+    reference_repository = ctx.alias or repository.name
+    serialized = [serialize_finding(f, repository=reference_repository) for f in filtered]
 
     def _keep_overflow(name: str, beyond: list[dict]) -> None:
         collector.add(
@@ -362,6 +322,49 @@ async def get_dead_code(
     attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
+
+
+async def _finding_by_id(ctx: Any, finding_id: str, filters: FindingFilters) -> dict:
+    """One finding by its ``id``, whatever its triage status, with every field.
+
+    A finding resolved, dismissed or acknowledged since it was listed still
+    answers, and says its ``status``. A gated finding answers too; a kind the
+    registry withholds does not, as lists never showed it.
+    """
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        rows = await get_dead_code_findings(
+            session, repository.id, status=None, include_withheld=True
+        )
+        rows, _withheld = filters.split_withheld(rows)
+        reference_repository = ctx.alias or repository.name
+        match = next(
+            (
+                row
+                for row in serve_findings(rows, **_cross_repo_cut(ctx.alias))
+                if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
+            ),
+            None,
+        )
+        git_meta_map = await _load_git_meta_map(session, repository.id, [match] if match else [])
+    finding = None
+    if match is not None:
+        finding = serialize_finding(
+            match, git_meta_map, repository=reference_repository, detail=True
+        )
+        finding["status"] = match.status
+        if match.note:
+            finding["note"] = match.note
+    return {
+        "mode": "finding",
+        "finding_id": finding_id,
+        "finding": finding,
+        "resolved": match is not None,
+        "_meta": _build_meta(
+            repository=repository,
+            targets=[match.file_path] if match else None,
+        ),
+    }
 
 
 async def _knows_directory(

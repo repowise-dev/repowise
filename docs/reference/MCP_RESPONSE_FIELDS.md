@@ -345,6 +345,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
 | `kind: "file"`, `symbols`, `symbols_total` | A bare file path: its top-level symbol names in source order (15 max; `symbols_total` when there are more), no source |
+| `symbols` on a range | Served with no checkout: the ids of the indexed symbols the lines overlap (15 max), each one `get_symbol` call |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
@@ -767,7 +768,8 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 | Field | Meaning |
 |-------|---------|
 | `headline` | What is shown, of how many match, and how many were withheld and of which kind |
-| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`: path, kind, confidence, lines, cleanup impact, stable `id`; an empty tier has no `description` |
+| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`, 10 per tier by default: path, symbol, kind, confidence, reason, lines, `safe_to_delete`, `last_commit_at`, owner, stable `id`; an empty tier has no `description` |
+| `finding` | With `finding_id`, at any triage status: the listed fields plus `status`, triage `note`, `repository`, `symbol_kind`, `start_line`, `end_line`, `commit_count_90d`, `age_days` (the file's age) and `last_meaningful_change` |
 | `summary` | Totals over all open findings; `filtered_findings`, `filters` (non-default), `scope` |
 | `summary.withheld_types` | Provisional types; ask with `kind=` to see them, marked unverified |
 | `summary.gated` | Gated-language findings per language; `include_unverified=true` shows them |
