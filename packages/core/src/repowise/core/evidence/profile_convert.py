@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, Any
 from repowise.core.code_origin import is_vendored_or_generated_path, path_origin
 from repowise.core.frame_resolver import frame_paths, resolve_frames
 
-from .format_v1 import EVIDENCE_FORMAT, MAX_SPLIT_ITEMS, EvidenceFormatError
+from .format_v1 import _LONG_TEXT, EVIDENCE_FORMAT, MAX_SPLIT_ITEMS, EvidenceFormatError
 
 if TYPE_CHECKING:
     from repowise.core.frame_resolver import FrameResolution, ProfileFrame
@@ -154,7 +154,10 @@ def is_import_frame(frame: ProfileFrame) -> bool:
 
 #: Go's module cache (``$GOPATH/pkg/mod/<module>@<version>/``): dependencies a
 #: build reads in place, which the vendored-path rule does not know.
-_GO_MODULE_CACHE_RE = re.compile(r"/pkg/mod/[^@]+@v")
+_GO_MODULE_CACHE_RE = re.compile(r"(?:^|/)pkg/mod/[^@]+@v")
+#: A Go toolchain the go command downloaded lives in the module cache too; its
+#: ``src`` is the standard library, which stays with the repo caller.
+_GO_TOOLCHAIN = "/pkg/mod/golang.org/toolchain@"
 
 
 def is_dependency_path(path: str) -> bool:
@@ -165,7 +168,14 @@ def is_dependency_path(path: str) -> bool:
     dependency here; it stays with the repo caller, as the module docstring says.
     """
     norm = path.replace("\\", "/")
-    return is_vendored_or_generated_path(norm) or _GO_MODULE_CACHE_RE.search(norm) is not None
+    if is_vendored_or_generated_path(norm):
+        return True
+    return _GO_MODULE_CACHE_RE.search(norm) is not None and _GO_TOOLCHAIN not in norm
+
+
+def _written_name(name: str) -> str:
+    """*name* as the v1 parser reads it: no control characters, at most :data:`_LONG_TEXT`."""
+    return "".join(c if ord(c) >= 0x20 else " " for c in name).strip()[:_LONG_TEXT] or "(unknown)"
 
 
 def is_native_frame(frame: ProfileFrame) -> bool:
@@ -176,7 +186,11 @@ def is_native_frame(frame: ProfileFrame) -> bool:
     and Go's ``runtime`` package.
     """
     path = frame.path
-    if not path or path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
+    if not path:
+        # A bare name a collapsed stack gives a JVM, Go or C++ library frame
+        # (``java/util/HashMap.get``, ``std::sort``) is not the runtime's.
+        return not any(mark in frame.function for mark in ("/", "::"))
+    if path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
         return True
     return frame.language == "go" and frame.function.startswith("runtime.")
 
@@ -542,7 +556,8 @@ class _Tally:
         """A frame the index holds no symbol for, by its name and file."""
         frame = self._frames[index]
         key = ("frame", frame.function, frame.path)
-        self._named.setdefault(key, {"name": frame.function or frame.path or "(unknown)"})
+        if key not in self._named:
+            self._named[key] = {"name": _written_name(frame.function or frame.path or "(unknown)")}
         return key
 
     def _repo_key(self, index: int, *, callee: bool) -> tuple[tuple[Any, ...], str]:
@@ -579,7 +594,9 @@ class _Tally:
         for key, share in self._top(self._inside.get(sid), sid):
             item: dict[str, Any] = {
                 "name": self._named[key]["name"],
-                "kind": self._inside_kinds[(sid, key)].most_common(1)[0][0],
+                "kind": min(self._inside_kinds[(sid, key)].items(), key=lambda kv: (-kv[1], kv[0]))[
+                    0
+                ],
                 "share": share,
             }
             leaves = self._leaves.get((sid, key))

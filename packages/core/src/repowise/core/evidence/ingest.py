@@ -201,7 +201,10 @@ def _join(
     if symbol_id is None and not optional:
         return None, reason, path
     if kind == "profile" and entry.get("drivers"):
-        entry = {**entry, "drivers": _joined_drivers(entry["drivers"], by_file)}
+        entry = {
+            **entry,
+            "drivers": _joined_drivers(entry["drivers"], by_file, origins, changed),
+        }
     return _ROW_BUILDERS[kind](entry, symbol_id), reason, path
 
 
@@ -224,15 +227,21 @@ def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, A
 def _joined_drivers(
     drivers: Iterable[Mapping[str, Any]],
     by_file: Mapping[str, Mapping[str, list[IndexedSymbol]]],
+    origins: Mapping[str, str],
+    changed: frozenset[str],
 ) -> list[dict[str, Any]]:
     """A profile entry's ``drivers`` as stored: ``name`` and ``share``, plus the
     caller's ``symbol`` when its location joins exactly (:func:`resolve_location`),
-    else its ``path`` when it named one."""
+    else its ``path`` when it named one. A caller in a file that differs from the
+    commit measured, or that nobody here maintains, keeps its path only, as an
+    entry there would not join."""
     out: list[dict[str, Any]] = []
     for driver in drivers:
         item: dict[str, Any] = {"name": driver["function"], "share": driver["share"]}
-        if driver.get("path") is not None:
-            symbol_id, _ = resolve_location(driver, by_file)
+        path = driver.get("path")
+        if path is not None:
+            joins = path not in changed and origins.get(path) not in _UNMAINTAINED
+            symbol_id = resolve_location(driver, by_file)[0] if joins else None
             if symbol_id is not None:
                 item["symbol"] = symbol_id
             else:

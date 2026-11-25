@@ -321,3 +321,70 @@ def test_cpuprofile_splits_node_internals_natives_and_dependencies() -> None:
         "share": round(7 / 8, 4),
         "leaf": {"name": "update", "kind": "native", "share": round(3 / 8, 4)},
     }
+
+
+def test_a_downloaded_go_toolchain_is_the_standard_library_not_a_dependency() -> None:
+    toolchain = "/home/u/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.4.linux-amd64/src"
+    assert not is_dependency_path(f"{toolchain}/net/http/server.go")
+    assert is_dependency_path("pkg/mod/gorm.io/gorm@v1.25.12/callbacks.go")
+
+
+def test_a_bare_library_name_in_a_collapsed_stack_is_a_library() -> None:
+    def frame(name: str) -> ProfileFrame:
+        return ProfileFrame(path="", line=0, language="unknown", function=name)
+
+    assert not is_native_frame(frame("java/util/HashMap.get"))
+    assert not is_native_frame(frame("std::sort"))
+    assert is_native_frame(frame("(garbage collector)"))
+    assert is_native_frame(frame("writev"))
+
+
+def test_a_name_the_v1_parser_would_refuse_is_written_so_it_reads() -> None:
+    long_name = "x" * 600
+    text = f"App.run ({_APP}:10);{long_name}\x07 (C:/Python/lib.py:3) 2\n"
+    conv = _convert("collapsed", text.encode())
+    (entry,) = parse_evidence(json.dumps(conv.document)).entries
+    assert entry["inside"][0]["name"] == "x" * 512
+
+
+def test_a_driver_in_a_changed_or_vendored_file_keeps_its_path_not_a_symbol() -> None:
+    from repowise.core.evidence.ingest import IndexedSymbol as Indexed
+    from repowise.core.evidence.ingest import join_entries, symbol_lookup
+
+    def doc(path: str) -> object:
+        return parse_evidence(
+            json.dumps(
+                {
+                    "format": "repowise-evidence-v1",
+                    "kind": "profile",
+                    "value_kind": "wall",
+                    "unit": "samples",
+                    "symbols": [
+                        {
+                            "path": "a.py",
+                            "function": "f",
+                            "line": 1,
+                            "self": 1,
+                            "total": 2,
+                            "drivers": [
+                                {"function": "main", "path": path, "line": 1, "share": 1.0}
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+
+    by_file = {
+        "a.py": symbol_lookup([Indexed("a.py::f", "f", "f", 1)]),
+        "b.py": symbol_lookup([Indexed("b.py::main", "main", "main", 1)]),
+    }
+    origins = {"a.py": "production", "b.py": "production"}
+
+    def drivers(changed: frozenset[str], origin: str = "production") -> list:
+        (row,) = join_entries(doc("b.py"), by_file, {**origins, "b.py": origin}, changed).rows
+        return json.loads(row["drivers_json"])
+
+    assert drivers(frozenset()) == [{"name": "main", "share": 1.0, "symbol": "b.py::main"}]
+    assert drivers(frozenset({"b.py"})) == [{"name": "main", "path": "b.py", "share": 1.0}]
+    assert drivers(frozenset(), "vendored") == [{"name": "main", "path": "b.py", "share": 1.0}]
