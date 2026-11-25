@@ -162,9 +162,6 @@ def _print_contract_change(result: Any) -> None:
     """
     if result.previous is None or result.current is None:
         return
-    from rich.markup import escape
-
-    from repowise.core.workspace.breaking_change import consumers_outside_service
     from repowise.core.workspace.repo_contracts import diff_repo_contracts
 
     change = diff_repo_contracts(result.previous, result.current)
@@ -180,11 +177,7 @@ def _print_contract_change(result: Any) -> None:
         f"{len(change.breaking)} break another service:"
     )
     for brk in change.breaking[:_BREAKING_DETAIL_LINES]:
-        callers = sorted({ic.service or ic.repo for ic in consumers_outside_service(brk)})
-        console.print(
-            f"    {escape(brk.contract_id)} [dim]({brk.kind.replace('_', ' ')})[/dim]  "
-            f"{escape(brk.provider_service or brk.provider_repo)} -> {escape(', '.join(callers))}"
-        )
+        console.print(_breaking_line(brk))
     if len(change.breaking) > _BREAKING_DETAIL_LINES:
         console.print(f"    [dim]and {len(change.breaking) - _BREAKING_DETAIL_LINES} more[/dim]")
 
@@ -201,3 +194,16 @@ def _in_repo_contracts_on(repo_path: Path) -> bool:
         return bool(current(repo_path, "contracts.in_repo").value)
     except Exception:
         return False
+
+
+def _breaking_line(brk: Any) -> str:
+    """``<contract> (<kind>)  <provider service> -> <calling services>``, escaped."""
+    from rich.markup import escape
+
+    from repowise.core.workspace.breaking_change import consumers_outside_service
+
+    callers = sorted({ic.service or ic.repo for ic in consumers_outside_service(brk)})
+    return (
+        f"    {escape(brk.contract_id)} [dim]({brk.kind.replace('_', ' ')})[/dim]  "
+        f"{escape(brk.provider_service or brk.provider_repo)} -> {escape(', '.join(callers))}"
+    )
