@@ -32,7 +32,6 @@ from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._prose_symbols import _file_pages, _fold, _pageless_row
 from repowise.server.mcp_server._query_terms import QUESTION_FRAME_VERBS, STOPWORDS
 from repowise.server.mcp_server._retrieval_rank import _PATH_NAME_LIFT_CAP
-from repowise.server.mcp_server.tool_overview.pages import _resolve_entry_point_ids
 from repowise.server.mcp_server.tool_search_symbols import _tokens
 
 _log = logging.getLogger("repowise.mcp.search")
@@ -127,6 +126,10 @@ async def entry_point_rows(ctx: Any, query: str) -> list[dict]:
     narrowing = _entry_question(query)
     if narrowing is None:
         return []
+    # Here, not at import: get_overview is outside the core tool set, which
+    # boots without its module.
+    from repowise.server.mcp_server.tool_overview.pages import _resolve_entry_point_ids
+
     try:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
