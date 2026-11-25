@@ -150,7 +150,7 @@ probability and does not decide review. MCP carries only the band, as `directive
 response and the CLI keep the score with its exact deprecated alias
 `overall_risk_score`.
 
-## Independent changes
+### Independent changes
 
 This answers whether the files in front of you are one change or several. It is a
 structural property of the diff, with no score. Only indexed source files in a language
@@ -172,7 +172,7 @@ least two groups. `repowise risk` prints the groups under the driver table;
 `--format json` and `get_change_risk` carry them as `independent_changes` (absent
 without an index).
 
-## Branch overlap
+### Branch overlap
 
 Branch overlap answers one question: which other open branches edit the files this
 change edits. It is git first, so it works in a fresh clone with no index.
@@ -264,6 +264,15 @@ rank without gating), and the GitLab template as the `repowise-risk` job when
 Method, calibration and every public scale:
 [architecture/change-risk.md](../architecture/change-risk.md).
 
+## Where it shows up
+
+- **CLI**: `repowise risk` (a change, or `--target` for files) and `repowise overlap`.
+- **MCP**: `get_change_risk` for a change; `get_risk(changed_files=[...])` for PR mode.
+- **Dashboard**: the Commits page leads its table with review priority.
+- **REST**: `GET /api/repos/{repo_id}/risk/range`.
+- **CI**: the `risk` gate in the GitHub Action and the `repowise-risk` GitLab job (see
+  [In CI](#in-ci)).
+
 ## Reference
 
 ### `repowise risk [REVSPEC]`
@@ -295,7 +304,13 @@ Full CLI entries:
 [`repowise overlap`](../reference/CLI_REFERENCE.md#repowise-overlap). MCP schemas:
 [`get_change_risk`](../agent/MCP_TOOLS.md#get_change_risk),
 [`get_risk`](../agent/MCP_TOOLS.md#get_risk). REST:
-`GET /api/repos/{repo_id}/risk/range`. Related: [BUG_HISTORY.md](BUG_HISTORY.md)
-(per-file and per-symbol fix counts), [CODE_HEALTH.md](CODE_HEALTH.md) (file-level
-scores) and [Workspaces](../scale/WORKSPACES.md) (cross-repo blast radius and
-contracts).
+`GET /api/repos/{repo_id}/risk/range`.
+
+## See also
+
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
+- [architecture/change-risk.md](../architecture/change-risk.md): the model, its
+  calibration and every public scale.
+- [BUG_HISTORY.md](BUG_HISTORY.md): per-file and per-symbol fix counts.
+- [CODE_HEALTH.md](CODE_HEALTH.md): file-level scores.
+- [Workspaces](../scale/WORKSPACES.md): cross-repo blast radius and contracts.

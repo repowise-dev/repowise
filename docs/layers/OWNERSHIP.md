@@ -36,8 +36,7 @@ get_overview(include=["ownership"])
 ```
 
 In the dashboard, open **Owners** for the contributor directory and per-person
-profiles, and the **Impact** tab of **Code Health** for reviewer suggestions on a
-set of files.
+profiles, and the **Review** page for reviewer suggestions on a set of files.
 
 Sample `get_context` ownership block:
 
@@ -70,6 +69,11 @@ Commits that only move a file do not count as authoring it. Author names and
 emails go through the repository's `.mailmap`, and GitHub `noreply` addresses
 for one login fold into one person, so a contributor who committed from several
 addresses is usually counted once. Each file keeps its top 50 authors.
+
+A commit a coding agent authored counts for the person behind it: the first
+`Co-authored-by` trailer that names a person, else a human committer. That credit
+applies to owners, top authors, bus factor, contributor count and blame lines. With
+no human signal the commit stays the agent's. Bots are never credited.
 
 ### Module ownership and silos
 
@@ -169,8 +173,8 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 - Ownership is authorship. Someone who reviews every change to a file but never
   commits to it does not appear.
 - Squash merges credit the whole change to whoever is recorded as the commit
-  author. Pair-programming credit via `Co-authored-by` trailers is not counted
-  toward ownership.
+  author. On a commit a person authored, `Co-authored-by` trailers are not counted
+  toward ownership; they credit a person only on a commit a coding agent authored.
 - Identity merging is conservative: beyond `.mailmap` and GitHub `noreply`
   folding, two addresses are only merged on guarded evidence, so some people may
   still appear twice. A false merge is treated as worse than a split.
@@ -190,7 +194,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 |---|---|
 | CLI | `repowise context --include ownership`, `repowise risk --target` (owner, recent owner, bus factor), `repowise health` findings |
 | MCP | `get_context` `ownership` block, `get_risk` owner fields and PR-mode reviewers, `get_overview` ownership summary, `get_health` findings |
-| Dashboard | **Owners** directory and profiles, **Stats** people numbers, **Code Health** findings and **Impact** reviewer suggestions |
+| Dashboard | **Owners** directory and profiles, **Stats** people numbers, **Code Health** findings and **Review** page reviewer suggestions |
 | Editor | VS Code: file hover shows the owner and their commit share; the **Hotspots & Ownership** view lists module owners and flags silos, with bus factor in each hotspot's tooltip |
 
 ## Reference

@@ -1036,7 +1036,7 @@ decay_only = sorted_by_pagerank[cascade_budget:] ∪ two_hop ∪ co_change
 
 **Why sort by PageRank?** If the budget is 50 and there are 80 candidates, you want to regenerate the 50 most important files first. A high-PageRank file is imported by many others — if its documentation is wrong, the error propagates further. Low-PageRank leaf files can wait.
 
-**Adaptive budget:** The budget is no longer fixed. `compute_adaptive_budget()` scales it based on change magnitude:
+**Adaptive budget:** `compute_adaptive_budget()` scales the budget with change magnitude:
 
 | Files changed | Budget |
 |---------------|--------|

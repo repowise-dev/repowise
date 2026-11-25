@@ -426,7 +426,7 @@ would need a written rationale and a recalibration corpus.
 ### 6.2 Validation and calibration
 
 Headline results (jEdit 4.0 / 4.1 held out with no git history, structural markers only): [layer page](../layers/CODE_HEALTH.md#accuracy-and-limits) and
-[BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects).
+[BENCHMARKS.md](../BENCHMARKS.md#code-health-that-predicts-bugs).
 
 - **Protocol.** Files scored at a commit T0 before the bug window, in a detached worktree
   whose history stops at T0; labels are the next six months of fix commits;

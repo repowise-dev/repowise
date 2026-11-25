@@ -7,7 +7,7 @@ thirty-one days to 2026-08-18, roughly one every two and a half days. Any
 quarter printed here would be wrong in the slow direction, and a roadmap that is
 wrong in the slow direction is worse than one carrying no dates at all. What we
 commit to is the status column. The [changelog](docs/CHANGELOG.md) is the
-evidence, and it is the fastest way to check whether this page is honest.
+evidence, and it is the fastest way to check this page against what shipped.
 
 Items disappear from this page when they ship. If you are looking for something
 that used to be here, it is in the changelog.
@@ -17,10 +17,12 @@ that used to be here, it is in the changelog.
 | **In development** | Being worked on now. Code exists, it is not finished. |
 | **Planned** | Committed to, not started. |
 | **Exploring** | We think it is a good idea and have not committed to it. Tell us if you need it, that is what moves a row up. |
+| **Set up per deployment** | An enterprise capability that is scoped and set up for your deployment during the pilot. |
 
-The same vocabulary describes the commercial surface in
-[docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md), where each capability
-also carries a **GA** marker when it is available today.
+The commercial surface in
+[docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md) uses two of these
+words: **GA** for what is available today, and **Set up per deployment** for the
+enterprise capabilities scoped and set up for your deployment.
 
 ---
 
@@ -114,9 +116,9 @@ gaps between them.
 
 | Item | Status | What it adds |
 |---|---|---|
-| Cross-repo intelligence at scale | In development | Hotspots, dead code and ownership across a whole estate with centralized dashboards, beyond the local-workspace scope already shipping in open source |
+| Cross-repo intelligence at scale | Set up per deployment | Hotspots, dead code and ownership across a whole estate with centralized dashboards, beyond the local-workspace scope already shipping in open source |
 | Column-level blast radius for SQL / dbt | Planned | Lineage is table-level today through `ref()` and `source()`. Column-level answers "who breaks if I drop this field" |
-| Organisation-wide change policy | Planned | Local change policy ships today ([POLICY.md](docs/layers/POLICY.md)). This adds central policy management across repositories, approvals and a policy audit trail |
+| Organisation-wide change policy | Set up per deployment | Local change policy ships today ([REPORTS.md](docs/layers/REPORTS.md#change-policy)). This adds central policy management across repositories, approvals and a policy audit trail |
 
 ---
 
@@ -124,21 +126,21 @@ gaps between them.
 
 These sit on the hosted platform and the commercial licence. Current
 availability, including everything that is GA today, is in
-[COMMERCIAL.md §5.2](docs/business/COMMERCIAL.md#52-workflow-integrations-rolling-out).
+[COMMERCIAL.md §5.2](docs/business/COMMERCIAL.md#52-workflow-integrations).
 
 | Item | Status |
 |---|---|
-| GitHub Enterprise, Azure DevOps, GitLab self-managed, Bitbucket | In development |
-| SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace) and SCIM provisioning | In development |
-| Slack and Microsoft Teams beyond security alerting: hotspot drift, bus-factor warnings, decision staleness, routed by ownership | In development |
+| GitHub Enterprise, Azure DevOps, GitLab self-managed, Bitbucket | Set up per deployment |
+| SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace) and SCIM provisioning | Set up per deployment |
+| Slack and Microsoft Teams beyond security alerting: hotspot drift, bus-factor warnings, decision staleness, routed by ownership | Set up per deployment |
 | Jira risk-finding links and PR-impact auto-comments on linked issues | Planned |
 | Native SIEM connectors (Splunk, Datadog, Elastic) beyond the signed-webhook stream | Planned |
 | PagerDuty | Planned |
 | SPDX SBOM output and cross-format conversion | Planned |
 | ISO 27001 Annex A and GDPR / data-residency control mappings | Planned |
 
-On that last row: we would rather ship two solid compliance mappings than four
-shallow ones, which is why PCI-DSS 4.0 and SOC 2 are GA and these are not.
+On that last row: two solid compliance mappings come before four shallow ones,
+which is why PCI-DSS 4.0 and SOC 2 are GA first.
 
 ---
 
@@ -146,13 +148,13 @@ shallow ones, which is why PCI-DSS 4.0 and SOC 2 are GA and these are not.
 
 | Item | Status |
 |---|---|
-| Role-based access control at repo, module and decision level | Planned |
-| Air-gapped install bundle with bundled grammars, embedding model and optional Ollama runtime | Planned |
+| Role-based access control at repo, module and decision level | Set up per deployment |
+| Air-gapped install bundle with bundled grammars, embedding model and optional Ollama runtime | Set up per deployment |
 | Helm chart for the reference topology | Planned |
-| Multi-tenant deployment | Planned |
-| Backup and restore, point-in-time snapshots of the intelligence layers | Planned |
-| Audit-trail coverage beyond the security surface, covering decisions and overrides | In development |
-| Engineering leader dashboard: bus-factor trends, ownership drift, decision-staleness curves, scheduled digests | In development |
+| Multi-tenant deployment | Set up per deployment |
+| Backup and restore, point-in-time snapshots of the intelligence layers | Set up per deployment |
+| Audit-trail coverage beyond the security surface, covering decisions and overrides | Set up per deployment |
+| Engineering leader dashboard: bus-factor trends, ownership drift, decision-staleness curves, scheduled digests | Set up per deployment |
 
 ---
 
@@ -164,9 +166,9 @@ The half of the roadmap that has nothing to do with procurement.
 |---|---|---|
 | Interface-dispatch recall | Exploring | The measured ceiling on our call-graph recall. On `syft`, 44% of what we miss is dynamic dispatch alone and a further 39% is dispatch with a closure at one end. Nobody in the [measured field](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) has cleared it, at 6.5 possible targets per call site, and matching that recall naively means emitting six edges where one is right. |
 | A sealed JavaScript / TypeScript retrieval corpus | In development | Built and half graded. The sealed half is unrun, and nothing from it is quoted anywhere until it is evaluated, once. |
-| More compiler oracles for graph precision | Exploring | Go and TypeScript are done. C#, Java, Kotlin and C++ each need a toolchain and a working build per repository; Rust has the toolchain and no sound call-graph tool exists for it; Python, Ruby and PHP admit no oracle even in principle. The honest status is "probably not", not "planned". |
+| More compiler oracles for graph precision | Exploring | Go and TypeScript are done. C#, Java, Kotlin and C++ each need a toolchain and a working build per repository; Rust has the toolchain and no sound call-graph tool exists for it; Python, Ruby and PHP admit no oracle even in principle. The status is "probably not", not "planned". |
 | Foresight | Waitlist | Learned models that rank where a fix goes, what a change forgot and which tests to update, with no LLM. Hosted and enterprise. [FORESIGHT.md](docs/business/FORESIGHT.md) |
-| Session intelligence harvesting | Planned | Architectural decisions surfaced from AI coding sessions and proposed to the team knowledge base, so knowledge generated during agent work does not evaporate when the session ends |
+| Session intelligence harvesting | Set up per deployment | Architectural decisions surfaced from AI coding sessions and proposed to the team knowledge base, so knowledge generated during agent work does not evaporate when the session ends |
 
 ---
 
