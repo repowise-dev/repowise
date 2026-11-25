@@ -173,3 +173,20 @@ def test_persisted_bytes_counts_the_delta(tmp_path: Path, monkeypatch):
     cache_dir = _seed_with_delta(tmp_path, monkeypatch)
     sizes = [(cache_dir / name).stat().st_size for name in (_CACHE_FILENAME, _DELTA_FILENAME)]
     assert persisted_bytes(cache_dir) == sum(sizes)
+
+
+def test_a_delta_that_cannot_be_removed_is_emptied_for_the_new_base(tmp_path: Path, monkeypatch):
+    """A locked delta must not leave every later load cold."""
+    cache_dir = _seed_with_delta(tmp_path, monkeypatch)
+    real_unlink = Path.unlink
+
+    def locked(self, *args, **kwargs):
+        if self.name == _DELTA_FILENAME:
+            raise PermissionError("locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    monkeypatch.setattr(token_cache_mod, "_COMPACT_SHARE", 0.0)
+    (tmp_path / "b.py").write_text(_OTHER.replace("other", "again"))
+    _incremental(_parsed(tmp_path), cache_dir, {"b.py"})
+    assert _entries(cache_dir) == _full_run_of(tmp_path, 0)[1]

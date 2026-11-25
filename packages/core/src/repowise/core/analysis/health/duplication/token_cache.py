@@ -125,24 +125,21 @@ class DuplicationTokenCache:
             return
         try:
             delta = load_sealed_pickle(self._delta_path, domain=_DELTA_FILENAME)
-        except FileNotFoundError:
-            delta = None
-        except Exception as exc:
-            # The newest state is unknown: start cold rather than serve a base
-            # whose delta was lost. The next save rewrites the base.
-            log.debug("duplication_cache_delta_load_failed", error=str(exc))
-            return
-        if delta is not None:
             if (
                 base_id is None
                 or delta.get("version") != _DELTA_VERSION
                 or delta.get("base_id") != base_id
             ):
-                return  # a delta from another base: start cold, as above
+                raise ValueError("token cache delta extends another base")
             added: dict[str, _Entry] = delta["added"]
             removed: set[str] = delta["removed"]
-        else:
+        except FileNotFoundError:
             added, removed = {}, set()
+        except Exception as exc:
+            # The newest state is unknown: start cold rather than serve a base
+            # whose delta was lost. The next save rewrites the base.
+            log.debug("duplication_cache_delta_load_failed", error=str(exc))
+            return
         self._base_id = base_id
         self._base_keys = frozenset(entries)
         self._delta_shape = (frozenset(added), frozenset(removed))
@@ -188,14 +185,28 @@ class DuplicationTokenCache:
                 "files": self._fresh,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
-            # A delta left behind names the old base, so it fails the next load.
-            with contextlib.suppress(FileNotFoundError):
-                self._delta_path.unlink()
+            self._drop_delta(base_id)
             self._base_id = base_id
             self._base_keys = frozenset(self._fresh)
             self._delta_shape = (frozenset(), frozenset())
         except Exception as exc:
             log.debug("duplication_cache_save_failed", error=str(exc))
+
+    def _drop_delta(self, base_id: str) -> None:
+        """Remove the delta of the replaced base.
+
+        One left behind names that base and so fails the next load. When it
+        cannot be removed (a lock on Windows), an empty delta for *base_id*
+        replaces it so later loads are not cold every run.
+        """
+        try:
+            self._delta_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            empty = {"version": _DELTA_VERSION, "base_id": base_id, "added": {}, "removed": set()}
+            with contextlib.suppress(Exception):
+                dump_sealed_pickle(self._delta_path, empty, domain=_DELTA_FILENAME)
 
     def release_memory(self) -> None:
         """Drop cached representations after a full scan has persisted them.
