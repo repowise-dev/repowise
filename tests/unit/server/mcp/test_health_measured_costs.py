@@ -332,7 +332,10 @@ async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypat
         "allocs_per_op": 1.0, "bytes_per_op": 48.0,
     }
     unnamed = {**row, "benchmark": "Benchmark404", "measures": None, "allocs_per_op": None}
-    view = {"benchmarks": {"runs": [], "rows": [row, unnamed], "total": 7}}
+    run = {"run_id": "b1", "workload_class": "benchmark", "workload_name": "go bench results .",
+           "commit": "c" * 40, "measured_at": None, "age_days": 2}
+    other = {**run, "run_id": "b0"}
+    view = {"benchmarks": {"runs": [run, other], "rows": [row, unnamed], "total": 7}}
 
     async def fake(*_a, **_k):
         return view
@@ -341,12 +344,14 @@ async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypat
     block = await pillars._measured_block(None, "repo", SimpleNamespace(limit=10, limit_explicit=False))
     assert block == {
         "basis": "measured",
-        "runs": [],
+        # Only the run a shown row came from.
+        "runs": [{"run_id": "b1", "workload_class": "benchmark",
+                  "workload_name": "go bench results .", "commit": "c" * 12, "age_days": 2}],
         "benchmarks": [
             {"benchmark": "BenchmarkGetMapFromFormData/Small",
-             "measures": "context.go::getMapFromFormData", "time": 105.1, "unit": "ns",
-             "allocs_per_op": 1.0},
-            {"benchmark": "Benchmark404", "time": 105.1, "unit": "ns"},
+             "measures": "context.go::getMapFromFormData", "run_id": "b1", "time": 105.1,
+             "unit": "ns", "allocs_per_op": 1.0},
+            {"benchmark": "Benchmark404", "run_id": "b1", "time": 105.1, "unit": "ns"},
         ],
         "benchmarks_total": 7,
     }
