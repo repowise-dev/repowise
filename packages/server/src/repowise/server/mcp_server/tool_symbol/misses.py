@@ -14,6 +14,7 @@ from repowise.core.persistence.models import WikiSymbol
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
+from repowise.server.mcp_server._helpers import serves_no_source
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._references import path_identity
 
@@ -281,10 +282,16 @@ def _live_grep_response(
 
 
 def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
-    """*symbol_id* as a repo file path when it names a live file and no symbol in it."""
+    """*symbol_id* as a repo file path when it names a live file and no symbol in it.
+
+    With no checkout the stored symbols decide: the path is a candidate, and
+    only a file the index holds symbols for gets a listing.
+    """
     path = symbol_id.strip().replace("\\", "/").strip("/")
-    if not ctx.path or "::" in path or _pkg.is_excluded(path, exclude_spec):
+    if "::" in path or _pkg.is_excluded(path, exclude_spec):
         return None
+    if not ctx.path:
+        return path if serves_no_source() else None
     root = Path(str(ctx.path)).resolve()
     target = (root / path).resolve()
     # Only a file inside the checkout: the reply must not confirm one outside it.
@@ -351,6 +358,7 @@ async def _not_found_response(
         listing = await _file_listing(ctx, repository, symbol_id, file_path, t0)
         if listing is not None:
             return listing
+    if file_path and ctx.path:
         return error_reply(
             "not_found",
             {

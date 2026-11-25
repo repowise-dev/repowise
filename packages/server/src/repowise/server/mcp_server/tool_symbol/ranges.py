@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
-from repowise.core.symbol_spans import symbol_at
+from repowise.core.symbol_spans import symbol_at, symbols_overlapping
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_symbol as _pkg
@@ -78,14 +78,16 @@ async def _resolve_range_read(
         )
 
     if serves_no_source():
-        return {
+        reply: dict[str, Any] = {
             "symbol_id": symbol_id,
             "file": path,
             **no_source_field(path, start, end),
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
-            ),
         }
+        await _attach_overlapping_symbols(reply, ctx, repository, path, start, end)
+        reply["_meta"] = _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
+        )
+        return reply
     # Before the exclusion spec: it is built from the repo path.
     if not ctx.path:
         return _err("internal", "MCP server has no repo path configured")
@@ -161,6 +163,36 @@ async def _resolve_range_read(
 
     declare_replaced(response, read_credit(repo_root, path, text))
     return response
+
+
+async def _attach_overlapping_symbols(
+    reply: dict[str, Any], ctx: Any, repository: Any, path: str, start: int, end: int
+) -> None:
+    """``symbols``: the indexed symbols lines *start* to *end* overlap, as ids.
+
+    With no source to serve, these are what the range can still be read as,
+    one ``get_symbol`` call each. Absent when none overlap. The cap is the
+    get_context card's.
+    """
+    from repowise.server.mcp_server.tool_context.targets import _SYMBOL_CAP
+
+    if _pkg.is_excluded(path, _get_exclude_spec(ctx.path)):
+        return
+    async with get_session(ctx.session_factory) as session:
+        res = await session.execute(
+            select(WikiSymbol)
+            .where(WikiSymbol.repository_id == repository.id, WikiSymbol.file_path == path)
+            .order_by(WikiSymbol.start_line, WikiSymbol.symbol_id)
+        )
+        rows = res.scalars().all()
+    lo, hi = min(start, end), max(start, end)
+    ids = list(
+        dict.fromkeys(symbol_identity(r.symbol_id) for r in symbols_overlapping(rows, [(lo, hi)]))
+    )
+    if ids:
+        reply["symbols"] = ids[:_SYMBOL_CAP]
+        if len(ids) > _SYMBOL_CAP:
+            reply["symbols_total"] = len(ids)
 
 
 def _repo_relative_id(symbol_id: str, repo_root: Any) -> str:
