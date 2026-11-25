@@ -152,7 +152,7 @@ export function useRuntimeEvidenceView(adapter: PerformanceViewAdapter): Runtime
     runs: runs?.runs ?? (runsError || !adapter.listEvidenceRuns ? [] : undefined),
     referenceCommit: runs?.reference_commit ?? null,
     tests:
-      suite?.status === "measured" && (suite.slow_tests.length > 0 || (suite.file_costs?.files.length ?? 0) > 0)
+      suite?.status === "measured" && suite.slow_tests.length > 0
         ? {
             suite,
             limit: testsLimit,

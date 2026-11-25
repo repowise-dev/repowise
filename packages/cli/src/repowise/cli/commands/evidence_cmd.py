@@ -785,13 +785,15 @@ async def _status(repo_path: Path) -> dict[str, Any]:
 )
 @format_option()
 def evidence_tests_command(repo: str | None, limit: int, fmt: str) -> None:
-    """Show the slowest tests and the test time spent on each production file.
+    """Show which groups of tests make the suite slow, and the slowest tests.
 
     Reads the JUnit XML timings ``evidence add`` stored (the newest run of each
-    test workload). Test time per file sums the timed tests that run it:
-    ``measured`` from the per-test coverage map when one is stored
-    (``repowise coverage add`` with per-test contexts), else ``inferred`` from
-    each function's nearest tests on the call graph. Timing orders, never gates.
+    test workload). With a per-test coverage map (``repowise coverage add`` with
+    per-test contexts), up to 3 groups of tests that run the same production
+    code and take longer than the rest, each with the time it adds and the
+    fixture its tests share; without one, how concentrated the time is. A suite
+    under a minute, or with no group 5 s over the rest, gets one line. Timing
+    orders, never gates.
 
     Examples:
 
@@ -827,14 +829,32 @@ async def _tests(repo_path: Path, limit: int) -> dict[str, Any]:
 
 
 def _tests_lines(payload: dict[str, Any]) -> list[str]:
-    """The slow-test list and the file costs, in words."""
+    """Where the suite's time goes, in words: one line when nothing is worth a list."""
+    cost = payload["cost"]
+    total = f"{cost['seconds']:,.1f} s"
+    if cost["verdict"] == "small_suite":
+        return [
+            f"Tests take {total} in all ({cost['timed']:,} timed): under a minute, nothing to speed up."
+        ]
+    if cost["verdict"] == "small_excess":
+        return [
+            f"Tests take {total} ({cost['timed']:,} timed), spread evenly: no group of tests "
+            "runs 5 s over the rest."
+        ]
+    lines = _cost_lead(cost, payload.get("suite"))
+    for i, cluster in enumerate(cost["clusters"], 1):
+        lines.extend(_cluster_lines(i, cluster))
     runs = ", ".join(
         f"{escape(r['workload'])} ({r['freshness']} at {(r['commit_sha'] or 'unknown')[:12]})"
         for r in payload["runs"]
     )
-    lines = [f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:"]
+    lines.append(f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:")
     for test in payload["slow_tests"]:
-        shared = " [dim](may include its class's shared fixtures)[/dim]" if test["first_in_class"] else ""
+        shared = (
+            " [dim](may include its class's shared fixtures)[/dim]"
+            if test["first_in_class"]
+            else ""
+        )
         failed = f" [red]{test['outcome']}[/red]" if test["outcome"] in ("failed", "error") else ""
         lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
     suite = payload.get("suite")
@@ -849,22 +869,95 @@ def _tests_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(
             f"[dim]{cut:,} faster or untimed tests were left out at the per-run cap{whole}.[/dim]"
         )
-    costs = payload["file_costs"]
-    if not costs["files"]:
-        lines.append(f"No production file is tied to a timed test ({costs['basis']}).")
-        return lines
-    lines.append(
-        f"[bold]Test time per production file[/bold] ({costs['basis']}), "
-        f"{len(costs['files'])} of {costs['files_total']:,}:"
-    )
-    for row in costs["files"]:
-        lines.append(
-            f"  {row['test_seconds']:8.2f}s  {escape(row['file_path'])} "
-            f"[dim]({row['timed_tests']} of {row['tests']} tests timed)[/dim]"
-        )
-    if costs["every_test"]:
-        lines.append(
-            f"[dim]{costs['every_test']:,} more run in every timed test that reaches production code "
-            "(the test setup imports them), so their time is all of those tests'; not listed.[/dim]"
-        )
     return lines
+
+
+def _cost_lead(cost: dict[str, Any], suite: dict[str, Any] | None) -> list[str]:
+    """What to look at first and what it saves, then how the time is spread."""
+    total = f"{cost['seconds']:,.1f} s"
+    top = cost["concentration"]
+    spread = f"; the slowest {top['tests']:,} take {top['share']:.0%} of it" if top else ""
+    shape = f"Tests take {total} ({cost['timed']:,} timed){spread}."
+    if suite is not None:
+        shape += f" [dim]{_histogram_text(suite['histogram'])}[/dim]"
+    if cost["verdict"] == "no_test_map":
+        return [
+            shape,
+            "To see which code makes them slow, record a per-test coverage map: "
+            f"[cyan]{escape(cost['command'])}[/cyan], then [cyan]repowise coverage add .coverage[/cyan].",
+        ]
+    first = cost["clusters"][0]
+    via = ""
+    if first["fixture"]:
+        fx = first["fixture"]
+        via = f", {fx['tests']} of them through fixture [cyan]{escape(fx['name'])}[/cyan] ({_where(fx)})"
+    return [
+        f"[bold]Start with the {first['tests']:,} tests that run {_files(first)}[/bold]: they take "
+        f"{first['excess_s']:,.1f} s more than the rest's pace ({_share(first)} of the suite){via}.",
+        shape,
+        "[bold]Groups of tests slower than the rest[/bold] (time over the others' mean):",
+    ]
+
+
+def _histogram_text(histogram: list[dict[str, Any]]) -> str:
+    """``By duration: 300 at 10-100 ms, 12 at 0.1-1 s, 2 over 100 s.``, empty buckets left out."""
+
+    def bound(le: float) -> str:
+        return f"{le * 1000:g}" if le < 1 else f"{le:g}"
+
+    parts, below = [], None
+    for bucket in histogram:
+        n, le = bucket["tests"], bucket["le"]
+        if n and below is None:
+            parts.append(f"{n:,} under {bound(le)} {'ms' if le < 1 else 's'}")
+        elif n and le is None:
+            parts.append(f"{n:,} over {bound(below)} s")
+        elif n:
+            unit = "ms" if le < 1 else "s"
+            low = bound(below) if (below < 1) == (le < 1) else f"{below:g}"
+            parts.append(f"{n:,} at {low}-{bound(le)} {unit}")
+        below = le
+    return f"By duration: {', '.join(parts)}." if parts else ""
+
+
+def _cluster_lines(i: int, cluster: dict[str, Any]) -> list[str]:
+    lines = [
+        f"  {i}. {cluster['tests']:,} tests at {cluster['mean_s']:.2f} s each vs "
+        f"{cluster['others_mean_s']:.2f} s: +{cluster['excess_s']:,.1f} s ({_share(cluster)})",
+        f"     run: {_files(cluster, cap=None)}",
+    ]
+    if cluster.get("within"):
+        outer = cluster["within"]
+        lines.append(
+            f"     [dim]inside the {outer['tests']:,} tests that run {_files(outer)}[/dim]"
+        )
+    if cluster["fixture"]:
+        fx = cluster["fixture"]
+        others = f"{fx['others']:,} other timed tests" if fx["others"] else "no other timed test"
+        lines.append(
+            f"     fixture: [cyan]{escape(fx['name'])}[/cyan] ({_where(fx)}), asked for by "
+            f"{fx['tests']:,} of them and {others}"
+        )
+    slowest = ", ".join(
+        f"{escape(t['test_id'].rsplit('/', 1)[-1])} {t['duration_s']:.2f} s"
+        for t in cluster["slowest"]
+    )
+    lines.append(f"     slowest: {slowest}")
+    return lines
+
+
+def _files(group: dict[str, Any], cap: int | None = 1) -> str:
+    """A group's files, the first *cap* of them named (all listed ones for ``None``)."""
+    shown = group["files"] if cap is None else group["files"][:cap]
+    more = group["files_total"] - len(shown)
+    named = ", ".join(escape(f) for f in shown)
+    return f"{named} and {more} more file{'s' if more != 1 else ''}" if more else named
+
+
+def _share(group: dict[str, Any]) -> str:
+    return f"{group['share']:.0%}" if group["share"] is not None else "unknown share"
+
+
+def _where(fixture: dict[str, Any]) -> str:
+    line = f":{fixture['line']}" if fixture["line"] else ""
+    return f"{escape(fixture['file_path'])}{line}"

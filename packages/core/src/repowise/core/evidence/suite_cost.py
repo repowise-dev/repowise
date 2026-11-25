@@ -1,19 +1,20 @@
-"""What the test suite spends its time on: the slowest tests, and test time per covered file.
+"""What the test suite spends its time on: the slowest tests, and the groups of tests
+that make it slow.
 
 Reads stored JUnit timings (``evidence_test_timings``): the newest run of
 each test-timing workload as ``evidence status`` picks it (a complete run
 first), the newest environment when a workload ran in several. A test is charged once, at its
 longest duration across those runs.
 
-Test time per file is the summed duration of the timed tests that run it.
-``measured`` when the per-test coverage map says which timed tests ran which
-file (``test_coverage_sources``); ``inferred`` from each function's nearest tests
-on the call graph (``function_facts.tests_json``) without it. Only production
-files (:mod:`repowise.core.code_origin`) are listed; others are counted. A file
-that every timed test reaching production code runs (a module the test setup
-imports) would show those tests' whole time, which says nothing of that file: it
-is counted, not listed, unless every listed file is one.
-Timing orders tests and files, it never gates anything.
+Summed test time per production file does not say why a suite is slow: the files
+the test setup imports lead every list with the whole suite's time. Excess does
+(:func:`excess_clusters`): tests that run the same production code
+(:mod:`repowise.core.code_origin`, from the per-test coverage map
+``test_coverage_sources``) and take longer than the rest, with the fixture they
+share when the index resolved one (:func:`_test_fixtures`). A suite under a
+minute, or with no group a few seconds over the rest, gets one line and no list
+(:func:`cost_fold`). Without a per-test map only the concentration is given.
+Timing orders tests and groups, it never gates anything.
 
 The ingest keeps a run's slowest tests under the row cap, and folds every test
 of the run first (:func:`timing_summary`): seconds and tests per test file and
@@ -23,15 +24,17 @@ tests the cap left out.
 
 from __future__ import annotations
 
+import heapq
 import json
 from bisect import bisect_left
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from .status import run_status
 
 #: Rows each list returns unless asked for another number.
@@ -41,6 +44,27 @@ SETUP_COMMAND = "repowise evidence setup"
 #: Upper bounds, in seconds, of the duration histogram's buckets: decades from
 #: 1 ms, then one open bucket for anything slower than the last.
 HISTOGRAM_BOUNDS = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
+#: A suite faster than this gets one line and no list: nothing in it is worth a
+#: developer's time to speed up.
+QUIET_SUITE_S = 60.0
+#: Nor is a group of tests running less than this over the rest's pace.
+MIN_EXCESS_S = 5.0
+MAX_CLUSTERS = 3
+#: Fewer tests than this running a file is a test of that file, not a group.
+MIN_CLUSTER_TESTS = 3
+#: A file more than this share of the timed tests run (one the test setup
+#: imports) groups nothing.
+MAX_REACH = 0.9
+#: A group inside a larger one is reported instead of it when it carries this
+#: share of the larger group's excess (:func:`_narrowest`).
+NARROW_SHARE = 2 / 3
+#: Files and slowest tests listed per cluster.
+CLUSTER_FILES = 5
+CLUSTER_TESTS = 3
+#: A cluster names a fixture at least this share of its tests ask for...
+FIXTURE_MIN_SHARE = 0.25
+#: ...and that is asked for mostly by them (``tmp_path`` is everybody's).
+FIXTURE_MIN_EXCLUSIVE = 0.5
 
 
 def timing_summary(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -193,113 +217,265 @@ def _slow_test(row: Any, workloads: dict[str, str]) -> dict[str, Any]:
     }
 
 
-_Costs = dict[str, tuple[float, int, int]]
-#: Each file's timed tests, by the basis's key for a test.
-_Tied = dict[str, Collection[Any]]
+class Fixture(NamedTuple):
+    """A fixture a test asks for by name, where it is defined."""
+
+    name: str
+    file_path: str
+    line: int | None
 
 
-async def _measured_costs(
-    session: AsyncSession, repository_id: str, timings: dict[str, Any]
-) -> tuple[_Costs, _Tied] | None:
-    """``{file: (seconds, timed tests, tests)}`` from the per-test map, and each file's
-    timed tests; None without a map, or when none of its test ids is a timed test's
-    (an lcov ``TN:`` name, say)."""
+def concentration(durations: Iterable[float], tests: int, seconds: float) -> dict[str, Any] | None:
+    """How much of *seconds* the slowest tenth of *tests* take; ``None`` for an empty suite.
+
+    *durations* may be the slowest tests only (the ingest's row cap keeps
+    those); *tests* and *seconds* are the whole suite's.
+    """
+    if tests <= 0 or seconds <= 0:
+        return None
+    top = max(1, tests // 10)
+    return {
+        "tests": top,
+        "share": round(min(1.0, sum(heapq.nlargest(top, durations)) / seconds), 4),
+    }
+
+
+def excess_clusters(
+    seconds: Mapping[str, float],
+    reach: Mapping[str, Collection[str]],
+    suite_seconds: float,
+    fixtures: Mapping[str, Collection[Fixture]] | None = None,
+) -> list[dict[str, Any]]:
+    """Up to :data:`MAX_CLUSTERS` groups of tests that run the same production code
+    and take longer than the rest, most excess first.
+
+    *seconds* maps each timed test to its duration, *reach* each test to the
+    production files it runs (the per-test map); only tests in both, running
+    some production file, count. A file's excess is ``n x (mean of its n
+    tests - mean of the others)``, over files at least :data:`MIN_CLUSTER_TESTS`
+    tests and at most :data:`MAX_REACH` of all of them run: a file nearly every
+    test runs (one the test setup imports) separates nothing. The file with the
+    most excess and every file run by exactly the same tests form a cluster.
+    Its tests leave the pool before the next cluster is ranked, so clusters
+    never share a test and the store files one fixture opens are one cluster,
+    not four. Ranking stops below :data:`MIN_EXCESS_S`.
+
+    *fixtures* maps every timed test to the fixtures it asks for; a cluster
+    names the one most of its tests use and few other timed tests do
+    (:func:`_shared_fixture`). ``share`` is of *suite_seconds*.
+    """
+    pool = {t: seconds[t] for t in sorted(reach) if reach[t] and t in seconds}
+    ceiling = MAX_REACH * len(pool)
+    fixtures = fixtures or {}
+    users = Counter(f for fs in fixtures.values() for f in set(fs))
+    clusters: list[dict[str, Any]] = []
+    while len(clusters) < MAX_CLUSTERS:
+        by_file: dict[str, list[str]] = defaultdict(list)
+        for test in pool:
+            for path in reach[test]:
+                by_file[path].append(test)
+        total = sum(pool.values())
+        ranked: list[tuple[float, str, frozenset[str]]] = []
+        for path, tests in by_file.items():
+            n = len(tests)
+            if n < MIN_CLUSTER_TESTS or n > ceiling or n == len(pool):
+                continue
+            inside = sum(pool[t] for t in tests)
+            ranked.append((inside - n * (total - inside) / (len(pool) - n), path, frozenset(tests)))
+        ranked.sort(key=lambda c: (-c[0], c[1]))
+        if not ranked or ranked[0][0] < MIN_EXCESS_S:
+            break
+        excess, _, members = _narrowest(ranked)
+        files = _run_by(by_file, members)
+        outer = ranked[0][2]
+        inside = sum(pool[t] for t in members)
+        slowest = sorted(members, key=lambda t: (-pool[t], t))[:CLUSTER_TESTS]
+        clusters.append(
+            {
+                "files": files[:CLUSTER_FILES],
+                "files_total": len(files),
+                "tests": len(members),
+                "mean_s": _rounded(inside / len(members)),
+                "others_mean_s": _rounded((total - inside) / (len(pool) - len(members))),
+                "excess_s": _rounded(excess),
+                "share": round(excess / suite_seconds, 4) if suite_seconds > 0 else None,
+                "slowest": [{"test_id": t, "duration_s": pool[t]} for t in slowest],
+                "fixture": _shared_fixture(members, fixtures, users),
+                # The larger group it was narrowed from: code all of its tests run too.
+                "within": None
+                if outer == members
+                else _within(_run_by(by_file, outer), len(outer)),
+            }
+        )
+        for test in members:
+            del pool[test]
+    return clusters
+
+
+def _run_by(by_file: Mapping[str, Collection[str]], group: frozenset[str]) -> list[str]:
+    """The files exactly *group*'s tests run."""
+    return sorted(p for p, ts in by_file.items() if len(ts) == len(group) and group.issuperset(ts))
+
+
+def _within(files: list[str], tests: int) -> dict[str, Any]:
+    return {"files": files[:CLUSTER_FILES], "files_total": len(files), "tests": tests}
+
+
+def _narrowest(
+    ranked: list[tuple[float, str, frozenset[str]]],
+) -> tuple[float, str, frozenset[str]]:
+    """The top candidate, or the narrowest group inside it that still carries
+    :data:`NARROW_SHARE` of its excess. When every store test also opens the
+    plugin registry, the registry's group holds the store's and most of its
+    excess is theirs: the store is the answer, and the registry's remainder is
+    ranked again once the store's tests leave the pool. *ranked* is most excess
+    first; the share is of the top's excess, so narrowing never drifts to a
+    handful of tests carrying a fraction of it."""
+    top = best = ranked[0]
+    while True:
+        inner = next((c for c in ranked if c[0] >= NARROW_SHARE * top[0] and c[2] < best[2]), None)
+        if inner is None:
+            return best
+        best = inner
+
+
+def _shared_fixture(
+    members: Collection[str], fixtures: Mapping[str, Collection[Fixture]], users: Counter[Fixture]
+) -> dict[str, Any] | None:
+    """The fixture the most *members* ask for, when at least :data:`FIXTURE_MIN_SHARE`
+    of them do and at least :data:`FIXTURE_MIN_EXCLUSIVE` of the timed tests asking
+    for it are members: a fixture every kind of test uses (``tmp_path``) says
+    nothing of this group. ``tests`` counts the members asking for it,
+    ``others`` the other timed tests that do."""
+    inside = Counter(f for t in members for f in set(fixtures.get(t, ())))
+    floor = max(2, FIXTURE_MIN_SHARE * len(members))
+    picked = [f for f, n in inside.items() if n >= floor and n >= FIXTURE_MIN_EXCLUSIVE * users[f]]
+    if not picked:
+        return None
+    fixture = min(picked, key=lambda f: (-inside[f], users[f], f.name, f.file_path, f.line or 0))
+    return {
+        **fixture._asdict(),
+        "tests": inside[fixture],
+        "others": users[fixture] - inside[fixture],
+    }
+
+
+def cost_fold(
+    seconds: Mapping[str, float],
+    reach: Mapping[str, Collection[str]] | None,
+    fixtures: Mapping[str, Collection[Fixture]] | None = None,
+    *,
+    timed: int | None = None,
+    suite_seconds: float | None = None,
+) -> dict[str, Any]:
+    """What the suite spends its time on, JSON-ready: the silence verdict, how
+    concentrated the time is, and the :func:`excess_clusters`.
+
+    *seconds* are the timed tests' durations, *reach* the production files each
+    runs (``None`` without a per-test map), *fixtures* what each asks for.
+    *timed* and *suite_seconds* are the whole suite's when *seconds* holds only
+    the slowest tests (the row cap); they default to *seconds*' own.
+
+    ``verdict``: ``small_suite`` under :data:`QUIET_SUITE_S`; ``no_test_map``
+    without a per-test map (``command`` records one); ``small_excess`` when no
+    group of tests runs :data:`MIN_EXCESS_S` over the rest; else ``clusters``.
+    Only ``clusters`` lists anything.
+    """
+    timed = len(seconds) if timed is None else timed
+    total = sum(seconds.values()) if suite_seconds is None else suite_seconds
+    clusters: list[dict[str, Any]] = []
+    if total < QUIET_SUITE_S:
+        verdict = "small_suite"
+    elif reach is None:
+        verdict = "no_test_map"
+    else:
+        clusters = excess_clusters(seconds, reach, total, fixtures)
+        verdict = "clusters" if clusters else "small_excess"
+    return {
+        "verdict": verdict,
+        "seconds": _rounded(total),
+        "timed": timed,
+        "concentration": concentration(seconds.values(), timed, total),
+        "clusters": clusters,
+        "command": PER_TEST_COVERAGE_COMMAND if verdict == "no_test_map" else None,
+    }
+
+
+async def _test_reach(
+    session: AsyncSession, repository_id: str, timings: Mapping[str, Any]
+) -> dict[str, set[str]] | None:
+    """The production files each timed test runs, from the per-test map; ``None``
+    without a map, or when none of its test ids is a timed test's (an lcov ``TN:``
+    name, say). File origin is :mod:`repowise.core.code_origin`'s."""
     from ..persistence.crud.analysis.coverage_map import get_per_test_map, source_test_numbers
+    from .ingest import load_origins
 
     tmap = await get_per_test_map(session, repository_id)
     if tmap is None:
         return None
-    seconds = {
-        no: timings[test_id].duration_s
-        for no, (test_id, _) in enumerate(tmap.tests)
-        if test_id in timings
-    }
-    if not seconds:
+    timed = {no: test_id for no, (test_id, _) in enumerate(tmap.tests) if test_id in timings}
+    if not timed:
         return None
-    out, tied = {}, {}
-    for source, numbers in source_test_numbers(tmap).items():
-        timed = tied[source] = [n for n in numbers if n in seconds]
-        out[source] = (sum(seconds[n] for n in timed), len(timed), len(numbers))
-    return out, tied
+    sources = source_test_numbers(tmap)
+    origins = await load_origins(session, repository_id, sources)
+    reach: dict[str, set[str]] = {test_id: set() for test_id in timed.values()}
+    for source, numbers in sources.items():
+        if origins[source] != "production":
+            continue
+        for no in numbers:
+            if no in timed:
+                reach[timed[no]].add(source)
+    return reach
 
 
-async def _inferred_costs(
-    session: AsyncSession, repository_id: str, timings: dict[str, Any], files: Iterable[str]
-) -> tuple[_Costs, _Tied]:
-    """``{file: (seconds, timed tests, tests)}`` from each function's nearest tests, and
-    each file's timed selectors.
+async def _test_fixtures(
+    session: AsyncSession, repository_id: str, timings: Mapping[str, Any]
+) -> dict[str, frozenset[Fixture]]:
+    """The fixtures each timed test asks for, as the index resolved them.
 
-    A test selector is a test function's symbol id, or for JS and TS a test
-    file; a test's parametrizations share its symbol, so their times add up.
+    Ingestion links a test function to each fixture it requests by name (its
+    parameters, ``usefixtures``) with a ``framework_binds`` edge stamped
+    ``pytest_edges.FIXTURE_HINT``, resolved in pytest's own scope order; this
+    reads those edges. Direct requests only: a fixture that another fixture
+    asks for is not counted for the test. Parametrizations share their
+    function's fixtures.
     """
+    from ..ingestion.framework_edges.pytest_edges import FIXTURE_HINT
     from ..ingestion.symbol_identity import file_of_symbol
-    from ..persistence.crud.analysis.function_facts import tests_in_files
+    from ..persistence.models import GraphEdge, GraphNode
 
-    by_symbol: dict[str, float] = defaultdict(float)
-    by_file: dict[str, float] = defaultdict(float)
-    for row in timings.values():
-        if row.symbol_id:
-            by_symbol[row.symbol_id] += row.duration_s
-        if row.test_file:
-            by_file[row.test_file] += row.duration_s
-    selectors: dict[str, set[str]] = defaultdict(set)
-    for symbol, tests in (await tests_in_files(session, repository_id, files)).items():
-        selectors[file_of_symbol(symbol)].update(t.selector for t in tests)
-    out, tied = {}, {}
-    for path, tests in selectors.items():
-        timed = {s: t for s in tests if (t := by_symbol.get(s, by_file.get(s))) is not None}
-        tied[path] = timed.keys()
-        out[path] = (sum(timed.values()), len(timed), len(tests))
-    return out, tied
-
-
-async def _indexed_files(session: AsyncSession, repository_id: str) -> list[str]:
-    from ..persistence.models import GraphNode
-
-    result = await session.execute(
-        select(GraphNode.node_id).where(
-            GraphNode.repository_id == repository_id, GraphNode.node_type == "file"
+    symbols = sorted({row.symbol_id for row in timings.values() if row.symbol_id})
+    asks: dict[str, set[str]] = defaultdict(set)
+    for i in range(0, len(symbols), 400):
+        result = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.edge_type == "framework_binds",
+                GraphEdge.hint_source == FIXTURE_HINT,
+                GraphEdge.source_node_id.in_(symbols[i : i + 400]),
+            )
         )
-    )
-    return list(result.scalars())
-
-
-async def _file_costs(
-    session: AsyncSession, repository_id: str, timings: dict[str, Any], limit: int
-) -> dict[str, Any]:
-    """Test time per production file, most first, with its basis."""
-    from .ingest import load_origins
-
-    found = await _measured_costs(session, repository_id, timings)
-    basis = "measured"
-    if found is None:
-        basis = "inferred"
-        files = await _indexed_files(session, repository_id)
-        found = await _inferred_costs(session, repository_id, timings, files)
-    costs, tied = found
-    timed = {p: c for p, c in costs.items() if c[1]}
-    origins = await load_origins(session, repository_id, timed)
-    production = [p for p in timed if origins[p] == "production"]
-    # The timed tests that run some production file: a test that runs only test
-    # helpers would otherwise keep a shared production file one short of all.
-    reaching = len(set().union(*(tied[p] for p in production)))
-    everywhere = {p for p in production if timed[p][1] == reaching}
-    if len(everywhere) == len(production):
-        everywhere = set()  # nothing else to show: the shared files are the answer
-    listed = sorted(
-        (p for p in production if p not in everywhere), key=lambda p: (-timed[p][0], p)
-    )
+        for source, target in result:
+            asks[source].add(target)
+    targets = sorted({t for ts in asks.values() for t in ts})
+    found: dict[str, Fixture] = {}
+    for i in range(0, len(targets), 400):
+        result = await session.execute(
+            select(
+                GraphNode.node_id, GraphNode.name, GraphNode.file_path, GraphNode.start_line
+            ).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_id.in_(targets[i : i + 400]),
+            )
+        )
+        for node_id, name, path, line in result:
+            found[node_id] = Fixture(
+                name or node_id.rsplit("::", 1)[-1], path or file_of_symbol(node_id), line
+            )
     return {
-        "basis": basis,
-        "files": [
-            {"file_path": p, "test_seconds": timed[p][0], "timed_tests": timed[p][1], "tests": timed[p][2]}
-            for p in listed[:limit]
-        ],
-        "files_total": len(listed),
-        # Test, tooling, generated and other non-production files run by timed tests.
-        "not_production": len(timed) - len(production),
-        # Production files every timed test runs, each costing the whole timed suite.
-        "every_test": len(everywhere),
+        test_id: frozenset(found[t] for t in asks[row.symbol_id] if t in found)
+        for test_id, row in timings.items()
+        if row.symbol_id in asks
     }
 
 
@@ -311,7 +487,7 @@ def no_timings(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         "runs": runs or [],
         "slow_tests": [],
         "tests_total": 0,
-        "file_costs": None,
+        "cost": None,
         "suite": None,
     }
 
@@ -323,7 +499,7 @@ async def suite_costs(
     *,
     limit: int = DEFAULT_LIMIT,
 ) -> dict[str, Any]:
-    """The slowest tests and the test time per covered file, JSON-ready.
+    """The slowest tests and where the suite's time goes (:func:`cost_fold`), JSON-ready.
 
     *reference_commit* is the indexed commit each basis run's freshness is
     judged against. With no timing stored, ``status`` is ``no_test_timings``
@@ -337,20 +513,34 @@ async def suite_costs(
         return no_timings([run_status(r, reference_commit) for r in runs])
     workloads = {r.id: r.workload_name for r in runs}
     slow = sorted(timings.values(), key=lambda r: (-r.duration_s, r.test_id))
+    suite = suite_summary(runs, limit)
+    seconds = {t: row.duration_s for t, row in timings.items()}
+    # The fold covers the tests the row cap left out; the stored rows are the slowest.
+    timed = suite["timed"] if suite else len(seconds)
+    total = suite["seconds"] if suite else sum(seconds.values())
+    reach = fixtures = None
+    if total >= QUIET_SUITE_S:
+        reach = await _test_reach(session, repository_id, timings)
+        if reach is not None:
+            fixtures = await _test_fixtures(session, repository_id, timings)
     return {
         "status": "measured",
         "command": None,
         "runs": [run_status(r, reference_commit) for r in runs],
         "slow_tests": [_slow_test(r, workloads) for r in slow[:limit]],
         "tests_total": len(slow),
-        "file_costs": await _file_costs(session, repository_id, timings, limit),
-        "suite": suite_summary(runs, limit),
+        "cost": cost_fold(seconds, reach, fixtures, timed=timed, suite_seconds=total),
+        "suite": suite,
     }
 
 
 __all__ = [
     "DEFAULT_LIMIT",
     "HISTOGRAM_BOUNDS",
+    "Fixture",
+    "concentration",
+    "cost_fold",
+    "excess_clusters",
     "no_timings",
     "suite_costs",
     "suite_summary",

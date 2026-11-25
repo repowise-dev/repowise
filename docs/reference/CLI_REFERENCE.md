@@ -1425,7 +1425,7 @@ repowise evidence add parent.json worker-1.json worker-2.json --workload "build"
 repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)   # every file in the directory
 repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
 repowise evidence status --format json   # newest run of each workload
-repowise evidence tests                  # slowest tests, and test time per production file
+repowise evidence tests                  # groups of tests that make the suite slow, and the slowest tests
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
 

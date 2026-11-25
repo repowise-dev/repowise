@@ -1414,6 +1414,46 @@ export interface CoordinatorHealthResponse {
   detail?: string | null;
 }
 
+/** Tests that run the same production files and take longer than the rest. */
+export interface CostCluster {
+  files: string[];
+  files_total: number;
+  tests: number;
+  mean_s: number;
+  others_mean_s: number;
+  excess_s: number;
+  share: number | null;
+  slowest: CostClusterTest[];
+  fixture: CostFixture | null;
+  within: CostGroup | null;
+}
+
+export interface CostClusterTest {
+  test_id: string;
+  duration_s: number;
+}
+
+export interface CostConcentration {
+  tests: number;
+  share: number;
+}
+
+/** The fixture most of a cluster's tests ask for and few other timed tests do. */
+export interface CostFixture {
+  name: string;
+  file_path: string;
+  line: number | null;
+  tests: number;
+  others: number;
+}
+
+/** A larger group of tests a cluster sits inside: code all of its tests run too. */
+export interface CostGroup {
+  files: string[];
+  files_total: number;
+  tests: number;
+}
+
 export interface CostGroupResponse {
   group: string;
   calls: number;
@@ -2380,22 +2420,6 @@ export interface FileScoreShiftResponse {
   before?: number | null;
   after?: number | null;
   change?: number | null;
-}
-
-/** The summed duration of the timed tests that run one production file. */
-export interface FileTestCost {
-  file_path: string;
-  test_seconds: number;
-  timed_tests: number;
-  tests: number;
-}
-
-export interface FileTestCosts {
-  basis: "measured" | "inferred";
-  files: FileTestCost[];
-  files_total: number;
-  not_production: number;
-  every_test: number;
 }
 
 export interface FileTrendPointResponse {
@@ -4978,14 +5002,24 @@ export interface SlowTest {
   workload: string;
 }
 
-/** The slowest tests and the test time per production file, from stored JUnit timings. */
+/** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
+export interface SuiteCost {
+  verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
+  seconds: number;
+  timed: number;
+  concentration: CostConcentration | null;
+  clusters: CostCluster[];
+  command: string | null;
+}
+
+/** The slowest tests and where the suite's time goes, from stored JUnit timings. */
 export interface SuiteCostResponse {
   status: "measured" | "no_test_timings";
   command: string | null;
   runs: EvidenceRunSummary[];
   slow_tests: SlowTest[];
   tests_total: number;
-  file_costs: FileTestCosts | null;
+  cost: SuiteCost | null;
   suite?: SuiteSummary | null;
 }
 
