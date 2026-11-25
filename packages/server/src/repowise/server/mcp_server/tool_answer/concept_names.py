@@ -95,18 +95,19 @@ async def concept_defining_files(
         return []
     paths = sorted({p for rows in by_phrase.values() for _, p in rows})
     ranks = await _file_pageranks(session, repo_id, paths)
-    out: list[str] = []
-    for words in phrases:
-        rows = by_phrase.get(words)
-        if not rows:
-            continue
-        files = prefer_production(sorted({p for _, p in rows}))
-        if len(files) > _MAX_DEFINING_FILES:
-            continue
-        callable_in = {p for kind, p in rows if kind in _CALLABLE_KINDS}
-        files.sort(key=lambda p: (p not in callable_in, -ranks.get(p, 0.0), p))
-        out.extend(p for p in files if p not in out)
-    return out[:_MAX_FILES]
+    # Longest phrase first; a file two phrases name keeps its first place.
+    ranked = (_ranked_files(by_phrase[w], ranks) for w in phrases if w in by_phrase)
+    return list(dict.fromkeys(p for files in ranked for p in files))[:_MAX_FILES]
+
+
+def _ranked_files(rows: list[tuple[str, str]], ranks: dict[str, float]) -> list[str]:
+    """One phrase's ``(kind, path)`` definitions as files, best first; none when
+    production code defines it in more files than one phrase can name."""
+    files = prefer_production(sorted({p for _, p in rows}))
+    if len(files) > _MAX_DEFINING_FILES:
+        return []
+    callable_in = {p for kind, p in rows if kind in _CALLABLE_KINDS}
+    return sorted(files, key=lambda p: (p not in callable_in, -ranks.get(p, 0.0), p))
 
 
 async def _file_pageranks(session, repo_id: str, paths: list[str]) -> dict[str, float]:

@@ -730,29 +730,37 @@ def off_topic_words(
     if not unserved or not _retrieval_corpus(untitled).strip():
         return []
     corpus = _retrieval_corpus(hits, include_paths=True)
-    lowered = corpus.lower()
-    if any(name.lower() in lowered for name in question_ids) or _names_retrieved_code(
-        answer_text, hits, lowered
-    ):
+    if _names_retrieved_code(answer_text, hits, corpus.lower(), question_ids):
         return []
+    return unserved if _adds_only_unshown(answer_text, set(words), served, corpus) else []
+
+
+def _names_retrieved_code(
+    answer_text: str, hits: list[dict], corpus_lower: str, question_ids: Collection[str]
+) -> bool:
+    """Whether a code name the question writes, or a file or code term the
+    answer cites, is in what retrieval showed."""
+    text = answer_text.lower()
+    paths = [(h.get("target_path") or "").lower() for h in hits]
+    if any(p and (p in text or p.rsplit("/", 1)[-1] in text) for p in paths):
+        return True
+    spans = re.findall(r"`([^`]+)`", answer_text)
+    terms = (*question_ids, *spans, *_distinctive_terms(answer_text))
+    return any(t.lower() in corpus_lower for t in terms)
+
+
+def _adds_only_unshown(
+    answer_text: str, asked: set[str], served: list[set[str]], corpus: str
+) -> bool:
+    """Whether the answer adds words or numbers to the question, outside its
+    admissions, and retrieval showed none of them."""
     claims = [s for s in _sentences(answer_text) if not _is_admission(s)]
-    claimed = {t for s in claims for t in _text_words(s) if not _stem_hit(t, set(words))}
+    claimed = {t for s in claims for t in _text_words(s) if not _stem_hit(t, asked)}
     numbers = {n for s in claims for n in _asserted_numbers(s)}
     shown = set().union(*served)
-    if any(_stem_hit(t, shown) for t in claimed) or (numbers & _numbers_in(corpus)):
-        return []
-    return unserved if claimed or numbers else []
-
-
-def _names_retrieved_code(answer_text: str, hits: list[dict], corpus_lower: str) -> bool:
-    """Whether the answer cites a retrieved file or a code term retrieval showed."""
-    text = answer_text.lower()
-    for h in hits:
-        path = (h.get("target_path") or "").lower()
-        if path and (path in text or path.rsplit("/", 1)[-1] in text):
-            return True
-    spans = re.findall(r"`([^`]+)`", answer_text)
-    return any(t.lower() in corpus_lower for t in (*spans, *_distinctive_terms(answer_text)))
+    if any(_stem_hit(t, shown) for t in claimed) or numbers & _numbers_in(corpus):
+        return False
+    return bool(claimed or numbers)
 
 
 def _question_words(question: str) -> dict[str, str]:

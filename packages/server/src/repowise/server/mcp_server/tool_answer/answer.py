@@ -813,24 +813,30 @@ async def _user_prompt(
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
-    if graph_callers.rows:
-        graph_block = "Callers from the call graph:\n" + "\n".join(
-            f"- {line}" for line in caller_lines(graph_callers.rows)
-        )
-        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
-    if history := [line for h in hits for line in h.get("_fix_history") or ()]:
-        history_block = "Bug-fix history from the index:\n" + "\n".join(f"- {s}" for s in history)
-        prelude = f"{prelude}\n\n{history_block}" if prelude else history_block
-    if other_repo_lines:
-        docs_block = "Lines from documents in other repositories of this workspace:\n" + "\n".join(
-            f"- {r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines
-        )
-        prelude = f"{prelude}\n\n{docs_block}" if prelude else docs_block
+    blocks = (
+        prelude,
+        _prompt_block("Callers from the call graph", caller_lines(graph_callers.rows)),
+        _prompt_block(
+            "Bug-fix history from the index",
+            [line for h in hits for line in h.get("_fix_history") or ()],
+        ),
+        _prompt_block(
+            "Lines from documents in other repositories of this workspace",
+            [f"{r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines],
+        ),
+    )
     return _USER_TEMPLATE.format(
         question=ask.question.strip(),
         n=len(hits),
-        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
+        context=_build_context_block_v2(
+            hits, prelude="\n\n".join(b for b in blocks if b), decisions=decisions
+        ),
     )
+
+
+def _prompt_block(title: str, lines: list[str]) -> str:
+    """A titled bullet block for the prelude, or ``""`` with no lines."""
+    return f"{title}:\n" + "\n".join(f"- {line}" for line in lines) if lines else ""
 
 
 async def _graded_payload(

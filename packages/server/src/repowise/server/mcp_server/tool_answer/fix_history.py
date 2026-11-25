@@ -58,28 +58,7 @@ async def named_file_fix_history(
     if not asks_fix_history(question):
         return []
     tokens = [t.replace("\\", "/").removeprefix("./") for t in path_tokens(question)]
-    if not tokens:
-        return []
-    res = await session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == repo_id,
-            or_(
-                *(
-                    or_(
-                        GitMetadata.file_path == t,
-                        GitMetadata.file_path.like(f"%/{escape_like(t)}", escape=LIKE_ESCAPE),
-                    )
-                    for t in tokens
-                )
-            ),
-        )
-    )
-    rows = [r for r in res.scalars().all() if not is_excluded(r.file_path, exclude_spec)]
-    named = []
-    for token in tokens:
-        matches = [r for r in rows if r.file_path == token or r.file_path.endswith(f"/{token}")]
-        if len(matches) == 1 and matches[0] not in named:
-            named.append(matches[0])
+    named = await _named_rows(session, repo_id, tokens, exclude_spec) if tokens else []
     if not named:
         return []
     # Ages count back from the indexed head, as get_risk counts them.
@@ -96,6 +75,32 @@ async def named_file_fix_history(
         if profile:
             out.append({"path": meta.file_path, **profile})
     return out
+
+
+async def _named_rows(session, repo_id: str, tokens: list[str], exclude_spec: Any) -> list:
+    """The ``GitMetadata`` row each token names: its path, or a file name only
+    one indexed file carries. In token order, each row once."""
+    res = await session.execute(
+        select(GitMetadata).where(
+            GitMetadata.repository_id == repo_id,
+            or_(
+                *(
+                    or_(
+                        GitMetadata.file_path == t,
+                        GitMetadata.file_path.like(f"%/{escape_like(t)}", escape=LIKE_ESCAPE),
+                    )
+                    for t in tokens
+                )
+            ),
+        )
+    )
+    rows = [r for r in res.scalars().all() if not is_excluded(r.file_path, exclude_spec)]
+    named: dict[str, Any] = {}
+    for token in tokens:
+        matches = [r for r in rows if r.file_path == token or r.file_path.endswith(f"/{token}")]
+        if len(matches) == 1:
+            named.setdefault(matches[0].file_path, matches[0])
+    return list(named.values())
 
 
 def fix_history_lines(history: list[dict]) -> list[str]:
