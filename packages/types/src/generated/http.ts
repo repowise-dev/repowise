@@ -2031,6 +2031,13 @@ export interface DocDriftSummaryResponse {
   new_since_last_update?: number | null;
 }
 
+/** Tests whose duration is at most ``le`` seconds and above the bucket before. */
+export interface DurationBucket {
+  le: number | null;
+  tests: number;
+  seconds: number;
+}
+
 export interface EgoGraphResponse {
   nodes: GraphNodeResponse[];
   links: GraphEdgeResponse[];
@@ -2163,6 +2170,8 @@ export interface EvidenceRunSummary {
   wait_share: number | null;
   library_share: number | null;
   unattributed_share?: number | null;
+  total_samples?: number | null;
+  low_signal?: "pruned_1pct" | "no_samples" | null;
   mapping_partial: boolean;
   tests_failed: number | null;
 }
@@ -4977,6 +4986,24 @@ export interface SuiteCostResponse {
   slow_tests: SlowTest[];
   tests_total: number;
   file_costs: FileTestCosts | null;
+  suite?: SuiteSummary | null;
+}
+
+/** The summed duration of one test file's timed tests. */
+export interface SuiteFileTime {
+  test_file: string;
+  seconds: number;
+  tests: number;
+}
+
+/** Every test of the basis runs, including those the per-run row cap left out. */
+export interface SuiteSummary {
+  tests: number;
+  timed: number;
+  seconds: number;
+  histogram: DurationBucket[];
+  test_files: SuiteFileTime[];
+  test_files_total: number;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */

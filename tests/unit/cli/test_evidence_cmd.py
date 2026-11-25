@@ -879,6 +879,32 @@ def test_tests_lists_the_slowest_tests_of_the_stored_junit_run(indexed) -> None:
     assert f"4.50s  {slowest['test_id']}" in table.stdout
 
 
+def test_a_capped_junit_run_keeps_its_slowest_tests_and_folds_them_all(indexed) -> None:
+    root, head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_rows_per_run: 1\n")
+    report = root / "junit.xml"
+    report.write_text(
+        '<testsuite name="pytest">'
+        '<testcase classname="tests.test_app" name="test_fast" time="0.25"/>'
+        '<testcase classname="tests.test_app" name="test_slow" time="4.5"/>'
+        '<testcase classname="tests.test_app" name="test_mid" time="1.25"/>'
+        "</testsuite>"
+    )
+    added = _add(str(report), "--workload", "pytest", "--class", "unit_test", "--commit", head,
+                 "--format", "json")
+    assert added.exit_code == 0, added.output
+    assert _json(added)["truncated"] == 2
+
+    payload = _json(_tests("--format", "json"))
+
+    # The report lists the slow test second; the cap keeps it, not the first.
+    assert [t["test_id"].rsplit("::", 1)[1] for t in payload["slow_tests"]] == ["test_slow"]
+    suite = payload["suite"]
+    assert (suite["tests"], suite["timed"], suite["seconds"]) == (3, 3, 6.0)
+    assert "2 faster or untimed tests were left out at the per-run cap" in _tests().stdout
+
+
+
 @pytest.mark.parametrize("elsewhere", [False, True])
 def test_a_vitest_report_below_the_root_lands_on_the_units_test_files(
     indexed, tmp_path_factory: pytest.TempPathFactory, elsewhere: bool
@@ -936,3 +962,34 @@ def test_tests_says_how_many_files_every_timed_test_runs() -> None:
     text = " ".join(evidence_cmd._tests_lines(payload))
 
     assert "src/app.py" in text and "3 more run in every timed test that reaches production code" in text
+
+
+def test_tests_says_how_many_the_cap_left_out_without_a_fold() -> None:
+    run = {"workload": "pytest", "freshness": "current", "commit_sha": "a" * 40,
+           "units": {"truncated": 7}}
+    payload = {
+        "runs": [run], "tests_total": 2, "slow_tests": [], "suite": None,
+        "file_costs": {"basis": "inferred", "files_total": 0, "not_production": 0,
+                       "every_test": 0, "files": []},
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "7 faster or untimed tests were left out at the per-run cap." in text
+
+
+def test_tests_names_a_suite_total_over_several_workloads_as_a_sum() -> None:
+    def run(name: str) -> dict:
+        return {"workload": name, "freshness": "current", "commit_sha": "a" * 40,
+                "units": {"truncated": 1}}
+
+    payload = {
+        "runs": [run("pytest"), run("vitest")], "tests_total": 2, "slow_tests": [],
+        "suite": {"timed": 4, "seconds": 9.0},
+        "file_costs": {"basis": "inferred", "files_total": 0, "not_production": 0,
+                       "every_test": 0, "files": []},
+    }
+
+    text = " ".join(evidence_cmd._tests_lines(payload))
+
+    assert "the 4 timed tests take 9.0s, summed over 2 workloads." in text

@@ -14,12 +14,19 @@ that every timed test reaching production code runs (a module the test setup
 imports) would show those tests' whole time, which says nothing of that file: it
 is counted, not listed, unless every listed file is one.
 Timing orders tests and files, it never gates anything.
+
+The ingest keeps a run's slowest tests under the row cap, and folds every test
+of the run first (:func:`timing_summary`): seconds and tests per test file and
+a duration histogram, so the suite's shape (:func:`suite_summary`) covers the
+tests the cap left out.
 """
 
 from __future__ import annotations
 
+import json
+from bisect import bisect_left
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -31,6 +38,103 @@ from .status import run_status
 DEFAULT_LIMIT = 20
 #: What stores test timings, said when none are stored.
 SETUP_COMMAND = "repowise evidence setup"
+#: Upper bounds, in seconds, of the duration histogram's buckets: decades from
+#: 1 ms, then one open bucket for anything slower than the last.
+HISTOGRAM_BOUNDS = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
+
+
+def timing_summary(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Every test row the join kept for one run (skipped entries are counted on
+    the run, not here), folded before any cap: JSON-ready, stored on the run.
+
+    ``tests`` counts the rows, ``timed`` those with a duration, ``seconds`` their
+    sum. ``histogram`` holds ``[tests, seconds]`` per bucket of
+    :data:`HISTOGRAM_BOUNDS` (a duration on a bound falls in that bound's
+    bucket), the open bucket last. ``files`` maps each test file to
+    ``[seconds, timed tests]``; a test with no file is in the totals only.
+    """
+    buckets = [[0, 0.0] for _ in range(len(HISTOGRAM_BOUNDS) + 1)]
+    files: dict[str, list[Any]] = {}
+    tests = timed = 0
+    seconds = 0.0
+    for row in rows:
+        tests += 1
+        duration = row.get("duration_s")
+        if duration is None:
+            continue
+        timed += 1
+        seconds += duration
+        bucket = buckets[bisect_left(HISTOGRAM_BOUNDS, duration)]
+        bucket[0] += 1
+        bucket[1] += duration
+        if row.get("test_file"):
+            entry = files.setdefault(row["test_file"], [0.0, 0])
+            entry[0] += duration
+            entry[1] += 1
+    return {
+        "tests": tests,
+        "timed": timed,
+        "seconds": _rounded(seconds),
+        "histogram": [[n, _rounded(total)] for n, total in buckets],
+        "files": {path: [_rounded(total), n] for path, (total, n) in sorted(files.items())},
+    }
+
+
+def _rounded(seconds: float) -> float:
+    # Microseconds: finer than any JUnit time, and keeps the stored JSON short.
+    return round(seconds, 6)
+
+
+def _fold(raw: str | None) -> dict[str, Any] | None:
+    """A stored fold, or ``None`` when absent or not of this shape (another bucket set)."""
+    try:
+        fold = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    if not isinstance(fold, dict) or len(fold.get("histogram") or ()) != len(HISTOGRAM_BOUNDS) + 1:
+        return None
+    return fold
+
+
+def suite_summary(runs: Iterable[Any], limit: int = DEFAULT_LIMIT) -> dict[str, Any] | None:
+    """The basis runs' stored :func:`timing_summary` folds added up, JSON-ready.
+
+    ``test_files`` are the *limit* test files with the most seconds, most
+    first; ``histogram`` names each bucket by its upper bound (``le``, null for
+    the open bucket). ``None`` unless every run carries a fold: a run stored
+    before the fold existed would leave the totals short without saying so.
+    Ceiling: workloads that run the same test each count it, where the slow
+    list charges a test once.
+    """
+    folds = [_fold(r.timing_summary_json) for r in runs]
+    if not folds or any(f is None for f in folds):
+        return None
+    files: dict[str, list[Any]] = {}
+    histogram = [[0, 0.0] for _ in range(len(HISTOGRAM_BOUNDS) + 1)]
+    for fold in folds:
+        for bucket, (n, total) in zip(histogram, fold["histogram"], strict=True):
+            bucket[0] += n
+            bucket[1] += total
+        for path, (total, n) in fold["files"].items():
+            entry = files.setdefault(path, [0.0, 0])
+            entry[0] += total
+            entry[1] += n
+    ranked = sorted(files.items(), key=lambda item: (-item[1][0], item[0]))
+    bounds: list[float | None] = [*HISTOGRAM_BOUNDS, None]
+    return {
+        "tests": sum(f["tests"] for f in folds),
+        "timed": sum(f["timed"] for f in folds),
+        "seconds": _rounded(sum(f["seconds"] for f in folds)),
+        "histogram": [
+            {"le": le, "tests": n, "seconds": _rounded(total)}
+            for le, (n, total) in zip(bounds, histogram, strict=True)
+        ],
+        "test_files": [
+            {"test_file": path, "seconds": _rounded(total), "tests": n}
+            for path, (total, n) in ranked[:limit]
+        ],
+        "test_files_total": len(files),
+    }
 
 
 def _basis_runs(runs: Sequence[Any]) -> list[Any]:
@@ -208,6 +312,7 @@ def no_timings(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         "slow_tests": [],
         "tests_total": 0,
         "file_costs": None,
+        "suite": None,
     }
 
 
@@ -239,7 +344,15 @@ async def suite_costs(
         "slow_tests": [_slow_test(r, workloads) for r in slow[:limit]],
         "tests_total": len(slow),
         "file_costs": await _file_costs(session, repository_id, timings, limit),
+        "suite": suite_summary(runs, limit),
     }
 
 
-__all__ = ["DEFAULT_LIMIT", "no_timings", "suite_costs"]
+__all__ = [
+    "DEFAULT_LIMIT",
+    "HISTOGRAM_BOUNDS",
+    "no_timings",
+    "suite_costs",
+    "suite_summary",
+    "timing_summary",
+]

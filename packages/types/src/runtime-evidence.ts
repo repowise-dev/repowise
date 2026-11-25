@@ -11,6 +11,7 @@
  * means unknown, never zero.
  */
 export type {
+  DurationBucket,
   EvidenceRunSummary,
   EvidenceRunsResponse,
   EvidenceStatusResponse,
@@ -26,6 +27,8 @@ export type {
   MeasuredRun,
   SlowTest,
   SuiteCostResponse,
+  SuiteFileTime,
+  SuiteSummary,
 } from "./generated/http.js";
 
 import type { EvidenceStatusResponse } from "./generated/http.js";

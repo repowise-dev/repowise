@@ -83,6 +83,12 @@ class EvidenceRunSummary(_Strict):
     library_share: float | None
     #: The rest: test or tooling code, module bodies, unresolved frames, runtime only.
     unattributed_share: float | None = None
+    #: How many samples a profile run holds; null when the profiler counted none.
+    total_samples: int | None = None
+    #: A profile run with no sample counts: ``pruned_1pct`` from an export that
+    #: drops frames under 1% of the run, ``no_samples`` otherwise. Null when
+    #: the run counted its samples, and for other kinds.
+    low_signal: Literal["pruned_1pct", "no_samples"] | None = None
     #: Fewer than half the entries mapped: stored, not a basis for ranking.
     mapping_partial: bool
     tests_failed: int | None
@@ -281,6 +287,36 @@ class FileTestCosts(_Strict):
     every_test: int
 
 
+class DurationBucket(_Strict):
+    """Tests whose duration is at most ``le`` seconds and above the bucket before."""
+
+    #: Upper bound in seconds; null for the open bucket past the last bound.
+    le: float | None
+    tests: int
+    seconds: float
+
+
+class SuiteFileTime(_Strict):
+    """The summed duration of one test file's timed tests."""
+
+    test_file: str
+    seconds: float
+    tests: int
+
+
+class SuiteSummary(_Strict):
+    """Every test of the basis runs, including those the per-run row cap left out."""
+
+    tests: int
+    #: Tests with a duration.
+    timed: int
+    seconds: float
+    histogram: list[DurationBucket]
+    #: The test files with the most seconds, most first.
+    test_files: list[SuiteFileTime]
+    test_files_total: int
+
+
 class SuiteCostResponse(_Strict):
     """The slowest tests and the test time per production file, from stored JUnit timings."""
 
@@ -292,3 +328,6 @@ class SuiteCostResponse(_Strict):
     slow_tests: list[SlowTest]
     tests_total: int
     file_costs: FileTestCosts | None
+    #: Every test of the basis runs, folded at ingest before the row cap; null
+    #: when a basis run was stored before the fold existed.
+    suite: SuiteSummary | None = None
