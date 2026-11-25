@@ -7,8 +7,9 @@ and ``git log -M --name-status`` over all of them costs minutes. A commit's
 commit here: for a fix, its time, prose and paths; for any other commit, only
 its rename rows, which are all the rename trail needs from it. The next walk
 asks git only for the range's order (``%H``, no diff), reads the commits the
-cache lacks with ``--no-walk``, and replays the same loop over the records in
-that order, so the result is the full walk's.
+cache lacks (a long run of them, such as a deeper window, with one ranged walk,
+the rest with ``--no-walk``), and replays the same loop over the records in that
+order, so the result is the full walk's.
 
 Keyed on :func:`..git_commit_index._record_context` (settings that change the
 rendered paths or the rename rows) and a fingerprint of the code that parses
