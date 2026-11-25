@@ -204,6 +204,9 @@ class TestClassNamedPairing:
             ("src/Foo.java", "tests/FooTests.cs"),
             ("src/Foo.cs", "tests/FooSpec.cs"),
             ("src/Foo.java", "tests/FooSuite.java"),
+            # JS test tails do not pair with a Python file
+            ("pkg/constants.py", "ui/__tests__/constants.test.ts"),
+            ("pkg/constants.py", "ui/__tests__/constants.spec.js"),
             # Case matters: ``Footest`` is not a test class for ``Foo``.
             ("src/Foo.java", "tests/Footest.java"),
         ],
@@ -218,3 +221,11 @@ class TestClassNamedPairing:
             ["src/main/java/a/Foo.java"], {"src/test/java/a/FooTest.java"}
         )
         assert found["src/main/java/a/Foo.java"].tests == ["src/test/java/a/FooTest.java"]
+
+    def test_python_file_does_not_pair_with_javascript_test_suffix(self) -> None:
+        from repowise.core.test_paths import paired_test_names
+
+        names = paired_test_names("pkg/constants.py")
+        assert not any(n.endswith((".test.ts", ".spec.ts", ".test.js", ".spec.js")) for n in names)
+        assert "test_constants.py" in names
+        assert "constants_test.py" in names
