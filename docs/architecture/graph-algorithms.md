@@ -375,13 +375,13 @@ to use the full graph.
 
 ### What question does it answer?
 
-**"Which files form circular dependency cycles?"**
+**"Which files form static import cycles?"**
 
 ### The intuition
 
 In a healthy codebase, dependencies flow in one direction: `main → service → repository → model`. You can always tell which module is "higher" or "lower" in the stack.
 
-A circular dependency breaks this. If `models.py` imports `serializers.py` and `serializers.py` imports `models.py`, there's no clear hierarchy. You can't understand one without the other. You can't test one without the other. You can't deploy one without the other.
+A static import cycle breaks this. If `models.py` imports `serializers.py` and `serializers.py` imports `models.py`, there's no clear hierarchy. You can't understand one without the other. You can't test one without the other. You can't deploy one without the other.
 
 An SCC is a maximal group of files where every file can reach every other file by following imports. If A can reach B and B can reach A, they're in the same SCC.
 
@@ -427,20 +427,20 @@ DFS starting at A:
 - Back to B: B.low = min(1, 0) = 0
 - Back to A: A.low = 0, A.low == A.discovery → SCC root. Pop C, B, A. SCC: {A, B, C}
 
-Result: Three SCCs: {A,B,C}, {D}, {E}. Only {A,B,C} has size > 1, meaning it's a circular dependency.
+Result: Three SCCs: {A,B,C}, {D}, {E}. Only {A,B,C} has size > 1, meaning it's a static import cycle.
 
 **Time complexity:** O(N + E); each node and edge is visited exactly once. Very fast.
 
-### What counts as a circular dependency
+### What counts as a static import cycle
 
 - **SCC of size 1**: Normal. A file that doesn't import itself. Not a cycle.
-- **SCC of size > 1**: Circular dependency. These files form a cycle and can't be separated.
+- **SCC of size > 1**: Static import cycle. These files form a cycle and can't be separated.
 
 ### How Repowise uses SCCs
 
 1. **Dedicated wiki pages**: Each SCC with size > 1 gets its own `scc_page` in the wiki, documenting which files are in the cycle, what they import from each other, and why it's worth addressing.
-2. **Architecture diagram**: Circular dependencies are highlighted in the generated architecture overview so the team can see coupling hotspots.
-3. **Codebase health signal**: Many or large SCCs indicate tightly coupled code. The repo overview includes a count of circular dependencies.
+2. **Architecture diagram**: Static import cycles are highlighted in the generated architecture overview so the team can see coupling hotspots.
+3. **Codebase health signal**: Many or large SCCs indicate tightly coupled code. The repo overview includes a count of static import cycles.
 4. **SCC IDs in node metadata**: Each file is tagged with an `scc_id`. Files in the same SCC share the same ID, which helps the frontend visualize which groups of files are tangled together.
 
 ---

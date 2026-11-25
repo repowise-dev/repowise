@@ -150,8 +150,7 @@ ENGLISH_LABELS: dict[str, str] = {
     # -- circular-dependency page ------------------------------------------
     "circular_dependency": "Static Import Cycle",
     "cycle_overview": (
-        "{count} files import each other in a loop, directly or transitively. Nothing in "
-        "this group can be loaded, tested or extracted without the rest of it."
+        "{count} files import each other in a loop, directly or transitively."
     ),
     "cycle_id": "Cycle id",
     "files_in_cycle": "Files in the cycle",
@@ -288,9 +287,7 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "type_plural": "Typen",
         "circular_dependency": "Statischer Importzyklus",
         "cycle_overview": (
-            "{count} Dateien importieren einander direkt oder transitiv in einer Schleife. "
-            "Nichts in dieser Gruppe kann ohne den Rest geladen, getestet oder extrahiert "
-            "werden."
+            "{count} Dateien importieren einander direkt oder transitiv in einer Schleife."
         ),
         "cycle_id": "Zyklus-ID",
         "files_in_cycle": "Dateien im Zyklus",

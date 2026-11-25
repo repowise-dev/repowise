@@ -144,3 +144,13 @@ def test_page_titles_fall_back_to_english_and_never_translate_the_target() -> No
     assert structural_page_title("de", "symbol_spotlight", "service.parse_file") == (
         "Symbol: service.parse_file"
     )
+
+
+def test_cycle_overview_states_the_loop_without_broad_load_claim() -> None:
+    en = resolve_structural_labels(None)["cycle_overview"].format(count=3)
+    assert en == "3 files import each other in a loop, directly or transitively."
+    assert "loaded" not in en
+    de = resolve_structural_labels("de")["cycle_overview"].format(count=3)
+    assert de == "3 Dateien importieren einander direkt oder transitiv in einer Schleife."
+    assert "geladen" not in de
+
