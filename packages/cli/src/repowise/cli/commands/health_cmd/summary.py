@@ -39,6 +39,22 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
         console.print(f"    {escape(item.why)}")
         if item.verify.command:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
+        for line in _measure_lines(item.verify.measure):
+            console.print(line)
+
+
+def _measure_lines(measure: dict[str, Any] | None) -> list[str]:
+    """How a performance item is re-measured (``verify.measure``): the baseline
+    before the edit, the comparison after it, from the directory it runs in."""
+    from rich.markup import escape
+
+    if not measure:
+        return []
+    where = f" [dim](from {escape(measure.get('cwd') or 'the repository root')})[/dim]"
+    return [
+        f"    [dim]measure before:[/dim] {escape(measure['before'])}{where}",
+        f"    [dim]measure after:[/dim] {escape(measure['after'])}{where}",
+    ]
 
 
 def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
