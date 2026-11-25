@@ -26,7 +26,7 @@ from .detector import (
     splice_may_apply,
 )
 from .limits import DuplicationLimits
-from .token_cache import _CACHE_FILENAME
+from .token_cache import persisted_bytes
 
 # Process startup is needless overhead for the small repositories common in
 # unit tests and editor workflows. Repositories above this size are where the
@@ -98,7 +98,7 @@ def _splices_in_process(
     if not splice_may_apply(len(changed_files & paths), len(paths)):
         return False
     try:
-        size = (Path(cache_dir) / _CACHE_FILENAME).stat().st_size
+        size = persisted_bytes(cache_dir)
     except OSError:
         return False  # no cache to splice against: a full scan follows
     return size <= _IN_PROCESS_SPLICE_MAX_CACHE_BYTES

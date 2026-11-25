@@ -19,6 +19,9 @@ from repowise.core.analysis.health.duplication.pair_index import (
 from repowise.core.analysis.health.duplication.token_cache import (
     _CACHE_FILENAME as _DUPLICATION_TOKENS,
 )
+from repowise.core.analysis.health.duplication.token_cache import (
+    _DELTA_FILENAME as _DUPLICATION_TOKENS_DELTA,
+)
 from repowise.core.analysis.health.walk_cache import _CACHE_FILENAME as _HEALTH_WALK
 from repowise.core.analysis.knowledge_graph import KNOWLEDGE_GRAPH_FILENAME
 from repowise.core.ingestion.dynamic_hints.scan_cache import _CACHE_NAME as _DYNAMIC_HINT_SCANS
@@ -53,6 +56,7 @@ SEALED_FILES: tuple[str, ...] = (
     _RESOLVED_IMPORTS,
     _FRAMEWORK_SCAN,
     _DUPLICATION_TOKENS,
+    _DUPLICATION_TOKENS_DELTA,
     _DUPLICATION_PAIRS,
     _HEALTH_WALK,
     _DEAD_CODE_TOKENS,

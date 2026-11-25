@@ -874,6 +874,12 @@ def _detect_clones_incremental(
             old_streams_map[p] = (kinds, names)
             new_streams_map[p] = (kinds, names)
         cache.retain(h)
+    # A full run reads gated files too and keeps their entries (a file too
+    # short to window still tokenizes); keep them here so a splice saves the
+    # entries a full run would, and the token cache's delta stays small.
+    if index.nonsurvivor_keys is not None:
+        for p in (index.nonsurvivors & current.keys()) - changed:
+            cache.retain(index.nonsurvivor_keys.get(p, ""))
 
     for p, (stream, window_tuples) in old_aff.items():
         g = path_grammar[p]
