@@ -53,15 +53,14 @@ def sniff(head: bytes) -> bool:
 
 def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
     """The whole output as a v1 ``test_timing`` document, or ``benchmark`` when it holds results."""
-    try:
-        return go_bench.to_v1(data, root)
-    except EvidenceFormatError:
-        pass
+    benchmarks = _benchmarks(data, root)
+    if benchmarks is not None:
+        return benchmarks
     locate = go_bench._Locator(root, _DECLARED, lambda _path, _name: True)
     seen: set[str | None] = set()
     tests: list[dict[str, Any]] = []
     for event in _events(go_bench._text(data)):
-        outcome = _OUTCOMES.get(event.get("Action"))  # type: ignore[arg-type]
+        outcome = _OUTCOMES.get(str(event.get("Action")))
         name = event.get("Test")
         if outcome is None or not isinstance(name, str) or not name or "/" in name:
             continue
@@ -81,6 +80,15 @@ def to_v1(data: bytes, root: Path | None = None) -> dict[str, Any]:
         "tool": {"name": "go"},
         "tests": tests,
     }
+
+
+def _benchmarks(data: bytes, root: Path | None) -> dict[str, Any] | None:
+    """The file as :mod:`.go_bench` reads it when it holds benchmark results, else None."""
+    try:
+        return go_bench.to_v1(data, root)
+    except EvidenceFormatError:
+        # No result line: a test run, which this reader times.
+        return None
 
 
 def _events(text: str) -> list[dict[str, Any]]:

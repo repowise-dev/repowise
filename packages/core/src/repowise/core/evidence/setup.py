@@ -162,6 +162,31 @@ def _found_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, A
     }
 
 
+def _timed(unit: dict[str, Any]) -> dict[str, Any] | None:
+    """The unit's test timings when its test step writes and ingests them, else None."""
+    timings = unit.get("test_timings") or {}
+    return timings if timings.get("command") and timings.get("ingest") else None
+
+
+def _wants_tests(unit: dict[str, Any], covered: bool, done: Collection[str]) -> bool:
+    """Whether the unit's tests still have something to measure: coverage, or its timings."""
+    timings = _timed(unit)
+    if not unit["coverage"]["command"]:
+        return False
+    return not covered or (timings is not None and timings["workload"] not in done)
+
+
+def _test_run(repo_root: Path, unit: dict[str, Any]) -> dict[str, Any]:
+    """The unit's test step: its coverage command, with the timings flag when it takes one,
+    and the environment both need."""
+    cov, timings = unit["coverage"], _timed(unit)
+    run = _step(repo_root, unit["root"], timings["command"] if timings else cov["command"])
+    env = {**(cov["env"] or {}), **((timings or {}).get("env") or {})}
+    if env:
+        run["env"] = env
+    return run
+
+
 def _coverage_call(
     repo_root: Path, units: Sequence[dict[str, Any]], *, covered: bool, done: Collection[str]
 ) -> dict[str, Any] | None:
@@ -171,29 +196,22 @@ def _coverage_call(
     *covered*: coverage at this commit is stored, so only a unit whose test timings
     are not (*done* lacks their workload) runs again.
     """
-    for unit in units:
-        cov = unit["coverage"]
-        timings = unit.get("test_timings") or {}
-        timed = bool(timings.get("command") and timings.get("ingest"))
-        if not cov["command"] or (covered and not (timed and timings["workload"] not in done)):
-            continue
-        where = unit["root"] or "the repository root"
-        run = _step(repo_root, unit["root"], timings["command"] if timed else cov["command"])
-        env = {**(cov["env"] or {}), **((timings["env"] or {}) if timed else {})}
-        if env:
-            run["env"] = env
-        return {
-            "purpose": f"Run the {unit['stack']} tests in {where} with coverage"
-            + (" and test timings, then ingest both." if timed else ", then ingest the report."),
-            "steps": [
-                *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
-                run,
-                _step(repo_root, "", cov["ingest"]),
-                *([_step(repo_root, "", timings["ingest"])] if timed else []),
-                _step(repo_root, "", COVERAGE_STATUS_COMMAND),
-            ],
-        }
-    return None
+    unit = next((u for u in units if _wants_tests(u, covered, done)), None)
+    if unit is None:
+        return None
+    cov, timings = unit["coverage"], _timed(unit)
+    where = unit["root"] or "the repository root"
+    return {
+        "purpose": f"Run the {unit['stack']} tests in {where} with coverage"
+        + (" and test timings, then ingest both." if timings else ", then ingest the report."),
+        "steps": [
+            *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
+            _test_run(repo_root, unit),
+            _step(repo_root, "", cov["ingest"]),
+            *([_step(repo_root, "", timings["ingest"])] if timings else []),
+            _step(repo_root, "", COVERAGE_STATUS_COMMAND),
+        ],
+    }
 
 
 def _runtime_call(
