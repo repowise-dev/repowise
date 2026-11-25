@@ -141,8 +141,10 @@ from repowise.server.mcp_server.tool_answer.callers import (
 )
 from repowise.server.mcp_server.tool_answer.citations import answer_files
 from repowise.server.mcp_server.tool_answer.clauses import cover_clauses
+from repowise.server.mcp_server.tool_answer.concept_names import concept_defining_files
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
+    _Grade,
     _grade_answer,
     _is_value_question,
     _retrieval_quality,
@@ -177,6 +179,11 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _first_resolvable_id,  # noqa: F401  — re-exported: imported from here by tests
     _is_readable_path,
     _repo_root,
+)
+from repowise.server.mcp_server.tool_answer.fix_history import (
+    asks_fix_history,
+    fix_history_lines,
+    named_file_fix_history,
 )
 from repowise.server.mcp_server.tool_answer.grounding import attach_grounding_bodies
 from repowise.server.mcp_server.tool_answer.neighbors import (
@@ -461,6 +468,14 @@ async def _run_retrieval_pipeline(
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+        elif not traced:
+            # Words spelling a symbol name ("bus factor" -> ``_bus_factor``)
+            # place its defining files the same way.
+            with contextlib.suppress(Exception):
+                async with get_session(ctx.session_factory) as session:
+                    concept = await concept_defining_files(session, repo_id, question, exclude_spec)
+                if concept := _in_scope(concept):
+                    hits = place_named_files(hits, concept)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
     hits = place_documents(hits, docs.hits)
@@ -681,6 +696,31 @@ async def _pre_synthesis_reply(
     return None
 
 
+async def _named_fix_history(ask: _Ask, hits: list[dict]) -> list[dict]:
+    """The fix record of each file the question asks why it breaks or keeps
+    changing; ``[]`` for every other question.
+
+    Its prompt line rides on that file's hit (the top hit when retrieval missed
+    the file), so synthesis reads it and the grade counts its numbers as shown.
+    """
+    if not asks_fix_history(ask.question):
+        return []
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            history = await named_file_fix_history(
+                session, ask.repo_id, ask.question, ask.exclude_spec
+            )
+    except Exception:
+        _log.warning("get_answer: fix history lookup failed", exc_info=True)
+        return []
+    by_path = {h.get("target_path"): h for h in hits}
+    for row, line in zip(history, fix_history_lines(history), strict=True):
+        hit = by_path.get(row["path"]) or (hits[0] if hits else None)
+        if hit is not None:
+            hit.setdefault("_fix_history", []).append(line)
+    return history
+
+
 def _fallback_targets(hits: list[dict]) -> list[str]:
     """Readable paths of the top hits, for the agent to verify."""
     return [
@@ -778,6 +818,9 @@ async def _user_prompt(
             f"- {line}" for line in caller_lines(graph_callers.rows)
         )
         prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
+    if history := [line for h in hits for line in h.get("_fix_history") or ()]:
+        history_block = "Bug-fix history from the index:\n" + "\n".join(f"- {s}" for s in history)
+        prelude = f"{prelude}\n\n{history_block}" if prelude else history_block
     if other_repo_lines:
         docs_block = "Lines from documents in other repositories of this workspace:\n" + "\n".join(
             f"- {r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines
@@ -798,8 +841,8 @@ async def _graded_payload(
     agreement_dominant: bool,
     dominance,
     stop_reason: str | None = None,
-) -> tuple[dict, str, list[str]]:
-    """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
+) -> tuple[dict, _Grade, list[str]]:
+    """Grade the synthesized answer and build its payload: ``(payload, grade, citations)``."""
     hits = retrieved.hits
     cited = answer_files(
         answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
@@ -835,6 +878,8 @@ async def _graded_payload(
     )
     if retrieved.scope and grade.split_names:
         grade = grade._replace(split_names=_split_in_scope(grade.split_names, retrieved.scope))
+    if grade.off_topic:
+        return _off_topic_payload(ask, grade.off_topic), grade, []
     payload = await build_synthesized_payload(
         question=ask.question,
         answer_text=answer_text,
@@ -851,7 +896,26 @@ async def _graded_payload(
         repository=ask.repository,
         exclude_spec=ask.exclude_spec,
     )
-    return payload, grade.confidence, citations
+    return payload, grade, citations
+
+
+def _off_topic_payload(ask: _Ask, words: tuple[str, ...]) -> dict:
+    """The reply when the question asks about what the repository does not hold.
+
+    No answer, citations or files to read: whatever synthesis wrote came from
+    outside the evidence, and the files retrieved are only where a stray word
+    landed.
+    """
+    asked = ", ".join(f"'{w}'" for w in words[:3])
+    payload = _no_answer_payload("", repository=ask.repository, t0=ask.t0)
+    # The verdict is the answer: the reply has nothing else to say.
+    del payload["note"]
+    payload["answer"] = (
+        f"Not found in this repository: nothing indexed mentions {asked}, and the "
+        "synthesized reply drew on none of what was retrieved, so it is not served. "
+        "Ask about code, a file or a behaviour this repository has."
+    )
+    return payload
 
 
 async def _resolve_scope(ask: _Ask, scope: str | None) -> ScopeResolution:
@@ -1058,6 +1122,7 @@ async def get_answer(
     clock.mark("retrieve")
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
+    fix_history = await _named_fix_history(ask, hits)
     graph_callers = await _graph_callers(ask, retrieved)
     # Impact questions the caller lookup left unanswered get the users of the
     # file the answer leads with, once that file is known.
@@ -1072,8 +1137,10 @@ async def get_answer(
     # Above the early returns: they rate retrieval too.
     agreement_dominant = _agreement(hits)
 
-    def _finish(payload: dict, *, keep: bool = False) -> dict:
+    def _finish(payload: dict, *, keep: bool = False, candidates: bool = True) -> dict:
         _with_scan_gaps(payload, retrieved.homonyms)
+        if fix_history:
+            payload["fix_history"] = fix_history
         _with_scope_note(payload, scoped)
         if retrieved.other_repo_lines:
             payload["other_repo_lines"] = retrieved.other_repo_lines
@@ -1085,7 +1152,8 @@ async def get_answer(
                 repo_id=ask.repo_id,
                 qhash=qhash,
             )
-        return _with_candidates(payload, resolved_pool)
+        # An off-topic reply ranks nothing: the pool is where stray words landed.
+        return _with_candidates(payload, resolved_pool if candidates else [])
 
     # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
@@ -1165,15 +1233,19 @@ async def get_answer(
     if failure_note is not None:
         return await _degrade("synthesis-failed", failure_note)
 
-    payload, confidence, citations = await _graded_payload(
+    payload, grade, citations = await _graded_payload(
         ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance, stop_reason
     )
+    confidence = grade.confidence
+    if grade.off_topic:
+        # Nothing retrieved is worth reading for it either.
+        fallback_targets = []
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
     if retrieved.flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in retrieved.flow_paths[:2]]
     # Navigation, not evidence: it survives the shrinking of ``retrieval``.
-    _finish(payload)
+    _finish(payload, candidates=not grade.off_topic)
     await _cache_and_stamp(
         payload,
         ask,
