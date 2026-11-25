@@ -201,9 +201,13 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
         "repo_self_share": 0.47,
         "wait_share": 0.3,
         "library_share": 0.12,
+        # 1000 total less 470 + 300 + 120 in the three buckets.
+        "unattributed_share": 0.11,
         "outside_production": 4,
         "value_kind": "wall",
         "ordering_only": False,
+        # The workload's newest run.
+        "newer_run": None,
     }
     assert [r["run_id"] for r in measured["runs"]] == ["r2", "r1"]
 

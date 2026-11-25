@@ -89,13 +89,14 @@ describe("PerformanceView runtime evidence", () => {
     expect(evidence.getMeasured).toHaveBeenCalledWith({ runId: "run-tests", limit: 5 });
   });
 
-  it("lists every stored run, marking one from an older commit", async () => {
+  it("lists every stored run, marking one from another commit", async () => {
     render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
     await table();
     fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
     const runs = await screen.findByRole("table");
     expect(within(runs).getAllByRole("row")).toHaveLength(4);
-    expect(within(runs).getByText("older commit")).toBeTruthy();
+    // No run of its own workload is at the indexed commit to place it against.
+    expect(within(runs).getByText("other commit")).toBeTruthy();
     expect(within(runs).getByText("1,240 tests, 2 failed")).toBeTruthy();
     expect(within(runs).getAllByText("96 of 100")).toHaveLength(3);
   });

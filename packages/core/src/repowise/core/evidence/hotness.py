@@ -50,11 +50,14 @@ Two read models come out of one derivation (:class:`Hotness`):
 - ``symbol_hotness``: one row per function, from its basis run, for readers
   that ask about a function (``get_context``);
 - ``workload_hotness``: the ranked functions of each workload's newest run
-  (by workload name and environment, as ``evidence status`` groups them), one
-  row per run and function, for readers that list what each workload
-  measured. A function two workloads both rank is listed under each, so no
-  workload hides behind another's basis, and a superseded run of a workload
-  is never listed.
+  that ranks any (by workload name and environment, as ``evidence status``
+  groups them), one row per run and function, for readers that list what
+  each workload measured. A newer run that ranks nothing (measured ahead of
+  the index, too few samples, no production frame) leaves the one before it
+  listed, and readers name the newer one beside it
+  (:func:`commit_position`). A function two workloads both rank is listed
+  under each, so no workload hides behind another's basis, and a superseded
+  run that ranks is never listed.
 """
 
 from __future__ import annotations
@@ -193,7 +196,8 @@ class Hotness:
 
     #: ``symbol_hotness``: one per function, from its basis run.
     symbols: list[dict[str, Any]]
-    #: ``workload_hotness``: the ranked functions of each workload's newest run.
+    #: ``workload_hotness``: the ranked functions of each workload's newest
+    #: run that ranks any.
     workloads: list[dict[str, Any]]
 
 
@@ -226,13 +230,10 @@ def derive_hotness(
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
         symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
-    newest = newest_runs(runs)
-    workloads = [
-        _workload_row(r)
-        for rows in rows_by_symbol.values()
-        for r in rows
-        if r.run.id in newest and r.tier != "measured"
-    ]
+    listed = [r for rows in rows_by_symbol.values() for r in rows if r.tier != "measured"]
+    # A newer run that ranks nothing never hides the run before it that does.
+    newest = newest_runs({r.run.id: r.run for r in listed}.values())
+    workloads = [_workload_row(r) for r in listed if r.run.id in newest]
     workloads.sort(key=lambda w: (w["run_id"], w["rank"], w["symbol_id"]))
     return Hotness(symbols, workloads)
 
@@ -250,6 +251,44 @@ def newest_runs(runs: Iterable[Any]) -> set[str]:
         if key not in newest or _age_key(run) > _age_key(newest[key]):
             newest[key] = run
     return {run.id for run in newest.values()}
+
+
+def commit_position(run: Any, runs: Iterable[Any], head_commit: str | None) -> str:
+    """Where *run*'s commit sits against the indexed *head_commit*.
+
+    ``indexed`` at it; ``ahead`` when added after the newest of *runs* of the
+    same history (kind, workload, environment) at the indexed commit,
+    ``older`` when added before it; ``other`` when no such run is at the
+    indexed commit to compare with, or either commit is unknown. Another
+    workload's run never places it: a test run added late says nothing about
+    where a profile sits.
+    Ingest order (measurement time for a run stored without one), the rule
+    the UI's ``commitPosition`` reads from the runs list, so the two agree.
+    Ceiling: ingest order is commit order for runs a CI job adds on each
+    push; an old commit added late reads as ahead. Git order needs a
+    checkout, which a host's read path does not have.
+    """
+    if not run.commit_sha or not head_commit:
+        return "other"
+    if run.commit_sha == head_commit:
+        return "indexed"
+    history = _history(run)
+    anchors = [
+        _ingest_time(r) for r in runs if r.commit_sha == head_commit and _history(r) == history
+    ]
+    if not anchors:
+        return "other"
+    return "ahead" if _ingest_time(run) > max(anchors) else "older"
+
+
+def _history(run: Any) -> tuple[Any, ...]:
+    return (getattr(run, "kind", None), run.workload_name, run.environment)
+
+
+def _ingest_time(run: Any) -> float:
+    at = getattr(run, "ingested_at", None) or run.measured_at
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).timestamp() if at else 0.0
 
 
 def _age_key(run: Any) -> tuple[float, str]:
@@ -576,6 +615,7 @@ __all__ = [
     "Hotness",
     "HotnessRules",
     "RunFacts",
+    "commit_position",
     "derive_hotness",
     "hotness_rules",
     "newest_runs",

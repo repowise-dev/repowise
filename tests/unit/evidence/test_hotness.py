@@ -312,3 +312,55 @@ def test_a_workload_row_carries_its_cost_and_never_a_measured_row() -> None:
         0.1, 0.2, 100, False,
     )
     assert f["share_low"] < 0.1 < f["share_high"]
+
+
+def test_a_newer_run_that_ranks_nothing_leaves_the_one_before_it_listed() -> None:
+    # The newest run of the workload was measured at a commit the index has not
+    # reached: no stored body matches, so it ranks nothing. The run before it,
+    # at the indexed commit, is what the workload view lists.
+    runs = [_run("at-index", day=1), _run("ahead", commit=OLD, day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {
+        "at-index": [_cost("parse", 200), _cost("walk", 100)],
+        "ahead": [_cost("parse", 300, digest=None)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("at-index", 1, "parse"), ("at-index", 2, "walk")]
+
+
+def test_a_newer_run_that_ranks_lists_alone_as_before() -> None:
+    runs = [_run("old", day=1), _run("new", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "init"}) for r in runs]
+    costs = {"old": [_cost("parse", 200)], "new": [_cost("walk", 100)]}
+    got = [(w["run_id"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [("new", "walk")]
+
+
+def test_commit_position_reads_ingest_order_within_the_runs_history() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.evidence.hotness import commit_position
+
+    def run(commit: str, measured: int, ingested: int, *, kind: str = "profile",
+            workload: str = "init") -> SimpleNamespace:
+        return SimpleNamespace(
+            commit_sha=commit, kind=kind, workload_name=workload, environment="ci",
+            measured_at=datetime(2026, 11, measured, tzinfo=UTC),
+            ingested_at=datetime(2026, 11, ingested),  # SQLite drops the zone
+        )
+
+    anchor = run(HEAD, 2, 2)
+    assert commit_position(anchor, [anchor], HEAD) == "indexed"
+    # Measured before the index's run but added after it: ahead, as the runs list reads it.
+    late = run(OLD, 1, 3)
+    assert commit_position(late, [anchor, late], HEAD) == "ahead"
+    # Measured after but added before it: older.
+    early = run(OLD, 3, 1)
+    assert commit_position(early, [anchor, early], HEAD) == "older"
+    # A test run, or another workload, at the indexed commit never places a profile.
+    junit = run(HEAD, 4, 4, kind="test_timing")
+    other = run(HEAD, 4, 4, workload="serve")
+    assert commit_position(late, [junit, other, late], HEAD) == "other"
+    assert commit_position(late, [anchor, junit, late], HEAD) == "ahead"
+    # No indexed commit.
+    assert commit_position(late, [anchor, late], None) == "other"

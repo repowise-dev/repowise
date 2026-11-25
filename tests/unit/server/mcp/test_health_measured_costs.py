@@ -235,10 +235,10 @@ async def test_an_index_from_before_the_workload_view_says_to_update(setup_mcp, 
 
 
 @pytest.mark.asyncio
-async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
+async def test_a_thin_newest_run_beside_a_ranked_older_one_says_to_update(
     setup_mcp, session, materialized
 ):
-    """The view is built and empty: an update could never change that answer."""
+    """Built, the view lists the older run that ranks, so an empty one was never built."""
     from datetime import timedelta
 
     await _seed(session, materialized, [])
@@ -253,7 +253,9 @@ async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
     ranked = {"symbol_id": LOGIN, "rank": 1, "tier": "ranked", "freshness": "current"}
     await replace_symbol_hotness(session, materialized, [{**ranked, "run_id": "r1"}])
     await session.commit()
-    assert await _measured() == {"basis": "unknown", "status": "not_ranked"}
+    assert await _measured() == {
+        "basis": "unknown", "status": "needs_update", "command": "repowise update",
+    }
 
 
 @pytest.mark.asyncio
@@ -300,3 +302,19 @@ async def test_a_measured_only_cause_stays_off_the_agent_surface(setup_mcp, sess
     shown = await get_overview()
     assert _size(shown) == overview
     assert minted not in json.dumps(shown)
+
+
+def test_a_run_names_its_newer_unranked_run_only_when_it_has_one() -> None:
+    from repowise.server.mcp_server.tool_health.pillars import _measured_run
+
+    run = {
+        "run_id": "r1", "workload_class": "entry_point", "workload_name": "w", "commit": "a" * 40,
+        "age_days": 1, "samples": 10, "repo_self_share": 0.1, "wait_share": 0.5,
+        "library_share": 0.0, "outside_production": 0, "value_kind": "wall",
+        "ordering_only": False, "newer_run": None,
+    }
+    assert "newer_run" not in _measured_run(run)
+    newer = {"run_id": "r2", "commit": "d" * 40, "measured_at": None, "reason": "ahead_of_index"}
+    assert _measured_run({**run, "newer_run": newer})["newer_run"] == {
+        "commit": "d" * 12, "reason": "ahead_of_index",
+    }
