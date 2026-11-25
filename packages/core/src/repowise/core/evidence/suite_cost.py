@@ -233,11 +233,11 @@ def concentration(durations: Iterable[float], tests: int, seconds: float) -> dic
     """
     if tests <= 0 or seconds <= 0:
         return None
-    top = max(1, tests // 10)
-    return {
-        "tests": top,
-        "share": round(min(1.0, sum(heapq.nlargest(top, durations)) / seconds), 4),
-    }
+    # A row cap under a tenth of the suite leaves fewer durations: name only those.
+    slowest = heapq.nlargest(max(1, tests // 10), durations)
+    if not slowest:
+        return None
+    return {"tests": len(slowest), "share": round(min(1.0, sum(slowest) / seconds), 4)}
 
 
 def excess_clusters(
@@ -255,7 +255,7 @@ def excess_clusters(
     production files it runs (the per-test map); only tests in both, running
     some production file, count. A file's excess is ``n x (mean of its n
     tests - mean of the others)``, over files at least :data:`MIN_CLUSTER_TESTS`
-    tests and at most :data:`MAX_REACH` of all of them run: a file nearly every
+    tests and at most :data:`MAX_REACH` of the tests still ranked run: a file nearly every
     test runs (one the test setup imports) separates nothing. The file with the
     most excess and every file run by exactly the same tests form a cluster.
     Its tests leave the pool before the next cluster is ranked, so clusters
@@ -269,7 +269,6 @@ def excess_clusters(
     the slowest): they count among the others, never in a cluster.
     """
     pool = {t: seconds[t] for t in sorted(reach) if reach[t] and t in seconds}
-    ceiling = MAX_REACH * (len(pool) + unseen[0])
     fixtures = fixtures or {}
     users = Counter(f for fs in fixtures.values() for f in set(fs))
     clusters: list[dict[str, Any]] = []
@@ -283,7 +282,8 @@ def excess_clusters(
         ranked: list[tuple[float, str, frozenset[str]]] = []
         for path, tests in by_file.items():
             n = len(tests)
-            if n < MIN_CLUSTER_TESTS or n > ceiling or n == size:
+            # Of the tests still ranked: a file nearly all of them run separates nothing.
+            if n < MIN_CLUSTER_TESTS or n > MAX_REACH * size or n == size:
                 continue
             inside = sum(pool[t] for t in tests)
             ranked.append((inside - n * (total - inside) / (size - n), path, frozenset(tests)))

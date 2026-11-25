@@ -273,7 +273,7 @@ def test_concentration_takes_the_suite_from_the_fold_when_the_cap_cut_rows() -> 
     # The cap kept the 3 slowest of 40 tests; the fold says the suite is 40 tests, 100 s.
     out = cost_fold({"a": 30.0, "b": 20.0, "c": 10.0}, None, timed=40, suite_seconds=100.0)
 
-    assert out["concentration"] == {"tests": 4, "share": 0.6}
+    assert out["concentration"] == {"tests": 3, "share": 0.6}
     assert (out["timed"], out["seconds"]) == (40, 100.0)
 
 
@@ -346,3 +346,20 @@ async def test_two_workloads_running_the_same_tests_count_each_test_once(session
 
     # The folds add up to 82 s over 4 tests; the suite is 41 s over 2.
     assert (cost["verdict"], cost["seconds"], cost["timed"]) == ("small_suite", 41.0, 2)
+
+
+def test_a_file_nearly_every_remaining_test_runs_is_never_a_later_group() -> None:
+    seconds = {f"a{i}": 10.0 for i in range(10)} | {f"b{i}": 1.0 for i in range(19)} | {"c": 0.1}
+    reach = {f"a{i}": {"src/a.py"} for i in range(10)} | {f"b{i}": {"src/x.py"} for i in range(19)}
+    reach["c"] = {"src/c.py"}
+
+    clusters = excess_clusters(seconds, reach, sum(seconds.values()))
+
+    # x.py: 19 of 30 tests at first, 19 of the 20 left once a.py's group leaves.
+    assert [c["files"] for c in clusters] == [["src/a.py"]]
+
+
+def test_a_row_cap_under_a_tenth_of_the_suite_names_only_the_stored_tests() -> None:
+    out = cost_fold({"a": 30.0, "b": 20.0}, None, timed=100, suite_seconds=100.0)
+
+    assert out["concentration"] == {"tests": 2, "share": 0.5}
