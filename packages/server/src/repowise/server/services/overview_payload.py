@@ -31,6 +31,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.stats_highlights import file_mix
 from repowise.server.services.attention import build_attention
+from repowise.server.services.hotspots import count_hotspots
 from repowise.server.services.knowledge_map import (
     compute_knowledge_silos,
     compute_onboarding_targets,
@@ -108,13 +109,8 @@ async def stat_strip(session: AsyncSession, repo_id: str) -> dict:
             ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         ),
     )
-    hotspot_count = await _count(
-        session,
-        select(func.count(GitMetadata.id)).where(
-            GitMetadata.repository_id == repo_id,
-            GitMetadata.is_hotspot.is_(True),
-        ),
-    )
+    # The hotspot list's own count, so "All N hotspots" opens N rows.
+    hotspot_count = await count_hotspots(session, repo_id)
     return {
         "file_count": file_count,
         "symbol_count": symbol_count,

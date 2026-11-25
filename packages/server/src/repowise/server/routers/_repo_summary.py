@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +19,13 @@ from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
     GraphNode,
+    HealthFileMetric,
     HealthSnapshot,
     Page,
 )
 from repowise.server.mcp_server._meta import read_live_head, resolve_indexed_commit
 from repowise.server.schemas import RepoResponse
+from repowise.server.services.hotspots import shown_hotspot
 
 # One grouped query's answer: ``(repository_id, figures)`` per row.
 _Figures = list[tuple[str, dict[str, Any]]]
@@ -87,13 +89,13 @@ async def _dead_export_figures(session: AsyncSession) -> _Figures:
 
 
 async def _hotspot_figures(session: AsyncSession) -> _Figures:
-    # Hotspots, and the tracked-file denominator they are meaningful against.
+    # Hotspots in the Code Health list's scope (services.hotspots.count_hotspots),
+    # and the tracked-file denominator they are meaningful against.
+    g, h = GitMetadata, HealthFileMetric
     result = await session.execute(
-        select(
-            GitMetadata.repository_id,
-            func.count(GitMetadata.id),
-            _fresh_case(GitMetadata.is_hotspot, True),
-        ).group_by(GitMetadata.repository_id)
+        select(g.repository_id, func.count(g.id), _fresh_case(shown_hotspot(), True))
+        .outerjoin(h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path))
+        .group_by(g.repository_id)
     )
     return [
         (repo_id, {"tracked_file_count": int(tracked or 0), "hotspot_count": int(hotspots or 0)})
