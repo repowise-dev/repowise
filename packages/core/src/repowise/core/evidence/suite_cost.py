@@ -355,7 +355,12 @@ def _shared_fixture(
     of them do and at least :data:`FIXTURE_MIN_EXCLUSIVE` of the timed tests asking
     for it are members: a fixture every kind of test uses (``tmp_path``) says
     nothing of this group. ``tests`` counts the members asking for it,
-    ``others`` the other timed tests that do."""
+    ``others`` the other timed tests that do.
+
+    Ceiling: only stored rows carry a test id, so tests the row cap cut (the
+    fastest, past ``evidence.max_rows_per_run``) are not counted in ``others``
+    or in the exclusivity check. Upgrade path: fold fixture request counts into
+    :func:`timing_summary` at ingest, before the cap, as the histogram is."""
     inside = Counter(f for t in members for f in set(fixtures.get(t, ())))
     floor = max(2, FIXTURE_MIN_SHARE * len(members))
     picked = [f for f, n in inside.items() if n >= floor and n >= FIXTURE_MIN_EXCLUSIVE * users[f]]
