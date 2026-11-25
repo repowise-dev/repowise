@@ -544,6 +544,15 @@ NO_TESTS = "No test needs to run for this change."
 ORDER = ", listed likeliest to fail first"
 
 
+def _first_reason(selection: Selection) -> str:
+    return selection.reasons[0] if selection.reasons else "the selection could not vouch"
+
+
+def _run_all_summary(lead: str, total: int, shown: str) -> str:
+    named = f" Run these {total} first{shown}." if total else ""
+    return f"Run every test: {lead}{named}"
+
+
 def _summary(
     selection: Selection,
     total: int,
@@ -555,9 +564,7 @@ def _summary(
 ) -> str:
     shown = f"; showing {listed}" if 0 < listed < total else ""
     if selection.run_all or share:
-        lead = share or (selection.reasons[0] if selection.reasons else "the selection could not vouch")
-        named = f" Run these {total} first{shown}." if total else ""
-        return f"Run every test: {lead}{named}"
+        return _run_all_summary(share or _first_reason(selection), total, shown)
     spread = apart_sentence(broadcast, closure, APART_KEYS)
     if not total:
         return f"No test the change reaches directly.{spread}" if spread else NO_TESTS
