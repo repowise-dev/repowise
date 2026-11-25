@@ -607,6 +607,13 @@ benchmark results; time never gates. The other gates: [Repowise in CI](../start/
   the file, and `render_connect_evidence` for the agent prompt.
 - **Performance findings**: the static findings evidence sits beside, in
   [PERFORMANCE.md](PERFORMANCE.md).
+- **Measured rows** (`repowise health`, the Performance tab and its REST view): each
+  ranked function names up to 3 tests. With a stored per-test map that has the
+  function's file, they are tests that ran its lines (`tests_basis: per_test_map`;
+  an empty list means none did); otherwise its nearest tests on the call graph
+  (`call_graph`). A benchmark that calls the function or ran its lines is never
+  listed as a test: `verify` is the command that reruns it before and after a fix
+  (`go test -run '^$' -bench ...` or `pytest ... --benchmark-only`).
 
 ## Reference
 

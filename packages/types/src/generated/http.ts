@@ -3268,6 +3268,8 @@ export interface MeasuredRow {
   callers: string[];
   owner: MeasuredOwner | null;
   tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  verify?: string | null;
   on_static_findings?: string[];
 }
 

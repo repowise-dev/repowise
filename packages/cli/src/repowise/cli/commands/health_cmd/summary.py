@@ -185,12 +185,15 @@ def _row_facts(row: dict[str, Any]) -> str:
     if row.get("owner"):
         parts.append(f"owner {row['owner']['name']}")
     tests = row.get("tests")
+    ran = row.get("tests_basis") == "per_test_map"
     if tests is None:
         parts.append("tests not mapped")
     elif tests:
-        parts.append(f"nearest test {tests[0]}")
+        parts.append(f"{'test that ran it' if ran else 'nearest test by call graph'} {tests[0]}")
     else:
-        parts.append("no test reaches it")
+        parts.append("no test ran it" if ran else "no test reaches it")
+    if row.get("verify"):
+        parts.append(f"verify: {row['verify']}")
     if row.get("on_static_findings"):
         parts.append(f"static cause {', '.join(row['on_static_findings'])}")
     return " · ".join(parts)

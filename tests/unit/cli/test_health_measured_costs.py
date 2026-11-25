@@ -44,6 +44,8 @@ ROW = {
     "callers": ["src/main.py::main"],
     "owner": {"name": "Ada", "commit_pct": 0.8},
     "tests": ["tests/test_app.py::test_serve"],
+    "tests_basis": "call_graph",
+    "verify": None,
 }
 VIEW = {
     "measured": {"runs": [RUN], "rows": [ROW]},
@@ -76,9 +78,23 @@ def test_each_run_states_its_basis_and_where_its_time_went() -> None:
         "owner Ada" in out
     )
     assert "94% of the run" not in out
-    assert "nearest test tests/test_app.py::test_serve" in out
+    assert "nearest test by call graph tests/test_app.py::test_serve" in out
     assert "tests not mapped · static cause perf3_x" in out
     assert not re.search(r"\b(hot|cold)\b", out, re.IGNORECASE)
+
+
+def test_a_row_names_the_test_that_ran_it_and_the_benchmark_that_verifies() -> None:
+    row = {
+        **ROW,
+        "tests": ["tests/test_app.py::test_run"],
+        "tests_basis": "per_test_map",
+        "verify": "pytest benches/bench_app.py::test_serve --benchmark-only",
+    }
+    out = _rendered({"measured": {"runs": [RUN], "rows": [row]}})
+    assert "test that ran it tests/test_app.py::test_run" in out
+    assert "verify: pytest benches/bench_app.py::test_serve --benchmark-only" in out
+    empty = _rendered({"measured": {"runs": [RUN], "rows": [{**row, "tests": []}]}})
+    assert "no test ran it" in empty
 
 
 def test_a_run_stored_before_the_split_says_so() -> None:
