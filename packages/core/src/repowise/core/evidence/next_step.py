@@ -36,7 +36,7 @@ by whichever leads. Upgrade path: keep the top leaves per callee.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -435,40 +435,23 @@ def next_step(
     ``javascript`` ...). *findings* are :func:`static_finding` dicts: those on the
     function or naming it or its drivers in a loop are read, the rest ignored.
     """
-    if row.get("workload_class") not in STEP_CLASSES:
-        return None
-    inside = [c for c in row.get("inside") or () if isinstance(c, Mapping)]
-    if not inside:
+    inside = _items(row.get("inside"))
+    if row.get("workload_class") not in STEP_CLASSES or not inside:
         return None
     lang = _family(language)
     symbol = row.get("symbol_id") or ""
     findings = list(findings)
     own_static = [f for f in findings if _on(f, symbol)]
-    families: dict[str, float] = {}
-    members: dict[str, list[Mapping[str, Any]]] = {}
-    for callee in inside:
-        family = _classify(callee, lang, own_static)
-        families[family] = families.get(family, 0.0) + float(callee.get("share") or 0.0)
-        members.setdefault(family, []).append(callee)
-    family, share = max(families.items(), key=lambda kv: (kv[1], kv[0]))
-    if share < DOMINANT or family == "own" or family.startswith("other:"):
+    picked = _dominant(inside, lang, own_static, symbol)
+    if picked is None:
         return None
-    lead = max(members[family], key=lambda c: c.get("share") or 0.0)
-    if _last(symbol.rsplit("::", 1)[-1]) == _last(str(lead.get("name"))):
-        return None  # a thin wrapper: the cost belongs to whoever calls it
-    drivers = [d for d in row.get("drivers") or () if isinstance(d, Mapping)]
-    group = members[family]
-    if family == "database":
-        family = _database_family(group, symbol)
-    loop = _loop_owner(symbol, drivers, findings) if family.startswith("db") else None
-    if family == "db_write" and loop and row.get("workload_class") == "entry_point":
-        family = "db_write_loop"
+    family, share, group = picked
+    drivers = _items(row.get("drivers"))
+    family, loop = _refine(family, group, symbol, drivers, findings, row.get("workload_class"))
     if family in _SILENT:
         return None
-    words = _WORDS[family](_Ctx(lang, family, group, share, lead, families, drivers, loop))
-    if words is None:
-        return None
-    why, step = words
+    lead = _lead(group)
+    why, step = _WORDS[family](_Ctx(lang, family, group, share, lead, drivers, loop))
     static = _agreeing(own_static, family)
     leaf = lead.get("leaf") if isinstance(lead.get("leaf"), Mapping) else None
     return NextStep(
@@ -481,6 +464,55 @@ def next_step(
         leaf=str(leaf["name"]) if leaf and family in _LEAF_RULES else None,
         static=static["kind"] if static else None,
     )
+
+
+def _items(value: Any) -> list[Mapping[str, Any]]:
+    return [item for item in value or () if isinstance(item, Mapping)]
+
+
+def _lead(group: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    return max(group, key=lambda c: c.get("share") or 0.0)
+
+
+def _dominant(
+    inside: Sequence[Mapping[str, Any]],
+    lang: str,
+    own_static: Sequence[Mapping[str, Any]],
+    symbol: str,
+) -> tuple[str, float, list[Mapping[str, Any]]] | None:
+    """The callee family holding :data:`DOMINANT` of the time, its share and callees;
+    ``None`` for own code, an unknown callee, or a thin wrapper named like its callee."""
+    families: dict[str, float] = {}
+    members: dict[str, list[Mapping[str, Any]]] = {}
+    for callee in inside:
+        family = _classify(callee, lang, own_static)
+        families[family] = families.get(family, 0.0) + float(callee.get("share") or 0.0)
+        members.setdefault(family, []).append(callee)
+    family, share = max(families.items(), key=lambda kv: (kv[1], kv[0]))
+    if share < DOMINANT or family == "own" or family.startswith("other:"):
+        return None
+    if _last(symbol.rsplit("::", 1)[-1]) == _last(str(_lead(members[family]).get("name"))):
+        return None  # a thin wrapper: the cost belongs to whoever calls it
+    return family, share, members[family]
+
+
+def _refine(
+    family: str,
+    group: Sequence[Mapping[str, Any]],
+    symbol: str,
+    drivers: Sequence[Mapping[str, Any]],
+    findings: Sequence[Mapping[str, Any]],
+    workload_class: Any,
+) -> tuple[str, str | None]:
+    """A database family split into read and write, with the loop that repeats it:
+    a write a loop repeats in one entry point run is ``db_write_loop``."""
+    if family != "database":
+        return family, None
+    family = _database_family(group, symbol)
+    loop = _loop_owner(symbol, drivers, findings)
+    if family == "db_write" and loop and workload_class == "entry_point":
+        family = "db_write_loop"
+    return family, loop
 
 
 # --- classification ----------------------------------------------------------
@@ -526,82 +558,118 @@ def _db_package(name: str) -> bool:
     return any(classify_io_kind(p) == "db" for p in (head, head.rsplit("/", 1)[-1]) if p)
 
 
+@dataclass(frozen=True)
+class _Callee:
+    """One ``inside`` item, read once for the lexicon rules."""
+
+    name: str
+    kind: Any
+    names: set[str]
+    leaf: str
+    leaf_names: set[str]
+    #: The leaf holds :data:`LEAF_LEADS` of the callee's time.
+    leaf_leads: bool
+    lang: str
+    #: A static finding on the function says it spawns a process.
+    spawns: bool
+
+
+def _read_callee(
+    callee: Mapping[str, Any], lang: str, own_static: Sequence[Mapping[str, Any]]
+) -> _Callee:
+    name = str(callee.get("name") or "")
+    leaf = callee.get("leaf") if isinstance(callee.get("leaf"), Mapping) else {}
+    leaf_name = str(leaf.get("name") or "")
+    share = callee.get("share") or 0.0
+    return _Callee(
+        name=name,
+        kind=callee.get("kind"),
+        names=_names(name),
+        leaf=leaf_name,
+        leaf_names=_names(leaf_name) if leaf_name else set(),
+        leaf_leads=bool(leaf_name) and (leaf.get("share") or 0.0) >= LEAF_LEADS * share,
+        lang=lang,
+        spawns=any(f.get("boundary") == "subprocess" for f in own_static),
+    )
+
+
+def _filesystem_callee(c: _Callee) -> bool:
+    if c.names & (_FS_METADATA | _DIR_WALK | _FS_QUALIFIED):
+        return True
+    # A library whose time is a filesystem call, or a name other libraries share
+    # (``walk``, ``exists``) whose stacks end in the filesystem.
+    fs_leaf = bool(c.leaf_names & (_FS_METADATA | _DIR_WALK))
+    return fs_leaf and (c.leaf_leads or bool(c.names & _FS_AMBIGUOUS))
+
+
+def _regex_callee(c: _Callee) -> bool:
+    if c.names & _REGEX_COMPILE:
+        return True
+    return (
+        c.lang == "python" and _last(c.name) == "_compile" and _last(c.leaf) in _PY_RE_MISS_LEAVES
+    )
+
+
+def _reflection_callee(c: _Callee) -> bool:
+    if c.lang == "go":
+        return c.name.startswith("reflect.")
+    return c.lang == "jvm" and _last(c.name) == "invoke" and _receiver(c.name) == "Method"
+
+
+def _path_callee(c: _Callee) -> bool:
+    if c.lang != "python" or not c.names & _PATH_PARSE:
+        return False
+    return bool(c.names & _PATH_INTERNALS) or _last(c.leaf) in _PATH_INTERNALS
+
+
+def _cgo_callee(c: _Callee) -> bool:
+    return c.name == _GO_CGO or (c.lang == "go" and c.leaf == _GO_CGO and c.leaf_leads)
+
+
+#: The lexicon, in order: the first rule that holds names a callee's family.
+#: ``other`` keeps the callee as a family of its own (its own row, or rendering).
+_RULES: tuple[tuple[str, Callable[[_Callee], bool]], ...] = (
+    ("own", lambda c: c.kind == "own"),
+    ("other", lambda c: c.kind == "repo"),
+    ("import", lambda c: c.kind == "import" or (c.lang == "python" and bool(c.names & _IMPORT_PY))),
+    ("sleep", lambda c: c.kind == "wait" and bool(c.names & _SLEEP)),
+    # A child-process wait, when a static finding says the function spawns one.
+    ("subprocess", lambda c: c.kind == "wait" and c.spawns and _last(c.name) in _CHILD_WAITS),
+    ("wait", lambda c: c.kind == "wait"),
+    ("spine", lambda c: bool(c.names & _SPINE)),
+    ("response_write", lambda c: bool(c.names & _RESPONSE_WRITE)),
+    ("database", lambda c: _database(c.name, c.lang)),
+    ("template_reread", lambda c: bool(c.names & _TEMPLATE_LOAD)),
+    (
+        "template_include",
+        lambda c: bool(c.names & _TEMPLATE_RENDER and c.leaf_names & _FS_METADATA),
+    ),
+    (
+        "template_reread",
+        lambda c: bool(c.names & _TEMPLATE_RENDER and c.leaf_names & _FILE_READ_LEAVES),
+    ),
+    ("other", lambda c: bool(c.names & _TEMPLATE_RENDER)),  # rendering itself is the work
+    ("etag", lambda c: bool(c.names & _ETAG)),
+    ("filesystem", _filesystem_callee),
+    ("hash", lambda c: bool(c.names & _HASH)),
+    ("subprocess", lambda c: _subprocess(c.name, c.lang)),
+    ("regex_compile", _regex_callee),
+    ("parse", lambda c: bool(c.names & _PARSE)),
+    ("deep_copy", lambda c: bool(c.names & _DEEP_COPY)),
+    ("map_build", lambda c: c.lang == "go" and bool(_GO_MAP.match(c.name))),
+    ("reflection", _reflection_callee),
+    ("path_parse", _path_callee),
+    ("package_metadata", lambda c: c.lang == "python" and bool(c.names & _PACKAGE_METADATA)),
+    # cgo time with nothing above it saying what it is.
+    ("unknown_native", _cgo_callee),
+)
+
+
 def _classify(callee: Mapping[str, Any], lang: str, own_static: Sequence[Mapping[str, Any]]) -> str:
     """The lexicon family of one ``inside`` item; ``other:<name>`` when none fits."""
-    name = str(callee.get("name") or "")
-    kind = callee.get("kind")
-    leaf = callee.get("leaf") if isinstance(callee.get("leaf"), Mapping) else None
-    leaf_name = str(leaf.get("name")) if leaf else ""
-    leaf_leads = bool(leaf) and (leaf.get("share") or 0.0) >= LEAF_LEADS * (
-        callee.get("share") or 0.0
-    )
-    names = _names(name)
-    if kind == "own":
-        return "own"
-    if kind == "repo":
-        return f"other:{name}"  # its own row says what it costs
-    if kind == "import" or (lang == "python" and names & _IMPORT_PY):
-        return "import"
-    if kind == "wait":
-        if names & _SLEEP:
-            return "sleep"
-        # A child-process wait, when a static finding says the function spawns one.
-        if _last(name) in _CHILD_WAITS and any(
-            f.get("boundary") == "subprocess" for f in own_static
-        ):
-            return "subprocess"
-        return "wait"
-    if names & _SPINE:
-        return "spine"
-    if names & _RESPONSE_WRITE:
-        return "response_write"
-    database = _database(name, lang)
-    if database:
-        return "database"
-    if names & _TEMPLATE_LOAD:
-        return "template_reread"
-    if names & _TEMPLATE_RENDER:
-        if leaf_name and _names(leaf_name) & _FS_METADATA:
-            return "template_include"
-        if leaf_name and _names(leaf_name) & _FILE_READ_LEAVES:
-            return "template_reread"
-        return f"other:{name}"  # rendering itself is the work
-    if names & _ETAG:
-        return "etag"
-    fs_leaf = bool(leaf_name) and bool(_names(leaf_name) & (_FS_METADATA | _DIR_WALK))
-    if names & (_FS_METADATA | _DIR_WALK | _FS_QUALIFIED) or (leaf_leads and fs_leaf):
-        return "filesystem"
-    if names & _FS_AMBIGUOUS and fs_leaf:
-        return "filesystem"
-    if names & _HASH:
-        return "hash"
-    if _subprocess(name, lang):
-        return "subprocess"
-    if names & _REGEX_COMPILE or (
-        lang == "python" and _last(name) == "_compile" and _last(leaf_name) in _PY_RE_MISS_LEAVES
-    ):
-        return "regex_compile"
-    if names & _PARSE:
-        return "parse"
-    if names & _DEEP_COPY:
-        return "deep_copy"
-    if lang == "go" and _GO_MAP.match(name):
-        return "map_build"
-    if lang == "go" and name.startswith("reflect."):
-        return "reflection"
-    if lang == "jvm" and _last(name) == "invoke" and _receiver(name) == "Method":
-        return "reflection"
-    if (
-        lang == "python"
-        and names & _PATH_PARSE
-        and (names & _PATH_INTERNALS or _last(leaf_name) in _PATH_INTERNALS)
-    ):
-        return "path_parse"
-    if lang == "python" and names & _PACKAGE_METADATA:
-        return "package_metadata"
-    if name == _GO_CGO or (lang == "go" and leaf_name == _GO_CGO and leaf_leads):
-        return "unknown_native"  # cgo time with nothing above it saying what it is
-    return f"other:{name}"
+    c = _read_callee(callee, lang, own_static)
+    family = next((family for family, holds in _RULES if holds(c)), "other")
+    return f"other:{c.name}" if family == "other" else family
 
 
 def _database(name: str, lang: str) -> bool:
@@ -671,20 +739,32 @@ def _loop_owner(
         return None
     lead = {d["symbol"] for d in drivers if d.get("symbol") and (d.get("share") or 0) >= DOMINANT}
     callers = {d["symbol"] for d in drivers if d.get("symbol")}
-    name = symbol.rsplit("::", 1)[-1]
-    for finding in findings:
-        if finding.get("kind") != "io_in_loop":
-            continue
-        path = finding.get("path") or []
-        # A loop that calls this function from one of its measured drivers, or
-        # calls the driver that holds most of its time.
-        if len(path) >= 2 and ((path[1] == symbol and path[0] in callers) or path[1] in lead):
-            return path[0]
-        # A loop written in a driver around a direct call to this function.
-        owner, sink = finding.get("owner"), finding.get("sink")
-        if owner in callers and sink and _last(str(sink).split("(")[0]) == name:
-            return owner
-    return None
+    loops = (f for f in findings if f.get("kind") == "io_in_loop")
+    owners = (
+        _loop_in_path(f, symbol, callers, lead) or _loop_around_call(f, symbol, callers)
+        for f in loops
+    )
+    return next((owner for owner in owners if owner), None)
+
+
+def _loop_in_path(
+    finding: Mapping[str, Any], symbol: str, callers: set[str], lead: set[str]
+) -> str | None:
+    """A loop (``path[0]``) that calls this function from one of its measured
+    drivers, or calls the driver that holds most of its time."""
+    path = finding.get("path") or []
+    if len(path) < 2:
+        return None
+    direct = path[1] == symbol and path[0] in callers
+    return path[0] if direct or path[1] in lead else None
+
+
+def _loop_around_call(finding: Mapping[str, Any], symbol: str, callers: set[str]) -> str | None:
+    """A loop written in a driver around a direct call to this function."""
+    owner, sink = finding.get("owner"), finding.get("sink")
+    if owner not in callers or not sink:
+        return None
+    return owner if _last(str(sink).split("(")[0]) == symbol.rsplit("::", 1)[-1] else None
 
 
 # --- words -------------------------------------------------------------------
@@ -697,7 +777,6 @@ class _Ctx:
     callees: Sequence[Mapping[str, Any]]
     share: float
     lead: Mapping[str, Any]
-    families: Mapping[str, float]
     drivers: Sequence[Mapping[str, Any]]
     loop: str | None
 
@@ -838,19 +917,25 @@ def _db_read(ctx: _Ctx) -> tuple[str, str]:
         else ""
     )
     why = f"{ctx.pct} of it is database work behind {what} each time it runs ({ctx.split}){note}"
+    return why, _db_read_next(ctx)
+
+
+def _db_read_next(ctx: _Ctx) -> str:
     if ctx.loop:
-        return why, (
-            f"it runs once per item of a loop in {_fn(ctx.loop)} (N+1): load the rows for all items in one query"
+        return (
+            f"it runs once per item of a loop in {_fn(ctx.loop)} (N+1): load the rows for all "
+            "items in one query"
+        )
+    top = max(ctx.drivers, key=lambda d: d.get("share") or 0.0) if ctx.drivers else {}
+    top_name = str(top.get("symbol") or top.get("name") or "")
+    if _MIDDLEWARE.search(top_name):
+        return (
+            f"it runs on every request from {_fn(top_name)}: cache the row by key or carry what the "
+            "handlers need in the session or token"
         )
     driver = _driver(ctx)
-    top = max(ctx.drivers, key=lambda d: d.get("share") or 0.0) if ctx.drivers else None
-    if top and _MIDDLEWARE.search(str(top.get("symbol") or top.get("name") or "")):
-        return why, (
-            f"it runs on every request from {_fn(str(top.get('symbol') or top.get('name')))}: cache the "
-            "row by key or carry what the handlers need in the session or token"
-        )
     by = f" (driven by {driver})" if driver else ""
-    return why, (
+    return (
         f"count the queries one request or run sends through it{by}; when it repeats with the same "
         "arguments, cache the result or load it once with its caller's data"
     )
