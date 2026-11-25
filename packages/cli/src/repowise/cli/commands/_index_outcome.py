@@ -143,6 +143,50 @@ def refresh_repo_contracts(repo_path: Any) -> None:
             f"  [dim]Contracts: {result.contracts} found, {result.links} linked "
             f"({time.monotonic() - start:.1f}s)[/dim]"
         )
+        try:
+            _print_contract_change(result)
+        except Exception:  # the diff is a report; it never fails the index
+            log.warning("repo_contracts_diff_failed", exc_info=True)
+
+
+#: Breaking changes named under the change line; the rest are counted.
+_BREAKING_DETAIL_LINES = 3
+
+
+def _print_contract_change(result: Any) -> None:
+    """One line on how this run moved the repo's contracts, then each break.
+
+    Silent on a first run, on a reuse, and when no contract end moved. A break
+    names the provider's service and the other services that call it, the
+    single-repo form of ``update --workspace``'s breaking-change line.
+    """
+    if result.previous is None or result.current is None:
+        return
+    from rich.markup import escape
+
+    from repowise.core.workspace.breaking_change import consumers_outside_service
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    change = diff_repo_contracts(result.previous, result.current)
+    if not change.changed:
+        return
+    if not change.breaking:
+        console.print(
+            f"  [dim]{change.changed} contract change(s); none breaks another service.[/dim]"
+        )
+        return
+    console.print(
+        f"  [yellow]![/yellow] {change.changed} contract change(s); "
+        f"{len(change.breaking)} break another service:"
+    )
+    for brk in change.breaking[:_BREAKING_DETAIL_LINES]:
+        callers = sorted({ic.service or ic.repo for ic in consumers_outside_service(brk)})
+        console.print(
+            f"    {escape(brk.contract_id)} [dim]({brk.kind.replace('_', ' ')})[/dim]  "
+            f"{escape(brk.provider_service or brk.provider_repo)} -> {escape(', '.join(callers))}"
+        )
+    if len(change.breaking) > _BREAKING_DETAIL_LINES:
+        console.print(f"    [dim]and {len(change.breaking) - _BREAKING_DETAIL_LINES} more[/dim]")
 
 
 def _in_repo_contracts_on(repo_path: Path) -> bool:

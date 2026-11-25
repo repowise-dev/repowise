@@ -29,14 +29,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from repowise.core.workspace.config import ContractConfig
 from repowise.core.workspace.contracts import (
     CONTRACTS_FILENAME,
     CONTRACTS_VERSION,
     ContractStore,
+    normalize_contract_id,
     write_contract_store,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.breaking_change import BreakingChange
 
 _log = logging.getLogger("repowise.workspace.repo_contracts")
 
@@ -63,6 +68,12 @@ class RepoContractsResult:
     contracts: int
     links: int
     path: Path
+    #: The rows a re-extraction replaced, when they were read the same way (same
+    #: settings, same index state); None on a first run, a reuse, or rows that
+    #: cannot be compared, so a diff only ever reflects a change in the code.
+    previous: ContractStore | None = None
+    #: The rows a re-extraction wrote; None when the stored rows were kept.
+    current: ContractStore | None = None
 
 
 async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
@@ -124,7 +135,64 @@ async def run_repo_contract_extraction(repo_path: Path) -> RepoContractsResult:
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_contract_store(store, out_path)
-    return RepoContractsResult(True, len(store.contracts), len(store.contract_links), out_path)
+    comparable = (
+        prior is not None
+        and prior.version == CONTRACTS_VERSION
+        and stamped.get("config_fp") == config_fp
+        and (stamped.get(INDEXED_KEY) == "1") == indexed
+    )
+    return RepoContractsResult(
+        True,
+        len(store.contracts),
+        len(store.contract_links),
+        out_path,
+        previous=prior if comparable else None,
+        current=store,
+    )
+
+
+@dataclass(frozen=True)
+class RepoContractChange:
+    """How a re-extraction moved the repo's contracts.
+
+    ``changed`` counts contract ends added, removed or changed in shape, on
+    either side. ``breaking`` holds one breaking change per contract with a
+    consumer in another service, the ones a caller in this repo will feel.
+    """
+
+    changed: int
+    breaking: list[BreakingChange]
+
+
+def diff_repo_contracts(previous: ContractStore, current: ContractStore) -> RepoContractChange:
+    """The workspace breaking-change diff, filtered by (repo, service).
+
+    A workspace gates on a consumer in another repo; inside one repo the
+    boundary that matters is the service, so a break counts only when a caller
+    outside the provider's own service is linked to it.
+    """
+    from .breaking_change import (
+        SEVERITY_BREAKING,
+        consumers_outside_service,
+        detect_breaking_changes,
+    )
+
+    def ends(store: ContractStore) -> set[tuple[str, str | None, str]]:
+        return {(c.role, c.service, normalize_contract_id(c.contract_id)) for c in store.contracts}
+
+    report = detect_breaking_changes(previous, current)
+    changed = (ends(previous) ^ ends(current)) | {
+        ("provider", c.provider_service, normalize_contract_id(c.contract_id))
+        for c in report.changes
+    }
+    # One entry per broken contract, counted in the same unit as ``changed``:
+    # a route that lost three fields is one break, named once.
+    breaking: dict[tuple[str, str | None, str], BreakingChange] = {}
+    for c in report.changes:
+        if c.severity == SEVERITY_BREAKING and consumers_outside_service(c):
+            key = (c.provider_repo, c.provider_service, normalize_contract_id(c.contract_id))
+            breaking.setdefault(key, c)
+    return RepoContractChange(changed=len(changed), breaking=list(breaking.values()))
 
 
 def _stamp_holds(
@@ -352,7 +420,9 @@ def _commits_leave_contracts_alone(
 
 __all__ = [
     "DIRTY_FP_KEY",
+    "RepoContractChange",
     "RepoContractsResult",
+    "diff_repo_contracts",
     "repo_contract_config",
     "repo_contracts_path",
     "run_repo_contract_extraction",
