@@ -706,9 +706,11 @@ def is_build_file(path: str) -> bool:
 # count is :func:`_is_docs_example`'s rule.
 _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
-# run the system (tooling below). Unlike ``support_paths`` these count only as
-# the first segment or under a docs root: ``src/pkg/examples/`` is as often
-# shipped code (an example registry, a runner) as a sample.
+# run the system (tooling below), plus the sample-app and playground names that
+# ``support_paths`` does not count, so ``is_example_path`` and this set disagree
+# on those. Unlike ``support_paths`` these count only as the first segment or
+# under a docs root: ``src/pkg/examples/`` is as often shipped code (an example
+# registry, a runner) as a sample.
 _EXAMPLE_TOKENS = (EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}) | {
     "sample-app",
     "sample-apps",
