@@ -223,6 +223,10 @@ class RepoIndex:
         """Stored ``code_origin`` by path the caller handed in, or ``None`` (read the session)."""
         return self._origins
 
+    def files(self) -> Collection[str]:
+        """Every file with parsed symbols (POSIX, repo-relative)."""
+        return self._by_file.keys()
+
     def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
         """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
         return self._by_file.get(rel_path, [])
