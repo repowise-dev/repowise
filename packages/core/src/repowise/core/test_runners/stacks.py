@@ -1412,6 +1412,37 @@ def _php(files: dict[str, str]) -> Stack:
         editor=_edit_phpunit,
     )
 
+
+def _swift() -> Stack:
+    return Stack(
+        "swift",
+        "swift test",
+        "swift",
+        ".build/debug/codecov/*.json",
+        test="swift test --enable-code-coverage",
+    )
+
+
+def _dart() -> Stack:
+    return Stack(
+        "dart",
+        "dart test",
+        "dart",
+        "coverage/lcov.info",
+        test="dart test --coverage=coverage",
+    )
+
+
+def _scala() -> Stack:
+    return Stack(
+        "scala",
+        "sbt test",
+        "sbt",
+        "target/scala-*/scoverage-report/scoverage.xml",
+        test="sbt coverage test coverageReport",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -1426,14 +1457,17 @@ _LANGUAGE_STACKS = {
     "rust": "rust",
     "java": "jvm",
     "kotlin": "jvm",
+    "scala": "scala",
     "csharp": "dotnet",
     "ruby": "ruby",
     "php": "php",
+    "swift": "swift",
+    "dart": "dart",
     "javascript": "node",
     "typescript": "node",
 }
 #: Most specific first; node last, as a root ``package.json`` is often tooling.
-_ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
+_ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "swift", "dart", "scala", "node")
 #: A builder returns None for a unit with nothing to test (a package with no test script).
 _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | None]] = {
     "python": _python,
@@ -1445,6 +1479,9 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | Non
     "dotnet": _dotnet,
     "ruby": _ruby,
     "php": lambda names, paths, files: _php(files),
+    "swift": lambda names, paths, files: _swift(),
+    "dart": lambda names, paths, files: _dart(),
+    "scala": lambda names, paths, files: _scala(),
     "node": lambda names, paths, files: _node(names, files),
 }
 #: What the registry's package-manifest glob matches, case and all.
