@@ -506,22 +506,7 @@ class _Tally:
             if not self._unmaintained[frames[k]]:
                 at = k
         for sid, k in last.items():
-            nxt = below[k]
-            if k == n - 1:
-                key, kind = ("own",), "own"
-                self._named.setdefault(key, {"name": "(own code)"})
-            elif nxt == k + 1:
-                key, kind = self._repo_key(frames[nxt], callee=True)
-            else:
-                # The unmaintained frames down to the next repo frame, or to the leaf.
-                segment = frames[k + 1 : nxt]
-                if any(self._wait[i] for i in segment):
-                    kind = "wait"
-                elif any(self._import[i] for i in segment):
-                    kind = "import"
-                else:
-                    kind = "native" if self._native[segment[0]] else "library"
-                key = self._frame_key(segment[0])
+            key, kind = self._callee(frames, k, below[k])
             self._inside.setdefault(sid, Counter())[key] += weight
             self._inside_kinds.setdefault((sid, key), Counter())[kind] += weight
             if kind != "own":
@@ -537,18 +522,33 @@ class _Tally:
                 continue
             self._drivers.setdefault(sid, Counter())[key] += weight
 
+    def _callee(self, frames: tuple[int, ...], k: int, nxt: int) -> tuple[tuple[Any, ...], str]:
+        """The callee below position *k* and its kind; *nxt* is the next repo frame below."""
+        if k == len(frames) - 1:
+            key = ("own",)
+            self._named.setdefault(key, {"name": "(own code)"})
+            return key, "own"
+        if nxt == k + 1:
+            return self._repo_key(frames[nxt], callee=True)
+        # The unmaintained frames down to the next repo frame, or to the leaf.
+        segment = frames[k + 1 : nxt]
+        return self._frame_key(segment[0]), self._unmaintained_kind(segment)
+
+    def _unmaintained_kind(self, segment: Sequence[int]) -> str:
+        """A run of frames nobody here maintains: a wait or an import anywhere in it,
+        else what its first frame is."""
+        if any(self._wait[i] for i in segment):
+            return "wait"
+        if any(self._import[i] for i in segment):
+            return "import"
+        return "native" if self._native[segment[0]] else "library"
+
     def _leaf_key(self, index: int) -> tuple[Any, ...]:
         """The frame a stack ended in, keyed like a callee, with its kind kept once."""
         if not self._unmaintained[index]:
             key, kind = self._repo_key(index, callee=True)
         else:
-            key = self._frame_key(index)
-            if self._wait[index]:
-                kind = "wait"
-            elif self._import[index]:
-                kind = "import"
-            else:
-                kind = "native" if self._native[index] else "library"
+            key, kind = self._frame_key(index), self._unmaintained_kind((index,))
         self._leaf_kind.setdefault(key, kind)
         return key
 
