@@ -330,3 +330,56 @@ async def test_a_missing_checkout_keeps_the_stored_rows(tmp_path: Path) -> None:
         assert len(await list_http_routes(index.session, index.repo_id)) == 1
     finally:
         await index.close()
+
+
+def test_a_bare_express_handler_binds_only_through_its_relative_import(tmp_path: Path) -> None:
+    (tmp_path / "handlers.js").write_text("export function list(req, res) {}\n")
+    (tmp_path / "index.js").write_text(
+        "import express from 'express';\n"
+        "import { list } from './handlers';\n"
+        "import { show } from 'some-package';\n"
+        "const app = express();\n"
+        "app.get('/a', list);\n"
+        "app.get('/b', show);\n"
+    )
+    # `show` is also the name of one unrelated function elsewhere in the repo.
+    index = _index(
+        _sym("handlers.js", "list", 1, 1), _sym("admin/view.js", "show", 1, 1), root=tmp_path
+    )
+    a, b = routes_from_contracts(
+        [
+            _provider("index.js", 5, framework="express", route="/a"),
+            _provider("index.js", 6, framework="express", route="/b"),
+        ],
+        index,
+        lambda rel: (tmp_path / rel).read_text(),
+    )
+    assert a.handler_symbol_id == "handlers.js::list"
+    assert (b.handler, b.handler_symbol_id) == ("show", None)
+
+
+async def test_a_failed_write_keeps_the_rows_and_clears_the_stamp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+
+    from repowise.core.persistence.crud import http_routes
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text(_APP)
+    index = await make_repo_index(repo, {})
+    session, repo_id = index.session, index.repo_id
+    try:
+        assert await refresh_route_table(session, repo_id, repo) == 1
+
+        async def broken(*_args, **_kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(http_routes, "replace_http_routes", broken)
+        with pytest.raises(RuntimeError):
+            await refresh_route_table(session, repo_id, repo, changed_paths=["app.py"])
+        assert len(await list_http_routes(session, repo_id)) == 1
+        assert await stored_routes_fingerprint(session, repo_id) is None
+    finally:
+        await index.close()

@@ -171,10 +171,10 @@ def _resolve_named(
 ) -> IndexedSymbol | None:
     """The one symbol *expr* names from *file_path*, nearest scope first.
 
-    The registering file, then for a JavaScript ``mod.fn`` the module ``mod``
-    is imported from, then for Go the file's package (its directory), then the
-    repo when the name is unique there. More than one candidate at a level is
-    no answer.
+    The registering file, then for JavaScript the relative module the name or
+    its qualifier is imported from, for Go the file's package (its directory),
+    and elsewhere the repo when the name is unique there. More than one
+    candidate at a level is no answer.
     """
     parts = _QUALIFIER_RE.split(expr)
     name = parts[-1]
@@ -182,10 +182,20 @@ def _resolve_named(
         local = _named_in(index.symbols_for_file(file_path), name)
         if local is not None:
             return local
-    if len(parts) > 1 and framework in _JS_ROUTERS:
-        # Only a relative module's member is followed; anything else is no answer.
-        target = _js_module_file(index, file_path, parts[0])
-        return _named_in(index.symbols_for_file(target), name) if target else None
+    if framework in _JS_ROUTERS:
+        # Only what a relative import names is followed: `mod.fn` off a whole
+        # module, or `fn` imported by name. A package or aliased spec is no answer.
+        imported = _js_import(index, file_path, parts[0])
+        if imported is None:
+            return None
+        target, exported = imported
+        if len(parts) == 1:
+            return (
+                None
+                if exported == "default"
+                else _named_in(index.symbols_for_file(target), exported)
+            )
+        return _named_in(index.symbols_for_file(target), name) if exported == "default" else None
     if framework == "go":
         # A bare name is the file's package (its directory); ``pkg.Fn`` is the
         # package directory named ``pkg``.
@@ -216,8 +226,8 @@ def _named_in(symbols: Iterable[IndexedSymbol], name: str) -> IndexedSymbol | No
     return found[0] if len(found) == 1 else None
 
 
-def _js_module_file(index: RepoIndex, file_path: str, local: str) -> str | None:
-    """The indexed file the module bound to *local* in *file_path* is, or None."""
+def _js_import(index: RepoIndex, file_path: str, local: str) -> tuple[str, str] | None:
+    """``(indexed file, exported name)`` *local* is imported as in *file_path*, or None."""
     from repowise.core.ingestion.framework_routes_js import (
         js_imports,
         module_key,
@@ -228,13 +238,11 @@ def _js_module_file(index: RepoIndex, file_path: str, local: str) -> str | None:
     if content is None:
         return None
     spec = js_imports(content).get(local)
-    if spec is None or spec[1] != "default":
-        return None  # a named import's member is not followed
-    module = resolve_module(file_path, spec[0])
-    if module is None:
+    module = resolve_module(file_path, spec[0]) if spec is not None else None
+    if spec is None or module is None:
         return None
     matches = [f for f in index.files() if module_key(f) == module]
-    return matches[0] if len(matches) == 1 else None
+    return (matches[0], spec[1]) if len(matches) == 1 else None
 
 
 def _js_handler_expression(content: str | None, line: int, path: str) -> str | None:
@@ -393,8 +401,15 @@ async def refresh_route_table(
         async with session.begin_nested():
             await stamp_routes_fingerprint(session, repo_id, None)
         return None
-    async with session.begin_nested():
-        await replace_http_routes(session, repo_id, routes, fingerprint)
+    try:
+        async with session.begin_nested():
+            await replace_http_routes(session, repo_id, routes, fingerprint)
+    except Exception:
+        # The savepoint put the old rows and their stamp back; clear the stamp
+        # so the next update reads again rather than trusting them.
+        async with session.begin_nested():
+            await stamp_routes_fingerprint(session, repo_id, None)
+        raise
     return len(routes)
 
 
