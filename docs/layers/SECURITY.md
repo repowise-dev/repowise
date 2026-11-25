@@ -47,7 +47,12 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `fixtures`, `__fixtures__`, `spec`, `specs`, `mock`, `mocks`, `__mocks__`,
 `example` or `examples`, is recorded at `low`. A non-secret finding in a
 script, tool, benchmark, migration or docs example is `low` too; a secret there
-keeps its severity. Nothing is scored or ranked. `security_sensitive_symbol` is
+keeps its severity, except a `hardcoded_password` in a docs example or sample,
+which is a demo login and is `low` (an API secret or a vendor key shape there
+stays high). A Gradle signing block's password is `low` when its `storeFile`
+is a keystore committed to the repository (on disk and not gitignored): the
+keystore is public, so the password guards nothing. Test material is decided by the file's code origin,
+so an Apex `@IsTest` class counts wherever it sits. Nothing is scored or ranked. `security_sensitive_symbol` is
 informational: it marks where security code lives, not a problem.
 
 | Kind | Severity | Matches |
