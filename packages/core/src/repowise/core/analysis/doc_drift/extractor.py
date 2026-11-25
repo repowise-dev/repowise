@@ -421,6 +421,7 @@ def extract_with_suppressed(
     ignore_file = False
     ignored_lines: set[int] = set()
     trail = _SectionTrail()
+    previous_line = ""
     for lineno, line in prose_lines(text):
         marker = "<!--" in line and _IGNORE_RE.search(_CODE_SPAN_RE.sub("", line))
         if marker:
@@ -436,11 +437,12 @@ def extract_with_suppressed(
         section = trail.trail()
         for extractor in _EXTRACTORS:
             for ref in extractor(line, lineno, doc_path):
-                ref = replace(ref, section=section)
+                ref = replace(ref, section=section, previous_context=previous_line.strip())
                 if ref in seen:
                     continue
                 seen.add(ref)
                 (suppressed if lineno in ignored_lines else out).append(ref)
+        previous_line = line
     if ignore_file:
         return [], sorted(out + suppressed, key=lambda ref: ref.line)
     return out, suppressed

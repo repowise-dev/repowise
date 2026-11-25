@@ -158,6 +158,23 @@ def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
     assert res.detail == "other-repository"
 
 
+def test_dotted_repository_name_does_not_end_the_sentence():
+    text = "In the acme/scanner.js repo, `src/x.py` handles it."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py")
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
+def test_previous_wrapped_line_is_considered_for_repository_context():
+    text = "In the acme/scanner repo,\n`src/x.py` handles it."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py")
+    assert ref.previous_context == "In the acme/scanner repo,"
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
 @pytest.mark.parametrize(
     "context",
     [
