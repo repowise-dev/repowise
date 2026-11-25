@@ -207,10 +207,20 @@ def _is_php_method_call(masked_source: str, match: re.Match[str]) -> bool:
     PHP's ``eval`` is a construct called bare, ``eval($code)``. After ``->``,
     ``?->`` or ``::`` it is a method, such as Redis ``EVAL`` running a Lua
     script (``$this->redis->eval($script)``, ``Redis::eval(...)``).
+
+    A ``->`` can also be the tail of a decrement: ``$n-->eval($x)`` is
+    ``($n--) > eval($x)``, a bare eval. PHP's lexer pairs a run of dashes into
+    ``--`` from the left, so the last dash before ``>`` starts an arrow only
+    when the run is odd.
     """
     eval_at = masked_source.rfind("eval", match.start(), match.end())
     before = masked_source[:eval_at].rstrip()
-    return before.endswith(("->", "::"))
+    if before.endswith("::"):
+        return True
+    if not before.endswith("->"):
+        return False
+    dashes = len(before[:-1]) - len(before[:-1].rstrip("-"))
+    return dashes % 2 == 1
 
 
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
