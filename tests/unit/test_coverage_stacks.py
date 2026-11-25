@@ -1178,3 +1178,86 @@ def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
                       "downloads/notes.txt": ""})
     assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
     assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+# ---------------------------------------------------------------------------
+# Test timings ride on the test command
+# ---------------------------------------------------------------------------
+
+_MOCHA = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+
+
+@pytest.mark.parametrize(
+    ("lock", "timed"),
+    [
+        # npm hands the flag to the script only after ``--``; pnpm reads ``pnpm test --x`` as its own.
+        ("package-lock.json", f"npx --yes c8 --reporter=lcov npm test -- {_MOCHA}"),
+        ("pnpm-lock.yaml", f"npx --yes c8 --reporter=lcov pnpm run test {_MOCHA}"),
+        ("yarn.lock", f"npx --yes c8 --reporter=lcov yarn test {_MOCHA}"),
+    ],
+)
+def test_mocha_writes_junit_through_its_own_xunit_reporter(lock, timed):
+    files = {"package.json": _package({"test": "mocha --check-leaks test/"}, devDependencies={"mocha": "11"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    assert stack.runner == "c8" and stack.junit_report == "junit.xml"
+    assert stack.with_junit(stack.test) == timed
+    # The runner's own line, for profiling the suite.
+    assert stack.suite == "mocha --check-leaks test/"
+
+
+def test_a_chained_command_takes_no_junit_flag():
+    stack = stacks.Stack("node", "jest", junit_report="junit.xml", junit_flag="--reporters=jest-junit")
+    assert stack.with_junit("npx c8 jest && npx c8 report") is None
+    assert stacks.Stack("java", junit_report="target/surefire-reports").with_junit("mvn verify") == "mvn verify"
+    assert stacks.Stack("go").with_junit("go test ./...") is None
+
+
+def test_go_writes_test2json_events_beside_its_coverage(tmp_path):
+    _write(tmp_path, {"go.mod": "module example.com/x\n\ngo 1.22\n", "x_test.go": "package x\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert stack.with_junit(stack.test) == "go test -coverprofile=coverage.out ./... -json > go-test.json"
+    assert stack.junit_report == "go-test.json"
+
+
+@pytest.mark.parametrize(
+    ("files", "report"),
+    [
+        ({"pom.xml": "<project><modules><module>a</module></modules></project>"},
+         "**/target/surefire-reports/*.xml"),
+        ({"build.gradle": "plugins { id 'java' }\n", "settings.gradle": "include 'a'\n"},
+         "**/build/test-results/test/*.xml"),
+    ],
+)
+def test_a_multi_module_jvm_build_reads_every_modules_reports(files, report):
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == report
+
+
+def test_pytest_with_per_test_contexts_runs_on_the_c_tracer(tmp_path):
+    _write(tmp_path, {"pyproject.toml": '[project]\nname = "app"\n', "app/__init__.py": "",
+                      "tests/test_app.py": "def test_x():\n    pass\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert "--cov-context=test" in stack.test
+    assert stack.environ() == {"COVERAGE_CORE": "ctrace"}
+
+
+def test_an_unknown_pinned_package_manager_is_refused_in_one_line():
+    files = {"package.json": _package(
+        {"test": "nub exec --node vitest run"}, packageManager="nub@0.8.3", devDependencies={"vitest": "^4.1.5"},
+    )}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    # No install is guessed; the runner runs through npx, which fails fast when it is missing.
+    assert (stack.package_manager, stack.requires) == ("nub", ())
+    assert stack.test.startswith("npx --no vitest run --coverage.enabled")
+    (note,) = stack.notes
+    assert note == ("`package.json` pins `nub` as its package manager, which Repowise does not know, so it "
+                    'prints no install: install the dependencies and `@vitest/coverage-v8@^4.1.5` with nub first.')
+    assert stack.suite == "vitest run" and stack.junit_report == "junit.xml"
+    assert "nub" in stack.setup[-1] and not any("cache:" in line for line in stack.setup)
+
+
+def test_an_unknown_package_manager_with_a_script_it_cannot_run_has_no_command():
+    files = {"package.json": _package({"test": "nub run build && nub exec --node vitest run"},
+                                      packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    assert stack.test == "" and stack.to_dict()["reason"].startswith("`package.json` pins `nub`")

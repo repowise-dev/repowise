@@ -87,7 +87,7 @@ def test_the_table_names_the_command_the_ingest_line_and_the_next_steps(repo: Pa
 
 
 def test_test_timings_name_the_environment_the_report_needs() -> None:
-    timings = {"flag": "--reporters=jest-junit", "env": "A={x}", "report": "junit.xml", "ingest": None}
+    timings = {"flag": "--reporters=jest-junit", "env": {"A": "{x}"}, "report": "junit.xml", "ingest": None}
     (line,) = evidence_cmd._timings_lines(timings)
     assert line == (
         "  test timings: add [cyan]--reporters=jest-junit[/cyan] to the test command "

@@ -1446,7 +1446,7 @@ writes nothing.
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local` |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pytest-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `junit`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--path` | Repo path. | cwd, or the workspace primary |
@@ -1501,11 +1501,15 @@ writes nothing.
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Each unit whose runner repowise knows also has
-  `test_timings`: the `flag` that makes its test command write JUnit XML (`null` for Maven and
-  Gradle, which write it by default), the `env` that command needs (`null` unless the runner reads
-  its report options from the environment, as jest-junit does; a Jest unit's `prerequisites` then
-  install `jest-junit` when the package lacks it), the `report` path and the `ingest` line. Test timings are
-  never a `next_call` step. Workload names and profile files of a unit below
+  `test_timings`: the `flag` that makes its test command write JUnit XML (`-json > go-test.json`
+  for Go; `null` for Maven and Gradle, which write it by default), the `env` that command needs as
+  name to value (`null` unless the runner reads its report options from the environment, as
+  jest-junit does; a Jest unit's `prerequisites` then install `jest-junit` when the package lacks
+  it), the `report` path, the `command` (the coverage command with the flag), the `workload` the
+  timings are stored under and the `ingest` line. `next_call`'s test step runs that `command` and
+  ingests both the coverage report and the timings; a step that needs environment variables
+  carries them under `env`, and the unit's `coverage.env` names what its coverage command needs
+  (`COVERAGE_CORE=ctrace` for pytest with per-test contexts). Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
   unit's own test install plus the profiler; a Python run that fails writes no profile, and the
   pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`

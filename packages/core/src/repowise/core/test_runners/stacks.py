@@ -115,6 +115,11 @@ class Stack:
     #: The variable that starts each test path in the report with the unit's directory, for a
     #: runner that writes paths relative to where it runs; repowise reads them repo-relative.
     junit_path_prefix: str = ""
+    #: ``NAME=value`` words ``test`` needs in its environment (any shell sets them its own way).
+    env: str = ""
+    #: The JavaScript test runner's own command line (``mocha --check-leaks test/``,
+    #: ``vitest run``) when the test script is that runner alone; empty otherwise.
+    suite: str = ""
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -134,6 +139,28 @@ class Stack:
         """:attr:`junit_env`, plus the unit's directory under :attr:`junit_path_prefix` below the root."""
         prefix = f"{self.junit_path_prefix}={quote_arg(self.root + '/')}" if self.junit_path_prefix and self.root else ""
         return " ".join(v for v in (self.junit_env, prefix) if v)
+
+    def environ(self) -> dict[str, str]:
+        """:attr:`env` as a mapping."""
+        return dict(word.split("=", 1) for word in self.env.split())
+
+    def junit_environ(self) -> dict[str, str]:
+        """:meth:`junit_vars` as a mapping, values unquoted, for a caller that sets the environment itself."""
+        env = dict(word.split("=", 1) for word in self.junit_env.split())
+        if self.junit_path_prefix and self.root:
+            env[self.junit_path_prefix] = self.root + "/"
+        return env
+
+    def with_junit(self, command: str) -> str | None:
+        """*command* writing the unit's JUnit XML (or ``go test -json``) too; None when it cannot.
+
+        None without a known report, and for a command chaining a second step
+        with ``&&`` (a c8 report): the flag goes at the end, which would hand
+        it to that step. The environment :meth:`junit_vars` names is the caller's.
+        """
+        if not self.junit_report or (self.junit_flag and "&&" in command):
+            return None
+        return f"{command} {self.junit_flag}" if self.junit_flag else command
 
     def report_paths(self) -> tuple[str, ...]:
         """The report globs, repo-relative."""
@@ -196,6 +223,8 @@ def _insert(line: str, *edits: tuple[int, str]) -> str:
 _PYTEST = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?(?:pytest|py\.test)(?![\w.-])")
 _PYTEST_ONE_FILE = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?pytest\s+(?:-\S+\s+)*\S+(?:\.py|::\S+)(?:\s|$)")
 _UV_RUN = re.compile(r"\buv\s+run\b")
+#: The coverage.py tracer that records dynamic (per-test) contexts on every Python.
+_CTRACE = "COVERAGE_CORE=ctrace"
 _ENV_RUN = re.compile(r"\b(poetry|pdm|hatch|pipenv)\s+run\b")
 
 
@@ -506,10 +535,14 @@ def _python(root: set[str], paths: list[str], files: dict[str, str], nested: tup
     # The standalone pip and hatch install lines already bring pytest-cov.
     test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
     requires = _run_lines(test.prepare) + installs
+    # coverage.py runs on sys.monitoring by default from Python 3.14, which records no per-test
+    # contexts and warns (an error under ``filterwarnings = error``); its C tracer records them.
+    env = _CTRACE if "--cov-context=test" in test.text else ""
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
         notes=tuple(notes), requires=requires, test_paths=tuple(tests.split()), test_ignores=ignores, pattern=_PYTEST,
         skip=_PYTEST_ONE_FILE, editor=editor, junit_report="junit.xml", junit_flag="--junitxml=junit.xml",
+        env=env,
     )
 
 
@@ -555,6 +588,13 @@ _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 #: runs it as it is: no environment, chain, quoting, expansion, redirection, comment, or a bare
 #: ``--`` that would turn the flags appended after it into test patterns.
 _PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
+#: The same, Mocha too: the runner's own command line, which ``node`` can run (:attr:`Stack.suite`).
+_PLAIN_SUITE = re.compile(r"(?:jest|vitest|mocha)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
+#: Mocha's own ``xunit`` reporter writes the JUnit XML, replacing the console reporter. Test
+#: paths are relative to where Mocha runs from Mocha 11.6 on; older releases write them
+#: absolute, and those tests keep their timing without a file.
+_MOCHA_JUNIT = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+_BARE_DASHES = re.compile(r"(?<!\S)--(?!\S)")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
 #: Where a trailing shell comment starts: the arguments a package manager appends land inside it.
@@ -662,12 +702,17 @@ def _root_add_flag(pm: str, workspace: bool, berry: bool) -> str:
     return {"pnpm": "-w", "yarn": "" if berry else "-W"}.get(pm, "")
 
 
-def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
+def _provider_package(deps: dict) -> str | None:
+    """The Vitest coverage provider to install, at the package's Vitest version; None when it has one."""
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
-        return ()
+        return None
     spec = str(deps.get("vitest") or "")
-    pkg = f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
-    return _dev_install(pm, pkg, workspace)
+    return f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
+
+
+def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
+    pkg = _provider_package(deps)
+    return _dev_install(pm, pkg, workspace) if pkg else ()
 
 
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
@@ -684,7 +729,10 @@ def _edit_script(
 ) -> CommandEdit:
     """Coverage for a package script whose *runner* is known."""
     if runner == "c8":
-        return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
+        # pnpm reads ``pnpm test --flag`` as its own option, so the JUnit flag appended later
+        # needs ``pnpm run test``.
+        run_word = [(m.start(3), "run ")] if m.group(1) == "pnpm" and not m.group(2) else []
+        return CommandEdit(_insert(line, (m.start(), _C8), *run_word), "coverage/lcov.info")
     if runner.startswith("report:"):
         # The tool keeps its raw data after the run, so its report command writes lcov from it.
         report = f" && npx --yes {runner[len('report:'):]} report --reporter=lcov"
@@ -753,7 +801,14 @@ def _node_manager(root: set[str], berry: bool) -> tuple[str, str]:
     return "npm", "npm ci" if "package-lock.json" in root else "npm install"
 
 
-def _node_setup(root: set[str], package: dict, pm: str, install: str) -> tuple[str, ...]:
+def _node_setup(root: set[str], package: dict, pm: str, install: str | None) -> tuple[str, ...]:
+    """The CI steps that set up Node and install the package; *install* None for a package
+    manager Repowise does not know, whose install is left to the workflow's author."""
+    if install is None:
+        version_file = next((f for f in (".nvmrc", ".node-version") if f in root), None)
+        return ("- uses: actions/setup-node@v4", "  with:",
+                f"    node-version-file: {version_file}" if version_file else "    node-version: lts/*",
+                f"# set up {pm} and install the dependencies with it here")
     setup: list[str] = []
     if pm == "pnpm":
         setup.append("- uses: pnpm/action-setup@v4")
@@ -879,9 +934,9 @@ def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, dep
     return _dev_install(pm, f"jest-junit@{_JEST_JUNIT_MAJOR}", workspace)
 
 
-def _node_junit(runner: str | None) -> dict[str, str]:
-    """The :class:`Stack` JUnit fields for *runner*."""
-    flag = _NODE_JUNIT_FLAGS.get(runner or "", "")
+def _node_junit(runner: str | None, mocha: str = "") -> dict[str, str]:
+    """The :class:`Stack` JUnit fields for *runner*; *mocha* is the flag when Mocha runs under c8."""
+    flag = mocha or _NODE_JUNIT_FLAGS.get(runner or "", "")
     jest = runner == "jest"
     return {
         "junit_report": "junit.xml" if flag else "",
@@ -925,9 +980,76 @@ def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
             f"script{'s' if len(hooks) > 1 else ''}.{first}",)
 
 
+def _suite(scripts: dict, deps: dict) -> str:
+    """:attr:`Stack.suite`: the test script past its exec wrapper (``nub exec --node vitest run``
+    is ``vitest run``) when that is a plain runner line, or the runner the package depends on
+    when it has no test script; ``""`` otherwise."""
+    name, _ = _test_script(scripts)
+    if name:
+        script = _EXEC_WRAPPER.sub("", _uncommented(str(scripts[name]))[0].strip())
+        return script if _PLAIN_SUITE.fullmatch(script) else ""
+    return "vitest run" if "vitest" in deps else "jest" if "jest" in deps else ""
+
+
+def _runs_mocha(scripts: dict) -> bool:
+    """Whether the test script's runner, the one c8 wraps, is Mocha."""
+    name, runner = _test_script(scripts)
+    if runner != "c8":
+        return False
+    return _command_words(_uncommented(str(scripts[name]))[0].split("&&")[-1])[:1] == ["mocha"]
+
+
+def _mocha_junit(pm: str, test: CommandEdit | None) -> str:
+    """Mocha's JUnit flag for *test*: after the ``--`` npm needs to hand it to the script."""
+    if test is None:
+        return ""
+    return ("-- " if pm == "npm" and not _BARE_DASHES.search(test.text) else "") + _MOCHA_JUNIT
+
+
+def _pinned_manager(package: dict) -> str | None:
+    """The package manager ``packageManager`` pins (``nub@0.8.3``) when Repowise does not know it."""
+    name = str(package.get("packageManager") or "").split("@", 1)[0].strip()
+    return name if name and name not in _NODE_EXEC else None
+
+
+def _pinned_node(root: set[str], package: dict, pinned: str, scripts: dict, deps: dict) -> Stack:
+    """A package whose pinned package manager Repowise does not know.
+
+    No install is printed: its commands are that tool's. The runner runs through
+    ``npx --no``, which fails at once on a runner that is not installed instead of
+    fetching one. With no plain runner line (:attr:`Stack.suite`) there is no command.
+    """
+    suite = _suite(scripts, deps)
+    head = suite.split()[0] if suite else None
+    setup = _node_setup(root, package, pinned, None)
+    needs = [f"`{pkg.strip(chr(34))}`" for pkg in (
+        _provider_package(deps) if head == "vitest" else None,
+        f"jest-junit@{_JEST_JUNIT_MAJOR}" if head == "jest" and "jest-junit" not in deps else None,
+    ) if pkg]
+    with_extra = f" and {' and '.join(needs)}" if needs else ""
+    refusal = (f"`package.json` pins `{pinned}` as its package manager, which Repowise does not know, "
+               f"so it prints no install: install the dependencies{with_extra} with {pinned} first.")
+    if head is None:
+        return Stack("node", None, pinned, setup=setup, notes=(
+            refusal[:-1] + ", then run the tests with an lcov reporter and JUnit XML.",))
+    if head == "mocha":
+        test, runner = f"{_C8}{suite}", "c8"
+    else:
+        base = f"npx --no {suite}"
+        test, runner = _edit_direct_runner(base, _NODE.search(base), head, "npm", deps, "").text, head
+    return Stack(
+        "node", runner, pinned, "coverage/lcov.info", setup=setup, test=test, notes=(refusal,),
+        suite=suite, **_node_junit(runner, _MOCHA_JUNIT if head == "mocha" else ""),
+    )
+
+
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
+    if pinned := _pinned_manager(package):
+        if not scripts.get("test") and not _suite(scripts, deps):
+            return None
+        return _pinned_node(root, package, pinned, scripts, deps)
     berry = _yarn_berry(root, package, files.get(_YARN_LOCK, ""))
     pm, install = _node_manager(root, berry)
     base, runner, hooks = _node_base(pm, scripts, deps)
@@ -948,7 +1070,8 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
                           reporter=bool(reporter), hooks=_hooks_note(pm, hooks)),
         # The install comes first: the runner and the coverage provider live in node_modules.
         requires=(install, *_run_lines(prepare)) if test else (), pattern=_NODE, editor=editor,
-        **_node_junit(runner),
+        suite=_suite(scripts, deps),
+        **_node_junit(runner, _mocha_junit(pm, test) if _runs_mocha(scripts) else ""),
     )
 
 
@@ -957,6 +1080,8 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
 # ---------------------------------------------------------------------------
 
 _GO = re.compile(r"(?<![\w-])go\s+test(?![\w-])")
+#: Where the Go test run writes its ``go test -json`` events, relative to the unit.
+_GO_TEST_JSON = "go-test.json"
 
 
 def _edit_go(line: str, m: re.Match) -> CommandEdit:
@@ -979,6 +1104,9 @@ def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
         "go", "go test", "go", "coverage.out",
         setup=("- uses: actions/setup-go@v5", "  with:", "    go-version-file: go.mod"),
         test="go test -coverprofile=coverage.out ./...", pattern=_GO, editor=_edit_go,
+        # test2json events on stdout; ``>`` reads the same in sh and PowerShell, and the
+        # reader takes the UTF-16 PowerShell 5 writes.
+        junit_report=_GO_TEST_JSON, junit_flag=f"-json > {_GO_TEST_JSON}",
     )
 
 
@@ -1042,8 +1170,9 @@ def _maven(root: set[str], files: dict[str, str]) -> Stack:
     return Stack(
         "java", "maven", "maven", reports, setup=(*_JAVA_SETUP, "    cache: maven"), test=test.text,
         notes=tuple(notes), pattern=_MVN, skip=_MVN_SKIP, editor=editor,
-        # Surefire writes one file per test class; a multi-module build writes one directory per module.
-        junit_report="" if "<modules>" in pom else "target/surefire-reports",
+        # Surefire writes one file per test class; a multi-module build writes one directory per
+        # module, which ``evidence add`` reads through the glob.
+        junit_report="**/target/surefire-reports/*.xml" if "<modules>" in pom else "target/surefire-reports",
     )
 
 
@@ -1105,7 +1234,7 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
         prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", workstation=workstation,
         pattern=_GRADLE,
         skip=re.compile(r"-x\s+test\b"), editor=partial(_edit_gradle, jacoco=jacoco, reports=reports),
-        junit_report="" if multi else "build/test-results/test",
+        junit_report="**/build/test-results/test/*.xml" if multi else "build/test-results/test",
     )
 
 

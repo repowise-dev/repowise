@@ -7,7 +7,9 @@ report lands, and the exact ``repowise`` line that ingests it, then the
 runtime targets worth profiling (:mod:`.runtime_setup`) and the JUnit XML
 report its tests can write for test timings. A report already on
 disk comes first. ``next_call`` is the sequence of steps an agent runs next,
-each with the directory it runs in. Nothing is written.
+each with the directory it runs in (and, for a step that needs it, the
+environment). Its test step writes the test timings with the coverage, so one
+run gives both. Nothing is written.
 """
 
 from __future__ import annotations
@@ -126,6 +128,8 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
         "package_manager": shown["package_manager"],
         "coverage": {
             "command": shown["command"],
+            # What the command needs in its environment, name to value (None: nothing).
+            "env": stack.environ() or None,
             "prerequisites": shown["prerequisites"],
             "reports": shown["reports"],
             "found": found,
@@ -140,7 +144,7 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
     }
 
 
-def _step(repo_root: Path, rel_dir: str, command: str) -> dict[str, str]:
+def _step(repo_root: Path, rel_dir: str, command: str) -> dict[str, Any]:
     return {"cwd": str(repo_root / rel_dir) if rel_dir else str(repo_root), "run": command}
 
 
@@ -158,21 +162,37 @@ def _found_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Run the first unit with a coverage command and ingest what it wrote."""
+def _coverage_call(
+    repo_root: Path, units: Sequence[dict[str, Any]], *, covered: bool, done: Collection[str]
+) -> dict[str, Any] | None:
+    """Run the first unit with a coverage command that still has something to measure, and ingest
+    what it wrote: the coverage report and, where the runner writes one, its test timings.
+
+    *covered*: coverage at this commit is stored, so only a unit whose test timings
+    are not (*done* lacks their workload) runs again.
+    """
     for unit in units:
         cov = unit["coverage"]
-        if cov["command"]:
-            where = unit["root"] or "the repository root"
-            return {
-                "purpose": f"Run the {unit['stack']} tests in {where} with coverage, then ingest the report.",
-                "steps": [
-                    *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
-                    _step(repo_root, unit["root"], cov["command"]),
-                    _step(repo_root, "", cov["ingest"]),
-                    _step(repo_root, "", COVERAGE_STATUS_COMMAND),
-                ],
-            }
+        timings = unit.get("test_timings") or {}
+        timed = bool(timings.get("command") and timings.get("ingest"))
+        if not cov["command"] or (covered and not (timed and timings["workload"] not in done)):
+            continue
+        where = unit["root"] or "the repository root"
+        run = _step(repo_root, unit["root"], timings["command"] if timed else cov["command"])
+        env = {**(cov["env"] or {}), **((timings["env"] or {}) if timed else {})}
+        if env:
+            run["env"] = env
+        return {
+            "purpose": f"Run the {unit['stack']} tests in {where} with coverage"
+            + (" and test timings, then ingest both." if timed else ", then ingest the report."),
+            "steps": [
+                *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
+                run,
+                _step(repo_root, "", cov["ingest"]),
+                *([_step(repo_root, "", timings["ingest"])] if timed else []),
+                _step(repo_root, "", COVERAGE_STATUS_COMMAND),
+            ],
+        }
     return None
 
 
@@ -286,22 +306,30 @@ def evidence_setup(
 
 
 def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
-    """How the unit's test run writes JUnit XML, and the line that ingests it; None when unknown.
+    """How the unit's test run writes JUnit XML (or ``go test -json``), and the line that
+    ingests it; None when unknown.
 
     ``flag`` is what to add to the unit's own test command (None: the runner
     writes the report by default); ``env`` is what that command needs in its
-    environment for the report (None: nothing). Test timings are never a step of
-    ``next_call``: they rank tests, they never decide anything.
+    environment for the report, name to value (None: nothing). ``command`` is
+    the unit's coverage command with the flag added, the one ``next_call`` runs,
+    so one run gives coverage and test timings (None when the flag cannot be
+    added to it). ``workload`` is the name the timings are stored under.
     """
     if not stack.junit_report:
         return None
     report = _joined(stack.root, stack.junit_report)
-    workload = f"{stack.root}: {stack.runner} tests" if stack.root else f"{stack.runner} tests"
+    # ``go test`` names Go's runner; the workload reads ``go tests``.
+    runner = (stack.suite.split() or [stack.runner or stack.language])[0].removesuffix(" test")
+    workload = f"{stack.root}: {runner} tests" if stack.root else f"{runner} tests"
+    command = stack.to_dict()["command"]
     return {
         "flag": stack.junit_flag or None,
-        "env": stack.junit_vars() or None,
+        "env": stack.junit_environ() or None,
         "report": report,
-        "ingest": evidence_ingest_line(report, workload, "unit_test", head) if head else None,
+        "command": stack.with_junit(command) if command else None,
+        "workload": workload,
+        "ingest": evidence_ingest_line(_report_arg(report), workload, "unit_test", head) if head else None,
     }
 
 
@@ -431,7 +459,7 @@ def _next_call(
     return (
         (None if covered else _found_call(root, planned))
         or _runtime_call(root, planned, done)
-        or (None if covered else _coverage_call(root, planned))
+        or _coverage_call(root, planned, covered=covered, done=done)
     )
 
 
