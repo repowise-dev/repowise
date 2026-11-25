@@ -52,6 +52,14 @@ BUILTIN_TYPES: frozenset[str] = frozenset(
     }
 )
 
+NODE_LOCK_FILES: tuple[str, ...] = (
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+)
+
 SPEC = LanguageSpec(
     tag="typescript",
     display_name="TypeScript",
@@ -72,7 +80,7 @@ SPEC = LanguageSpec(
     ),
     entry_point_patterns=("index.ts", "main.ts", "app.ts", "server.ts"),
     manifest_files=("package.json",),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=NODE_LOCK_FILES,
     generated_suffixes=("_pb.ts",),
     shebang_tokens=(),
     blocked_dirs=("node_modules", ".next", "dist", "build"),

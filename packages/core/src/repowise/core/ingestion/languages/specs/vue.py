@@ -18,6 +18,7 @@ TS/JS one that affects every object literal in every ``.ts``/``.js`` file.
 """
 
 from ..spec import LanguageSpec
+from .typescript import NODE_LOCK_FILES as _NODE_LOCK_FILES
 
 SPEC = LanguageSpec(
     tag="vue",
@@ -37,7 +38,7 @@ SPEC = LanguageSpec(
     manifest_files=("package.json", "vite.config.js", "nuxt.config.ts"),
     # Bundler config, not a package declaration — package.json is the root.
     build_config_manifests=("vite.config.js", "nuxt.config.ts"),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=_NODE_LOCK_FILES,
     blocked_dirs=("node_modules", ".nuxt", ".output", "dist", "build"),
     # Vue's compiler macros and template intrinsics. These are compiler
     # intrinsics, not user functions — they must never mint a call edge.

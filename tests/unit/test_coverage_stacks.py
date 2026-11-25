@@ -633,6 +633,17 @@ def test_a_yarn_member_adds_without_the_root_flag():
     assert stack.requires[-1] == 'yarn add -D "@vitest/coverage-v8@1"'
 
 
+def test_a_bun_member_installs_with_bun():
+    files = {"web/package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1"})}
+    (stack,) = detect_stacks(["bun.lock", "web/package.json"], files)
+    assert stack.package_manager == "bun"
+    assert stack.requires == ("bun install --frozen-lockfile", 'bun add -d "@vitest/coverage-v8@1"')
+
+    (stackb,) = detect_stacks(["bun.lockb", "web/package.json"], files)
+    assert stackb.package_manager == "bun"
+    assert stackb.requires == ("bun install --frozen-lockfile", 'bun add -d "@vitest/coverage-v8@1"')
+
+
 # ---------------------------------------------------------------------------
 # Fixtures, stubs and samples are not units
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """LanguageSpec for javascript (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
-from .typescript import BUILTIN_TYPES as _TS_BUILTIN_TYPES
+from .typescript import BUILTIN_TYPES as _TS_BUILTIN_TYPES, NODE_LOCK_FILES as _NODE_LOCK_FILES
 
 SPEC = LanguageSpec(
     tag="javascript",
@@ -14,7 +14,7 @@ SPEC = LanguageSpec(
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("index.js", "main.js", "app.js", "server.js"),
     manifest_files=("package.json",),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=_NODE_LOCK_FILES,
     generated_suffixes=("_pb.js",),
     shebang_tokens=("node",),
     blocked_dirs=("node_modules", "dist", "build"),
