@@ -183,6 +183,37 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
+def _owners(
+    all_files: Collection[str],
+    by_name: Mapping[str, list[str]],
+    tests_by_dir_and_name: Mapping[tuple[str, str], list[str]],
+) -> dict[str, set[str]]:
+    """Each test that belongs to some files of its name only: a sibling, else
+    the ones it mirrors most (:func:`tests_matching_by_name`)."""
+    owned_by: dict[str, set[str]] = {}
+    sources_by_name: dict[str, set[str]] = {}
+    for source in all_files:
+        dir_path, _, _ = source.rpartition("/")
+        for name in paired_test_names(source):
+            if source not in by_name.get(name, (source,)):
+                sources_by_name.setdefault(name, set()).add(source)
+            siblings = [t for t in tests_by_dir_and_name.get((dir_path, name), ()) if t != source]
+            for test in siblings:
+                owned_by.setdefault(test, set()).add(source)
+    unowned = (
+        (test, rivals)
+        for name, rivals in sources_by_name.items()
+        if len(rivals) > 1
+        for test in by_name[name]
+        if test not in owned_by
+    )
+    for test, rivals in unowned:
+        nearest = _mirrored_most(test, rivals)
+        if len(nearest) < len(rivals):
+            owned_by[test] = nearest
+    return owned_by
+
+
 def _mirrored_most(test: str, sources: Collection[str]) -> set[str]:
     """The *sources* sharing the most directory names with *test*; all of them on a tie at none."""
     dirs = set(test.split("/")[:-1])
@@ -214,23 +245,7 @@ def tests_matching_by_name(
         by_name.setdefault(name, []).append(path)
         tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
 
-    owned_by: dict[str, set[str]] = {}
-    sources_by_name: dict[str, set[str]] = {}
-    for source in all_files:
-        dir_path, _, _ = source.rpartition("/")
-        for name in paired_test_names(source):
-            if name in by_name and source not in by_name[name]:
-                sources_by_name.setdefault(name, set()).add(source)
-            for test in tests_by_dir_and_name.get((dir_path, name), ()):
-                if source != test:
-                    owned_by.setdefault(test, set()).add(source)
-    for name, tests in by_name.items():
-        rivals = sources_by_name.get(name, set())
-        for test in tests:
-            if test not in owned_by and len(rivals) > 1:
-                nearest = _mirrored_most(test, rivals)
-                if len(nearest) < len(rivals):
-                    owned_by[test] = nearest
+    owned_by = _owners(all_files, by_name, tests_by_dir_and_name)
     out: dict[str, ReachedBy] = {}
     for target in targets:
         found = [
