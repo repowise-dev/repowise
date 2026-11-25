@@ -21,6 +21,8 @@ store. Structure alone picks them, so the same index always draws the same map:
   terminal, an app, a web page the framework routes to), and one box per
   program that calls in. An entry point
   that looks like an API but serves no route is a person's way in.
+* Boxes that do not fit the budget are cut: the ways in and any part holding
+  a large share of the code stay first, then the largest parts.
 * Arrows are the import and call graph rolled up to boxes, plus the runtime
   links no import expresses (actor to entry point, HTTP client to route). An
   arrow carrying a large share of the dependencies is always drawn; the rest
@@ -57,6 +59,9 @@ _MAX_EDGES_PER_BOX = 2
 # An arrow carrying this share of the dependency weight is always drawn, and
 # drawn thick when it also stands out from a typical arrow.
 _HEAVY_SHARE = 0.1
+
+# Share of the mapped files a part must hold to rank with the ways in.
+_MAJOR_SHARE = 0.2
 
 # Share of a box's files that must declare HTTP routes for it to be the server.
 _ROUTE_SHARE = 0.05
@@ -203,9 +208,19 @@ def build_system_map(
     store_users = {s for s, t in graph.rolled if t == _STORE_ID}
     cap = MAX_NODES_OPENED if opened else MAX_NODES
     budget = cap - (1 if person else 0) - len(programs)
+    # A part holding a large share of the code ranks with the ways in: dozens of
+    # small apps a framework routes to (eval or sample sites) never push the
+    # product's main package off the map.
+    mapped = sum(len(units[u]) for u in tiers)
+    major = {u for u in tiers if len(units[u]) >= _MAJOR_SHARE * mapped}
     ranked = sorted(
         tiers,
-        key=lambda u: (u not in anchored, -len(units[u]), -_weight(units[u], weights), u),
+        key=lambda u: (
+            u not in anchored and u not in major,
+            -len(units[u]),
+            -_weight(units[u], weights),
+            u,
+        ),
     )
     # The store takes a slot only when a box that is drawn uses it.
     kept = ranked[: budget - 1] if store_users & set(ranked[: budget - 1]) else ranked[:budget]
