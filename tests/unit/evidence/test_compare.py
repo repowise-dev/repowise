@@ -348,3 +348,36 @@ def test_slower_workloads_lead() -> None:
     loud_rows = {"z" + k: v for k, v in loud_rows.items()}
     found = compare_runs([*quiet_runs, *loud_runs], {**quiet_rows, **loud_rows})
     assert [c.workload for c in found] == ["z bench", "go bench"]
+
+
+def test_a_path_never_makes_a_family() -> None:
+    runs, rows = [], {}
+    for i, (a, b) in enumerate([(100, 100), (101, 100), (99, 101), (160, 102)]):
+        run = _run(i, BASE if i < 3 else HEAD)
+        runs.append(run)
+        rows[run.id] = [
+            _bench(a, key="tests/test_a.py::test_one"),
+            _bench(b, key="tests/test_b.py::test_two"),
+        ]
+    [found] = compare_runs(runs, rows)
+    assert found.slower[0].family_geomean is None
+
+
+def test_a_pytest_parameter_makes_a_family() -> None:
+    runs, rows = [], {}
+    for i, (a, b) in enumerate([(100, 100), (101, 100), (99, 101), (160, 102)]):
+        run = _run(i, BASE if i < 3 else HEAD)
+        runs.append(run)
+        rows[run.id] = [
+            _bench(a, key="tests/test_a.py::test_one[1]"),
+            _bench(b, key="tests/test_a.py::test_one[2]"),
+        ]
+    [found] = compare_runs(runs, rows)
+    assert found.slower[0].family_geomean is not None
+
+
+def test_a_capped_range_has_no_count() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    history = History(ranges={(BASE, HEAD): [(HEAD, "x")]}, touched={}, truncated={(BASE, HEAD)})
+    [found] = compare_runs(runs, rows, history)
+    assert found.cause.commits_in_range is None

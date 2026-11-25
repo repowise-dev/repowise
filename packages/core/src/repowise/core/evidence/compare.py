@@ -152,6 +152,9 @@ class History:
     ranges: Mapping[tuple[str, str], Sequence[tuple[str, str | None]]] = field(default_factory=dict)
     touched: Mapping[str, Collection[str]] = field(default_factory=dict)
     callees: Mapping[str, Collection[str]] = field(default_factory=dict)
+    #: Pairs whose listing stopped at the host's cap: the count is unknown, and the
+    #: oldest commits are not listed.
+    truncated: Collection[tuple[str, str]] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -317,37 +320,17 @@ def _compare_benchmarks(
     ratios: dict[str, float] = {}
     for key, head in current[0].items():
         now = [r[key] for r in current if key in r]
-        # A band run in another unit or direction measured something else.
-        before = [
-            r[key]
-            for r in band
-            if key in r and (r[key].unit, _lower_better(r[key])) == (head.unit, _lower_better(head))
-        ]
+        before = _same_measure(head, [r[key] for r in band if key in r])
         if not before:
             continue
-        banded = len(before) >= MIN_BAND
-        for metric in EXACT_BENCHMARK_METRICS:
-            after_v = _pick(head, metric)
-            band_v = [v for r in before if (v := _pick(r, metric)) is not None]
-            if after_v is not None and band_v and after_v > max(band_v):
-                exact.append(Slower(metric, key, max(band_v), after_v, None, None, head.symbol_id))
+        exact.extend(_exact_growth(key, head, before))
         ratio = _time_ratio(now, before)
         if ratio is None:
             continue
         ratios[key] = ratio
-        floor = max(_floor(now), _spread(before, head)) if banded else PAIR_FLOOR
-        if ratio > floor and _apart(now, before, head):
-            (flagged if banded else hints).append(
-                Slower(
-                    "time",
-                    key,
-                    _median(before, "median"),
-                    _median(now, "median"),
-                    ratio,
-                    head.unit,
-                    head.symbol_id,
-                )
-            )
+        found = _time_flag(key, head, now, before, ratio)
+        if found is not None:
+            (flagged if len(before) >= MIN_BAND else hints).append(found)
     flagged = sorted(_with_families(flagged, ratios), key=lambda s: -(s.ratio or 0.0))
     hints = sorted(_with_families(hints, ratios), key=lambda s: -(s.ratio or 0.0))
     # Without a band time is only a hint to confirm; exact values need none.
@@ -356,6 +339,43 @@ def _compare_benchmarks(
     if hints:
         return "looks_slower", hints
     return "within_noise", []
+
+
+def _same_measure(head: Any, before: list[Any]) -> list[Any]:
+    """The band rows in *head*'s unit and direction: another one measured something else."""
+    measure = (head.unit, _lower_better(head))
+    return [r for r in before if (r.unit, _lower_better(r)) == measure]
+
+
+def _exact_growth(key: str, head: Any, before: Sequence[Any]) -> list[Slower]:
+    """Exact values (allocations per op) above every band run's."""
+    out = []
+    for metric in EXACT_BENCHMARK_METRICS:
+        after_v = _pick(head, metric)
+        band_v = [v for r in before if (v := _pick(r, metric)) is not None]
+        if after_v is not None and band_v and after_v > max(band_v):
+            out.append(Slower(metric, key, max(band_v), after_v, None, None, head.symbol_id))
+    return out
+
+
+def _time_flag(
+    key: str, head: Any, now: Sequence[Any], before: Sequence[Any], ratio: float
+) -> Slower | None:
+    """The benchmark's time item when it is past its bar with no overlap: the band
+    rule with :data:`MIN_BAND` band runs or more, the pair floor below that."""
+    banded = len(before) >= MIN_BAND
+    floor = max(_floor(now), _spread(before, head)) if banded else PAIR_FLOOR
+    if ratio <= floor or not _apart(now, before, head):
+        return None
+    return Slower(
+        "time",
+        key,
+        _median(before, "median"),
+        _median(now, "median"),
+        ratio,
+        head.unit,
+        head.symbol_id,
+    )
 
 
 def _floor(now: Sequence[Any]) -> float:
@@ -414,12 +434,17 @@ def benchmark_name(key: str) -> str:
 
 
 def _family(key: str) -> str | None:
-    """The family a sub-benchmark belongs to (``BenchmarkX`` of ``BenchmarkX/sub``,
-    ``test_x`` of ``test_x[param]``); ``None`` for a benchmark with no parameters."""
+    """The family a sub-benchmark belongs to (``BenchmarkX`` of a Go
+    ``BenchmarkX/sub``, ``test_x`` of ``test_x[param]``); ``None`` for a benchmark
+    with no parameters. Only the part after the last ``::`` is read, so a path's
+    ``/`` never makes a family."""
     name = benchmark_name(key)
-    for sep in ("/", "["):
-        if sep in name:
-            return key[: len(key) - len(name)] + name.split(sep, 1)[0]
+    head, sep, function = name.rpartition("::")
+    separators = ("/", "[") if function.startswith("Benchmark") else ("[",)
+    for mark in separators:
+        if mark in function:
+            prefix = key[: len(key) - len(name)] + head + sep
+            return prefix + function.split(mark, 1)[0]
     return None
 
 
@@ -440,49 +465,65 @@ def _with_families(flagged: list[Slower], ratios: Mapping[str, float]) -> list[S
     return out
 
 
+def _profile_comparable(sides: _Sides) -> bool:
+    """A CPU profile in seconds of a workload that is not a benchmark, against
+    :data:`MIN_BAND` runs or more of the same class, unit and value kind."""
+    head = sides.current[0]
+    measure = (head.unit, "cpu", head.workload_class)
+    return (
+        head.workload_class != "benchmark"
+        and head.value_kind == "cpu"
+        and head.unit in _SECONDS
+        and len(sides.band) >= MIN_BAND
+        and all((r.unit, r.value_kind, r.workload_class) == measure for r in sides.band)
+    )
+
+
 def _compare_profile(
     sides: _Sides, rows: Mapping[str, Sequence[Any]], origins: Mapping[str, str]
 ) -> tuple[Verdict, list[Slower]] | None:
     from repowise.core.ingestion.symbol_identity import file_of_symbol
 
-    head = sides.current[0]
-    per = _SECONDS.get(head.unit or "")
-    if (
-        head.workload_class == "benchmark"
-        or head.value_kind != "cpu"
-        or per is None
-        or len(sides.band) < MIN_BAND
-        or any(
-            (r.unit, r.value_kind, r.workload_class) != (head.unit, "cpu", head.workload_class)
-            for r in sides.band
-        )
-    ):
+    if not _profile_comparable(sides):
         return None
+    per = _SECONDS[sides.current[0].unit]
     current = _by_key(sides.current, rows, "symbol_id")
     band = _by_key(sides.band, rows, "symbol_id")
     total = statistics.median(float(r.total_value or 0.0) for r in sides.current)
+    if total <= 0:
+        return "within_noise", []
     flagged: list[Slower] = []
     for symbol_id in current[0]:
         if origins.get(file_of_symbol(symbol_id)) != "production":
             continue
         now = [v for r in current if (v := _pick(r.get(symbol_id), "self_value")) is not None]
-        before = [_pick(r.get(symbol_id), "self_value") for r in band]
-        # No row in a band run is unknown there, never zero: such a function is not compared.
-        if not now or any(v is None or v <= 0 for v in before):
-            continue
-        after_s = statistics.median(now)
-        if total <= 0 or after_s / total < MIN_PROFILE_SHARE:
-            continue
-        mid = statistics.median(before)  # type: ignore[type-var]
-        ratio = after_s / mid
-        if ratio > max(PAIR_FLOOR, max(before) / mid) and min(now) > max(before):  # type: ignore[type-var]
-            flagged.append(
-                Slower("self_seconds", symbol_id, mid * per, after_s * per, ratio, "s", symbol_id)
-            )
+        found = _self_seconds_flag(
+            symbol_id, now, [_pick(r.get(symbol_id), "self_value") for r in band], total, per
+        )
+        if found is not None:
+            flagged.append(found)
     if not flagged:
         return "within_noise", []
     flagged.sort(key=lambda s: -(s.after - s.before))
     return "slower", flagged
+
+
+def _self_seconds_flag(
+    symbol_id: str, now: list[float], before: list[float | None], total: float, per: float
+) -> Slower | None:
+    """A function's self time past the pair floor and the band's spread, with no
+    overlap. No row in a band run is unknown there, never zero: not compared."""
+    known = [v for v in before if v is not None and v > 0]
+    if not now or len(known) != len(before):
+        return None
+    after_s = statistics.median(now)
+    if after_s / total < MIN_PROFILE_SHARE:
+        return None
+    mid = statistics.median(known)
+    ratio = after_s / mid
+    if ratio <= max(PAIR_FLOOR, max(known) / mid) or min(now) <= max(known):
+        return None
+    return Slower("self_seconds", symbol_id, mid * per, after_s * per, ratio, "s", symbol_id)
 
 
 def _compare_suite(
@@ -608,7 +649,10 @@ def cause_for(
                     ChangedCommit(sha, subject, _pr(subject), tuple(hit[:MAX_FUNCTIONS]))
                 )
     return Cause(
-        base, head, len(listed) if listed is not None else None, tuple(commits[:MAX_COMMITS])
+        base,
+        head,
+        len(listed) if listed is not None and (base, head) not in history.truncated else None,
+        tuple(commits[:MAX_COMMITS]),
     )
 
 

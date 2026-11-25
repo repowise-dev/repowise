@@ -47,7 +47,8 @@ def git_range(
     repo_path: Path | str, base: str, head: str
 ) -> list[tuple[str, str, list[str]]] | None:
     """``base..head``'s commits ``(sha, subject, files)``, newest first, merges left out;
-    paths relative to *repo_path*. ``None`` when git cannot list the range."""
+    paths relative to *repo_path*; one past :data:`MAX_RANGE_COMMITS` at most, so a
+    caller can tell a capped listing. ``None`` when git cannot list the range."""
     from ..analysis.git_cli import run_git
 
     try:
@@ -57,7 +58,7 @@ def git_range(
                 "--no-merges",
                 "--relative",
                 "--name-only",
-                f"--max-count={MAX_RANGE_COMMITS}",
+                f"--max-count={MAX_RANGE_COMMITS + 1}",
                 "--format=%x1e%H%x1f%s",
                 f"{base}..{head}",
             ],
@@ -89,19 +90,24 @@ async def load_history(
     *benchmark_functions* from the graph."""
     ranges: dict[tuple[str, str], list[tuple[str, str | None]]] = {}
     files: dict[str, set[str]] = {}
+    truncated: set[tuple[str, str]] = set()
     if repo_path is not None:
         for base, head in pairs:
             # Off the event loop: a server answers other calls while git runs.
             listed = await asyncio.to_thread(git_range, repo_path, base, head)
             if listed is None:
                 continue
+            if len(listed) > MAX_RANGE_COMMITS:
+                # The newest commits only: the count is unknown past the cap.
+                truncated.add((base, head))
+                listed = listed[:MAX_RANGE_COMMITS]
             ranges[(base, head)] = [(sha, subject) for sha, subject, _ in listed]
             for sha, _, changed in listed:
                 for path in changed:
                     files.setdefault(path, set()).add(sha)
     touched = await _touched(session, repository_id, files)
     callees = await _callees(session, repository_id, benchmark_functions)
-    return History(ranges=ranges, touched=touched, callees=callees)
+    return History(ranges=ranges, touched=touched, callees=callees, truncated=truncated)
 
 
 async def _touched(
