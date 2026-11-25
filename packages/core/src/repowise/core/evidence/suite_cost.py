@@ -279,27 +279,16 @@ def excess_clusters(
                 by_file[path].append(test)
         total = sum(pool.values()) + unseen[1]
         size = len(pool) + unseen[0]
-        ranked: list[tuple[float, str, frozenset[str]]] = []
-        for path, tests in by_file.items():
-            n = len(tests)
-            # Of the tests still ranked: a file nearly all of them run separates nothing.
-            if n < MIN_CLUSTER_TESTS or n > MAX_REACH * size or n == size:
-                continue
-            inside = sum(pool[t] for t in tests)
-            ranked.append((inside - n * (total - inside) / (size - n), path, frozenset(tests)))
-        ranked.sort(key=lambda c: (-c[0], c[1]))
+        ranked = _ranked_files(by_file, pool, total, size)
         if not ranked or ranked[0][0] < MIN_EXCESS_S:
             break
         excess, _, members = _narrowest(ranked)
-        files = _run_by(by_file, members)
-        outer = ranked[0][2]
         inside = sum(pool[t] for t in members)
         slowest = sorted(members, key=lambda t: (-pool[t], t))[:CLUSTER_TESTS]
+        outer = ranked[0][2]
         clusters.append(
             {
-                "files": files[:CLUSTER_FILES],
-                "files_total": len(files),
-                "tests": len(members),
+                **_within(_run_by(by_file, members), len(members)),
                 "mean_s": _rounded(inside / len(members)),
                 "others_mean_s": _rounded((total - inside) / (size - len(members))),
                 "excess_s": _rounded(excess),
@@ -307,14 +296,29 @@ def excess_clusters(
                 "slowest": [{"test_id": t, "duration_s": pool[t]} for t in slowest],
                 "fixture": _shared_fixture(members, fixtures, users),
                 # The larger group it was narrowed from: code all of its tests run too.
-                "within": None
-                if outer == members
-                else _within(_run_by(by_file, outer), len(outer)),
+                "within": None if outer == members else _within(_run_by(by_file, outer), len(outer)),
             }
         )
         for test in members:
             del pool[test]
     return clusters
+
+
+def _ranked_files(
+    by_file: Mapping[str, list[str]], pool: Mapping[str, float], total: float, size: int
+) -> list[tuple[float, str, frozenset[str]]]:
+    """``(excess, file, its tests)`` per file, most excess first; *total* and *size*
+    are the seconds and tests still ranked, the ones the row cap cut included."""
+    ranked = []
+    for path, tests in by_file.items():
+        n = len(tests)
+        # Of the tests still ranked: a file nearly all of them run separates nothing.
+        if n < MIN_CLUSTER_TESTS or n > MAX_REACH * size or n == size:
+            continue
+        inside = sum(pool[t] for t in tests)
+        ranked.append((inside - n * (total - inside) / (size - n), path, frozenset(tests)))
+    ranked.sort(key=lambda c: (-c[0], c[1]))
+    return ranked
 
 
 def _run_by(by_file: Mapping[str, Collection[str]], group: frozenset[str]) -> list[str]:
