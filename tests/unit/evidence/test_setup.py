@@ -308,3 +308,15 @@ def test_the_test_step_sets_its_environment_in_the_step(tmp_path: Path) -> None:
     assert run["env"] == {"COVERAGE_CORE": "ctrace"} == plan["units"][0]["coverage"]["env"]
     # Never in the command text: sh and PowerShell spell an assignment differently.
     assert "COVERAGE_CORE" not in run["run"]
+
+
+def test_a_timings_report_written_at_head_ends_the_rerun(tmp_path: Path) -> None:
+    _python(tmp_path)
+    head = {"indexed": True, "head": "a" * 40, "coverage_commit": "a" * 40}
+    assert evidence_setup(tmp_path, **head)["next_call"] is not None
+
+    # The run wrote its report and the ingest was refused (every test errored, say):
+    # running the suite again would write the same, so the loop ends instead of repeating.
+    (tmp_path / "junit.xml").write_text("<testsuite/>")
+
+    assert evidence_setup(tmp_path, **head)["next_call"] is None

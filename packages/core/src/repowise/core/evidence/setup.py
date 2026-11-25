@@ -271,8 +271,14 @@ def evidence_setup(
             unit["test_timings"] = _test_timings(stack, head)
     covered = head is not None and coverage_commit == head
     done = _measured_at(runtime, head)
+    # A unit whose timings report on disk was written at this commit already ran its tests
+    # here: its ingest failed or was refused, and running the suite again changes nothing.
+    ran = {
+        unit["test_timings"]["workload"] for stack, unit in zip(stacks, planned, strict=True)
+        if covered and unit.get("test_timings") and _timings_ran(root, stack, head)
+    }
     next_call = _with_optional(
-        _next_call(root, planned, indexed=indexed, covered=covered, done=done),
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done, ran=ran),
         _optional_entry_points(planned, done),
     )
     if next_call is not None:
@@ -331,6 +337,17 @@ def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
         "workload": workload,
         "ingest": evidence_ingest_line(_report_arg(report), workload, "unit_test", head) if head else None,
     }
+
+
+def _timings_ran(repo_root: Path, stack: Stack, head: str | None) -> bool:
+    """Whether the unit's test timings report is on disk and was written at *head*."""
+    from ..analysis.health.coverage import discover_artifacts
+
+    report = _joined(stack.root, stack.junit_report)
+    pattern = report if report.endswith((".xml", ".json")) else f"{report}/*.xml"
+    found = discover_artifacts(repo_root, globs=[pattern])
+    rel = [p.resolve().relative_to(repo_root.resolve()).as_posix() for p in found]
+    return bool(rel) and _measures(repo_root, rel, head)
 
 
 def _offers_runtime(planned: Sequence[dict[str, Any]]) -> bool:
@@ -445,11 +462,18 @@ def _measured_at(runtime: RuntimeInputs | None, head: str | None) -> set[str]:
 
 
 def _next_call(
-    root: Path, planned: Sequence[dict[str, Any]], *, indexed: bool, covered: bool, done: set[str]
+    root: Path,
+    planned: Sequence[dict[str, Any]],
+    *,
+    indexed: bool,
+    covered: bool,
+    done: set[str],
+    ran: Collection[str] = (),
 ) -> dict[str, Any] | None:
     """Index first; then a report on disk, the best profile, the tests with coverage.
 
     *covered*: coverage at this commit is stored. *done*: workloads measured here.
+    *ran*: test-timing workloads whose report on disk was written at this commit.
     """
     if not indexed:
         return {
@@ -459,7 +483,7 @@ def _next_call(
     return (
         (None if covered else _found_call(root, planned))
         or _runtime_call(root, planned, done)
-        or _coverage_call(root, planned, covered=covered, done=done)
+        or _coverage_call(root, planned, covered=covered, done={*done, *ran})
     )
 
 
