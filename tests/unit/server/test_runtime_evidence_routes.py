@@ -241,6 +241,49 @@ async def test_functions_by_symbol_and_by_file(ev_client: AsyncClient, session_f
     ]
 
 
+@pytest.mark.asyncio
+async def test_functions_carry_the_next_step_with_a_production_loop_only(
+    ev_client: AsyncClient, session_factory
+) -> None:
+    import json
+
+    from repowise.core.persistence.models import HealthFinding
+
+    repo_id = await _repo(ev_client, session_factory)
+    await _seed(session_factory, repo_id)
+    inside = [{"name": "Session.execute", "kind": "library", "share": 0.9}]
+    drivers = [{"name": "list_users", "share": 1.0, "symbol": "src/api.py::list_users"}]
+
+    def finding(path: str, loop_path: list[str]) -> HealthFinding:
+        return HealthFinding(
+            repository_id=repo_id, file_path=path, biomarker_type="io_in_loop", severity="medium",
+            function_name=loop_path[0].rsplit("::", 1)[-1], dimension="performance", status="open",
+            reason="a database call is reached once per loop iteration",
+            details_json=json.dumps({"boundary_kind": "db", "cross_function": True, "path": loop_path}),
+        )
+
+    async with session_factory() as session:
+        await replace_symbol_hotness(session, repo_id, [{
+            "symbol_id": LOAD, "tier": "ranked", "run_id": "r1", "freshness": "current",
+            "workload_name": "w-r1", "workload_class": "entry_point",
+            "inside_json": json.dumps(inside), "drivers_json": json.dumps(drivers),
+        }])
+        # A loop in a test calls the driver: never an N+1 in the product.
+        session.add(finding("tests/test_api.py", ["tests/test_api.py::test_many", "src/api.py::list_users"]))
+        await session.commit()
+    base = f"/api/repos/{repo_id}/evidence/functions"
+    load = (await ev_client.get(base, params={"symbol_id": LOAD})).json()["functions"][0]
+    assert load["next_step"]["rule"] == "db_read"
+    assert "N+1" not in load["next_step"]["next"]
+    assert load["next_step"]["verify"].startswith("repowise perf measure --save before -- w-r1")
+
+    async with session_factory() as session:
+        session.add(finding("src/jobs.py", ["src/jobs.py::sync_all", "src/api.py::list_users"]))
+        await session.commit()
+    load = (await ev_client.get(base, params={"symbol_id": LOAD})).json()["functions"][0]
+    assert "loop in sync_all (N+1)" in load["next_step"]["next"]
+
+
 @pytest.mark.parametrize(
     ("status", "command"),
     [
@@ -380,13 +423,14 @@ async def test_routes_return_what_the_payload_builders_make_from_the_same_rows(
         view = await crud.measured_costs(session, repo_id, limit=10)
         none = await crud.measured_costs(session, repo_id, limit=10, run_id="nope")
         rows = await crud.hotness_for_symbols(session, repo_id, [], files=["src/auth/service.py"])
+        findings = await crud.step_findings(session, repo_id, rows.values())
         built = {
             "status": EvidenceStatusResponse(**status_payload(runs, status, HEAD)),
             "runs": EvidenceRunsResponse(**runs_payload(runs, HEAD)),
             "measured": MeasuredResponse(**measured_payload(view, status)),
             "measured?run_id=nope": MeasuredResponse(**measured_payload(none, status)),
             "functions?file=src/auth/service.py": MeasuredFunctionsResponse(
-                **functions_payload(rows)
+                **functions_payload(rows, findings)
             ),
         }
     for path, model in built.items():

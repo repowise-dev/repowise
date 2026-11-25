@@ -83,6 +83,7 @@ from .evidence import (
     replace_symbol_hotness,
     replace_workload_hotness,
     save_evidence_run,
+    step_findings,
     unranked_command,
     unranked_reason,
 )
@@ -269,6 +270,7 @@ __all__ = [
     "serialize_doc_drift_reference_row",
     "serialize_doc_drift_row",
     "sort_metrics_worst_first",
+    "step_findings",
     "store_plan_ranks",
     "stored_bodies",
     "summarize_confidence_rows",

@@ -377,6 +377,57 @@ async def hotness_for_symbols(
     return out
 
 
+async def step_findings(
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
+) -> list[dict[str, Any]]:
+    """The open performance findings a next step reads for *rows*
+    (``evidence.next_step``): those in the rows' files and their drivers' files,
+    and those whose call path names a row or a driver, as
+    :func:`~repowise.core.evidence.next_step.static_finding` dicts. Findings in
+    files that are not production code (``code_origin``) are left out, so a loop
+    in a test never reads as an N+1."""
+    import json
+
+    from ....evidence.ingest import load_origins
+    from ....evidence.next_step import static_finding
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ...models import HealthFinding
+
+    targets: set[str] = set()
+    for row in rows:
+        targets.add(row.symbol_id)
+        for driver in json.loads(getattr(row, "drivers_json", None) or "[]"):
+            if driver.get("symbol"):
+                targets.add(driver["symbol"])
+    if not targets:
+        return []
+    files = sorted({file_of_symbol(t) for t in targets})
+    named = sorted(targets)
+    found: dict[str, HealthFinding] = {}
+    for i in range(0, max(len(files), len(named)), _BATCH_SIZE):
+        clauses: list[Any] = []
+        if files[i : i + _BATCH_SIZE]:
+            clauses.append(HealthFinding.file_path.in_(files[i : i + _BATCH_SIZE]))
+        clauses += [HealthFinding.details_json.contains(json.dumps(t)) for t in named[i : i + _BATCH_SIZE]]
+        result = await session.execute(
+            select(HealthFinding).where(
+                HealthFinding.repository_id == repository_id,
+                HealthFinding.dimension == "performance",
+                HealthFinding.status == "open",
+                or_(*clauses),
+            )
+        )
+        found.update({f.id: f for f in result.scalars()})
+    origins = await load_origins(session, repository_id, {f.file_path for f in found.values()})
+    return [
+        static_finding(
+            f.file_path, f.function_name, f.biomarker_type, f.reason, json.loads(f.details_json or "{}")
+        )
+        for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
+        if origins.get(f.file_path) == "production"
+    ]
+
+
 async def ranked_by_workload(
     session: AsyncSession, repository_id: str
 ) -> list[tuple[EvidenceRun, list[WorkloadHotness]]]:
