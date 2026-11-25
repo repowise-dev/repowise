@@ -325,7 +325,7 @@ async def build_architecture_graph(
         langs: dict[str, int] = {}
         for m in members:
             sig = signals.get(m.node_id, EMPTY_SIGNALS)
-            if sig.is_hotspot:
+            if sig.shown_hotspot:
                 hotspot_count += 1
             if sig.is_dead:
                 dead_count += 1

@@ -269,3 +269,25 @@ def test_files_list_code_before_other_files_and_tests():
         "app/tests/helpers.py",
         "app/tests/test_models.py",
     ]
+
+
+@pytest.mark.asyncio
+async def test_directory_hotspot_count_leaves_out_held_origins(setup_mcp, session):
+    # The one hotspot under src/ is generated code: the hotspot list holds it
+    # out, so the directory card names no hotspot files (#6266).
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server import get_context
+
+    session.add(
+        HealthFileMetric(
+            repository_id=setup_mcp,
+            file_path="src/auth/service.py",
+            score=7.0,
+            nloc=10,
+            code_origin="generated",
+        )
+    )
+    await session.flush()
+
+    card = (await get_context(["src/"]))["targets"]["src/"]
+    assert "hotspot_files" not in card

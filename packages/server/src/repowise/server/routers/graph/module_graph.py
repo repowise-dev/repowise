@@ -90,7 +90,7 @@ async def module_graph(
         owner_tally: dict[str, int] = {}
         for n in module_file_nodes:
             sig = signals.get(n.node_id, EMPTY_SIGNALS)
-            if sig.is_hotspot:
+            if sig.shown_hotspot:
                 hotspot_count += 1
             if sig.is_dead:
                 dead_count += 1

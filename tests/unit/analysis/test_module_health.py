@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.analysis.module_health import ModuleAccumulator, aggregate_modules, summarize
+from repowise.core.analysis.module_health import (
+    ModuleAccumulator,
+    aggregate_modules,
+    detail_extras,
+    summarize,
+)
 
 
 def _file(path: str, *, owner: str, bus_factor: int = 1) -> dict:
@@ -97,3 +102,25 @@ def test_finding_density_keeps_the_existing_single_owner_penalty() -> None:
     assert summary["is_silo"] is True
     assert baseline["health_score"] == 72.5
     assert summary["health_score"] == pytest.approx(69.16666666666667)
+
+
+def test_hotspot_count_leaves_out_the_origins_the_hotspot_list_holds() -> None:
+    # A production hotspot, a test-origin one and a generated one (#6266): the
+    # hotspot list shows only the first, so the module counts only the first.
+    rows = [
+        {**_file("m/core.py", owner="Alice"), "is_hotspot": True, "code_origin": "production"},
+        {**_file("m/test_core.py", owner="Alice"), "is_hotspot": True, "code_origin": "test"},
+        {**_file("m/core_pb2.py", owner="Alice"), "is_hotspot": True, "code_origin": "generated"},
+    ]
+    summary = summarize(ModuleAccumulator(module_path="m", files=rows))
+    assert summary["hotspot_count"] == 1
+
+    # A row stamped before ``code_origin`` reads its origin off ``is_test``.
+    legacy = [{**_file("m/test_old.py", owner="Alice"), "is_hotspot": True, "is_test": True}]
+    assert summarize(ModuleAccumulator(module_path="m", files=legacy))["hotspot_count"] == 0
+
+    (acc,) = aggregate_modules(rows, [], [], []).values()
+    assert detail_extras(acc)["top_hotspots"] == ["m/core.py"]
+    # Held hotspots do not lower the score either: same score as one hotspot in three.
+    calm = [{**r, "is_hotspot": r["code_origin"] == "production"} for r in rows]
+    assert summarize(acc)["health_score"] == _module(calm, [], [])["health_score"]

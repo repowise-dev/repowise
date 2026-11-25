@@ -37,6 +37,9 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
+# The held sets live in an import-light module so the portable folds can count
+# hotspots without this one's imports; re-exported here for every existing caller.
+from repowise.core.analysis.held_origins import HELD_ORIGINS, MAP_HELD_ORIGINS, stored_origin
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 
 FindingStatus = Literal["validated", "provisional", "hidden"]
@@ -234,23 +237,6 @@ def is_estimated(kind: Any, details: Any) -> bool:
         except ValueError:
             return False
     return isinstance(details, Mapping) and details.get(COVERAGE_BASIS_KEY) == "estimated"
-
-#: The stored ``code_origin`` values a health finding is never served on.
-HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
-
-#: The stored ``code_origin`` values the area map leaves out until the reader
-#: brings them back: tests, docs examples, build files and data folders' code,
-#: plus everything no health finding is served on. Prose docs have no health
-#: row, so never appear.
-MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", "data", *HELD_ORIGINS)
-
-
-def stored_origin(code_origin: Any, is_test: Any) -> str:
-    """A row's origin, reading a row stamped before ``code_origin`` off ``is_test``."""
-    if isinstance(code_origin, str) and code_origin:
-        return code_origin
-    return "test" if is_test is True else "production"
-
 
 def map_held(include: Iterable[str]) -> frozenset[str]:
     """The origins the map holds out when the reader has brought back *include*."""
