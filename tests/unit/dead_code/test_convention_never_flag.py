@@ -122,10 +122,18 @@ def test_vendored_and_generated_files_are_never_flagged(path):
         "src/pkg/external/client.py",
         "x-pack/plugin/inference/src/main/java/org/x/external/Sender.java",
         "src/libraries/System.Runtime/src/System/DateTime.cs",
+        "Gemfile.rb",
+        "lib/Gemfile.rb",
     ],
 )
 def test_origin_near_misses_stay_flaggable(path):
     assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize("path", ["Gemfile", "apps/api/Gemfile"])
+def test_package_manifests_are_not_unreachable(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
 
 
 @pytest.mark.parametrize(

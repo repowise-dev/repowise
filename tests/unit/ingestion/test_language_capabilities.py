@@ -19,10 +19,25 @@ Two kinds of test live here:
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.kg_curation import _CODE_SUFFIXES
 from repowise.core.entry_candidacy import non_code_entry_languages
 from repowise.core.generation.tour import _ENTRY_FILENAME_STEMS
 from repowise.core.ingestion.languages.registry import REGISTRY
+
+
+@pytest.mark.parametrize("extension", [".rb", ".rake", ".jbuilder", ".gemspec"])
+def test_ruby_extensions(extension: str) -> None:
+    assert REGISTRY.from_extension(extension) == "ruby"
+
+
+@pytest.mark.parametrize(
+    "filename", ["config.ru", "Rakefile", "Gemfile", "Capfile", "Guardfile", "Vagrantfile"]
+)
+def test_ruby_special_filenames(filename: str) -> None:
+    assert REGISTRY.from_filename(filename) == "ruby"
+
 
 # ---------------------------------------------------------------------------
 # Parity goldens — derived unions == historical literals

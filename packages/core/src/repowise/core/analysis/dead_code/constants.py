@@ -1294,13 +1294,18 @@ def never_flag_match(path: str) -> bool:
 
 
 def never_flag_path(path: str) -> bool:
-    """The never-flag globs, plus vendored, generated and build files by path.
+    """The never-flag globs, plus vendored, generated, build and manifest files.
 
     A copied library or a generator's output is not this repository's to
     delete, whatever its importers look like, and a build tool runs a build
-    file by its name, so it has no importer by design.
+    file or package manifest by its name, so it has no importer by design.
     """
-    return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
+    return (
+        never_flag_match(path)
+        or is_vendored_or_generated_path(path)
+        or is_build_file(path)
+        or _LANG_REGISTRY.is_package_manifest(path)
+    )
 
 
 def _is_fixture_path(path: str) -> bool:

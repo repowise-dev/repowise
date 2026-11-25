@@ -6,7 +6,10 @@ Covers Python, TypeScript, Go, Rust, Java, C++ — one test class per language.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.traverser import FileTraverser
 from tests.unit.ingestion.parser._helpers import _make_file_info
 
 RUBY_SOURCE = b"""\
@@ -38,6 +41,21 @@ end
 
 
 class TestRubyParser:
+    def test_rake_file_is_discovered_and_parsed(self, parser: ASTParser, tmp_path: Path) -> None:
+        task = tmp_path / "lib" / "tasks" / "cleanup.rake"
+        task.parent.mkdir(parents=True)
+        task.write_bytes(
+            b"module Helper; def self.go; 1; end; end\n"
+            b"namespace :cleanup do; task :run do; Helper.go; end; end\n"
+        )
+
+        files = list(FileTraverser(tmp_path).traverse())
+        assert [f.path for f in files] == ["lib/tasks/cleanup.rake"]
+        assert files[0].language == "ruby"
+        result = parser.parse_file(files[0], task.read_bytes())
+        assert result.parse_errors == []
+        assert any(s.name == "Helper" and s.kind == "module" for s in result.symbols)
+
     def test_finds_class(self, parser: ASTParser) -> None:
         fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
         result = parser.parse_file(fi, RUBY_SOURCE)

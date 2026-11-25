@@ -15,10 +15,11 @@ SPEC = LanguageSpec(
     # Rails app/jobs/ (models/controllers/services are generic tokens already).
     layer_dir_hints=(("jobs", "Service"),),
     entry_point_patterns=("main.rb", "app.rb", "config.ru"),
-    extensions=frozenset({".rb"}),
-    # Rack's config.ru is Ruby with a .ru extension — without this mapping
-    # the traverser would skip it as unknown and the entry pattern is dead.
-    special_filenames=frozenset({"config.ru"}),
+    extensions=frozenset({".rb", ".rake", ".jbuilder", ".gemspec"}),
+    # Ruby scripts with conventional names rather than a Ruby extension.
+    special_filenames=frozenset(
+        {"config.ru", "Rakefile", "Gemfile", "Capfile", "Guardfile", "Vagrantfile"}
+    ),
     grammar_package="tree_sitter_ruby",
     scm_file="ruby.scm",
     heritage_node_types=frozenset({"class"}),
