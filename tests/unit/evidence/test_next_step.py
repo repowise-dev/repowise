@@ -464,3 +464,52 @@ def test_only_a_loop_finding_makes_a_database_read_an_n_plus_one() -> None:
     row = _row("a.py::read", [_c("Session.execute", "library", 0.9)], drivers, klass="entry_point")
     assert "N+1" not in next_step(row, "python", [lock]).next
     assert "N+1" in next_step(row, "python", [{**lock, "kind": "io_in_loop"}]).next
+
+
+def test_a_lock_wait_stays_silent_beside_a_subprocess_finding() -> None:
+    sub = static_finding(
+        "a.py",
+        "f",
+        "hot_path_sync_io",
+        "a blocking subprocess spawn",
+        {"boundary_kind": "subprocess"},
+    )
+    row = _row("a.py::f", [_c("RLock.acquire", "wait", 0.9)], klass="entry_point")
+    assert next_step(row, "python", [sub]) is None
+
+
+def test_only_a_transaction_named_function_reads_its_sql_as_a_commit() -> None:
+    drivers = [{"name": "each", "share": 1.0, "symbol": "a.py::each"}]
+    loop = static_finding(
+        "a.py",
+        "run",
+        "io_in_loop",
+        "a database call per item",
+        {"boundary_kind": "db", "path": ["a.py::run", "a.py::each"]},
+    )
+    read = _row(
+        "a.py::get_transaction",
+        [_c("Session.execute", "library", 0.9)],
+        drivers,
+        klass="entry_point",
+    )
+    assert next_step(read, "python", [loop]).rule == "db_read"
+    commit = _row(
+        "a.py::atomic", [_c("Session.execute", "library", 0.9)], drivers, klass="entry_point"
+    )
+    assert next_step(commit, "python", [loop]).rule == "db_write_loop"
+
+
+def test_a_loop_in_a_driver_around_a_direct_call_is_an_n_plus_one() -> None:
+    drivers = [{"name": "each", "share": 1.0, "symbol": "a.py::each"}]
+    direct = static_finding(
+        "a.py",
+        "each",
+        "io_in_loop",
+        "a database call runs once per loop iteration",
+        {"boundary_kind": "db", "sink_call": "self.db.load_row", "role_owner": "a.py::each"},
+    )
+    row = _row(
+        "a.py::load_row", [_c("Session.execute", "library", 0.9)], drivers, klass="entry_point"
+    )
+    assert "loop in each (N+1)" in next_step(row, "python", [direct]).next

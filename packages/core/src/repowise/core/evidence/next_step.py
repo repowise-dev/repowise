@@ -187,6 +187,8 @@ _RESPONSE_WRITE = frozenset(
     }
 )
 _SLEEP = frozenset({"sleep", "Sleep", "time.Sleep", "setTimeout"})
+# Calls that run or wait on a child process (``subprocess.run`` reads as a wait).
+_CHILD_WAITS = PY_SUBPROC_METHODS | {"communicate", "wait", "_wait", "_communicate", "waitpid"}
 _IMPORT_PY = frozenset({"_find_and_load", "_gcd_import", "import_module", "__import__"})
 _REGEX_COMPILE = frozenset({"regexp.MustCompile", "regexp.Compile", "Pattern.compile"})
 _PY_RE_MISS_LEAVES = frozenset({"parse", "_parse", "_parse_sub", "_code", "compile"})
@@ -341,7 +343,7 @@ _JVM_DB_VERBS = frozenset(
     {"find", "getResultList", "getSingleResult", "list", "uniqueResult", "executeQuery", "query"}
 )
 # A function whose own name says it ends a transaction: its SQL time is a commit.
-_TRANSACTION_NAME = re.compile(r"(?i)(?:^|_)(?:atomic|transaction|commit|savepoint)(?:$|_)")
+_TRANSACTION_NAME = re.compile(r"(?i)_?(?:atomic|transaction|commit|savepoint|release_savepoint)")
 _MIDDLEWARE = re.compile(r"(?i)middleware")
 
 # Static finding boundaries that agree with a callee family (S2).
@@ -543,7 +545,10 @@ def _classify(callee: Mapping[str, Any], lang: str, own_static: Sequence[Mapping
     if kind == "wait":
         if names & _SLEEP:
             return "sleep"
-        if any(f.get("boundary") == "subprocess" for f in own_static):
+        # A child-process wait, when a static finding says the function spawns one.
+        if _last(name) in _CHILD_WAITS and any(
+            f.get("boundary") == "subprocess" for f in own_static
+        ):
             return "subprocess"
         return "wait"
     if names & _SPINE:
@@ -634,7 +639,7 @@ def _database_family(callees: Sequence[Mapping[str, Any]], symbol: str) -> str:
     lead = max(callees, key=lambda c: c.get("share") or 0.0)
     if _last(str(lead.get("name"))) in _DB_WRITE_VERBS:
         return "db_write"
-    if _TRANSACTION_NAME.search(_last(symbol.rsplit("::", 1)[-1])):
+    if _TRANSACTION_NAME.fullmatch(_last(symbol.rsplit("::", 1)[-1])):
         return "db_write"
     return "db_read"
 
