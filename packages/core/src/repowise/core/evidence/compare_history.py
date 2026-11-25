@@ -12,8 +12,10 @@ only that it is slower.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import subprocess
 from collections.abc import Collection, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -61,7 +63,7 @@ def git_range(
             ],
             cwd=repo_path,
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         log.debug("git log %s..%s failed: %s", base, head, exc)
         return None
     if proc.returncode != 0:
@@ -89,7 +91,8 @@ async def load_history(
     files: dict[str, set[str]] = {}
     if repo_path is not None:
         for base, head in pairs:
-            listed = git_range(repo_path, base, head)
+            # Off the event loop: a server answers other calls while git runs.
+            listed = await asyncio.to_thread(git_range, repo_path, base, head)
             if listed is None:
                 continue
             ranges[(base, head)] = [(sha, subject) for sha, subject, _ in listed]
@@ -177,7 +180,8 @@ async def load_comparisons(
     runs = await list_evidence_runs(session, repository_id)
     wanted = runs_to_read(runs)
     rows = await _rows(session, runs, wanted, EVIDENCE_ROW_TABLES)
-    found = compare_runs(runs, rows)
+    origins = await _profile_origins(session, repository_id, runs, rows)
+    found = compare_runs(runs, rows, origins=origins)
     slower = [c for c in found if c.verdict == "slower"]
     if not slower:
         # Nothing to explain: no git call, no history read.
@@ -189,7 +193,24 @@ async def load_comparisons(
         s.symbol_id for c in slower if c.kind == "benchmark" for s in c.slower if s.symbol_id
     }
     history = await load_history(session, repository_id, repo_path, pairs, benchmark_functions)
-    return compare_runs(runs, rows, history)
+    return compare_runs(runs, rows, history, origins)
+
+
+async def _profile_origins(
+    session: Any, repository_id: str, runs: Sequence[Any], rows: dict[str, list[Any]]
+) -> dict[str, str]:
+    """``code_origin`` of every file a profile row names (stored per file, path fallback)."""
+    from ..ingestion.symbol_identity import file_of_symbol
+    from .ingest import load_origins
+
+    files = {
+        file_of_symbol(r.symbol_id)
+        for run in runs
+        if run.kind == "profile"
+        for r in rows.get(run.id, ())
+        if r.symbol_id
+    }
+    return await load_origins(session, repository_id, files) if files else {}
 
 
 async def benchmark_cause(

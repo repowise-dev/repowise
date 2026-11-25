@@ -22,7 +22,10 @@ T0 = datetime(2026, 11, 1, tzinfo=UTC)
 def _git(cwd, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
-        cwd=cwd, check=True, capture_output=True, text=True,
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
@@ -58,13 +61,20 @@ async def _seed(session, repo_id: str, base: str, head: str, plant: str) -> None
             make_wiki_symbol(repo_id, "tree.go", "getValue", start_line=3, end_line=3),
             make_wiki_symbol(repo_id, "bench_test.go", "BenchmarkRoute", start_line=1, end_line=5),
             GitFunctionBlame(
-                repository_id=repo_id, symbol_id="tree.go::getValue", file_path="tree.go",
-                function_name="getValue", start_line=3, end_line=3, mod_count=2,
+                repository_id=repo_id,
+                symbol_id="tree.go::getValue",
+                file_path="tree.go",
+                function_name="getValue",
+                start_line=3,
+                end_line=3,
+                mod_count=2,
                 commit_shas_json=json.dumps([plant, base]),
             ),
             GraphEdge(
-                repository_id=repo_id, source_node_id="bench_test.go::BenchmarkRoute",
-                target_node_id="tree.go::getValue", edge_type="calls",
+                repository_id=repo_id,
+                source_node_id="bench_test.go::BenchmarkRoute",
+                target_node_id="tree.go::getValue",
+                edge_type="calls",
             ),
         ]
     )
@@ -72,17 +82,31 @@ async def _seed(session, repo_id: str, base: str, head: str, plant: str) -> None
         run_id = f"r{i}"
         session.add(
             EvidenceRun(
-                id=run_id, repository_id=repo_id, run_key=run_id, kind="benchmark",
-                format="go-bench", source="cli", workload_name="go bench",
-                workload_class="benchmark", environment="ci", commit_sha=commit,
+                id=run_id,
+                repository_id=repo_id,
+                run_key=run_id,
+                kind="benchmark",
+                format="go-bench",
+                source="cli",
+                workload_name="go bench",
+                workload_class="benchmark",
+                environment="ci",
+                commit_sha=commit,
                 measured_at=T0 + timedelta(hours=i),
             )
         )
         session.add(
             EvidenceBenchmarkResult(
-                run_id=run_id, benchmark_key="pkg.BenchmarkRoute", repository_id=repo_id,
-                symbol_id="bench_test.go::BenchmarkRoute", unit="ns", lower_is_better=True,
-                median=median, min=median * 0.99, max=median * 1.01, allocs_per_op=0.0,
+                run_id=run_id,
+                benchmark_key="pkg.BenchmarkRoute",
+                repository_id=repo_id,
+                symbol_id="bench_test.go::BenchmarkRoute",
+                unit="ns",
+                lower_is_better=True,
+                median=median,
+                min=median * 0.99,
+                max=median * 1.01,
+                allocs_per_op=0.0,
             )
         )
     await session.flush()

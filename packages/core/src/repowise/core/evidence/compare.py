@@ -128,6 +128,8 @@ class Comparison:
     environment: str
     verdict: Verdict
     band_runs: int
+    #: The newest run, the one the comparison is about.
+    head_run_id: str
     current_runs: int
     base_commit: str | None
     head_commit: str | None
@@ -165,9 +167,12 @@ def _usable(run: Any) -> bool:
 def _sides(runs: Sequence[Any]) -> _Sides | None:
     """*runs* of one workload split into the current side and the band, or ``None``
     without an earlier run at another commit."""
-    ordered = sorted((r for r in runs if _usable(r)), key=_age_key, reverse=True)
-    if not ordered:
+    ordered = sorted(runs, key=_age_key, reverse=True)
+    # A partially mapped newest run is no basis: it is never compared, and an older
+    # run never speaks in its place.
+    if not ordered or not _usable(ordered[0]):
         return None
+    ordered = [r for r in ordered if _usable(r)]
     newest = ordered[0]
     current = [newest]
     rest = ordered[1:]
@@ -231,6 +236,7 @@ def compare_runs(
     runs: Iterable[Any],
     rows: Mapping[str, Sequence[Any]],
     history: History | None = None,
+    origins: Mapping[str, str] | None = None,
 ) -> list[Comparison]:
     """Each workload's newest run against its band, worst verdict first.
 
@@ -238,8 +244,10 @@ def compare_runs(
     ``workload_name``, ``workload_class``, ``environment``, ``commit_sha``,
     ``measured_at``/``ingested_at``, ``value_kind``, ``unit``, ``total_value``,
     ``mapping_partial``); *rows* maps a run id to its rows (the kind's table
-    columns), at least for :func:`runs_to_read`. A workload with no earlier run
-    at another commit has no comparison.
+    columns), at least for :func:`runs_to_read`. *origins* maps a file to its
+    ``code_origin``: a profile compares only production functions, so without it
+    no profile is compared. A workload with no earlier run at another commit has
+    no comparison.
     """
     runs = list(runs)
     reach_profiles = [rows.get(r.id, ()) for r in _bench_profiles(runs)]
@@ -252,7 +260,7 @@ def compare_runs(
         if kind == "benchmark":
             found = _compare_benchmarks(sides, rows)
         elif kind == "profile":
-            found = _compare_profile(sides, rows)
+            found = _compare_profile(sides, rows, origins) if origins is not None else None
         elif kind == "test_timing":
             found = _compare_suite(sides, rows)
         elif kind == "query_count":
@@ -279,6 +287,7 @@ def _comparison(sides: _Sides, verdict: Verdict, slower: list[Slower]) -> Compar
         environment=head.environment,
         verdict=verdict,
         band_runs=len(sides.band),
+        head_run_id=head.id,
         current_runs=len(sides.current),
         base_commit=sides.band[0].commit_sha,
         head_commit=head.commit_sha,
@@ -302,15 +311,21 @@ def _compare_benchmarks(
 ) -> tuple[Verdict, list[Slower]] | None:
     current = _by_key(sides.current, rows, "benchmark_key")
     band = _by_key(sides.band, rows, "benchmark_key")
-    banded = len(sides.band) >= MIN_BAND
     flagged: list[Slower] = []
+    hints: list[Slower] = []
     exact: list[Slower] = []
     ratios: dict[str, float] = {}
     for key, head in current[0].items():
         now = [r[key] for r in current if key in r]
-        before = [r[key] for r in band if key in r]
+        # A band run in another unit or direction measured something else.
+        before = [
+            r[key]
+            for r in band
+            if key in r and (r[key].unit, _lower_better(r[key])) == (head.unit, _lower_better(head))
+        ]
         if not before:
             continue
+        banded = len(before) >= MIN_BAND
         for metric in EXACT_BENCHMARK_METRICS:
             after_v = _pick(head, metric)
             band_v = [v for r in before if (v := _pick(r, metric)) is not None]
@@ -320,9 +335,9 @@ def _compare_benchmarks(
         if ratio is None:
             continue
         ratios[key] = ratio
-        floor = max(_floor(sides), _spread(before, head)) if banded else PAIR_FLOOR
+        floor = max(_floor(now), _spread(before, head)) if banded else PAIR_FLOOR
         if ratio > floor and _apart(now, before, head):
-            flagged.append(
+            (flagged if banded else hints).append(
                 Slower(
                     "time",
                     key,
@@ -333,23 +348,21 @@ def _compare_benchmarks(
                     head.symbol_id,
                 )
             )
-    flagged = _with_families(flagged, ratios)
-    flagged.sort(key=lambda s: -(s.ratio or 0.0))
-    if banded and (exact or flagged):
+    flagged = sorted(_with_families(flagged, ratios), key=lambda s: -(s.ratio or 0.0))
+    hints = sorted(_with_families(hints, ratios), key=lambda s: -(s.ratio or 0.0))
+    # Without a band time is only a hint to confirm; exact values need none.
+    if exact or flagged:
         return "slower", exact + flagged
-    # Without a band only exact values are a finding; time is a hint to confirm.
-    if exact:
-        return "slower", exact
-    if flagged:
-        return "looks_slower", flagged
+    if hints:
+        return "looks_slower", hints
     return "within_noise", []
 
 
-def _floor(sides: _Sides) -> float:
+def _floor(now: Sequence[Any]) -> float:
     """The least ratio a banded benchmark flags at: :data:`BAND_FLOOR` when two or more
     current runs at one commit pool their samples, :data:`PAIR_FLOOR` for one run
     (on a laptop one run of unchanged code drifted 1.45x with no overlap, P3 rerun)."""
-    return BAND_FLOOR if len(sides.current) >= 2 else PAIR_FLOOR
+    return BAND_FLOOR if len(now) >= 2 else PAIR_FLOOR
 
 
 def _median(rows: Sequence[Any], attr: str) -> float:
@@ -428,8 +441,10 @@ def _with_families(flagged: list[Slower], ratios: Mapping[str, float]) -> list[S
 
 
 def _compare_profile(
-    sides: _Sides, rows: Mapping[str, Sequence[Any]]
+    sides: _Sides, rows: Mapping[str, Sequence[Any]], origins: Mapping[str, str]
 ) -> tuple[Verdict, list[Slower]] | None:
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+
     head = sides.current[0]
     per = _SECONDS.get(head.unit or "")
     if (
@@ -437,7 +452,10 @@ def _compare_profile(
         or head.value_kind != "cpu"
         or per is None
         or len(sides.band) < MIN_BAND
-        or any(r.unit != head.unit or r.value_kind != "cpu" for r in sides.band)
+        or any(
+            (r.unit, r.value_kind, r.workload_class) != (head.unit, "cpu", head.workload_class)
+            for r in sides.band
+        )
     ):
         return None
     current = _by_key(sides.current, rows, "symbol_id")
@@ -445,6 +463,8 @@ def _compare_profile(
     total = statistics.median(float(r.total_value or 0.0) for r in sides.current)
     flagged: list[Slower] = []
     for symbol_id in current[0]:
+        if origins.get(file_of_symbol(symbol_id)) != "production":
+            continue
         now = [v for r in current if (v := _pick(r.get(symbol_id), "self_value")) is not None]
         before = [_pick(r.get(symbol_id), "self_value") for r in band]
         # No row in a band run is unknown there, never zero: such a function is not compared.
@@ -508,7 +528,15 @@ def _compare_queries(
         before = [b[key] for b in band if key in b]
         if before and after_v > max(before):
             flagged.append(
-                Slower("queries", f"{key[0]} {key[1]}", max(before), after_v, None, None, key[2])
+                Slower(
+                    "queries",
+                    f"{key[0]} {key[1]} at {key[2]}",
+                    max(before),
+                    after_v,
+                    None,
+                    None,
+                    key[2],
+                )
             )
     if not flagged:
         return "within_noise", []
@@ -619,7 +647,8 @@ def _item_words(item: Slower) -> str:
         return f"{name} {item.before:g} to {item.after:g} allocs/op"
     if item.metric == "queries":
         return f"{name} {item.before:g} to {item.after:g} statements"
-    unit = f"{item.unit}/op" if item.metric == "time" and item.unit else item.unit
+    per_op = item.metric == "time" and item.unit in _SECONDS
+    unit = f"{item.unit}/op" if per_op else item.unit
     text = f"{name} {item.ratio:.2f}x ({_amount(item.before, unit)} to {_amount(item.after, unit)})"
     if item.family_geomean is not None:
         text += f", family {item.family_geomean:.2f}x"

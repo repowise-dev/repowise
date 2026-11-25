@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -176,10 +177,14 @@ async def _slower_lines(session: Any, repository_id: str) -> list[str]:
     from repowise.core.evidence.compare_history import load_comparisons
     from repowise.core.persistence.models import Repository
 
-    repository = await session.get(Repository, repository_id)
-    found = await load_comparisons(
-        session, repository_id, getattr(repository, "local_path", None) or None
-    )
+    try:
+        repository = await session.get(Repository, repository_id)
+        found = await load_comparisons(
+            session, repository_id, getattr(repository, "local_path", None) or None
+        )
+    except Exception:  # the measured block stands without it
+        logging.getLogger(__name__).warning("Could not compare evidence runs.", exc_info=True)
+        return []
     return [comparison_line(c) for c in found if c.verdict == "slower"]
 
 

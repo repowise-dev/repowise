@@ -348,18 +348,17 @@ async def _compare_stored(
     from repowise.core.evidence.compare_history import load_comparisons
 
     try:
-        comparisons = await load_comparisons(session, repo_id, repo_path)
+        # A savepoint, so a failed read cannot abort the transaction holding the run.
+        async with session.begin_nested():
+            comparisons = await load_comparisons(session, repo_id, repo_path)
     except Exception:  # a comparison must never undo the stored run
         logging.getLogger(__name__).warning(
             "Could not compare the run with earlier runs.", exc_info=True
         )
         return None
+    # Only a comparison about the run just stored: a partially mapped run has none.
     for found in comparisons:
-        if (found.kind, found.workload, found.environment) == (
-            payload["kind"],
-            payload["workload"],
-            payload["environment"],
-        ):
+        if found.head_run_id == payload.get("run_id"):
             return comparison_payload(found)
     return None
 

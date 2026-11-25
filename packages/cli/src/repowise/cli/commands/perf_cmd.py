@@ -561,7 +561,9 @@ def _regression_causes(
                 return out
             session, repo_id = opened
             for name, benchmarks in sorted(keys.items()):
-                before, now = base["workloads"][name], head["workloads"][name]
+                before, now = base["workloads"].get(name), head["workloads"].get(name)
+                if before is None or now is None:
+                    continue
                 rows = await benchmark_results(session, [now["run_id"]])
                 functions = sorted(
                     {r.symbol_id for r in rows if r.benchmark_key in benchmarks and r.symbol_id}

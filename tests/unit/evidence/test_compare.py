@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace as NS
+from types import SimpleNamespace as NS  # noqa: N814
 
 from repowise.core.evidence.compare import (
     Cause,
@@ -25,18 +25,34 @@ GET_VALUE = "tree.go::node::getValue"
 
 def _run(i: int, commit: str, *, kind: str = "benchmark", workload: str = "go bench", **over):
     return NS(
-        id=f"r{i}", kind=kind, workload_name=workload, workload_class="benchmark",
-        environment="ci", commit_sha=commit, measured_at=T0 + timedelta(hours=i),
-        ingested_at=None, mapping_partial=False, value_kind=None, unit="ns", total_value=None,
+        id=f"r{i}",
+        kind=kind,
+        workload_name=workload,
+        workload_class="benchmark",
+        environment="ci",
+        commit_sha=commit,
+        measured_at=T0 + timedelta(hours=i),
+        ingested_at=None,
+        mapping_partial=False,
+        value_kind=None,
+        unit="ns",
+        total_value=None,
         **over,
     )
 
 
 def _bench(median: float, *, key: str = BENCH, spread: float = 0.01, allocs=0.0, **over):
     return NS(
-        benchmark_key=key, symbol_id=over.pop("symbol_id", BENCH_FN), unit="ns",
-        lower_is_better=over.pop("lower_is_better", True), median=median, min=median * (1 - spread),
-        max=median * (1 + spread), allocs_per_op=allocs, bytes_per_op=0.0, **over,
+        benchmark_key=key,
+        symbol_id=over.pop("symbol_id", BENCH_FN),
+        unit="ns",
+        lower_is_better=over.pop("lower_is_better", True),
+        median=median,
+        min=median * (1 - spread),
+        max=median * (1 + spread),
+        allocs_per_op=allocs,
+        bytes_per_op=0.0,
+        **over,
     )
 
 
@@ -138,8 +154,28 @@ def test_no_earlier_run_at_another_commit_means_no_comparison() -> None:
 def test_a_partially_mapped_run_never_counts() -> None:
     runs, rows = _series([100, 101, 99], [160])
     runs[-1].mapping_partial = True
-    # The newest usable run is a band run at BASE: nothing earlier at another commit.
+    # The newest run is partial: no comparison, and no older run speaks in its place.
     assert compare_runs(runs, rows) == []
+    # A partial band run is left out of the band.
+    runs, rows = _series([100, 101, 99, 100], [160])
+    runs[0].mapping_partial = True
+    [found] = compare_runs(runs, rows)
+    assert (found.band_runs, found.head_run_id) == (3, runs[-1].id)
+
+
+def test_a_benchmark_in_fewer_than_three_band_runs_only_looks_slower() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    for run in runs[:2]:
+        rows[run.id] = [_bench(100, key="gin.BenchmarkOther")]
+    [found] = compare_runs(runs, rows)
+    assert found.verdict == "looks_slower"
+
+
+def test_a_band_run_in_another_unit_is_not_compared() -> None:
+    runs, rows = _series([100, 101, 99], [160])
+    for run in runs[:3]:
+        rows[run.id][0].unit = "s"
+    assert compare_runs(runs, rows) == [] or compare_runs(runs, rows)[0].verdict == "within_noise"
 
 
 def test_a_family_reports_its_geomean_beside_a_flagged_member() -> None:
@@ -147,7 +183,10 @@ def test_a_family_reports_its_geomean_beside_a_flagged_member() -> None:
     for i, (a, b) in enumerate([(100, 100), (101, 100), (99, 101), (160, 102)]):
         run = _run(i, BASE if i < 3 else HEAD)
         runs.append(run)
-        rows[run.id] = [_bench(a, key="pkg.BenchmarkForm/small"), _bench(b, key="pkg.BenchmarkForm/big")]
+        rows[run.id] = [
+            _bench(a, key="pkg.BenchmarkForm/small"),
+            _bench(b, key="pkg.BenchmarkForm/big"),
+        ]
     [found] = compare_runs(runs, rows)
     [item] = found.slower
     assert item.name == "pkg.BenchmarkForm/small"
@@ -182,7 +221,7 @@ def test_a_benchmark_profile_says_what_the_benchmarks_ran() -> None:
     rows[profile.id] = [NS(symbol_id=GET_VALUE, self_value=5.0)]
     assert profile.id in runs_to_read(runs)
     history = History(ranges={(BASE, HEAD): [(HEAD, "plant")]}, touched={HEAD: {GET_VALUE}})
-    found = [c for c in compare_runs(runs, rows, history) if c.kind == "benchmark"][0]
+    found = next(c for c in compare_runs(runs, rows, history) if c.kind == "benchmark")
     assert found.cause.commits[0].functions == (GET_VALUE,)
 
 
@@ -206,19 +245,35 @@ def test_within_noise_reads_no_history() -> None:
     assert found.cause is None
 
 
-def _profile_series(band: list[float], current: list[float], *, value_kind: str = "cpu", cls="entry_point"):
+def _profile_series(
+    band: list[float], current: list[float], *, value_kind: str = "cpu", cls="entry_point"
+):
     runs, rows = [], {}
     for i, value in enumerate([*band, *current]):
         run = _run(i, BASE if i < len(band) else HEAD, kind="profile", workload="cli")
-        run.workload_class, run.value_kind, run.unit, run.total_value = cls, value_kind, "ms", 10_000.0
+        run.workload_class, run.value_kind, run.unit, run.total_value = (
+            cls,
+            value_kind,
+            "ms",
+            10_000.0,
+        )
         runs.append(run)
-        rows[run.id] = [NS(symbol_id=GET_VALUE, self_value=value), NS(symbol_id="a.py::cold", self_value=50.0)]
+        rows[run.id] = [
+            NS(symbol_id=GET_VALUE, self_value=value),
+            NS(symbol_id="a.py::cold", self_value=50.0),
+            NS(symbol_id="tests/t.py::helper", self_value=value),
+        ]
     return runs, rows
+
+
+ORIGINS = {"tree.go": "production", "a.py": "production", "tests/t.py": "test"}
 
 
 def test_a_profile_compares_cpu_self_seconds_against_three_runs() -> None:
     runs, rows = _profile_series([1000, 1050, 980], [2000])
-    [found] = compare_runs(runs, rows)
+    # Without code origins no profile function can be called production.
+    assert compare_runs(runs, rows) == []
+    [found] = compare_runs(runs, rows, origins=ORIGINS)
     assert found.verdict == "slower"
     [item] = found.slower
     assert (item.metric, item.name, item.unit) == ("self_seconds", GET_VALUE, "s")
@@ -227,9 +282,12 @@ def test_a_profile_compares_cpu_self_seconds_against_three_runs() -> None:
 
 
 def test_a_profile_never_compares_wall_time_benchmarks_or_a_short_band() -> None:
-    assert compare_runs(*_profile_series([1000, 1050, 980], [2000], value_kind="wall")) == []
-    assert compare_runs(*_profile_series([1000, 1050, 980], [2000], cls="benchmark")) == []
-    assert compare_runs(*_profile_series([1000, 1050], [2000])) == []
+    for runs, rows in (
+        _profile_series([1000, 1050, 980], [2000], value_kind="wall"),
+        _profile_series([1000, 1050, 980], [2000], cls="benchmark"),
+        _profile_series([1000, 1050], [2000]),
+    ):
+        assert compare_runs(runs, rows, origins=ORIGINS) == []
 
 
 def _suite_series(band: list[float], current: list[float]):
@@ -250,7 +308,12 @@ def test_a_suite_compares_the_seconds_of_the_tests_every_run_has() -> None:
     [found] = compare_runs(*_suite_series([100, 102, 98], [180]))
     assert found.verdict == "slower"
     [item] = found.slower
-    assert (item.metric, item.name, item.before, item.after) == ("suite_seconds", "2 tests", 100, 180)
+    assert (item.metric, item.name, item.before, item.after) == (
+        "suite_seconds",
+        "2 tests",
+        100,
+        180,
+    )
 
 
 def test_a_short_suite_stays_silent() -> None:
@@ -263,10 +326,17 @@ def test_query_counts_flag_on_any_increase() -> None:
     for i, count in enumerate([3, 3, 4]):
         run = _run(i, BASE if i < 2 else HEAD, kind="query_count", workload="api")
         runs.append(run)
-        rows[run.id] = [NS(scope_kind="test", scope_id="t::list", site_symbol_id="db.py::load", query_count=count)]
+        rows[run.id] = [
+            NS(
+                scope_kind="test",
+                scope_id="t::list",
+                site_symbol_id="db.py::load",
+                query_count=count,
+            )
+        ]
     [found] = compare_runs(runs, rows)
     assert found.verdict == "slower"
-    assert "test t::list 3 to 4 statements" in comparison_line(found)
+    assert "test t::list at db.py::load 3 to 4 statements" in comparison_line(found)
 
 
 def test_slower_workloads_lead() -> None:
