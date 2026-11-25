@@ -144,6 +144,9 @@ class TestScanFile:
             ("exec (payload)\n", {"exec_call"}),
             ("eval(\n    payload\n)\n", {"eval_call"}),
             ("builtins.eval(payload)\n", {"eval_call"}),
+            ("model.eval()\n", set()),
+            ("net.to(device).eval()\n", set()),
+            ("model = Net().to(device).eval()\n", set()),
             ("retrieval (payload)\n", set()),
             ("my_eval(payload)\n", set()),
             ("# eval(payload)\n", set()),
@@ -154,6 +157,20 @@ class TestScanFile:
     def test_python_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("calls.py", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("def broken(:\n    eval(payload)\n", {"eval_call"}),
+            ("def broken(:\n    builtins.eval(payload)\n", {"eval_call"}),
+            ("def broken(:\n    model.eval()\n", set()),
+            ("def broken(:\n    net.to(device).eval()\n", set()),
+            ("def broken(:\n    model = Net().to(device).eval()\n", set()),
+        ],
+    )
+    def test_python_syntax_error_eval_corpus(self, source: str, expected: set[str]) -> None:
+        findings = scan_source("broken.py", source)
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
 
     @pytest.mark.parametrize(

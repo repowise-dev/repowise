@@ -11,7 +11,7 @@ import re
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 7
+SECURITY_SCANNER_VERSION = 8
 
 
 def security_scanner_changed(state: dict) -> bool:
@@ -33,6 +33,18 @@ def security_scanner_changed(state: dict) -> bool:
 _CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (
         re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*eval\s*\("),
+        "eval_call",
+        "high",
+    ),
+    (
+        re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec\s*\("),
+        "exec_call",
+        "high",
+    ),
+]
+_PYTHON_CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    (
+        re.compile(r"(?<![\w$.])(?:builtins\s*\.\s*)?eval\s*\("),
         "eval_call",
         "high",
     ),

@@ -110,6 +110,7 @@ from repowise.core.analysis.security.patterns import (
     _KEYWORD_KINDS,
     _MASKED_KINDS,
     _PATTERNS,
+    _PYTHON_CALL_PATTERNS,
     _SECRET_SPECIFICITY,
     _SPANNING_PATTERNS,
     _SYMBOL_KEYWORDS,

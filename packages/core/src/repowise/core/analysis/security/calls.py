@@ -10,7 +10,7 @@ from repowise.core.pyparse import parse_python
 
 from .credentials import _snippet
 from .masking import source_lines
-from .patterns import _CALL_PATTERNS
+from .patterns import _CALL_PATTERNS, _PYTHON_CALL_PATTERNS
 
 # ``exec`` is not a global in JavaScript; the name belongs to
 # ``RegExp.prototype.exec``. The receiver-chain prefix above therefore matches
@@ -201,6 +201,18 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     return found
 
 
+def _python_ast_call_kind(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name) and func.id in {"eval", "exec"}:
+        return f"{func.id}_call"
+    if isinstance(func, ast.Attribute):
+        if func.attr == "eval" and isinstance(func.value, ast.Name) and func.value.id == "builtins":
+            return "eval_call"
+        if func.attr == "exec":
+            return "exec_call"
+    return None
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -226,17 +238,12 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                if isinstance(node.func, ast.Name):
-                    call_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    call_name = node.func.attr
-                else:
-                    continue
-                if call_name not in {"eval", "exec"}:
+                kind = _python_ast_call_kind(node)
+                if not kind:
                     continue
                 findings.append(
                     {
-                        "kind": f"{call_name}_call",
+                        "kind": kind,
                         "severity": "high",
                         # ast also breaks lines on a lone ``\r``, which git does
                         # not; such a line number can outrun the split.
@@ -257,7 +264,8 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         snippet = _snippet(lines[lineno - 1]) if lineno <= len(lines) else ""
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
-    for pattern, kind, severity in _CALL_PATTERNS:
+    call_patterns = _PYTHON_CALL_PATTERNS if is_python else _CALL_PATTERNS
+    for pattern, kind, severity in call_patterns:
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):

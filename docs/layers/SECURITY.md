@@ -57,7 +57,7 @@ informational: it marks where security code lives, not a problem.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
-| `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`) |
+| `eval_call` | high | `eval(...)` (in Python bare or `builtins.eval(...)`; in JS/TS including a receiver chain like `vm.eval(`) |
 | `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execSync`). `execFile` runs no shell and does not fire |
 | `pickle_loads` | high | `pickle.loads`, except a round trip of an own object (`pickle.loads(pickle.dumps(x))`) |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, also across lines |
