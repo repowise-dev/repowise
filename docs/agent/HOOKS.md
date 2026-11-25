@@ -28,7 +28,7 @@ For the exact settings entries each install writes, see the
 | **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it comes into force when that commit merges |
 | **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
 | **Health gate** (opt-in) | Claude Code | `repowise hook health-gate install` | `git commit` / `git push` via `Bash` / `PowerShell` | Runs `repowise health check` on what the command records and blocks it when the gate fails ([details](../start/CI.md#before-an-agent-commits-or-pushes)) |
-| **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
+| **Command rewrite (distill)** | Claude Code (on by default); Codex, Cursor (opt-in) | Claude Code: `repowise init` by default (`--no-distill-hook` skips it) and the Claude Code plugin; Codex and Cursor: `repowise hook rewrite install`, which adds them when `~/.codex` or `~/.cursor` exists | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
 | **Codex context and staleness** | Codex | `repowise init --codex` | SessionStart, edits, shell | Reminds Codex to use the MCP tools and flags stale context after git operations |
 
 Each agent hook records what it said and whether the agent acted on it. See
@@ -62,7 +62,7 @@ SessionStart hook tells the agent when the index falls behind.
 ## Claude Code agent hooks
 
 `repowise init` installs these into your global `~/.claude/settings.json`.
-Existing user hooks are preserved, and older repowise entries are updated in
+Existing user hooks are preserved, and repowise's own entries are updated in
 place on the next `init` or `update`. They all run the `repowise-augment` entry
 point, which does not load the full CLI.
 
@@ -303,7 +303,7 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
-| Claude Code | `PreToolUse` (rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
+| Claude Code | `PreToolUse` (rewrite, on by default) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |

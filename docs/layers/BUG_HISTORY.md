@@ -145,7 +145,7 @@ never more. To turn hooks off, see [HOOKS.md](../agent/HOOKS.md).
 - **The hook notice's effect on agent behaviour is unmeasured.**
 
 Benchmark method for the health model that reads these counts:
-[docs/BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects). The
+[docs/BENCHMARKS.md](../BENCHMARKS.md#code-health-that-predicts-bugs). The
 classifier misses, the inducing-commit measurement and the effect of filtering
 on the health score are in
 [architecture/bug-history.md](../architecture/bug-history.md#measurements).
@@ -172,6 +172,7 @@ MCP schemas: [`get_risk`](../agent/MCP_TOOLS.md#get_risk) and
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
 - [architecture/bug-history.md](../architecture/bug-history.md): the
   `fix_events` table, the rollup, and the SZZ findings.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the `prior_defect` marker that reads the

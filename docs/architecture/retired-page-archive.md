@@ -1,18 +1,18 @@
 # Retired Page Archive
 
 Structural page identities describe a particular file group. Regrouping retires
-that identity rather than assigning its history to a different subject. The live
-tables therefore contain only current pages and their own versions. Retirement
-must preserve old prose and human notes without reintroducing obsolete retrieval
-hits ([issue #4787](https://github.com/repowise-dev/repowise/issues/4787)).
+that identity instead of assigning its history to a different subject, so the
+live tables contain only current pages and their own versions. Retirement
+preserves old prose and human notes without bringing obsolete pages back into
+retrieval.
 
-`persistence/crud/page_archive.py` owns `retire_pages`. The existing
+`persistence/crud/page_archive.py` owns `retire_pages`. The
 `pipeline/persist/prune.py` deletion boundary delegates to it for every page
 sweep, including file-keyed selection and expired tombstones. Within
 the caller's existing transaction it captures each complete page and version
 record, transfers attributed notes to a valid successor, then deletes the live
 versions and page. A caller rollback undoes the archive, note transfer and
-deletions together. Existing post-commit FTS/vector retirement remains unchanged.
+deletions together. FTS and vector entries are retired after the commit.
 
 `page_archive` identifies a distinct retirement with a UUID, original page ID,
 repository, retirement time, reason and optional successor. `record_json` captures
@@ -30,9 +30,9 @@ sweep's protection and cannot claim coverage.
 
 The native HTTP and CLI readers share retirement summary/detail projections.
 Listings return identity metadata; exact detail reads return every captured
-column and all versions. The existing always-run retired-page sweep purges only
+column and all versions. The always-run retired-page sweep purges only
 that repository's events strictly older than 90 days, including their versions.
-Additive `init_db` reconciliation and Alembic revision `0121` create the schema.
+`init_db` reconciliation and Alembic revision `0121` create the schema.
 
 Alembic downgrade removes these tables; it is not a data-recovery operation.
 Before downgrading a populated store, preserve a complete database through
@@ -43,5 +43,6 @@ human notes and every version after restoration; an empty-schema rollback does
 not establish that guarantee.
 
 See [CLI reference](../reference/CLI_REFERENCE.md#repowise-pages-retired) and
-[API response contracts](../reference/API_REFERENCE.md). Restoring a retirement
-as live and an archive GUI are outside this change.
+[API response contracts](../reference/API_REFERENCE.md). The archive is
+read-only: a retirement is not restored as live, and the web UI has no archive
+view.

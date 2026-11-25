@@ -79,10 +79,12 @@ A PreToolUse hook rewrites noisy agent commands: `pytest -x` becomes
 (`permission: allow`). That is a bounded substitution, never a new command (see
 [Safety model](#safety-model-in-one-place)). Set `permission: ask` in
 `.repowise/config.yaml` to approve each rewrite. `repowise init` installs the
-hook by default: an interactive run asks (default: yes), and `--yes` or a run
-with no terminal installs it and prints how to turn it off. `--no-distill-hook`
-and `--no-editor-setup` leave it off, and a repo that opted out stays off. The
-Claude Code plugin ships the same hook. To manage it yourself:
+Claude Code hook by default: an interactive run asks (default: yes), and `--yes`
+or a run with no terminal installs it and prints how to turn it off.
+`--no-distill-hook` and `--no-editor-setup` leave it off, and a repo that opted
+out stays off. The Claude Code plugin ships the same hook. The Codex and Cursor
+entries are opt-in: `repowise hook rewrite install` adds them. To manage it
+yourself:
 
 ```bash
 repowise hook rewrite install

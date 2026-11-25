@@ -147,42 +147,6 @@ location only.
 A low finding count means the registry did not match. On most repos, in most
 languages, that is all it means.
 
-## In CI: `repowise security check`
-
-The PR surface. It needs git only: no index, no database, no API key, and it
-stores nothing.
-
-```bash
-repowise security check origin/main...HEAD
-repowise security check --fail-on med --format github
-repowise security check --format sarif > security.sarif
-```
-
-It judges what the change adds:
-
-- At the head, every touched file is scanned, and a finding counts only
-  when a line it spans was added or edited. In documentation files only the
-  secret kinds count.
-- Inside the change, every non-merge commit in the range is scanned for the
-  secret kinds. A key added in one commit and deleted in the next is reported
-  with the commit that added it.
-
-`--fail-on` sets the lowest failing severity (`high` by default, then `med`,
-`low`). Findings in test paths are `low`, so under the default they warn
-without failing. Exit codes: `0` passed, `1` failed, `2` could not evaluate
-(not a git repo, unknown revision, missing merge-base or commits in a shallow
-clone, unreadable baseline). A git error is never read as a clean change.
-
-Every format shows a secret by kind and location only, never a snippet:
-`table`, `json`, `markdown`, `github` (annotations plus job summary), `sarif`,
-`gitlab` (Code Quality) and the baseline file.
-In the Code Quality report a failing finding is `critical` when high and
-`major` otherwise; one below `--fail-on` is `minor`.
-
-Without a revspec, the base comes from the CI's pull-request variables, else
-the remote's default branch. The GitHub Action, GitLab template and SARIF
-upload are in [Repowise in CI](../start/CI.md).
-
 ## Tuning and suppressing
 
 ### Silencing one finding: `repowise-security-ignore`
@@ -238,6 +202,42 @@ index. `repowise hook install --security` runs it as a pre-commit hook that
 blocks a commit on a finding at or above `high`. Skip it once with
 `git commit --no-verify`. See
 [`repowise hook install`](../reference/CLI_REFERENCE.md#repowise-hook-install).
+
+## In CI: `repowise security check`
+
+The PR surface. It needs git only: no index, no database, no API key, and it
+stores nothing.
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --fail-on med --format github
+repowise security check --format sarif > security.sarif
+```
+
+It judges what the change adds:
+
+- At the head, every touched file is scanned, and a finding counts only
+  when a line it spans was added or edited. In documentation files only the
+  secret kinds count.
+- Inside the change, every non-merge commit in the range is scanned for the
+  secret kinds. A key added in one commit and deleted in the next is reported
+  with the commit that added it.
+
+`--fail-on` sets the lowest failing severity (`high` by default, then `med`,
+`low`). Findings in test paths are `low`, so under the default they warn
+without failing. Exit codes: `0` passed, `1` failed, `2` could not evaluate
+(not a git repo, unknown revision, missing merge-base or commits in a shallow
+clone, unreadable baseline). A git error is never read as a clean change.
+
+Every format shows a secret by kind and location only, never a snippet:
+`table`, `json`, `markdown`, `github` (annotations plus job summary), `sarif`,
+`gitlab` (Code Quality) and the baseline file.
+In the Code Quality report a failing finding is `critical` when high and
+`major` otherwise; one below `--fail-on` is `minor`.
+
+Without a revspec, the base comes from the CI's pull-request variables, else
+the remote's default branch. The GitHub Action, GitLab template and SARIF
+upload are in [Repowise in CI](../start/CI.md).
 
 ## Accuracy and limits
 
@@ -304,6 +304,9 @@ MCP schema: [`get_risk`](../agent/MCP_TOOLS.md#get_risk).
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
+- [architecture/security.md](../architecture/security.md): matching rules per
+  kind, baseline keys and the precision checks.
 - [CHANGE_RISK.md](CHANGE_RISK.md): the other CI gate on a change.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the Code Health page that hosts the
   Security tab.

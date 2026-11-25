@@ -8,8 +8,8 @@ Short version: Repowise is self-hosted by default. Your source code is read from
 disk, parsed in memory, and never persisted. The only content that leaves your
 infrastructure is what you send to your own LLM provider under your own key, and
 even that is optional. Anonymous CLI telemetry is the one outbound channel we
-add, it contains no code, paths, or repo names, and it has three independent
-off switches.
+add: it is on by default, anonymous and opt-out, it contains no code, paths, or
+repo names, and it has four independent off switches.
 
 - Open-source feature set: [README](../../README.md) · [docs/](..)
 - Commercial layer, on-prem topology, licensing: [COMMERCIAL.md](COMMERCIAL.md)
@@ -114,24 +114,19 @@ reversed to a person. Delete the file and a new, unrelated id is generated.
 REPOWISE_TELEMETRY_DEBUG=1 repowise status
 ```
 
-**Three independent ways to disable it**, any one of which is sufficient:
+**Four independent ways to disable it**, any one of which is sufficient:
 
 ```bash
 repowise telemetry disable        # persisted to ~/.repowise/platform.json
 export REPOWISE_TELEMETRY_DISABLED=1
 export DO_NOT_TRACK=1             # the cross-tool standard
+export REPOWISE_OFFLINE=1         # blocks all of repowise's own network calls
 ```
 
-Running fully offline (§2) also means nothing is sent. Check state with
-`repowise telemetry status`.
+Check state with `repowise telemetry status`.
 
 **Retention:** events are kept for 90 days, then deleted. Only aggregate figures
 are used or shared.
-
-Note that [COMMERCIAL.md §2](COMMERCIAL.md#2-what-ships-in-open-source-agpl-30)
-summarizes this as "zero telemetry". The precise statement is the one here and
-in the telemetry reference: anonymous, opt-out, no code or identifiers, three
-off switches.
 
 ---
 
@@ -145,12 +140,11 @@ off switches.
 | Outbound from your network | anonymous telemetry (disableable), your LLM provider | same, plus configured integrations | n/a, you are sending code to the platform |
 | Commercial security features (CVE triage, SBOM/VEX, hosted secret detection, compliance reports, audit trail) | not included (local pattern + full-history scan via `repowise security scan --history` is OSS) | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities-in-detail) | GA today |
 
-The honest framing: **several commercial security capabilities are GA on the
-hosted platform first.** If your requirement is on-prem *and* CVE-aware
-dependency analysis, SBOM/VEX, or compliance reporting, that sequencing is a
-scoping conversation, not a checkbox. The status of each capability (GA / in
-development / planned) is listed unvarnished in
-[COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance).
+**Several commercial security capabilities are GA on the hosted platform
+first.** If your requirement is on-prem *and* CVE-aware dependency analysis,
+SBOM/VEX, or compliance reporting, that sequencing is a scoping conversation, not
+a checkbox. The status of each capability (GA, or set up per deployment) is
+listed in [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance).
 
 **Secrets handling on the hosted secret-detection feature:** only a fingerprint
 and a redacted preview are stored, never the secret value.
@@ -174,16 +168,17 @@ Components:
 3. **Optional Ollama container** for fully-offline LLM use.
 4. **Webhook receivers** for GitHub Enterprise, GitLab self-managed, or Azure
    DevOps, configured per tracked repository.
-5. **SSO** through your existing Entra ID / Okta tenant, and **outbound
-   integrations** configured with signed service tokens held in the Repowise
-   secret store. Availability per [COMMERCIAL.md §5.2](COMMERCIAL.md#52-workflow-integrations-rolling-out).
+5. **SSO** through your existing Entra ID / Okta tenant, scoped and set up for
+   your deployment, and **outbound integrations** configured with signed service
+   tokens held in the Repowise secret store. Availability per
+   [COMMERCIAL.md §5.2](COMMERCIAL.md#52-workflow-integrations).
 
 **Air-gapped.** All services run inside your VPC or air-gapped network. The LLM
 provider and the git server sit inside the same boundary. **No outbound
-connectivity is required in air-gapped mode.** A packaged air-gapped install
-bundle (bundled grammars, embedding model, optional Ollama runtime) is on the
-roadmap and marked *planned* in COMMERCIAL.md; today an air-gapped install is
-assembled from the containers above rather than from a single bundle.
+connectivity is required in air-gapped mode.** An air-gapped install is
+assembled from the containers above; a packaged install bundle (bundled
+grammars, embedding model, optional Ollama runtime) is scoped and set up for your
+deployment.
 
 **Indexing cost profile, for capacity planning.** Graph, git, dead-code, and
 code-health layers build in minutes with zero LLM calls
@@ -202,21 +197,21 @@ implies otherwise without a report to read.
 What does exist:
 
 - **PCI-DSS 4.0 and SOC 2 control-coverage reports** are GA on the hosted
-  platform (Teams+). These are derived from live security findings with
+  platform (Teams plan). These are derived from live security findings with
   per-control evidence drill-ins and JSON / Markdown export. They are framed
   in-product and in every export as **coverage signals, not an audit or a
   certification**. Controls that automated findings cannot evidence are marked
   for manual attestation rather than silently passed.
 - **ISO 27001 Annex A** and **GDPR / data-residency mappings** are on the
-  extended roadmap, not shipped.
+  extended roadmap.
 - **SBOM (CycloneDX 1.6) with per-dependency license detection, plus VEX
-  export** is GA on the hosted platform (Pro+). SPDX and cross-format conversion
+  export** is GA on the hosted platform (Pro and Teams plans; see
+  [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance)). SPDX and cross-format conversion
   are roadmap.
 - **Audit trail** covering the hosted security surface (scans, vulnerability and
   secret views, SBOM/VEX exports, compliance views, finding-status changes, and
   MCP reads by AI agents) is insert-only with user, IP, and timestamp,
-  exportable to JSON/CSV, with an opt-in signed-webhook stream. Coverage beyond
-  the security surface is in development.
+  exportable to JSON/CSV, with an opt-in signed-webhook stream.
 - **Audit rights.** The commercial license grants you the right to audit
   Repowise's own security and compliance practices
   ([COMMERCIAL.md §7.1](COMMERCIAL.md#71-what-the-commercial-license-grants)).
@@ -240,15 +235,15 @@ own product and adds the layer above.
 | Can we run with no network access at all? | Yes. Ollama plus a local embedding model gives zero external API calls; disable telemetry and the process makes no outbound requests. In air-gapped mode the LLM provider and git server sit inside your boundary. |
 | Do you see our LLM API traffic? | No. BYOK calls go directly from your infrastructure to your provider. We do not proxy them. |
 | What is your data retention on LLM prompts? | Governed by your own provider contract (for example Anthropic's API zero-retention policy), not by us. |
-| What telemetry is sent, and can we turn it off? | Anonymous command names and coarse environment only, with no code, paths, repo names, flag values, IPs, or identifiers. Disable via `repowise telemetry disable`, `DO_NOT_TRACK=1`, `REPOWISE_TELEMETRY_DISABLED=1`, or by running offline. Verify the exact payload with `REPOWISE_TELEMETRY_DEBUG=1`. |
+| What telemetry is sent, and can we turn it off? | Anonymous command names and coarse environment only, with no code, paths, repo names, flag values, IPs, or identifiers. On by default; disable via `repowise telemetry disable`, `DO_NOT_TRACK=1`, `REPOWISE_TELEMETRY_DISABLED=1`, or `REPOWISE_OFFLINE=1`. Verify the exact payload with `REPOWISE_TELEMETRY_DEBUG=1`. |
 | How long is telemetry retained? | 90 days, then deleted. Only aggregates are used. |
 | Can telemetry be tied back to a user or a repo? | No. `anon_id` is a random UUID in `~/.repowise/platform.json`, not derived from any machine or user identifier, and no repo-identifying field is sent. |
 | Are you SOC 2 or ISO 27001 certified? | No. We publish PCI-DSS 4.0 and SOC 2 **control-coverage reports** on the hosted platform, explicitly labeled as coverage signals rather than an audit or certification. ISO 27001 Annex A mapping is roadmap. |
-| Can we deploy on-prem or air-gapped? | Yes. Containerized API, indexer workers, and dashboard, backed by Postgres and LanceDB/pgvector, with optional Ollama. No outbound connectivity is required in air-gapped mode. A single packaged air-gapped bundle is planned, not shipped. |
-| Do you support SSO and SCIM? | SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0) and SCIM provisioning are rolling out commercially. RBAC and multi-tenant are planned. Confirm current status against [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance). |
-| Is there an audit log? | On the hosted platform, insert-only, covering the security surface, with user, IP, and timestamp, JSON/CSV export, and an opt-in signed-webhook stream. Broader coverage is in development. |
+| Can we deploy on-prem or air-gapped? | Yes. Containerized API, indexer workers, and dashboard, backed by Postgres and LanceDB/pgvector, with optional Ollama. No outbound connectivity is required in air-gapped mode. A single packaged air-gapped bundle is scoped and set up for your deployment. |
+| Do you support SSO and SCIM? | SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0), SCIM provisioning, RBAC and multi-tenant segregation are scoped and set up for your deployment under the commercial license. See [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance). |
+| Is there an audit log? | On the hosted platform, insert-only, covering the security surface, with user, IP, and timestamp, JSON/CSV export, and an opt-in signed-webhook stream. |
 | Do you store secrets you find? | Only a fingerprint and a redacted preview. Never the secret value. |
-| What does the MCP server expose to an AI agent? | Read-only query tools over the local index. The lean MCP container exposes no ports and speaks stdio only. |
+| What does the MCP server expose to an AI agent? | Read-only query tools over the local index by default. Two opt-in tools go further when you enable them: `set_finding_status` writes a status (acknowledged, resolved or false positive) on a refactoring plan in the local index, and `generate_refactoring_code` calls your configured model to turn a refactoring plan into code and a diff. The lean MCP container exposes no ports and speaks stdio only. |
 | How is a shared server authenticated? | REST, MCP over HTTP (streamable HTTP and SSE) and webhooks resolve every caller to a principal. Scoped tokens in `~/.repowise/tokens.yaml` are stored as SHA-256 hashes, can expire, and can be limited to repositories and MCP tools. MCP HTTP serves an RFC 9728 protected-resource document. A server reachable from the network refuses requests until a key is set. See [API_REFERENCE.md §2](../reference/API_REFERENCE.md#2-authentication). |
 | Can we connect our own identity provider or directory? | Authentication, authorisation, team directory, change metadata and event delivery are named plugin seams. An installed plugin fills them without changes to the open-source code, and `repowise plugins` shows which implementation each seam uses. Managed SSO and SCIM are part of the commercial layer. |
 | Does AI attribution monitor developers? | No. By default only public markers already in git history are read. Edit capture is opt-in per agent and stores line hashes, never prompts, code or identities. `attribution.enabled: false` stores and shows nothing about AI. Reports count owners and reviewers and never rank or name them. See [ATTRIBUTION.md](../layers/ATTRIBUTION.md). |

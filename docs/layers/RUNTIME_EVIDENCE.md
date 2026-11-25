@@ -20,7 +20,7 @@ Stored evidence is read by `repowise evidence status` and `repowise evidence
 setup`. The static findings it sits beside are in
 [PERFORMANCE.md](PERFORMANCE.md).
 
-## The loop
+## Quick start
 
 Four commands, run from the repository root. `add` needs an index. On a
 repository with none, `setup` prints the coverage plan and a `next_call` of
@@ -81,12 +81,6 @@ read, a program with no profiler flag).
   profile even when the program throws or exits nonzero, so check the exit code
   before ingesting.
 - `repowise coverage setup` prints the same plan with the coverage part only.
-- `repowise evidence setup --write` also writes a CI file with one job per unit:
-  its tests with coverage and JUnit XML, on pull requests and pushes to the
-  default branch, the report and test results kept as artifacts. <!-- repowise-drift-ignore -->
-  `.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
-  (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one.
-  A different file already at that path is left alone and the command exits `1`.
 
 ### Python example
 
@@ -152,7 +146,7 @@ repowise evidence add .repowise/go-bench-results-work.txt --workload "go bench r
 
 ### Hand it to an agent
 
-The "Connect evidence" prompt hands an agent the loop rather than stack
+The "Connect evidence" prompt hands an agent the loop instead of stack
 commands, so the commands always come from `setup`:
 
 ```text
@@ -162,7 +156,9 @@ Connect runtime evidence to Repowise for this repository. From the repository ro
 From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
 returns the same text with the agent's role line before it.
 
-## `evidence add`
+## Reading the results
+
+### `evidence add`
 
 ```bash
 repowise evidence add .repowise/app.speedscope.json --workload "app" --class entry_point --commit $(git rev-parse HEAD)
@@ -204,7 +200,7 @@ result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `environment
 `rows_written`, `truncated` and `runs_pruned`. Every flag:
 [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
 
-### Several profiles of one run
+#### Several profiles of one run
 
 A profile of one process misses the work of the processes it starts. When a
 run has workers, profile each process and pass every file to one `evidence
@@ -233,8 +229,8 @@ not recorded, so a missing worker cannot be told apart.
 Every run carries an environment tag, the OS and whether it ran in a CI job
 (`linux-ci`, `macos-local`), unless `--environment` names another. Runs of
 one workload in different environments keep separate histories. The tag does
-not catch everything that slows one machine (antivirus scanning on file open
-did once); two agreeing runs are the guard.
+not catch everything that slows one machine (antivirus scanning on file open,
+for one); two agreeing runs are the guard.
 
 A server that receives the same file calls
 `repowise.core.evidence.add.ingest_evidence(session, repo, data, repo_path=..., workload=..., workload_class=...)`
@@ -246,7 +242,7 @@ same checks, stores the same run and returns the same result; a file or option
 it will not take raises `EvidenceRefusedError` with a `code`, the `option` at
 fault and a `hint`.
 
-### Workload classes
+#### Workload classes
 
 The class says what kind of run produced the numbers, so a reader knows how far
 they reach.
@@ -262,7 +258,7 @@ they reach.
 `setup` ranks its targets `entry_point`, then `benchmark`, then `unit_test`, so
 the first profile it asks for is the one closest to real use.
 
-## Kinds and input formats
+### Kinds and input formats
 
 One file holds one run of one kind; the profiles of one run's processes may come in
 several files (see [Several profiles of one run](#several-profiles-of-one-run)).
@@ -278,7 +274,7 @@ The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
 `pprof`, `cpuprofile`, `pytest-benchmark`, `go-bench`, `hyperfine`, `junit`, `collapsed`, or one a plugin registers).
 
-### Profiles as the profiler wrote them
+#### Profiles as the profiler wrote them
 
 | Format | Written by | What a frame carries |
 |---|---|---|
@@ -301,7 +297,7 @@ The format is detected from the content, never the file name;
   it. A build made in another directory (CI, a container) joins with that
   directory as `--checkout-root`.
 
-### Benchmark results as the runner wrote them
+#### Benchmark results as the runner wrote them
 
 | Format | Written by | What a benchmark carries |
 |---|---|---|
@@ -337,7 +333,7 @@ The format is detected from the content, never the file name;
   back.
 - A hyperfine result links to no function: it times a command line, not a symbol, so every entry is a series on its own. `user`, `system`, `parameters` and the exit codes are not read.
 
-### Test reports as the runner wrote them
+#### Test reports as the runner wrote them
 
 | Format | Written by | What a test carries |
 |---|---|---|
@@ -371,7 +367,7 @@ The format is detected from the content, never the file name;
 - `--commit` is required; the report records none. Captured output,
   properties and failure messages are not read.
 
-## The `repowise-evidence-v1` document
+### The `repowise-evidence-v1` document
 
 Any tool can write this shape directly; converted formats become it before
 they are joined.
@@ -424,7 +420,7 @@ they are joined.
   optional location that breaks the path rules is dropped and the entry kept.
 - Fields the format does not name are never read.
 
-## How entries join to code
+### How entries join to code
 
 A profile or query-count entry ends as a row for exactly one indexed function,
 or as a count under a reason. Nothing is matched by path suffix.
@@ -487,7 +483,7 @@ A profile or query-count run where more than half the entries did not map is
 refused unless `--allow-partial`; stored that way it is flagged
 `mapping_partial`.
 
-### Stale evidence
+#### Stale evidence
 
 Evidence keeps the commit it measured. A run from another commit than the
 checkout's HEAD is stored with its own commit and reads as `stale`; it is never
@@ -496,7 +492,7 @@ older commit, `add` says to run `repowise update` and add the file again. The sa
 file added again with the same flags against the same index restamps the stored
 run instead of adding a second one; after `repowise update` it is joined afresh.
 
-## `evidence status`
+### `evidence status`
 
 ```bash
 repowise evidence status
@@ -514,7 +510,7 @@ recorded: add the profile again). The JSON form adds
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
 
-## `evidence tests`
+### `evidence tests`
 
 ```bash
 repowise evidence tests
@@ -541,7 +537,7 @@ so it is counted under `every_test` instead of listed, unless no other file is. 
 each unit's tests write JUnit XML. Timing orders tests and files; it never
 gates. The same answer is served at `GET /api/repos/{repo_id}/evidence/tests`.
 
-## What is stored
+### What is stored
 
 Evidence lives in the local index (`evidence_runs` and one table per kind:
 `evidence_symbol_costs`, `evidence_benchmark_results`, `evidence_test_timings`,
@@ -559,7 +555,7 @@ Entry paths are repo-relative; the checkout root is stored as given. Retention i
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
 oldest first, though every workload always keeps its newest run.
 
-## Settings
+## Tuning
 
 The `evidence:` block of `.repowise/config.yaml`:
 
@@ -573,7 +569,48 @@ The `evidence:` block of `.repowise/config.yaml`:
 
 Full reference: [CONFIG.md](../reference/CONFIG.md#the-evidence-block).
 
-## Adding a format
+## In CI
+
+`repowise evidence setup --write` writes a CI file with one job per unit: its tests
+with coverage and JUnit XML, on pull requests and pushes to the default branch, the
+report and test results kept as artifacts. <!-- repowise-drift-ignore -->
+`.github/workflows/repowise-evidence.yml`, or `.gitlab/repowise-evidence.yml`
+(include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one. A
+different file already at that path is left alone and the command exits `1`.
+`repowise perf check` gates a change on allocations per operation from stored
+benchmark results; time never gates. The other gates: [Repowise in CI](../start/CI.md).
+
+## Accuracy and limits
+
+- An entry joins exactly or not at all: a profile frame needs its line inside an
+  indexed function and a second signal that agrees, and nothing is matched by path
+  suffix. What does not join is counted by reason, and a value that was not
+  measured is unknown, never zero.
+- A profile joins to code for Python, Go and JavaScript frames. TypeScript and
+  bundled code are refused, since source maps are not read, and so is a Go binary
+  built with `-trimpath`.
+- A profile or query-count run where more than half the entries did not map is
+  refused unless `--allow-partial`.
+- A profile of one process misses the processes it starts; profile each one and
+  add the files together.
+- Test timing includes fixtures, so it orders tests and files and never gates.
+  Benchmark time per operation is not exact; allocations and bytes per operation are.
+- Evidence is never re-mapped onto newer code: a run from another commit reads as
+  `stale`.
+
+## Where it shows up
+
+- **CLI**: `repowise evidence setup|add|status|tests`, `repowise coverage setup` and
+  `repowise perf check`.
+- **REST**: `GET /api/repos/{repo_id}/evidence/tests`.
+- **Python**: `repowise.core.evidence.add.ingest_evidence` for a server that receives
+  the file, and `render_connect_evidence` for the agent prompt.
+- **Performance findings**: the static findings evidence sits beside, in
+  [PERFORMANCE.md](PERFORMANCE.md).
+
+## Reference
+
+### Adding a format
 
 Input formats register on the `profile-format` seam. A format is a sniffer over
 the file's first bytes plus one reader: `read` returns a profile run (frames
@@ -590,3 +627,12 @@ profile_formats.register("myprof", ProfileFormat(sniff=my_sniff, read=my_read))
 Detection takes the first format that claims the file, built-in formats first,
 and `--input-format myprof` picks it by name. Entry points, testing and
 publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
+
+Every flag: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
+
+## See also
+
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
+- [PERFORMANCE.md](PERFORMANCE.md): the static performance findings
+- [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md): coverage reports and the per-test map
+- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#runtime-evidence): coverage and profile support per language
