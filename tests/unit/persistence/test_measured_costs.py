@@ -820,3 +820,38 @@ async def test_benchmarks_list_each_result_with_the_function_it_measures(async_s
     assert await unranked_reason(async_session, repo.id) == "no_runtime_data"
     # Another run's id keeps nothing.
     assert await measured_costs(async_session, repo.id, now=NOW, run_id="r1") is None
+
+
+async def test_a_benchmark_profile_never_reads_as_evidence_ahead_of_the_index(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.evidence import _newest_ahead_of_index
+
+    repo = await insert_repo(async_session)
+    repo.head_commit = "c" * 40
+    at_head = _run(repo.id, "p1", day=1)
+    at_head.ingested_at = datetime(2026, 11, 1, tzinfo=UTC)
+    bench = _run(repo.id, "p2", cls="benchmark", day=2)
+    bench.workload_name = at_head.workload_name
+    bench.commit_sha = "d" * 40
+    bench.ingested_at = datetime(2026, 11, 2, tzinfo=UTC)
+    async_session.add_all([at_head, bench])
+    await async_session.flush()
+    assert await _newest_ahead_of_index(async_session, repo.id) is False
+
+
+async def test_an_older_benchmark_run_id_keeps_nothing(async_session) -> None:
+    from repowise.core.persistence.models import EvidenceBenchmarkResult
+
+    repo = await insert_repo(async_session)
+    for rid, day in (("b0", 1), ("b1", 2)):
+        run = _run(repo.id, rid, cls="benchmark", day=day)
+        run.kind, run.workload_name = "benchmark", "go bench"
+        async_session.add(run)
+    await async_session.flush()
+    async_session.add_all(
+        EvidenceBenchmarkResult(run_id=rid, repository_id=repo.id, benchmark_key="k", median=1.0)
+        for rid in ("b0", "b1")
+    )
+    await async_session.flush()
+    assert await measured_costs(async_session, repo.id, now=NOW, run_id="b0") is None
+    view = await measured_costs(async_session, repo.id, now=NOW, run_id="b1")
+    assert [r["run_id"] for r in view["benchmarks"]["rows"]] == ["b1"]

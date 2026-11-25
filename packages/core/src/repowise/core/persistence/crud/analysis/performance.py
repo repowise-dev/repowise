@@ -1257,13 +1257,13 @@ async def _benchmark_group(
     from ....evidence.hotness import newest_runs
     from .evidence import benchmark_callees, benchmark_results, benchmark_runs
 
+    # Only each workload's newest run speaks, as for profiles: an older id keeps nothing.
     runs = await benchmark_runs(session, repository_id)
-    if run_id is not None:
-        runs = [run for run in runs if run.id == run_id]
+    newest = newest_runs(runs)
+    runs = [run for run in runs if run.id in newest and run_id in (None, run.id)]
     if not runs:
         return None
-    newest = newest_runs(runs)
-    results = await benchmark_results(session, sorted(newest))
+    results = await benchmark_results(session, sorted(run.id for run in runs))
     callees = await benchmark_callees(session, repository_id, {r.symbol_id for r in results})
     view = benchmark_view(
         runs, results, measured_functions(list(callees), callees), limit=max(limit, 0)

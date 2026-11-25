@@ -556,6 +556,7 @@ async def _run_marks(session: AsyncSession, repository_id: str) -> tuple[list[An
             EvidenceRun.id,
             EvidenceRun.kind,
             EvidenceRun.workload_name,
+            EvidenceRun.workload_class,
             EvidenceRun.environment,
             EvidenceRun.commit_sha,
             EvidenceRun.measured_at,
@@ -567,11 +568,16 @@ async def _run_marks(session: AsyncSession, repository_id: str) -> tuple[list[An
 
 
 async def _newest_ahead_of_index(session: AsyncSession, repository_id: str) -> bool:
-    """A profile workload's newest complete run is ahead of the index."""
-    from ....evidence.hotness import commit_position, newest_runs
+    """A profile workload's newest complete run is ahead of the index (a
+    benchmark profile never ranks, so it is not one)."""
+    from ....evidence.hotness import BENCHMARK_CLASS, commit_position, newest_runs
 
     runs, head = await _run_marks(session, repository_id)
-    newest = newest_runs(r for r in runs if r.kind == "profile" and not r.mapping_partial)
+    newest = newest_runs(
+        r
+        for r in runs
+        if r.kind == "profile" and r.workload_class != BENCHMARK_CLASS and not r.mapping_partial
+    )
     return any(commit_position(r, runs, head) == "ahead" for r in runs if r.id in newest)
 
 

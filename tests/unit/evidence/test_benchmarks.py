@@ -59,6 +59,29 @@ def test_measured_function(benchmark, callees, measures) -> None:
     assert measured_function(benchmark, callees) == measures
 
 
+def test_a_one_word_callee_from_another_directory_is_too_generic() -> None:
+    assert measured_function("users/api_test.go::BenchmarkGetUser", ["store/kv.go::Get"]) is None
+    # From the benchmark's own package it is the subject (gin: Recovery middleware).
+    found = measured_function(
+        "benchmarks_test.go::BenchmarkRecoveryMiddleware", ["recovery.go::Recovery"]
+    )
+    assert found == "recovery.go::Recovery"
+    # A one-word benchmark name: the callee covers all of it, wherever it is.
+    assert measured_function("recovery_test.go::BenchmarkStack", ["x/recovery.go::stack"]) == (
+        "x/recovery.go::stack"
+    )
+
+
+def test_the_name_starts_after_the_package_never_inside_its_path() -> None:
+    from repowise.core.evidence.benchmarks import _benchmark_name
+
+    sym = "parse/parse_test.go::BenchmarkParse"
+    key = "example.com/BenchmarkParse/tools/parse.BenchmarkParse/big"
+    assert _benchmark_name(key, sym) == "BenchmarkParse/big"
+    assert _benchmark_name("other", sym) == "other"
+    assert _benchmark_name("k", None) == "k"
+
+
 def test_a_tie_between_callees_is_no_answer() -> None:
     callees = ["a.go::readFile", "b.go::fileRead"]
     assert measured_function("a_test.go::BenchmarkReadFile", callees) is None

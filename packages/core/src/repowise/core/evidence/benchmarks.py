@@ -15,11 +15,12 @@ directly. Pure, so a host that keeps evidence elsewhere builds the same rows.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from repowise.core.ingestion.symbol_identity import local_symbol_id
+from repowise.core.ingestion.symbol_identity import file_of_symbol, local_symbol_id
 
 from .hotness import newest_runs
 
@@ -38,6 +39,10 @@ def _words(name: str) -> set[str]:
     return {w.lower() for w in _WORD.findall(name)} - _RUNNER_WORDS
 
 
+def _qualified_words(symbol_id: str) -> set[str]:
+    return set().union(*(_words(part) for part in local_symbol_id(symbol_id).split("::")))
+
+
 def measured_function(benchmark: str | None, callees: Iterable[str]) -> str | None:
     """The production function *benchmark* measures, or ``None`` when unsure.
 
@@ -46,6 +51,10 @@ def measured_function(benchmark: str | None, callees: Iterable[str]) -> str | No
     every word of the callee's name is in the benchmark's name and covers at
     least half of it (``BenchmarkGetMapFromFormData`` calls
     ``getMapFromFormData``; ``BenchmarkPathCleanLong`` calls ``cleanPath``);
+    a one-word callee that covers only part of it must sit in the benchmark's
+    own directory or have its class named too (``BenchmarkGetUser`` calling
+    another package's ``Get`` names none; ``TestCache::test_get`` calling
+    ``Cache::get`` names it);
     the callee whose name covers the most words wins, and a tie is no answer.
     A benchmark that only calls setup and a shared request helper
     (``New``, ``Use``, ``runRequest``) names none.
@@ -56,13 +65,23 @@ def measured_function(benchmark: str | None, callees: Iterable[str]) -> str | No
     """
     if not benchmark:
         return None
-    wanted = set().union(*(_words(part) for part in local_symbol_id(benchmark).split("::")))
+    wanted = _qualified_words(benchmark)
     if not wanted:
         return None
     best: list[tuple[int, str]] = []
+    home = posixpath.dirname(file_of_symbol(benchmark))
     for callee in dict.fromkeys(callees):
         words = _words(local_symbol_id(callee).split("::")[-1])
         if not words or not words <= wanted or 2 * len(words) < len(wanted):
+            continue
+        # A one-word name (``Get``, ``New``) from elsewhere is too generic to
+        # claim, unless its class is named too (``TestCache::test_get``, ``Cache::get``).
+        named = _qualified_words(callee) - words
+        if (
+            len(words) == 1 < len(wanted)
+            and posixpath.dirname(file_of_symbol(callee)) != home
+            and not (named and named <= wanted)
+        ):
             continue
         best.append((len(words), callee))
     if not best:
@@ -79,9 +98,11 @@ def _benchmark_name(key: str, symbol_id: str | None) -> str:
     unknown."""
     if symbol_id:
         name = local_symbol_id(symbol_id)
-        at = key.find(name) if name else -1
-        if at >= 0:
-            return key[at:]
+        # Where the name starts, after the package (``pkg.``) or file (``::``),
+        # never a package path that happens to hold the name.
+        for at in (m.start() for m in re.finditer(re.escape(name), key)) if name else ():
+            if at == 0 or key[at - 1] in ".:":
+                return key[at:]
     return key
 
 

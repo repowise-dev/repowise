@@ -41,7 +41,8 @@ const sha7 = (sha: string) => sha.slice(0, 7);
  */
 function newestProfile(view: RuntimeEvidenceView) {
   const runs = view.runs ?? [];
-  const newest = runs.find((r) => r.kind === "profile");
+  // A benchmark profile never ranks, so it never says where ranked evidence sits.
+  const newest = runs.find((r) => r.kind === "profile" && r.class !== "benchmark");
   const indexed = view.referenceCommit;
   if (!newest?.commit_sha || !indexed) return null;
   const position = commitPosition(newest, runs, indexed);

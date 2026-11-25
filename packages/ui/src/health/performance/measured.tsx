@@ -507,7 +507,7 @@ function BenchmarkRunRows({ adapter, run }: { adapter: PerformanceViewAdapter; r
             className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
           >
             {rows.map((row) => (
-              <BenchmarkRowItem key={`${row.run_id}:${row.benchmark}`} row={row} adapter={adapter} />
+              <BenchmarkRowItem key={`${row.run_id}:${row.benchmark_symbol_id ?? ""}:${row.benchmark}`} row={row} adapter={adapter} />
             ))}
           </ul>
           {total > rows.length ? (
