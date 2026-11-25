@@ -193,6 +193,35 @@ def test_hand_written_dart_stays_flaggable():
     assert not never_flag_path("lib/src/photo.dart")
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        # A top-level build output root stays never-flagged.
+        "build/out.js",
+        "build/classes/main/App.class",
+        # A nested build output root outside a source root stays never-flagged.
+        "pkg/build/out.js",
+        "tools/analyzer/build/gen.c",
+    ],
+)
+def test_build_output_roots_are_never_flagged(path):
+    assert never_flag_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # A ``build/`` directory the walker keeps as hand-written source is
+        # production to ``code_origin`` and must stay flaggable (#6263).
+        "src/build/x.ts",
+        "packages/next/src/build/compile.ts",
+    ],
+)
+def test_source_root_build_dirs_stay_flaggable(path):
+    assert not never_flag_path(path)
+    assert _unreachable(path)
+
+
 def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
     from pathlib import Path
 

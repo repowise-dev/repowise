@@ -16,7 +16,11 @@ import os
 import re
 from functools import lru_cache
 
-from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
+from repowise.core.code_origin import (
+    is_build_file,
+    is_vendored_or_generated_path,
+    path_origin,
+)
 from repowise.core.ingestion.languages.js_config_values import TEST_SETUP_KEYS
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
@@ -380,8 +384,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_example.h",
     "*_example.hpp",
     "*_example.cc",
-    # Build output roots, in case the walker lets them in.
-    "*/build/**",
+    # Build output roots, in case the walker lets them in. The nested
+    # ``*/build/**`` shape is applied by ``never_flag_path`` instead: it
+    # also matches shipped source under a source root the walker keeps
+    # (``src/build/``), which ``code_origin`` classifies as production.
     "build/**",
     "*/cmake-build-*/**",
     "cmake-build-*/**",
@@ -1293,13 +1299,36 @@ def never_flag_match(path: str) -> bool:
     return False
 
 
+# A nested build output root, in case the walker lets one in. Applied apart
+# from the pattern list because ``*/build/**`` also matches a ``build/``
+# directory the walker keeps as hand-written source (``src/build/``): there
+# it must not never-flag files ``code_origin`` classifies as production.
+_BUILD_ROOT_GLOB = os.path.normcase("*/build/**")
+
+
+def _never_flag_build_root(path: str) -> bool:
+    """Whether *path* sits in a build output root that is not shipped source.
+
+    A top-level ``build/**`` output root stays covered by the pattern list;
+    a nested one never-flags only when ``path_origin`` does not classify the
+    file as production (#6263).
+    """
+    norm = os.path.normcase(path)
+    if not fnmatch.fnmatchcase(norm, _BUILD_ROOT_GLOB):
+        return False
+    return path_origin(path) != "production"
+
+
 def never_flag_path(path: str) -> bool:
     """The never-flag globs, plus vendored, generated and build files by path.
 
     A copied library or a generator's output is not this repository's to
     delete, whatever its importers look like, and a build tool runs a build
-    file by its name, so it has no importer by design.
+    file by its name, so it has no importer by design. A nested build output
+    root never-flags only outside a source root the walker keeps (#6263).
     """
+    if _never_flag_build_root(path):
+        return True
     return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
 
 
