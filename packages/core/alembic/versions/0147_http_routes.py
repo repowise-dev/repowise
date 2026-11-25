@@ -1,9 +1,10 @@
-"""Route table: ``http_routes`` and ``repositories.http_routes_fingerprint``.
+"""Route table: ``http_routes`` and ``http_routes_stamp``.
 
 Every index stores the HTTP routes the repo registers (method, path template,
 framework, registration site, handler symbol), not only with
-``contracts.in_repo``. The fingerprint on the repository row names the read
-that wrote them, so an update re-reads when it moves.
+``contracts.in_repo``. ``http_routes_stamp`` names the read that wrote them,
+so an update re-reads when it moves. New tables only: a column on
+``repositories`` would break every ORM insert into a store at an older revision.
 
 Local SQLite stores get both from the models through ``init_db``; this
 migration exists for managed Postgres.
@@ -52,17 +53,22 @@ def upgrade() -> None:
             sa.Column("service", sa.Text, nullable=True),
             sqlite_with_rowid=False,
         )
-    columns = {c["name"] for c in inspector.get_columns("repositories")}
-    if "http_routes_fingerprint" not in columns:
-        op.add_column(
-            "repositories", sa.Column("http_routes_fingerprint", sa.String(64), nullable=True)
+    if "http_routes_stamp" not in set(inspector.get_table_names()):
+        op.create_table(
+            "http_routes_stamp",
+            sa.Column(
+                "repository_id",
+                sa.String(32),
+                sa.ForeignKey("repositories.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+            sa.Column("fingerprint", sa.String(64), nullable=True),
         )
 
 
 def downgrade() -> None:
     inspector = sa.inspect(op.get_bind())
-    if "http_routes_fingerprint" in {c["name"] for c in inspector.get_columns("repositories")}:
-        with op.batch_alter_table("repositories") as batch:
-            batch.drop_column("http_routes_fingerprint")
-    if "http_routes" in set(inspector.get_table_names()):
-        op.drop_table("http_routes")
+    tables = set(inspector.get_table_names())
+    for name in ("http_routes_stamp", "http_routes"):
+        if name in tables:
+            op.drop_table(name)

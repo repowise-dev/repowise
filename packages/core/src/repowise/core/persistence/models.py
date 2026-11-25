@@ -145,11 +145,6 @@ class Repository(Base):
     # update's edge reconcile to every parsed file, once. NULL on stores written
     # before this, which is treated as a mismatch and heals the same way.
     graph_edges_parser_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # ``repo_routes.routes_fingerprint()`` of the read that last wrote this
-    # repo's ``http_routes``. An update re-reads the routes when a changed path
-    # can hold one or this differs, so an index written before the table, or by
-    # other extractors, fills it on its next update. NULL until the first read.
-    http_routes_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -3469,6 +3464,21 @@ class HttpRoute(Base):
     service: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoutesStamp(Base):
+    """Which read last wrote a repository's ``http_routes``.
+
+    ``repo_routes.routes_fingerprint()`` of that read. An update re-reads the
+    routes when a changed path can hold one or this differs, so an index
+    written before the table, or by other extractors, fills on its next
+    update. No row (or NULL) means read again.
+    """
+
+    __tablename__ = "http_routes_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class BuildUnitDep(Base):

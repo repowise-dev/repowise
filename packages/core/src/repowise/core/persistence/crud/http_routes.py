@@ -1,18 +1,18 @@
 """CRUD for the route table (``http_routes``), see :mod:`repowise.core.workspace.repo_routes`.
 
-Written whole by every read, with the fingerprint of that read on the
-repository row, and read back as :class:`~repowise.core.workspace.repo_routes.Route`.
+Written whole by every read, with the fingerprint of that read in
+``http_routes_stamp``, and read back as :class:`~repowise.core.workspace.repo_routes.Route`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...workspace.repo_routes import Route
-from ..models import HttpRoute, Repository
+from ..models import HttpRoute, HttpRoutesStamp
 from ._shared import _BATCH_SIZE
 
 
@@ -45,11 +45,7 @@ async def stamp_routes_fingerprint(
     session: AsyncSession, repository_id: str, fingerprint: str | None
 ) -> None:
     """Record the read the stored routes come from; None makes the next update re-read."""
-    await session.execute(
-        update(Repository)
-        .where(Repository.id == repository_id)
-        .values(http_routes_fingerprint=fingerprint)
-    )
+    await session.merge(HttpRoutesStamp(repository_id=repository_id, fingerprint=fingerprint))
     await session.flush()
 
 
@@ -79,7 +75,9 @@ async def stored_routes_fingerprint(session: AsyncSession, repository_id: str) -
     """The fingerprint of the read that last wrote the repository's routes, or None."""
     return (
         await session.execute(
-            select(Repository.http_routes_fingerprint).where(Repository.id == repository_id)
+            select(HttpRoutesStamp.fingerprint).where(
+                HttpRoutesStamp.repository_id == repository_id
+            )
         )
     ).scalar_one_or_none()
 
