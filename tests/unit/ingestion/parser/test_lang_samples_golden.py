@@ -50,6 +50,11 @@ def _parse_language(parser: ASTParser, language: str) -> dict:
         row = dataclasses.asdict(parser.parse_file(info, source))
         for key in _VOLATILE_INFO:
             row["file_info"].pop(key)
+        if info.language != "tcl":
+            # Keep Tcl-only call metadata out of other languages' snapshots.
+            for key in ("calls", "references"):
+                for site in row[key]:
+                    assert site.pop("namespace") is None
         out[rel] = _plain(row)
     return out
 

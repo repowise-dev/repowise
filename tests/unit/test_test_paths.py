@@ -130,6 +130,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # ...and a `.t` file is a prove test wherever it sits
     ("xt/author.t", None, "test"),
     ("basic.t", "perl", "test"),
+    # ...and a tcltest `.test` file is a test wherever it sits
+    ("parser.test", "tcl", "test"),
+    ("generic/parser.test", None, "test"),
     # ...a non-source file under t/ stays as it is without corroboration
     ("t/data/expected.json", None, ""),
     ("t/assets/image.png", None, ""),

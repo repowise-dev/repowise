@@ -9,6 +9,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ..extractors import node_text
+from ..extractors.tcl import is_tcl_switch_arm, unwrap_word
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
 from ..parser_helpers import (
@@ -43,6 +44,9 @@ def _extract_imports(
             continue
 
         stmt_node = stmt_nodes[0]
+        # A Tcl switch arm parses as a command named by its pattern.
+        if language == "tcl" and is_tcl_switch_arm(stmt_node):
+            continue
         if rules.deduped is not None:
             imports.extend(rules.deduped(stmt_node, module_nodes[0], src, seen_own))
             continue
@@ -66,6 +70,8 @@ def _extract_imports(
         seen_imports[dedup_key] = []
 
         module_text = node_text(module_nodes[0], src).strip().strip("\"'` ")
+        if language == "tcl" and module_nodes[0].type == "braced_word":
+            module_text = unwrap_word(module_text)
         if not module_text:
             continue
 
