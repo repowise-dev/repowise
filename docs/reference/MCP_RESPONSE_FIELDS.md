@@ -679,6 +679,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `kpis` | Averages and worst-file pointers |
 | `kpis.band`, `kpis.analysed_share` | Band (`null` under half analysed); scored share when some left out |
 | `unanalysed_file_count` | Files with no health dialect, unscored and excluded; absent when none |
+| `import_cycles` | Stored import cycles in scope, every size (`total`; the first-look report lists only those of 2 to 4 files), and `static_only`: Python cycles made only of `import b` edges whose name no module-level code reads, unlikely to fail at import; absent when none |
 | `gap_analysis` | Recovery to 8.0: points, files below, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | By `weighted_deficit`, with `share_of_repo_gap_pct` |

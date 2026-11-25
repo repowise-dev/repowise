@@ -327,6 +327,9 @@ class Import:
     # Python: in a ``try`` body with an ``except ImportError`` handler; runs at
     # load, but the module already survives it failing.
     guarded: bool = False
+    # Python: ``import b`` / ``import a.b`` (not ``from``) whose bound name no
+    # module-level code mentions, so it cannot fail at import inside a cycle.
+    module_form: bool = False
     # Python: the ``(start_line, end_line)`` of each function whose body holds
     # the statement, the only code its names are bound for. None: file-wide.
     scopes: tuple[tuple[int, int], ...] | None = None

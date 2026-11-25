@@ -130,6 +130,9 @@ class HealthData:
     withheld_rows: list[Any] = field(default_factory=list)
     #: Files whose recorded history is too thin for the history half to count.
     short_history_paths: set[str] = field(default_factory=set)
+    #: Dashboard only: ``{"total", "static_only"}`` stored import cycles in
+    #: scope; None when there are none.
+    import_cycles: dict[str, int] | None = None
 
 
 async def load_health_data(
@@ -216,7 +219,32 @@ async def load_health_data(
         )
         data.finding_counts = counts.as_dict()
     data.gated = await _read_gated(session, req, data)
+    data.import_cycles = await _read_import_cycles(session, repository, pop, req)
     return data
+
+
+async def _read_import_cycles(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> dict[str, int] | None:
+    """How many stored import cycles lie in scope, and how many are static only.
+
+    A cycle counts when none of its files is excluded and, under the
+    production scope, all of them are production files.
+    """
+    if pop.scoped or not req.wants("import_cycles"):
+        return None
+    from repowise.core.persistence.crud.graph import get_scc_members, get_static_only_scc_ids
+
+    sccs = {
+        scc_id: members
+        for scc_id, members in (await get_scc_members(session, repository.id)).items()
+        if not pop.excluded_paths.intersection(members)
+        and (pop.scope_paths is None or pop.scope_paths.issuperset(members))
+    }
+    if not sccs:
+        return None
+    static_only = await get_static_only_scc_ids(session, repository.id, sccs)
+    return {"total": len(sccs), "static_only": len(static_only)}
 
 
 async def _read_gated(session: Any, req: HealthRequest, data: HealthData) -> dict[str, dict]:

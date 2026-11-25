@@ -510,6 +510,7 @@
         "type_only": false,
         "deferred": false,
         "guarded": false,
+        "module_form": false,
         "scopes": null
       },
       {
@@ -538,6 +539,7 @@
         "type_only": false,
         "deferred": false,
         "guarded": false,
+        "module_form": false,
         "scopes": null
       },
       {
@@ -566,6 +568,7 @@
         "type_only": false,
         "deferred": false,
         "guarded": false,
+        "module_form": false,
         "scopes": null
       },
       {
@@ -594,6 +597,7 @@
         "type_only": false,
         "deferred": false,
         "guarded": false,
+        "module_form": false,
         "scopes": null
       }
     ],

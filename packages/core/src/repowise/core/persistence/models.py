@@ -494,6 +494,13 @@ class GraphEdge(Base):
     guarded: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # True when every load-time import along the edge is a Python module-form
+    # import (``import b``) whose name no module-level code mentions. A cycle
+    # made only of these is static only, unlikely to fail at import; it stays
+    # a cycle. Persisted for the same reason as ``type_only``.
+    module_form: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

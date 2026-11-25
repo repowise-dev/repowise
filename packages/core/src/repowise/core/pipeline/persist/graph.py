@@ -409,6 +409,7 @@ def _edge_row(source: str, target: str, data: dict) -> dict:
         "type_only": bool(data.get("type_only", False)),
         "deferred": bool(data.get("deferred", False)),
         "guarded": bool(data.get("guarded", False)),
+        "module_form": bool(data.get("module_form", False)),
     }
 
 
@@ -682,6 +683,7 @@ _EDGE_ROW_FIELDS = (
     "type_only",
     "deferred",
     "guarded",
+    "module_form",
 )
 
 
