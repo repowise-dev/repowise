@@ -42,6 +42,10 @@ const FIX: Record<LowSignalCause["kind"], string> = {
     "Profile from the repository root at the indexed commit, with no uncommitted changes, so frames map to indexed functions, and run a workload long enough to reach most of the code.",
 };
 
+/** Said once when a fix names py-spy: its file does not say which clock it sampled, and ingest refuses it without one. */
+const PY_SPY_CLOCK =
+  "A py-spy profile does not say which clock it sampled: add it with `--value-kind cpu` (`value_kind=cpu` on a CI upload), or it is refused.";
+
 /**
  * Re-profile a workload whose stored run ranks too little. Names each cause
  * the run showed and its fix, and leaves the ingest step to wherever the
@@ -54,6 +58,7 @@ export function buildRichProfilePrompt({
   flavor = "generic",
 }: BuildRichProfilePromptOptions): string {
   const fixes = Array.from(new Set(causes.map((c) => FIX[c.kind])));
+  if (fixes.some((fix) => fix.includes("py-spy"))) fixes.push(PY_SPY_CLOCK);
   return joinSections([
     `${REPO_ROLE[flavor]} Repowise stores a runtime profile of \`${workload}\`${tool ? ` (${tool})` : ""}, but the run carries too little signal to rank functions by measured time.`,
     "",
