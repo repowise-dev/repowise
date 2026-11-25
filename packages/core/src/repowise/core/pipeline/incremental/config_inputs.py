@@ -19,6 +19,7 @@ configs, lockfiles, assets and data files.
 - ``.gitignore`` decides which files the walk indexes and which build
   outputs ``package.json`` names count as checked in (``git check-ignore``).
   An edit that leaves both as the last build had them cannot change the graph.
+  ``.repowiseIgnore`` decides only the first.
 - A manifest the build does read can still be edited in a way no reader sees,
   such as a version bump. For ``package.json``, ``pyproject.toml``,
   ``go.mod`` and ``CMakeLists.txt`` the last build records a digest of what
@@ -422,19 +423,22 @@ def _unindexed_refusal(
     indexes, and which build outputs ``package.json`` names count as checked
     in. An edit to one goes to *ignores* when the indexed set is what the last
     build indexed (*index_moved* false); :func:`inputs_refusal` then compares
-    the checked-in builds with the record.
+    the checked-in builds with the record. A ``.repowiseIgnore`` decides only
+    the first, so it clears on the indexed set alone.
     """
     for path in sorted(unparsed):
         if has_projection(path):
             views.append(path)
         elif presence_changed is None or path in presence_changed:
             return f"{path}: an unindexed file was added or removed"
-        elif PurePosixPath(path).name == ".gitignore":
-            # Cleared only by both checks: the indexed set here (index_moved)
-            # and the recorded checked-in builds (record_inputs, inputs_refusal).
+        elif (name := PurePosixPath(path).name.lower()) in (".gitignore", ".repowiseignore"):
+            # Cleared by the indexed set here (index_moved) and, for a
+            # .gitignore, which ``git check-ignore`` also reads, the recorded
+            # checked-in builds (record_inputs, inputs_refusal).
             if index_moved:
                 return f"{path}: it changed which files the walk indexes"
-            ignores.append(path)
+            if name == ".gitignore":
+                ignores.append(path)
         elif not _unread_unindexed(path):
             return f"{path}: the graph build reads this file"
     return None
