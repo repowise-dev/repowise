@@ -126,3 +126,6 @@ async def test_words_past_entry_point_narrow_the_entry_points(setup_mcp, session
     rows = await entry_point_rows(ctx, "entry point of the auth service")
     assert [row["target_path"] for row in rows] == ["src/auth/service.py"]
     assert await entry_point_rows(ctx, "how is a user stored") == []
+    # Words that frame the question do not narrow it.
+    rows = await entry_point_rows(ctx, "how does the entry point work")
+    assert [row["target_path"] for row in rows] == ["src/db/models.py", "src/auth/service.py"]

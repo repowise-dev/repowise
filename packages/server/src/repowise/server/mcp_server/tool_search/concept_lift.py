@@ -115,7 +115,7 @@ def _entry_question(query: str) -> set[str] | None:
     asked = _words(query)
     if not ({"entry", "point"} <= asked or "entrypoint" in asked):
         return None
-    return asked - {_fold(w) for w in _ENTRY_QUALIFIERS}
+    return asked - _FRAME_WORDS - {_fold(w) for w in _ENTRY_QUALIFIERS}
 
 
 async def entry_point_rows(ctx: Any, query: str) -> list[dict]:
