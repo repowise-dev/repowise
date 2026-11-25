@@ -6,6 +6,8 @@ the load-bearing ones: the guard must stay silent on non-breaking changes.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.core.workspace.breaking_change import (
     SEVERITY_BREAKING,
     SEVERITY_WARNING,
@@ -428,6 +430,12 @@ def test_mono_a_removed_route_only_its_own_service_calls_breaks_no_other() -> No
     assert (change.changed, change.breaking) == (1, [])
 
 
+def _mono_link(cid: str, provider_service: str = "api") -> ContractLink:
+    """web -> *provider_service*, both inside the repo ``mono``."""
+    link = _link(cid, c_repo="mono", c_service="web")
+    return replace(link, provider_repo="mono", provider_service=provider_service)
+
+
 def test_mono_a_route_that_lost_two_response_fields_is_one_break() -> None:
     from repowise.core.workspace.repo_contracts import diff_repo_contracts
 
@@ -435,13 +443,31 @@ def test_mono_a_route_that_lost_two_response_fields_is_one_break() -> None:
     fields = [SchemaField("id", "string"), SchemaField("name", "string")]
     before = _store(
         [_provider(cid, repo="mono", service="api", schema=_schema(response=fields))],
-        [_link(cid, c_repo="mono", c_service="web")],
+        [_mono_link(cid)],
     )
     after = _store(
         [_provider(cid, repo="mono", service="api", schema=_schema(response=[]))],
-        [_link(cid, c_repo="mono", c_service="web")],
+        [_mono_link(cid)],
     )
 
     change = diff_repo_contracts(before, after)
 
     assert (change.changed, len(change.breaking)) == (1, 1)
+
+
+def test_mono_a_route_two_services_serve_breaks_when_one_drops_it() -> None:
+    from repowise.core.workspace.repo_contracts import diff_repo_contracts
+
+    cid = "http::GET::/users"
+
+    def store(*services: str) -> ContractStore:
+        providers = [_provider(cid, repo="mono", service=s) for s in services]
+        return _store(providers, [_mono_link(cid, s) for s in services])
+
+    # admin is listed last, so a shared-id index would keep it on both sides.
+    change = diff_repo_contracts(store("api", "admin"), store("admin"))
+
+    assert change.changed == 1
+    [brk] = change.breaking
+    assert (brk.kind, brk.provider_service) == ("removed_endpoint", "api")
+    assert [ic.service for ic in brk.impacted_consumers] == ["web"]

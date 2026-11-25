@@ -180,19 +180,40 @@ def diff_repo_contracts(previous: ContractStore, current: ContractStore) -> Repo
     def ends(store: ContractStore) -> set[tuple[str, str | None, str]]:
         return {(c.role, c.service, normalize_contract_id(c.contract_id)) for c in store.contracts}
 
-    report = detect_breaking_changes(previous, current)
+    # The engine indexes providers by contract id alone, and two services of
+    # one repo can serve the same id: diffed together, one service's removal
+    # hides behind the other's surviving copy. Diff each service on its own.
+    prev_parts, curr_parts = _by_provider_service(previous), _by_provider_service(current)
+    changes: list[BreakingChange] = []
+    for owner in sorted(set(prev_parts) | set(curr_parts), key=str):
+        empty = ContractStore()
+        changes += detect_breaking_changes(
+            prev_parts.get(owner, empty), curr_parts.get(owner, empty)
+        ).changes
     changed = (ends(previous) ^ ends(current)) | {
-        ("provider", c.provider_service, normalize_contract_id(c.contract_id))
-        for c in report.changes
+        ("provider", c.provider_service, normalize_contract_id(c.contract_id)) for c in changes
     }
     # One entry per broken contract, counted in the same unit as ``changed``:
     # a route that lost three fields is one break, named once.
     breaking: dict[tuple[str, str | None, str], BreakingChange] = {}
-    for c in report.changes:
+    for c in changes:
         if c.severity == SEVERITY_BREAKING and consumers_outside_service(c):
             key = (c.provider_repo, c.provider_service, normalize_contract_id(c.contract_id))
             breaking.setdefault(key, c)
     return RepoContractChange(changed=len(changed), breaking=list(breaking.values()))
+
+
+def _by_provider_service(store: ContractStore) -> dict[tuple[str, str | None], ContractStore]:
+    """*store*'s providers and their links, one store per (repo, service)."""
+    parts: dict[tuple[str, str | None], ContractStore] = {}
+    for c in store.contracts:
+        if c.role == "provider":
+            parts.setdefault((c.repo, c.service), ContractStore()).contracts.append(c)
+    for lk in store.contract_links:
+        part = parts.get((lk.provider_repo, lk.provider_service))
+        if part is not None:
+            part.contract_links.append(lk)
+    return parts
 
 
 def _stamp_holds(
