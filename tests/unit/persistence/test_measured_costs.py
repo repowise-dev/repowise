@@ -14,6 +14,7 @@ from repowise.core.persistence.crud import (
     replace_symbol_hotness,
     replace_workload_hotness,
 )
+from repowise.core.persistence.crud import tests_running_spans as spans_run
 from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
     EvidenceRun,
@@ -709,3 +710,46 @@ async def test_a_measured_hotspots_evidence_on_rest_is_the_run_that_measured_it(
         repo.id, static.opportunity_id, limit=50, offset=0, session=async_session
     )
     assert all(r["biomarker_type"] != "measured_hotspot" for r in other["items"])
+
+
+async def test_a_one_line_python_function_is_unknown_to_the_map(async_session) -> None:
+    repo = await insert_repo(async_session)
+    async_session.add_all(
+        _map(repo.id, [("tests/test_app.py::test_imports", "tests/test_app.py")], ["1-3,90"])
+    )
+    await async_session.flush()
+    spans = {"one": (APP, 90, 90), "body": (APP, 1, 3), "elsewhere": ("src/other.py", 1, 9)}
+
+    found = await spans_run(async_session, repo.id, spans)
+
+    # Its def line runs on import: no line tells a call apart, so no claim either way.
+    assert "one" not in found and "elsewhere" not in found
+    assert found["body"] == [("tests/test_app.py::test_imports", "tests/test_app.py", 2)]
+
+
+async def test_a_stored_benchmark_among_the_nearest_tests_is_never_listed(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    timed = "tests/test_app.py::test_timed"
+    async_session.add_all(
+        [
+            _run(repo.id, "r1"),
+            FunctionFact(
+                repository_id=repo.id,
+                symbol_id=f"{APP}::load",
+                tests_json=encode_tests(
+                    [MappedTest(timed, 2), MappedTest("tests/test_load.py::test_load", 2)]
+                ),
+            ),
+            EvidenceBenchmarkResult(
+                run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
+                symbol_id=timed, median=1.0,
+            ),
+        ]
+    )
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("load")])
+
+    row = (await measured_costs(async_session, repo.id, now=NOW))["measured"]["rows"][0]
+
+    assert (row["tests"], row["tests_basis"]) == (["tests/test_load.py::test_load"], "call_graph")

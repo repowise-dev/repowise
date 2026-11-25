@@ -1391,7 +1391,11 @@ async def _function_context(
     near = await tests_for_functions(session, repository_id, symbol_ids)
     # A benchmark is a direct caller or a test that ran the function's lines.
     reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
-    stored = await _stored_benchmarks(session, repository_id, set().union(*reach.values()))
+    # The nearest tests are asked too, so a stored benchmark there is never listed as a test.
+    listed = {t.selector for found in near.values() for t in found}
+    stored = await _stored_benchmarks(
+        session, repository_id, set().union(listed, *reach.values())
+    )
     verify = {
         sid: command
         for sid, found in reach.items()
