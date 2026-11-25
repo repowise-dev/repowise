@@ -359,7 +359,10 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v5: one person counts once across names and emails (mailmap applied) in a
 #: file's owners, top authors, bus factor and blame owners (#6045), and bot
 #: accounts count toward neither ownership nor the contributor count (#6051).
-GIT_HISTORY_VERSION: int = 5
+#: v6: a commit a coding agent authored counts, in a file's owners, top
+#: authors, bus factor and blame owners, for the human its ``Co-authored-by``
+#: trailer or its committer names; with neither it stays the agent's.
+GIT_HISTORY_VERSION: int = 6
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
