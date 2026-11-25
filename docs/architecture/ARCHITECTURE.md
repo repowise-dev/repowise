@@ -304,7 +304,7 @@ The graph is used for:
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
   the most central files, which get richer generation prompts
-- **SCC detection**: circular dependency clusters require a special generation
+- **SCC detection**: static import cycle clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
   change together (but may have no import relationship) get `co_changes` edges.
@@ -572,14 +572,14 @@ After graph construction, the builder computes:
 - **PageRank**: nodes with high PageRank are central and well-connected.
   Used to decide generation priority. Spotlight pages rank each symbol by its
   own production callers instead (`selection/scoring.py::score_symbol`).
-- **Strongly Connected Components (SCCs)**: groups of files with circular imports.
+- **Strongly Connected Components (SCCs)**: groups of files in a static import cycle.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
   disconnect the graph. These are the most critical to document well.
 - **Community detection (Leiden when the `graph-extra` extra is installed, Louvain otherwise)**: discovers logical modules even when the
   directory structure doesn't reflect them. These communities become module pages.
 
-**Circular dependency handling:**
+**Static import cycle handling:**
 
 Files in an SCC cannot be generated in strict bottom-up order because each one
 depends on the others. Strategy:
