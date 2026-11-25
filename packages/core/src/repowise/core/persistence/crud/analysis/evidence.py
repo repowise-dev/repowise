@@ -300,6 +300,8 @@ async def hotness_inputs(
                 cost.total_samples,
                 cost.call_count,
                 cost.self_samples,
+                cost.inside_json,
+                cost.drivers_json,
             ).where(cost.run_id.in_(ids[i : i + _BATCH_SIZE]))
         )
         for row in result:

@@ -26,7 +26,8 @@ The run's time is split four ways, each stack into exactly one:
 - ``waits``: blocked in a wait frame below its innermost maintained repo frame
   (or anywhere, with no repo frame);
 - ``libraries``: not waiting, and a dependency frame (vendored, generated, or
-  outside the checkout under a vendored path such as ``site-packages``) runs
+  outside the checkout under a vendored path such as ``site-packages`` or in
+  Go's module cache, :func:`is_dependency_path`) runs
   below its innermost repo frame, or anywhere on a stack with no repo frame;
 - ``repo_self``: neither, and the innermost repo frame is a production
   function (``code_origin``): time in production repo code itself, built-ins
@@ -37,6 +38,25 @@ The run's time is split four ways, each stack into exactly one:
 ``explained`` (weight on stacks with a production frame anywhere) is still
 written for older readers; it says nothing about cost, since a CLI's entry
 function is on every stack.
+
+Per symbol the run also gets what its time went to and what drove it, each as
+a share of its inclusive weight, up to :data:`TOP_SPLIT` of each:
+
+- ``inside``: the frame directly below the symbol's innermost occurrence on
+  each stack, by ``name`` and ``kind`` (``format_v1.INSIDE_KINDS``): ``own`` when
+  the symbol is the leaf, ``repo`` for a maintained repo frame, else by the
+  unmaintained frames down to the next repo frame: ``wait`` when one blocks
+  (:func:`is_wait_frame`, so a subprocess or an event loop the symbol waits on
+  is a wait), ``import`` when one is import machinery, ``native`` when the
+  frame has no source (a built-in, the Go runtime), ``library`` otherwise (the
+  standard library or a dependency). A callee seen with several kinds keeps
+  the one with the most weight. This is ``go tool pprof -peek``'s callee list
+  with the flat time as ``own``. A callee also names its heaviest ``leaf``, the
+  frame its stacks end in (``name``, ``kind`` as above, ``share``), when that
+  is not the callee itself: what a library call spends its time on.
+- ``drivers``: the nearest maintained repo frame above the symbol's outermost
+  occurrence (the code that drove it, through any library in between), else
+  the frame directly above; a root frame has none.
 """
 
 from __future__ import annotations
@@ -50,7 +70,7 @@ from typing import TYPE_CHECKING, Any
 from repowise.core.code_origin import is_vendored_or_generated_path, path_origin
 from repowise.core.frame_resolver import frame_paths, resolve_frames
 
-from .format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
+from .format_v1 import EVIDENCE_FORMAT, MAX_SPLIT_ITEMS, EvidenceFormatError
 
 if TYPE_CHECKING:
     from repowise.core.frame_resolver import FrameResolution, ProfileFrame
@@ -118,6 +138,47 @@ CHILD_PROCESS_FUNCTIONS = frozenset(
 )  # fmt: skip
 #: Go function-name prefixes: ``os/exec`` and the process handle it waits on.
 _CHILD_PROCESS_PREFIXES = ("os/exec.", "os.(*Process).")
+
+#: Entries of ``inside`` and of ``drivers`` kept per symbol, costliest first.
+TOP_SPLIT = MAX_SPLIT_ITEMS
+#: Import machinery, by path fragment: CPython's frozen importlib, Node's module loader.
+_IMPORT_PATHS = ("importlib._bootstrap", "node:internal/modules/")
+_IMPORT_FUNCTIONS = frozenset({"__import__", "importlib.import_module", "import_module"})
+
+
+def is_import_frame(frame: ProfileFrame) -> bool:
+    """Whether *frame* is import machinery (:data:`_IMPORT_PATHS`)."""
+    path = frame.path.replace("\\", "/")
+    return frame.function in _IMPORT_FUNCTIONS or any(p in path for p in _IMPORT_PATHS)
+
+
+#: Go's module cache (``$GOPATH/pkg/mod/<module>@<version>/``): dependencies a
+#: build reads in place, which the vendored-path rule does not know.
+_GO_MODULE_CACHE_RE = re.compile(r"/pkg/mod/[^@]+@v")
+
+
+def is_dependency_path(path: str) -> bool:
+    """Whether a frame outside the checkout runs a dependency: a vendored-looking
+    path (``site-packages``, ``node_modules``) or Go's module cache.
+
+    Ceiling: a standard library (GOROOT, CPython's ``Lib``, the JDK) is not a
+    dependency here; it stays with the repo caller, as the module docstring says.
+    """
+    norm = path.replace("\\", "/")
+    return is_vendored_or_generated_path(norm) or _GO_MODULE_CACHE_RE.search(norm) is not None
+
+
+def is_native_frame(frame: ProfileFrame) -> bool:
+    """Whether *frame* runs code with no source: a built-in or the language runtime.
+
+    A frame with no file (V8's natives, a collapsed stack's bare name), one
+    pyinstrument files under ``<built-in>``, assembly (Go's ``memeqbody``),
+    and Go's ``runtime`` package.
+    """
+    path = frame.path
+    if not path or path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
+        return True
+    return frame.language == "go" and frame.function.startswith("runtime.")
 
 
 def is_child_process_frame(frame: ProfileFrame) -> bool:
@@ -347,12 +408,14 @@ class _Tally:
         # Per frame, once: nobody here maintains it, it is a dependency, it blocks.
         self._unmaintained = [r in _UNMAINTAINED for r in self._reasons]
         self._dependency = [
-            r in ("vendored", "generated")
-            or (r == "outside_root" and is_vendored_or_generated_path(f.path.replace("\\", "/")))
+            r in ("vendored", "generated") or (r == "outside_root" and is_dependency_path(f.path))
             for f, r in zip(frames, self._reasons, strict=True)
         ]
         self._wait = [is_wait_frame(f) for f in frames]
         self._child = [is_child_process_frame(f) for f in frames]
+        self._import = [is_import_frame(f) for f in frames]
+        self._native = [is_native_frame(f) for f in frames]
+        self._frames = frames
         self._resolved = {r.index: r for r in resolution.resolved}
         self._origins = origins
         self._symbols: dict[str, tuple[str, IndexedSymbol]] = {}
@@ -360,6 +423,15 @@ class _Tally:
         self._own: Counter[str] = Counter()
         self._inclusive_n: Counter[str] = Counter()
         self._own_n: Counter[str] = Counter()
+        #: Per symbol, weight by callee key (``inside``) and by caller key (``drivers``).
+        self._inside: dict[str, Counter[tuple[Any, ...]]] = {}
+        self._inside_kinds: dict[tuple[str, tuple[Any, ...]], Counter[str]] = {}
+        #: Per symbol and callee, weight by the stack's leaf frame, and each leaf's kind.
+        self._leaves: dict[tuple[str, tuple[Any, ...]], Counter[tuple[Any, ...]]] = {}
+        self._leaf_kind: dict[tuple[Any, ...], str] = {}
+        self._drivers: dict[str, Counter[tuple[Any, ...]]] = {}
+        #: What a callee or caller key is written as.
+        self._named: dict[tuple[Any, ...], dict[str, Any]] = {}
         self.frame_time: Counter[str] = Counter()
         #: Self weight whose innermost repo frame has no symbol row, by why.
         self.self_unattributed: Counter[str] = Counter()
@@ -377,23 +449,162 @@ class _Tally:
         weight, samples = stack.weight, stack.samples or 0
         self.total += weight
         self.samples += samples
-        on_stack: set[str] = set()
+        # Per symbol on the stack: its outermost and innermost position.
+        first: dict[str, int] = {}
+        last: dict[str, int] = {}
         in_production = False
-        for i in stack.frames:
+        for k, i in enumerate(stack.frames):
             hit = self._resolved.get(i)
             self.frame_time["resolved" if hit is not None else str(self._reasons[i])] += weight
             if hit is None:
                 continue
             in_production = in_production or self._production(hit.path)
-            if hit.symbol is not None and hit.symbol.symbol_id not in on_stack:
+            if hit.symbol is not None:
                 sid = hit.symbol.symbol_id
-                on_stack.add(sid)
-                self._symbols[sid] = (hit.path, hit.symbol)
-                self._inclusive[sid] += weight
-                self._inclusive_n[sid] += samples
+                last[sid] = k
+                if sid not in first:
+                    first[sid] = k
+                    self._symbols[sid] = (hit.path, hit.symbol)
+                    self._inclusive[sid] += weight
+                    self._inclusive_n[sid] += samples
         if in_production:
             self.explained += weight
         self._charge(stack.frames, weight, samples)
+        if first and weight > 0:
+            self._split(stack.frames, first, last, weight)
+
+    def _split(
+        self, frames: tuple[int, ...], first: dict[str, int], last: dict[str, int], weight: float
+    ) -> None:
+        """*weight* to each symbol's callee below its innermost position and its caller
+        above its outermost (``inside`` and ``drivers``, see the module docstring)."""
+        n = len(frames)
+        # The maintained repo frame next below and next above each position (n, -1: none).
+        below, above = [n] * n, [-1] * n
+        at = n
+        for k in range(n - 1, -1, -1):
+            below[k] = at
+            if not self._unmaintained[frames[k]]:
+                at = k
+        at = -1
+        for k in range(n):
+            above[k] = at
+            if not self._unmaintained[frames[k]]:
+                at = k
+        for sid, k in last.items():
+            nxt = below[k]
+            if k == n - 1:
+                key, kind = ("own",), "own"
+                self._named.setdefault(key, {"name": "(own code)"})
+            elif nxt == k + 1:
+                key, kind = self._repo_key(frames[nxt], callee=True)
+            else:
+                # The unmaintained frames down to the next repo frame, or to the leaf.
+                segment = frames[k + 1 : nxt]
+                if any(self._wait[i] for i in segment):
+                    kind = "wait"
+                elif any(self._import[i] for i in segment):
+                    kind = "import"
+                else:
+                    kind = "native" if self._native[segment[0]] else "library"
+                key = self._frame_key(segment[0])
+            self._inside.setdefault(sid, Counter())[key] += weight
+            self._inside_kinds.setdefault((sid, key), Counter())[kind] += weight
+            if kind != "own":
+                leaf = self._leaf_key(frames[-1])
+                self._leaves.setdefault((sid, key), Counter())[leaf] += weight
+        for sid, k in first.items():
+            prev = above[k]
+            if prev >= 0:
+                key, _ = self._repo_key(frames[prev], callee=False)
+            elif k > 0:
+                key = self._frame_key(frames[k - 1])
+            else:
+                continue
+            self._drivers.setdefault(sid, Counter())[key] += weight
+
+    def _leaf_key(self, index: int) -> tuple[Any, ...]:
+        """The frame a stack ended in, keyed like a callee, with its kind kept once."""
+        if not self._unmaintained[index]:
+            key, kind = self._repo_key(index, callee=True)
+        else:
+            key = self._frame_key(index)
+            if self._wait[index]:
+                kind = "wait"
+            elif self._import[index]:
+                kind = "import"
+            else:
+                kind = "native" if self._native[index] else "library"
+        self._leaf_kind.setdefault(key, kind)
+        return key
+
+    def _frame_key(self, index: int) -> tuple[Any, ...]:
+        """A frame the index holds no symbol for, by its name and file."""
+        frame = self._frames[index]
+        key = ("frame", frame.function, frame.path)
+        self._named.setdefault(key, {"name": frame.function or frame.path or "(unknown)"})
+        return key
+
+    def _repo_key(self, index: int, *, callee: bool) -> tuple[tuple[Any, ...], str]:
+        """A maintained repo frame: its symbol, its file's module body (an import when
+        it is a callee) or, unresolved, its name; with the kind it has as a callee."""
+        hit = self._resolved.get(index)
+        if hit is None:
+            return self._frame_key(index), "repo"
+        if hit.symbol is None:
+            key: tuple[Any, ...] = ("module", hit.path)
+            self._named.setdefault(key, {"name": "<module>", "path": hit.path})
+            return key, "import" if callee else "repo"
+        key = ("symbol", hit.symbol.symbol_id)
+        self._named.setdefault(
+            key,
+            {"name": hit.symbol.qualified_name, "path": hit.path, "line": hit.symbol.start_line},
+        )
+        return key, "repo"
+
+    def _top(self, weights: Counter[tuple[Any, ...]] | None, sid: str) -> list[tuple[Any, float]]:
+        """The :data:`TOP_SPLIT` heaviest keys of *weights*, each with its share of *sid*'s
+        inclusive weight."""
+        total = self._inclusive[sid]
+        if not weights or total <= 0:
+            return []
+        ranked = sorted(weights.items(), key=lambda kv: (-kv[1], repr(kv[0])))[:TOP_SPLIT]
+        return [(key, round(min(w / total, 1.0), 4)) for key, w in ranked]
+
+    def inside(self, sid: str) -> list[dict[str, Any]]:
+        """*sid*'s ``inside``: ``name``, ``kind`` and ``share`` per callee, and the
+        callee's heaviest ``leaf`` (``name``, ``kind``, ``share``) when the stacks
+        under it end somewhere else than the callee itself."""
+        out = []
+        for key, share in self._top(self._inside.get(sid), sid):
+            item: dict[str, Any] = {
+                "name": self._named[key]["name"],
+                "kind": self._inside_kinds[(sid, key)].most_common(1)[0][0],
+                "share": share,
+            }
+            leaves = self._leaves.get((sid, key))
+            if leaves:
+                (leaf, weight), *_ = sorted(leaves.items(), key=lambda kv: (-kv[1], repr(kv[0])))
+                if leaf != key:
+                    item["leaf"] = {
+                        "name": self._named[leaf]["name"],
+                        "kind": self._leaf_kind[leaf],
+                        "share": round(min(weight / self._inclusive[sid], 1.0), 4),
+                    }
+            out.append(item)
+        return out
+
+    def drivers(self, sid: str) -> list[dict[str, Any]]:
+        """*sid*'s ``drivers``: ``function`` (with ``path`` and ``line`` in the repo) and ``share``."""
+        out = []
+        for key, share in self._top(self._drivers.get(sid), sid):
+            named = self._named[key]
+            driver: dict[str, Any] = {"function": named["name"], "share": share}
+            for name in ("path", "line"):
+                if named.get(name) is not None:
+                    driver[name] = named[name]
+            out.append(driver)
+        return out
 
     def _charge(self, frames: tuple[int, ...], weight: float, samples: int) -> None:
         """Self time to the innermost maintained repo frame, and the stack's bucket."""
@@ -444,6 +655,8 @@ class _Tally:
                     if counted
                     else {}
                 ),
+                **({"inside": inside} if (inside := self.inside(sid)) else {}),
+                **({"drivers": drivers} if (drivers := self.drivers(sid)) else {}),
             }
             for sid in order
         ]
@@ -504,6 +717,9 @@ __all__ = [
     "ProfileConversion",
     "convert_profile",
     "is_child_process_frame",
+    "is_dependency_path",
+    "is_import_frame",
+    "is_native_frame",
     "merge_runs",
     "refuse_compiled_positions",
 ]

@@ -145,6 +145,9 @@ class CostFacts:
     total_samples: int | None
     call_count: int | None
     self_samples: int | None = None
+    #: What the function's time went to and what drove it (JSON, as stored).
+    inside_json: str | None = None
+    drivers_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -539,6 +542,8 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "run_count": run_count,
         "evidence_commit_sha": run.commit_sha,
         "measured_at": run.measured_at,
+        "inside_json": cost.inside_json,
+        "drivers_json": cost.drivers_json,
     }
 
 

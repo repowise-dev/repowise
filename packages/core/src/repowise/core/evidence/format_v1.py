@@ -19,7 +19,11 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
       "total_samples": 5300,              # profile, optional: samples in the whole run, any unit
       "skipped": {"outside_repo": 812},   # optional: entries the converter dropped, by reason
       "symbols": [{"path": "src/app/cli.py", "function": "build", "line": 40,
-                   "self": 12, "total": 410}]
+                   "self": 12, "total": 410,
+                   "inside": [{"name": "Path.is_file", "kind": "library", "share": 0.57,
+                               "leaf": {"name": "stat", "kind": "native", "share": 0.55}}],
+                   "drivers": [{"path": "src/app/main.py", "function": "run", "line": 12,
+                                "share": 1.0}]}]
     }
 
 The entry list is named by the kind: ``symbols`` (profile), ``benchmarks``,
@@ -29,6 +33,12 @@ symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
 the function costs: its own time and the built-ins and libraries it called,
 never time spent waiting; ``total`` adds its callees in the repo.
+Optional on a profile entry, as shares of ``total``: ``inside``, up to three
+callees by ``name`` and ``kind`` (``own``, ``repo``, ``wait``, ``import``,
+``native``, ``library``) with an optional ``leaf`` of the same shape (the
+frame the callee's stacks end in), and ``drivers``, up to three callers by
+``function`` (with ``path`` and ``line`` when the caller is repo code). A bad
+item is dropped; the entry stays.
 A test entry with no ``path`` may carry ``classname``, the dotted name a
 JUnit report gives it (``tests.unit.test_x.TestC``): ingest places it on the
 indexed file that name leads to. ``"first_in_class": true`` marks the first
@@ -50,7 +60,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +79,10 @@ ENTRY_LISTS: dict[str, str] = {
 VALUE_KINDS = frozenset({"cpu", "wall"})
 TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
+#: A profile entry's ``inside`` kinds (``evidence.profile_convert`` says what each means).
+INSIDE_KINDS = ("own", "repo", "wait", "import", "native", "library")
+#: Items of ``inside`` and of ``drivers`` read per entry; more are dropped, lightest first.
+MAX_SPLIT_ITEMS = 3
 
 # A statement digest, never statement text: hex only, so SQL cannot pass.
 _DIGEST_RE = re.compile(r"[0-9a-f]{8,32}")
@@ -324,10 +338,58 @@ def _profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
         "self_samples": _count(raw.get("self_samples")),
         "total_samples": _count(raw.get("total_samples")),
         "call_count": _count(raw.get("calls")),
+        "inside": _split_items(raw.get("inside"), _inside_item),
+        "drivers": _split_items(raw.get("drivers"), _driver_item),
     }
     if entry["self_value"] is None and entry["total_value"] is None:
         return None, "no_value"
     return entry, None
+
+
+def _share_value(value: Any) -> float | None:
+    number = _amount(value)
+    return number if number is not None and number <= 1 else None
+
+
+def _inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
+    name, _ = _name(raw.get("name"))
+    kind, share = _member(raw.get("kind"), INSIDE_KINDS), _share_value(raw.get("share"))
+    if name is None or kind is None or share is None:
+        return None
+    item: dict[str, Any] = {"name": name, "kind": kind, "share": share}
+    leaf = raw.get("leaf")
+    # One level only: a leaf names no leaf of its own.
+    if isinstance(leaf, dict) and "leaf" not in leaf and (read := _inside_item(leaf)):
+        item["leaf"] = read
+    return item
+
+
+def _driver_item(raw: dict[str, Any]) -> dict[str, Any] | None:
+    function, _ = _name(raw.get("function"))
+    share = _share_value(raw.get("share"))
+    if function is None or share is None:
+        return None
+    item: dict[str, Any] = {"function": function, "share": share}
+    if raw.get("path") is not None:
+        path, _ = repo_relative_path(raw.get("path"))
+        if path is None or len(path) > _LONG_TEXT:
+            return None
+        item["path"] = path
+        if (line := _line(raw.get("line"))) is not None:
+            item["line"] = line
+    return item
+
+
+def _split_items(
+    raw: Any, read: Callable[[dict[str, Any]], dict[str, Any] | None]
+) -> list[dict[str, Any]] | None:
+    """A profile entry's ``inside`` or ``drivers``: its valid items, heaviest
+    first, at most :data:`MAX_SPLIT_ITEMS`; None when absent or none is valid."""
+    if not isinstance(raw, list):
+        return None
+    items = [item for item in (read(r) for r in raw if isinstance(r, dict)) if item is not None]
+    items.sort(key=lambda item: -item["share"])
+    return items[:MAX_SPLIT_ITEMS] or None
 
 
 def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:

@@ -16,6 +16,7 @@ Nothing here reads a store.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -108,7 +109,20 @@ def function_payload(row: Any) -> dict[str, Any]:
         "wait_share": row.wait_share,
         "library_share": row.library_share,
         "run_unlisted": row.run_unlisted,
+        "inside": _json_list(getattr(row, "inside_json", None)),
+        "drivers": _json_list(getattr(row, "drivers_json", None)),
     }
+
+
+def _json_list(text: str | None) -> list[Any] | None:
+    """A stored JSON list column; None when empty or unreadable."""
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, list) and value else None
 
 
 __all__ = [

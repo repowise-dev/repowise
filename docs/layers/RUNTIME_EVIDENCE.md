@@ -398,7 +398,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
+| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -468,9 +468,22 @@ is counted there as `unplaced`.
   dispatcher is on every stack and costs nothing itself.
 - A stack whose innermost repo frame was skipped charges no function; its self
   time is reported under `self_unattributed` by that skip reason.
+- **Inside and drivers.** Each function keeps up to three callees by share of
+  its inclusive time (`inside`), read like `go tool pprof -peek`: the frame
+  directly below its innermost occurrence on each stack, with a `kind`: `own`
+  (its own code), `repo`, `wait` (the frames down to the next repo frame
+  block, an event loop or a subprocess wait included), `import`, `native` (a
+  built-in, the Go runtime, assembly) or `library` (the standard library or a
+  dependency). A callee also names its heaviest `leaf`, the frame its stacks
+  end in, when that is not the callee itself (`existsSync` under a template
+  render, `runtime.cgocall` under an ORM call). It also keeps up to three
+  callers (`drivers`): the nearest repo frame above its outermost occurrence,
+  through any library in between, else the frame directly above. The
+  `functions` route returns both; a run stored before they were recorded has
+  none: add the profile again.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
-  `libraries` (a dependency frame runs below the innermost repo frame, or on a
-  stack with no repo frame),
+  `libraries` (a dependency frame, including Go's module cache, runs below the
+  innermost repo frame, or on a stack with no repo frame),
   `repo_self` (neither, and that frame is a production function by
   `code_origin`: time in production repo code itself), or none of them (test or
   tooling code, module bodies, unjoined frames, stacks with no repo frame that

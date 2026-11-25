@@ -331,3 +331,53 @@ def test_a_directory_stands_for_the_files_in_it(tmp_path: Path) -> None:
     with pytest.raises(EvidenceRefusedError) as refused:
         evidence_paths([tmp_path / "empty"])
     assert refused.value.option == "FILE"
+
+
+def test_a_profile_stores_inside_and_drivers_and_the_read_model_serves_them(indexed) -> None:
+    from repowise.core.evidence.payloads import function_payload
+    from repowise.core.persistence.models import SymbolHotness
+
+    root, head = indexed
+    frames = [
+        {"name": "build", "file": str(root / "src" / "app.py"), "line": 1},
+        {"name": "f", "file": str(root / "src" / "edited.py"), "line": 1},
+        {"name": "read", "file": "C:/Python/Lib/json.py", "line": 7},
+    ]
+    data = json.dumps({
+        "$schema": "https://www.speedscope.app/file-format-schema.json",
+        "exporter": "pyinstrument@5.1.3",
+        "shared": {"frames": frames},
+        "profiles": [{"type": "sampled", "unit": "seconds", "samples": [[0, 1, 2], [0]],
+                      "weights": [3.0, 1.0]}],
+    }).encode()
+
+    assert _ingest(root, data, workload="app", workload_class="entry_point", commit=head)["stored"]
+
+    _, costs = _stored(root)
+    by_id = {c.symbol_id: c for c in costs}
+    assert json.loads(by_id["src/app.py::build"].inside_json) == [
+        {"kind": "repo", "leaf": {"kind": "library", "name": "read", "share": 0.75},
+         "name": "f", "share": 0.75},
+        {"kind": "own", "name": "(own code)", "share": 0.25},
+    ]
+    # The caller's location joins to its symbol at ingest.
+    assert json.loads(by_id["src/edited.py::f"].drivers_json) == [
+        {"name": "build", "share": 1.0, "symbol": "src/app.py::build"},
+    ]
+    assert by_id["src/app.py::build"].drivers_json is None
+
+    async def hot() -> dict:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                rows = (await session.execute(select(SymbolHotness))).scalars()
+                return {r.symbol_id: function_payload(r) for r in rows}
+        finally:
+            await engine.dispose()
+
+    served = asyncio.run(hot())
+    assert served["src/edited.py::f"]["drivers"] == [
+        {"name": "build", "share": 1.0, "symbol": "src/app.py::build"},
+    ]
+    assert served["src/app.py::build"]["inside"][0]["name"] == "f"
+    assert served["src/app.py::build"]["drivers"] is None
