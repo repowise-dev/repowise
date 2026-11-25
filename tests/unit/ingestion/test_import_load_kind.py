@@ -412,6 +412,7 @@ def test_type_checking_guards_do_not_close_import_cycles() -> None:
     b_source = "from a import A\nclass B: ...\n"
     cases = {
         "if TYPE_CHECKING": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from b import B\nclass A: ...\n",
+        "if typing.TYPE_CHECKING": "import typing\nif typing.TYPE_CHECKING:\n    from b import B\nclass A: ...\n",
         "if False": "if False:\n    from b import B\nclass A: ...\n",
         "if 0": "if 0:\n    from b import B\nclass A: ...\n",
         "alias TC": "from typing import TYPE_CHECKING as TC\nif TC:\n    from b import B\nclass A: ...\n",
@@ -420,4 +421,17 @@ def test_type_checking_guards_do_not_close_import_cycles() -> None:
     for name, a_source in cases.items():
         sccs = _builder({"a.py": a_source, "b.py": b_source}).strongly_connected_components()
         assert [sorted(s) for s in sccs if len(s) > 1] == [], f"cycle found for {name}"
+
+
+def test_unrelated_attribute_named_like_type_checking_alias_is_runtime() -> None:
+    b_source = "from a import A\nclass B: ...\n"
+    a_source = (
+        "from typing import TYPE_CHECKING as TC\n"
+        "if obj.TC:\n"
+        "    from b import B\n"
+        "class A: ...\n"
+    )
+    sccs = _builder({"a.py": a_source, "b.py": b_source}).strongly_connected_components()
+    assert [sorted(s) for s in sccs if len(s) > 1] == [["a.py", "b.py"]]
+
 

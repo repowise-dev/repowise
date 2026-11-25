@@ -285,8 +285,13 @@ def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
     if _is_literal_false_guard(condition, src):
         return True
     if condition.type == "attribute":
-        condition = condition.child_by_field_name("attribute")
-    if condition is None or condition.type != "identifier":
+        attr = condition.child_by_field_name("attribute")
+        return (
+            attr is not None
+            and attr.type == "identifier"
+            and node_text(attr, src) == "TYPE_CHECKING"
+        )
+    if condition.type != "identifier":
         return False
     name = node_text(condition, src)
     if name == "TYPE_CHECKING":
