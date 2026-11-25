@@ -979,6 +979,26 @@ free; with a configured provider one model call can write its prose.
 | `first_look.model` | `""` | Model for that call; empty uses the provider's cheap model, else its default. |
 <!-- END GENERATED settings:report -->
 
+## The `contracts:` block
+
+Contracts inside one repository, off by default. When on, `init` and `update`
+read the repo's HTTP routes and client calls, gRPC services, sockets and
+message topics into `.repowise/contracts.json` and link each caller to the
+route it reaches, across the repo's services. An update re-reads them only when
+a commit or an uncommitted edit touches a file that can hold one. A workspace
+keeps its own contracts in `.repowise-workspace/contracts.json`.
+
+```yaml
+contracts:
+  in_repo: true
+```
+
+<!-- BEGIN GENERATED settings:contracts (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `in_repo` | `false` | Extract this repo's HTTP, gRPC, socket and topic contracts into .repowise/contracts.json on init and update, and link callers to routes across its services. |
+<!-- END GENERATED settings:contracts -->
+
 ## The `assertions:` block
 
 Your own assertion helpers, for test-quality markers that divide by a test's
