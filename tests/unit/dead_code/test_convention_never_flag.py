@@ -143,6 +143,7 @@ def test_origin_near_misses_stay_flaggable(path):
         "cmake/Toolchain.cmake",
         "Package@swift-6.0.swift",
         "Package@swift-5.10.swift",
+        "build/out.js",
     ],
 )
 def test_build_files_are_never_flagged(path):
@@ -154,6 +155,8 @@ def test_build_files_are_never_flagged(path):
     "path",
     [
         "src/build.rs",  # a ``mod build;`` module
+        "src/build/x.ts",
+        "packages/next/src/build/index.ts",
         "src/main/kotlin/io/ktor/Settings.kt",
         "lib/webpack.js",
         "PackageManager.swift",
