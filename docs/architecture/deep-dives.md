@@ -753,6 +753,8 @@ The MCP `search_codebase` tool applies additional ranking on top of raw search s
 
 **Step 2: Fallback to FTS** if semantic fails or returns empty
 
+**Name what a concept question asks for.** A "where is X computed" or "how is X built" question lifts the files that define a symbol named only by the question's words (`_bus_factor` for "where is bus factor computed", not `BusFactorPanel`). A question about the entry point lifts the repository's curated entry points, the list `get_overview` serves, and words past "entry point" narrow them by path.
+
 **Step 3: Freshness boost** — recently modified files rank higher:
 
 ```
