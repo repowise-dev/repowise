@@ -164,6 +164,16 @@ def test_build_near_misses_stay_flaggable(path):
     assert not never_flag_path(path)
 
 
+def test_shipped_build_modules_stay_flaggable():
+    # */build/** previously skipped shipped source under build/ folders (#6263).
+    assert not never_flag_path("src/build/x.ts")
+    assert not never_flag_path("packages/next/src/build/index.ts")
+    assert not never_flag_path("src/build/compile.ts")
+    # Top-level build/** root stays never_flag.
+    assert never_flag_path("build/out.js")
+
+
+
 def test_a_build_file_runs_what_it_names():
     assert is_runner_file("CMakeLists.txt")
     assert is_runner_file("server/build.gradle")
