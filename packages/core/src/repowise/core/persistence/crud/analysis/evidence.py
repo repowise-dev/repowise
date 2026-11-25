@@ -396,19 +396,28 @@ async def step_findings(
     targets: set[str] = set()
     for row in rows:
         targets.add(row.symbol_id)
-        for driver in json.loads(getattr(row, "drivers_json", None) or "[]"):
-            if driver.get("symbol"):
+        try:
+            drivers = json.loads(getattr(row, "drivers_json", None) or "[]")
+        except ValueError:
+            drivers = []
+        for driver in drivers if isinstance(drivers, list) else ():
+            if isinstance(driver, dict) and isinstance(driver.get("symbol"), str):
                 targets.add(driver["symbol"])
     if not targets:
         return []
     files = sorted({file_of_symbol(t) for t in targets})
     named = sorted(targets)
+    # Half a batch of each per statement keeps the bound variables under the limit.
+    step = _BATCH_SIZE // 2
     found: dict[str, HealthFinding] = {}
-    for i in range(0, max(len(files), len(named)), _BATCH_SIZE):
+    for i in range(0, max(len(files), len(named)), step):
         clauses: list[Any] = []
-        if files[i : i + _BATCH_SIZE]:
-            clauses.append(HealthFinding.file_path.in_(files[i : i + _BATCH_SIZE]))
-        clauses += [HealthFinding.details_json.contains(json.dumps(t)) for t in named[i : i + _BATCH_SIZE]]
+        if files[i : i + step]:
+            clauses.append(HealthFinding.file_path.in_(files[i : i + step]))
+        clauses += [
+            HealthFinding.details_json.contains(json.dumps(t), autoescape=True)
+            for t in named[i : i + step]
+        ]
         result = await session.execute(
             select(HealthFinding).where(
                 HealthFinding.repository_id == repository_id,

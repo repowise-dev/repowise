@@ -425,3 +425,42 @@ def test_as_dict_drops_empty_fields() -> None:
         _row("lib/view.js::tryStat", [_c("statSync", "library", 0.99)], workload=""), "javascript"
     )
     assert set(step.as_dict()) == {"rule", "why", "next", "callee", "share"}
+
+
+@pytest.mark.parametrize(
+    ("name", "leaf"),
+    [
+        ("walk", None),  # ast.walk
+        ("exists", None),  # Redis.exists
+        ("Session.get", None),  # an HTTP session
+        ("glob", ("fnmatch", "library", 0.5)),
+    ],
+)
+def test_names_other_libraries_spell_too_are_not_filesystem_or_database(
+    name: str, leaf: tuple[str, str, float] | None
+) -> None:
+    assert (
+        next_step(_row("a.py::f", [_c(name, "library", 0.8, leaf)], klass="entry_point"), "python")
+        is None
+    )
+
+
+def test_an_ambiguous_walk_counts_when_its_stacks_end_in_the_filesystem() -> None:
+    row = _row(
+        "a.py::f", [_c("walk", "library", 0.8, ("scandir", "native", 0.6))], klass="entry_point"
+    )
+    assert next_step(row, "python").rule == "filesystem"
+
+
+def test_only_a_loop_finding_makes_a_database_read_an_n_plus_one() -> None:
+    drivers = [{"name": "hold", "share": 1.0, "symbol": "a.py::hold"}]
+    lock = static_finding(
+        "a.py",
+        "hold",
+        "blocking_io_under_lock",
+        "io under a lock",
+        {"boundary_kind": "db", "path": ["a.py::hold", "a.py::read"]},
+    )
+    row = _row("a.py::read", [_c("Session.execute", "library", 0.9)], drivers, klass="entry_point")
+    assert "N+1" not in next_step(row, "python", [lock]).next
+    assert "N+1" in next_step(row, "python", [{**lock, "kind": "io_in_loop"}]).next

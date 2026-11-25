@@ -66,8 +66,6 @@ _FS_METADATA = frozenset(
         "statSync",
         "lstatSync",
         "existsSync",
-        "exists",
-        "access",
         "accessSync",
         "is_file",
         "is_dir",
@@ -85,22 +83,36 @@ _FS_METADATA = frozenset(
 _DIR_WALK = frozenset(
     {
         "rglob",
-        "glob",
-        "iglob",
         "iterdir",
-        "walk",
         "listdir",
         "scandir",
         "select_recursive",
         "_select_recursive",
         "select_wildcard",
-        "readdir",
         "readdirSync",
         "opendirSync",
         "filepath.Walk",
         "filepath.WalkDir",
         "os.ReadDir",
         "fs.WalkDir",
+    }
+)
+# Names other libraries spell too (``ast.walk``, ``Redis.exists``): filesystem only
+# when the module says so or the stacks end in the filesystem.
+_FS_AMBIGUOUS = frozenset({"walk", "glob", "iglob", "readdir", "exists", "access"})
+_FS_QUALIFIED = frozenset(
+    {
+        "os.walk",
+        "Path.walk",
+        "glob.glob",
+        "glob.iglob",
+        "Path.glob",
+        "Path.exists",
+        "path.exists",
+        "os.access",
+        "fs.readdir",
+        "fs.exists",
+        "fs.access",
     }
 )
 # Template engines: the call that renders, and calls that always read and compile.
@@ -299,9 +311,7 @@ _PY_DB_RECEIVERS = frozenset(
         "Engine",
     }
 )
-_PY_DB_VERBS = (
-    PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | {"all", "first", "one", "one_or_none", "get"}
-)
+_PY_DB_VERBS = PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | {"all", "first", "one", "one_or_none"}
 _JS_DB_READS = frozenset(
     {
         "findOne",
@@ -464,7 +474,7 @@ def next_step(
         why=f"{static['reason']} (measured: {why})" if static and static.get("reason") else why,
         next=step,
         verify=verify_command(row.get("workload_name"), row.get("workload_class")),
-        callee=str(lead.get("name")),
+        callee=str(lead.get("name") or ""),
         share=round(share, 4),
         leaf=str(leaf["name"]) if leaf and family in _LEAF_RULES else None,
         static=static["kind"] if static else None,
@@ -553,9 +563,10 @@ def _classify(callee: Mapping[str, Any], lang: str, own_static: Sequence[Mapping
         return f"other:{name}"  # rendering itself is the work
     if names & _ETAG:
         return "etag"
-    if names & _FS_METADATA or (leaf_leads and _names(leaf_name) & _FS_METADATA):
+    fs_leaf = bool(leaf_name) and bool(_names(leaf_name) & (_FS_METADATA | _DIR_WALK))
+    if names & (_FS_METADATA | _DIR_WALK | _FS_QUALIFIED) or (leaf_leads and fs_leaf):
         return "filesystem"
-    if names & _DIR_WALK:
+    if names & _FS_AMBIGUOUS and fs_leaf:
         return "filesystem"
     if names & _HASH:
         return "hash"
@@ -657,6 +668,8 @@ def _loop_owner(
     callers = {d["symbol"] for d in drivers if d.get("symbol")}
     name = symbol.rsplit("::", 1)[-1]
     for finding in findings:
+        if finding.get("kind") != "io_in_loop":
+            continue
         path = finding.get("path") or []
         # A loop that calls this function from one of its measured drivers, or
         # calls the driver that holds most of its time.
@@ -728,8 +741,10 @@ def _filesystem(ctx: _Ctx) -> tuple[str, str]:
     leaves = {
         _last(str(c["leaf"]["name"])) for c in ctx.callees if isinstance(c.get("leaf"), Mapping)
     }
-    walk = bool((names | leaves) & {_last(n) for n in _DIR_WALK})
-    meta = bool((names | leaves) & {_last(n) for n in _FS_METADATA})
+    walk = bool(
+        (names | leaves) & ({_last(n) for n in _DIR_WALK} | {"walk", "glob", "iglob", "readdir"})
+    )
+    meta = bool((names | leaves) & ({_last(n) for n in _FS_METADATA} | {"exists", "access"}))
     if walk and meta:
         step = {
             "python": "walk with os.scandir and use each entry's is_file() and stat(), which reuse "
