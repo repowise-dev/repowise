@@ -106,11 +106,12 @@ def _extract_question_identifiers(question: str) -> set[str]:
     """
     ids: set[str] = set()
     for tok in _WORD_CHAIN_RE.findall(question):
-        # A file name (``call_resolver.py``) yields its stem only: the stem may
-        # name a class (``UserService.java``), the extension never names code.
-        # A dotted path yields both the full thing and each part.
-        parts = (_file_stem(tok),) if _has_code_extension(tok) else (tok, *tok.split("."))
-        for c in parts:
+        # A file name (``call_resolver.py``) yields its stem: the stem may name
+        # a class (``UserService.java``), the extension never names code.
+        # A dotted name yields both the full thing and each part.
+        if _has_code_extension(tok):
+            tok = os.path.splitext(tok)[0]
+        for c in (tok, *tok.split(".")):
             if c.lower() not in _STOPWORDS and _identifier_shaped(c):
                 ids.add(c)
     return ids
@@ -118,11 +119,8 @@ def _extract_question_identifiers(question: str) -> set[str]:
 
 def _named_file_stems(question: str) -> set[str]:
     """Stems of the file names *question* writes (``call_resolver.py`` -> ``call_resolver``)."""
-    return {_file_stem(tok) for tok in _WORD_CHAIN_RE.findall(question) if _has_code_extension(tok)}
-
-
-def _file_stem(token: str) -> str:
-    return os.path.splitext(token)[0].rsplit(".", 1)[-1]
+    stems = [os.path.splitext(t)[0] for t in _WORD_CHAIN_RE.findall(question) if _has_code_extension(t)]
+    return {part for stem in stems for part in (stem, *stem.split("."))}
 
 
 def union_defers_to_synthesis(

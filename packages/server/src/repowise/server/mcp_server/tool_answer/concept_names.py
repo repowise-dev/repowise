@@ -29,8 +29,9 @@ _RUN_LENGTHS = (3, 2)
 _MAX_DEFINING_FILES = 6
 # Files the leg adds, at most. They join below the top hits, never above them.
 _MAX_FILES = 3
-# Phrases tried, at most: a pasted log stays one small query (6 forms each).
-_MAX_PHRASES = 48
+# Plain words read, at most, from the start of the question: a pasted log
+# stays one small query (under 2 * 32 phrases, 6 forms each).
+_MAX_WORDS = 32
 _CALLABLE_KINDS = frozenset({"function", "method"})
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 # Punctuation ends a phrase: "the cache, key order" joins neither pair across it.
@@ -40,21 +41,22 @@ _CLAUSE_BREAK_RE = re.compile(r"[,;:.!?()\[\]{}\"'`]")
 def _phrases(question: str) -> list[tuple[str, ...]]:
     """Runs of adjacent plain words, longest first. A stopword or an
     identifier-shaped word (the question typed code) breaks the run."""
-    out: list[tuple[str, ...]] = []
+    runs: list[list[str]] = []
+    read = 0
     for clause in _CLAUSE_BREAK_RE.split(question):
-        runs: list[list[str]] = [[]]
+        runs.append([])
         for word in clause.split():
-            plain = _WORD_RE.fullmatch(word)
-            if not plain or word.lower() in STOPWORDS or _typed_as_code(word):
+            if not _WORD_RE.fullmatch(word) or word.lower() in STOPWORDS or _typed_as_code(word):
                 runs.append([])
-            else:
+            elif read < _MAX_WORDS:
+                read += 1
                 runs[-1].append(word.lower())
-        for run in runs:
-            for n in _RUN_LENGTHS:
-                out.extend(tuple(run[i : i + n]) for i in range(len(run) - n + 1))
-    out = out[:_MAX_PHRASES]
-    out.sort(key=len, reverse=True)
-    return out
+    return [
+        tuple(run[i : i + n])
+        for n in _RUN_LENGTHS
+        for run in runs
+        for i in range(len(run) - n + 1)
+    ]
 
 
 def _typed_as_code(word: str) -> bool:

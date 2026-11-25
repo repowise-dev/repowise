@@ -97,23 +97,30 @@ async def _named_rows(session, repo_id: str, tokens: list[str], exclude_spec: An
     rows = [r for r in res.scalars().all() if not is_excluded(r.file_path, exclude_spec)]
     named: dict[str, Any] = {}
     for token in tokens:
-        matches = [r for r in rows if r.file_path == token or r.file_path.endswith(f"/{token}")]
+        # The path as written wins; a bare file name must be one file's.
+        matches = [r for r in rows if r.file_path == token] or [
+            r for r in rows if r.file_path.endswith(f"/{token}")
+        ]
         if len(matches) == 1:
             named.setdefault(matches[0].file_path, matches[0])
     return list(named.values())
 
 
 def fix_history_lines(history: list[dict]) -> list[str]:
-    """One prompt line per file: the same clause get_risk's summary leads with."""
+    """One prompt line per file: the same clause get_risk's summary leads with.
+
+    Without a last-fix age that clause is empty (a count with no age reads as
+    a claim about the distant past), and the line names the fixed symbols only.
+    """
     lines = []
     for row in history:
-        clause = _fix_clause(row).rstrip(", ") or (
-            f"{row['fix_count']} bug fixes in {row['window']}"
-        )
         top = row.get("top_symbols") or {}
-        symbols = ", ".join(f"{name} ({n})" for name, n in top.items())
-        lines.append(
-            f"Bug-fix history of {row['path']}: {clause}"
-            + (f"; fixes landed most in {symbols}" if symbols else "")
-        )
+        parts = [
+            _fix_clause(row).rstrip(", "),
+            "fixes landed most in " + ", ".join(f"{name} ({n})" for name, n in top.items())
+            if top
+            else "",
+        ]
+        if said := "; ".join(p for p in parts if p):
+            lines.append(f"Bug-fix history of {row['path']}: {said}")
     return lines

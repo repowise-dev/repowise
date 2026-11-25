@@ -35,6 +35,7 @@ def test_a_file_extension_never_names_a_symbol():
     names = {"py", "PY", "ts", "proxyExecute"}
     assert not _names_symbol("call_resolver.py", names)
     assert not _names_symbol("index.ts", names)
+    assert not _names_symbol("Call_Resolver.PY", names)
     assert defined_identifiers("why so many fixes in call_resolver.py", names) == []
     # A dotted symbol chain still resolves by its last part.
     assert _names_symbol("client.proxyExecute", names)
@@ -46,6 +47,12 @@ def test_a_file_name_yields_its_stem_not_its_extension():
     }
     assert _extract_question_identifiers("how does src/UserService.java validate") == {
         "UserService"
+    }
+    # A dotted file name keeps its whole stem and each part of it.
+    assert _extract_question_identifiers("how does Auth.TokenService.ts validate") == {
+        "Auth.TokenService",
+        "Auth",
+        "TokenService",
     }
     # A dotted chain that is not a file still yields every part.
     assert _extract_question_identifiers("what does Config.load_all do") == {
@@ -102,7 +109,10 @@ def test_phrases_join_adjacent_plain_words_longest_first():
     assert ("calculated", "where") not in phrases
     assert _phrases("where is load_config called") == []
     # A pasted log stays one small query.
-    assert len(_phrases("alpha beta gamma delta " * 100)) == 48
+    assert len(_phrases("alpha beta gamma delta " * 100)) == 30 + 31
+    # Every phrase among the words read is kept, the short ones too.
+    long_run = " ".join(f"w{chr(97 + i % 26)}x" for i in range(26))
+    assert ("bus", "factor") in _phrases(f"{long_run}, how is bus factor computed")
 
 
 def test_name_forms_cover_each_casing_convention():
@@ -236,6 +246,49 @@ async def test_a_history_question_serves_the_named_files_fix_record(setup_mcp, s
     assert history["bug_magnet"] is True
     assert history["last_fix_days_ago"] == 2
     assert history["top_symbols"] == {"login": 4, "AuthService": 2}
+
+
+def test_a_fix_count_without_an_age_is_not_put_to_synthesis():
+    from repowise.server.mcp_server.tool_answer.fix_history import fix_history_lines
+
+    aged = {"path": "a.py", "fix_count": 3, "window": "6 months", "last_fix_days_ago": 2}
+    assert fix_history_lines([aged]) == [
+        "Bug-fix history of a.py: 3 bug fixes in 6 months, last 2d before the indexed commit"
+    ]
+    unaged = {"path": "a.py", "fix_count": 3, "window": "6 months"}
+    assert fix_history_lines([unaged]) == []
+    assert fix_history_lines([{**unaged, "top_symbols": {"run": 2}}]) == [
+        "Bug-fix history of a.py: fixes landed most in run (2)"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_path_written_whole_wins_over_a_longer_path_ending_in_it(setup_mcp, session):
+    from repowise.server.mcp_server.tool_answer.fix_history import named_file_fix_history
+
+    await _seed_fixes(session)
+    twin = (
+        await session.execute(
+            select(GitMetadata).where(GitMetadata.file_path == "src/auth/service.py")
+        )
+    ).scalar_one()
+    session.add(
+        GitMetadata(
+            id="gm-twin",
+            repository_id=twin.repository_id,
+            file_path="vendor/src/auth/service.py",
+            commit_count_total=1,
+            commit_count_90d=0,
+            commit_count_30d=0,
+            last_commit_at=twin.last_commit_at,
+        )
+    )
+    await session.flush()
+    question = "Why are there so many fixes in src/auth/service.py?"
+    [history] = await named_file_fix_history(session, "repo1", question)
+    assert history["path"] == "src/auth/service.py"
+    # A bare name two files carry names neither.
+    assert await named_file_fix_history(session, "repo1", "Why so many fixes in service.py?") == []
 
 
 @pytest.mark.asyncio

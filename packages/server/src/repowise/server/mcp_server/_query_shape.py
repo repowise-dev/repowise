@@ -135,7 +135,7 @@ def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
 
 def _has_code_extension(token: str) -> bool:
     """``plugin.go``, ``x.py``: a file name, not a dotted symbol name."""
-    return os.path.splitext(token)[1] in _code_exts()
+    return os.path.splitext(token)[1].lower() in _code_exts()
 
 
 def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
