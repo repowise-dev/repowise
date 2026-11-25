@@ -84,7 +84,9 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
         return
 
     qualifier = "" if evidence is None or evidence["state"] == "measured" else ", partial evidence"
-    score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
+    from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
+
+    score_color = BAND_TERMINAL_COLOR[band_for(metrics.score)]
     console.print(
         f"\n  Architecture score  [bold {score_color}]{metrics.score:.1f}[/bold {score_color}]"
         f" / 10   [dim]({metrics.architecture_type}{qualifier})[/dim]"
