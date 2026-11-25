@@ -193,6 +193,11 @@ class TestScanFile:
             ("<?php\n$c -> eval($script);\n", set()),
             ("<?php\nRedis::eval($script, [], 0);\n", set()),
             ("<?php\n$r = $c->eval($s); eval($code);\n", {"eval_call"}),
+            # A decrement, then a comparison: ($n--) > eval($x) is a bare eval.
+            ("<?php\nif ($n-->eval($x)) {}\n", {"eval_call"}),
+            ("<?php\nif ($n-- > eval($x)) {}\n", {"eval_call"}),
+            # Three dashes lex as -- then ->: a method call after a decrement.
+            ("<?php\n$n--->eval($x);\n", set()),
         ],
     )
     def test_php_method_eval_is_not_an_eval_call(self, source: str, expected: set[str]) -> None:
