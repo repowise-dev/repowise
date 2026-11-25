@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from urllib.parse import unquote, urlsplit
 
 from repowise.core.code_origin import path_origin
-from repowise.core.frame_resolver import ProfileFrame, frame_paths
+from repowise.core.frame_resolver import ProfileFrame, dirty_path_checker, frame_paths
 
 from .format_v1 import EvidenceFormatError
 from .profile_formats.model import ProfileRun
@@ -132,6 +132,17 @@ def _load_map(
     read_lines: Callable[[str], Sequence[str] | None],
     generated: bool,
 ) -> tuple[str, list[list[_Position]]] | None:
+    try:
+        return _read_map(rel, read_lines)
+    except EvidenceFormatError:
+        if generated:
+            return None  # Unusable build output stays a library frame, as before.
+        raise
+
+
+def _read_map(
+    rel: str, read_lines: Callable[[str], Sequence[str] | None],
+) -> tuple[str, list[list[_Position]]] | None:
     lines = read_lines(rel)
     tail = [line for line in reversed(lines or ()) if line.strip()][:5]
     match = next((m for line in tail if (m := _COMMENT.fullmatch(line))), None)
@@ -140,9 +151,7 @@ def _load_map(
     map_path = _relative(rel, match[1])
     map_lines = read_lines(map_path)
     if map_lines is None:
-        if not generated:
-            raise _refuse(f"{map_path} is missing")
-        return None
+        raise _refuse(f"{map_path} is missing")
     return map_path, _decode("\n".join(map_lines), map_path)
 
 
@@ -176,6 +185,7 @@ def remap_profile(
     if read_lines is None:
         return run
     cache: dict[str, tuple[str, list[list[_Position]]] | None] = {}
+    is_dirty = dirty_path_checker(root, dirty_paths)
     frames: list[ProfileFrame] = []
     for frame in run.frames:
         paths = frame_paths([frame], root=root) if frame.language == "javascript" else set()
@@ -191,7 +201,7 @@ def remap_profile(
             frames.append(frame)
             continue
         map_path, lines = mapping
-        if rel in dirty_paths or map_path in dirty_paths:
+        if is_dirty(rel) or is_dirty(map_path):
             raise _refuse("the bundle or map differs from the indexed commit")
         position = _position(frame, lines)
         assert position.source is not None

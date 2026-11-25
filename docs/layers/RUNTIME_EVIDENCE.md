@@ -296,8 +296,9 @@ The format is detected from the content, never the file name;
   local Source Map v3 file instead. Before joining, the shared converter maps
   positions to the original checkout source (JavaScript or TypeScript), then
   applies the usual position, dirty-file and code-origin checks. Generated
-  bundles with usable maps can resolve to maintained sources; vendored files
-  remain libraries. Missing maps for maintained files and unmapped positions
+  bundles with usable maps can resolve to maintained sources; generated files
+  with unavailable or unsupported maps and vendored files remain libraries.
+  Missing maps for maintained files and unmapped positions
   are refused. Inline, remote and indexed maps are unsupported; map paths and
   sources must stay inside the checkout. Collapsed frames without columns need
   exactly one mapping segment starting at column zero on their generated line.

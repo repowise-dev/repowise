@@ -131,3 +131,43 @@ def test_dirty_bundle_or_map_is_not_used(bundle, dirty):
     with pytest.raises(EvidenceFormatError, match="differs from the indexed commit"):
         convert_profile(_run(root, "cpuprofile"), root=str(root), value_kind="cpu",
                         symbols_by_file={}, read_lines=checkout_reader(root), dirty_paths=[dirty])
+
+
+@pytest.mark.parametrize("problem", ["inline", "remote", "webpack", "indexed", "invalid"])
+def test_unusable_generated_maps_remain_library_frames(bundle, problem):
+    root, data = bundle
+    if problem in ("inline", "remote"):
+        url = "data:application/json;base64,e30=" if problem == "inline" else "https://example.com/a.map"
+        (root / "bundle.js").write_text(f"//# sourceMappingURL={url}\n")
+    else:
+        if problem == "webpack":
+            data["sources"] = ["webpack:///./src/app.ts"]
+        elif problem == "indexed":
+            data["sections"] = []
+        else:
+            data["mappings"] = "!"
+        (root / "bundle.js.map").write_text(json.dumps(data))
+    run = _run(root, "cpuprofile")
+    result = convert_profile(run, root=str(root), value_kind="cpu", symbols_by_file={},
+                             origins={"bundle.js": "generated"}, read_lines=checkout_reader(root))
+    assert result.libraries == result.total > 0
+    assert result.document["symbols"] == []
+    # The same unsupported map on maintained code remains an explicit refusal.
+    with pytest.raises(EvidenceFormatError, match="source map"):
+        convert_profile(run, root=str(root), value_kind="cpu", symbols_by_file={},
+                        read_lines=checkout_reader(root))
+
+
+@pytest.mark.parametrize("dirty", ["bundle.js", "BUNDLE.JS.MAP", r"sub\..\bundle.js"])
+def test_windows_dirty_paths_use_the_resolvers_case_and_separator_rules(dirty):
+    from repowise.core.evidence.profile_formats.model import ProfileRun, Stack
+    from repowise.core.frame_resolver import ProfileFrame
+
+    files = {"bundle.js": ["//# sourceMappingURL=bundle.js.map"],
+             "bundle.js.map": [json.dumps({"version": 3, "sources": ["src/app.ts"],
+                                           "mappings": "AAAA"})]}
+    run = ProfileRun((ProfileFrame("C:/SRC/Bundle.js", 1, "javascript", "a", 1),),
+                     (Stack((0,), 1, 1),), "samples", "cpu")
+    with pytest.raises(EvidenceFormatError, match="differs from the indexed commit"):
+        convert_profile(run, root="C:/src", symbols_by_file={}, dirty_paths=[dirty],
+                        read_lines=lambda p: files.get(p.casefold()))
