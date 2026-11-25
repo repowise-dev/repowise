@@ -187,9 +187,14 @@ def is_native_frame(frame: ProfileFrame) -> bool:
     """
     path = frame.path
     if not path:
-        # A bare name a collapsed stack gives a JVM, Go or C++ library frame
-        # (``java/util/HashMap.get``, ``std::sort``) is not the runtime's.
-        return not any(mark in frame.function for mark in ("/", "::"))
+        # A bare name: the runtime's when it is a V8 marker (``(program)``), Go's
+        # ``runtime`` or an unqualified native (``writev``); a qualified name a
+        # collapsed stack gives a library frame (``java/util/HashMap.get``,
+        # ``std::sort``, ``gorm.(*DB).First``) is a library.
+        name = frame.function
+        if name.startswith(("(", "runtime.")):
+            return True
+        return not any(mark in name for mark in (".", "/", "::"))
     if path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
         return True
     return frame.language == "go" and frame.function.startswith("runtime.")

@@ -364,3 +364,22 @@ def test_commit_position_reads_ingest_order_within_the_runs_history() -> None:
     assert commit_position(late, [anchor, junit, late], HEAD) == "ahead"
     # No indexed commit.
     assert commit_position(late, [anchor, late], None) == "other"
+
+
+def test_inside_comes_from_the_basis_run_and_a_caller_gone_from_the_index_keeps_its_file() -> None:
+    import json
+    from dataclasses import replace
+
+    inside = '[{"kind": "own", "name": "(own code)", "share": 1.0}]'
+    drivers = json.dumps([
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "share": 0.4, "symbol": "src/gone.py::old"},
+    ])
+    cost = replace(_cost("f", 100), inside_json=inside, drivers_json=drivers)
+    rows = _derive([_run()], {"r1": [cost]}, current=_current("src/m.py::f", "src/app.py::main"))
+    row = rows["src/m.py::f"]
+    assert row["inside_json"] == inside
+    assert json.loads(row["drivers_json"]) == [
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "path": "src/gone.py", "share": 0.4},
+    ]

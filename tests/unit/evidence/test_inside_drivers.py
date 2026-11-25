@@ -388,3 +388,13 @@ def test_a_driver_in_a_changed_or_vendored_file_keeps_its_path_not_a_symbol() ->
     assert drivers(frozenset()) == [{"name": "main", "share": 1.0, "symbol": "b.py::main"}]
     assert drivers(frozenset({"b.py"})) == [{"name": "main", "path": "b.py", "share": 1.0}]
     assert drivers(frozenset(), "vendored") == [{"name": "main", "path": "b.py", "share": 1.0}]
+
+
+def test_a_dotted_bare_name_is_a_library_and_a_runtime_marker_is_native() -> None:
+    def frame(name: str) -> ProfileFrame:
+        return ProfileFrame(path="", line=0, language="unknown", function=name)
+
+    assert not is_native_frame(frame("gorm.(*DB).First"))
+    assert not is_native_frame(frame("requests.get"))
+    assert is_native_frame(frame("runtime.mallocgc"))
+    assert is_native_frame(frame("(program)"))
