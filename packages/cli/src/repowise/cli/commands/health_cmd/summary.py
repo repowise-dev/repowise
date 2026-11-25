@@ -184,6 +184,10 @@ def _row_facts(row: dict[str, Any]) -> str:
         parts.append(f"{callers} caller{'s' if callers != 1 else ''}")
     if row.get("owner"):
         parts.append(f"owner {row['owner']['name']}")
+    last = row.get("last_change")
+    if last:
+        ref = ", ".join(x for x in (last["sha"][:7], f"#{last['pr']}" if last["pr"] else None) if x)
+        parts.append(f"last changed {last['date']} ({ref})" if last["date"] else f"last changed {ref}")
     tests = row.get("tests")
     ran = row.get("tests_basis") == "per_test_map"
     if tests is None:

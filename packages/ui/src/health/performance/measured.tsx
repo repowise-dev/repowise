@@ -154,8 +154,8 @@ function RowMeta({ row, run }: { row: MeasuredRow; run: MeasuredRun }) {
   if (row.callers_total != null) parts.push(plural(row.callers_total, "caller"));
   if (row.owner) {
     parts.push(
-      row.owner.commit_pct != null
-        ? `${row.owner.name} ${formatPercent(row.owner.commit_pct)}`
+      row.owner.line_pct != null
+        ? `${row.owner.name} ${formatPercent(row.owner.line_pct)}`
         : row.owner.name,
     );
   }

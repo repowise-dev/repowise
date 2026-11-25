@@ -1304,6 +1304,13 @@ class GitFunctionBlame(Base):
     # ``function_blame_rollup.COMMIT_SET_LIMIT``. Split File's co-change edge
     # reads it when a re-score has no blame index. NULL on rows written before.
     commit_shas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Blamed for the function's owner and last change only: a file under the
+    # commit floor, or a production file over the biomarkers' size cap. The
+    # health readers (function mod percentile, Split File sets, Fix first,
+    # plan annotations) skip these rows, so they read what the biomarkers saw.
+    history_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

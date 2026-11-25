@@ -19,6 +19,8 @@ from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
     EvidenceRun,
     FunctionFact,
+    GitCommit,
+    GitFunctionBlame,
     GitMetadata,
     GraphEdge,
     GraphNode,
@@ -86,11 +88,22 @@ async def _seed_code(session, repo_id: str) -> None:
                 )
                 for c in callers
             ),
+            # The file's owner: never shown on a function row.
             GitMetadata(
                 repository_id=repo_id,
                 file_path=APP,
                 primary_owner_name="Ada",
                 primary_owner_commit_pct=0.8,
+            ),
+            # ``serve``'s own lines: Grace wrote most, newest commit is "f" * 40.
+            GitFunctionBlame(
+                repository_id=repo_id, symbol_id=serve, file_path=APP, function_name="serve",
+                start_line=1, end_line=20, mod_count=2, owner_name="Grace",
+                owner_line_pct=0.75, commit_shas_json=json.dumps(["f" * 40, "e" * 40]),
+            ),
+            GitCommit(
+                repository_id=repo_id, sha="f" * 40, subject="perf: serve faster (#42)",
+                committed_at=datetime(2026, 10, 3, 12, tzinfo=UTC),
             ),
         ]
     )
@@ -186,7 +199,14 @@ async def test_each_workload_keeps_its_rows_with_context_and_static_links(async_
     assert serve["lines"] == [1, 20]
     # The test caller is neither listed nor counted.
     assert serve["callers_total"] == 1 and serve["callers"] == ["src/main.py::main"]
-    assert serve["owner"] == {"name": "Ada", "commit_pct": 0.8}
+    # Owner and last change from the function's own lines, not the file's owner.
+    assert serve["owner"] == {"name": "Grace", "line_pct": 0.75}
+    assert serve["last_change"] == {
+        "sha": "f" * 40, "date": "2026-10-03", "subject": "perf: serve faster (#42)", "pr": 42,
+    }
+    # ``load`` has no blame row of its own: no owner line, never the file's owner.
+    load = measured["rows"][3]
+    assert load["owner"] is None and load["last_change"] is None
     assert serve["tests"] == ["tests/test_app.py::test_serve"]
     # No per-test map: the nearest test by call graph, labelled so.
     assert (serve["tests_basis"], serve["verify"]) == ("call_graph", None)

@@ -430,6 +430,12 @@ _GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
 # used as a fallback instead.
 _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 
+# A production file up to this size is still blamed, for its functions' owner
+# and last change only (``git_function_blame.history_only``): the file owner
+# and the health biomarkers keep the cap above. Without it a function in a
+# large module has no owner at all.
+_MAX_FUNCTION_BLAME_SIZE_BYTES: int = 512 * 1024  # 512 KB
+
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the
 # semaphore slot is released so other files can proceed.

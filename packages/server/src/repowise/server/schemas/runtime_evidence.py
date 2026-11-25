@@ -159,8 +159,22 @@ class MeasuredRun(_Strict):
 
 
 class MeasuredOwner(_Strict):
+    """Who wrote most of the function's current lines, by line blame."""
+
     name: str
-    commit_pct: float | None
+    #: Their share of the function's blamed lines.
+    line_pct: float | None
+
+
+class MeasuredLastChange(_Strict):
+    """The newest commit blame credits a current line of the function to."""
+
+    sha: str
+    #: Null when the commit is older than the indexed history window.
+    date: str | None
+    subject: str | None
+    #: The PR or MR the commit subject names.
+    pr: int | None
 
 
 class MeasuredRow(_Strict):
@@ -186,7 +200,10 @@ class MeasuredRow(_Strict):
     #: Callers outside test code; null when the graph does not know the function.
     callers_total: int | None
     callers: list[str]
+    #: Owner and last change come from the function's own lines; null without
+    #: its blame row (never the file's owner).
     owner: MeasuredOwner | None
+    last_change: MeasuredLastChange | None
     #: Tests for the function, at most three; null when unknown. Empty: no
     #: test ran it (``per_test_map``) or reaches it (``call_graph``).
     tests: list[str] | None

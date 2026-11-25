@@ -3279,6 +3279,14 @@ export interface MeasuredGroup {
   total: number;
 }
 
+/** The newest commit blame credits a current line of the function to. */
+export interface MeasuredLastChange {
+  sha: string;
+  date: string | null;
+  subject: string | null;
+  pr: number | null;
+}
+
 /** The frame a callee's stacks end in most: what the callee spends its time on. */
 export interface MeasuredLeaf {
   name: string;
@@ -3286,9 +3294,10 @@ export interface MeasuredLeaf {
   share: number;
 }
 
+/** Who wrote most of the function's current lines, by line blame. */
 export interface MeasuredOwner {
   name: string;
-  commit_pct: number | null;
+  line_pct: number | null;
 }
 
 /** What each workload's newest run that ranks anything ranks, grouped by workload class. */
@@ -3316,6 +3325,7 @@ export interface MeasuredRow {
   callers_total: number | null;
   callers: string[];
   owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
   tests: string[] | null;
   tests_basis?: "per_test_map" | "call_graph" | null;
   verify?: string | null;
