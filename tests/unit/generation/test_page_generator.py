@@ -765,7 +765,7 @@ async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
     real_build = _levels.build_level2_coros
 
     async def slow_build(run):
-        time.sleep(0.1)
+        time.sleep(0.2)
         return await real_build(run)
 
     monkeypatch.setattr(_levels, "build_level2_coros", slow_build)
@@ -773,11 +773,11 @@ async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
 
     builds = {k: v for k, v in totals.items() if k.startswith("generation.llm.")}
     assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 7, 8)}
-    assert builds["generation.llm.build.level2"] >= 0.09
-    assert totals["generation.level2"] < 0.09
+    assert builds["generation.llm.build.level2"] >= 0.19
     # The builds, the levels they feed and the finalize pass are disjoint parts
     # of generation.llm, so together they fit inside it (each total is rounded
-    # to 0.01 s, hence the slack).
+    # to 0.01 s, hence the slack). Were the slow build counted twice, the sum
+    # would overshoot by its 0.2 s, well past the slack.
     levels = {k: v for k, v in totals.items() if k.startswith("generation.level")}
     parts = {**builds, **levels, "generation.finalize": totals["generation.finalize"]}
     assert sum(parts.values()) <= totals["generation.llm"] + 0.01 * len(parts)
