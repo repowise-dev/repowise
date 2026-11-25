@@ -32,6 +32,8 @@ def test_a_repository_never_indexed_is_told_to_index_first(tmp_path: Path) -> No
     assert unit["coverage"]["command"].startswith("pytest --cov=app")
     # The plan still says what runs, so a person can read it before indexing.
     assert unit["coverage"]["ingest"] == "repowise coverage add coverage.xml .coverage"
+    # The per-test map's file is a field, not only a hint in prose.
+    assert unit["coverage"]["per_test_map"] == ".coverage"
     assert not (tmp_path / ".repowise").exists()
 
 
@@ -77,6 +79,8 @@ def test_a_nested_unit_keeps_its_own_report_and_runs_in_its_root(tmp_path: Path)
     assert unit["root"] == "svc"
     assert unit["coverage"]["found"] == ["svc/coverage.out"]
     assert unit["coverage"]["ingest"] == "repowise coverage add svc/coverage.out"
+    # Go coverage has no per-test contexts.
+    assert unit["coverage"]["per_test_map"] is None
 
 
 def test_an_unknown_stack_says_why_and_offers_no_command(tmp_path: Path) -> None:
@@ -236,3 +240,17 @@ def test_coverage_setup_leaves_test_timings_out(tmp_path: Path) -> None:
     (unit,) = evidence_setup(tmp_path, indexed=True, coverage_only=True)["units"]
 
     assert "test_timings" not in unit
+
+
+def test_the_per_test_map_file_sits_in_the_unit_root_and_needs_a_command() -> None:
+    from repowise.core.evidence.setup import _coverage_unit
+    from repowise.core.test_runners.stacks import Stack
+
+    test = "pytest --cov-context=test"
+    nested = Stack("python", "pytest", test=test, push_reports=".coverage", root="svc")
+    no_command = Stack("python", "pytest", push_reports=".coverage", root="svc")
+
+    assert _coverage_unit(nested, [], False)["coverage"]["per_test_map"] == "svc/.coverage"
+    assert _coverage_unit(no_command, [], False)["coverage"]["per_test_map"] is None
+    no_contexts = Stack("python", "pytest", test="pytest --cov --cov-report=xml", root="svc")
+    assert _coverage_unit(no_contexts, [], False)["coverage"]["per_test_map"] is None

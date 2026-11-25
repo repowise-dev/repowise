@@ -117,6 +117,8 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
         ingest = coverage_ingest_line(_written_reports(stack))
     else:
         ingest = None
+    has_map = shown["command"] and stack.push_reports
+    per_test_map = _joined(stack.root, stack.push_reports.split()[0]) if has_map else None
     return {
         "root": shown["root"],
         "stack": shown["stack"],
@@ -129,6 +131,9 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
             "found": found,
             "found_current": bool(found) and current,
             "ingest": ingest,
+            # The file the command also writes that builds the per-test map
+            # (coverage.py's ``.coverage`` with test contexts); ingest it with the report.
+            "per_test_map": per_test_map,
             "reason": shown["reason"],
             "notes": shown["notes"],
         },

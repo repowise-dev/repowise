@@ -39,6 +39,7 @@ from repowise.core.analysis.health.coverage.contexts import (
     PER_TEST_COVERAGE_COMMAND,
     is_coverage_data_file,
 )
+from repowise.core.evidence.setup import COVERAGE_SETUP
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
@@ -204,10 +205,8 @@ def coverage_add(
             console.print(
                 "[yellow]No coverage report found.[/yellow] Looked for "
                 "coverage/lcov.info, .coverage, **/cobertura.xml, and similar.\n"
-                f"Generate one (e.g. [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], "
-                "which needs pytest-cov, "
-                "or [cyan]cargo llvm-cov --lcov --output-path coverage/lcov.info[/cyan]) "
-                "then re-run, or pass a path:\n"
+                f"[cyan]{COVERAGE_SETUP}[/cyan] prints this repository's test command "
+                "with coverage and the exact ingest line. Or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
             )
             _record_ingest_outcome("no_report")
@@ -494,9 +493,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
-                    "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
-                    f"recorded with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) "
-                    "also builds the per-test map."
+                    f"[cyan]{COVERAGE_SETUP}[/cyan] for this repository's test command "
+                    "with coverage and the exact ingest line."
                 )
                 return
 
