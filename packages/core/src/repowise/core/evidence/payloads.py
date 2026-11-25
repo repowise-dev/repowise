@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from datetime import timedelta
 from typing import Any
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
@@ -99,6 +100,9 @@ def owner_history_payload(blame: Any, commit: Any | None) -> dict[str, Any]:
     if isinstance(shas, list) and shas:
         subject = (commit.subject or None) if commit is not None else None
         at = commit.committed_at if commit is not None else None
+        if at is not None:
+            # The committer's own calendar day: ``committed_at`` is a UTC instant.
+            at += timedelta(minutes=getattr(commit, "committed_offset_minutes", None) or 0)
         last = {
             "sha": str(shas[0]),
             "date": at.date().isoformat() if at is not None else None,

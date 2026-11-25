@@ -94,3 +94,16 @@ async def test_rows_match_by_file_name_and_lines(async_session) -> None:
 def test_payload_without_owner_or_history() -> None:
     blame = SimpleNamespace(owner_name=None, owner_line_pct=None, commit_shas_json=None)
     assert owner_history_payload(blame, None) == {"owner": None, "last_change": None}
+
+
+def test_the_date_is_the_committers_own_day() -> None:
+    blame = SimpleNamespace(
+        owner_name="Grace", owner_line_pct=1.0, commit_shas_json=json.dumps([NEW])
+    )
+    # 00:30 at +02:00 is 22:30 UTC the day before.
+    commit = SimpleNamespace(
+        subject="x",
+        committed_at=datetime(2026, 10, 9, 22, 30, tzinfo=UTC),
+        committed_offset_minutes=120,
+    )
+    assert owner_history_payload(blame, commit)["last_change"]["date"] == "2026-10-10"
