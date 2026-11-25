@@ -21,7 +21,7 @@ from repowise.core.registry.instructions import (
     server_instructions,
 )
 from repowise.server.mcp_server import tool_definitions
-from repowise.server.mcp_server._no_checkout import NO_CHECKOUT_WORDING
+from repowise.server.mcp_server._no_checkout import NO_CHECKOUT_WORDING, phrase_pattern
 
 _ALL = sorted({*TOOL_LINES, *CHECK_CLAUSES, "get_overview", "get_health", "get_dead_code"})
 #: Words a server with no checkout cannot stand behind.
@@ -80,7 +80,21 @@ def test_every_no_checkout_phrase_still_matches_the_default_definitions():
         props = defaults[name]["inputSchema"].get("properties", {})
         for where, old, _new in swaps:
             holder = defaults[name] if where == "description" else props[where]
-            assert old in holder["description"], (name, where, old)
+            assert phrase_pattern(old).search(holder["description"]), (name, where, old)
+
+
+def test_a_phrase_matches_whatever_the_docstring_indentation():
+    """Python 3.13 strips docstring indentation; the swap must still apply."""
+    from repowise.server.mcp_server._no_checkout import without_checkout
+
+    for indent in ("", "    ", "            "):
+        definition = {
+            "name": "get_change_risk",
+            "description": "revspec: commit or ``base..head``. Omit for uncommitted work, or\n"
+            f"{indent}``HEAD`` when the tree is clean.",
+        }
+        text = without_checkout(definition)["description"]
+        assert text == "revspec: an indexed commit or ``base..head``.", indent
 
 
 @pytest.mark.parametrize("workspace", [False, True])
