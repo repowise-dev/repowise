@@ -149,3 +149,20 @@ def test_the_connect_line_comes_last(monkeypatch) -> None:
         monkeypatch.setattr(health_module, name, lambda *_a, _n=name: calls.append(_n))
     _run(monkeypatch)
     assert calls == ["_render_files_table", "_render_findings_table", "_render_connect_line"]
+
+
+def test_benchmarks_show_the_function_each_measures_and_numbers_per_op() -> None:
+    bench_run = {"run_id": "b1", "workload_class": "benchmark", "workload_name": "go bench",
+                 "commit": "abcdef1234", "measured_at": None, "age_days": 0}
+    row = {"run_id": "b1", "benchmark": "BenchmarkGetMapFromFormData/Large_Bracket",
+           "benchmark_symbol_id": "context_test.go::BenchmarkGetMapFromFormData",
+           "measures": "context.go::getMapFromFormData", "time": 10244.0, "unit": "ns",
+           "allocs_per_op": 11.0, "bytes_per_op": 5456.0}
+    unnamed = {**row, "benchmark": "Benchmark404", "measures": None, "time": 62.58,
+               "allocs_per_op": 0.0, "bytes_per_op": None}
+    out = _rendered({"benchmarks": {"runs": [bench_run], "rows": [row, unnamed], "total": 2}})
+    assert 'Benchmarks ("go bench" at abcdef1)' in out
+    assert "BenchmarkGetMapFromFormData/Large_Bracket -> context.go::getMapFromFormData" in out
+    assert "10,244 ns/op, 11 allocs/op, 5,456 B/op" in out
+    assert "Benchmark404\n" in out and "62.6 ns/op, 0 allocs/op" in out
+    assert "of the run" not in out

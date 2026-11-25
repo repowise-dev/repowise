@@ -1208,8 +1208,7 @@ async def measured_costs(
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
-    if not ranked:
-        return None
+    benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
         if run.workload_class in LEAD_CLASSES:
@@ -1217,7 +1216,7 @@ async def measured_costs(
         elif run.workload_class == "unit_test":
             groups["measured_in_tests"].append((run, rows))
     if not any(groups.values()):
-        return None
+        return {"benchmarks": benchmarks} if benchmarks else None
     # ``limit=0`` keeps each group's runs and total with no rows.
     shown = {key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()}
     ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
@@ -1239,7 +1238,60 @@ async def measured_costs(
                 ],
                 "total": sum(len(rows) for _, rows in groups[key]),
             }
+    if benchmarks:
+        view["benchmarks"] = benchmarks
     return view or None
+
+
+async def _benchmark_group(
+    session: AsyncSession,
+    repository_id: str,
+    limit: int,
+    now: datetime | None,
+    run_id: str | None,
+) -> dict[str, Any] | None:
+    """Each workload's newest benchmark run: per result, the benchmark, the
+    production function it measures and its numbers per operation
+    (``evidence.benchmarks``). ``None`` when no benchmark result is stored."""
+    from ....evidence.benchmarks import benchmark_view, measured_functions
+    from ....evidence.hotness import newest_runs
+    from .evidence import benchmark_callees, benchmark_results, benchmark_runs
+
+    runs = await benchmark_runs(session, repository_id)
+    if run_id is not None:
+        runs = [run for run in runs if run.id == run_id]
+    if not runs:
+        return None
+    newest = newest_runs(runs)
+    results = await benchmark_results(session, sorted(newest))
+    callees = await benchmark_callees(session, repository_id, {r.symbol_id for r in results})
+    view = benchmark_view(
+        runs, results, measured_functions(list(callees), callees), limit=max(limit, 0)
+    )
+    if view is None:
+        return None
+    at = now or _now_utc()
+    by_id = {run.id: run for run in runs}
+    return {
+        "runs": [_benchmark_run(by_id[i], at) for i in view["run_ids"]],
+        "rows": view["rows"],
+        "total": view["total"],
+    }
+
+
+def _benchmark_run(run: Any, at: datetime) -> dict[str, Any]:
+    """A benchmark run's basis: workload, commit and age."""
+    measured_at = run.measured_at or run.ingested_at
+    if measured_at is not None and measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=UTC)
+    return {
+        "run_id": run.id,
+        "workload_class": run.workload_class,
+        "workload_name": run.workload_name,
+        "commit": run.commit_sha,
+        "measured_at": measured_at.isoformat() if measured_at else None,
+        "age_days": max((at - measured_at).days, 0) if measured_at else None,
+    }
 
 
 async def _symbol_spans(

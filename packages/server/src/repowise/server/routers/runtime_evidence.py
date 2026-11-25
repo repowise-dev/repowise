@@ -84,8 +84,9 @@ async def get_measured(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Each workload's newest run with its ranked production functions, best
-    rank first: benchmark, entry point, load test and production runs under
-    ``measured``, unit-test runs under ``measured_in_tests``."""
+    rank first: entry point, load test and production runs under
+    ``measured``, unit-test runs under ``measured_in_tests``, and each
+    benchmark's result with the function it measures under ``benchmarks``."""
     await _repo(session, repo_id)
     view = await crud.measured_costs(session, repo_id, limit=limit, run_id=run_id)
     status = "measured" if view is not None else await crud.measured_status(session, repo_id)

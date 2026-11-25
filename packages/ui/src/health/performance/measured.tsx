@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type {
+  BenchmarkRow,
+  BenchmarkRun,
   EvidenceRunSummary,
   MeasuredRow,
   MeasuredRun,
@@ -21,6 +23,7 @@ import { MICRO } from "../tokens";
 import type { PerformanceViewAdapter } from "./adapter";
 import {
   intervalText,
+  perOpText,
   plural,
   rowLocation,
   shareText,
@@ -333,7 +336,7 @@ function RowsFooter({
 }
 
 /** The list while it loads, when it could not be read, or nothing when it is empty. */
-function RowsPending({ loading }: { loading: boolean }) {
+function RowsPending({ loading, what = "the ranked functions" }: { loading: boolean; what?: string }) {
   if (loading) {
     return (
       <div className="space-y-px" aria-busy="true">
@@ -345,7 +348,7 @@ function RowsPending({ loading }: { loading: boolean }) {
   }
   return (
     <p role="status" className="text-sm text-[var(--color-text-tertiary)]">
-      Could not read the ranked functions. Reload to try again.
+      Could not read {what}. Reload to try again.
     </p>
   );
 }
@@ -435,6 +438,110 @@ function MeasuredRows({
           />
         </>
       )}
+    </div>
+  );
+}
+
+/** One benchmark: its name, the production function it measures when known, its figures per operation. */
+function BenchmarkRowItem({ row, adapter }: { row: BenchmarkRow; adapter: PerformanceViewAdapter }) {
+  const figures = perOpText(row);
+  const measures = row.measures;
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)] gap-x-3 gap-y-1 px-1 py-3 hover:bg-[var(--color-bg-elevated)] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+      <div className="min-w-0">
+        <p className="font-mono text-[13px] font-medium text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+          {row.benchmark}
+        </p>
+        {measures ? (
+          <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">
+            measures{" "}
+            <a
+              href={adapter.symbolHref?.(measures) ?? adapter.fileHref(measures.split("::")[0] ?? measures)}
+              className={`font-mono ${QUIET_LINK_CLS}`}
+            >
+              {symbolSubject(measures)}
+            </a>
+          </p>
+        ) : null}
+      </div>
+      {figures ? (
+        <p className="font-mono text-[13px] tabular-nums text-[var(--color-text-primary)] lg:text-right">
+          {figures}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+/** One benchmark run's results under its workload and commit, with a "Show all" past the preview. */
+function BenchmarkRunRows({ adapter, run }: { adapter: PerformanceViewAdapter; run: BenchmarkRun }) {
+  const [all, setAll] = useState(false);
+  const { data, error, isLoading } = useMeasuredRows(
+    adapter,
+    run.run_id,
+    all ? MEASURED_MAX : MEASURED_PREVIEW,
+  );
+  const rows = data?.benchmarks?.rows ?? [];
+  const total = data?.benchmarks?.total ?? 0;
+  const pending = Boolean(error) || (!data && isLoading);
+  if (!pending && rows.length === 0) return null;
+  const at = sha7(run.commit);
+  const label = [
+    run.workload_name,
+    at ? `at ${at}` : null,
+    run.measured_at ? formatRelativeTimeOrNull(run.measured_at) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div>
+      <p className="mb-1.5 font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+        {label}
+      </p>
+      {pending ? (
+        <RowsPending loading={isLoading} what="the benchmark results" />
+      ) : (
+        <>
+          <ul
+            aria-label={`Benchmarks in ${run.workload_name}`}
+            className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
+          >
+            {rows.map((row) => (
+              <BenchmarkRowItem key={`${row.run_id}:${row.benchmark}`} row={row} adapter={adapter} />
+            ))}
+          </ul>
+          {total > rows.length ? (
+            <RowsFooter
+              caption={`Showing ${formatNumber(rows.length)} of ${plural(total, "benchmark")}.`}
+              showAll={all ? null : { count: Math.min(total, MEASURED_MAX), onClick: () => setAll(true) }}
+            />
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Each workload's newest benchmark run: per benchmark, the function it
+ * measures and its figures per operation. A benchmark times one piece of
+ * work in isolation, so it never ranks functions or reorders the queue.
+ */
+function BenchmarksGroup({ view, adapter }: { view: RuntimeEvidenceView; adapter: PerformanceViewAdapter }) {
+  if (view.benchmarkRuns.length === 0) return null;
+  return (
+    <div>
+      <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">Benchmarks</h3>
+      <p className="mb-3 mt-1 max-w-[70ch] text-xs text-[var(--color-text-secondary)]">
+        Each benchmark&apos;s time per operation and the production function it measures. A
+        benchmark times one piece of work on its own, so it does not rank functions or reorder the
+        queue.
+      </p>
+      <div className="space-y-6">
+        {view.benchmarkRuns.map((run) => (
+          <BenchmarkRunRows key={run.run_id} adapter={adapter} run={run} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -725,7 +832,7 @@ function RunsGroup({
 /**
  * The runtime evidence block between the lede and the queue: why stored runs
  * rank nothing when they do not, the strip with the workload lens and the
- * run's header, the measured table, then the unit-test run, the test time and
+ * run's header, the measured table, each benchmark's results, then the unit-test run, the test time and
  * every stored run, closed. With no ranked workload the newest profile's
  * header still shows: its total, its split, and whether it carries enough
  * signal to rank. Renders nothing when there is nothing to say.
@@ -753,7 +860,15 @@ export function RuntimeEvidenceSection({
   const onOpenCause = canOpenCause ? openCause : undefined;
   const notices = runtimeNotices(view);
   const unranked = view.run ? null : overviewRun(view.runs, null, view.referenceCommit);
-  if (!view.run && !unranked && !view.testRun && !view.tests && notices.length === 0) return null;
+  if (
+    !view.run &&
+    !unranked &&
+    !view.testRun &&
+    !view.tests &&
+    view.benchmarkRuns.length === 0 &&
+    notices.length === 0
+  )
+    return null;
   const rows = { view, adapter, onOpenCause, onPrompt };
   return (
     <section aria-label="Runtime evidence" className="space-y-10">
@@ -769,6 +884,7 @@ export function RuntimeEvidenceSection({
         />
       ) : null}
       <LeadRun {...rows} lowSignalPrompt={lowSignalPrompt} />
+      <BenchmarksGroup view={view} adapter={adapter} />
       <div className="border-b border-[var(--color-border-default)]">
         <TestRunGroup {...rows} />
         <TestsGroup tests={view.tests} fileHref={adapter.fileHref} onPrompt={onPrompt} />

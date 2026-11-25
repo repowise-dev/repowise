@@ -101,7 +101,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     """The ``performance_measured`` block: ranked functions with their runs.
 
     One run per workload, its newest. Each group (``rows`` from workload
-    classes that may lead, ``in_tests`` from unit-test runs) lists
+    classes that may lead, ``in_tests`` from unit-test runs, ``benchmarks``
+    from benchmark results with the function each measures) lists
     :data:`_MEASURED_CAP` rows per run, or ``limit`` up to
     :data:`_MEASURED_PAGE_CAP`, beside its total. A row an open static cause
     with production evidence sits on names it in ``on_static_findings``.
@@ -136,7 +137,18 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _measured_run(run))
     block["runs"] = list(runs.values())
+    benchmarks = view.get("benchmarks")
+    if benchmarks:
+        rows = benchmarks["rows"] if cap else []
+        block["benchmarks"] = [_benchmark_row(row) for row in rows]
+        block["benchmarks_total"] = benchmarks["total"]
     return block
+
+
+def _benchmark_row(row: dict[str, Any]) -> dict[str, Any]:
+    """``benchmark``, the function it ``measures`` and its numbers per op; unset ones left out."""
+    keys = ("benchmark", "measures", "time", "unit", "allocs_per_op")
+    return {k: row[k] for k in keys if row.get(k) is not None}
 
 
 def _measured_run(run: dict[str, Any]) -> dict[str, Any]:

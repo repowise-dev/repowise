@@ -10,6 +10,8 @@ import {
   measuredRow,
   measuredRun,
   NOTHING_MEASURED,
+  RUNS,
+  withBenchmarks,
 } from "./fixtures/runtime-evidence";
 
 configure({ asyncUtilTimeout: 5000 });
@@ -62,10 +64,44 @@ describe("PerformanceView runtime evidence", () => {
   it("switches the workload from the lens", async () => {
     render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
     await table();
-    fireEvent.click(screen.getByRole("radio", { name: /bench parse/ }));
-    const rows = within(await screen.findByRole("list", { name: "Measured in bench parse" })).getAllByRole("listitem");
+    fireEvent.click(screen.getByRole("radio", { name: /cli serve/ }));
+    const rows = within(await screen.findByRole("list", { name: "Measured in cli serve" })).getAllByRole("listitem");
     expect(within(rows[0]!).getByText("tokenize")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Measured cost in bench parse" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Measured cost in cli serve" })).toBeTruthy();
+  });
+
+  it("lists each benchmark with the function it measures and its figures per operation", async () => {
+    const getMeasured = vi.fn(withBenchmarks(measured));
+    render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasured })} />);
+    await table();
+    const list = await screen.findByRole("list", { name: "Benchmarks in go test -bench" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("BenchmarkParse")).toBeTruthy();
+    expect(within(rows[0]!).getByRole("link", { name: "Parse" })).toBeTruthy();
+    expect(within(rows[0]!).getByText("1,234.5 ns/op · 12 allocs/op · 2,048 B/op")).toBeTruthy();
+    // No function named: the benchmark and its numbers only, no claim.
+    expect(within(rows[1]!).getByText("BenchmarkMisc/small")).toBeTruthy();
+    expect(within(rows[1]!).queryByText(/measures/)).toBeNull();
+    expect(within(rows[1]!).getByText("88 ns/op · 0 allocs/op")).toBeTruthy();
+    expect(screen.getByText(/go test -bench · at 4f9c2a1/)).toBeTruthy();
+    expect(getMeasured).toHaveBeenCalledWith({ runId: "run-gobench", limit: 5 });
+    // A benchmark never leads: the lens offers only the ranked workloads.
+    expect(screen.queryByRole("radio", { name: /go test -bench/ })).toBeNull();
+  });
+
+  it("shows the benchmarks when they are the only runtime evidence", async () => {
+    const getMeasured = vi.fn(withBenchmarks(null));
+    render(
+      <PerformanceView
+        adapter={adapter({ getMeasured, listEvidenceRuns: async () => ({ ...RUNS, runs: [] }) })}
+      />,
+    );
+    const list = await screen.findByRole("list", { name: "Benchmarks in go test -bench" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "Benchmarks" })).toBeTruthy();
+    expect(screen.queryByText("Repo code explains")).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
   });
 
   it("opens the static cause a measured function carries", async () => {

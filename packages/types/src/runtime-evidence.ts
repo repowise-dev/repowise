@@ -11,6 +11,9 @@
  * means unknown, never zero.
  */
 export type {
+  BenchmarkGroup,
+  BenchmarkRow,
+  BenchmarkRun,
   CostCluster,
   CostClusterTest,
   CostConcentration,

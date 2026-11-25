@@ -1,5 +1,7 @@
 import { vi } from "vitest";
 import type {
+  BenchmarkRow,
+  BenchmarkRun,
   EvidenceRunSummary,
   EvidenceRunsResponse,
   MeasuredResponse,
@@ -77,15 +79,15 @@ const CLI_ROWS: MeasuredRow[] = [
   ),
 ];
 
-const BENCH = measuredRun({
-  run_id: "run-bench",
-  workload_class: "benchmark",
-  workload_name: "bench parse",
+const SERVE = measuredRun({
+  run_id: "run-serve",
+  workload_class: "entry_point",
+  workload_name: "cli serve",
   samples: 8904,
   repo_self_share: 0.02,
 });
-const BENCH_ROWS = [
-  measuredRow({ run_id: "run-bench", symbol_id: "src/parse.py::tokenize", file_path: "src/parse.py" }),
+const SERVE_ROWS = [
+  measuredRow({ run_id: "run-serve", symbol_id: "src/parse.py::tokenize", file_path: "src/parse.py" }),
 ];
 const TESTS = measuredRun({
   run_id: "run-tests",
@@ -99,7 +101,7 @@ const TEST_ROWS = [
 
 const ROWS: Record<string, [MeasuredRun, MeasuredRow[]]> = {
   "run-cli": [measuredRun(), CLI_ROWS],
-  "run-bench": [BENCH, BENCH_ROWS],
+  "run-serve": [SERVE, SERVE_ROWS],
   "run-tests": [TESTS, TEST_ROWS],
 };
 
@@ -119,8 +121,61 @@ export async function measured(opts: { runId?: string; limit?: number } = {}): P
     basis: "measured",
     status: "measured",
     command: null,
-    measured: group(["run-cli", "run-bench"]),
+    measured: group(["run-cli", "run-serve"]),
     measured_in_tests: group(["run-tests"]),
+  };
+}
+
+export const BENCH_RUN: BenchmarkRun = {
+  run_id: "run-gobench",
+  workload_class: "benchmark",
+  workload_name: "go test -bench",
+  commit: "4f9c2a1e0b",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+};
+
+/** Rows naming a function come first, as the route orders them. */
+const BENCH_ROWS: BenchmarkRow[] = [
+  {
+    run_id: "run-gobench",
+    benchmark: "BenchmarkParse",
+    benchmark_symbol_id: "parse/parse_test.go::BenchmarkParse",
+    measures: "parse/parse.go::Parse",
+    time: 1234.5,
+    unit: "ns",
+    allocs_per_op: 12,
+    bytes_per_op: 2048,
+  },
+  {
+    run_id: "run-gobench",
+    benchmark: "BenchmarkMisc/small",
+    benchmark_symbol_id: null,
+    measures: null,
+    time: 88,
+    unit: "ns",
+    allocs_per_op: 0,
+    bytes_per_op: null,
+  },
+];
+
+/**
+ * The route with benchmark results stored: `limit` rows of the benchmark run,
+ * whose own run id reads only it. `base` is what the route says about ranked
+ * runs (null for a repository with benchmark results only).
+ */
+export function withBenchmarks(base: typeof measured | null) {
+  return async (opts: { runId?: string; limit?: number } = {}): Promise<MeasuredResponse> => {
+    const benchmarks = {
+      runs: [BENCH_RUN],
+      rows: BENCH_ROWS.slice(0, opts.limit ?? 10),
+      total: BENCH_ROWS.length,
+    };
+    if (opts.runId === BENCH_RUN.run_id || !base) {
+      return { basis: "measured", status: "measured", command: null, measured: null, measured_in_tests: null, benchmarks };
+    }
+    const view = await base(opts);
+    return opts.runId ? view : { ...view, benchmarks };
   };
 }
 
@@ -163,7 +218,7 @@ export const RUNS: EvidenceRunsResponse = {
   reference_commit: "4f9c2a1e0b",
   runs: [
     runSummary(),
-    runSummary({ run_id: "run-bench", workload: "bench parse", class: "benchmark" }),
+    runSummary({ run_id: "run-serve", workload: "cli serve", class: "entry_point" }),
     runSummary({
       run_id: "run-junit",
       kind: "test_timing",
