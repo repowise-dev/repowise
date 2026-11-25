@@ -99,3 +99,7 @@ def test_the_verify_command_reruns_the_benchmarks_that_measure_it() -> None:
     )
     assert benchmark_command([]) is None
     assert benchmark_command(["bench/x.bench.ts"]) is None
+    # A runner with no command never hides one that has it.
+    assert benchmark_command(["a/x.bench.ts", "b_test.go::BenchmarkB"]) == (
+        "go test -run '^$' -bench '^BenchmarkB$' -count 5 ."
+    )

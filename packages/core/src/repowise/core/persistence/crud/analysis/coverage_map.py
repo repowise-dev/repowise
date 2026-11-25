@@ -689,7 +689,8 @@ async def tests_running_spans(
     """The tests the per-test map saw run each span: ``{key: [(test_id, test_file, lines)]}``.
 
     *spans* is ``{key: (source_file, start_line, end_line)}``, a function's
-    lines; ``lines`` is how many covered lines of the span the test ran. Each
+    lines; ``lines`` is how many covered lines of the span, its first line
+    left out, the test ran. Each
     file's row is read once for every span in it, its ranges checked as spans,
     never expanded. A key is absent when its file has no map row (unknown,
     never "no test"); ``[]`` means the map has the file and no test ran a line
@@ -698,7 +699,10 @@ async def tests_running_spans(
     """
     by_file: dict[str, list[tuple[str, int, int]]] = {}
     for key, (path, start, end) in spans.items():
-        by_file.setdefault(path, []).append((key, start, end))
+        # A Python ``def`` line runs when its module is imported, so a test
+        # that only imported it would read as running the function; a body
+        # line is what a call runs. Ceiling: decorator lines above it still count.
+        by_file.setdefault(path, []).append((key, start + 1 if end > start else start, end))
     hits: dict[str, list[tuple[int, int]]] = {}
     for row in await _source_rows(session, repository_id, set(by_file)):
         wanted = by_file[row.source_file]

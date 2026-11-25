@@ -102,9 +102,11 @@ def benchmark_command(benchmarks: Iterable[str]) -> str | None:
     command; the package path is from the repository root.
     """
     ordered = sorted(set(benchmarks))
-    if not ordered:
+    first = next(
+        (p for s in ordered if (p := s.partition("::")[0]).endswith(("_test.go", ".py"))), None
+    )
+    if first is None:
         return None
-    first = ordered[0].partition("::")[0]
     if first.endswith("_test.go"):
         folder = str(PurePosixPath(first).parent)
         names = [

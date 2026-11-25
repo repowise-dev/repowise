@@ -255,8 +255,10 @@ async def test_the_per_test_map_names_the_tests_that_ran_each_function(async_ses
                     # A pytest-benchmark test: its stored result says so.
                     ("tests/test_app.py::test_timed", "tests/test_app.py"),
                     ("tests/test_app.py::test_module_only", "tests/test_app.py"),
+                    # Ran only ``load``'s def line: an import, not a call.
+                    ("tests/test_app.py::test_import_only", "tests/test_app.py"),
                 ],
-                ["3-6", "32-33,36", "2", "25"],
+                ["3-6", "32-33,36", "2", "25", "30"],
             ),
             EvidenceBenchmarkResult(
                 run_id="r1", benchmark_key="test_timed", repository_id=repo.id,
