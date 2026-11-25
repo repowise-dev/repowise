@@ -110,6 +110,35 @@ def test_a_scored_only_marker_scores_in_its_language_only(marker, scored, adviso
         assert finding_is_advisory(finding)
 
 
+@pytest.mark.parametrize(
+    ("language"),
+    ["vue", "svelte"],
+)
+def test_sfc_tags_alias_to_the_typescript_cells(language):
+    """`.vue` / `.svelte` files are parsed as TypeScript buffers, so their
+    per-language cells are the typescript cells (issue #6302)."""
+    results = [_result("complex_conditional")]
+    scores, deductions = score_file(results, language)
+    assert set(scores.values()) == {10.0} and deductions == [0.0]
+    (finding,) = attach_impacts(results, deductions, language)
+    assert finding_is_advisory(finding)
+
+    scored = [_result("complex_method")]
+    scores, deductions = score_file(scored, language)
+    assert min(scores.values()) < 10.0
+    (finding,) = attach_impacts(scored, deductions, language)
+    assert not finding_is_advisory(finding)
+
+    # `_SCORED_ONLY_IN` follows the same alias: dry_violation scores in a
+    # `.vue` / `.svelte` file exactly as it does in the `.ts` it contains.
+    duplicated = [_result("dry_violation")]
+    scores, deductions = score_file(duplicated, language)
+    assert scores["defect"] < 10.0 and deductions[0] > 0.0
+    (finding,) = attach_impacts(duplicated, deductions, language)
+    assert finding.dimension == "maintainability"
+    assert not finding_is_advisory(finding)
+
+
 @pytest.mark.usefixtures("complex_method_advisory_in_python")
 def test_listed_language_scores_nothing_and_stores_advisory():
     results = [_result()]
