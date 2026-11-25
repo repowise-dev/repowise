@@ -19,7 +19,9 @@ from repowise.core.analysis.health.aggregation import (
 )
 from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.trends import latest_per_day
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.health.snapshots import HEALTH_SNAPSHOT_RETENTION
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
@@ -240,6 +242,14 @@ def defect_accuracy(health_metrics: list[Any], findings: list[Any]) -> dict | No
         return None
 
 
+#: How many days the health card's trend line plots, one point per day.
+HEALTH_HISTORY_POINTS = 12
+#: Snapshot rows the overview reads for it: every retained row (scalars only,
+#: one query), so same-day runs push older days off the window only once the
+#: store's retention has dropped those days' rows.
+HEALTH_HISTORY_READ = HEALTH_SNAPSHOT_RETENTION
+
+
 def snapshot_history(snapshot: Any) -> list[dict]:
     return [
         {
@@ -247,7 +257,7 @@ def snapshot_history(snapshot: Any) -> list[dict]:
             "average_health": round(s.average_health, 2),
             "hotspot_health": (round(s.hotspot_health, 2) if s.hotspot_health is not None else None),
         }
-        for s in snapshot.recent
+        for s in latest_per_day(snapshot.recent)[-HEALTH_HISTORY_POINTS:]
     ]
 
 
