@@ -500,6 +500,53 @@ def template_prose(report: FirstLookReport) -> dict[str, Any]:
     }
 
 
+def _first_place(item: Mapping[str, Any]) -> tuple[str | None, int]:
+    """*item*'s first place as ``path:line`` (``None`` without one) and how many others it names."""
+    locations = item.get("locations") or ()
+    # A file's symbols on one line are one place, as the report's chips show them.
+    places = list(dict.fromkeys((loc["path"], loc.get("line")) for loc in locations))
+    if not places:
+        return None, 0
+    path, line = places[0]
+    unlisted = max(int(item.get("locations_total") or 0) - len(locations), 0)
+    return (f"{path}:{line}" if line else path), len(places) - 1 + unlisted
+
+
+def top_items_summary(report_json: Mapping[str, Any], n: int | None = None) -> list[dict[str, Any]]:
+    """The "Do these first" lines of a report's JSON, as the Markdown export writes them.
+
+    One dict per listed item, in order (the first *n*, all when ``None``):
+    ``id``, ``section``, ``title`` (the section heading before any colon),
+    ``text`` (the item's prose on one line, backtick spans kept), ``where``
+    (its first place as ``path:line`` or ``path``; ``None`` when it names
+    none), ``more`` (how many other places it names) and ``item`` (the item's
+    JSON). *report_json* is ``FirstLookReport.to_json()``, the living report's,
+    or a document :func:`.write.render_document` returned.
+    """
+    by_id = {
+        i["id"]: (s, i) for s in report_json.get("sections") or () for i in s.get("items") or ()
+    }
+    prose = report_json.get("prose") or {}
+    titles, texts = prose.get("titles") or {}, prose.get("items") or {}
+    ids = [i for i in report_json.get("top") or () if i in by_id]
+    out = []
+    for item_id in ids if n is None else ids[:n]:
+        section, item = by_id[item_id]
+        where, more = _first_place(item)
+        out.append(
+            {
+                "id": item_id,
+                "section": section["key"],
+                "title": str(titles.get(section["key"]) or section["key"]).split(":")[0],
+                "text": " ".join(str(texts.get(item_id) or "").split()),
+                "where": where,
+                "more": more,
+                "item": item,
+            }
+        )
+    return out
+
+
 __all__ = [
     "ITEM_WRITERS",
     "SECTION_WRITERS",
@@ -511,4 +558,5 @@ __all__ = [
     "section_text",
     "template_prose",
     "title",
+    "top_items_summary",
 ]
