@@ -29,6 +29,8 @@ _RUN_LENGTHS = (3, 2)
 _MAX_DEFINING_FILES = 6
 # Files the leg adds, at most. They join below the top hits, never above them.
 _MAX_FILES = 3
+# Phrases tried, at most: a pasted log stays one small query (6 forms each).
+_MAX_PHRASES = 48
 _CALLABLE_KINDS = frozenset({"function", "method"})
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 # Punctuation ends a phrase: "the cache, key order" joins neither pair across it.
@@ -50,6 +52,7 @@ def _phrases(question: str) -> list[tuple[str, ...]]:
         for run in runs:
             for n in _RUN_LENGTHS:
                 out.extend(tuple(run[i : i + n]) for i in range(len(run) - n + 1))
+    out = out[:_MAX_PHRASES]
     out.sort(key=len, reverse=True)
     return out
 

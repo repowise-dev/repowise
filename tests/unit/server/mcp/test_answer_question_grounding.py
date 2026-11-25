@@ -101,6 +101,8 @@ def test_phrases_join_adjacent_plain_words_longest_first():
     # A stopword or punctuation breaks the run; a typed identifier is not prose.
     assert ("calculated", "where") not in phrases
     assert _phrases("where is load_config called") == []
+    # A pasted log stays one small query.
+    assert len(_phrases("alpha beta gamma delta " * 100)) == 48
 
 
 def test_name_forms_cover_each_casing_convention():
