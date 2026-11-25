@@ -355,3 +355,33 @@ async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypat
         ],
         "benchmarks_total": 7,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_slower_benchmark_adds_one_line(setup_mcp, session, materialized):
+    """Only a slower workload adds ``slower``; with none the block is unchanged
+    (``test_no_runtime_data_is_one_token_and_a_command`` pins it whole)."""
+    from repowise.core.persistence.models import EvidenceBenchmarkResult
+
+    for i, (commit, median) in enumerate([("a", 100), ("a", 101), ("a", 99), ("b", 180)]):
+        run_id = f"b{i}"
+        session.add(
+            EvidenceRun(
+                id=run_id, repository_id=materialized, run_key=run_id, kind="benchmark",
+                format="go-bench", source="cli", workload_name="go bench",
+                workload_class="benchmark", commit_sha=commit * 40,
+                measured_at=datetime(2026, 11, 10 + i, tzinfo=UTC),
+            )
+        )
+        await session.flush()
+        session.add(
+            EvidenceBenchmarkResult(
+                run_id=run_id, benchmark_key="pkg.BenchmarkRoute", repository_id=materialized,
+                unit="ns", lower_is_better=True, median=median, min=median, max=median,
+            )
+        )
+        await session.flush()
+
+    [line] = (await _measured())["slower"]
+    assert line.startswith('"go bench": 1 benchmark slower than the band of 3 earlier runs')
+    assert "BenchmarkRoute 1.80x" in line

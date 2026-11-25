@@ -612,6 +612,7 @@ run instead of adding a second one; after `repowise update` it is joined afresh.
 ```bash
 repowise evidence status
 repowise evidence status --format json
+repowise evidence status --compare
 ```
 
 One line per workload (kind, name, environment), the newest run of each: its
@@ -624,6 +625,24 @@ recorded: add the profile again). The JSON form adds
 `runs_stored` per kind and, per run, the tool, value kind, unit, `ingested_at`,
 unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
 skip reasons. An unknown value reads as unknown, never 0.
+
+`--compare` adds what got slower: each workload's newest run (pooled with other
+runs of the same commit) against a band of up to 5 earlier runs at other commits.
+Against 3 or more earlier runs a benchmark is slower when its median is past the
+band's own spread and at least 25% worse (10% when two or more runs of the new
+commit pool their samples), with no sample overlapping the band's; against fewer
+it only looks slower, to confirm with `repowise perf measure`. Allocations per op
+and statements per query scope are exact: any growth over every band run is
+slower. A CPU profile compares each production function's self seconds, and a
+test run the seconds of the tests every run has (suites of 60 s or more), against 3
+or more earlier runs; a benchmark profile never compares. A slower workload names
+the commits between the band and this run that changed a function it ran (the
+slower benchmark's function and its callees, what the newest benchmark profile
+measured, a slower profile's functions), from function-level blame; without a
+checkout only the range is named. `evidence add` prints the same line for the
+workload it stored, `repowise update` prints one line when a workload is slower,
+and MCP `get_health(include=["performance"])` lists the lines under
+`performance_measured.slower`, only when there are any.
 
 ### `evidence tests`
 
@@ -715,7 +734,8 @@ report and test results kept as artifacts. <!-- repowise-drift-ignore -->
 (include it from `.gitlab-ci.yml`) for a GitLab repository; `--ci` picks one. A
 different file already at that path is left alone and the command exits `1`.
 `repowise perf check` gates a change on allocations per operation from stored
-benchmark results; time never gates. The other gates: [Repowise in CI](../start/CI.md).
+benchmark results, and names the commits since the baseline that changed what a
+regressed benchmark ran; time never gates. The other gates: [Repowise in CI](../start/CI.md).
 
 ## Accuracy and limits
 

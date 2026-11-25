@@ -98,6 +98,7 @@ from .reporting import (
     _render_update_report,
     render_changed_files,
     render_header,
+    render_slower,
     show_full_completion,
 )
 from .stale_targets import (
@@ -2657,7 +2658,6 @@ def run_update(
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
-
-    return _docs_update(opts, run)
+    outcome = _index_only_update(opts, run) if run.index_only else _docs_update(opts, run)
+    render_slower(run.repo_path)
+    return outcome
