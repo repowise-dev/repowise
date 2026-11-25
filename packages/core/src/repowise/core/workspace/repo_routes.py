@@ -43,16 +43,21 @@ _log = logging.getLogger("repowise.workspace.repo_routes")
 #: covers the extractors underneath (see :func:`routes_fingerprint`).
 ROUTE_TABLE_VERSION = 1
 
-#: Frameworks whose route is a call taking its handler as an argument. There
-#: the symbol declared just below the call is never the handler (a decorator
-#: or annotation framework is the opposite), so a row binds only a named one.
-_CALL_STYLE = frozenset(
+#: Frameworks whose route is an annotation, attribute or decorator on its
+#: handler, or a file route's exported function. Only these may bind the symbol
+#: the contract found at the route's line; anywhere else that symbol is the
+#: function registering the route (``main``), so a row binds only a handler the
+#: registration names. A framework missing here loses a handler, never gains a
+#: wrong one.
+_DECLARATIVE = frozenset(
     {
-        "express", "hono", "koa", "fastify", "elysia", "go", "axum", "javalin",
-        "ktor", "sinatra", "grape", "rails", "laravel", "hapi", "django",
-        "aspnet-minimal",
+        "spring", "jaxrs", "micronaut", "aspnet", "azure-functions", "nestjs",
+        "apex-rest", "rust-attr", "next-app", "next-pages",
     }
 )  # fmt: skip
+#: Python decorators sit outside the function's span, so there the handler
+#: opens below the route line; a symbol holding the line registers the route.
+_PYTHON_DECORATORS = frozenset({"fastapi", "flask"})
 #: JavaScript router frameworks whose dialect names no handler: the row reads
 #: the call's last argument itself (see :func:`_js_handler_expression`).
 _JS_ROUTERS = frozenset({"express", "hono", "koa", "elysia"})
@@ -107,7 +112,7 @@ def routes_from_contracts(
         framework = str(meta.get("framework") or "")
         expr = meta.get("handler")
         if expr is None and framework in _JS_ROUTERS and read_file is not None:
-            expr = _js_handler_expression(read_file(c.file_path), c.line)
+            expr = _js_handler_expression(read_file(c.file_path), c.line, str(path))
         symbol_id = _handler_symbol(c, framework, expr, index)
         route = Route(
             method=str(method),
@@ -131,18 +136,27 @@ def _handler_symbol(
         return None
     bound = _symbol_by_id(index, c.symbol_id) if c.symbol_id else None
     if expr:
-        name = _QUALIFIER_RE.split(expr)[-1]
-        # The contract already bound the name (index-backed dialects, or a
-        # handler the repo names once); the line fallback lands elsewhere.
-        if bound is not None and bound.name == name:
+        # The contract may already have bound the name (index-backed dialects,
+        # or a handler the repo names once); its line fallback lands elsewhere.
+        if bound is not None and _names(bound, expr):
             return bound.symbol_id
         found = _resolve_named(index, c.file_path, expr, framework)
         return found.symbol_id if found is not None else None
-    if bound is None or framework in _CALL_STYLE:
+    if bound is None:
         return None
-    # A decorator or annotation names the symbol that opens on or below it;
-    # a symbol whose body holds the line is where the route is registered.
-    return bound.symbol_id if bound.start_line >= c.line else None
+    if framework in _PYTHON_DECORATORS:
+        return bound.symbol_id if bound.start_line >= c.line else None
+    # An annotation stack is inside the span on the JVM and .NET, so the
+    # symbol holding the line is the annotated one.
+    return bound.symbol_id if framework in _DECLARATIVE else None
+
+
+def _names(sym: IndexedSymbol, expr: str) -> bool:
+    """Whether *sym* is what *expr* spells: its name, and a qualifier its own."""
+    parts = _QUALIFIER_RE.split(expr)
+    if sym.name != parts[-1]:
+        return False
+    return len(parts) == 1 or _QUALIFIER_RE.split(sym.qualified_name)[-2:] == parts[-2:]
 
 
 def _symbol_by_id(index: RepoIndex, symbol_id: str) -> IndexedSymbol | None:
@@ -168,24 +182,33 @@ def _resolve_named(
         local = _named_in(index.symbols_for_file(file_path), name)
         if local is not None:
             return local
-    if len(parts) > 1 and framework in _JS_ROUTERS | {"fastify"}:
+    if len(parts) > 1 and framework in _JS_ROUTERS:
+        # Only a relative module's member is followed; anything else is no answer.
         target = _js_module_file(index, file_path, parts[0])
-        if target is not None:
-            return _named_in(index.symbols_for_file(target), name)
+        return _named_in(index.symbols_for_file(target), name) if target else None
     if framework == "go":
-        package = posixpath.dirname(file_path)
-        found = _named_in(
-            (
-                sym
-                for f in index.files()
-                if posixpath.dirname(f) == package
-                for sym in index.symbols_for_file(f)
-            ),
-            name,
-        )
-        if found is not None:
-            return found
-    return index.symbol_named(expr)
+        # A bare name is the file's package (its directory); ``pkg.Fn`` is the
+        # package directory named ``pkg``.
+        if len(parts) == 1:
+            package = posixpath.dirname(file_path)
+            return _named_in(_in_directories(index, lambda d: d == package), name)
+        if len(parts) == 2:
+            return _named_in(
+                _in_directories(index, lambda d: posixpath.basename(d) == parts[0]), name
+            )
+        return None
+    found = index.symbol_named(expr)
+    # ``symbol_named`` returns a lone candidate whatever its qualifier says.
+    return found if found is not None and _names(found, expr) else None
+
+
+def _in_directories(index: RepoIndex, keep: Any) -> Iterable[IndexedSymbol]:
+    return (
+        sym
+        for f in index.files()
+        if keep(posixpath.dirname(f))
+        for sym in index.symbols_for_file(f)
+    )
 
 
 def _named_in(symbols: Iterable[IndexedSymbol], name: str) -> IndexedSymbol | None:
@@ -214,29 +237,34 @@ def _js_module_file(index: RepoIndex, file_path: str, local: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _js_handler_expression(content: str | None, line: int) -> str | None:
+def _js_handler_expression(content: str | None, line: int, path: str) -> str | None:
     """The last argument of the router call on *line*, when it names a function.
 
     Express runs a route's arguments as a middleware chain and the last one
     answers the request, so that is the handler. An inline function, a call
-    (``wrap(fn)``) or anything but a name or member chain gives None.
+    (``wrap(fn)``) or anything but a name or member chain gives None. Two calls
+    on one line are told apart by *path*, the contract's (mounted) path.
     """
     if not content:
         return None
     from repowise.core.ingestion.framework_routes import express_routes
 
     from .extractors.base import line_at
+    from .extractors.http.paths import normalize_http_path
     from .extractors.strings import call_arguments
 
-    for route in express_routes(content):
-        if line_at(content, route.offset) != line:
-            continue
-        args = call_arguments(content, route.paren_offset)
-        if not args or len(args) < 2:
-            return None
-        last = args[-1].strip()
-        return last if _HANDLER_EXPR_RE.fullmatch(last) else None
-    return None
+    on_line = [r for r in express_routes(content) if line_at(content, r.offset) == line]
+    if len(on_line) > 1:
+        on_line = [r for r in on_line if r.path and path.endswith(normalize_http_path(r.path))]
+    if len(on_line) != 1:
+        return None
+    args = call_arguments(content, on_line[0].paren_offset)
+    if args and not args[-1]:
+        args = args[:-1]  # a trailing comma
+    if not args or len(args) < 2:
+        return None
+    last = args[-1].strip()
+    return last if _HANDLER_EXPR_RE.fullmatch(last) else None
 
 
 def _read(path: Path) -> str | None:
@@ -334,9 +362,11 @@ async def refresh_route_table(
 
     *changed_paths* None (an init) always reads. Given (an update), it reads
     only when one of them can hold a route or the stored rows were read with
-    another fingerprint, and returns None when it skipped. An extractor
-    failure is logged and leaves the stored rows as they were (None too); a
-    database error is the caller's, like every other write in its session.
+    another fingerprint (an empty list reads on a fingerprint change alone),
+    and returns None when it skipped. A missing checkout reads nothing. A
+    failed read is logged, keeps the stored rows and clears the stamp so the
+    next update reads again (None too). The write is one savepoint: a database
+    error leaves the rows as they were and is the caller's.
     """
     from repowise.core.persistence.crud.http_routes import (
         replace_http_routes,
@@ -347,21 +377,24 @@ async def refresh_route_table(
     from .repo_index import RepoIndex
 
     repo_path = Path(repo_path)
+    if not repo_path.is_dir():
+        return None
     fingerprint = routes_fingerprint(repo_path)
     if changed_paths is not None:
         stored = await stored_routes_fingerprint(session, repo_id)
         if stored == fingerprint and not routes_relevant(changed_paths):
             return None
-    index = RepoIndex(repo_path.name, repo_path.resolve(), session, None, repo_id=repo_id)
-    await index._load(repo_id)
     try:
+        index = RepoIndex(repo_path.name, repo_path.resolve(), session, None, repo_id=repo_id)
+        await index._load(repo_id)
         routes = await read_routes(repo_path, index)
     except Exception as exc:
         _log.warning("route table not refreshed: %r", exc)
-        # The rows stay; an empty stamp makes the next update read again.
-        await stamp_routes_fingerprint(session, repo_id, None)
+        async with session.begin_nested():
+            await stamp_routes_fingerprint(session, repo_id, None)
         return None
-    await replace_http_routes(session, repo_id, routes, fingerprint)
+    async with session.begin_nested():
+        await replace_http_routes(session, repo_id, routes, fingerprint)
     return len(routes)
 
 

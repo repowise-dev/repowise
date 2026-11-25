@@ -25,6 +25,7 @@ from repowise.cli.commands._index_outcome import (
     record_index_outcome,
     refresh_read_snapshots,
     refresh_repo_contracts,
+    refresh_stale_routes,
 )
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
@@ -203,6 +204,8 @@ def _finish_outcome(
             keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
+        with timed(timings, "routes"):
+            refresh_stale_routes(repo_path)
         # Opt-in; off, it reads one setting and writes nothing (no timing row).
         refresh_repo_contracts(repo_path)
     with timed(timings, "editor_files"):

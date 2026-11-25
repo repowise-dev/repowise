@@ -143,6 +143,86 @@ def test_an_express_route_names_the_imported_modules_function(tmp_path: Path) ->
     assert (wrapped.handler, wrapped.handler_symbol_id) == (None, None)
 
 
+def test_an_annotation_stack_binds_the_method_it_annotates() -> None:
+    # Java and C# spans open at the first annotation, above the route's own.
+    index = _index(_sym("api/Users.java", "list", 4, 12))
+    (route,) = routes_from_contracts(
+        [_provider("api/Users.java", 5, framework="spring", symbol_id="api/Users.java::list")],
+        index,
+    )
+    assert route.handler_symbol_id == "api/Users.java::list"
+
+
+def test_a_call_style_route_never_takes_the_next_function_down() -> None:
+    # aiohttp's `app.router.add_get('/x', h)` names no handler the dialect reads;
+    # the contract's lookup finds the function declared two lines below.
+    index = _index(_sym("app.py", "other", 12, 14))
+    (route,) = routes_from_contracts(
+        [_provider("app.py", 10, framework="aiohttp", symbol_id="app.py::other")], index
+    )
+    assert route.handler_symbol_id is None
+
+
+def test_a_qualified_handler_never_binds_a_lone_symbol_of_another_owner() -> None:
+    # `views.index`: the repo's only `index` is a model method, not the view.
+    thing = IndexedSymbol(
+        symbol_id="other/models.py::Thing.index",
+        name="index",
+        qualified_name="Thing.index",
+        kind="method",
+        signature="",
+        file_path="other/models.py",
+        start_line=3,
+        end_line=4,
+        visibility="public",
+    )
+    index = _index(thing)
+    (route,) = routes_from_contracts(
+        [
+            _provider(
+                "urls.py",
+                5,
+                framework="django",
+                symbol_id="other/models.py::Thing.index",
+                handler="views.index",
+            )
+        ],
+        index,
+    )
+    assert route.handler_symbol_id is None
+
+
+def test_a_go_package_qualified_handler_resolves_in_that_package_directory() -> None:
+    index = _index(
+        _sym("cmd/main.go", "main", 1, 40),
+        _sym("internal/handlers/users.go", "ListUsers", 3, 9),
+        _sym("internal/admin/users.go", "ListUsers", 3, 9),
+    )
+    (route,) = routes_from_contracts(
+        [_provider("cmd/main.go", 12, framework="go", handler="handlers.ListUsers")], index
+    )
+    assert route.handler_symbol_id == "internal/handlers/users.go::ListUsers"
+
+
+def test_two_router_calls_on_one_line_each_name_their_own_handler(tmp_path: Path) -> None:
+    (tmp_path / "index.js").write_text(
+        "var app = require('express')();\n"
+        "app.get('/a', first); app.get('/b', second,\n);\n"
+        "function first() {}\nfunction second() {}\n"
+    )
+    index = _index(_sym("index.js", "first", 3, 3), _sym("index.js", "second", 4, 4))
+    a, b = routes_from_contracts(
+        [
+            _provider("index.js", 2, framework="express", route="/a"),
+            _provider("index.js", 2, framework="express", route="/b"),
+        ],
+        index,
+        lambda rel: (tmp_path / rel).read_text(),
+    )
+    assert (a.path, a.handler_symbol_id) == ("/a", "index.js::first")
+    assert (b.path, b.handler_symbol_id) == ("/b", "index.js::second")
+
+
 def test_only_http_providers_become_rows_and_a_repeat_is_one_row() -> None:
     consumer = _provider("a.py", 3, framework="fastapi")
     consumer.role = "consumer"
@@ -205,6 +285,8 @@ async def test_the_table_is_written_on_index_and_reread_only_when_a_route_can_mo
         # A changed source file is read again; so is a store read by other extractors.
         assert await refresh_route_table(session, repo_id, repo, changed_paths=["app.py"]) == 1
         assert (await list_http_routes(session, repo_id))[0].path == "/people/{param}"
+        # An update with no diff (already up to date) reads only on a moved stamp.
+        assert await refresh_route_table(session, repo_id, repo, changed_paths=()) is None
         (repo / "app.py").unlink()
         await stamp_routes_fingerprint(session, repo_id, "older")
         assert await refresh_route_table(session, repo_id, repo, changed_paths=["README.md"]) == 0
@@ -233,5 +315,18 @@ async def test_a_failed_read_keeps_the_rows_and_retries_on_the_next_update(
         assert await refresh_route_table(session, repo_id, repo, changed_paths=["app.py"]) is None
         assert len(await list_http_routes(session, repo_id)) == 1
         assert await stored_routes_fingerprint(session, repo_id) is None
+    finally:
+        await index.close()
+
+
+async def test_a_missing_checkout_keeps_the_stored_rows(tmp_path: Path) -> None:
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text(_APP)
+    index = await make_repo_index(repo, {})
+    try:
+        assert await refresh_route_table(index.session, index.repo_id, repo) == 1
+        assert await refresh_route_table(index.session, index.repo_id, tmp_path / "gone") is None
+        assert len(await list_http_routes(index.session, index.repo_id)) == 1
     finally:
         await index.close()

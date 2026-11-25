@@ -141,14 +141,18 @@ async def persist_routes(result: Any, session: Any, repo_id: str) -> None:
 
     After symbols and analysis: handlers bind to the stored symbols, and the
     ``code_origin`` rule reads the stored origins. A result with no
-    ``repo_path`` has no tree to read and keeps the stored rows.
+    ``repo_path`` has no tree to read and keeps the stored rows. Best-effort:
+    the write is a savepoint, so a failure leaves the rest of the index whole.
     """
     repo_path = getattr(result, "repo_path", "")
     if not repo_path:
         return
     from repowise.core.workspace.repo_routes import refresh_route_table
 
-    await refresh_route_table(session, repo_id, repo_path)
+    try:
+        await refresh_route_table(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("route_table_not_written", error=repr(exc))
 
 
 async def persist_pipeline_result(
