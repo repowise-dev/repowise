@@ -44,7 +44,7 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 | `timing_ms` | Tool wall time |
 | `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
 | `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
-| `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout |
+| `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout. A lean reply keeps `indexed_commit` when the index is behind HEAD or more than 7 days old and no `stale_warning` names it |
 | `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
 | `working_tree_dirty` | Served targets with uncommitted edits no `repowise update --working-tree` has indexed |
 | `embedder_degraded`, `embedder` | The embedder state behind `degraded` |
@@ -270,9 +270,9 @@ Never complete for:
 
 On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files first, then other files, then tests, each group by path, with the test evidence `get_risk` reads for its test gaps.
 
-- `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
+- `total`, `complete`, `listed_counts` (the listed rows per state, not the whole directory: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
 - Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
-- A code row is `{path, has_test}` plus, when found, `named_tests` (test files with its file name, nearest directory first; one in another directory is a weaker match), `reached_by` (other tests reaching it through calls or imports) and `covered_by` (per-test coverage rows from `repowise coverage add`), 3 each with `*_total` beyond.
+- A code row is `{path, has_test}` plus, when found, `named_tests` (test files with its file name, nearest directory first; a test that mirrors the directories of another file with that name goes to that file), `reached_by` (other tests reaching it through calls or imports) and `covered_by` (per-test coverage rows from `repowise coverage add`), 3 each with `*_total` beyond.
 - `has_test: false` means none of the three exists. `type_only: true` marks a file that declares only types and needs no test.
 - A test file is `{path, is_test: true}`; a file that is not code is `{path, code: false}`.
 - `note` appears when the index holds no test files, so `has_test: false` is not evidence there.
@@ -449,7 +449,7 @@ With `changed_files`, the response leads with `directive`:
 | `tests_to_run` | The `repowise impacted-tests` selection, max 10, in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec) |
 | `tests_to_run_basis` | `measured` (coverage decided a file), `inferred` (graph or rule), `none` |
 | `tests_to_run_why` | Per listed file: changed file and evidence |
-| `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for; the list is what to run first |
+| `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for, or the selection holds over half of a suite of 10+ test files (`selection_covers_most_of_suite: <n> of <total> test files.`); the list is what to run first |
 | `tests_broadcast_total`, `tests_import_closure_total`, `tests_always_run_total` | Tests left out of the list that still run (`always_run`: run with every subset, nothing links them to the change) |
 | `tests_status`, `tests_status_reason` | Failed selection; names nothing |
 | `tests_to_update` | Up to 3 test files to edit, `{path, reason}` |
@@ -664,6 +664,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `kind` | `refactor` (one file's composed refactoring), `perf_fix` (one intervention and its sinks), `finding` (code-shape, no plan) |
 | `totals` | `candidates`, `eligible`, `shown`, `dormant` (functions kept out as `gated_off`) |
 | `by_improves`, `detail_call` | Rollup; call that opens the lead |
+| `order` | The sort key in one line: value band, then tier, then worth x confidence / effort. `gain` is the target file's health delta, not the key, so it need not fall down the list |
 
 - **Paging:** with `only=["fix_first"]`, `items` pages from `cursor` (`recovery.fix_first` names the next page) and `limit` sets the size, up to 25.
 - **Due items:** a `now`/`next` lead carries `first_step` (`action`, `line`, `file` if not the target's) and `verify` (`command`, or `prerequisite` when no test reaches it); with `only=["fix_first"]`, so do due items among the page's first five. `get_health(fix_id=...)` returns one in full.

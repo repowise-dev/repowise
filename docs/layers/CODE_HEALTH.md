@@ -127,6 +127,8 @@ repowise next --json                   # the whole stored view
   row to plan.
 - A fragile file asks for tests when no coverage or test reaches it, else to simplify its
   lead function if Fix first would break it up, else to review why fixes keep landing.
+  Its fix count covers 90 days and counts the bug-fix commits that changed the file's code,
+  so it can differ from `get_risk`'s 6-month `fix_count`.
   A folder where fixes concentrate names its most fixed file's first step, or is left
   out. A coverage report 14 days older than the latest commit gets a refresh row. Under
   five commits, history-ranked rows are left out.

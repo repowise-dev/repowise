@@ -414,9 +414,8 @@ def selection_block(
         rest = run_list[limit:]
     else:
         shown, rest = agent_head(selection, run_list, direct, limit)
-    known = set(selection.known_tests)
-    held = len(known & set(selection.test_files))
-    broad = held > len(known) * _DEGRADED_SHARE
+    held, suite = suite_share(selection)
+    broad = covers_most_of_suite(selection)
     degraded = broad and not selection.run_all and bool(result.get("index_gap"))
     # Most of the suite under a verdict to run all of it: the tail restores nothing to act on.
     if rest and not (broad and (selection.run_all or degraded)):
@@ -445,7 +444,7 @@ def selection_block(
         "always_run_total": always,
         "summary": (
             f"the index predates files changed outside this change, so {held} of "
-            f"{len(known)} test files were selected{ORDER if shown else ''}; "
+            f"{suite} test files were selected{ORDER if shown else ''}; "
             "run the whole suite, or `repowise update` to narrow it."
             if degraded
             else _summary(
@@ -472,6 +471,18 @@ def selection_block(
             dict(basis_rows[_BASIS_LIMIT:]),
         )
     return block
+
+
+def suite_share(selection: Selection) -> tuple[int, int]:
+    """``(selected test files, runnable test files in the checkout)``; ``(n, 0)`` when unread."""
+    known = set(selection.known_tests)
+    return len(known & set(selection.test_files)), len(known)
+
+
+def covers_most_of_suite(selection: Selection) -> bool:
+    """Whether the selection holds over half the suite, so it is no targeted subset."""
+    held, suite = suite_share(selection)
+    return bool(suite) and held > suite * _DEGRADED_SHARE
 
 
 def of_the_change(selection: Selection, test: str) -> bool:

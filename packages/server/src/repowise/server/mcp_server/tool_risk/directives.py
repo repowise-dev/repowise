@@ -32,8 +32,10 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
+    covers_most_of_suite,
     of_the_change,
     split_apart,
+    suite_share,
 )
 from repowise.server.mcp_server.tool_risk.directives_pr import (
     _WORKSPACE_FAMILIES,  # noqa: F401  re-exported
@@ -84,6 +86,9 @@ _MAY_BREAK_LIMIT = 5
 _TESTS_TO_RUN_LIMIT = 10
 #: Run-all reasons carried on the directive; the rest go to the omission store.
 _RUN_ALL_REASONS_LIMIT = 3
+#: Below this many test files a subset still reads as targeted, however much of
+#: the suite it holds: running all of it costs little either way.
+_RUN_ALL_SHARE_MIN_SUITE = 10
 #: Cap on the edit-list: the test files this change will probably need edited.
 _TESTS_TO_UPDATE_LIMIT = 3
 
@@ -590,6 +595,13 @@ def _tests_to_run(
         if tests:
             collector.add(f"directive.{key.removesuffix('_total')} ({len(tests)})", tests)
     reasons = list(selection.reasons)
+    run_all = selection.run_all
+    held, suite = suite_share(selection)
+    if not run_all and suite >= _RUN_ALL_SHARE_MIN_SUITE and covers_most_of_suite(selection):
+        # A subset holding most of the suite saves little; the ranked head still leads.
+        # Its notes were never on the wire for a subset, so only this reason is.
+        run_all = True
+        reasons = [f"selection_covers_most_of_suite: {held} of {suite} test files."]
     if len(reasons) > _RUN_ALL_REASONS_LIMIT:
         collector.add(
             f"directive.tests_run_all_reasons beyond cap={_RUN_ALL_REASONS_LIMIT} "
@@ -597,9 +609,9 @@ def _tests_to_run(
             reasons[_RUN_ALL_REASONS_LIMIT:],
         )
     shown = dict.fromkeys(t.split("::", 1)[0] for t in population[:_TESTS_TO_RUN_LIMIT])
-    extra: dict[str, Any] = {"tests_run_all": selection.run_all}
+    extra: dict[str, Any] = {"tests_run_all": run_all}
     extra.update((key, len(tests)) for key, tests in counts.items() if tests)
-    if selection.run_all:
+    if run_all:
         extra["tests_run_all_reasons"] = reasons[:_RUN_ALL_REASONS_LIMIT]
     extra["tests_to_run_why"] = {p: selection.why[p] for p in shown if p in selection.why}
     return population, basis_of(selection), extra

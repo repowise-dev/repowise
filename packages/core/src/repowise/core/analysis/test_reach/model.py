@@ -183,6 +183,14 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
+def _mirrored_most(test: str, sources: Collection[str]) -> set[str]:
+    """The *sources* sharing the most directory names with *test*; all of them on a tie at none."""
+    dirs = set(test.split("/")[:-1])
+    shared = {s: len(dirs & set(s.split("/")[:-1])) for s in sources}
+    best = max(shared.values(), default=0)
+    return {s for s, n in shared.items() if n == best} if best else set(sources)
+
+
 def tests_matching_by_name(
     targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
 ) -> dict[str, ReachedBy]:
@@ -192,8 +200,11 @@ def tests_matching_by_name(
     ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
     against a change a test guards.  A test beside a source file it names is
     owned by that sibling, though: ``a/index.test.ts`` is not evidence for
-    every other ``index.ts`` in the repository.  Tests outside their subject
-    directory retain the cross-directory fallback.
+    every other ``index.ts`` in the repository.  A test elsewhere goes to the
+    files of its name whose directories it mirrors most
+    (``tests/providers/test_registry.py`` to ``providers/registry.py``, not
+    ``dynamic_hints/registry.py``); when none shares a directory with it, every
+    one keeps the cross-directory fallback.
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
     by_name: dict[str, list[str]] = {}
@@ -204,12 +215,22 @@ def tests_matching_by_name(
         tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
 
     owned_by: dict[str, set[str]] = {}
+    sources_by_name: dict[str, set[str]] = {}
     for source in all_files:
         dir_path, _, _ = source.rpartition("/")
         for name in paired_test_names(source):
+            if name in by_name and source not in by_name[name]:
+                sources_by_name.setdefault(name, set()).add(source)
             for test in tests_by_dir_and_name.get((dir_path, name), ()):
                 if source != test:
                     owned_by.setdefault(test, set()).add(source)
+    for name, tests in by_name.items():
+        rivals = sources_by_name.get(name, set())
+        for test in tests:
+            if test not in owned_by and len(rivals) > 1:
+                nearest = _mirrored_most(test, rivals)
+                if len(nearest) < len(rivals):
+                    owned_by[test] = nearest
     out: dict[str, ReachedBy] = {}
     for target in targets:
         found = [
