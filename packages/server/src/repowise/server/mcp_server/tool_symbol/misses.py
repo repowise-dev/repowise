@@ -339,6 +339,36 @@ async def _file_listing(
     return reply
 
 
+async def _bare_file_reply(
+    ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
+) -> dict | None:
+    """A bare file path's listing, or the "a file, not a symbol" miss, else None.
+
+    The miss needs a checkout to confirm the file; with none, only a file the
+    index holds symbols for is answered as one.
+    """
+    file_path = _bare_file_path(ctx, symbol_id, exclude_spec)
+    if file_path is None:
+        return None
+    listing = await _file_listing(ctx, repository, symbol_id, file_path, t0)
+    if listing is not None or not ctx.path:
+        return listing
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
+    return error_reply(
+        "not_found",
+        {
+            "symbol_id": symbol_id,
+            "error": (
+                f"'{file_path}' is a file, not a symbol. Whole file: "
+                f'get_context(targets=["{file_path}"], include=["skeleton"]). '
+                f'Lines: get_symbol("{file_path}:1-120").'
+            ),
+            "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
+        },
+    )
+
+
 async def _not_found_response(
     ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
 ) -> dict:
@@ -354,23 +384,9 @@ async def _not_found_response(
     from repowise.server.mcp_server._savings.interaction import error_reply
 
     # Every reply below is a miss, but for a file whose symbols it can name.
-    if file_path := _bare_file_path(ctx, symbol_id, exclude_spec):
-        listing = await _file_listing(ctx, repository, symbol_id, file_path, t0)
-        if listing is not None:
-            return listing
-    if file_path and ctx.path:
-        return error_reply(
-            "not_found",
-            {
-                "symbol_id": symbol_id,
-                "error": (
-                    f"'{file_path}' is a file, not a symbol. Whole file: "
-                    f'get_context(targets=["{file_path}"], include=["skeleton"]). '
-                    f'Lines: get_symbol("{file_path}:1-120").'
-                ),
-                "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
-            },
-        )
+    file_reply = await _bare_file_reply(ctx, repository, symbol_id, exclude_spec, t0)
+    if file_reply is not None:
+        return file_reply
     async with get_session(ctx.session_factory) as session:
         suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
     if suggestions:
