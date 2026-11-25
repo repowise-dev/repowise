@@ -850,3 +850,27 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
         "src/calc/gen/keep.py",
     ]
     assert coverage["file_count"] == 3
+
+
+def test_coverage_unindexed_repo_reports_no_index_and_creates_no_store(tmp_path) -> None:
+    cov_file = tmp_path / "coverage.lcov"
+    cov_file.write_text("TN:\nSF:src/a.py\nDA:1,1\nend_of_record\n")
+
+    # 1. coverage add returns exit code 1 and prints warning
+    add_result = CliRunner().invoke(cli, ["coverage", "add", str(cov_file), "--path", str(tmp_path)])
+    assert add_result.exit_code == 1, add_result.output
+    assert "No index yet. Run `repowise init`" in add_result.output
+
+    # 2. coverage status returns exit code 0 and prints notice
+    status_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path)])
+    assert status_result.exit_code == 0, status_result.output
+    assert "No index yet. Run `repowise init`." in status_result.output
+
+    # 3. coverage status --format json returns exit code 0 with indexed: False
+    json_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path), "--format", "json"])
+    assert json_result.exit_code == 0, json_result.output
+    data = json.loads(json_result.output[json_result.output.index("{") :])
+    assert data["indexed"] is False
+
+    # 4. No .repowise/wiki.db file is created
+    assert not (tmp_path / ".repowise" / "wiki.db").exists()
