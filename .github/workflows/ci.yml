@@ -271,6 +271,7 @@ jobs:
             uv run repowise init --yes --no-prose --no-editor-setup --no-hook
           fi
 
+      # "Test selection (recorded only)" waits on this step by name.
       - name: Save the index before the per-test map
         if: steps.build.outcome == 'success'
         continue-on-error: true
@@ -444,7 +445,8 @@ jobs:
             state=pending
             if [ -z "$run" ]; then
               if run=$(gh api "$runs" --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")][0].id // empty'); then
-                [ -n "$run" ] || state=gone
+                # A run seen as missing in the first 90s may not be listed yet.
+                [ -n "$run" ] || [ "$SECONDS" -lt 90 ] || state=gone
               else
                 run=""
               fi
@@ -452,7 +454,8 @@ jobs:
             if [ -n "$run" ]; then
               state=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?filter=latest&per_page=100" --jq '
                 [.jobs[] | select(.name == "Repowise index (main)")][0]
-                | if . == null or .status == "completed" then "gone"
+                | if . == null then (if '"$SECONDS"' < 90 then "pending" else "gone" end)
+                  elif .status == "completed" then "gone"
                   elif any(.steps[]?; .name == "Save the index before the per-test map" and .status == "completed") then "gone"
                   else "pending" end') || state=pending
             fi
