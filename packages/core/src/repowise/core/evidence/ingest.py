@@ -22,7 +22,7 @@ from typing import Any
 from repowise.core.ingestion.symbol_identity import local_symbol_id
 from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
-from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
+from .format_v1 import EVIDENCE_FORMAT, MODULE_FUNCTION, EvidenceDocument
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, WORKLOAD_CLASSES, evidence_kinds
 from .suite_cost import timing_summary
 
@@ -248,6 +248,12 @@ def _join(
         symbol_id = None
     elif path in changed:
         reason, symbol_id = "dirty_file", None
+    elif kind == "profile" and location["function"] == MODULE_FUNCTION:
+        # A module body's row: the reserved id, no symbol to look up.
+        if path in by_file:
+            symbol_id, reason = f"{path}::{MODULE_FUNCTION}", None
+        else:
+            symbol_id, reason = None, "unknown_file"
     else:
         symbol_id, reason = resolve_location(location, by_file)
     if symbol_id is None and not optional:

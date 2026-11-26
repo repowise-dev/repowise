@@ -496,7 +496,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location; `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
+| `profile` | location (`function` `<module>` with no `line` is the file's import time); `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -552,10 +552,19 @@ is counted there as `unplaced`.
 - **Nested code.** Lambdas, generator expressions and nested functions with no
   symbol of their own are charged to the enclosing function when the frame's
   qualified name shows it.
-- **Module bodies.** Import-time code (Python `<module>`, Go package `init`)
-  resolves to its file. The index keeps no symbol for a
-  file's top level, so its self time is reported under `self_unattributed` as
-  `module_body`, never dropped.
+- **Import time is a row.** Import-time code (Python `<module>`, Go package
+  `init`) resolves to its file. A Python module body is ranked with the
+  functions as the row `<path>::<module>` (no lines), shown as "import time":
+  a module and the repo modules it imports in turn are one import, charged to
+  the outermost one, with the libraries and standard-library modules they load
+  named by package in `inside` (`sqlalchemy`, `json`). A module a function
+  imports starts its own row, driven by that function; a library a function
+  imports stays that function's cost. The row takes no next step: whether the
+  run needed the import is not in the profile. Go package `init` and the
+  CommonJS wrapper have no row yet; their self time is reported under
+  `self_unattributed` as `module_body`, never dropped. An import row measured
+  at another commit than the indexed one reads stale, as a module's top level
+  has no stored body to compare.
 - **Self is the cost.** A function's self time is the stacks where it is the
   innermost repo frame somebody here maintains. Built-ins, the standard
   library and dependencies below it (outside the checkout, or vendored and

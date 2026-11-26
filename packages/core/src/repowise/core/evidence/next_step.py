@@ -19,6 +19,10 @@ Silence is the default. No step when:
   no loop repeats: each request needs its own, and "batch" would be wrong;
 - the function is a thin wrapper named like its dominant callee (the cost
   belongs to its drivers);
+- the row is a module body's import time (``<path>::<module>``): whether the
+  run needed what the file imports is not in the row (ceiling; upgrade path:
+  mark a library the run imported but never called, then say "import it
+  inside the function that uses it");
 - the time sits under ``runtime.cgocall`` and no database call above it says
   what the C code is: a Go profile taken on Windows samples threads inside cgo
   while they wait, so that time is unknown, never a cost claim.
@@ -47,6 +51,8 @@ from repowise.core.analysis.health.perf.dialects.python_lexicon import (
 )
 from repowise.core.ingestion.external_systems.io_kind import classify_io_kind
 from repowise.core.ingestion.symbol_identity import file_of_symbol
+
+from .format_v1 import is_import_row
 
 #: Workload classes whose rows lead, so their rows get a step.
 STEP_CLASSES = frozenset({"entry_point", "load_test", "production"})
@@ -436,10 +442,12 @@ def next_step(
     function or naming it or its drivers in a loop are read, the rest ignored.
     """
     inside = _items(row.get("inside"))
+    symbol = row.get("symbol_id") or ""
     if row.get("workload_class") not in STEP_CLASSES or not inside:
         return None
+    if is_import_row(symbol):
+        return None
     lang = _family(language)
-    symbol = row.get("symbol_id") or ""
     findings = list(findings)
     own_static = [f for f in findings if _on(f, symbol)]
     picked = _dominant(inside, lang, own_static, symbol)

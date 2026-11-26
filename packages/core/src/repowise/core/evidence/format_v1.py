@@ -41,7 +41,10 @@ oldest commit deployed in it (``commit_sha`` is then the newest). A code locatio
 symbol's id after its file as a test runner names it: ``TestCache::test_get``)
 and ``line`` (where the function starts). A profile entry's ``self`` is what
 the function costs: its own time and the built-ins and libraries it called,
-never time spent waiting; ``total`` adds its callees in the repo.
+never time spent waiting; ``total`` adds its callees in the repo. A profile
+entry whose ``function`` is ``<module>`` (no ``line``) is the file's module
+body: its time is the file's import time, stored as the row
+``<path>::<module>``.
 Optional on a profile entry, as shares of ``total``: ``inside``, up to three
 callees by ``name`` and ``kind`` (``own``, ``repo``, ``wait``, ``import``,
 ``native``, ``library``) with an optional ``leaf`` of the same shape (the
@@ -84,6 +87,17 @@ TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
 #: A profile entry's ``inside`` kinds (``evidence.profile_convert`` says what each means).
 INSIDE_KINDS = ("own", "repo", "wait", "import", "native", "library")
+#: A profile entry's ``function`` for a file's module body (its import time).
+MODULE_FUNCTION = "<module>"
+#: What a surface calls a module body's row.
+IMPORT_TIME = "import time"
+
+
+def is_import_row(symbol_id: str) -> bool:
+    """Whether *symbol_id* is a module body's row (``<path>::<module>``): import time."""
+    return symbol_id.endswith("::" + MODULE_FUNCTION)
+
+
 #: Items of ``inside`` and of ``drivers`` read per entry; more are dropped, lightest first.
 MAX_SPLIT_ITEMS = 3
 
@@ -649,6 +663,8 @@ def statement_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
 
 __all__ = [
     "EVIDENCE_FORMAT",
+    "IMPORT_TIME",
+    "MODULE_FUNCTION",
     "QUERY_SCOPES",
     "STATEMENT_TEXT_MAX",
     "TEST_OUTCOMES",
@@ -656,6 +672,7 @@ __all__ = [
     "EvidenceDocument",
     "EvidenceFormatError",
     "benchmark_entry",
+    "is_import_row",
     "parse_evidence",
     "profile_entry",
     "query_entry",
