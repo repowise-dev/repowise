@@ -237,6 +237,39 @@ async def test_symbol_card_lists_only_the_changes_that_edited_its_lines(
 
 
 @pytest.mark.asyncio
+async def test_symbol_last_change_is_the_newest_commit_on_its_lines(setup_mcp, session, tmp_path):
+    from repowise.server.mcp_server import get_context
+
+    shas = await _symbol_history(session, tmp_path)
+    target, path = "src/auth/service.py::login", "src/auth/service.py"
+    named = await get_context(targets=[target, path], include=["last_change"])
+    own = named["targets"][target]["last_change"]
+    committed = _git(tmp_path, "show", "-s", "--format=%cI", shas["inside"])
+    # The method's own last fix and its author, not the file's newer "after" commit.
+    assert own["author"] == "Dev" and own["ref"] == "#11" and "scope" not in own
+    assert datetime.fromisoformat(own["date"]).replace(tzinfo=UTC) == datetime.fromisoformat(
+        committed
+    ).astimezone(UTC)
+    assert "ref" not in named["targets"][path]["last_change"]
+    # Opt-in: a default card runs no walk and carries no last_change.
+    assert "last_change" not in (await get_context(targets=[target]))["targets"][target]
+
+
+@pytest.mark.asyncio
+async def test_symbol_last_change_falls_back_to_the_file_labelled(setup_mcp, session):
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import get_context
+
+    await session.execute(
+        update(Repository).where(Repository.id == "repo1").values(head_commit=None)
+    )
+    await session.commit()
+    target, path = "src/auth/service.py::login", "src/auth/service.py"
+    cards = (await get_context(targets=[target, path], include=["last_change"]))["targets"]
+    assert cards[target]["last_change"] == {**cards[path]["last_change"], "scope": "file"}
+
+
+@pytest.mark.asyncio
 async def test_symbol_changes_say_file_level_when_git_cannot_walk_its_lines(
     setup_mcp, session, tmp_path
 ):
