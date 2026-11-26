@@ -211,8 +211,8 @@ def is_native_frame(frame: ProfileFrame) -> bool:
     """Whether *frame* runs code with no source: a built-in or the language runtime.
 
     A frame with no file (V8's natives, a collapsed stack's bare name), one
-    pyinstrument files under ``<built-in>``, assembly (Go's ``memeqbody``),
-    and Go's ``runtime`` package.
+    pyinstrument files under ``<built-in>`` or cProfile under ``~``, assembly
+    (Go's ``memeqbody``), and Go's ``runtime`` package.
     """
     path = frame.path
     if not path:
@@ -224,7 +224,7 @@ def is_native_frame(frame: ProfileFrame) -> bool:
         if name.startswith(("(", "runtime.")):
             return True
         return not any(mark in name for mark in (".", "/", "::"))
-    if path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
+    if path == "~" or path.startswith("<built-in") or path.lower().endswith((".s", ".asm")):
         return True
     return frame.language == "go" and frame.function.startswith("runtime.")
 

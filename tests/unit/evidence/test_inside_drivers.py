@@ -296,6 +296,7 @@ def test_library_frames_are_dependencies_and_the_standard_library() -> None:
     assert not library("node:internal/modules/cjs/loader", "Module._load", "javascript")
     assert not library(f"{GOROOT}\\runtime\\cgocall.go", "runtime.cgocall")
     assert not library("<built-in>", "posix.stat", "python")
+    assert not library("~", "<built-in method builtins.len>", "unknown")  # cProfile
     assert not library("", "(program)", "unknown")
     assert is_library_frame(_frame("vendor/x/y.go", "y.F"), "vendored")
     assert not is_library_frame(_frame("pkg/app.py", "App.run", "python"), "no_span")
