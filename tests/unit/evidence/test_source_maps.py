@@ -121,6 +121,7 @@ def test_a_nested_next_bundle_joins_the_apps_source(tmp_path):
     # A module that names no file never becomes one.
     ("webpack://_N_E/?3f2a", "apps/web/.next/static/<webpack module>"),
     ("webpack://ns/C:/x.ts", "apps/web/.next/static/<webpack module>"),
+    ("webpack://_N_E/a%00b.ts", "apps/web/.next/static/<webpack module>"),
 ])
 def test_webpack_sources_resolve_against_the_build_context(source, found):
     from repowise.core.evidence.source_maps import _decode
@@ -132,7 +133,7 @@ def test_webpack_sources_resolve_against_the_build_context(source, found):
 
 
 @pytest.mark.parametrize("source", ["webpack:///../outside.ts", "https://example.com/src/x.ts",
-                                    "webpack-internal:///./src/x.ts"])
+                                    "webpack-internal:///./src/x.ts", "webpack://[_N_E/./src/x.ts"])
 def test_webpack_paths_stay_inside_the_checkout(source):
     from repowise.core.evidence.source_maps import _decode
 

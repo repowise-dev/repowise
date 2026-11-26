@@ -61,15 +61,18 @@ def _webpack_source(
     map. The deepest ancestor of the map where the file exists wins; with none,
     the path reads from the map's directory like a plain relative source.
     A module that names no file (``webpack://_N_E/?abc`` for CSS, a path with
-    a drive letter) gets a path that is never a checkout file, so a frame in
+    a drive letter or a NUL) gets a path that is never a checkout file, so a frame in
     it stays unjoined instead of refusing every other source in the map.
     """
-    parsed = urlsplit(reference)
+    try:
+        parsed = urlsplit(reference)
+    except ValueError:
+        raise _refuse("invalid map or source URL") from None
     if parsed.scheme != "webpack" or parsed.fragment:
         return None
     decoded = unquote(parsed.path).lstrip("/").replace("\\", "/")
     base = posixpath.dirname(map_path)
-    if not decoded or ":" in decoded:
+    if not decoded or ":" in decoded or "\0" in decoded:
         return posixpath.join(base, "<webpack module>")
     candidates: list[str] = []
     while True:
