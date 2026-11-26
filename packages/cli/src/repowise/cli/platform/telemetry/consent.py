@@ -21,7 +21,8 @@ _NOTICE = (
     "Repowise collects anonymous usage telemetry (commands run, MCP tools used, "
     "the client that ran them, versions, OS, success/duration) to help "
     "prioritize what to build.\n"
-    "It never sees your code, file paths, or repo names. Opt out anytime with "
+    "It never sees your code, file paths, or repo names. Signing in links this "
+    "install's events to your account. Opt out anytime with "
     "'repowise telemetry disable' or DO_NOT_TRACK=1.\n"
     f"Details: {TELEMETRY_DOC_URL}"
 )

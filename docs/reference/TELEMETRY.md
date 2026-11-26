@@ -101,7 +101,7 @@ A few other commands add fixed labels, booleans or ranges of their own:
 | `properties.outcome` | `publish` | How the publish ended, a fixed label |
 | `properties.transport`, `properties.transport_outcome` | `mcp` | The MCP transport (`stdio`, `streamable-http`, `sse`) and how the session ended |
 | `properties.link_anon_status`, `properties.already_signed_in` | `login` | The HTTP status of the install-id link (see below) and whether a session already existed |
-| `properties.client` | hooks (`augment`) | The client named by the hook's `--client` flag, overriding the detected one |
+| `properties.client` | Codex and Cursor hooks (`augment`) | The same `client` field as above, set to `codex` or `cursor` from the hook's `--client` flag instead of the environment |
 | `properties.subscription_cli_detected` | commands that check for signed-in agent CLIs, such as `init` | Whether a signed-in agent CLI was found, a boolean |
 | `properties.hint_shown` | any command | The fixed id of a one-line hint the command printed |
 | `properties.error_leaves`, `properties.error_leaf_count` | any command that crashes | Exception class names when several failures ended the run together, and how many |
