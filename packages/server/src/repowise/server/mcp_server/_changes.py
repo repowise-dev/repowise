@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from repowise.core.analysis.git_cli import run_git
+from repowise.core.analysis.git_cli import landed_apart, landing_date, run_git
 from repowise.core.attribution import (
     AGENT,
     COVERAGE_FLOOR,
@@ -33,7 +33,14 @@ from repowise.core.attribution import (
 )
 from repowise.core.changes.record import change_record
 from repowise.core.persistence.crud import find_changes
-from repowise.core.persistence.models import Change, GitMetadata
+from repowise.core.persistence.models import (
+    Change,
+    ChangeCommit,
+    ChangeFile,
+    GitCommit,
+    GitCommitFile,
+    GitMetadata,
+)
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 
@@ -330,11 +337,12 @@ class _LineHistoryError(Exception):
 @functools.lru_cache(maxsize=2048)
 def _newest_line_commit(
     repo_root: str, at_commit: str, file_path: str, lines: tuple[int, int]
-) -> tuple[str, str, datetime]:
-    """``(sha, author, committed_at as naive UTC)`` of the newest commit that
-    changed *lines*. Keyed on the indexed commit, so a cached answer stays true
-    until the next index. A failed walk raises :class:`_LineHistoryError`, which
-    ``lru_cache`` does not keep, so a passing failure is retried next call.
+) -> tuple[str, str, datetime, str]:
+    """``(sha, author, committed_at as naive UTC, authored ISO day)`` of the
+    newest commit that changed *lines*. Keyed on the indexed commit, so a cached
+    answer stays true until the next index. A failed walk raises
+    :class:`_LineHistoryError`, which ``lru_cache`` does not keep, so a passing
+    failure is retried next call.
     """
     out = _line_log(
         repo_root,
@@ -342,18 +350,37 @@ def _newest_line_commit(
         file_path,
         lines,
         "-n1",
-        "--format=%H%x1f%aN%x1f%cI",
+        "--format=%H%x1f%aN%x1f%cI%x1f%aI",
         timeout=_NEWEST_LINE_TIMEOUT_SECONDS,
     )
     first = (out or "").strip().splitlines()[:1]
     parts = first[0].split("\x1f") if first else []
-    if len(parts) != 3:
+    if len(parts) != 4:
         raise _LineHistoryError
     try:
-        moment = datetime.fromisoformat(parts[2])
+        moment = _naive_utc(parts[2])
     except ValueError as exc:
         raise _LineHistoryError from exc
-    return parts[0], parts[1], moment.astimezone(UTC).replace(tzinfo=None)
+    return parts[0], parts[1], moment, parts[3][:10]
+
+
+def _naive_utc(iso: str) -> datetime:
+    return datetime.fromisoformat(iso).astimezone(UTC).replace(tzinfo=None)
+
+
+@functools.lru_cache(maxsize=2048)
+def _landed_at(repo_root: str, at_commit: str, sha: str, committed: datetime) -> datetime:
+    """When the change holding *sha* reached the indexed commit's branch, as
+    naive UTC, for a commit no stored change names. Raises
+    :class:`_LineHistoryError` (never cached) when git cannot tell."""
+    own = committed.replace(tzinfo=UTC).isoformat()
+    landed = landing_date(repo_root, sha, own, _NEWEST_LINE_TIMEOUT_SECONDS, head=at_commit)
+    if landed is None:
+        raise _LineHistoryError
+    try:
+        return _naive_utc(landed)
+    except ValueError as exc:
+        raise _LineHistoryError from exc
 
 
 async def symbol_last_change(
@@ -364,7 +391,10 @@ async def symbol_last_change(
     lines: tuple[int, int] | None,
 ) -> dict[str, Any] | None:
     """The newest commit that edited a symbol's lines: ``sha``, ``author``,
-    ``committed_at`` and, when a stored change landed it, ``ref``.
+    ``committed_at`` (when its change landed: the stored change's merge, else
+    the first-parent commit that brought it in), ``authored`` (its authored
+    day, only when more than a day before that) and, when a stored change
+    landed it, ``ref``.
 
     Walked at the indexed commit, like :func:`symbol_changes`. None with no
     line range, no indexed commit or a failed walk; the caller then serves the
@@ -372,15 +402,98 @@ async def symbol_last_change(
     """
     if lines is None or not repository.head_commit or not repo_root:
         return None
+    head = repository.head_commit
     try:
-        sha, author, committed_at = await asyncio.to_thread(
-            _newest_line_commit, repo_root, repository.head_commit, file_path, lines
+        sha, author, committed_at, authored = await asyncio.to_thread(
+            _newest_line_commit, repo_root, head, file_path, lines
         )
     except _LineHistoryError:
         return None
     found = await find_changes(session, repository.id, sha, limit=1)
     ref = (found[0].forge_ref or found[0].change_id) if found else None
-    return {"sha": sha, "author": author, "committed_at": committed_at, "ref": ref}
+    if found and found[0].merged_at is not None:
+        merged = found[0].merged_at
+        landed = (merged if merged.tzinfo else merged.replace(tzinfo=UTC)).astimezone(UTC)
+        committed_at = landed.replace(tzinfo=None)
+    else:
+        # No stored change: a failed lookup keeps the commit's own date, unlabelled.
+        try:
+            committed_at = await asyncio.to_thread(_landed_at, repo_root, head, sha, committed_at)
+        except _LineHistoryError:
+            authored = None
+    if not landed_apart(committed_at.date().isoformat(), authored):
+        authored = None
+    return {
+        "sha": sha,
+        "author": author,
+        "committed_at": committed_at,
+        "authored": authored,
+        "ref": ref,
+    }
+
+
+async def file_landing(
+    session: Any, repo_id: str, file_path: str, last_commit_at: datetime
+) -> tuple[datetime, datetime] | None:
+    """``(merged_at, its newest commit on the file)`` for the newest stored
+    change touching *file_path*, when it landed later than the file's newest
+    commit was made; ``None`` otherwise, and the commit's date stands.
+
+    A merge brings in commits made before it, so the file's newest commit date
+    is the branch's, not the day the change reached the main line. Ceilings:
+    the stored change files are capped per change, so a change too large to
+    list the file is not found; and a change whose commits are outside the
+    stored history is not used.
+    """
+    newest = (
+        await session.execute(
+            select(Change.change_id, Change.merged_at)
+            .join(
+                ChangeFile,
+                (ChangeFile.repository_id == Change.repository_id)
+                & (ChangeFile.change_id == Change.change_id),
+            )
+            .where(
+                Change.repository_id == repo_id,
+                ChangeFile.file_path == file_path,
+                Change.merged_at.is_not(None),
+            )
+            .order_by(Change.merged_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if newest is None:
+        return None
+    merged = _aware_utc(newest.merged_at)
+    if (merged - _aware_utc(last_commit_at)).total_seconds() <= 1:
+        return None
+    written = (
+        await session.execute(
+            select(func.max(GitCommit.committed_at))
+            .join(
+                ChangeCommit,
+                (ChangeCommit.repository_id == GitCommit.repository_id)
+                & (ChangeCommit.sha == GitCommit.sha),
+            )
+            .join(
+                GitCommitFile,
+                (GitCommitFile.repository_id == GitCommit.repository_id)
+                & (GitCommitFile.sha == GitCommit.sha),
+            )
+            .where(
+                GitCommit.repository_id == repo_id,
+                ChangeCommit.change_id == newest.change_id,
+                GitCommitFile.file_path == file_path,
+            )
+        )
+    ).scalar()
+    # Without the change's commit on the file, its author and day are unknown:
+    # the file's newest commit keeps its own date rather than lose its author.
+    return (merged, _aware_utc(written)) if written else None
+
+
+def _aware_utc(moment: datetime) -> datetime:
+    return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 # -- include=["provenance"]: a file's three-state attribution ------------------

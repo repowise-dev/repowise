@@ -247,9 +247,9 @@ async def test_symbol_last_change_is_the_newest_commit_on_its_lines(setup_mcp, s
     committed = _git(tmp_path, "show", "-s", "--format=%cI", shas["inside"])
     # The method's own last fix and its author, not the file's newer "after" commit.
     assert own["author"] == "Dev" and own["ref"] == "#11" and "scope" not in own
-    assert datetime.fromisoformat(own["date"]).replace(tzinfo=UTC) == datetime.fromisoformat(
-        committed
-    ).astimezone(UTC)
+    # Dated by the stored change that landed it, with the day it was written.
+    assert own["date"].startswith("2026-03-11")
+    assert own["authored"] == committed[:10]
     assert "ref" not in named["targets"][path]["last_change"]
     # Opt-in: a default card runs no walk and carries no last_change.
     assert "last_change" not in (await get_context(targets=[target]))["targets"][target]
@@ -588,7 +588,9 @@ async def test_default_responses_are_byte_identical_with_change_records(setup_mc
     assert await defaults() == before
 
 
-@pytest.mark.parametrize("out", [None, "", "abc\x1fDev", "abc\x1fDev\x1fnot-a-date"])
+@pytest.mark.parametrize(
+    "out", [None, "", "abc\x1fDev", "abc\x1fDev\x1fnot-a-date\x1f2026-01-18T00:00:00Z"]
+)
 def test_a_failed_newest_line_walk_is_not_cached(monkeypatch, out):
     from repowise.server.mcp_server import _changes
 
@@ -597,6 +599,158 @@ def test_a_failed_newest_line_walk_is_not_cached(monkeypatch, out):
     with pytest.raises(_changes._LineHistoryError):
         _changes._newest_line_commit(*key)
     # The next call walks again rather than replaying the failure.
-    good = "abc\x1fDev\x1f2026-09-29T14:28:33+05:30\n"
+    good = "abc\x1fDev\x1f2026-09-29T14:28:33+05:30\x1f2026-01-18T10:00:00+05:30\n"
     monkeypatch.setattr(_changes, "_line_log", lambda *a, **k: good)
-    assert _changes._newest_line_commit(*key) == ("abc", "Dev", datetime(2026, 9, 29, 8, 58, 33))
+    assert _changes._newest_line_commit(*key) == (
+        "abc",
+        "Dev",
+        datetime(2026, 9, 29, 8, 58, 33),
+        "2026-01-18",
+    )
+
+
+def _dated(root: Path, when: str, *args: str, authored: str | None = None) -> str:
+    """``git *args`` committed at *when*, authored at *authored* (default *when*)."""
+    import os
+    import subprocess
+
+    env = {
+        **os.environ,
+        "GIT_COMMITTER_DATE": f"{when}T12:00:00Z",
+        "GIT_AUTHOR_DATE": f"{authored or when}T12:00:00Z",
+    }
+    return subprocess.run(
+        ["git", "-c", "user.name=Dev", "-c", "user.email=dev@example.com", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout.strip()
+
+
+@pytest.fixture(params=["merge", "squash", "rebase"])
+async def late_landing(request, setup_mcp, session, tmp_path):
+    """``login``'s lines edited on a branch on 2026-01-18 that lands on 2026-08-12."""
+    from repowise.core.persistence.models import Repository
+
+    path = tmp_path / "src/auth/service.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"x{n} = {n}" for n in range(1, 121)]
+    path.write_text("".join(f"{t}\n" for t in lines), encoding="utf-8")
+    _dated(tmp_path, "2026-01-01", "init", "-q", "-b", "main")
+    _dated(tmp_path, "2026-01-01", "add", "src")
+    _dated(tmp_path, "2026-01-01", "commit", "-qm", "seed")
+    _dated(tmp_path, "2026-01-18", "checkout", "-qb", "feat")
+    lines[29] = "x30 = 'fixed'"
+    path.write_text("".join(f"{t}\n" for t in lines), encoding="utf-8")
+    _dated(tmp_path, "2026-01-18", "commit", "-qam", "fix login")
+    _dated(tmp_path, "2026-03-01", "checkout", "-q", "main")
+    (tmp_path / "notes.txt").write_text("n\n", encoding="utf-8")
+    _dated(tmp_path, "2026-03-01", "add", "notes.txt")
+    _dated(tmp_path, "2026-03-01", "commit", "-qm", "notes")
+    land = "2026-08-12"
+    if request.param == "merge":
+        _dated(tmp_path, land, "merge", "-q", "--no-ff", "feat", "-m", "Merge pull request #7")
+    elif request.param == "squash":
+        _dated(tmp_path, land, "merge", "-q", "--squash", "feat")
+        _dated(tmp_path, land, "commit", "-qm", "fix login (#7)", authored="2026-01-18")
+    else:
+        _dated(tmp_path, land, "rebase", "-q", "main", "feat")
+        _dated(tmp_path, land, "checkout", "-q", "main")
+        _dated(tmp_path, land, "merge", "-q", "--ff-only", "feat")
+    (tmp_path / "notes.txt").write_text("n\nm\n", encoding="utf-8")
+    _dated(tmp_path, "2026-09-01", "commit", "-qam", "more notes")
+    head = _dated(tmp_path, "2026-09-01", "rev-parse", "HEAD")
+    await session.execute(
+        update(Repository).where(Repository.id == "repo1").values(head_commit=head)
+    )
+    await session.commit()
+    return request.param
+
+
+@pytest.mark.asyncio
+async def test_symbol_last_change_is_dated_by_the_day_its_change_landed(late_landing):
+    from repowise.server.mcp_server import get_context
+
+    target = "src/auth/service.py::login"
+    own = (await get_context(targets=[target], include=["last_change"]))["targets"][target][
+        "last_change"
+    ]
+    assert own["date"].startswith("2026-08-12")
+    assert own["authored"] == "2026-01-18"
+
+
+@pytest.mark.asyncio
+async def test_symbol_last_change_keeps_one_date_when_git_cannot_tell_the_landing(
+    late_landing, monkeypatch
+):
+    from repowise.server.mcp_server import _changes, get_context
+
+    _changes._landed_at.cache_clear()
+    monkeypatch.setattr(_changes, "landing_date", lambda *a, **k: None)
+    target = "src/auth/service.py::login"
+    own = (await get_context(targets=[target], include=["last_change"]))["targets"][target][
+        "last_change"
+    ]
+    assert "authored" not in own
+
+
+async def _landed_change(session, *, merged: datetime, written: datetime) -> None:
+    """A stored change touching service.py, merged at *merged*, whose commit on
+    the file was made at *written*, the file's newest commit."""
+    from repowise.core.persistence.models import GitCommit, GitCommitFile
+
+    sha = "7" * 40
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(last_commit_at=written)
+    )
+    session.add(GitCommit(repository_id="repo1", sha=sha, author_name="Dev", committed_at=written))
+    session.add(GitCommitFile(repository_id="repo1", sha=sha, file_path="src/auth/service.py"))
+    await _seed(session, [_row("pr-7", 7, ["src/auth/service.py"], sha=sha, merged_at=merged)])
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_is_dated_by_the_merge_that_landed_it(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    await _landed_change(
+        session, merged=datetime(2026, 8, 12, tzinfo=UTC), written=datetime(2026, 1, 18, tzinfo=UTC)
+    )
+    path = "src/auth/service.py"
+    last = (await get_context([path], include=["last_change"]))["targets"][path]["last_change"]
+    assert last["date"].startswith("2026-08-12")
+    assert last["authored"] == "2026-01-18"
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_written_and_landed_together_is_unchanged(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    when = datetime(2026, 1, 18, tzinfo=UTC)
+    path = "src/auth/service.py"
+    await _landed_change(session, merged=when, written=when)
+    last = (await get_context([path], include=["last_change"]))["targets"][path]["last_change"]
+    assert last["date"].startswith("2026-01-18")
+    assert "authored" not in last
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_without_the_changes_commits_keeps_its_own_date(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    path = "src/auth/service.py"
+    written = datetime(2026, 1, 18, tzinfo=UTC)
+    await session.execute(
+        update(GitMetadata).where(GitMetadata.file_path == path).values(last_commit_at=written)
+    )
+    # The change's commit is not in the stored history: its author is unknown.
+    await _seed(
+        session,
+        [_row("pr-7", 7, [path], sha="8" * 40, merged_at=datetime(2026, 8, 12, tzinfo=UTC))],
+    )
+    last = (await get_context([path], include=["last_change"]))["targets"][path]["last_change"]
+    assert last["date"].startswith("2026-01-18")
+    assert "authored" not in last
