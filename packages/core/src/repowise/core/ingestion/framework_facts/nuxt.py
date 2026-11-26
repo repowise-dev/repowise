@@ -66,7 +66,9 @@ _VERSION_MAJOR_RE = re.compile(r"(\d+)")
 
 
 def _join(*parts: str) -> str:
-    return posixpath.normpath(posixpath.join(*[p for p in parts if p])) if any(parts) else ""
+    """The parts joined and normalised; the repository root is ``""``, never ``"."``."""
+    joined = posixpath.normpath(posixpath.join(*[p for p in parts if p])) if any(parts) else ""
+    return "" if joined == "." else joined
 
 
 def nuxt_src_dir(manifest: NpmManifest, paths: Collection[str] | None = None) -> str | None:

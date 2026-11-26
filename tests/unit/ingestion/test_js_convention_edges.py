@@ -281,6 +281,25 @@ def test_a_root_nuxt_3_app_roots_at_the_repo_root() -> None:
     assert facts.entry_files("", paths) == ["layouts/default.vue", "server/api/a.ts"]
 
 
+def test_a_dot_src_dir_is_the_app_root() -> None:
+    from dataclasses import replace
+
+    manifest = parse_npm_manifest({"dependencies": {"nuxt": "^3.12.0"}})
+    assert manifest is not None
+    manifest = replace(manifest, configs={"nuxt.config.ts": "defineNuxtConfig({ srcDir: './' })"})
+    ((facts, _pkg),) = js_frameworks(manifest)
+    assert facts.entry_files("", ["pages/index.vue", "app/pages/a.vue"]) == ["pages/index.vue"]
+
+
+def test_the_deletion_gate_roots_a_nuxt_4_app_where_the_graph_does(tmp_path: Path) -> None:
+    repo = _write(tmp_path, {"package.json": _pkg({"nuxt": "^4.1.0"})})
+    repo_paths = {"app/app.vue", "app/components/A.vue", "components/Old.vue"}
+    candidates = ["app/components/A.vue", "components/Old.vue"]
+    assert set(convention_load_reasons(repo, candidates, repo_paths)) == {"app/components/A.vue"}
+    # Without the repository's files, both Nuxt 3 and Nuxt 4 readings count.
+    assert set(convention_load_reasons(repo, candidates)) == set(candidates)
+
+
 @pytest.mark.parametrize(
     ("config", "lib"),
     [

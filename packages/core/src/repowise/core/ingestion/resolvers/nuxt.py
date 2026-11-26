@@ -13,12 +13,13 @@ component file Nuxt names ``RecipeCard`` under ``components/``, and
 resolves like written ones, so file reachability, unused exports, the call
 graph and test links all see them.
 
-A project is a ``package.json`` that :data:`~..framework_facts.NUXT` matches,
-with a ``nuxt.config.*`` beside it, rooted at the source directory
-:func:`~..framework_facts.nuxt_src_dir` names. The config is required here
-and not for the convention anchors: a Nuxt module repository declares ``nuxt``
-as a devDependency, and its root ``components/`` must not bind as an app's.
-Nothing here runs for any other repository.
+A project is a directory holding ``nuxt.config.*`` whose ``package.json`` (that
+directory's, else the nearest above it) :data:`~..framework_facts.NUXT`
+matches, rooted at the source directory :func:`~..framework_facts.nuxt_src_dir`
+names. The config is required here and not for the convention anchors: a Nuxt
+module repository declares ``nuxt`` as a devDependency, and its root
+``components/`` must not bind as an app's. Nothing here runs for any other
+repository.
 
 Ceilings, each falling back to today's behaviour (no edge):
 
@@ -38,7 +39,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,7 @@ from ..sfc_source import vue_component_name_from_stem
 from .ts_workspace import _probe_path
 
 if TYPE_CHECKING:
+    from ..framework_facts import NpmManifest
     from ..models import CallSite, Import, ParsedFile
     from .context import ResolverContext
 
@@ -178,21 +180,43 @@ def _is_auto_import_file(path: str, bases: tuple[str, ...]) -> bool:
     return len(parts) == 1 or (len(parts) == 2 and parts[1].rsplit(".", 1)[0] == "index")
 
 
+def _nearest_manifest(manifests: dict[str, NpmManifest], directory: str) -> NpmManifest | None:
+    """The manifest in *directory* or the nearest directory above it."""
+    current = directory
+    while (found := manifests.get(current)) is None and current:
+        current = posixpath.dirname(current)
+    return found
+
+
 def nuxt_projects(ctx: ResolverContext) -> tuple[NuxtProject, ...]:
     """Every Nuxt project in the repository, deepest root first (cached on *ctx*)."""
     cached = getattr(ctx, "_nuxt_projects", None)
     if cached is not None:
         return cached
     projects: list[NuxtProject] = []
-    configs = [p for p in ctx.sorted_paths if p.rpartition("/")[2] in NUXT_CONFIGS]
-    for manifest in npm_manifests(ctx.repo_path, configs) if ctx.repo_path and configs else ():
-        config = NUXT.config(manifest) if NUXT.matches_npm(manifest) else None
-        if config is None:
+    config_paths: dict[str, str] = {}  # project directory -> its nuxt.config, first name wins
+    for path in ctx.sorted_paths:
+        directory, _, name = path.rpartition("/")
+        if name in NUXT_CONFIGS:
+            current = config_paths.get(directory)
+            if current is None or NUXT_CONFIGS.index(name) < NUXT_CONFIGS.index(current.rpartition("/")[2]):
+                config_paths[directory] = path
+    manifests = (
+        {m.rel_dir: m for m in npm_manifests(ctx.repo_path, config_paths.values())}
+        if ctx.repo_path and config_paths
+        else {}
+    )
+    for directory, path in sorted(config_paths.items()):
+        nearest = _nearest_manifest(manifests, directory)
+        config = _read_text(ctx, path) if nearest and NUXT.matches_npm(nearest) else None
+        if nearest is None or config is None:
             continue
-        src = nuxt_src_dir(manifest, ctx.sorted_paths) or manifest.rel_dir
+        # The app is the config's directory, with the dependencies of the manifest above it.
+        app = replace(nearest, rel_dir=directory, configs={path.rpartition("/")[2]: config})
+        src = nuxt_src_dir(app, ctx.sorted_paths) or directory
         projects.append(
             NuxtProject(
-                root=manifest.rel_dir,
+                root=directory,
                 src_dir=src,
                 components=_components(ctx, src, config),
                 auto_imports=_auto_imports(ctx, src),

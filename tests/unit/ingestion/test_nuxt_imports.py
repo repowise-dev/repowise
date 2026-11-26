@@ -270,6 +270,23 @@ def test_src_dir_roots_aliases_and_auto_imports(tmp_path: Path) -> None:
     assert ("src/pages/index.vue", "src/components/RecipeCard.vue") in edges
 
 
+def test_a_config_takes_the_dependency_of_the_manifest_above_it(tmp_path: Path) -> None:
+    """``web/nuxt.config.ts`` with ``nuxt`` declared only in the root package.json."""
+    _write_tree(
+        tmp_path,
+        {
+            "package.json": '{"devDependencies": {"nuxt": "^3.12.0"}}',
+            "web/nuxt.config.ts": "export default defineNuxtConfig({});\n",
+            "web/pages/index.vue": (
+                '<script setup lang="ts">\nimport { a } from "~/lib/a";\nconst x = a();\n</script>\n'
+            ),
+            "web/lib/a.ts": "export function a() { return 1; }\n",
+        },
+    )
+    _, graph, _ = _build(tmp_path)
+    assert ("web/pages/index.vue", "web/lib/a.ts") in _imports(graph)
+
+
 def test_a_nuxt_module_repo_binds_nothing(tmp_path: Path) -> None:
     """``nuxt`` as a devDependency with no ``nuxt.config`` is a module, not an app."""
     _write_tree(

@@ -71,12 +71,15 @@ class GateFacts:
         # Deferred: the ingestion package imports analysis modules at load time.
         from ...ingestion.framework_facts import convention_load_reasons
 
+        repo_files = {n for n, d in graph.nodes(data=True) if d.get("node_type") == "file"}
         return cls(
             repo_root=repo_root,
             file_languages=file_languages,
             weak_languages=weak_resolution_languages(graph, set(file_languages.values())),
             convention_loaded=(
-                convention_load_reasons(repo_root, file_languages) if repo_root is not None else {}
+                convention_load_reasons(repo_root, file_languages, repo_files)
+                if repo_root is not None
+                else {}
             ),
         )
 

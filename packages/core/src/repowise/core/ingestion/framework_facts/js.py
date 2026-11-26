@@ -53,18 +53,22 @@ def js_frameworks(
     return out
 
 
-def convention_load_reasons(repo_root: str | Path, paths: Iterable[str]) -> dict[str, str]:
+def convention_load_reasons(
+    repo_root: str | Path, paths: Iterable[str], repo_paths: Collection[str] | None = None
+) -> dict[str, str]:
     """For each of *paths* a JS framework may load by convention, why.
 
     A file a framework declared in a ``package.json`` at or above it anchors
     (an entry glob) or imports by name when used (a review glob). The dead-code
     deletion gate reads this: the framework, not an importer, decides whether
-    such a file runs.
+    such a file runs. *repo_paths*, every file of the repository, lets a Nuxt
+    app with no literal ``srcDir`` root at the one directory the graph's
+    anchors use; without it both candidates count.
     """
     wanted = sorted(set(paths))
     reasons: dict[str, str] = {}
     for manifest in npm_manifests(repo_root, wanted):
-        for facts, pkg in js_frameworks(manifest):
+        for facts, pkg in js_frameworks(manifest, repo_paths):
             loaded = replace(facts, entry_globs=facts.entry_globs + facts.review_globs)
             for path in loaded.entry_files(manifest.rel_dir, wanted):
                 reasons.setdefault(
